@@ -21,7 +21,7 @@ What this means for the design: one core, one backend interface, two products th
 weigh the backends differently. On Linux the PTY backend is the main path and the
 SSH-channel backend doesn't exist. On Windows the SSH-channel backend is the main
 path and ConPTY is the fallback. Platform-specific code is built only on its own
-platform (build tags in Go), so the Linux binary carries no SSH client.
+platform (conditional compilation), so the Linux binary carries no SSH client.
 
 ---
 
@@ -551,12 +551,12 @@ for Windows are in §10.
   only in the Windows build.
 - **What the embedded client has to cover** (users will compare it to OpenSSH and
   PuTTY):
-  - Go has `golang.org/x/crypto/ssh` (pure Go, no cgo), which handles the protocol,
-    channels, PTY requests, `window-change`, and agent forwarding. It doesn't parse
-    `~/.ssh/config` or manage `known_hosts` with OpenSSH's semantics. Those are
-    yours to write, or use `x/crypto/ssh/knownhosts` plus a config parser.
+  - **Protocol library:** most SSH libraries (libssh, libssh2, and native ones in
+    most languages) handle transport, auth, channels, PTY requests, `window-change`,
+    and agent forwarding. Few parse `~/.ssh/config` or manage `known_hosts` with
+    OpenSSH's semantics. Expect to write or adopt those separately.
   - **Agents:** the Windows OpenSSH agent (named pipe `\\.\pipe\openssh-ssh-agent`)
-    and Pageant. Both speak the agent protocol, which `x/crypto/ssh/agent` handles.
+    and Pageant. Both speak the standard agent protocol.
   - **Host keys:** a first-connect prompt, then a mismatch warning that is hard to
     click through. Reuse `%USERPROFILE%\.ssh\known_hosts` so the CLI and the app agree.
   - **Config:** read `%USERPROFILE%\.ssh\config` for `Host`, `HostName`, `User`,
@@ -622,21 +622,28 @@ Windows story with embedded SSH. Codebases worth studying before the Windows pha
 | Core as a separate library | Enables testing, fuzzing, reuse | Yes; consider libghostty-vt vs your own |
 | Scrollback limit units and reflow strategy | Affects page design and resize cost | Bytes; plan lazy reflow |
 | Native tabs/splits | tmux `-CC` needs them anyway | Yes, as an immutable split tree |
-| Windows SSH strategy | Determines whether ConPTY is on the main path | Embedded SSH backend on Windows (`x/crypto/ssh`); Linux uses the system `ssh` in a PTY |
+| Windows SSH strategy | Determines whether ConPTY is on the main path | Embedded SSH backend on Windows; Linux uses the system `ssh` in a PTY |
 
-### Implementation language note
+### Properties the implementation language must support
 
-Your usual stack is Go, so a few Go-specific points:
+The language is deliberately undecided. These are the requirements the design above
+puts on it, to check any candidate against:
 
-- The hot parser and grid paths want predictable latency and compact memory
-  (8-byte cells, offset-addressed pages). In Go, keep those in large `[]uint64`/byte
-  slabs, not pointer-rich structs, so the GC has little to scan. Benchmark GC pauses
-  during `cat`-heavy output.
-- Any GL, FreeType, HarfBuzz, or libghostty-vt usage goes through cgo. Batch calls
-  per row or run rather than per cell, because each cgo call costs tens of ns.
-- XCB has a pure-Go equivalent (`github.com/jezek/xgb`). It speaks the X protocol
-  directly, including the RENDER extension, which suits the remote X11 backend and
-  avoids cgo there.
+- **Compact, pointer-free hot data.** The parser and grid want 8-byte cells and
+  offset-addressed pages in large flat buffers. A garbage-collected language must let
+  you keep these out of the GC's scan set (flat byte or integer arrays), and you
+  should benchmark pause times during `cat`-heavy output.
+- **Cheap calls into C libraries**, or native equivalents. FreeType, HarfBuzz,
+  fontconfig, GL/D3D11, DirectWrite, and possibly libghostty-vt or an SSH library are
+  C/C++/COM. If foreign calls are expensive, batch them per row or run, not per cell.
+- **Asynchronous X11 protocol access.** XCB-style request/reply cookies, including
+  the RENDER extension. Some languages have pure implementations of the X protocol,
+  which avoids a C dependency for the remote X11 backend.
+- **Real threads with shared memory** for the IO/render/UI split and a fair lock (§4).
+- **Win32 and COM interop** for ConPTY, D3D11, DirectWrite, TSF (IME), and named
+  pipes (agents).
+- **A mature SSH library** for the Windows build, or the willingness to own one.
+- **Fuzzing and benchmarking tools** (§11).
 
 ### A sensible build order
 
