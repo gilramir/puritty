@@ -10,6 +10,7 @@ doc):
 | W | [`wezterm.md`](wezterm.md) | WezTerm @ `e2a98e1b8`, 2026-10-10 (nightly; last tagged release Feb 2024) |
 | T | [`windows-terminal.md`](windows-terminal.md) | Windows Terminal / OpenConsole @ `9e6cf223d`, 2026-10-19 |
 | P | [`putty.md`](putty.md) | PuTTY @ `7507c54b`, 2026-10-14 |
+| C | [`cjk-and-thai.md`](cjk-and-thai.md) | Cross-cutting: CJK, Thai and grapheme clusters across all five |
 
 Target product, as stated:
 
@@ -23,6 +24,8 @@ Target product, as stated:
   app** (leaning that way). Local shells through ConPTY are still needed, but are the
   secondary path there.
 - **tmux integration** (control mode, `tmux -CC`) on both platforms.
+- **Korean, Chinese, Japanese and Thai must render well**, including grapheme
+  clusters, and their IMEs must work (C§0).
 - The implementation language is deliberately undecided. This document stays
   language-neutral; §12 lists what the design asks of a language.
 
@@ -73,9 +76,13 @@ requirements make central:
    T§5.2). Only PuTTY draws just what changed. For remote X11 (and RDP on Windows)
    the damage set *is* the network payload. Add explicit scroll deltas, which none of
    them report to the renderer.
-4. **Grapheme clusters and shaping are hard to retrofit.** Alacritty and PuTTY store
-   one codepoint per cell. Ghostty, WezTerm and Windows Terminal designed for
-   clusters and shaping. Decide on the cell content model now.
+4. **CJK and Thai need clusters, shaping, fitting and IME work from the start.**
+   Thai stacked marks need GPOS shaping and overflow above the cell; conjoining Hangul
+   needs GSUB; Han characters need a language setting to pick Japanese vs Chinese vs
+   Korean glyph forms; CJK glyphs need scaling and centring in two cells; Korean IME
+   ordering is a classic bug source. Alacritty doesn't shape at all, and each of the
+   others gets only part of it right (C§0, C§1). These choices shape the cell model,
+   the renderer and the damage tracking, so they can't be retrofitted.
 5. **Distance changes latency assumptions.** On Linux the distance is the X link. On
    Windows it's the SSH connection. Query replies, clipboard, terminfo, and echo
    latency all behave differently when the app and the shell are far apart (§8).
@@ -377,20 +384,32 @@ Storage:
   same data feeds the local renderer, remote X11 damage, and any future network
   protocol.
 
-### 5.3 Unicode
+### 5.3 Unicode, CJK and Thai
 
-- Use a generated width table so you control the Unicode version.
-- **Store grapheme clusters per cell from the start**, with UAX #29 break checks
-  gated by mode 2027 (G§4.7). Streaming grapheme state that can re-measure the
-  previous cell handles VS16 widening (T§4.3).
-- **Make the width model per pane, not global.** WT's measurement modes (graphemes,
-  wcswidth, console) are a good model, but WT makes the choice process-global
-  (T§4.3). A tmux pane must use tmux's width model, a local pane can use yours.
-- Width disagreements between your terminal, the remote `wcwidth`, and tmux **will**
-  happen over SSH. Match xterm/tmux in legacy (non-2027) mode and test with
-  `ucs-detect` (G§10).
-- On Windows, pass ConPTY the `PSEUDOCONSOLE_GLYPH_WIDTH_*` flag that matches your
-  width mode (T§2.1).
+Details and evidence in [`cjk-and-thai.md`](cjk-and-thai.md) §2–§3.
+
+- Generate width and grapheme-break tables from a **pinned Unicode version** (Ghostty
+  packs width, break class and emoji flags into 16 bits per codepoint).
+- **Store grapheme clusters per cell from the start** (UAX #29 incl. GB6–8 for Hangul,
+  GB9a for Thai SARA AM, GB9c for Indic), in a side table bounded by **bytes** per
+  cluster, not a small mark count (Alacritty caps at 9 marks, PuTTY at 32).
+- **Streaming must re-open the previous cell.** Marks often arrive after an SGR change
+  or in the next read. Ghostty re-feeds the previous cell into the break state; WT
+  re-measures and may widen it. WezTerm drops such marks (inferred) (C§3.2).
+- **The width model is per pane:** legacy (wcwidth-compatible sum) or grapheme mode
+  (2027); ambiguous width 1 or 2; per-codepoint overrides (WezTerm's `cell_widths`).
+  WT and Ghostty make these global, and WT's commit admits it was a shortcut.
+  - **tmux panes use the legacy model**, because tmux keeps its own grid with
+    wcwidth-style widths and doesn't support 2027. Otherwise cursors and wrapping
+    drift.
+  - Local panes default to grapheme mode.
+- Zero-width ranges must include Hangul V/T jamo (U+1160–11FF and U+D7B0–D7FF; PuTTY
+  misses the latter, WT's Wcswidth mode gives them width 1) and the Thai marks.
+- **Decide SARA AM's cell structure.** Ghostty and WT make consonant + SARA AM one wide
+  cell; wcwidth implies two narrow cells. Column totals agree either way (C§2.2).
+- Test with `ucs-detect`, inside and outside tmux, and with the corpus in C§9.
+- On Windows, pass ConPTY the `PSEUDOCONSOLE_GLYPH_WIDTH_*` flag that matches the
+  pane's width mode (T§2.1).
 
 ### 5.4 Reflow and alt screen
 
@@ -458,6 +477,12 @@ Rules for this backend:
   WezTerm's mux protocol shows the failure mode of not doing this (§8.1).
 - Glyph rasterisation stays local. Only glyph bitmaps cross the wire, once. Colour
   emoji need ARGB glyphsets, which XRender supports.
+- **Bound server-side glyph sets** with an LRU and `RenderFreeGlyphs`. CJK text puts
+  thousands of distinct glyphs on screen (C§6).
+- **Damage must include overhang.** Glyphs aren't clipped to their cells (Thai marks
+  rise above the row; SARA AM overhangs the previous cell). When a row is repainted,
+  its background fill erases neighbours' overhanging ink, so track each row's ink
+  extent (as WT does) and repaint affected neighbours (C§4.3).
 - MIT-SHM, DRI3, and Present are local-only. Use them when local; never depend on
   them.
 
@@ -481,8 +506,11 @@ Copy the proven pieces:
   previous frame or damage accumulated across buffer ages (T§10). Plan for this from
   the start; it pays off on battery, RDP and VMs.
 - Skip drawing when nothing is dirty (WT skips `Present`) or the window is occluded.
-- **Atlas eviction.** Alacritty and Ghostty atlases only grow; WT clears the whole
-  atlas when full. Use LRU or epoch eviction.
+- **Atlas eviction.** Alacritty and Ghostty atlases only grow; WezTerm and WT clear
+  the whole atlas when full. Use fixed-size pages with LRU or epoch eviction, sized
+  for CJK from the start (C§6).
+- **Don't clip glyphs to their cell**; draw backgrounds, then glyphs, and track ink
+  extents per row for partial redraw (C§4.3).
 
 ### 6.4 Choosing a backend at runtime
 
@@ -499,18 +527,46 @@ Copy the proven pieces:
 
 ### 6.5 Fonts and shaping
 
+Details in [`cjk-and-thai.md`](cjk-and-thai.md) §4–§5.
+
 - **Discovery:** fontconfig on Linux, DirectWrite on Windows, with per-style fallback
   chains and negative-result caching (A§5.4, G§5.5, T§5.2).
 - **Async fallback:** render immediately with what you have, redraw when the fallback
-  font is found (W§7.4). Ghostty and WT do fallback discovery synchronously, on the
-  render thread or under the terminal lock.
-- **Shaping** (HarfBuzz or DirectWrite): if yes, follow Ghostty: runs never cross
-  rows; break on style, font, selection edges, and the cursor; force LTR; cache by a
-  position-independent run hash (G§5.5). Shape from a snapshot, outside the lock.
-- **Synthetic bold and italic** for fonts lacking those styles.
-- **Bundle a fallback font set** so remote or minimal hosts still render.
+  font is found (W§7.4). Invalidate only affected rows; WezTerm clears the whole shape
+  cache. Ghostty and WT do fallback discovery synchronously, on the render thread or
+  under the terminal lock.
+- **Shaping is mandatory** (HarfBuzz on Linux, DirectWrite on Windows): Thai stacking
+  and SARA AM reordering need GPOS/GSUB, and conjoining Hangul needs GSUB. Overstriking
+  marks at the cell origin (Alacritty, PuTTY on Windows) doesn't work.
+  - Keep a base and its marks **in one font**; move whole clusters to fallback fonts
+    (Ghostty picks a face covering the whole cluster; WezTerm re-shapes the cluster in
+    the fallback font with the full run as context).
+  - Runs never cross rows. Segment by font and script, but **don't split runs at the
+    cursor, selection or colour changes**; colour glyphs afterwards (WezTerm slices
+    quads by pixel range, WT colours per glyph).
+  - Map glyphs back to cells with your stored widths, not the shaper's clusters.
+  - Force LTR (unless bidi is added later); cache by a position-independent run hash
+    (G§5.5). Shape from a snapshot, outside the lock.
+- **Han unification:** a per-profile CJK language (ja, ko, zh-Hans, zh-Hant, zh-HK),
+  defaulting from the OS locale, passed to fontconfig (`lang`), DirectWrite
+  (`MapCharacters` locale) **and** the shaper (`locl`). WezTerm hard-codes `en`; WT and
+  Alacritty use only the OS locale. Plus per-script or per-range font overrides
+  (Ghostty's `font-codepoint-map`) (C§5.2).
+- **Wide glyph fit:** scale fallback fonts so their ideograph width matches the primary
+  font (Ghostty's `ic_width`, measured on 水), centre in the 2-cell box, align on the
+  Latin baseline, shrink only on overflow. Draw a glyph that the font makes wide but
+  the terminal says is narrow compressed (PuTTY's "narrow" trick) (C§4.4).
+- Cell height comes from the primary font in every reference. Offer automatic ascent
+  headroom for Thai fallback fonts as well as manual line height.
+- **Synthetic bold and italic, for fallback fonts too.** Ghostty and WezTerm
+  synthesise only for the primary font, so bold CJK from auto-fallback comes out
+  regular (inferred).
+- **Bundle or recommend a fallback set that includes CJK and Thai** (e.g. Noto Sans
+  Mono CJK, Noto Sans Thai). No reference bundles one.
 - With the X11 backend, glyph upload is an X request, so cache both rasterised
   bitmaps and server-side glyph ids.
+- On Windows, convert to UTF-16 with surrogate pairs. WezTerm's DirectWrite fallback
+  truncates codepoints above U+FFFF (C§5.3).
 
 ---
 
@@ -649,11 +705,31 @@ apply to the remote X11 renderer, where the X connection is the slow link:
 - **X11 modifier correctness:** use XKB state-notify events (G§6.3).
 - **Windows keyboard:** copy WT's KeyDown / `ToUnicodeEx` / `WM_CHAR` split and its
   AltGr heuristics (T§7).
-- **IME:** send every key press and release through the IME, attach commits inside a
-  key event to that event, draw preedit inline at the cursor (G§7.5, A§6.5). On
-  Windows, WT's custom TSF client with `TF_TMAE_CONSOLE` semantics, inline
-  composition drawn by the renderer, and composition flushed on key-down is the best
-  reference (T§7).
+- **IME** (details and bug history in C§7): Korean, Japanese and Chinese input is a
+  hard requirement, and every reference has Korean ordering bugs in its history.
+  - Send every key press and release through the IME; attach commits inside a key
+    event to that event (G§7.5, A§6.5).
+  - Ordering: apply commit then preedit from one event, in order; on a non-IME key
+    during composition, flush the composition **synchronously** first, then handle
+    the key (WT GH#20244); never forward keys while composing; never drop them.
+  - Send commits through the normal keystroke path, not as bracketed paste (Alacritty
+    does), never splitting surrogate pairs or clusters.
+  - Draw the preedit as an **overlay**, shaped, measured with the pane's width model,
+    keeping combining marks (Ghostty drops them), with clause attributes and caret,
+    and **wrapping** when long. No reference shapes or wraps the preedit.
+  - Put the candidate window at the **target clause** or caret. Every reference pins
+    it to the cursor cell.
+  - Windows: a custom TSF client with transitory context and `TF_TMAE_CONSOLE`
+    semantics (keeps Korean syllables from being left as interim characters),
+    insert-style preview, display attributes mapped to underline styles, an input
+    scope option (T§7).
+  - Linux: handle IMEs that disagree on commit vs. preedit-end order, and
+    fcitx5-hangul's commit-then-preedit (Ghostty's workarounds).
+  - Test with real IMEs: fcitx5-hangul, ibus-hangul, Mozc, a pinyin IME, and the
+    Microsoft Korean and Japanese IMEs.
+- **Selection:** cluster-aware; Thai has no spaces, so double-click word selection
+  needs dictionary breaking (ICU, libthai, or Windows' `icu.dll`), with "one script
+  run = one word" as the fallback (C§8).
 - **Mouse:** SGR (1006) and SGR-pixels (1016). Motion only on cell change. Shift
   bypasses mouse reporting.
 - **Bindings:** a trie of key sequences, plus key tables (modes) and
@@ -854,7 +930,11 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
    keypress-to-pixel latency, and remote X bytes per update.
 8. **Integrity checks:** debug-mode assertions over page and row invariants (Ghostty
    `assertIntegrity`). Fault injection for OOM paths.
-9. **Inspector:** an in-app view of recent bytes and parsed events per terminal. You'll
+9. **Script corpus:** Thai (กี้ ปั๊ม น้ำ ญุ ฐุ), Hangul (precomposed and conjoining
+   ᄒᆞᆫ), Han unification probes (直 骨 返 刃) under each language setting, mixed
+   CJK/Latin, ambiguous characters, emoji. Image comparisons with bundled fonts, plus
+   width and cursor-position checks under and outside tmux (C§9).
+10. **Inspector:** an in-app view of recent bytes and parsed events per terminal. You'll
    want it for tmux control mode and SSH.
 
 ---
@@ -864,14 +944,17 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 | Decision | Why it can't wait | Suggested default |
 |---|---|---|
 | Cell content model | Retrofitting broke Alacritty's ligature and emoji plans | Codepoint + grapheme side table, 8-byte cell |
-| Shaping yes/no | Changes glyph cache keys and renderer run structure | Yes, cursor-aware run splitting, from a snapshot outside the lock |
+| Shaping | Changes glyph cache keys and renderer run structure | Mandatory (Thai, Hangul); whole clusters in one font; runs not split at cursor or colour; from a snapshot outside the lock |
 | Backend interface | tmux on both platforms and SSH on Windows depend on it | Two layers; message-based; upward Seat-style events; process details as capabilities (§3.2) |
 | Renderer interface with damage + scroll deltas | Required by the X11 backend and RDP; no reference has scroll deltas | Row-granular damage plus explicit scroll ops; one seqno-based dirty mechanism |
 | GPU API | Ghostty's GL 4.3 excludes some hardware; GL on Windows is fragile | GL 3.3 core / GLES 3 on Linux; D3D11 on Windows |
 | Threading model | Hard to change after state ownership is set | IO thread per terminal, IO loop per SSH connection, render thread, UI thread, one fair lock; bounded queues |
 | Core as a separate library | Testing, fuzzing, reuse | Yes; consider libghostty-vt vs your own |
 | Scrollback units and reflow | Affects page design and resize cost | Bytes; cold-line compression; plan lazy reflow |
-| Width model scope | tmux panes and local panes disagree | Per pane, negotiated (mode 2027) |
+| Width model scope | tmux panes and local panes disagree | Per pane: legacy for tmux, grapheme (2027) for local; ambiguous width per profile |
+| CJK language for Han glyphs | Feeds font fallback and shaping | Per profile, default from OS locale |
+| Glyph clipping and ink extents | Thai marks overflow the cell; partial redraw must repaint overhang | No clipping; per-row ink extents in the damage model |
+| IME model | Korean/Japanese/Chinese are required; preedit needs attributes, caret, wrap | Overlay preedit, shaped, wrapping; strict commit/key ordering |
 | Native tabs/splits | tmux `-CC` needs them anyway | Yes, as an immutable split tree |
 | Windows SSH strategy | Determines whether ConPTY is on the main path | Embedded SSH on Windows, one implementation; Linux uses system `ssh` in a PTY |
 | Prompt trust model | Decides how prompts are drawn and whether the renderer needs a trust bit per line | Prompts out of band, or a per-line trust bit with an unforgeable margin marker |
