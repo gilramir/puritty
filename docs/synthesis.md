@@ -18,7 +18,7 @@ Target product, as stated:
   on. It runs a local shell in a PTY. SSH happens the usual way, by running the `ssh`
   binary inside it. No SSH client is built in.
 - Linux display paths: **X11 over the network** (app on one host, X server on another)
-  and **local GPU** rendering.
+  and **local GPU** rendering. **Efficient remote X11 is mandatory**, not a fallback.
 - **Windows: mostly used as an SSH terminal**, with an **SSH client built into the
   app** (leaning that way). Local shells through ConPTY are still needed, but are the
   secondary path there.
@@ -31,6 +31,19 @@ weigh the backends differently. On Linux the PTY backend is the main path and th
 SSH-channel backend doesn't exist. On Windows the SSH-channel backend is the main
 path and ConPTY is the fallback. Platform-specific code is built only on its own
 platform (conditional compilation), so the Linux binary carries no SSH client.
+
+### Why build rather than adopt WezTerm
+
+WezTerm is the closest existing terminal: it has the right backend layering, an
+embedded SSH client with connection sharing, working tmux `-CC` tab/split mapping,
+and predictive echo (W§0). Its Windows SSH gaps (no ProxyJump, no Windows agent or
+Pageant, no reconnect, keepalives that can't detect a dead link) and tmux gaps could be
+fixed by contributing. The deciding factor is remote X11: WezTerm renders only through
+OpenGL/wgpu, uses XRender only for cursors, rebuilds the whole frame every time, and
+has no scroll or damage information reaching the renderer (W§7). Adding a server-side
+X11 renderer would mean reworking its renderer, its damage tracking and its threading,
+the parts where it is weakest. Its release cadence (last tagged release Feb 2024)
+and size add to the case for a smaller, purpose-built design that borrows its ideas.
 
 ---
 
