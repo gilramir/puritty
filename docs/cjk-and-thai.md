@@ -102,8 +102,8 @@ and lines wrap in the wrong place. The cases that matter for these scripts:
 | Emoji with text default + VS16 (❤️) | 1 | 2 | Not CJK-specific, but common in CJK chat text |
 
 Hangul and Thai mostly agree across models. The disagreements are SARA AM's cell
-structure (Ghostty and WT make one wide cell where wcwidth implies two narrow ones)
-and the ambiguous characters.
+structure (Ghostty and WT make one wide cell where wcwidth implies two narrow ones;
+visiterm uses two narrow cells, §2.2) and the ambiguous characters.
 
 ### 2.2 SARA AM and other spacing marks
 
@@ -120,9 +120,23 @@ The references differ:
 - **Legacy / wcwidth:** SARA AM takes its own cell.
 
 The column count agrees in all cases, so cursor positions stay in sync. What differs is
-whether cursor movement and selection treat กำ as one unit. Either is defensible;
-visiterm should decide consciously and test it. The same rule applies to Indic
-spacing vowel signs (Mc).
+whether cursor movement and selection treat กำ as one unit.
+
+**Decision for visiterm:** SARA AM takes its own narrow cell in every width mode, so
+arrow keys and selection treat กำ as two units, as legacy terminals and wcwidth do.
+Consequences:
+
+- The segmenter deviates from UAX #29 GB9a by breaking before U+0E33 and U+0EB3.
+  A consonant's above/below marks (e.g. the tone mark in ก่ำ) stay in the consonant's
+  cell; only SARA AM moves to the next one.
+- Rendering must still shape the consonant cell and the SARA AM cell as one run in one
+  font. HarfBuzz decomposes SARA AM into nikhahit + SARA AA and moves the nikhahit
+  over the consonant (and above any tone mark), so that ink lands in the previous cell
+  (see §4 and the ink-extent rule in §9).
+- Applications using mode 2027 expect one cluster here. Column totals still agree, so
+  cursor positions stay in sync; only visiterm's own cursor and selection units differ.
+- Indic spacing vowel signs (Mc) are not covered by this decision; they follow UAX #29
+  for now.
 
 ### 2.3 Design
 
@@ -444,12 +458,13 @@ Nobody does this fully right:
 
 ## 9. Rules for visiterm
 
-1. **Clusters in cells:** UAX #29 incl. GB6–8, GB9a, GB9c; side-table storage bounded by
+1. **Clusters in cells:** UAX #29 incl. GB6–8, GB9a (except SARA AM, rule 3), GB9c; side-table storage bounded by
    bytes; streaming that re-opens the previous cell (Ghostty/WT).
 2. **Width per pane:** legacy (tmux, SSH default) or grapheme (2027) mode; ambiguous
    1 or 2; per-codepoint overrides; tables generated from a pinned UCD with the Hangul
    V/T and Thai mark ranges zero-width.
-3. **Decide SARA AM's cell structure** (one wide cell vs. two narrow) and test it.
+3. **SARA AM gets its own narrow cell** in every mode (break before U+0E33/U+0EB3), so
+   กำ is two units for cursor and selection; shape both cells as one run (§2.2).
 4. **Shape everything** with HarfBuzz (Linux) or DirectWrite (Windows). Keep a cluster
    in one font; move whole clusters to fallback fonts; shape across cells; don't
    split runs at cursor or colour changes; map back with stored widths.

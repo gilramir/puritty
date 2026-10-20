@@ -391,7 +391,7 @@ Details and evidence in [`cjk-and-thai.md`](cjk-and-thai.md) §2–§3.
 - Generate width and grapheme-break tables from a **pinned Unicode version** (Ghostty
   packs width, break class and emoji flags into 16 bits per codepoint).
 - **Store grapheme clusters per cell from the start** (UAX #29 incl. GB6–8 for Hangul,
-  GB9a for Thai SARA AM, GB9c for Indic), in a side table bounded by **bytes** per
+  GB9a except Thai/Lao AM (below), GB9c for Indic), in a side table bounded by **bytes** per
   cluster, not a small mark count (Alacritty caps at 9 marks, PuTTY at 32).
 - **Streaming must re-open the previous cell.** Marks often arrive after an SGR change
   or in the next read. Ghostty re-feeds the previous cell into the break state; WT
@@ -405,8 +405,12 @@ Details and evidence in [`cjk-and-thai.md`](cjk-and-thai.md) §2–§3.
   - Local panes default to grapheme mode.
 - Zero-width ranges must include Hangul V/T jamo (U+1160–11FF and U+D7B0–D7FF; PuTTY
   misses the latter, WT's Wcswidth mode gives them width 1) and the Thai marks.
-- **Decide SARA AM's cell structure.** Ghostty and WT make consonant + SARA AM one wide
-  cell; wcwidth implies two narrow cells. Column totals agree either way (C§2.2).
+- **SARA AM takes its own narrow cell in every width mode** (decided). Arrow keys and
+  selection treat กำ as two units, as in a legacy terminal. This deviates from UAX #29
+  GB9a: the segmenter breaks before U+0E33 (and Lao U+0EB3). Ghostty and WT instead
+  make one wide cell; column totals agree either way, so cursors stay in sync (C§2.2).
+  The two cells must still be shaped as one run, since SARA AM's ring draws over the
+  consonant.
 - Test with `ucs-detect`, inside and outside tmux, and with the corpus in C§9.
 - On Windows, pass ConPTY the `PSEUDOCONSOLE_GLYPH_WIDTH_*` flag that matches the
   pane's width mode (T§2.1).
@@ -952,6 +956,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 | Core as a separate library | Testing, fuzzing, reuse | Yes; consider libghostty-vt vs your own |
 | Scrollback units and reflow | Affects page design and resize cost | Bytes; cold-line compression; plan lazy reflow |
 | Width model scope | tmux panes and local panes disagree | Per pane: legacy for tmux, grapheme (2027) for local; ambiguous width per profile |
+| SARA AM cell structure | Ghostty/WT: one wide cell; wcwidth: two narrow | Two narrow cells in all modes; break before U+0E33/U+0EB3; shape both cells as one run |
 | CJK language for Han glyphs | Feeds font fallback and shaping | Per profile, default from OS locale |
 | Glyph clipping and ink extents | Thai marks overflow the cell; partial redraw must repaint overhang | No clipping; per-row ink extents in the damage model |
 | IME model | Korean/Japanese/Chinese are required; preedit needs attributes, caret, wrap | Overlay preedit, shaped, wrapping; strict commit/key ordering |
