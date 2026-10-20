@@ -230,7 +230,7 @@ Messaging rules:
   grapheme length per cell, sync buffer. Alacritty added several caps only recently
   as DoS fixes (A§9).
 
-Minimum sequence coverage for an SSH terminal: everything in A§3.2, plus OSC 7 (cwd),
+Minimum sequence coverage for a modern terminal (local and over SSH): everything in A§3.2, plus OSC 7 (cwd),
 OSC 133 (prompt marks), OSC 8, OSC 52, OSC 9/777 notifications, XTVERSION, DECRQM,
 mode 2026 (sync), 2004, 1004, and 1006/1016 mouse. Add 2027 (grapheme) and 2048
 (in-band resize) when the grid supports them.
