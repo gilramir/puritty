@@ -12,6 +12,9 @@ doc):
 | P | [`putty.md`](putty.md) | PuTTY @ `7507c54b`, 2026-10-14 |
 | C | [`cjk-and-thai.md`](cjk-and-thai.md) | Cross-cutting: CJK, Thai and grapheme clusters across all five |
 
+[`library-tests.md`](library-tests.md) records how well tested each library named
+below is. It is for information only.
+
 Target product, as stated:
 
 - Linux first, Windows later.
