@@ -405,8 +405,9 @@ Details and evidence in [`cjk-and-thai.md`](cjk-and-thai.md) §2–§3.
   - Local panes default to grapheme mode.
 - Zero-width ranges must include Hangul V/T jamo (U+1160–11FF and U+D7B0–D7FF; PuTTY
   misses the latter, WT's Wcswidth mode gives them width 1) and the Thai marks.
-- **SARA AM takes its own narrow cell in every width mode** (decided). Arrow keys and
-  selection treat กำ as two units, as in a legacy terminal. This deviates from UAX #29
+- **SARA AM takes its own narrow cell in every width mode** (tentative, open to
+  revisiting). Arrow keys and selection treat กำ as two units, as in a legacy
+  terminal. This deviates from UAX #29
   GB9a: the segmenter breaks before U+0E33 (and Lao U+0EB3). Ghostty and WT instead
   make one wide cell; column totals agree either way, so cursors stay in sync (C§2.2).
   The two cells must still be shaped as one run, since SARA AM's ring draws over the
@@ -956,7 +957,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 | Core as a separate library | Testing, fuzzing, reuse | Yes; consider libghostty-vt vs your own |
 | Scrollback units and reflow | Affects page design and resize cost | Bytes; cold-line compression; plan lazy reflow |
 | Width model scope | tmux panes and local panes disagree | Per pane: legacy for tmux, grapheme (2027) for local; ambiguous width per profile |
-| SARA AM cell structure | Ghostty/WT: one wide cell; wcwidth: two narrow | Two narrow cells in all modes; break before U+0E33/U+0EB3; shape both cells as one run |
+| SARA AM cell structure | Ghostty/WT: one wide cell; wcwidth: two narrow | Tentative: two narrow cells in all modes; break before U+0E33/U+0EB3; shape both cells as one run. Open to revisiting |
 | CJK language for Han glyphs | Feeds font fallback and shaping | Per profile, default from OS locale |
 | Glyph clipping and ink extents | Thai marks overflow the cell; partial redraw must repaint overhang | No clipping; per-row ink extents in the damage model |
 | IME model | Korean/Japanese/Chinese are required; preedit needs attributes, caret, wrap | Overlay preedit, shaped, wrapping; strict commit/key ordering |

@@ -122,8 +122,9 @@ The references differ:
 The column count agrees in all cases, so cursor positions stay in sync. What differs is
 whether cursor movement and selection treat กำ as one unit.
 
-**Decision for visiterm:** SARA AM takes its own narrow cell in every width mode, so
-arrow keys and selection treat กำ as two units, as legacy terminals and wcwidth do.
+**Tentative choice for visiterm** (not final; open to revisiting): SARA AM takes its
+own narrow cell in every width mode, so arrow keys and selection treat กำ as two
+units, as legacy terminals and wcwidth do.
 Consequences:
 
 - The segmenter deviates from UAX #29 GB9a by breaking before U+0E33 and U+0EB3.
@@ -463,7 +464,7 @@ Nobody does this fully right:
 2. **Width per pane:** legacy (tmux, SSH default) or grapheme (2027) mode; ambiguous
    1 or 2; per-codepoint overrides; tables generated from a pinned UCD with the Hangul
    V/T and Thai mark ranges zero-width.
-3. **SARA AM gets its own narrow cell** in every mode (break before U+0E33/U+0EB3), so
+3. **SARA AM gets its own narrow cell** (tentative) in every mode (break before U+0E33/U+0EB3), so
    กำ is two units for cursor and selection; shape both cells as one run (§2.2).
 4. **Shape everything** with HarfBuzz (Linux) or DirectWrite (Windows). Keep a cluster
    in one font; move whole clusters to fallback fonts; shape across cells; don't
