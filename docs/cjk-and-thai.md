@@ -2,8 +2,9 @@
 
 Requirement: Korean, Chinese, Japanese and Thai must render well, including grapheme
 clusters. This doc compares how the five reference terminals handle these scripts and
-turns that into design rules for visiterm. The summary is folded into
-[`synthesis.md`](synthesis.md) §5.3, §6.5 and §9.
+turns that into design rules for visiterm. §10 covers a related requirement: hosts
+that use the legacy Korean encoding EUC-KR instead of UTF-8. The summary is folded
+into [`synthesis.md`](synthesis.md) §3.4, §5.3, §6.5 and §9.
 
 Sources: four focused research passes over the vendored trees (same commits as the
 per-terminal docs). Paths are relative to each `vendor/<name>/` directory. Claims
@@ -54,6 +55,10 @@ pinned versions.
 - **Glyph atlases fill up with CJK.** Every reference either grows its atlas forever
   (Alacritty, Ghostty) or throws it all away when full (WezTerm, WT). Use pages with
   LRU eviction. For remote X11, the same applies to server-side glyph sets.
+- **EUC-KR has to work for years.** Some users' RHEL8 hosts run in `ko_KR.euckr`. No
+  reference decodes two-byte encodings properly; PuTTY has the setting but only
+  per-byte decoding. Convert at the backend boundary so the core stays UTF-8, and give
+  those panes ambiguous width 2 (§10).
 
 ---
 
@@ -493,3 +498,144 @@ Nobody does this fully right:
     - mixed CJK/Latin lines, fullwidth punctuation, ambiguous characters;
     - emoji: ❤️ 🇯🇵 👨‍👩‍👧; Devanagari क्षि (cheap extra coverage);
     - IME scripts for Korean, Japanese and Chinese composition.
+14. **Legacy character sets:** a remote character set per profile (UTF-8, EUC-KR,
+    CP949), defaulting from the locale for local panes, switchable per pane; a filter
+    pair at the backend boundary; ambiguous width 2 in EUC-KR panes (§10).
+
+---
+
+## 10. Legacy encodings: EUC-KR
+
+Requirement: some users work on RHEL8 hosts with `LANG=ko_KR.euckr`. Their
+installation is too large to move to UTF-8, so they will stay on EUC-KR for years.
+Programs on those hosts read and write EUC-KR bytes, not UTF-8. A UTF-8-only terminal
+shows their Korean output as garbage and sends them UTF-8 they can't read.
+
+### 10.1 What the references do
+
+- **Alacritty, Ghostty, WezTerm, Windows Terminal:** UTF-8 only. A search of the
+  vendored trees for EUC-KR, CP949 and KS C 5601 finds nothing in any terminal path;
+  the only hits are in Ghostty's regex library and WezTerm's font code.
+- **PuTTY** has a "Remote character set" setting (`CONF_line_codepage`, `config.c`),
+  but it is not a model for multibyte decoding (inferred from these code paths):
+  - Incoming bytes go through a 256-entry per-byte table (`unitab_line`,
+    `windows/unicode.c`), which can't express a two-byte encoding.
+  - On Windows, the only two-byte path is "direct to font": when the line code page
+    equals the font's code page and the font is DBCS, bytes are passed to the font
+    unconverted (`windows/unicode.c`, around line 596).
+  - On Unix there is no DBCS support (`unix/unicode.c:21`, "we don't do DBCS").
+- **xterm** handles non-UTF-8 locales by running the shell under `luit`, a filter that
+  converts between the locale's encoding and UTF-8 (general knowledge).
+
+So visiterm needs its own conversion. PuTTY is prior art for the setting and its UI
+only.
+
+### 10.2 Facts about the encoding
+
+General knowledge; check against the WHATWG Encoding Standard and glibc's charmaps.
+
+- **EUC-KR** is ASCII plus the two-byte characters of KS X 1001, both bytes in
+  0xA1–0xFE. KS X 1001 has 2,350 precomposed Hangul syllables (of 11,172), 4,888
+  Hanja, and symbols, Greek, Cyrillic, box drawing, circled numbers and kana.
+- **CP949** (Unified Hangul Code, Windows code page 949) is a superset. It adds the
+  other 8,822 syllables, with lead bytes 0x81–0xFE and trail bytes 0x41–0x5A,
+  0x61–0x7A and 0x81–0xFE.
+  - Text from Korean Windows users is CP949 even when it is labelled EUC-KR, and
+    WHATWG decodes the label `euc-kr` as CP949.
+  - glibc's `ko_KR.euckr` locale is strict EUC-KR, so programs on RHEL8 can't handle
+    the extra syllables (for example 똠).
+- **No byte of a two-byte character is below 0x41**, so ESC, other C0 controls and DEL
+  never occur inside a character, and escape sequences survive conversion intact.
+  CP949 trail bytes do include ASCII letters, though, so the decoder must keep state:
+  whether a byte is a letter or a trail byte depends on the byte before it.
+- **Bytes 0x80–0x9F are not C1 controls** here. In CP949 they are lead and trail bytes.
+- **Width:** in Korean legacy practice every two-byte character takes 2 columns, so
+  byte count equals column count, and programs in `ko_KR.euckr` expect that (check
+  the `WIDTH` section of glibc's EUC-KR charmap on RHEL8). Unicode gives many of the
+  KS X 1001 symbols East Asian Width "Ambiguous" (Greek, Cyrillic, box drawing, ①).
+  With ambiguous width 1, tables and box drawing from Korean legacy programs come out
+  misaligned.
+
+### 10.3 Design
+
+1. **A "remote character set" setting per profile:** UTF-8 (default), EUC-KR or
+   CP949.
+   - **Linux local PTY:** default from the process locale (`nl_langinfo(CODESET)`
+     after `setlocale(LC_ALL, "")`). This covers the remote X11 case, where visiterm
+     itself runs on an RHEL8 host and inherits EUC-KR from the login environment.
+   - **SSH** (system `ssh` in a PTY on Linux, the embedded client on Windows): the
+     terminal can't learn the remote locale, so the setting goes in the host profile.
+   - **A per-pane switch at runtime** (a menu action), because one pane can `ssh` from
+     a UTF-8 host to an EUC-KR one.
+2. **Convert at the backend boundary,** as a pair of filters on the byte stream:
+   EUC-KR/CP949 to UTF-8 before the parser, UTF-8 to EUC-KR/CP949 on the way out. The
+   parser, its UTF-8 fast path and the grid stay UTF-8 only. UTF-8 panes have no
+   filter at all.
+   - **The decoder keeps state across reads,** since a lead byte can end one read and
+     its trail byte start the next.
+   - **A lead byte followed by an invalid trail byte** produces U+FFFD, and the second
+     byte is processed again on its own (WHATWG behaviour), so a stray lead byte can't
+     swallow an ESC.
+   - **The decoder never produces C1 controls.**
+   - **Always decode the CP949 superset,** even when the setting is EUC-KR. Accepting
+     more is harmless.
+   - **The encoder in EUC-KR mode** can't send characters outside KS X 1001 (똠, emoji).
+     Replace them with `?` and show that this happened (a status indicator or a
+     one-time notice) rather than dropping them silently. CP949 mode can encode every
+     syllable.
+3. **Outbound writes must say whether they are text or raw bytes.** Keys, IME commits
+   and paste are text and go through the encoder. Some output is raw bytes and must
+   skip it: legacy mouse reports (modes 1000/1005 without 1006) with coordinates that
+   produce bytes ≥ 0x80, and 8-bit Meta. Query replies are ASCII, so it doesn't matter
+   for them. Give the backend's write interface two entry points.
+4. **Bytes wrapped in ASCII are invisible to the filter,** so their handlers convert
+   them using the pane's character set:
+   - **OSC 52:** the base64 payload decodes to bytes in the remote encoding. Convert
+     after base64-decoding on a write from the remote, and before base64-encoding when
+     answering a read.
+   - **OSC 7 and OSC 8:** percent-encoded bytes in paths and URLs are in the remote
+     encoding (inferred; it depends on the program).
+   - **Titles (OSC 0/2)** are ordinary bytes and go through the filter.
+5. **Width:** EUC-KR and CP949 panes default to ambiguous width 2 and the legacy width
+   model (§2.3).
+6. **Selection and copy need nothing extra.** The grid is Unicode, so copied text is
+   UTF-8.
+7. **X11 hygiene when visiterm runs in an EUC-KR locale** (general knowledge):
+   - Use `Xutf8LookupString`, not `XmbLookupString`, for XIM commits; the latter
+     returns the locale's encoding.
+   - Clipboard: request `UTF8_STRING`, and fall back to `COMPOUND_TEXT` for old
+     clients.
+   - Don't assume file names, the environment or argv are UTF-8.
+   - The CJK language default (§5.2) still works: `ko_KR.euckr` gives `ko`. Only the
+     codeset differs.
+8. **Windows ConPTY panes should not need the filter.** ConPTY emits UTF-8 VT
+   whatever the console code page (inferred from T§2.4; check with `chcp 949`).
+9. **One portable converter on both platforms,** driven by the WHATWG EUC-KR index, so
+   behaviour is identical everywhere. Don't use `MultiByteToWideChar` on Windows and
+   iconv on Linux. iconv, ICU and most language ecosystems implement the index. glibc
+   iconv's `EUC-KR` is strict; its CP949 converter is `UHC` (general knowledge).
+
+### 10.4 tmux: open, to be tested
+
+It isn't yet known whether the EUC-KR users run tmux; the combination will be tested
+on RHEL8 later. tmux stores its grid as UTF-8 and decides from the client's locale
+whether the outer terminal handles UTF-8 (general knowledge). To check:
+
+- whether EUC-KR written by a program inside tmux survives tmux's own parsing, in
+  normal and `-CC` mode;
+- in `-CC` mode, whether converting `%output` bytes in visiterm is enough, or whether
+  `capture-pane` and reattach show mangled text;
+- which tmux version RHEL8 ships. If it is older than 3.2, the flow-control features
+  in [`synthesis.md`](synthesis.md) §7.3 are not available.
+
+### 10.5 Tests
+
+- a two-byte character split across two reads;
+- a lead byte followed by ESC, and followed by an ASCII letter (valid in CP949 as a
+  trail byte, invalid in strict EUC-KR);
+- a CP949-only syllable received in EUC-KR mode (decoded) and typed in EUC-KR mode
+  (replaced and flagged);
+- box-drawing tables and symbol-heavy screens from a Korean legacy program, checked
+  for alignment;
+- Korean IME commits, paste and OSC 52 round trips in an EUC-KR pane;
+- mouse reports beyond column 95 in mode 1000 (raw bytes, not encoded).

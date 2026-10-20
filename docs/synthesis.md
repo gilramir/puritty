@@ -10,7 +10,7 @@ doc):
 | W | [`wezterm.md`](wezterm.md) | WezTerm @ `e2a98e1b8`, 2026-10-10 (nightly; last tagged release Feb 2024) |
 | T | [`windows-terminal.md`](windows-terminal.md) | Windows Terminal / OpenConsole @ `9e6cf223d`, 2026-10-19 |
 | P | [`putty.md`](putty.md) | PuTTY @ `7507c54b`, 2026-10-14 |
-| C | [`cjk-and-thai.md`](cjk-and-thai.md) | Cross-cutting: CJK, Thai and grapheme clusters across all five |
+| C | [`cjk-and-thai.md`](cjk-and-thai.md) | Cross-cutting: CJK, Thai, grapheme clusters and EUC-KR across all five |
 
 [`library-tests.md`](library-tests.md) records how well tested each library named
 below is. It is for information only.
@@ -29,6 +29,8 @@ Target product, as stated:
 - **tmux integration** (control mode, `tmux -CC`) on both platforms.
 - **Korean, Chinese, Japanese and Thai must render well**, including grapheme
   clusters, and their IMEs must work (C§0).
+- **EUC-KR must work.** Some users' RHEL8 hosts run in `ko_KR.euckr` and will for
+  years; their installation is too large to move to UTF-8 (§3.4, C§10).
 - The implementation language is deliberately undecided. This document stays
   language-neutral; §12 lists what the design asks of a language.
 
@@ -273,6 +275,32 @@ writes replies straight from the parse thread (G§2.2), and WT queues them durin
 parse and writes them after unlock (T§3.1). Do that. ConPTY makes this more urgent:
 conhost blocks some Console API calls on a DSR-CPR reply for up to ~500 ms (T§2.6).
 
+### 3.4 Legacy character sets (EUC-KR)
+
+Details and evidence in C§10. Programs on an EUC-KR host send and expect EUC-KR bytes.
+None of the four modern references converts; PuTTY has a "remote character set"
+setting but decodes per byte, so it can't handle two-byte encodings (C§10.1).
+
+- **Where:** a pair of filters between the backend and the core: EUC-KR/CP949 to UTF-8
+  before the parser, UTF-8 back on the way out. The parser, grid and UTF-8 fast path
+  (§5.1) stay UTF-8 only, and UTF-8 panes have no filter. It works the same for PTY,
+  SSH-channel and (if it works at all, see below) tmux panes.
+- **Setting:** remote character set per profile (UTF-8, EUC-KR, CP949). Local PTYs
+  default from the process locale; this is what makes the remote X11 case work, where
+  visiterm runs on the RHEL8 host itself. SSH hosts set it in their profile. Each pane
+  can switch at runtime.
+- **Decoder:** stateful across reads; always accepts the CP949 superset; an invalid
+  trail byte gives U+FFFD and is reprocessed, so ESC is never swallowed; never
+  produces C1 controls.
+- **Encoder:** in strict EUC-KR mode, characters outside KS X 1001 are replaced with
+  `?` and flagged, not dropped silently.
+- **Write interface:** the backend's write path takes text (keys, IME, paste: encoded)
+  and raw bytes (legacy mouse reports ≥ 0x80, 8-bit Meta: not encoded) separately.
+- **Wrapped payloads:** OSC 52's base64 contents and percent-encoded OSC 7/8 paths are
+  converted by their handlers with the pane's character set.
+- **Width:** EUC-KR panes default to ambiguous width 2 (§5.3).
+- **tmux with EUC-KR is untested** and will be tested on RHEL8 later (C§10.4).
+
 ---
 
 ## 4. Threads, locking, data flow
@@ -335,6 +363,8 @@ Messaging rules:
   SIMD, decode UTF-8 in bulk, and hand whole printable runs to a `print_slice`
   routine (A§3.1, G§3.2, T§4.1). Keep a byte-at-a-time path as a test oracle and fuzz
   both against each other.
+- **The parser only ever sees UTF-8.** Panes in a legacy character set are converted
+  before it (§3.4).
 - **Dispatch directly.** WezTerm builds an owned `Action` value per sequence on the
   hot path (W§6.1). Keep such a type for tests and recording only.
 - **DCS and APC are not optional.** Make them pluggable sub-parsers chosen at `hook`
@@ -594,7 +624,7 @@ Details in [`cjk-and-thai.md`](cjk-and-thai.md) §4–§5.
 - **Commands** are written to the byte stream tmux is running on: the local PTY on
   Linux, or the SSH channel on Windows.
 - **Pane content is UTF-8 inside a DCS**, so the DCS path must pass non-ASCII bytes
-  (§5.1).
+  (§5.1). Whether tmux carries EUC-KR panes correctly is not yet known (C§10.4).
 
 ### 7.2 Two partial implementations to learn from
 
@@ -941,7 +971,9 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 9. **Script corpus:** Thai (กี้ ปั๊ม น้ำ ญุ ฐุ), Hangul (precomposed and conjoining
    ᄒᆞᆫ), Han unification probes (直 骨 返 刃) under each language setting, mixed
    CJK/Latin, ambiguous characters, emoji. Image comparisons with bundled fonts, plus
-   width and cursor-position checks under and outside tmux (C§9).
+   width and cursor-position checks under and outside tmux (C§9). EUC-KR byte streams:
+   split characters, invalid trail bytes, CP949-only syllables, legacy box drawing
+   (C§10.5).
 10. **Inspector:** an in-app view of recent bytes and parsed events per terminal. You'll
    want it for tmux control mode and SSH.
 
@@ -962,6 +994,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 | Width model scope | tmux panes and local panes disagree | Per pane: legacy for tmux, grapheme (2027) for local; ambiguous width per profile |
 | SARA AM cell structure | Ghostty/WT: one wide cell; wcwidth: two narrow | Tentative: two narrow cells in all modes; break before U+0E33/U+0EB3; shape both cells as one run. Open to revisiting |
 | CJK language for Han glyphs | Feeds font fallback and shaping | Per profile, default from OS locale |
+| Legacy character sets | EUC-KR users for years; decides whether the core ever sees non-UTF-8 | Filter pair at the backend boundary; core UTF-8 only; per profile, default from locale (§3.4) |
 | Glyph clipping and ink extents | Thai marks overflow the cell; partial redraw must repaint overhang | No clipping; per-row ink extents in the damage model |
 | IME model | Korean/Japanese/Chinese are required; preedit needs attributes, caret, wrap | Overlay preedit, shaped, wrapping; strict commit/key ordering |
 | Native tabs/splits | tmux `-CC` needs them anyway | Yes, as an immutable split tree |
@@ -996,7 +1029,8 @@ puts on it, to check any candidate against:
 2. Linux PTY backend plus the **X11 server-side renderer** (async X protocol,
    XRender, `CopyArea`). It works locally and remotely, and makes damage and
    scroll-delta tracking honest from the start.
-3. Input (kitty and legacy), clipboard and OSC 52, IME.
+3. Input (kitty and legacy), clipboard and OSC 52, IME. The EUC-KR filter pair
+   (§3.4), since it touches the write path, OSC 52 and IME commits.
 4. tmux control mode: protocol layer, then PTY-less pane surfaces, then the split
    tree and tabs.
 5. GPU renderer for local high-DPI and high-throughput use, selected at runtime.
