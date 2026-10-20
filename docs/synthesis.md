@@ -1,4 +1,4 @@
-# Synthesis: what a new SSH-focused terminal has to get right
+# Synthesis: what a new terminal has to get right
 
 Inputs: [`alacritty.md`](alacritty.md) (Alacritty @ `54214706`, 2026-10-16) and
 [`ghostty.md`](ghostty.md) (Ghostty @ `d8619f1bc`, 2026-10-18). Section references like
@@ -7,10 +7,21 @@ Inputs: [`alacritty.md`](alacritty.md) (Alacritty @ `54214706`, 2026-10-16) and
 Target product, as stated:
 
 - Linux first, Windows later.
-- Mostly used as an **SSH terminal**.
+- **Linux: a regular, general-purpose terminal** for development, system work, and so
+  on. It runs a local shell in a PTY. SSH happens the usual way, by running the `ssh`
+  binary inside it. No SSH client is built in.
 - Linux display paths: **X11 over the network** (app on one host, X server on another)
   and **local GPU** rendering.
-- **tmux integration** (control mode, `tmux -CC`).
+- **Windows: mostly used as an SSH terminal**, with an **SSH client built into the
+  app** (leaning that way). Local shells through ConPTY are still needed, but are the
+  secondary path there.
+- **tmux integration** (control mode, `tmux -CC`) on both platforms.
+
+What this means for the design: one core, one backend interface, two products that
+weigh the backends differently. On Linux the PTY backend is the main path and the
+SSH-channel backend doesn't exist. On Windows the SSH-channel backend is the main
+path and ConPTY is the fallback. Platform-specific code is built only on its own
+platform (build tags in Go), so the Linux binary carries no SSH client.
 
 ---
 
@@ -30,7 +41,7 @@ make central:
    Its bytes arrive inside another terminal's DCS stream, its input goes out as
    `send-keys`, and its size is set with `refresh-client`. Ghostty built the protocol
    half (G§8) and stopped at the GUI half. Design a **"terminal backend" abstraction**
-   (PTY / tmux pane / later, an embedded SSH channel) from day one.
+   (PTY / tmux pane / on Windows, an embedded SSH channel) from day one.
 3. **Damage tracking must reach the screen.** Alacritty tracks damage but only uses it
    for Wayland hints. Ghostty tracks dirty rows to rebuild GPU buffers, then re-uploads
    everything and presents a full frame. For remote X11 the damage set *is* the network
@@ -38,8 +49,10 @@ make central:
 4. **Grapheme clusters and shaping are hard to retrofit.** Alacritty stores one `char`
    per cell and never added ligatures or ZWJ emoji. Ghostty designed for clusters
    (mode 2027) and HarfBuzz runs from the start. Decide on the cell content model now.
-5. **SSH changes latency assumptions.** Terminal query replies, clipboard, and terminfo
-   availability all behave differently when the app is far away. Alacritty routes
+5. **Distance changes latency assumptions.** On Linux the distance is the X link
+   (remote display). On Windows it's the SSH connection (the shell is on another
+   machine). Either way, terminal query replies, clipboard, and terminfo availability
+   behave differently when the app and the shell are far apart. Alacritty routes
    query replies through its UI thread (A§1.5). Both terminals assume `TERM` works on
    the remote host, and Ghostty ships a `+ssh` helper to install terminfo there (G§2.6).
 
@@ -82,9 +95,10 @@ mostly solved. Copy the better of the two designs, listed below.
  Backend ──────►│  Parser (state machine + fast paths) ──► Handler ──► Terminal state                  │
   (byte source  │      DCS sub-parsers: tmux, XTGETTCAP, DECRQSS, [sixel]       (screens, pages, pins) │
    + sink)      │      APC sub-parsers: [kitty graphics]                               │               │
-  • PTY         │                                                                      ▼               │
+  • PTY/ConPTY  │                                                                      ▼               │
   • tmux pane   │  Replies (DA/DSR/CPR/OSC queries) ──► written to Backend directly    RenderState     │
   • SSH channel │                                                               (dirty-row snapshot)   │
+    (Windows)   │                                                                                      │
                 └──────────────────────────────────────────────────────────────────────┬───────────────┘
                                                                                        │ frame = changed rows
                 ┌──────────────────────────── frontend ────────────────────────────────▼───────────────┐
@@ -121,20 +135,27 @@ its tmux gaps (§7.4). Even if you don't adopt it, use it as the benchmark.
 
 Ghostty's `termio/backend.zig` was designed for more than one backend but only has
 `Exec` (subprocess + PTY). Alacritty's `EventedPty` abstracts Unix vs Windows PTYs
-only. You need at least three:
+only. You need three:
 
-| Backend | Read side | Write side | Resize |
-|---|---|---|---|
-| PTY (local shell, `ssh` binary) | PTY master / ConPTY pipe | same | `TIOCSWINSZ` / `ResizePseudoConsole` |
-| tmux pane | `%output %N …` lines from the control connection (unescaped) | `send-keys -H -t %N …` via the control connection | `refresh-client -C WxH` (window-level; see §7) |
-| SSH channel (optional, later) | channel data | channel data | `window-change` request |
+| Backend | Platforms | Read side | Write side | Resize |
+|---|---|---|---|---|
+| PTY (local shell; on Linux also the `ssh` binary) | Linux (main), Windows (secondary) | PTY master / ConPTY pipe | same | `TIOCSWINSZ` / `ResizePseudoConsole` |
+| tmux pane | both | `%output %N …` lines from the control connection (unescaped) | `send-keys -H -t %N …` via the control connection | `refresh-client -C WxH` (window-level; see §7) |
+| SSH channel | Windows only (main) | channel data | channel data | `window-change` request |
 
-The SSH channel backend is optional but worth thinking about for **Windows**: with an
-embedded SSH client (libssh2, libssh, or a native library in your implementation
-language), SSH sessions **bypass ConPTY entirely**. ConPTY re-parses and re-emits the
-VT stream, and that is the root of most Windows terminal fidelity bugs (A§2.3).
-Windows Terminal, PuTTY, and others all fight this. Neither reference terminal embeds
-SSH.
+**Linux** needs only the first two. SSH is just a program running in the PTY, as in
+any other terminal. That's the right call: OpenSSH already handles config, agents,
+keys, `ProxyJump`, and `ControlMaster`, and Linux users expect exactly that behaviour.
+
+**Windows** is where the embedded SSH client pays for itself. SSH sessions **bypass
+ConPTY entirely**. ConPTY re-parses and re-emits the VT stream, and that is the root
+of most Windows terminal fidelity bugs (A§2.3). Windows Terminal, PuTTY, and others
+all fight this. Neither reference terminal embeds SSH; WezTerm and PuTTY do (see the
+note at the end of §10).
+
+The control connection for tmux `-CC` sits on top of whichever byte stream carries
+tmux: a Linux PTY running `ssh host tmux -CC attach`, or on Windows an SSH channel
+running `tmux -CC attach` directly. Keep the tmux layer unaware of which.
 
 ### 3.3 Query replies must not depend on the UI thread
 
@@ -392,8 +413,9 @@ Selection logic Ghostty and Alacritty both lack:
 - **`%output %<pane> <data>`:** bytes below 0x20 and `\` are **octal-escaped**
   (`\033`). You must decode them. Ghostty currently does not (G§8.4); its field is
   commented `// unescaped`, but no decoder exists.
-- **Commands** are written to the PTY that tmux is running on. With SSH, that's the
-  local PTY whose child is `ssh host tmux -CC attach`.
+- **Commands** are written to the byte stream tmux is running on. On Linux that's the
+  local PTY (for remote tmux, the PTY whose child is `ssh host tmux -CC attach`). On
+  Windows with embedded SSH, it's the SSH channel.
 
 ### 7.2 What to reuse from Ghostty's design (G§8.3–8.7)
 
@@ -476,11 +498,15 @@ unless you adopt libghostty-vt as your whole core anyway.
 
 ---
 
-## 8. SSH-specific concerns
+## 8. Remote-shell concerns
+
+These apply on both platforms: on Linux whenever the user runs `ssh` inside the
+terminal, and on Windows for nearly every session. The embedded-client-only concerns
+for Windows are in §10.
 
 | Concern | What the reference terminals do | Recommendation |
 |---|---|---|
-| Remote lacks your terminfo | Alacritty uses `TERM=alacritty` only if the entry exists *locally*. Ghostty's `+ssh` installs terminfo remotely via `tic`, or falls back to `xterm-256color` + `COLORTERM` (A§2.1, G§2.6) | Default `TERM=xterm-256color`-compatible behaviour. Ship an install helper. Answer XTGETTCAP so modern apps don't need terminfo |
+| Remote lacks your terminfo | Alacritty uses `TERM=alacritty` only if the entry exists *locally*. Ghostty's `+ssh` installs terminfo remotely via `tic`, or falls back to `xterm-256color` + `COLORTERM` (A§2.1, G§2.6) | Default `TERM=xterm-256color`-compatible behaviour. Ship an install helper. Answer XTGETTCAP so modern apps don't need terminfo. On Windows the embedded client sets `TERM` in its `pty-req`, so it can pick per host |
 | Clipboard from remote vim/tmux | OSC 52. Alacritty: copy-only by default, ignored when unfocused. Ghostty: write allowed, read asks (A§7.4, G§7.5) | Write allowed with a size cap, read asks. Handle large base64 payloads efficiently |
 | Query latency | Alacritty routes replies via the UI thread | Reply from the IO thread directly (§3.3) |
 | Paste over SSH | Both strip ESC in bracketed paste. Ghostty warns on newline or `ESC[201~` (A§7.3, G§7.5) | Do both |
@@ -521,7 +547,28 @@ unless you adopt libghostty-vt as your whole core anyway.
   - Optionally load a newer `conpty.dll`/OpenConsole from Windows Terminal.
   - ConPTY rewrites the VT stream.
 - **Embedded SSH** avoids ConPTY for the main use case (§3.2). That may be the most
-  important Windows decision, and it affects the backend interface now.
+  important Windows decision, and it affects the backend interface now. It exists
+  only in the Windows build.
+- **What the embedded client has to cover** (users will compare it to OpenSSH and
+  PuTTY):
+  - Go has `golang.org/x/crypto/ssh` (pure Go, no cgo), which handles the protocol,
+    channels, PTY requests, `window-change`, and agent forwarding. It doesn't parse
+    `~/.ssh/config` or manage `known_hosts` with OpenSSH's semantics. Those are
+    yours to write, or use `x/crypto/ssh/knownhosts` plus a config parser.
+  - **Agents:** the Windows OpenSSH agent (named pipe `\\.\pipe\openssh-ssh-agent`)
+    and Pageant. Both speak the agent protocol, which `x/crypto/ssh/agent` handles.
+  - **Host keys:** a first-connect prompt, then a mismatch warning that is hard to
+    click through. Reuse `%USERPROFILE%\.ssh\known_hosts` so the CLI and the app agree.
+  - **Config:** read `%USERPROFILE%\.ssh\config` for `Host`, `HostName`, `User`,
+    `Port`, `IdentityFile`, and `ProxyJump`. Users already have it.
+  - **Keepalives and reconnect:** laptops sleep. Detect a dead connection, show it in
+    the pane, and offer reconnect. With tmux `-CC` that becomes a clean reattach.
+  - **Connection sharing:** several tabs to the same host should share one SSH
+    connection (one channel each), like OpenSSH's `ControlMaster`. This also makes
+    new tabs instant.
+  - Later: port forwarding and SFTP drag-and-drop. Keep them out of v1.
+- **Local shells** (PowerShell, cmd, WSL) still go through ConPTY. WSL distros can
+  also be reached over SSH to avoid ConPTY, but that's a user choice.
 - **Rendering:**
   - GL on Windows means WGL. Alacritty creates the window before the GL display
     because WGL needs an HWND (A§6.1).
@@ -530,6 +577,18 @@ unless you adopt libghostty-vt as your whole core anyway.
     backend already forces that.
 - **Fonts:** DirectWrite. Ghostty uses FreeType on Windows; crossfont uses DirectWrite.
 - **Memory:** `VirtualAlloc` replaces `mmap` for Ghostty-style pages (G§4.2).
+
+**More reference material for Windows.** Neither Alacritty nor Ghostty has a full
+Windows story with embedded SSH. Codebases worth studying before the Windows phase:
+
+- **Windows Terminal** (`microsoft/terminal`): ConPTY and OpenConsole source (the
+  thing that rewrites your VT stream), the AtlasEngine D3D11/DirectWrite renderer,
+  and Win32 IME/input/DPI handling.
+- **WezTerm** (`wezterm/wezterm`): cross-platform, with a built-in SSH client
+  (`wezterm ssh`, SSH domains), `ssh_config` parsing, and its own multiplexer. It is
+  the closest existing match to the Windows product.
+- **PuTTY**: the reference for what Windows SSH users expect (host-key UX, Pageant,
+  saved sessions). Its code is old C, so read it for behaviour, not structure.
 
 ---
 
@@ -556,14 +615,14 @@ unless you adopt libghostty-vt as your whole core anyway.
 |---|---|---|
 | Cell content model (cluster vs `char`) | Retrofitting broke Alacritty's ligature and emoji plans | Codepoint + grapheme side table, 8-byte cell |
 | Shaping (HarfBuzz) yes/no | Changes glyph cache keys and renderer run structure | Yes, with cursor-aware run splitting; allow disabling ligatures |
-| Backend abstraction (PTY / tmux pane / SSH) | tmux panes and embedded SSH both need it; Ghostty never built it | Define it before writing the IO loop |
+| Backend abstraction (PTY / tmux pane / SSH) | tmux panes need it on both platforms, embedded SSH on Windows; Ghostty never built it | Define it before writing the IO loop; SSH backend built only for Windows |
 | Renderer interface with damage + scroll deltas | Required by the X11 backend; neither reference has scroll deltas | Row-granular damage plus explicit scroll ops |
 | GPU API floor | Ghostty's GL 4.3 excludes some hardware | GL 3.3 core / GLES 3; D3D11 on Windows |
 | Threading model | Hard to change after state ownership is set | IO thread per terminal, render thread, UI thread, one fair lock |
 | Core as a separate library | Enables testing, fuzzing, reuse | Yes; consider libghostty-vt vs your own |
 | Scrollback limit units and reflow strategy | Affects page design and resize cost | Bytes; plan lazy reflow |
 | Native tabs/splits | tmux `-CC` needs them anyway | Yes, as an immutable split tree |
-| Windows SSH strategy | Determines whether ConPTY is on the main path | Plan an embedded SSH backend |
+| Windows SSH strategy | Determines whether ConPTY is on the main path | Embedded SSH backend on Windows (`x/crypto/ssh`); Linux uses the system `ssh` in a PTY |
 
 ### Implementation language note
 
@@ -589,4 +648,6 @@ Your usual stack is Go, so a few Go-specific points:
 4. tmux control mode: protocol layer, then PTY-less pane surfaces, then the split
    tree and tabs.
 5. GPU renderer for local high-DPI and high-throughput use, selected at runtime.
-6. Windows: ConPTY backend, D3D11 or GL renderer, DirectWrite. Then embedded SSH.
+6. Windows: embedded SSH backend first (it's the main use case and skips ConPTY),
+   then D3D11 or GL renderer and DirectWrite, then the ConPTY backend for local
+   shells.
