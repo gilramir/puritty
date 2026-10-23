@@ -1,0 +1,56 @@
+module Main exposing (main)
+
+import Console
+import Int64
+import Probe
+import Task exposing (Task)
+import Time
+
+
+pureLoop : Int -> Int -> Int
+pureLoop n acc =
+    if n <= 0 then
+        acc
+
+    else
+        pureLoop (n - 1) (Probe.add acc n)
+
+
+taskLoop : Int -> Int -> Task x Int
+taskLoop n acc =
+    if n <= 0 then
+        Task.succeed acc
+
+    else
+        Probe.addTask acc n |> Task.andThen (\next -> taskLoop (n - 1) next)
+
+
+timed : String -> Task x Int -> Task x {}
+timed label work =
+    Time.now
+        |> Task.andThen
+            (\t0 ->
+                work
+                    |> Task.andThen
+                        (\answer ->
+                            Time.now
+                                |> Task.andThen
+                                    (\t1 ->
+                                        Console.write
+                                            (label ++ ": " ++ String.fromInt (Int64.toInt (Time.posixToMillis t1 - Time.posixToMillis t0)) ++ " ms (" ++ String.fromInt answer ++ ")\n")
+                                    )
+                        )
+            )
+
+
+main : Task Never {}
+main =
+    timed "100M pure c calls" (Task.succeed {} |> Task.map (\_ -> pureLoop 100000000 0))
+        |> Task.andThen (\_ -> timed "10M task c calls" (taskLoop 10000000 0))
+        |> Task.andThen
+            (\_ ->
+                Probe.xcbScreens 0
+                    |> Task.map (\n -> "xcb: " ++ String.fromInt n ++ " screen(s)\n")
+                    |> Task.onError (\e -> Task.succeed ("xcb connection error " ++ String.fromInt e ++ "\n"))
+                    |> Task.andThen Console.write
+            )
