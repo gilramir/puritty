@@ -44,9 +44,11 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
     (G2, G6, the PTY package in §5).
   - **No compiler check of a C row against its declaration.** A wrong type in a C row
     corrupts memory silently. That is not acceptable for this app (G8).
-  - **The release binary must run on RHEL8** (decided, Q4). That means glibc 2.28,
-    kernel 4.18 and 2018's HarfBuzz, and Geng's `os` package currently needs pidfds
-    (§1.1, G10).
+  - **Two platforms, in order** (Gilbert, 2026-10-23). Platform 1 is this Linux
+    Mint machine, a local X11 desktop: visiterm is built and used there first.
+    Platform 2 is RHEL8 under ETX, which needs glibc 2.28, kernel 4.18 and 2018's
+    HarfBuzz, while Geng's `os` package currently needs pidfds (§1.1, G10). It is
+    its own phase, after daily use on Mint (phase 6).
 - **The terminal core is written in Geng, not adopted.** The core is the hardest pure
   code in the app and the part most worth testing Geng on. libghostty-vt is the
   oracle for a differential gate, in the style geng-lang already uses for its
@@ -55,11 +57,12 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
   takes about 160 MB/s of `ls`-like output. Its worst case, one cell per cursor move,
   costs about 120 ns per cell (§1). Immutable rows also give the renderer its
   snapshot and damage tracking for free (§3.3).
-- **Six phases** (§6), each starting as a measured survey, as geng-lang's work does.
+- **Eight phases, 0 to 7** (§6), each starting as a measured survey, as geng-lang's work does.
   The terminal becomes usable for daily work at the end of phase 3.
-- **Gilbert answered the questions** on 2026-10-23 (§9.1). RHEL8 is required, and
-  there visiterm runs in an ETX remote X11 desktop on a VM with no GPU, so the
-  server-side X11 renderer is the product's main path. One process per window. Every
+- **Gilbert answered the questions** on 2026-10-23 (§9.1). Mint is platform 1;
+  RHEL8 is required as platform 2, where visiterm runs in an ETX remote X11 desktop
+  on a VM with no GPU, so the server-side X11 renderer is the product's main path
+  on both. One process per window. Every
   recommendation was taken. Geng-side tracking is in geng-lang's register (D888–D890).
   Only bundled fonts is still open.
 
@@ -81,7 +84,11 @@ with their build scripts. Every run is shown.
 | Grid, workload 2: 2,000,000 single cells, each after a CUP, 18.3 MB | 234, 236, 236, 236, 237, 238 ms: **about 118 ns a cell**, a full row copy each |
 | The same grid probe on node | Not measured: the build succeeded but the program printed nothing on the node runtime, and it was not pursued. Native is the target |
 
-**The two workarounds for libxcb**, which are G1's evidence:
+**The two workarounds for libxcb**, which were G1's evidence. G1 is built since
+(geng-lang D890–D892, `m4-visiterm.md` §VA2): the probe's package now names `xcb`
+in a `[native]` table, and `probes/geng/c-call/app/build.sh` builds it with devbox's
+clang and Nix's libxcb from this repository's `devbox.json`, with no workaround
+(`devbox run probes/geng/c-call/app/build.sh`). What was measured first:
 
 - devbox's clang is a Nix toolchain and does not search `/usr/include`, so
   `#include <xcb/xcb.h>` fails. The probe was built with the system gcc instead
@@ -407,7 +414,8 @@ gates, committed at the same checkpoint as the visiterm side.
 
 **Phase 0 · Groundwork (mostly geng-lang).**
 
-1. G1: package link declarations and the library source decision.
+1. G1: package link declarations and the library source decision. **Built
+   2026-10-23** (geng-lang D890–D892).
 2. G8: prototype headers for C rows.
 3. G6: monotonic clock in `core`.
 4. G2: signals as events.
@@ -416,10 +424,16 @@ gates, committed at the same checkpoint as the visiterm side.
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
    files plus §1's workloads) with Alacritty, Ghostty, xterm and st, and set the
    core's throughput budget from that.
-8. G10: Gilbert runs `probes/rhel8/inspect.sh` on a RHEL8 host (§9). A hello
-   program built in the AlmaLinux 8 container that starts a child runs there.
+8. Moved to phase 6: RHEL8 is platform 2. Gilbert's run of
+   `probes/rhel8/inspect.sh` is still welcome whenever it suits, since it costs
+   nothing to look early.
 9. visiterm's `devbox.json` with the C libraries and Zig 0.16 (libghostty-vt's
-   minimum, for the oracle).
+   minimum, for the oracle). **Done 2026-10-23**, from the nixpkgs commit geng-lang's
+   clang and gcc come from: libxcb 1.17.0 (with render, xkb, renderutil 0.3.10,
+   keysyms 0.4.1), xkbcommon 1.13.2, HarfBuzz 13.2.1, FreeType 2.14.3, fontconfig
+   2.18.3, xcb-imdkit 1.0.9, libthai 0.1.30, Zig 0.16.0, tmux 3.7c, Xvfb 21.1.24,
+   xtrace 1.4.0 and xdpyinfo. These are much newer than RHEL8's (§1.1), so the
+   AlmaLinux 8 release build is what catches an API RHEL8 lacks.
 
 Exit: a package in this repository links libxcb with no environment variables, a
 wrong C row type fails to compile, and the throughput budget and pause figures are
@@ -442,8 +456,8 @@ Exit:
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).
 
-Exit: runs a shell locally, over `ssh -X` from another host, and **in the ETX
-desktop on Gilbert's RHEL8 VM**, which is the case that matters most (Q10). Bytes per update are
+Exit: runs a shell on **this Mint desktop**, and over `ssh -X` from another
+host, which stands in for ETX until phase 6. Bytes per update are
 measured with an X protocol tracer and recorded for `tail -f`, `htop` and a vim
 scroll. The C§9 script corpus renders correctly under bundled fonts.
 
@@ -452,9 +466,8 @@ keyboard encodings, mouse 1006/1016, selection and clipboard, OSC 52 with its ca
 bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules, the
 EUC-KR filter pair.
 
-Exit: **Gilbert uses it as his daily terminal.** The IME matrix (fcitx5-hangul,
-ibus-hangul, Mozc, a pinyin IME, and RHEL8's ibus 1.5.19 with ibus-hangul) passes its
-scripted tests, and the EUC-KR corpus
+Exit: **Gilbert uses it as his daily terminal on Mint.** The IME matrix (fcitx5-hangul,
+ibus-hangul, Mozc, a pinyin IME) passes its scripted tests, and the EUC-KR corpus
 (C§10.5) passes.
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
@@ -463,11 +476,22 @@ the attach race, recorded-session tests. tmux 3.2 or later is required (Q11): an
 older tmux is refused with a message saying so, not served in a degraded mode.
 
 **Phase 5 · The GPU renderer.** Local use on Mint only: on RHEL8 visiterm runs in
-ETX on a VM with no GPU (Q10), where the X11 renderer is the path. EGL and GLES 3, the same display list, partial
+ETX on a VM with no GPU (Q10), where the X11 renderer is the path. It is an
+option, not a requirement: the X11 renderer serves Mint's local desktop too. EGL and GLES 3, the same display list, partial
 redraw with buffer age, runtime selection by S§6.4's rules, failure visible and never
 fatal.
 
-**Phase 6 · Hardening and release.** Soak tests (§7), config reload, a crash report
+**Phase 6 · Platform 2: RHEL8 under ETX.** G10: the pidfd question settled on a
+real RHEL8 kernel (`probes/rhel8/inspect.sh`), and a fallback in `os` if it needs
+one; the release build in an AlmaLinux 8 container against glibc 2.28, with pinned
+HarfBuzz, FreeType and xcb-imdkit linked in (Q12); every API visiterm uses checked
+against RHEL8's libxcb 1.13.1 and xkbcommon 0.9.1; ibus 1.5.19 with ibus-hangul in
+the IME matrix; the ETX X server's extensions checked, RENDER above all.
+
+Exit: Gilbert uses it in the ETX desktop on his RHEL8 VM, and bytes per update are
+recorded there as in phase 2.
+
+**Phase 7 · Hardening and release.** Soak tests (§7), config reload, a crash report
 that doesn't need a debugger, and packaging for Mint and RHEL8.
 
 ---
@@ -529,7 +553,8 @@ The main risk is a crash, and the plan attacks it on several fronts:
   libraries after the objects, Nix libraries for development and the gates, the
   AlmaLinux 8 container for releases (geng-lang D890).
 - **Q4, RHEL8:** visiterm must run on RHEL8, though development is on Mint with
-  devbox (geng-lang D889). §1.1 has what a container showed.
+  devbox (geng-lang D889). **Mint comes first:** Gilbert uses visiterm on this
+  Mint machine first, and RHEL8 is platform 2 (phase 6). §1.1 has what a container showed.
 - **Q5, packages in this repository until their APIs settle:** yes.
 - **Q6, one process per top-level window:** yes (§3.5).
 - **Q7, the GPU renderer after daily use:** yes, and Q10 makes it a Mint-only
