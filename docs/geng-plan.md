@@ -1,6 +1,7 @@
 # Plan: visiterm for Linux, written in Geng
 
-Status: **plan, 2026-10-23. Nothing is built.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert's first answers the same day (§9). Nothing is
+built.** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -44,9 +45,9 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
     (G2, G6, the PTY package in §5).
   - **No compiler check of a C row against its declaration.** A wrong type in a C row
     corrupts memory silently. That is not acceptable for this app (G8).
-  - **The release binary must run on RHEL8**, if visiterm runs on the users' RHEL8
-    hosts as S§3.4 assumes. That means glibc 2.28 and kernel 4.18, and Geng's `os`
-    package currently needs pidfds (G10, Q4).
+  - **The release binary must run on RHEL8** (decided, Q4). That means glibc 2.28,
+    kernel 4.18 and 2018's HarfBuzz, and Geng's `os` package currently needs pidfds
+    (§1.1, G10).
 - **The terminal core is written in Geng, not adopted.** The core is the hardest pure
   code in the app and the part most worth testing Geng on. libghostty-vt is the
   oracle for a differential gate, in the style geng-lang already uses for its
@@ -57,7 +58,9 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
   snapshot and damage tracking for free (§3.3).
 - **Six phases** (§6), each starting as a measured survey, as geng-lang's work does.
   The terminal becomes usable for daily work at the end of phase 3.
-- **Eight questions for Gilbert**, each with a recommendation (§9).
+- **Gilbert answered three of the eight questions** on 2026-10-23: RHEL8 is required,
+  one process per window, and Geng-side tracking lives in geng-lang's register
+  (D888, D889). The rest and six new ones are in §9.
 
 ---
 
@@ -105,6 +108,29 @@ reference terminals on the same inputs (§6, phase 0 item 7).
 - An executable built by devbox's toolchain is tied to the Nix glibc. One built by the
   system compiler links the system glibc.
 - `os` starts children with pidfds, which needs Linux 5.4.
+
+### 1.1 RHEL8, measured in a container
+
+Gilbert's answer to Q4: visiterm must run on RHEL8 too, while development stays on
+Mint with devbox (geng-lang D889). An AlmaLinux 8 container (`podman`,
+`almalinux:8`, 2026-10-23) shows RHEL8's userland. It can't show RHEL8's kernel,
+which is 4.18. §9 asks Gilbert for what only a real host shows.
+
+| Component | RHEL8 (AlmaLinux 8, with EPEL) | On this Mint machine | What it means |
+|---|---|---|---|
+| glibc | 2.28 | 2.39; devbox's 2.42 | A release must be built against 2.28 |
+| HarfBuzz | 1.7.5 (2018) | 8.3 | Too old to match Mint's shaping. Bundle a pinned HarfBuzz (Q12) |
+| FreeType | 2.9.1 | 2.13 (pkg-config 26.1.20) | Bundle a pinned FreeType with it |
+| fontconfig | 2.13.1 | 2.15.0 | System's is fine |
+| libxcb | 1.13.1 | 1.15 | System's is fine. Don't use anything newer than 1.13's protocol set |
+| libxkbcommon, -x11 | 0.9.1 | 1.6.0 | System's is probably fine; check the APIs used against 0.9 |
+| xcb-util-renderutil, -keysyms | 0.3.9, 0.4.0 | present | Fine |
+| xcb-imdkit | **not packaged**, not in EPEL | runtime only | Bundle it |
+| fcitx5 | **not packaged** | — | The RHEL8 IME is **ibus 1.5.19** |
+| libthai | 0.1.27 | runtime only | Fine |
+| Mesa EGL | 23.1.4 | — | GLES 3 possible locally; irrelevant over `ssh -X` |
+| Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts can come from the system, or be bundled (Q13) |
+| **tmux** | **2.7** | 3.4 | Before 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Phase 4 has to degrade for it (Q11) |
 
 ---
 
@@ -254,10 +280,9 @@ C§6).
 ### 3.5 Processes and windows
 
 A crash ends the process. If one process held every window, one crash would close
-every shell Gilbert has open. Q6 asks whether v1 should run **one process per
-top-level window** for isolation, at the cost of a fresh start (fonts, config) per
-window. Tabs and splits inside a window share a process either way, since tmux `-CC`
-needs that.
+every shell Gilbert has open. **Decided (Q6, 2026-10-23): one process per top-level
+window**, for isolation, at the cost of a fresh start (fonts, config) per window.
+Tabs and splits inside a window share a process, since tmux `-CC` needs that.
 
 ---
 
@@ -328,11 +353,14 @@ The same harness feeds identical input to libghostty-vt for the differential gat
 (§7). No language change is needed, only an embed ABI that carries `Bytes` in and
 out of an exported function efficiently. That is to be checked in phase 1.
 
-**G10 · Running on old Linux.** If visiterm must run on the users' RHEL8 hosts (Q4):
-glibc 2.28 and kernel 4.18. `os` starts children with `pidfd_spawn` or `posix_spawn`
+**G10 · Running on old Linux.** visiterm must run on RHEL8 (Q4, geng-lang D889):
+glibc 2.28 and kernel 4.18 (§1.1). `os` starts children with `pidfd_spawn` or `posix_spawn`
 plus `pidfd_open`, and `pidfd_open` arrived in Linux 5.3, so `os` needs a fallback
 that is still safe against pid reuse. Whether RHEL8's kernel backports it has not
-been checked. A release build also needs a toolchain that targets glibc 2.28.
+been checked (§9 asks for a look). A release build also needs a toolchain that
+targets glibc 2.28. The plan is to build releases in an AlmaLinux 8 container,
+running the C compiler there through `GENG_CC`, and to link HarfBuzz, FreeType and
+xcb-imdkit from pinned sources (§1.1).
 
 **G11 · Things found along the way.** The geng-hello example under `~/prj` imports
 a module named `Os` that no longer exists (Os.Env and friends replaced it), so it
@@ -387,8 +415,8 @@ gates, committed at the same checkpoint as the visiterm side.
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
    files plus §1's workloads) with Alacritty, Ghostty, xterm and st, and set the
    core's throughput budget from that.
-8. Q4 and G10: decide on RHEL8. If yes, check `pidfd_open` on a RHEL8 kernel and
-   build a hello program that runs there.
+8. G10: Gilbert runs `probes/rhel8/inspect.sh` on a RHEL8 host (§9). A hello
+   program built in the AlmaLinux 8 container that starts a child runs there.
 9. visiterm's `devbox.json` with the C libraries and Zig 0.16 (libghostty-vt's
    minimum, for the oracle).
 
@@ -423,19 +451,22 @@ bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules,
 EUC-KR filter pair.
 
 Exit: **Gilbert uses it as his daily terminal.** The IME matrix (fcitx5-hangul,
-ibus-hangul, Mozc, a pinyin IME) passes its scripted tests, and the EUC-KR corpus
+ibus-hangul, Mozc, a pinyin IME, and RHEL8's ibus 1.5.19 with ibus-hangul) passes its
+scripted tests, and the EUC-KR corpus
 (C§10.5) passes.
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,
-the attach race, recorded-session tests.
+the attach race, recorded-session tests. tmux 2.7, RHEL8's, lacks per-window sizing
+and `pause-after`, so the version detection of S§7.3 item 9 decides what each
+session gets (Q11).
 
 **Phase 5 · The GPU renderer.** EGL and GLES 3, the same display list, partial
 redraw with buffer age, runtime selection by S§6.4's rules, failure visible and never
 fatal.
 
 **Phase 6 · Hardening and release.** Soak tests (§7), config reload, a crash report
-that doesn't need a debugger, and packaging for Mint and, if Q4 says so, RHEL8.
+that doesn't need a debugger, and packaging for Mint and RHEL8.
 
 ---
 
@@ -488,28 +519,63 @@ The main risk is a crash, and the plan attacks it on several fronts:
 
 ## 9. Questions for Gilbert
 
-Each has a recommendation. None blocks phase 0 items 3–7.
+### 9.1 Answered, 2026-10-23
 
-1. **One event loop for v1, instead of waiting for threads?** Recommended: yes (§3.1).
-   Revisit only if phase 0's pause figures or phase 2's frame cost say so.
-2. **Write the core in Geng, with libghostty-vt as a differential oracle, rather than
-   adopt it?** Recommended: write it in Geng. The core is where Geng is tested
-   hardest, and libghostty-vt's API is unstable and needs Zig (S§3.1). As an oracle it
-   only has to build in the dev environment.
+- **Q4, RHEL8:** yes, visiterm must run on RHEL8, though development is on Mint
+  with devbox (geng-lang D889). §1.1 has what a container showed; Gilbert offered
+  to inspect a real host, and §9.2's Q9 takes the offer.
+- **Q6, one process per top-level window:** yes (§3.5).
+- **Q8, the register:** yes. visiterm's own documents stay here; the work it asks of
+  Geng and the issues it finds are tracked in geng-lang's register, under "The native
+  application: visiterm" (D888).
+- **Threads:** Gilbert is open to exploring real threads in Geng if visiterm needs
+  them, and thinks it may be too early. The plan agrees it is too early: nothing
+  measured yet asks for them. Two measurements would: GC pauses (G7, phase 0) and
+  frame cost on the one loop (phase 2). If either breaks its budget, threads are one
+  of the options considered then, beside incremental marking and rendering on a C
+  thread fed by the display list. G5, a C thread completing a `Task`, is needed
+  either way and is the small first step.
+
+### 9.2 Open
+
+Still open from the first list, each with its recommendation:
+
+1. **One event loop for v1?** Recommended: yes (§3.1), revisited on the two
+   measurements above.
+2. **Write the core in Geng, with libghostty-vt as a differential oracle?**
+   Recommended: yes. The core is where Geng is tested hardest, and libghostty-vt's API
+   is unstable and needs Zig (S§3.1). As an oracle it only has to build in the dev
+   environment.
 3. **G1's shape:** a `[native] pkg-config` list in a package's `geng.toml`, libraries
-   after the objects, Nix libraries for development and a system toolchain for
-   releases? Recommended: yes.
-4. **Must visiterm run on RHEL8?** S§3.4 says the remote X11 case works because
-   "visiterm runs on the RHEL8 host itself". If so, the release needs glibc 2.28 and
-   kernel 4.18, and `os` needs a pidfd fallback (G10). Recommended: yes, and test it
-   in phase 0 rather than discover it at release.
+   after the objects, Nix libraries for development and the gates, and the AlmaLinux 8
+   container for releases (G10)? Recommended: yes.
 5. **Packages live in this repository under `packages/` until their APIs settle?**
    Recommended: yes, then move the general ones (`pty`, `xcb`, `fonts`, `euckr`,
    `signal`) to their own repositories.
-6. **One process per top-level window?** Recommended: yes for v1, so a crash loses
-   one window's shells and not all of them (§3.5).
-7. **GPU renderer after daily use, not before?** S§12's build order puts it fifth.
-   Recommended: yes. The X11 renderer is mandatory, works locally too, and keeps
-   damage tracking honest.
-8. **Record the application in geng-lang's register** under D797's item, pointing
-   here, with each G item becoming a decision as it is answered? Recommended: yes.
+7. **GPU renderer after daily use, not before?** Recommended: yes. The X11 renderer
+   is mandatory, works locally too, and keeps damage tracking honest.
+
+New:
+
+9. **Run `probes/rhel8/inspect.sh` on a RHEL8 host and send me its output?** It needs
+   no compiler and changes nothing. It reports the kernel and whether `pidfd_open`
+   works there (G10), glibc, the X server's extensions as seen from that host, fonts,
+   ibus, tmux, and the locale settings the EUC-KR users have.
+10. **How is visiterm used on RHEL8?** On the RHEL8 host with its window sent to
+    another X server (`ssh -X`, the case S§1 calls mandatory), on a RHEL8 desktop,
+    or both? This decides whether the GPU renderer matters on RHEL8 at all.
+11. **Is `tmux -CC` used on RHEL8 hosts, with their tmux 2.7?** If so, phase 4 needs a
+    degraded mode without per-window sizing and flow control. If tmux there is
+    usually a newer build, the plan can require 3.2.
+12. **Bundle HarfBuzz and FreeType, pinned, in every build?** Recommended: yes.
+    RHEL8's HarfBuzz is from 2018, and shaping that differs between Mint and RHEL8
+    would make Thai and Hangul rendering depend on the host. The rest (libxcb,
+    fontconfig, xkbcommon) come from the system.
+13. **Ship fallback fonts (Noto Sans Mono CJK, Noto Sans Thai), or rely on the
+    system's?** Both are packaged on RHEL8 and Mint. Bundling makes rendering the
+    same everywhere and makes the image tests (S§11 item 9) meaningful, at about
+    100 MB. Recommended: rely on the system's, and pin bundled copies only for the
+    tests.
+14. **Which terminal do you use every day now, and which of its features would you
+    miss on day one?** That sets phase 3's "daily terminal" bar more exactly than
+    the synthesis can.
