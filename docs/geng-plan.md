@@ -1,7 +1,6 @@
 # Plan: visiterm for Linux, written in Geng
 
-Status: **plan, 2026-10-23; Gilbert's first answers the same day (§9). Nothing is
-built.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Nothing is built.** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -58,9 +57,11 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
   snapshot and damage tracking for free (§3.3).
 - **Six phases** (§6), each starting as a measured survey, as geng-lang's work does.
   The terminal becomes usable for daily work at the end of phase 3.
-- **Gilbert answered three of the eight questions** on 2026-10-23: RHEL8 is required,
-  one process per window, and Geng-side tracking lives in geng-lang's register
-  (D888, D889). The rest and six new ones are in §9.
+- **Gilbert answered the questions** on 2026-10-23 (§9.1). RHEL8 is required, and
+  there visiterm runs in an ETX remote X11 desktop on a VM with no GPU, so the
+  server-side X11 renderer is the product's main path. One process per window. Every
+  recommendation was taken. Geng-side tracking is in geng-lang's register (D888–D890).
+  Only bundled fonts is still open.
 
 ---
 
@@ -130,7 +131,7 @@ which is 4.18. §9 asks Gilbert for what only a real host shows.
 | libthai | 0.1.27 | runtime only | Fine |
 | Mesa EGL | 23.1.4 | — | GLES 3 possible locally; irrelevant over `ssh -X` |
 | Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts can come from the system, or be bundled (Q13) |
-| **tmux** | **2.7** | 3.4 | Before 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Phase 4 has to degrade for it (Q11) |
+| **tmux** | 2.7 packaged; **3.6 installed** where visiterm will run | 3.4 | The packaged 2.7 predates 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Gilbert's hosts have 3.6, so visiterm requires 3.2 (Q11) |
 
 ---
 
@@ -441,7 +442,8 @@ Exit:
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).
 
-Exit: runs a shell locally and over `ssh -X` from another host. Bytes per update are
+Exit: runs a shell locally, over `ssh -X` from another host, and **in the ETX
+desktop on Gilbert's RHEL8 VM**, which is the case that matters most (Q10). Bytes per update are
 measured with an X protocol tracer and recorded for `tail -f`, `htop` and a vim
 scroll. The C§9 script corpus renders correctly under bundled fonts.
 
@@ -457,11 +459,11 @@ scripted tests, and the EUC-KR corpus
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,
-the attach race, recorded-session tests. tmux 2.7, RHEL8's, lacks per-window sizing
-and `pause-after`, so the version detection of S§7.3 item 9 decides what each
-session gets (Q11).
+the attach race, recorded-session tests. tmux 3.2 or later is required (Q11): an
+older tmux is refused with a message saying so, not served in a degraded mode.
 
-**Phase 5 · The GPU renderer.** EGL and GLES 3, the same display list, partial
+**Phase 5 · The GPU renderer.** Local use on Mint only: on RHEL8 visiterm runs in
+ETX on a VM with no GPU (Q10), where the X11 renderer is the path. EGL and GLES 3, the same display list, partial
 redraw with buffer age, runtime selection by S§6.4's rules, failure visible and never
 fatal.
 
@@ -521,61 +523,43 @@ The main risk is a crash, and the plan attacks it on several fronts:
 
 ### 9.1 Answered, 2026-10-23
 
-- **Q4, RHEL8:** yes, visiterm must run on RHEL8, though development is on Mint
-  with devbox (geng-lang D889). §1.1 has what a container showed; Gilbert offered
-  to inspect a real host, and §9.2's Q9 takes the offer.
+- **Q1, one event loop for v1:** yes (§3.1).
+- **Q2, the core in Geng, libghostty-vt as a differential oracle:** yes.
+- **Q3, G1's shape:** yes: a `[native] pkg-config` list in a package's `geng.toml`,
+  libraries after the objects, Nix libraries for development and the gates, the
+  AlmaLinux 8 container for releases (geng-lang D890).
+- **Q4, RHEL8:** visiterm must run on RHEL8, though development is on Mint with
+  devbox (geng-lang D889). §1.1 has what a container showed.
+- **Q5, packages in this repository until their APIs settle:** yes.
 - **Q6, one process per top-level window:** yes (§3.5).
-- **Q8, the register:** yes. visiterm's own documents stay here; the work it asks of
-  Geng and the issues it finds are tracked in geng-lang's register, under "The native
+- **Q7, the GPU renderer after daily use:** yes, and Q10 makes it a Mint-only
+  feature.
+- **Q8, the register:** visiterm's own documents stay here. The work it asks of Geng
+  and the issues it finds are tracked in geng-lang's register, under "The native
   application: visiterm" (D888).
+- **Q9, a real RHEL8 host:** `probes/rhel8/inspect.sh` was mailed to Gilbert, to run
+  inside the ETX desktop. Its output settles G10 (pidfds on RHEL8's kernel) and says
+  which extensions ETX's X server has, RENDER above all.
+- **Q10, how visiterm runs on RHEL8:** in an ETX (Exceed TurboX) remote X11 desktop
+  on a VM, with no GPU. The server-side X11 renderer (S§6.2) is therefore the main
+  path, not a fallback. Where ETX's X server runs relative to the VM, and so how far
+  the X connection is, is for the inspection to show. Drawing only what changed pays
+  either way, since ETX has to carry every changed pixel to Gilbert's screen.
+- **Q11, tmux:** Gilbert runs tmux 3.6 on RHEL8 and RHEL9, so visiterm requires
+  tmux 3.2 and has no degraded mode (phase 4).
+- **Q12, bundle pinned HarfBuzz and FreeType:** yes.
+- **Q14:** dropped. The plan builds what the synthesis describes. New features, from
+  Gilbert or as questions about a specific feature, are considered as they come up.
 - **Threads:** Gilbert is open to exploring real threads in Geng if visiterm needs
-  them, and thinks it may be too early. The plan agrees it is too early: nothing
-  measured yet asks for them. Two measurements would: GC pauses (G7, phase 0) and
-  frame cost on the one loop (phase 2). If either breaks its budget, threads are one
-  of the options considered then, beside incremental marking and rendering on a C
-  thread fed by the display list. G5, a C thread completing a `Task`, is needed
-  either way and is the small first step.
+  them, and thinks it may be too early. Nothing measured yet asks for them. Two
+  measurements would: GC pauses (G7, phase 0) and frame cost on the one loop
+  (phase 2). If either breaks its budget, threads are one option considered then,
+  beside incremental marking and rendering on a C thread fed by the display list.
+  G5, a C thread completing a `Task`, is needed either way and is the small first
+  step.
 
 ### 9.2 Open
 
-Still open from the first list, each with its recommendation:
-
-1. **One event loop for v1?** Recommended: yes (§3.1), revisited on the two
-   measurements above.
-2. **Write the core in Geng, with libghostty-vt as a differential oracle?**
-   Recommended: yes. The core is where Geng is tested hardest, and libghostty-vt's API
-   is unstable and needs Zig (S§3.1). As an oracle it only has to build in the dev
-   environment.
-3. **G1's shape:** a `[native] pkg-config` list in a package's `geng.toml`, libraries
-   after the objects, Nix libraries for development and the gates, and the AlmaLinux 8
-   container for releases (G10)? Recommended: yes.
-5. **Packages live in this repository under `packages/` until their APIs settle?**
-   Recommended: yes, then move the general ones (`pty`, `xcb`, `fonts`, `euckr`,
-   `signal`) to their own repositories.
-7. **GPU renderer after daily use, not before?** Recommended: yes. The X11 renderer
-   is mandatory, works locally too, and keeps damage tracking honest.
-
-New:
-
-9. **Run `probes/rhel8/inspect.sh` on a RHEL8 host and send me its output?** It needs
-   no compiler and changes nothing. It reports the kernel and whether `pidfd_open`
-   works there (G10), glibc, the X server's extensions as seen from that host, fonts,
-   ibus, tmux, and the locale settings the EUC-KR users have.
-10. **How is visiterm used on RHEL8?** On the RHEL8 host with its window sent to
-    another X server (`ssh -X`, the case S§1 calls mandatory), on a RHEL8 desktop,
-    or both? This decides whether the GPU renderer matters on RHEL8 at all.
-11. **Is `tmux -CC` used on RHEL8 hosts, with their tmux 2.7?** If so, phase 4 needs a
-    degraded mode without per-window sizing and flow control. If tmux there is
-    usually a newer build, the plan can require 3.2.
-12. **Bundle HarfBuzz and FreeType, pinned, in every build?** Recommended: yes.
-    RHEL8's HarfBuzz is from 2018, and shaping that differs between Mint and RHEL8
-    would make Thai and Hangul rendering depend on the host. The rest (libxcb,
-    fontconfig, xkbcommon) come from the system.
-13. **Ship fallback fonts (Noto Sans Mono CJK, Noto Sans Thai), or rely on the
-    system's?** Both are packaged on RHEL8 and Mint. Bundling makes rendering the
-    same everywhere and makes the image tests (S§11 item 9) meaningful, at about
-    100 MB. Recommended: rely on the system's, and pin bundled copies only for the
-    tests.
-14. **Which terminal do you use every day now, and which of its features would you
-    miss on day one?** That sets phase 3's "daily terminal" bar more exactly than
-    the synthesis can.
+- **Q13, fallback fonts:** ship Noto Sans Mono CJK and Noto Sans Thai (about 100 MB),
+  or rely on the system's? Gilbert hasn't decided. Until he does, visiterm uses the
+  system's, and the rendering tests (S§11 item 9) pin their own copies.
