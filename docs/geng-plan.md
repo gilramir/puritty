@@ -203,10 +203,12 @@ Why this is acceptable, and what has to be measured to keep it acceptable:
   are incremental marking, a smaller heap, or rendering on a C thread fed by the
   display list.
 - **Blocking C work goes on C threads.** fontconfig fallback queries can take
-  milliseconds, and S§6.5 wants them asynchronous anyway. A C row starts a thread, the
-  thread writes its answer and an eventfd, and the loop picks it up. That works
-  today. G5 proposes making it a runtime facility so that every package doesn't
-  write it again.
+  milliseconds, and S§6.5 wants them asynchronous anyway. A C row starts a thread
+  with `geng_thread_start`, the thread sends its answer to a post, and the loop
+  hands it to the row on the program's thread (G5, geng-lang D897). By hand, with
+  the thread writing an eventfd and the loop answering a wait the row kept, it
+  does **not** work: `probes/geng/answer` showed the nursery moves the wait, 5
+  crashes in 5 runs.
 
 ### 3.2 What is Geng and what is C
 
@@ -334,7 +336,7 @@ can show the counts stay flat.
 deferred to the measurements.
 
 **G5 · Answering from another thread.** The pattern in §3.1 (a C thread does
-blocking work and wakes the loop through an fd) works today, but each package would
+blocking work and wakes the loop through an fd) was thought to work today, but each package would
 write its own eventfd and queue. Proposal: a runtime call such as
 `geng_answer_from_thread(wait, …)` backed by one eventfd and a locked queue, so a row
 can complete its `Task` from any thread. That is a small, self-contained step toward
@@ -424,7 +426,12 @@ gates, committed at the same checkpoint as the visiterm side.
    it: the runtime's second thread took the signal and the program died, 20
    runs of 20, so the runtime now blocks every signal on that thread. The
    PTY spawn must give its child an empty signal mask, as `Os.Process` does.
-5. G5: answering from another thread.
+5. G5: answering from another thread. **Built 2026-10-23** (geng-lang D897:
+   `geng_post_*` and `geng_thread_start`). `probes/geng/answer` showed that the
+   hand-written pattern was not safe: a wait kept in `malloc`'d memory is moved
+   by the nursery, and the row crashed 5 runs of 5. A post costs about 170 ns a
+   message from one thread (`answer/app/src/Bench.geng`); a row whose thread
+   starts and answers once, about 82 µs, most of it the thread.
 6. G7: measure GC pauses on a visiterm-shaped heap.
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
    files plus §1's workloads) with Alacritty, Ghostty, xterm and st, and set the

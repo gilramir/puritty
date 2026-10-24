@@ -1,0 +1,66 @@
+module Main exposing (main)
+
+import Answer
+import Array
+import Console
+import Process
+import Task exposing (Task)
+
+
+{-| Allocates: `rounds` arrays of a thousand records, each kept until the
+next is built, so the nursery is collected many times over. -}
+churn : Int -> Int
+churn rounds =
+    Array.range 1 rounds
+        |> Array.foldl
+            (\r acc ->
+                Array.range 1 1000
+                    |> Array.map (\i -> { a = i, b = r })
+                    |> Array.foldl (\x s -> s + x.a - x.b) acc
+            )
+            0
+
+
+{-| A hundred threads answer after 200 ms, while the program allocates. -}
+answers : Task x String
+answers =
+    let
+        waits =
+            Array.range 1 100
+                |> Array.map (\k -> Answer.later 200 k)
+
+        work =
+            Task.succeed {}
+                |> Task.map (\_ -> churn 20000)
+                |> Task.map (\_ -> 0)
+    in
+    Task.concurrent (Array.pushLast work waits)
+        |> Task.map (\all -> "answers summed: " ++ String.fromInt (Array.foldl (+) 0 all) ++ " (5050 wanted)\n")
+
+
+{-| Fifty races of a slow thread against a quick one: the quick one wins, the
+slow one's row is cancelled, and its late answer is refused. -}
+races : Task x String
+races =
+    Array.range 1 50
+        |> Array.map (\k -> Task.race (Answer.later 300 0) [ Answer.later 10 k ])
+        |> Task.concurrent
+        |> Task.andThen
+            (\won ->
+                Process.sleep 500
+                    |> Task.andThen (\_ -> Answer.refused 0)
+                    |> Task.map
+                        (\n ->
+                            "races won by the quick thread, summed: "
+                                ++ String.fromInt (Array.foldl (+) 0 won)
+                                ++ " (1275 wanted); late answers refused: "
+                                ++ String.fromInt n
+                                ++ " (50 wanted)\n"
+                        )
+            )
+
+
+main : Task Never {}
+main =
+    Task.sequence [ answers, races ]
+        |> Task.andThen (\lines -> Console.write (String.join "" lines))

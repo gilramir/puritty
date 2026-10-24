@@ -1,0 +1,72 @@
+module Bench exposing (main)
+
+{-| What a post costs: a million messages from one thread into a Source, and
+two thousand rows one after another, each a thread started and its answer
+posted back. -}
+
+import Answer
+import Array
+import Console
+import Int64
+import Source exposing (Source)
+import Task exposing (Task)
+import Time
+
+
+elapsed : Task x a -> Task x { value : a, ms : Int }
+elapsed task =
+    Time.monotonic
+        |> Task.andThen
+            (\start ->
+                task
+                    |> Task.andThen
+                        (\value ->
+                            Time.monotonic
+                                |> Task.map (\end -> { value = value, ms = Int64.toInt (Time.inMilliseconds end) - Int64.toInt (Time.inMilliseconds start) })
+                        )
+            )
+
+
+drain : Source Int -> Int -> Int -> Task x Int
+drain source left sum =
+    if left == 0 then
+        Task.succeed sum
+
+    else
+        Source.next source
+            |> Task.andThen (\m -> drain source (left - 1) (sum + Maybe.withDefault 0 m))
+
+
+messages : Int
+messages =
+    1000000
+
+
+rows : Int
+rows =
+    2000
+
+
+chain : Int -> Int -> Task x Int
+chain left sum =
+    if left == 0 then
+        Task.succeed sum
+
+    else
+        Answer.later 0 left |> Task.andThen (\v -> chain (left - 1) (sum + v))
+
+
+main : Task Never {}
+main =
+    elapsed (Source.new |> Task.andThen (\s -> Answer.count s messages |> Task.andThen (\_ -> drain s messages 0)))
+        |> Task.andThen
+            (\a ->
+                elapsed (chain rows 0)
+                    |> Task.andThen
+                        (\b ->
+                            Console.write
+                                ("a million messages: " ++ String.fromInt a.ms ++ " ms (sum " ++ String.fromInt a.value ++ ")\n"
+                                    ++ "two thousand rows in turn: " ++ String.fromInt b.ms ++ " ms (sum " ++ String.fromInt b.value ++ ")\n"
+                                )
+                        )
+            )
