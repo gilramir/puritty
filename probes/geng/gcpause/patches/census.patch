@@ -1,0 +1,98 @@
+--- a/packages/c-backend/runtime/geng.c
++++ b/packages/c-backend/runtime/geng.c
+@@ -1257,6 +1257,87 @@
+     return (uint64_t) t.tv_sec * 1000000000u + (uint64_t) t.tv_nsec;
+ }
+ 
++/* CENSUS EXPERIMENT (G7): at the Nth full collection, every reachable
++ * object by size. */
++typedef void (*census_proc)(void *, size_t, void *);
++extern void GC_enumerate_reachable_objects_inner(census_proc, void *);
++#define CENSUS_SIZES 8192
++static unsigned long long census_count[CENSUS_SIZES + 1], census_bytes[CENSUS_SIZES + 1];
++static int census_fulls;
++static void census_one(void *obj, size_t bytes, void *data) {
++    (void) obj;
++    (void) data;
++    size_t k = bytes / 16 < CENSUS_SIZES ? bytes / 16 : CENSUS_SIZES;
++    census_count[k]++;
++    census_bytes[k] += bytes;
++}
++typedef struct { char *p; size_t n; } census_obj;
++static VECTOR(census_obj) census_all;
++static void census_keep(void *obj, size_t bytes, void *data) {
++    (void) data;
++    PUSH(census_all, ((census_obj) {obj, bytes}));
++}
++static void census_dump(const char *what, char *p, size_t n) {
++    fprintf(stderr, "    %s %p size %zu:", what, (void *) p, n);
++    for (size_t i = 0; i < 6 && i * 8 < n; i++) fprintf(stderr, " %016lx", ((unsigned long *) p)[i]);
++    fprintf(stderr, "\n");
++}
++/* The chain to an old row: a text whose number is below GENG_CENSUS_BEFORE,
++ * then whoever holds it, up to the root. */
++static void census_chain(long before) {
++    census_all.count = 0;
++    GC_enumerate_reachable_objects_inner(census_keep, NULL);
++    census_obj target = {0};
++    long oldest = -1, newest = -1, older = 0;
++    for (size_t i = 0; i < census_all.count; i++) {
++        census_obj o = census_all.items[i];
++        if (o.n > 256) continue;
++        char *hit = memmem(o.p, o.n, "directory-", 10);
++        if (!hit) continue;
++        long line = atol(hit + 10);
++        if (line > newest) newest = line;
++        if (line < before) older++;
++        if (oldest < 0 || line < oldest) oldest = line, target = o;
++    }
++    fprintf(stderr, "  packed rows: oldest line %ld, newest %ld, %ld older than %ld\n", oldest, newest, older, before);
++    if (target.p == NULL) { fprintf(stderr, "  no old row\n"); return; }
++    census_dump("old row", target.p, target.n);
++    for (int depth = 0; depth < 14; depth++) {
++        census_obj holder = {0};
++        size_t holders = 0;
++        for (size_t i = 0; i < census_all.count; i++) {
++            census_obj o = census_all.items[i];
++            for (size_t w = 0; w + 8 <= o.n; w += 8) {
++                uintptr_t v = *(uintptr_t *) (o.p + w);
++                if (v >= (uintptr_t) target.p && v < (uintptr_t) target.p + target.n && o.p != target.p) {
++                    if (holder.p == NULL) holder = o;
++                    holders++;
++                    fprintf(stderr, "      word %zu of %p (size %zu)\n", w / 8, (void *) o.p, o.n);
++                    break;
++                }
++            }
++        }
++        if (holder.p == NULL) { fprintf(stderr, "  held by no object: a root\n"); return; }
++        fprintf(stderr, "  %zu holders\n", holders);
++        census_dump("held by", holder.p, holder.n);
++        target = holder;
++    }
++}
++static void census(void) {
++    if (getenv("GENG_CENSUS_BEFORE")) census_chain(atol(getenv("GENG_CENSUS_BEFORE")));
++    GC_enumerate_reachable_objects_inner(census_one, NULL);
++    unsigned long long total = 0, n = 0;
++    for (size_t k = 0; k <= CENSUS_SIZES; k++) total += census_bytes[k], n += census_count[k];
++    fprintf(stderr, "census at full %d: %llu objects, %llu bytes\n", census_fulls, n, total);
++    for (int top = 0; top < 20; top++) {
++        size_t best = 0;
++        for (size_t k = 1; k <= CENSUS_SIZES; k++) if (census_bytes[k] > census_bytes[best]) best = k;
++        if (census_bytes[best] == 0) break;
++        fprintf(stderr, "  size %6zu%s: %9llu objects, %10llu bytes\n", best * 16, best == CENSUS_SIZES ? "+" : "", census_count[best], census_bytes[best]);
++        census_bytes[best] = 0;
++    }
++}
++
+ static void pause_event(GC_EventType event) {
+     uint64_t now = pause_clock();
+     if (event == GC_EVENT_START) {
+@@ -1266,6 +1347,7 @@
+         P.mark_start = now;
+     } else if (event == GC_EVENT_MARK_END) {
+         P.mark_ns += now - P.mark_start;
++        if (getenv("GENG_HEAP_CENSUS") && ++census_fulls == atoi(getenv("GENG_HEAP_CENSUS"))) census();
+     } else if (event == GC_EVENT_END) {
+         PUSH(P.log, ((gc_pause) {'f', (char) P.in_minor, P.full_start, now - P.full_start, P.mark_ns, GC_get_heap_size()}));
+     }

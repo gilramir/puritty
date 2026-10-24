@@ -1,0 +1,529 @@
+module Main exposing (main)
+
+{-| G7's probe: GC pauses on a heap shaped like visiterm's.
+
+Several panes, each a 160×50 screen of `Array Int` rows and a scrollback of
+rows in pages of 256. A row that scrolls off the screen goes to the scrollback
+packed (`ROWS=packed`, the default: its text as `Bytes` and its attribute runs
+as `Bytes`, the plan's §3.3 cold row) or as its cells trimmed of trailing
+blanks (`ROWS=cells`), or packed and, once its page is full, the page's
+rows joined into one text `Bytes` and one of attribute runs (`ROWS=page`,
+WezTerm's cold rows, a few objects a page). Every pane is filled to its limit first; then pane 0
+takes `CAT_MB` megabytes of `ls`-like output in 64 KB reads, as a `cat` of a
+large file would arrive, the oldest page dropped as each new one fills.
+
+Run with `GENG_GC_PAUSES=<file>` and the runtime writes every collection.
+The probe prints when the `cat` began and ended on the monotonic clock, in
+milliseconds, and how long each read took to take in.
+
+The scrollback is a queue of pages (`BACK=queue`, the default: `pushLast` a
+full page, `dropFirst` the oldest), or a ring of them (`BACK=ring`: a page
+written over the oldest with `Array.set`).
+
+Environment: `PANES` (4), `SCROLLBACK` (100000 lines a pane), `CAT_MB` (200),
+`ROWS` (packed, cells or page), `BACK` (queue or ring).
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Encode as Encode
+import Console
+import Dict exposing (Dict)
+import Int64
+import Os.Env
+import Task exposing (Task)
+import Time
+import UInt8
+
+
+cols : Int
+cols =
+    160
+
+
+lines : Int
+lines =
+    50
+
+
+pageRows : Int
+pageRows =
+    256
+
+
+blank : Int
+blank =
+    32
+
+
+-- THE HEAP
+
+
+type Row
+    = Cells (Array Int)
+    | Packed { text : Bytes, attrs : Bytes }
+
+
+type alias Scrollback =
+    { pages : Array (Array Row)
+    , page : Array Row
+    , limit : Int
+    , ring : Bool
+    , head : Int
+    , join : Bool
+    }
+
+
+type alias Pane =
+    { screen : Array (Array Int)
+    , x : Int
+    , y : Int
+    , style : Int
+    , back : Scrollback
+    , packed : Bool
+    }
+
+
+blankRow : Array Int
+blankRow =
+    Array.repeat cols blank
+
+
+emptyPane : Bool -> Bool -> Bool -> Int -> Pane
+emptyPane packed join ring limit =
+    { screen = Array.repeat lines blankRow
+    , x = 0
+    , y = 0
+    , style = 0
+    , back = { pages = [], page = [], limit = limit, ring = ring, head = 0, join = join }
+    , packed = packed
+    }
+
+
+{-| A full page as one row: its rows' texts joined, and their attribute
+runs. -}
+joined : Array Row -> Array Row
+joined rows =
+    let
+        part pick row =
+            when row is
+                Packed p ->
+                    pick p
+
+                Cells _ ->
+                    Bytes.empty
+    in
+    [ Packed { text = Bytes.flatten (Array.map (part .text) rows), attrs = Bytes.flatten (Array.map (part .attrs) rows) } ]
+
+
+push : Row -> Scrollback -> Scrollback
+push row back =
+    let
+        filled =
+            Array.pushLast row back.page
+
+        page =
+            if back.join && Array.length filled >= pageRows then
+                joined filled
+
+            else
+                filled
+    in
+    if Array.length filled < pageRows then
+        { back | page = page }
+
+    else if back.ring && (Array.length back.pages + 1) * pageRows > back.limit then
+        { back
+            | page = []
+            , pages = Array.set back.head page back.pages
+            , head = modBy (Array.length back.pages) (back.head + 1)
+        }
+
+    else
+        let
+            pages =
+                Array.pushLast page back.pages
+        in
+        { back
+            | page = []
+            , pages =
+                if Array.length pages * pageRows > back.limit then
+                    Array.dropFirst 1 pages
+
+                else
+                    pages
+        }
+
+
+{-| The length of a row less its trailing blanks. -}
+used : Array Int -> Int -> Int
+used row n =
+    if n > 0 && Bitwise.and 0x1FFFFF (Maybe.withDefault blank (Array.get (n - 1) row)) == blank then
+        used row (n - 1)
+
+    else
+        n
+
+
+{-| A row as the scrollback keeps it. -}
+cold : Bool -> Array Int -> Row
+cold packed row =
+    let
+        cells =
+            Array.takeFirst (used row cols) row
+    in
+    if packed then
+        Packed { text = pack (Array.map (Bitwise.and 0xFF) cells), attrs = runs cells }
+
+    else
+        Cells cells
+
+
+pack : Array Int -> Bytes
+pack values =
+    Encode.encode (Encode.sequence (Array.map (\v -> Encode.unsignedInt8 (UInt8.fromInt v)) values))
+
+
+{-| The row's attribute runs: each run of one style as its style and its
+length, two bytes each. -}
+runs : Array Int -> Bytes
+runs cells =
+    let
+        step c acc =
+            let
+                style =
+                    Bitwise.shiftRightZfBy 21 c
+            in
+            if acc.count > 0 && style == acc.style then
+                { acc | count = acc.count + 1 }
+
+            else if acc.count > 0 then
+                { style = style, count = 1, out = Array.pushLast acc.count (Array.pushLast acc.style acc.out) }
+
+            else
+                { acc | style = style, count = 1 }
+
+        done =
+            Array.foldl step { style = 0, count = 0, out = [] } cells
+    in
+    pack (Array.pushLast (Bitwise.and 0xFF done.count) (Array.pushLast (Bitwise.and 0xFF done.style) done.out))
+
+
+-- THE INPUT
+
+
+sampleLine : Int -> String
+sampleLine n =
+    "drwxr-xr-x  2 gram gram  4096 Oct 23 10:"
+        ++ String.fromInt (modBy 60 n)
+        ++ " \u{001B}[01;34mdirectory-"
+        ++ String.fromInt n
+        ++ "\u{001B}[0m "
+        ++ String.repeat (modBy 70 (n * 7)) "x"
+        ++ "\r\n"
+
+
+chunkLines : Int
+chunkLines =
+    600
+
+
+chunk : Int -> Bytes
+chunk k =
+    Bytes.flatten (Array.initialize chunkLines (k * chunkLines) (\n -> Bytes.fromString (sampleLine n)))
+
+
+-- THE PARSER (the grid probe's)
+
+
+byteAt : Bytes -> Int -> Int
+byteAt bytes i =
+    when Bytes.get i bytes is
+        Just b ->
+            UInt8.toInt b
+
+        Nothing ->
+            -1
+
+
+runEnd : Bytes -> Int -> Int -> Int
+runEnd bytes n i =
+    if i < n && byteAt bytes i >= 32 then
+        runEnd bytes n (i + 1)
+
+    else
+        i
+
+
+feed : Bytes -> Int -> Int -> Pane -> Pane
+feed bytes n i pane =
+    if i >= n then
+        pane
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 27 then
+            csi bytes n (i + 2) 0 0 pane
+
+        else if b == 10 then
+            feed bytes n (i + 1) (lineFeed pane)
+
+        else if b == 13 then
+            feed bytes n (i + 1) { pane | x = 0 }
+
+        else if b < 32 then
+            feed bytes n (i + 1) pane
+
+        else
+            let
+                end =
+                    runEnd bytes n i
+            in
+            feed bytes n end (print bytes i end pane)
+
+
+csi : Bytes -> Int -> Int -> Int -> Int -> Pane -> Pane
+csi bytes n i first param pane =
+    let
+        b =
+            byteAt bytes i
+    in
+    if b >= 48 && b <= 57 then
+        csi bytes n (i + 1) first (param * 10 + b - 48) pane
+
+    else if b == 59 then
+        csi bytes n (i + 1) param 0 pane
+
+    else if b == 109 then
+        feed bytes n (i + 1) { pane | style = param }
+
+    else
+        feed bytes n (i + 1) pane
+
+
+print : Bytes -> Int -> Int -> Pane -> Pane
+print bytes start end pane =
+    let
+        count =
+            min (end - start) (cols - pane.x)
+
+        style =
+            Bitwise.shiftLeftBy 21 pane.style
+
+        cells =
+            Array.initialize count start (\k -> Bitwise.or style (byteAt bytes k))
+
+        row =
+            Maybe.withDefault blankRow (Array.get pane.y pane.screen)
+    in
+    if count <= 0 then
+        pane
+
+    else
+        { pane
+            | screen = Array.set pane.y (Array.setMany pane.x cells row) pane.screen
+            , x = pane.x + count
+        }
+
+
+lineFeed : Pane -> Pane
+lineFeed pane =
+    if pane.y + 1 >= lines then
+        { pane
+            | screen = Array.pushLast blankRow (Array.dropFirst 1 pane.screen)
+            , back = push (cold pane.packed (Maybe.withDefault blankRow (Array.get 0 pane.screen))) pane.back
+        }
+
+    else
+        { pane | y = pane.y + 1 }
+
+
+-- THE RUN
+
+
+feedChunk : Int -> Pane -> Pane
+feedChunk k pane =
+    let
+        bytes =
+            chunk k
+    in
+    feed bytes (Bytes.length bytes) 0 pane
+
+
+fill : Int -> Int -> Pane -> Pane
+fill k chunks pane =
+    if k >= chunks then
+        pane
+
+    else
+        fill (k + 1) chunks (feedChunk k pane)
+
+
+now : Task x Int
+now =
+    Time.monotonic |> Task.map (\d -> Int64.toInt (Time.inMilliseconds d))
+
+
+type alias Cat =
+    { pane : Pane
+    , times : Array Int
+    , bytes : Int
+    }
+
+
+{-| One read at a time, each its own step of the task, as visiterm's loop
+would take a PTY's reads. -}
+cat : Int -> Int -> Cat -> Task x Cat
+cat k last state =
+    if k >= last then
+        Task.succeed state
+
+    else
+        now
+            |> Task.andThen
+                (\t0 ->
+                    let
+                        pane =
+                            feedChunk k state.pane
+                    in
+                    now
+                        |> Task.andThen
+                            (\t1 ->
+                                cat (k + 1)
+                                    last
+                                    { pane = pane
+                                    , times = Array.pushLast (t1 - t0) state.times
+                                    , bytes = state.bytes + chunkLines
+                                    }
+                            )
+                )
+
+
+rowsHeld : Pane -> Int
+rowsHeld pane =
+    let
+        held page =
+            if Array.length page == 1 then
+                pageRows
+
+            else
+                Array.length page
+    in
+    Array.foldl (\page n -> n + held page) (Array.length pane.back.page) pane.back.pages
+
+
+setting : Dict String String -> String -> Int -> Int
+setting env name default =
+    Dict.get name env |> Maybe.andThen String.toInt |> Maybe.withDefault default
+
+
+percentile : Array Int -> Int -> Int
+percentile sorted p =
+    Maybe.withDefault 0 (Array.get ((Array.length sorted - 1) * p // 100) sorted)
+
+
+main : Task Never {}
+main =
+    Os.Env.getEnvironmentVariables
+        |> Task.andThen
+            (\env ->
+                let
+                    panes =
+                        setting env "PANES" 4
+
+                    limit =
+                        setting env "SCROLLBACK" 100000
+
+                    catMb =
+                        setting env "CAT_MB" 200
+
+                    packed =
+                        Dict.get "ROWS" env /= Just "cells"
+
+                    join =
+                        Dict.get "ROWS" env == Just "page"
+
+                    ring =
+                        Dict.get "BACK" env == Just "ring"
+
+                    -- Enough reads to fill a pane's scrollback and screen.
+                    fillChunks =
+                        (limit + lines) // chunkLines + 1
+
+                    -- A line averages 103 bytes.
+                    catChunks =
+                        catMb * 1000000 // (chunkLines * 103)
+                in
+                now
+                    |> Task.andThen
+                        (\t0 ->
+                            let
+                                -- Pane 0 apart, so that nothing keeps it as it was
+                                -- before the cat.
+                                others =
+                                    Array.initialize (panes - 1) 1 (\p -> fill (p * fillChunks) ((p + 1) * fillChunks) (emptyPane packed join ring limit))
+
+                                first =
+                                    fill 0 fillChunks (emptyPane packed join ring limit)
+                            in
+                            now
+                                |> Task.andThen
+                                    (\t1 ->
+                                        let
+                                            start =
+                                                panes * fillChunks
+                                        in
+                                        cat start (start + catChunks) { pane = first, times = [], bytes = 0 }
+                                            |> Task.andThen
+                                                (\done ->
+                                                    now
+                                                        |> Task.andThen
+                                                            (\t2 ->
+                                                                let
+                                                                    all =
+                                                                        Array.pushFirst done.pane others
+
+                                                                    held =
+                                                                        Array.foldl (\p n -> n + rowsHeld p) 0 all
+
+                                                                    sorted =
+                                                                        Array.sort done.times
+                                                                in
+                                                                Console.write
+                                                                    ("panes "
+                                                                        ++ String.fromInt panes
+                                                                        ++ ", scrollback "
+                                                                        ++ String.fromInt limit
+                                                                        ++ ", rows "
+                                                                        ++ (if join then "page" else if packed then "packed" else "cells")
+                                                                        ++ ", back "
+                                                                        ++ (if ring then "ring" else "queue")
+                                                                        ++ ", rows held "
+                                                                        ++ String.fromInt held
+                                                                        ++ "\nfill_ms "
+                                                                        ++ String.fromInt (t1 - t0)
+                                                                        ++ "\ncat_start_ms "
+                                                                        ++ String.fromInt t1
+                                                                        ++ "\ncat_end_ms "
+                                                                        ++ String.fromInt t2
+                                                                        ++ "\ncat_lines "
+                                                                        ++ String.fromInt done.bytes
+                                                                        ++ "\nreads "
+                                                                        ++ String.fromInt (Array.length sorted)
+                                                                        ++ " ms p50 "
+                                                                        ++ String.fromInt (percentile sorted 50)
+                                                                        ++ " p99 "
+                                                                        ++ String.fromInt (percentile sorted 99)
+                                                                        ++ " max "
+                                                                        ++ String.fromInt (percentile sorted 100)
+                                                                        ++ "\n"
+                                                                    )
+                                                            )
+                                                )
+                                    )
+                        )
+            )

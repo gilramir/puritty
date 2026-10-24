@@ -108,8 +108,9 @@ reference terminals on the same inputs (§6, phase 0 item 7).
 
 - Every task runs on one thread, and `Task.parallel` is `Task.concurrent` natively.
 - The collector is a copying nursery in front of conservative, non-moving Boehm.
-  Marking stops the program. **Pause times for a large interactive heap were never
-  measured** (phase 0 item 6).
+  Marking stops the program. Pause times on a heap like this one's are measured
+  since (phase 0 item 6, geng-lang `m4-visiterm.md` §VA7): over the budget with a
+  row per object, under it with a page per `Bytes`.
 - `SIGINT` and `SIGTERM` end the program at once, and release handlers don't run.
 - Regular-file reads run in place and stall every task (1 ms for 1.3 MB cold).
   Pipes, sockets and FIFOs wait in the scheduler.
@@ -432,7 +433,20 @@ gates, committed at the same checkpoint as the visiterm side.
    by the nursery, and the row crashed 5 runs of 5. A post costs about 170 ns a
    message from one thread (`answer/app/src/Bench.geng`); a row whose thread
    starts and answers once, about 82 µs, most of it the thread.
-6. G7: measure GC pauses on a visiterm-shaped heap.
+6. G7: measure GC pauses on a visiterm-shaped heap. **Measured 2026-10-24**
+   (geng-lang `m4-visiterm.md` §VA7; `probes/geng/gcpause`). Minor collections
+   are 0.3 ms at worst. Boehm's full collections stop the program about 7.5 ms
+   for each 100,000 rows of scrollback kept as a `Bytes` per row: 16 ms at one
+   pane of 100,000 lines, 31–38 ms at four, 57–62 ms at eight, so the budget
+   holds only at one pane. With each full page of 256 cold rows joined into
+   one text `Bytes` and one of attribute runs, the longest pause is 4.5 ms at
+   four panes and 4.1 ms at eight, with a fifth of the memory. Keep the pages
+   in a ring (`Array.set`), not a queue (`pushLast` and `dropFirst`), which
+   keeps up to twice its rows (geng-lang D705). The probe first found a leak
+   in Geng's runtime, fixed there (D898): every row a `cat` scrolled away was
+   kept. Which of §VA7.6's options to take, in Geng and here, is Gilbert's
+   to decide; the recommendation is joined pages here and atomic strings in
+   the runtime.
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
    files plus §1's workloads) with Alacritty, Ghostty, xterm and st, and set the
    core's throughput budget from that.

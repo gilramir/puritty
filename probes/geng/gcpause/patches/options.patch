@@ -1,0 +1,43 @@
+diff --git a/packages/c-backend/runtime/geng.c b/packages/c-backend/runtime/geng.c
+index 87de6a04..4a4dce1c 100644
+--- a/packages/c-backend/runtime/geng.c
++++ b/packages/c-backend/runtime/geng.c
+@@ -744,6 +744,9 @@ static inline void copy_body(char *to, const char *from, size_t body) {
+ }
+ 
+ static void *forward(void *p);
++/* EXPERIMENT (G7): GENG_ATOMIC_BYTES=1 promotes every self-contained
++ * string or bytes atomic, from Boehm's atomic allocator. */
++static int experiment_atomic_bytes;
+ 
+ /* A string's buffer, `b->buffer` of a `geng_bytes`, promoted with the bytes
+  * up to `used` and no further (D613, m3-sweep.md §SW21): no string reaches
+@@ -801,7 +804,7 @@ static void *forward(void *p) {
+         geng_bytes *b = (geng_bytes *) object;
+         if (b->length <= GENG_INLINE_STRING && (b->buffer ? geng_young(b->buffer) : b->block && geng_young(b->block))) {
+             size_t own = sizeof(geng_bytes) + (size_t) b->length;
+-            geng_bytes *copy = copy_alloc(own, GENG_HEADER_BYTES(own), 0);
++            geng_bytes *copy = copy_alloc(own, GENG_HEADER_BYTES(own), experiment_atomic_bytes);
+             copy->length = b->length;
+             copy->pad = b->pad;
+             copy->data = (uint8_t *) (copy + 1);
+@@ -842,7 +845,7 @@ static void *forward(void *p) {
+      * scanned (m3-closeout.md §CL18). */
+     int atomic = GENG_HEADER_KIND(h) == GENG_KIND_RAW ||
+                  (GENG_HEADER_KIND(h) == GENG_KIND_ARRAY && !((geng_array *) object)->pointers && ((geng_array *) object)->form != GENG_ARRAY_VIEW) ||
+-                 (GENG_HEADER_KIND(h) == GENG_KIND_BYTES && body > LISTS * 16 && ((geng_bytes *) object)->buffer == NULL &&
++                 (GENG_HEADER_KIND(h) == GENG_KIND_BYTES && (experiment_atomic_bytes || body > LISTS * 16) && ((geng_bytes *) object)->buffer == NULL &&
+                   ((geng_bytes *) object)->block == NULL);
+     char *copy = copy_alloc(body, h, atomic);
+     copy_body(copy, object, body);
+@@ -1565,7 +1568,9 @@ static void *program_thread(void *arg) {
+ }
+ 
+ int geng_main(int argc, char **argv, int (*entry)(int argc, char **argv)) {
+-    GC_set_markers_count(1);
++    /* EXPERIMENT (G7): GENG_MARKERS=n marks with n threads. */
++    experiment_atomic_bytes = getenv("GENG_ATOMIC_BYTES") != NULL;
++    GC_set_markers_count(getenv("GENG_MARKERS") ? (unsigned) atoi(getenv("GENG_MARKERS")) : 1);
+     /* Before GC_INIT, which reads GC_FREE_SPACE_DIVISOR over it. */
+     GC_set_free_space_divisor(1);
+     GC_set_all_interior_pointers(0);
