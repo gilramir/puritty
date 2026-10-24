@@ -34,13 +34,13 @@ def pct(sorted_values, p):
     return sorted_values[min(len(sorted_values) - 1, (len(sorted_values) - 1) * p // 100)]
 
 
-def run_once(panes, rows, back, scrollback, cat_mb, extra_env):
+def run_once(probe, panes, rows, back, scrollback, cat_mb, extra_env):
     with tempfile.TemporaryDirectory() as work:
         log = pathlib.Path(work) / "pauses"
         env = dict(os.environ, PANES=str(panes), ROWS=rows, BACK=back, SCROLLBACK=str(scrollback), CAT_MB=str(cat_mb), GENG_GC_PAUSES=str(log))
         env.update(extra_env)
         out = subprocess.run(
-            ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=12G", "/usr/bin/time", "-f", "rss_kb %M", str(HERE / "probe")],
+            ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=12G", "/usr/bin/time", "-f", "rss_kb %M", str(probe)],
             env=env, capture_output=True, text=True, check=True,
         )
         facts = {}
@@ -91,13 +91,14 @@ def main():
     ap.add_argument("--cat-mb", type=int, default=200)
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the probe's environment")
+    ap.add_argument("--probe", default=str(HERE / "probe"), help="the binary to run, for a build against another runtime")
     args = ap.parse_args()
     extra = dict(e.split("=", 1) for e in args.env)
     for rows in args.rows or ["packed", "cells"]:
         for back in args.back or ["queue", "ring"]:
             for panes in args.panes or [1, 4, 8]:
                 for _ in range(args.runs):
-                    report(*run_once(panes, rows, back, args.scrollback, args.cat_mb, extra))
+                    report(*run_once(args.probe, panes, rows, back, args.scrollback, args.cat_mb, extra))
                     sys.stdout.flush()
 
 

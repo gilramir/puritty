@@ -110,7 +110,8 @@ reference terminals on the same inputs (§6, phase 0 item 7).
 - The collector is a copying nursery in front of conservative, non-moving Boehm.
   Marking stops the program. Pause times on a heap like this one's are measured
   since (phase 0 item 6, geng-lang `m4-visiterm.md` §VA7): over the budget with a
-  row per object, under it with a page per `Bytes`.
+  row per object, under it with a page per `Bytes`, which is how scrollback is kept
+  (§3.3).
 - `SIGINT` and `SIGTERM` end the program at once, and release handlers don't run.
 - Regular-file reads run in place and stall every task (1 ms for 1.3 MB cold).
   Pipes, sockets and FIFOs wait in the scheduler.
@@ -256,6 +257,15 @@ style id and side tables (S§5.2) maps to an `Int` or `Int64` per cell plus per-
 per-page tables. Scrollback in **bytes**, with cold rows compressed to a string plus
 attribute runs (WezTerm's scheme, S§5.2), suits immutable rows well. Whether a row is
 an `Array Int` or a `Bytes` is measured, not guessed.
+
+**Cold scrollback is kept in pages, decided 2026-10-24** (geng-lang D901, from G7).
+When a page of 256 rows fills, its rows' text is joined into one `Bytes` and their
+attribute runs into another, and the page, not the row, is the unit of cold storage.
+A cold row is read by slicing its page; reflow and search decode a page at a time.
+The screen and the page being filled stay rows. Pages sit in a ring (`Array.set`),
+not a queue. The reason is the collector: Boehm marks each live object with the
+program stopped, and a row per object is 31–38 ms at four panes of 100,000 lines,
+where pages are 3–4 ms (`probes/geng/gcpause`).
 
 If the real core is too slow on immutable rows, the question for Geng is a mutable
 buffer that the refinement checker or a linearity rule keeps safe (G4). That is a
@@ -444,9 +454,10 @@ gates, committed at the same checkpoint as the visiterm side.
    in a ring (`Array.set`), not a queue (`pushLast` and `dropFirst`), which
    keeps up to twice its rows (geng-lang D705). The probe first found a leak
    in Geng's runtime, fixed there (D898): every row a `cat` scrolled away was
-   kept. Which of §VA7.6's options to take, in Geng and here, is Gilbert's
-   to decide; the recommendation is joined pages here and atomic strings in
-   the runtime.
+   kept. **Decided 2026-10-24**: Gilbert chose joined pages here (geng-lang
+   D901, §3.3) and atomic strings in the runtime (D900, built). With both,
+   the longest pause is 3.0–3.7 ms at four panes and 3.0 ms at eight
+   (geng-lang §VA7.7).
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
    files plus §1's workloads) with Alacritty, Ghostty, xterm and st, and set the
    core's throughput budget from that.
