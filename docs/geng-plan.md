@@ -1,6 +1,6 @@
 # Plan: visiterm for Linux, written in Geng
 
-Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0's G1, G8, G6 and G2 are built in geng-lang; nothing of visiterm itself is yet.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of visiterm itself is built yet; phase 1 is next.** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -141,6 +141,154 @@ which is 4.18. §9 asks Gilbert for what only a real host shows.
 | Mesa EGL | 23.1.4 | — | GLES 3 possible locally; irrelevant over `ssh -X` |
 | Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts can come from the system, or be bundled (Q13) |
 | **tmux** | 2.7 packaged; **3.6 installed** where visiterm will run | 3.4 | The packaged 2.7 predates 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Gilbert's hosts have 3.6, so visiterm requires 3.2 (Q11) |
+
+### 1.2 The reference terminals' throughput, measured 2026-10-24
+
+Phase 0 item 7. The same machine as §1 (AMD Ryzen 7 8845HS, 16 threads, Linux
+6.8), idle. Every program comes from the nixpkgs commit `devbox.json` pins:
+Alacritty 0.17.0, Ghostty 1.3.1, xterm 411, st 0.9.3, vtebench 0.3.1,
+hyperfine 1.20.0, Xvfb 21.1.24, Mesa 26.2.3, rustc 1.98.1. The probe is
+[`../probes/throughput/`](../probes/throughput/); each script's header says how
+it is run.
+
+**Inputs** (`gen.py`, `gen-vtebench.py`):
+
+- `ls`: §1's workload 1, byte for byte: 200,000 `ls`-like lines with two SGR
+  sequences each, 24.3 MB.
+- `cup`: §1's workload 2: 2,000,000 single cells, each after a CUP, 18.3 MB.
+- `gitlog`: real text with colour, `git log -p --color=always` of the vendored
+  Ghostty, 2,000 commits back from `d8619f1bc`, 25.8 MB.
+- `vte-*`: vtebench's ten benchmarks, run in a 160×50 pty and captured as the
+  terminal would read them, each repeated to 8–11 MB.
+
+**In a terminal** (`terminals.sh`, `inside.sh`). Each terminal runs at 160×50
+in DejaVu Sans Mono 11 and otherwise keeps its defaults (scrollback: Alacritty
+10,000 lines, xterm 1,024, st none). They run on a private Xvfb, the two GL
+terminals drawing through Mesa's llvmpipe, so that nothing opens on Gilbert's
+desktop and all four draw on the CPU, as on RHEL8's ETX desktop (Q10). On the
+Radeon the GL terminals may do better; that was not measured. Inside each, the
+shell times `cat` of a file, three runs:
+
+| ms, three runs | `ls` | `cup` | `gitlog` |
+|---|---:|---:|---:|
+| **Alacritty** | **236–268** | **107–113** | **309–314** |
+| st | 398–405 | 228–229 | 510–516 |
+| Ghostty | 456–491 | 250–254 | 551–566 |
+| xterm | 523–533 | 1,917–1,926 | 835–843 |
+| no terminal: a reader that discards (`pty.py`) | 166–178 | 44–49 | 275–301 |
+| the same, the pty in raw mode | 49–56 | 40–42 | 54–57 |
+
+**The pty is a floor under every terminal.** A shell's pty has the line
+discipline's output processing on (`OPOST`, `ONLCR`), and the kernel does that
+work in `cat`'s `write`, a byte at a time around each newline: 120 ms of `ls`'s
+170 and 230 of `gitlog`'s 285. So `cat` in a shell cannot go faster than about
+140 MB/s of `ls` or 90 MB/s of `gitlog` here, whatever the terminal. Alacritty
+is near that floor: 97 MB/s of `ls`, 83 of `gitlog`. A program that puts its
+pty in raw mode, as tmux's client does, does not pay it.
+
+vtebench in each terminal, its defaults (10 s a benchmark, samples of at least
+1 MiB); the median ms a sample, and the number of samples:
+
+| benchmark | Alacritty | Ghostty | xterm | st |
+|---|---:|---:|---:|---:|
+| cursor_motion | **7** (1,279) | 16 (587) | 152 (66) | 16 (608) |
+| dense_cells | **7** (1,389) | 23 (418) | 71 (140) | 64 (156)¹ |
+| light_cells | **6** (1,526) | 15 (670) | 129 (78) | 15 (650) |
+| scrolling | **130** (76) | 166 (60) | 326 (31) | 183 (57) |
+| scrolling_bottom_region | **128** (78) | 163 (62) | 143 (70) | 180 (57) |
+| scrolling_bottom_small_region | **128** (78) | 163 (62) | 143 (70) | 171 (58) |
+| scrolling_fullscreen | **15** (581) | 28 (363) | 25 (380) | 18 (533) |
+| scrolling_top_region | **129** (77) | 160 (63) | 144 (70) | 169 (60) |
+| scrolling_top_small_region | **129** (77) | 160 (63) | 143 (70) | 168 (60) |
+| unicode | **7** (1,309) | 17 (600) | 495 (18) | 11 (170) |
+
+¹ vtebench's `dense_cells` asks for 256-colour indices up to 355. st rejects each
+one and writes a line to stderr, 162 MB of them in the run, so its number
+measures that.
+
+**Headless** (`build-cores.sh`, `cores.sh`). Two cores, fed each file directly:
+Ghostty's own `ghostty-bench +terminal-stream` from the vendored checkout at
+`d8619f1bc`, with `ghostty-scrollback.patch` to set its scrollback (the bench
+keeps 10 KB, the app 50 MB); and `alacritty-core`, which feeds the vendored
+`alacritty_terminal` 64 KB at a time, as Alacritty's pty loop does. Each is a
+whole process under hyperfine, the mean of 10 runs, so each includes start-up
+and reading the file, a few ms:
+
+| ms | Ghostty, 10 KB | Ghostty, 50 MB | Alacritty, 10,000 lines | Alacritty, 100,000 |
+|---|---:|---:|---:|---:|
+| `ls` | 47 | 84 | 195 | 343 |
+| `cup` | 71 | 68 | 85 | 82 |
+| `gitlog` | 83 | 131 | 239 | 412 |
+| vte-cursor_motion | 33 | 33 | 41 | 41 |
+| vte-dense_cells | 57 | 58 | 46 | 46 |
+| vte-light_cells | 6 | 6 | 39 | 40 |
+| vte-scrolling | 106 | 206 | 70 | 240 |
+| vte-scrolling_bottom_region | 105 | 104 | 55 | 57 |
+| vte-scrolling_bottom_small_region | 107 | 103 | 179 | 179 |
+| vte-scrolling_fullscreen | 8 | 36 | 74 | 132 |
+| vte-scrolling_top_region | 105 | 105 | 290 | 290 |
+| vte-scrolling_top_small_region | 106 | 109 | 176 | 175 |
+| vte-unicode | 9 | 8 | 39 | 38 |
+
+What they show:
+
+- **Ghostty's core is the fastest on most inputs**, 2.3× Alacritty's on `ls` and
+  1.8× on `gitlog` at each one's default scrollback, and 6× on `light_cells`.
+  It is slower on `dense_cells`, `scrolling` and a bottom scroll region.
+- **Its window does not show it.** In a terminal, Ghostty is half Alacritty's
+  speed on every input, 3–6× its own core. Under llvmpipe its renderer and GTK
+  are the likely cost; it was not profiled.
+- **Scrollback is not free in either.** Alacritty at 100,000 lines takes `ls` in
+  343 ms where 10,000 take 195, most of the difference system time, the pages
+  of a larger grid faulted in; Ghostty at 50 MB is 1.8× its 10 KB on `ls`.
+- **A scroll region costs differently at the top and the bottom.** Alacritty
+  scrolls a region that ends at the bottom in 55 ms and one that starts at the
+  top in 290; Ghostty takes 105 for both. Phase 1's region scroll is worth
+  measuring on both.
+
+**The Geng grid probe**, §1's, built again on geng-lang `ac0225e5` and run
+beside them: `ls` in 149–156 ms, `cup` in 222–230 ms (113 ns a cell).
+
+### 1.3 The core's throughput budget
+
+**Headless, on this machine, visiterm's core takes each input of §1.2 at least
+as fast as Alacritty's core does with its default 10,000 lines of scrollback,
+while keeping visiterm's own scrollback** (100,000 lines a pane, as G7
+measured). It is geng-lang D902, and phase 1's exit holds the core to it:
+
+| input | budget | | input | budget |
+|---|---:|---|---|---:|
+| `ls` | 195 ms (124 MB/s) | | vte-scrolling | 70 ms |
+| `cup` | 85 ms (42 ns a cell) | | vte-scrolling_bottom_region | 55 ms |
+| `gitlog` | 239 ms (108 MB/s) | | vte-scrolling_bottom_small_region | 179 ms |
+| vte-cursor_motion | 41 ms | | vte-scrolling_fullscreen | 74 ms |
+| vte-dense_cells | 46 ms | | vte-scrolling_top_region | 290 ms |
+| vte-light_cells | 39 ms | | vte-scrolling_top_small_region | 176 ms |
+| vte-unicode | 39 ms | | | |
+
+Why this bar:
+
+1. **Alacritty is the fastest of the four in a window**, on all three files and
+   on every vtebench benchmark, and its core is what sets that.
+2. **A slower core would show in `cat`.** Alacritty's core takes `ls` in 195 ms
+   over a pty floor of 170; much slower and the core, not the kernel, is what
+   the user waits for.
+3. **Ghostty's core is not the bar**, though it is faster on most inputs: it is
+   slower on three, and the window it feeds is slower than Alacritty's here.
+   Its numbers stay as the reference for what a core can do.
+4. **It is necessary, not sufficient.** visiterm parses and renders on one
+   thread (§3.1); Alacritty parses on a thread of its own. Phase 2 measures
+   the frame cost on the loop and the same `cat`s in a visiterm window,
+   against Alacritty's times above.
+
+**Against it, the grid probe**: `ls` is under (152 ms against 195), though the
+probe does a fraction of a core's work (no style table, scrollback, wrapping or
+damage). **`cup` is 2.6× over** (225 ms against 85): each cell allocates its
+run, copies its 160-cell row and copies the 50-row array, about 210 words a
+cell. vte-cursor_motion is the same shape. This is the number §3.3 said G4
+waits for, but it is the probe's, not the core's: phase 1 measures the real
+core's cell write before G4 or an in-place update of a row in its grid is
+decided (geng-lang `m4-visiterm.md` §VA8).
 
 ---
 
@@ -460,7 +608,12 @@ gates, committed at the same checkpoint as the visiterm side.
    (geng-lang §VA7.7).
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
    files plus §1's workloads) with Alacritty, Ghostty, xterm and st, and set the
-   core's throughput budget from that.
+   core's throughput budget from that. **Measured 2026-10-24** (§1.2,
+   `probes/throughput`): Alacritty is the fastest in a window on every input,
+   and a shell's pty alone is a floor of about 140 MB/s of `ls`. **The budget**
+   (§1.3, geng-lang D902): headless, visiterm's core is at least as fast as
+   Alacritty's core on each input. §1's grid probe meets it on `ls` and is 2.6×
+   over on `cup`, a row copied for each cell.
 8. Moved to phase 6: RHEL8 is platform 2. Gilbert's run of
    `probes/rhel8/inspect.sh` is still welcome whenever it suits, since it costs
    nothing to look early.
@@ -486,7 +639,7 @@ Exit:
 - the differential gate against libghostty-vt passes on the replay corpus, with every
   divergence explained in a `divergence.txt`, as geng-lang's corpus does;
 - the fuzzer has run clean for a recorded number of hours;
-- throughput meets the phase 0 budget.
+- throughput meets the phase 0 budget (§1.3, with 100,000 lines of scrollback).
 
 **Phase 2 · A window on X11.** PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
