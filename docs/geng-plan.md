@@ -1,6 +1,6 @@
 # Plan: visiterm for Linux, written in Geng
 
-Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of visiterm itself is built yet; phase 1 is next.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of visiterm itself is built yet. Phase 1 is surveyed, 2026-10-24 ([`phase1-core.md`](phase1-core.md)): no grid of immutable rows meets the budget, and `Array.Builder`, which halves it, has a soundness bug in Geng to fix first; its questions wait on Gilbert.** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -419,6 +419,13 @@ If the real core is too slow on immutable rows, the question for Geng is a mutab
 buffer that the refinement checker or a linearity rule keeps safe (G4). That is a
 language decision, and it waits for the numbers.
 
+**The numbers, 2026-10-24** ([`phase1-core.md`](phase1-core.md) §3, §4): a
+probe core on immutable rows is over the budget on every input, a cell
+through a row and the screen costing 34 ns before it is parsed. The same core
+on a screen of `Array.Builder`s, `core`'s public transient, halves most
+inputs. The builder is G4's buffer already, but natively and on node it is
+not sound on a read of an older handle (§4.2), and Geng fixes that first.
+
 ### 3.4 The display list and the C side of rendering
 
 The tvision experiment's best idea was sending a *description* and diffing it in one
@@ -492,7 +499,9 @@ sits inside `Task.bracket`. A debug build counts live C objects so that a soak t
 can show the counts stay flat.
 
 **G4 · A mutable byte buffer, only if phase 1 needs one.** See §3.3. The decision is
-deferred to the measurements.
+deferred to the measurements. *Measured 2026-10-24: phase 1 needs one, and
+the survey proposes `Array.Builder`, made sound and given a write of a run, a
+fill and a block move ([`phase1-core.md`](phase1-core.md) §5.1, §8).*
 
 **G5 · Answering from another thread.** The pattern in §3.1 (a C thread does
 blocking work and wakes the loop through an fd) was thought to work today, but each package would
@@ -629,7 +638,9 @@ Exit: a package in this repository links libxcb with no environment variables, a
 wrong C row type fails to compile, and the throughput budget and pause figures are
 written down.
 
-**Phase 1 · The headless core.** S§5 in Geng: parser with a ground-state fast path,
+**Phase 1 · The headless core.** *Surveyed 2026-10-24:
+[`phase1-core.md`](phase1-core.md); its five questions (§8) wait on
+Gilbert.* S§5 in Geng: parser with a ground-state fast path,
 cells and styles, scrollback in bytes, graphemes and widths per pane, the modes and
 sequences of S§5.1's minimum list, replies, the bounds on every attacker-controlled
 buffer. Reflow is designed with its tests first (S§5.4) and may land last.

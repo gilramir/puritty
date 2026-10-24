@@ -1,0 +1,155 @@
+module Main exposing (main)
+
+{-| What each step of a cell write and a scroll costs on its own, for phase 1's
+survey: an `Array.set` into a 160-cell row and into a 50-row screen, the same
+through `Array.Builder` held linearly, a builder kept inside a builder, and a
+record of 22 fields updated. Each loop runs `count` times, threading its value.
+
+usage: probe COUNT
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Console
+import Dict
+import Int64
+import Os.Env
+import Task exposing (Task)
+import Time
+
+
+row : Array Int
+row =
+    Array.repeat 160 32
+
+
+screen : Array (Array Int)
+screen =
+    Array.repeat 50 row
+
+
+setRow : Int -> Int -> Array Int -> Array Int
+setRow i n r =
+    if i >= n then
+        r
+
+    else
+        setRow (i + 1) n (Array.set (modBy 160 (i * 13)) i r)
+
+
+setScreen : Int -> Int -> Array (Array Int) -> Array (Array Int)
+setScreen i n s =
+    if i >= n then
+        s
+
+    else
+        setScreen (i + 1) n (Array.set (modBy 50 (i * 7)) row s)
+
+
+{-| A cell written through both levels, as a write to the grid is. -}
+setBoth : Int -> Int -> Array (Array Int) -> Array (Array Int)
+setBoth i n s =
+    if i >= n then
+        s
+
+    else
+        let
+            y =
+                modBy 50 (i * 7)
+
+            r =
+                Maybe.withDefault row (Array.get y s)
+        in
+        setBoth (i + 1) n (Array.set y (Array.set (modBy 160 (i * 13)) i r) s)
+
+
+builderRow : Int -> Int -> Builder Int -> Builder Int
+builderRow i n b =
+    if i >= n then
+        b
+
+    else
+        builderRow (i + 1) n (Builder.set (modBy 160 (i * 13)) i b)
+
+
+{-| A screen of row builders, each written in place through the screen's. -}
+builderBoth : Int -> Int -> Builder (Builder Int) -> Builder (Builder Int)
+builderBoth i n s =
+    if i >= n then
+        s
+
+    else
+        let
+            y =
+                modBy 50 (i * 7)
+        in
+        when Builder.get y s is
+            Just r ->
+                builderBoth (i + 1) n (Builder.set y (Builder.set (modBy 160 (i * 13)) i r) s)
+
+            Nothing ->
+                s
+
+
+type alias Big =
+    { a : Int, b : Int, c : Int, d : Int, e : Int, f : Int, g : Int, h : Int, i : Int, j : Int, k : Int
+    , l : Int, m : Int, n : Int, o : Int, p : Int, q : Int, r : Int, s : Int, t : Int, u : Int, x : Int
+    }
+
+
+big : Big
+big =
+    { a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0, j = 0, k = 0, l = 0, m = 0, n = 0, o = 0, p = 0, q = 0, r = 0, s = 0, t = 0, u = 0, x = 0 }
+
+
+bumpBig : Int -> Int -> Big -> Big
+bumpBig i n v =
+    if i >= n then
+        v
+
+    else
+        bumpBig (i + 1) n { v | x = v.x + i }
+
+
+timed : String -> (Int -> Int) -> Int -> Task x {}
+timed name run n =
+    Time.monotonic
+        |> Task.andThen
+            (\t0 ->
+                let
+                    v =
+                        run n
+                in
+                Time.monotonic
+                    |> Task.andThen
+                        (\t1 ->
+                            let
+                                ms =
+                                    Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0)
+                            in
+                            Console.write (name ++ ": " ++ String.fromInt ms ++ " ms, " ++ String.fromFloat (toFloat (ms * 1000000) / toFloat n) ++ " ns each (" ++ String.fromInt v ++ ")\n")
+                        )
+            )
+
+
+sumRow : Array Int -> Int
+sumRow r =
+    Array.foldl (\c s -> Bitwise.xor (s * 31) c) 0 r
+
+
+main : Task Never {}
+main =
+    Os.Env.getEnvironment
+        |> Task.andThen
+            (\e ->
+                let
+                    n =
+                        Maybe.withDefault 10000000 (Maybe.andThen String.toInt (Array.get 0 e.args))
+                in
+                timed "Array.set, 160-cell row" (\k -> sumRow (setRow 0 k row)) n
+                    |> Task.andThen (\_ -> timed "Array.set, 50-row screen" (\k -> Array.length (setScreen 0 k screen)) n)
+                    |> Task.andThen (\_ -> timed "Array.set, a cell through both" (\k -> Array.length (setBoth 0 k screen)) n)
+                    |> Task.andThen (\_ -> timed "Builder.set, 160-cell row" (\k -> sumRow (Builder.toArray (builderRow 0 k (Builder.fromArray row)))) n)
+                    |> Task.andThen (\_ -> timed "Builder.set, a cell through both" (\k -> Builder.length (builderBoth 0 k (Builder.fromArray (Array.map Builder.fromArray screen)))) n)
+                    |> Task.andThen (\_ -> timed "record of 22 fields, one updated" (\k -> (bumpBig 0 k big).x) n)
+            )

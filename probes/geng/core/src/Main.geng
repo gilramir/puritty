@@ -1,0 +1,1176 @@
+module Main exposing (main)
+
+{-| Phase 1's survey probe: a sketch of the core, to measure what immutable
+rows cost when the core does a core's work, against D902's budget
+(`geng-plan.md` §1.3).
+
+It is not the core. It does what the thirteen inputs ask and keeps what a
+core has to keep: a resumable parser (state carried across 64 KB reads, a
+CSI or a UTF-8 sequence split between two of them picked up again), a
+printable run written to its row in one `setMany`, UTF-8 decoded and each
+codepoint's width looked up, deferred wrap, SGR interned into a style id,
+scroll regions, the alt screen of `?1049h`, and the main screen's scrollback
+kept as D901's pages: 256 rows, trimmed of trailing blanks, joined into one
+`Bytes` of text and one of attribute runs, in a ring of 100,000 lines.
+
+What it leaves out: graphemes (a zero-width codepoint is dropped, not
+joined), a row's wrapped flag, tab stops other than every 8, OSC, DCS,
+replies other than DSR 6, origin mode, and charsets.
+
+A cell is an `Int`: its codepoint in bits 0–20, bit 21 set on the second cell
+of a wide character, and its style id in bits 22–31. Ten bits hold 1,024
+styles; past that a style takes id `n % 1024`, wrong colours that cost the same.
+
+usage: probe FILE        environment: CELLS (copy, set or chunk), PACK (seq,
+string or cells), SCROLLBACK (100000)
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Encode as Encode
+import Console
+import Dict exposing (Dict)
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import UInt8
+import Width
+
+
+cols : Int
+cols =
+    160
+
+
+lines : Int
+lines =
+    50
+
+
+pageRows : Int
+pageRows =
+    256
+
+
+blank : Int
+blank =
+    32
+
+
+readSize : Int
+readSize =
+    65536
+
+
+-- THE STATE
+
+
+{-| How a row is written. `Copy`: §1's grid probe's way, a run built with
+`Array.initialize` and laid in with `setMany`, even a single cell. `Set`: the
+same, but a single cell is one `Array.set`. `Chunk`: a row is five arrays of
+32 cells, so a write copies 32 cells and five pointers, not 160. -}
+type CellMode
+    = Copy
+    | Set
+    | Chunk
+
+
+type PackMode
+    = PackSeq
+    | PackString
+    | PackCells
+
+
+type Page
+    = Joined { text : Bytes, attrs : Bytes }
+    | Flat { cells : Array Int, ends : Array Int }
+
+
+type alias Back =
+    { pages : Array Page
+    , page : Array (Array Int)
+    , head : Int
+    , limit : Int
+    , pack : PackMode
+    }
+
+
+{-| A row: one array of cells, or (CELLS=chunk) the chunks' cells kept as one
+array of five arrays. Both are `Array (Array Int)` here: an unchunked row is
+an array of one. -}
+type alias Row =
+    Array (Array Int)
+
+
+type alias Term =
+    { screen : Array Row
+    , saved : Array Row
+    , alt : Bool
+    , x : Int
+    , y : Int
+    , wrapNext : Bool
+    , top : Int
+    , bottom : Int
+    , pen : Int
+    , fg : Int
+    , bg : Int
+    , flags : Int
+    , styles : Dict Int64 Int
+    , back : Back
+    , ps : Int
+    , params : Array Int
+    , cur : Int
+    , priv : Int
+    , utf : Int
+    , need : Int
+    , replies : Array Bytes
+    , mode : CellMode
+    }
+
+
+chunkCells : Int
+chunkCells =
+    32
+
+
+blankChunk : Array Int
+blankChunk =
+    Array.repeat chunkCells blank
+
+
+{-| Made once: `Array.repeat` builds an array an element at a time. -}
+blankRow : CellMode -> Row
+blankRow mode =
+    when mode is
+        Chunk ->
+            blankChunked
+
+        _ ->
+            blankWhole
+
+
+blankChunked : Row
+blankChunked =
+    Array.repeat (cols // chunkCells) blankChunk
+
+
+blankWhole : Row
+blankWhole =
+    [ Array.repeat cols blank ]
+
+
+newTerm : CellMode -> PackMode -> Int -> Term
+newTerm mode pack scrollback =
+    { screen = Array.repeat lines (blankRow mode)
+    , saved = []
+    , alt = False
+    , x = 0
+    , y = 0
+    , wrapNext = False
+    , top = 0
+    , bottom = lines - 1
+    , pen = 0
+    , fg = 0
+    , bg = 0
+    , flags = 0
+    , styles = Dict.empty
+    , back = { pages = [], page = [], head = 0, limit = scrollback // pageRows, pack = pack }
+    , ps = 0
+    , params = []
+    , cur = 0
+    , priv = 0
+    , utf = 0
+    , need = 0
+    , replies = []
+    , mode = mode
+    }
+
+
+-- ROWS
+
+
+rowCells : Row -> Array Int
+rowCells row =
+    when row is
+        [ one ] ->
+            one
+
+        _ ->
+            Array.flatten row
+
+
+{-| Lay `cells` into the row from column `x`. -}
+rowSet : CellMode -> Int -> Array Int -> Row -> Row
+rowSet mode x cells row =
+    when mode is
+        Chunk ->
+            chunkSet x 0 cells row
+
+        Set ->
+            when cells is
+                [ c ] ->
+                    Array.map (Array.set x c) row
+
+                _ ->
+                    Array.map (Array.setMany x cells) row
+
+        Copy ->
+            Array.map (Array.setMany x cells) row
+
+
+chunkSet : Int -> Int -> Array Int -> Row -> Row
+chunkSet x from cells row =
+    let
+        n =
+            Array.length cells - from
+    in
+    if n <= 0 then
+        row
+
+    else
+        let
+            k =
+                x // chunkCells
+
+            off =
+                x - k * chunkCells
+
+            take =
+                min n (chunkCells - off)
+
+            part =
+                if from == 0 && take == Array.length cells then
+                    cells
+
+                else
+                    Array.slice from (from + take) cells
+
+            chunk =
+                Maybe.withDefault blankChunk (Array.get k row)
+
+            written =
+                if take == 1 then
+                    Array.set off (Maybe.withDefault blank (Array.get 0 part)) chunk
+
+                else
+                    Array.setMany off part chunk
+        in
+        chunkSet (x + take) (from + take) cells (Array.set k written row)
+
+
+-- THE SCROLLBACK
+
+
+{-| The length of a row less its trailing blanks. -}
+used : Array Int -> Int -> Int
+used row n =
+    if n > 0 && Bitwise.and 0x3FFFFF (Maybe.withDefault blank (Array.get (n - 1) row)) == blank then
+        used row (n - 1)
+
+    else
+        n
+
+
+pushBack : Array Int -> Back -> Back
+pushBack cells back =
+    let
+        filled =
+            Array.pushLast (Array.takeFirst (used cells cols) cells) back.page
+    in
+    if Array.length filled < pageRows then
+        { back | page = filled }
+
+    else
+        let
+            page =
+                join back.pack filled
+        in
+        if Array.length back.pages < back.limit then
+            { back | page = [], pages = Array.pushLast page back.pages }
+
+        else
+            { back
+                | page = []
+                , pages = Array.set back.head page back.pages
+                , head = modBy back.limit (back.head + 1)
+            }
+
+
+join : PackMode -> Array (Array Int) -> Page
+join pack rows =
+    when pack is
+        PackCells ->
+            Flat { cells = Array.flatten rows, ends = Array.map Array.length rows }
+
+        PackSeq ->
+            Joined
+                { text = Encode.encode (Encode.sequence (Array.mapAndFlatten (Array.map utf8) rows))
+                , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
+                }
+
+        PackString ->
+            Joined
+                { text = Bytes.fromString (String.fromArray (Array.mapAndFlatten (Array.mapAndKeepJust textChar) rows))
+                , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
+                }
+
+
+textChar : Int -> Maybe Char
+textChar cell =
+    if Bitwise.and 0x200000 cell /= 0 then
+        Nothing
+
+    else
+        Char.fromCode (Bitwise.and 0x1FFFFF cell)
+
+
+utf8 : Int -> Encode.Encoder
+utf8 cell =
+    let
+        cp =
+            Bitwise.and 0x1FFFFF cell
+
+        u8 v =
+            Encode.unsignedInt8 (UInt8.fromInt v)
+    in
+    if Bitwise.and 0x200000 cell /= 0 then
+        Encode.sequence []
+
+    else if cp < 0x80 then
+        u8 cp
+
+    else if cp < 0x800 then
+        Encode.sequence [ u8 (Bitwise.or 0xC0 (Bitwise.shiftRightZfBy 6 cp)), u8 (Bitwise.or 0x80 (Bitwise.and 0x3F cp)) ]
+
+    else if cp < 0x10000 then
+        Encode.sequence
+            [ u8 (Bitwise.or 0xE0 (Bitwise.shiftRightZfBy 12 cp))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp)))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F cp))
+            ]
+
+    else
+        Encode.sequence
+            [ u8 (Bitwise.or 0xF0 (Bitwise.shiftRightZfBy 18 cp))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 12 cp)))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp)))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F cp))
+            ]
+
+
+{-| A row's attribute runs: each run of one style as its style id and its
+length, two bytes each, after the row's length in cells. -}
+attrRuns : Array Int -> Encode.Encoder
+attrRuns cells =
+    let
+        step c acc =
+            let
+                style =
+                    Bitwise.shiftRightZfBy 22 c
+            in
+            if acc.count > 0 && style == acc.style then
+                { acc | count = acc.count + 1 }
+
+            else if acc.count > 0 then
+                { style = style, count = 1, out = Array.pushLast (run16 acc.style acc.count) acc.out }
+
+            else
+                { acc | style = style, count = 1 }
+
+        done =
+            Array.foldl step { style = 0, count = 0, out = [ Encode.unsignedInt8 (UInt8.fromInt (Array.length cells)) ] } cells
+    in
+    Encode.sequence (Array.pushLast (run16 done.style done.count) done.out)
+
+
+run16 : Int -> Int -> Encode.Encoder
+run16 style count =
+    Encode.sequence [ Encode.unsignedInt8 (UInt8.fromInt style), Encode.unsignedInt8 (UInt8.fromInt count) ]
+
+
+-- READING BYTES
+
+
+byteAt : Bytes -> Int -> Int
+byteAt bytes i =
+    when Bytes.get i bytes is
+        Just b ->
+            UInt8.toInt b
+
+        Nothing ->
+            -1
+
+
+{-| The index of the first byte at or after `i` that is not printable ASCII,
+or `stop`. -}
+asciiEnd : Bytes -> Int -> Int -> Int
+asciiEnd bytes stop i =
+    if i < stop then
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            asciiEnd bytes stop (i + 1)
+
+        else
+            i
+
+    else
+        i
+
+
+-- THE PARSER
+
+
+feed : Bytes -> Term -> Term
+feed bytes t =
+    let
+        n =
+            Bytes.length bytes
+    in
+    when t.ps is
+        1 ->
+            escape bytes n 0 { t | ps = 0 }
+
+        2 ->
+            csi bytes n 0 { t | ps = 0, params = [] } t.params t.cur t.priv
+
+        3 ->
+            skipEsc bytes n 0 { t | ps = 0 }
+
+        5 ->
+            continueUtf8 bytes n 0 t.utf t.need { t | ps = 0 }
+
+        _ ->
+            ground bytes n 0 t
+
+
+ground : Bytes -> Int -> Int -> Term -> Term
+ground bytes n i t =
+    if i >= n then
+        t
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            printAscii bytes n i t
+
+        else if b >= 0x80 then
+            printUnicode bytes n i t
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 10 || b == 11 || b == 12 then
+            ground bytes n (i + 1) (lineFeed { t | wrapNext = False })
+
+        else if b == 13 then
+            ground bytes n (i + 1) { t | x = 0, wrapNext = False }
+
+        else if b == 9 then
+            ground bytes n (i + 1) { t | x = min (cols - 1) ((t.x // 8 + 1) * 8) }
+
+        else if b == 8 then
+            ground bytes n (i + 1) { t | x = max 0 (t.x - 1), wrapNext = False }
+
+        else
+            ground bytes n (i + 1) t
+
+
+{-| Wrap first if the last write left the cursor past the end. -}
+wrapped : Term -> Term
+wrapped t =
+    if t.wrapNext then
+        lineFeed { t | x = 0, wrapNext = False }
+
+    else
+        t
+
+
+{-| Lay `cells` into the cursor's row and move past them. -}
+put : Array Int -> Term -> Term
+put cells t =
+    let
+        row =
+            Maybe.withDefault (blankRow t.mode) (Array.get t.y t.screen)
+
+        x =
+            t.x + Array.length cells
+    in
+    { t
+        | screen = Array.set t.y (rowSet t.mode t.x cells row) t.screen
+        , x = min (cols - 1) x
+        , wrapNext = x >= cols
+    }
+
+
+printAscii : Bytes -> Int -> Int -> Term -> Term
+printAscii bytes n i t0 =
+    let
+        t =
+            wrapped t0
+
+        end =
+            asciiEnd bytes (min n (i + cols - t.x)) i
+
+        style =
+            Bitwise.shiftLeftBy 22 t.pen
+    in
+    ground bytes n end (put (Array.initialize (end - i) i (\k -> Bitwise.or style (byteAt bytes k))) t)
+
+
+{-| A run of UTF-8, decoded until a byte below 0x20, the row's end or a
+sequence the read cut short. ASCII inside it stays in the run. -}
+printUnicode : Bytes -> Int -> Int -> Term -> Term
+printUnicode bytes n i t0 =
+    let
+        t =
+            wrapped t0
+
+        style =
+            Bitwise.shiftLeftBy 22 t.pen
+
+        r =
+            decodeRun bytes n i style (cols - t.x) []
+
+        t1 =
+            if Array.isEmpty r.cells then
+                t
+
+            else
+                put r.cells t
+    in
+    if r.cut > 0 then
+        { t1 | ps = 5, utf = r.cp, need = r.cut }
+
+    else if r.wide then
+        -- a wide character that does not fit: wrap, and go on
+        ground bytes n r.next { t1 | wrapNext = True }
+
+    else
+        ground bytes n r.next t1
+
+
+type alias Run =
+    { cells : Array Int, next : Int, cut : Int, cp : Int, wide : Bool }
+
+
+decodeRun : Bytes -> Int -> Int -> Int -> Int -> Array Int -> Run
+decodeRun bytes n i style room cells =
+    if i >= n || room <= 0 then
+        { cells = cells, next = i, cut = 0, cp = 0, wide = False }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b < 0x20 || b == 0x7F then
+            { cells = cells, next = i, cut = 0, cp = 0, wide = False }
+
+        else if b < 0x80 then
+            decodeRun bytes n (i + 1) style (room - 1) (Array.pushLast (Bitwise.or style b) cells)
+
+        else
+            let
+                len =
+                    if b >= 0xF0 then
+                        4
+
+                    else if b >= 0xE0 then
+                        3
+
+                    else if b >= 0xC0 then
+                        2
+
+                    else
+                        1
+
+                lead =
+                    if len == 4 then
+                        Bitwise.and b 0x07
+
+                    else if len == 3 then
+                        Bitwise.and b 0x0F
+
+                    else if len == 2 then
+                        Bitwise.and b 0x1F
+
+                    else
+                        0xFFFD
+            in
+            if i + len > n then
+                { cells = cells, next = n, cut = len - 1 - (n - i - 1), cp = cont bytes (i + 1) n lead, wide = False }
+
+            else
+                let
+                    cp =
+                        cont bytes (i + 1) (i + len) lead
+
+                    w =
+                        Width.width cp
+                in
+                if w == 0 then
+                    decodeRun bytes n (i + len) style room cells
+
+                else if w == 2 then
+                    if room < 2 then
+                        { cells = cells, next = i, cut = 0, cp = 0, wide = True }
+
+                    else
+                        decodeRun bytes n (i + len) style (room - 2) (Array.pushLast (Bitwise.or (Bitwise.or style 0x200000) cp) (Array.pushLast (Bitwise.or style cp) cells))
+
+                else
+                    decodeRun bytes n (i + len) style (room - 1) (Array.pushLast (Bitwise.or style cp) cells)
+
+
+cont : Bytes -> Int -> Int -> Int -> Int
+cont bytes i stop acc =
+    if i < stop then
+        cont bytes (i + 1) stop (Bitwise.or (Bitwise.shiftLeftBy 6 acc) (Bitwise.and 0x3F (byteAt bytes i)))
+
+    else
+        acc
+
+
+continueUtf8 : Bytes -> Int -> Int -> Int -> Int -> Term -> Term
+continueUtf8 bytes n i acc need t =
+    if need <= 0 then
+        let
+            style =
+                Bitwise.shiftLeftBy 22 t.pen
+
+            w =
+                Width.width acc
+
+            t1 =
+                wrapped t
+        in
+        if w == 0 then
+            ground bytes n i t1
+
+        else if w == 2 then
+            ground bytes n i (put [ Bitwise.or style acc, Bitwise.or (Bitwise.or style 0x200000) acc ] t1)
+
+        else
+            ground bytes n i (put [ Bitwise.or style acc ] t1)
+
+    else if i >= n then
+        { t | ps = 5, utf = acc, need = need }
+
+    else
+        continueUtf8 bytes n (i + 1) (Bitwise.or (Bitwise.shiftLeftBy 6 acc) (Bitwise.and 0x3F (byteAt bytes i))) (need - 1) t
+
+
+escape : Bytes -> Int -> Int -> Term -> Term
+escape bytes n i t =
+    if i >= n then
+        { t | ps = 1 }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 0x5B then
+            csi bytes n (i + 1) t [] 0 0
+
+        else if b == 0x5D then
+            skipEsc bytes n (i + 1) t
+
+        else if b == 0x4D then
+            ground bytes n (i + 1) (reverseIndex t)
+
+        else if b == 0x44 then
+            ground bytes n (i + 1) (lineFeed t)
+
+        else if b == 0x45 then
+            ground bytes n (i + 1) (lineFeed { t | x = 0 })
+
+        else if b >= 0x20 && b < 0x30 then
+            -- a charset designation: its final byte is skipped
+            ground bytes n (i + 2) t
+
+        else
+            ground bytes n (i + 1) t
+
+
+{-| An OSC or a string, skipped to BEL or ST. -}
+skipEsc : Bytes -> Int -> Int -> Term -> Term
+skipEsc bytes n i t =
+    if i >= n then
+        { t | ps = 3 }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 7 then
+            ground bytes n (i + 1) t
+
+        else if b == 0x1B then
+            ground bytes n (i + 2) t
+
+        else
+            skipEsc bytes n (i + 1) t
+
+
+csi : Bytes -> Int -> Int -> Term -> Array Int -> Int -> Int -> Term
+csi bytes n i t params cur priv =
+    if i >= n then
+        { t | ps = 2, params = params, cur = cur, priv = priv }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x30 && b <= 0x39 then
+            csi bytes n (i + 1) t params (min 65535 (cur * 10 + b - 0x30)) priv
+
+        else if b == 0x3B || b == 0x3A then
+            csi bytes n (i + 1) t (if Array.length params < 32 then Array.pushLast cur params else params) 0 priv
+
+        else if b >= 0x3C && b <= 0x3F then
+            csi bytes n (i + 1) t params cur b
+
+        else if b >= 0x20 && b < 0x30 then
+            csi bytes n (i + 1) t params cur priv
+
+        else if b >= 0x40 && b <= 0x7E then
+            ground bytes n (i + 1) (dispatch b priv (Array.pushLast cur params) t)
+
+        else
+            ground bytes n (i + 1) t
+
+
+param : Int -> Int -> Array Int -> Int
+param k default params =
+    when Array.get k params is
+        Just 0 ->
+            default
+
+        Just v ->
+            v
+
+        Nothing ->
+            default
+
+
+dispatch : Int -> Int -> Array Int -> Term -> Term
+dispatch final priv params t =
+    if priv == 0x3F then
+        if final == 0x68 && param 0 0 params == 1049 then
+            if t.alt then
+                t
+
+            else
+                { t | alt = True, saved = t.screen, screen = Array.repeat lines (blankRow t.mode) }
+
+        else if final == 0x6C && param 0 0 params == 1049 then
+            if t.alt then
+                { t | alt = False, screen = t.saved, saved = [] }
+
+            else
+                t
+
+        else
+            t
+
+    else if final == 0x6D then
+        sgr params 0 t
+
+    else if final == 0x48 || final == 0x66 then
+        { t | y = clamp 0 (lines - 1) (param 0 1 params - 1), x = clamp 0 (cols - 1) (param 1 1 params - 1), wrapNext = False }
+
+    else if final == 0x41 then
+        { t | y = max t.top (t.y - param 0 1 params), wrapNext = False }
+
+    else if final == 0x42 then
+        { t | y = min t.bottom (t.y + param 0 1 params), wrapNext = False }
+
+    else if final == 0x43 then
+        { t | x = min (cols - 1) (t.x + param 0 1 params), wrapNext = False }
+
+    else if final == 0x44 then
+        { t | x = max 0 (t.x - param 0 1 params), wrapNext = False }
+
+    else if final == 0x47 then
+        { t | x = clamp 0 (cols - 1) (param 0 1 params - 1), wrapNext = False }
+
+    else if final == 0x64 then
+        { t | y = clamp 0 (lines - 1) (param 0 1 params - 1), wrapNext = False }
+
+    else if final == 0x4A then
+        eraseDisplay (param 0 0 params) t
+
+    else if final == 0x4B then
+        eraseLine (param 0 0 params) t
+
+    else if final == 0x72 then
+        let
+            top =
+                param 0 1 params - 1
+
+            bottom =
+                param 1 lines params - 1
+        in
+        if top < bottom && bottom < lines then
+            { t | top = top, bottom = bottom, x = 0, y = 0, wrapNext = False }
+
+        else
+            t
+
+    else if final == 0x53 then
+        scrollUp (param 0 1 params) t
+
+    else if final == 0x54 then
+        scrollDown (param 0 1 params) t
+
+    else if final == 0x4C then
+        if t.y >= t.top && t.y <= t.bottom then
+            scrollDown (param 0 1 params) { t | top = t.y } |> (\s -> { s | top = t.top })
+
+        else
+            t
+
+    else if final == 0x4D then
+        if t.y >= t.top && t.y <= t.bottom then
+            regionUp (param 0 1 params) t.y t.bottom t
+
+        else
+            t
+
+    else if final == 0x6E && param 0 0 params == 6 then
+        { t | replies = Array.pushLast (Bytes.fromString ("\u{001B}[" ++ String.fromInt (t.y + 1) ++ ";" ++ String.fromInt (t.x + 1) ++ "R")) t.replies }
+
+    else
+        t
+
+
+-- STYLES
+
+
+sgr : Array Int -> Int -> Term -> Term
+sgr params k t =
+    if k >= Array.length params then
+        intern t
+
+    else
+        let
+            p =
+                Maybe.withDefault 0 (Array.get k params)
+        in
+        if p == 0 then
+            sgr params (k + 1) { t | fg = 0, bg = 0, flags = 0 }
+
+        else if p < 10 then
+            sgr params (k + 1) { t | flags = Bitwise.or t.flags (Bitwise.shiftLeftBy p 1) }
+
+        else if p >= 22 && p <= 29 then
+            sgr params (k + 1) { t | flags = Bitwise.and t.flags (Bitwise.complement (Bitwise.shiftLeftBy (p - 20) 1)) }
+
+        else if p >= 30 && p <= 37 then
+            sgr params (k + 1) { t | fg = p - 30 + 1 }
+
+        else if p == 38 || p == 48 then
+            let
+                kind =
+                    Maybe.withDefault 0 (Array.get (k + 1) params)
+
+                v1 =
+                    Maybe.withDefault 0 (Array.get (k + 2) params)
+
+                colour =
+                    if kind == 5 then
+                        Bitwise.and 0xFF v1 + 1
+
+                    else
+                        Bitwise.or 0x1000000
+                            (Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0xFF v1))
+                                (Bitwise.or (Bitwise.shiftLeftBy 8 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (k + 3) params))))
+                                    (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (k + 4) params)))
+                                )
+                            )
+
+                skip =
+                    if kind == 5 then
+                        3
+
+                    else
+                        5
+            in
+            if p == 38 then
+                sgr params (k + skip) { t | fg = colour }
+
+            else
+                sgr params (k + skip) { t | bg = colour }
+
+        else if p == 39 then
+            sgr params (k + 1) { t | fg = 0 }
+
+        else if p >= 40 && p <= 47 then
+            sgr params (k + 1) { t | bg = p - 40 + 1 }
+
+        else if p == 49 then
+            sgr params (k + 1) { t | bg = 0 }
+
+        else if p >= 90 && p <= 97 then
+            sgr params (k + 1) { t | fg = p - 90 + 9 }
+
+        else if p >= 100 && p <= 107 then
+            sgr params (k + 1) { t | bg = p - 100 + 9 }
+
+        else
+            sgr params (k + 1) t
+
+
+{-| The pen's style id, from the table, adding the style if it is new. -}
+intern : Term -> Term
+intern t =
+    let
+        key =
+            Bitwise.or (Bitwise.shiftLeftBy 39 (Int64.fromInt t.flags))
+                (Bitwise.or (Bitwise.shiftLeftBy 25 (Int64.fromInt t.fg)) (Int64.fromInt t.bg))
+    in
+    when Dict.get key t.styles is
+        Just id ->
+            { t | pen = id }
+
+        Nothing ->
+            let
+                id =
+                    modBy 1024 (Dict.count t.styles)
+            in
+            { t | pen = id, styles = Dict.set key id t.styles }
+
+
+-- SCROLLING AND ERASING
+
+
+{-| The pieces end to end, by `prepend`, which copies each with one
+`memcpy`: `Array.flatten` pushes them an element at a time. -}
+cat : Array (Array a) -> Array a
+cat pieces =
+    Array.foldr Array.prepend [] pieces
+
+
+lineFeed : Term -> Term
+lineFeed t =
+    if t.y == t.bottom then
+        scrollUp 1 t
+
+    else if t.y < lines - 1 then
+        { t | y = t.y + 1 }
+
+    else
+        t
+
+
+reverseIndex : Term -> Term
+reverseIndex t =
+    if t.y == t.top then
+        scrollDown 1 t
+
+    else if t.y > 0 then
+        { t | y = t.y - 1 }
+
+    else
+        t
+
+
+scrollUp : Int -> Term -> Term
+scrollUp count t =
+    regionUp count t.top t.bottom t
+
+
+{-| Rows `top` to `bottom` move up `count`; blank rows come in at the bottom.
+On the main screen, with the region starting at the top, the rows that leave go
+to the scrollback. -}
+regionUp : Int -> Int -> Int -> Term -> Term
+regionUp count top bottom t =
+    let
+        k =
+            min count (bottom - top + 1)
+
+        back =
+            if not t.alt && top == 0 && t.back.limit > 0 then
+                Array.foldl (\row b -> pushBack (rowCells row) b) t.back (Array.slice 0 k t.screen)
+
+            else
+                t.back
+
+        screen =
+            cat
+                [ Array.slice 0 top t.screen
+                , Array.slice (top + k) (bottom + 1) t.screen
+                , Array.repeat k (blankRow t.mode)
+                , Array.slice (bottom + 1) lines t.screen
+                ]
+    in
+    { t | screen = screen, back = back }
+
+
+scrollDown : Int -> Term -> Term
+scrollDown count t =
+    let
+        k =
+            min count (t.bottom - t.top + 1)
+
+        screen =
+            cat
+                [ Array.slice 0 t.top t.screen
+                , Array.repeat k (blankRow t.mode)
+                , Array.slice t.top (t.bottom + 1 - k) t.screen
+                , Array.slice (t.bottom + 1) lines t.screen
+                ]
+    in
+    { t | screen = screen }
+
+
+eraseDisplay : Int -> Term -> Term
+eraseDisplay how t =
+    let
+        b =
+            blankRow t.mode
+
+        line =
+            eraseLine how t
+
+        screen =
+            if how == 2 || how == 3 then
+                Array.repeat lines b
+
+            else if how == 1 then
+                cat [ Array.repeat t.y b, Array.slice t.y lines line.screen ]
+
+            else
+                cat [ Array.slice 0 (t.y + 1) line.screen, Array.repeat (lines - t.y - 1) b ]
+    in
+    { t | screen = screen }
+
+
+eraseLine : Int -> Term -> Term
+eraseLine how t =
+    let
+        from =
+            if how == 0 then
+                t.x
+
+            else
+                0
+
+        to =
+            if how == 1 then
+                t.x + 1
+
+            else
+                cols
+
+        row =
+            Maybe.withDefault (blankRow t.mode) (Array.get t.y t.screen)
+    in
+    if to <= from then
+        t
+
+    else
+        { t | screen = Array.set t.y (rowSet t.mode from (Array.repeat (to - from) blank) row) t.screen }
+
+
+-- RUNNING IT
+
+
+checksum : Term -> Int
+checksum t =
+    Array.foldl (\row sum -> Array.foldl (\c s -> Bitwise.xor (s * 31) c) sum (rowCells row)) (Array.length t.back.pages) t.screen
+
+
+feedAll : Bytes -> Int -> Term -> Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + readSize) (feed (Bytes.slice at (at + readSize) bytes) t)
+
+
+setting : String -> String -> Dict String String -> String
+setting name default env =
+    Maybe.withDefault default (Dict.get name env)
+
+
+main : Task Never {}
+main =
+    Task.map3 (\e env perm -> { args = e.argsAsBytes, env = env, perm = perm }) Os.Env.getEnvironment Os.Env.getEnvironmentVariables Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                let
+                    path =
+                        Maybe.withDefault Bytes.empty (Array.get 0 s.args)
+
+                    mode =
+                        when setting "CELLS" "set" s.env is
+                            "copy" ->
+                                Copy
+
+                            "chunk" ->
+                                Chunk
+
+                            _ ->
+                                Set
+
+                    pack =
+                        when setting "PACK" "string" s.env is
+                            "seq" ->
+                                PackSeq
+
+                            "cells" ->
+                                PackCells
+
+                            _ ->
+                                PackString
+
+                    scrollback =
+                        Maybe.withDefault 100000 (String.toInt (setting "SCROLLBACK" "100000" s.env))
+                in
+                Os.File.readFile s.perm (Os.Path.fromBytes path)
+                    |> Task.andThen
+                        (\bytes ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            t =
+                                                feedAll bytes 0 (newTerm mode pack scrollback)
+                                        in
+                                        Time.monotonic
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    Console.write
+                                                        (String.fromInt (Bytes.length bytes)
+                                                            ++ " bytes in "
+                                                            ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                            ++ " ms; pages "
+                                                            ++ String.fromInt (Array.length t.back.pages)
+                                                            ++ ", styles "
+                                                            ++ String.fromInt (Dict.count t.styles)
+                                                            ++ ", replies "
+                                                            ++ String.fromInt (Array.length t.replies)
+                                                            ++ ", checksum "
+                                                            ++ String.fromInt (checksum t)
+                                                            ++ "\n"
+                                                        )
+                                                )
+                                    )
+                        )
+                    |> Task.onError (\_ -> Console.write "cannot read the file\n")
+            )

@@ -1,0 +1,98 @@
+module Case exposing (results)
+
+{-| A `Builder` is a value: reading one after another builder was made from it
+answers what it held, as reading an `Array` does, and an `Array` that
+`toArray` handed out never changes.
+
+Natively a write to the builder the call before answered is in place, and the
+handle it was given is marked as passed on, so that a later *write* to that
+handle copies; but the handle still points at the buffer, so a later *read*
+of it saw the newer write, and so did an array handed out by `toArray` before
+it (visiterm's phase 1 survey, which wanted a builder as a terminal's screen).
+Each row makes the older value, then the newer one from it, and reads the
+older after the newer exists: the arguments of `after` are evaluated before
+its body.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+
+
+ints : Array Int -> String
+ints array =
+    "[" ++ String.join "," (Array.map String.fromInt array) ++ "]"
+
+
+cell : Maybe Int -> String
+cell m =
+    when m is
+        Just v ->
+            String.fromInt v
+
+        Nothing ->
+            "Nothing"
+
+
+pushed : Builder Int
+pushed =
+    Builder.pushLast 3 (Builder.pushLast 2 (Builder.pushLast 1 (Builder.empty 4)))
+
+
+{-| The older value read, then the newer. -}
+after : Builder Int -> Builder Int -> String
+after newer older =
+    "older " ++ ints (Builder.toArray older) ++ ", newer " ++ ints (Builder.toArray newer)
+
+
+results : Array { name : String, value : String }
+results =
+    [ { name = "set, then the builder it was set on read"
+      , value = after (Builder.set 0 9 pushed) pushed
+      }
+    , { name = "set, then the builder it was set on read by get"
+      , value =
+            (\newer older -> cell (Builder.get 0 older) ++ " " ++ cell (Builder.get 0 newer))
+                (Builder.set 0 9 pushed)
+                pushed
+      }
+    , { name = "toArray, then a set on the same builder"
+      , value =
+            (\frozen newer -> "frozen " ++ ints frozen ++ ", newer " ++ ints (Builder.toArray newer))
+                (Builder.toArray pushed)
+                (Builder.set 1 7 pushed)
+      }
+    , { name = "a set, then toArray of the builder it was set on"
+      , value =
+            (\newer frozen -> "frozen " ++ ints frozen ++ ", newer " ++ ints (Builder.toArray newer))
+                (Builder.set 1 7 pushed)
+                (Builder.toArray pushed)
+      }
+    , { name = "a push, then a push onto the builder it was pushed on"
+      , value =
+            (\first second -> ints (Builder.toArray first) ++ " " ++ ints (Builder.toArray second))
+                (Builder.pushLast 4 pushed)
+                (Builder.pushLast 5 pushed)
+      }
+    , { name = "a builder inside a builder, the inner one set and read through the outer's older value"
+      , value =
+            let
+                outer =
+                    Builder.pushLast pushed (Builder.empty 1)
+            in
+            (\newer older ->
+                when { o = Builder.get 0 older, n = Builder.get 0 newer } is
+                    { o = Just o, n = Just n } ->
+                        "older " ++ ints (Builder.toArray o) ++ ", newer " ++ ints (Builder.toArray n)
+
+                    _ ->
+                        "missing"
+            )
+                (when Builder.get 0 outer is
+                    Just inner ->
+                        Builder.set 0 (Builder.set 2 8 inner) outer
+
+                    Nothing ->
+                        outer
+                )
+                outer
+      }
+    ]
