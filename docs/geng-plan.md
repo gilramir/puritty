@@ -1,6 +1,6 @@
 # Plan: visiterm for Linux, written in Geng
 
-Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Nothing is built.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0's G1, G8, G6 and G2 are built in geng-lang; nothing of visiterm itself is yet.** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -416,9 +416,14 @@ gates, committed at the same checkpoint as the visiterm side.
 
 1. G1: package link declarations and the library source decision. **Built
    2026-10-23** (geng-lang D890–D892).
-2. G8: prototype headers for C rows.
-3. G6: monotonic clock in `core`.
-4. G2: signals as events.
+2. G8: prototype headers for C rows. **Built 2026-10-23** (geng-lang D893).
+3. G6: monotonic clock in `core`. **Built 2026-10-23** (geng-lang D894:
+   `Time.monotonic`, a `Duration` of whole milliseconds).
+4. G2: signals as events. **Built 2026-10-23** (geng-lang D895, D896:
+   `Os.Signal`). `probes/geng/signal` showed that a row alone could not do
+   it: the runtime's second thread took the signal and the program died, 20
+   runs of 20, so the runtime now blocks every signal on that thread. The
+   PTY spawn must give its child an empty signal mask, as `Os.Process` does.
 5. G5: answering from another thread.
 6. G7: measure GC pauses on a visiterm-shaped heap.
 7. Measure the reference terminals' throughput on the same inputs (vtebench-style
