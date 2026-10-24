@@ -1,6 +1,7 @@
 # Phase 1 · The headless core: a survey
 
-Status: **survey, 2026-10-24, before any of the core is written.** Phase 1 of
+Status: **survey, 2026-10-24, before any of the core is written; Gilbert took
+every leaning of §8 the same day, and the stale read is fixed (§9).** Phase 1 of
 [`geng-plan.md`](geng-plan.md) §6 starts here, as every phase does, by
 measuring before building. What it measured is how the core's state can be
 kept in Geng and what each way costs against D902's budget (`geng-plan.md`
@@ -329,3 +330,33 @@ pane's policy.
 `repeat`, `initialize`, `flatten` and code-point encoder; `Unicode.Grapheme`
 exposed; this survey's builder probe measured again; then the core itself,
 designed with the oracle and esctest2 harnesses from the start.
+
+---
+
+## 9. Gilbert's answers, and the stale read fixed (2026-10-24)
+
+Gilbert took every leaning of §8: geng-lang D903 (the stale read, by the
+record in the old handle), D904 (G4 is the builder, with a run write, a fill
+and a block move), D905 (`core`'s faster `repeat`, `initialize`, `flatten`
+and a code-point encoder), D906 (`Unicode.Grapheme` exposed), D907 (D902
+stays the bar); and question 5, the cell's width, is decided in the core's
+design by measurement.
+
+D903 is built (geng-lang `m4-visiterm.md` §VA10). `builder-stale`'s case is
+in geng-lang's corpus as `accept/builder-stale`, with seven rows more, and
+passes on every fork target. It was not one more store a write: an older
+handle's record keeps what follows it alive, which a generational,
+conservative collector turns into promoting every handle a loop makes unless
+the chains are bounded, and the bounds and the larger handle cost the builder
+screen this, on the three inputs whose files were kept (5 runs, least and
+most):
+
+| ms | budget | builders before D903, measured again | builders, D903 |
+|---|---:|---:|---:|
+| `ls` | 195 | 260–275 | 323–340 |
+| `cup` | 85 | 144–153 | 183–189 |
+| `gitlog` | 239 | 317–337 | 376–394 |
+
+The ten vtebench inputs were not kept and are not measured again here; D907's
+measurement after D904 and D905 takes all thirteen.
+
