@@ -428,3 +428,32 @@ where the first machine gave 3.0–3.7 and 3.0. Marking is still serial
 are larger than §VA7.7's (packed, 4 panes, 188 MB where 148; pages 68 where
 60), which was not looked into.
 
+
+---
+
+## 11. D904 and D905 built (2026-10-24)
+
+geng-lang `m4-visiterm.md` §VA11. `Array.Builder` has `setMany`, `fill` and
+`copyWithin`, each one call and one builder, `append` is one call, and
+`Array.repeat`, `initialize` and `flatten` each make their array in one call;
+`Bytes.fromCodePoints` encodes an `Array Int` of code points as UTF-8, or
+answers the index of the first that is not a scalar value (D909). A run
+written in place keeps the run it replaced, so an older builder still reads
+what it held.
+
+What it means for the core, from geng-lang's `bench/builder-runs` (natively,
+ns an element, the element-at-a-time way first): an erase in line is
+2.0 → 0.18, a 25-row region scrolled 3.2 → 0.5 a row, a blank row made with
+`repeat` 3.3 → 0.11, and a 160-cell line packed through `fromCodePoints`
+10.4 → 0.86 a cell, where §3's `string` pages went through `String`.
+
+What it does not change: **a printable run**. Made with `Array.initialize`
+and written with one `setMany`, a run of 40 cells costs 2.3 ns a cell
+against 2.1 for a `set` a cell, and a run of 8 is slower, since making each
+cell through `initialize`'s function costs most of what the `set` did. The
+probe's text should stay a `set` a cell; geng-lang registers a write from a
+function as what would take the call out.
+
+D907 is next: the builder probe rewritten on `fill`, `copyWithin` and
+`repeat`, and the scrollback's pages on `fromCodePoints`, measured on all
+thirteen inputs against this machine's budget.
