@@ -360,3 +360,71 @@ most):
 The ten vtebench inputs were not kept and are not measured again here; D907's
 measurement after D904 and D905 takes all thirteen.
 
+---
+
+## 10. On the second machine (2026-10-24)
+
+Development moved to a Ryzen 9 9950X the same day, and `geng-plan.md` §1.4
+measures the reference terminals and D902's budget again there. The two
+probe cores, built on geng-lang `d027d333` and the fork at `d0f892f2` (D903
+built), `run.sh` over all thirteen inputs, five runs, least and most; the
+immutable one with `CELLS=set PACK=cells`, as §3's tables (its default,
+`PACK=string`, is slower on the scrolling inputs: `ls` 552–556):
+
+| ms | budget here | immutable (`set`) | builders, D903 | builders ÷ budget |
+|---|---:|---:|---:|---:|
+| `ls` | 124 | 264–272 | 203–205 | 1.7 |
+| `cup` | 56 | 189–213 | 129–135 | 2.4 |
+| `gitlog` | 132 | 371–380 | 248–252 | 1.9 |
+| vte-cursor_motion | 28 | 92–94 | 62–64 | 2.3 |
+| vte-dense_cells | 28 | 74–76 | 61–63 | 2.3 |
+| vte-light_cells | 24 | 38–41 | 36–37 | 1.5 |
+| vte-scrolling | 42 | 762–774 | 254–256 | 6.1 |
+| vte-scrolling_bottom_region | 37 | 329–335 | 195–197 | 5.3 |
+| vte-scrolling_bottom_small_region | 132 | 411–418 | 858–870 | 6.6 |
+| vte-scrolling_fullscreen | 45 | 71–74 | 62–67 | 1.5 |
+| vte-scrolling_top_region | 223 | 318–323 | **194–200** | 0.9 |
+| vte-scrolling_top_small_region | 125 | 326–331 | 866–875 | 7.0 |
+| vte-unicode | 25 | 75–77 | 59 | 2.4 |
+
+- **Builders meet the budget on one input here**, `scrolling_top_region`.
+  `light_cells`, which they met on the first machine before D903, is 1.5×
+  over: Alacritty's core gained more from the machine (39 → 24 ms) than the
+  probe did.
+- **On the three inputs §9 measured, the builder screen's distance from the
+  budget is about what it was**: `ls` 1.7× (1.7× on the first machine with
+  D903), `cup` 2.4× (2.2×), `gitlog` 1.9× (1.6×). The machine does not change
+  what D904 and D905 have to win.
+- The immutable screen is 1.4–18× over, as §3 found.
+
+`core-ops` (three runs, 10,000,000 each; D903 built, where §3's table was
+before it):
+
+| operation | ns |
+|---|---:|
+| `Array.set` into a 160-cell row | 10.0–12.4 |
+| `Array.set` into a 50-row screen | 7.6–7.7 |
+| a cell through both, as a grid write is | 20.5 |
+| `Array.Builder.set` into a 160-cell row | 3.3–3.4 |
+| a cell through a builder of row builders | 7.9–8.0 |
+| a record of 22 fields, one updated | 2.0–2.1 |
+
+A cell on immutable rows is 20 ns here before any parsing; Alacritty's core
+takes 28 ns for the CUP and the cell together.
+
+**G7's pauses** (`gcpause/run.py`, the ring, three runs each), the longest
+pause in the `cat`, with the heap at the run's longest full collection:
+
+| | longest pause | heap | peak RSS | the `cat` |
+|---|---:|---:|---:|---:|
+| packed rows, 1 pane | 4.8–5.1 ms | 84 MB | 99–100 MB | 4.88–4.92 s |
+| packed rows, 4 panes | 12.1–12.3 | 188 | 212 | 4.98–5.03 |
+| **joined pages, 4 panes** | **1.3–1.9** | **68** | **80** | 4.83–4.84 |
+| **joined pages, 8 panes** | **1.7** | **124** | **137–138** | 4.81–4.84 |
+
+D901's joined pages are under half the 4 ms goal at four and at eight panes,
+where the first machine gave 3.0–3.7 and 3.0. Marking is still serial
+(`GC_set_markers_count(1)`), so this is the machine's speed alone. The heaps
+are larger than §VA7.7's (packed, 4 panes, 188 MB where 148; pages 68 where
+60), which was not looked into.
+

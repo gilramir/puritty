@@ -290,6 +290,100 @@ waits for, but it is the probe's, not the core's: phase 1 measures the real
 core's cell write before G4 or an in-place update of a row in its grid is
 decided (geng-lang `m4-visiterm.md` §VA8).
 
+**Development moved to a second machine the same day (§1.4), and the budget
+is measured again there**: its rule is the same, its numbers are §1.4's, and
+from here on a probe is held to the budget measured on the machine the probe
+ran on.
+
+### 1.4 The same measurements on the second machine, 2026-10-24
+
+Development moved to an AMD Ryzen 9 9950X, 16 cores, 32 threads, 60 GB, Linux
+Mint 22.3 with kernel 7.0.0, the `powersave` governor with
+`balance_performance` (Gilbert's choice, kept for now), idle. The programs
+come from the same nixpkgs commit; geng-lang at `d027d333`, the fork at
+`d0f892f2`, which is D903 built. Every script ran as in §1.2 except that
+`terminals.sh` now gives the terminals no session bus: Ghostty's GTK waited
+on desktop portals that never answered here until its window came up after
+`inside.sh` had stopped waiting for 160×50.
+
+**Headless** (`cores.sh`, the mean of 10 runs):
+
+| ms | Ghostty, 10 KB | Ghostty, 50 MB | Alacritty, 10,000 lines | Alacritty, 100,000 |
+|---|---:|---:|---:|---:|
+| `ls` | 32 | 47 | 124 | 202 |
+| `cup` | 51 | 51 | 56 | 56 |
+| `gitlog` | 60 | 84 | 132 | 261 |
+| vte-cursor_motion | 22 | 22 | 28 | 28 |
+| vte-dense_cells | 40 | 39 | 28 | 28 |
+| vte-light_cells | 3 | 3 | 24 | 25 |
+| vte-scrolling | 69 | 143 | 42 | 119 |
+| vte-scrolling_bottom_region | 66 | 66 | 37 | 38 |
+| vte-scrolling_bottom_small_region | 65 | 66 | 132 | 132 |
+| vte-scrolling_fullscreen | 4 | 13 | 45 | 67 |
+| vte-scrolling_top_region | 66 | 67 | 223 | 225 |
+| vte-scrolling_top_small_region | 65 | 65 | 125 | 126 |
+| vte-unicode | 5 | 5 | 25 | 25 |
+
+Alacritty's core is 1.3–1.8× faster than on the first machine (`ls` 195 →
+124, `gitlog` 239 → 132, `cup` 85 → 56); what §1.2 says of the two cores still
+holds.
+
+**So D902's budget on this machine** is the Alacritty, 10,000 lines column:
+
+| input | budget | | input | budget |
+|---|---:|---|---|---:|
+| `ls` | 124 ms (196 MB/s) | | vte-scrolling | 42 ms |
+| `cup` | 56 ms (28 ns a cell) | | vte-scrolling_bottom_region | 37 ms |
+| `gitlog` | 132 ms (195 MB/s) | | vte-scrolling_bottom_small_region | 132 ms |
+| vte-cursor_motion | 28 ms | | vte-scrolling_fullscreen | 45 ms |
+| vte-dense_cells | 28 ms | | vte-scrolling_top_region | 223 ms |
+| vte-light_cells | 24 ms | | vte-scrolling_top_small_region | 125 ms |
+| vte-unicode | 25 ms | | | |
+
+**In a terminal** (`terminals.sh`, three `cat`s each; Ghostty run on its own
+after the other three, the first time it ran never reaching 160×50):
+
+| ms, three runs | `ls` | `cup` | `gitlog` |
+|---|---:|---:|---:|
+| **Alacritty** | **152–181** | **69–76** | **188–204** |
+| Ghostty | 210–243 | 129–138 | 299–318 |
+| st | 259–269 | 158–162 | 366–367 |
+| xterm | 330–337 | 1,537–1,543 | 529–546 |
+| no terminal: a reader that discards (`pty.py`, five runs) | 88–118 | 20–33 | 183–187 |
+| the same, the pty in raw mode | 24–33 | 19–25 | 25–32 |
+
+Alacritty is still the fastest. Ghostty is now faster than st on all three,
+where on the first machine it was slower than st on all three; whether that
+is the machine or the session bus Ghostty no longer waits on was not
+separated. The cooked pty is still most of a `cat`: 88–118 ms of `ls` and
+183–187 of `gitlog`, against Alacritty's 152–181 and 188–204.
+
+vtebench, the median ms a sample and the number of samples:
+
+| benchmark | Alacritty | Ghostty | xterm | st |
+|---|---:|---:|---:|---:|
+| cursor_motion | **4** (2,164) | 8 (1,190) | 118 (85) | 10 (954) |
+| dense_cells | **4** (2,260) | 12 (812) | 54 (183) | 22 (459)¹ |
+| light_cells | **3** (2,665) | 6 (1,495) | 82 (122) | 9 (1,078) |
+| scrolling | **115** (87) | 146 (69) | 210 (48) | 155 (65) |
+| scrolling_bottom_region | **118** (85) | 144 (71) | 148 (68) | 155 (65) |
+| scrolling_bottom_small_region | **120** (84) | 147 (69) | 148 (68) | 153 (66) |
+| scrolling_fullscreen | **9** (1,013) | 11 (925) | 16 (604) | 12 (823) |
+| scrolling_top_region | **115** (87) | 146 (70) | 146 (69) | 151 (66) |
+| scrolling_top_small_region | **112** (90) | 146 (70) | 147 (69) | 152 (66) |
+| unicode | **4** (2,383) | 7 (1,190) | 170 (59) | 6 (318) |
+
+¹ As in §1.2: st wrote 497 MB of rejected colour indices to its log in the run.
+
+**The Geng probes on this machine**, against this budget:
+
+- §1's grid probe (five runs): `ls` 132–148 ms against 124, over where it was
+  under on the first machine (152 against 195); `cup` 149–151 against 56,
+  2.7× over, as it was 2.6×. Alacritty's core gained more from the machine
+  than the probe did on `ls` (0.64× its time against 0.87×).
+- Phase 1's two cores, `core`'s cell operations and G7's pauses are in
+  `phase1-core.md` §10.
+
 ---
 
 ## 2. What the design asks of a language, and what Geng gives

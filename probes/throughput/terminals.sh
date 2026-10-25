@@ -20,6 +20,9 @@ export LD_LIBRARY_PATH=$MESA/lib LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 export FONTCONFIG_FILE=/etc/fonts/fonts.conf
 # Ghostty would otherwise write a template config into ~/.config.
 export XDG_CONFIG_HOME=$OUT/xdg
+# No session bus: with the desktop's, Ghostty's GTK waited on portals that never
+# answered until inside.sh had stopped waiting for 160x50 (geng-plan.md §1.4).
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent
 
 DPY=:77
 $XVFB $DPY -screen 0 2560x1440x24 -nolisten tcp > "$OUT/xvfb.log" 2>&1 &
