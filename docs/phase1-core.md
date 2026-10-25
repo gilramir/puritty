@@ -512,3 +512,48 @@ geng-lang §VA14.1 puts the next step to Gilbert: survey the compiler
 proving an older builder dead, so a write needs no handle or record (the
 largest cost on every input over the budget), and start the core on the
 builder screen meanwhile.
+
+---
+
+## 13. The builder probe on `update`, `swap` and `moveWithin` (2026-10-25)
+
+geng-lang `m4-unique.md` §UQ14 (D913's first step).
+
+geng-lang decided (D913) that the compiler will prove a builder's older
+handle dead, so that a write is a store, and that `Array.Builder` first gets
+an exchange, since a row taken out of the screen with `get` while the screen
+still holds it has two owners and no proof can take its writes. `core` now
+has `update i f b`, `swap i x b` and `moveWithin at from to vacated b`.
+
+`probes/geng/core/src/Hot.geng` is rewritten on them: a row is written
+through `update`; `decodeRun` takes its row out with `swap` and puts it back
+with `set`; a run of rows moves with `moveWithin`, a one-row move with
+`swap` and `set`, and the row a scroll turns to the bottom is taken with
+`swap`. The placeholder, `holeRow`, is one empty row nothing writes. Every
+input's checksum, pages and styles are what they were. Five runs, least and
+most, ms, the same `core` and fork for both:
+
+| ms | budget | before (§12's source) | on the exchange |
+|---|---:|---:|---:|
+| `ls` | 124 | 154–160 | 155–158 |
+| `cup` | 56 | 131–152 | 129–132 |
+| `gitlog` | 132 | 204–208 | 203–206 |
+| vte-cursor_motion | 28 | 63–64 | 62–66 |
+| vte-dense_cells | 28 | 60–62 | 61–63 |
+| vte-light_cells | 24 | 37–39 | 37–40 |
+| vte-scrolling | 42 | 263–267 | 264–270 |
+| vte-scrolling_bottom_region | 37 | 204–217 | 221–226 |
+| vte-scrolling_bottom_small_region | 132 | 245–251 | 264–269 |
+| vte-scrolling_fullscreen | 45 | 47–49 | 45–48 |
+| vte-scrolling_top_region | 223 | 198–209 | 231–236 |
+| vte-scrolling_top_small_region | 125 | 333–337 | 389–391 |
+| vte-unicode | 25 | 59–61 | 59–60 |
+
+- Level on the text inputs: `update` is the `get` and `set` the old shape
+  made.
+- 7–16% slower on the four region scrolls: `swap` and `set`, and
+  `moveWithin`'s copy and fill, are two writes where there was one, each a
+  D903 handle. `top_region` is now just over the budget (231 against 223).
+- The probe stays on the exchange: it is the shape the proof is built for,
+  and the proof makes both writes stores. geng-lang's next piece is a survey
+  of ownership in Geng's types (D918), then the proof.

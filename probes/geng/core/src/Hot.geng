@@ -136,6 +136,14 @@ blankRow _ =
     Builder.fromArray blankArray
 
 
+{-| What a slot holds while its row is out (`Builder.swap`) or after its row
+moved (`Builder.moveWithin`); always overwritten before it is read
+(geng-lang `m4-unique.md` D913). -}
+holeRow : Builder Int
+holeRow =
+    Builder.empty 0
+
+
 newScreen : {} -> Screen
 newScreen _ =
     { rows = Array.foldl (\_ b -> Builder.pushLast (blankRow {}) b) (Builder.empty lines) (Array.repeat lines 0)
@@ -233,13 +241,16 @@ screenUp keep top bottom s0 =
     else if bottom == lines - 1 && top < bottom - top then
         -- turn the ring, then move the rows above the region back up
         let
+            taken =
+                Builder.swap (phys s0 0) holeRow s0.rows
+
             row0 =
-                rowAt 0 s0
+                Maybe.withDefault (blankRow {}) taken.old
 
             ext0 =
                 extentAt 0 s0
         in
-        { screen = rotate s0 |> setRow (lines - 1) (blankRow {}) 0 |> downTo (top - 1) |> setRow 0 row0 ext0, gone = gone }
+        { screen = rotate { s0 | rows = taken.builder } |> setRow (lines - 1) (blankRow {}) 0 |> downTo (top - 1) |> setRow 0 row0 ext0, gone = gone }
 
     else
         { screen = shiftUp top bottom s0 |> setRow bottom (blankRow {}) 0, gone = gone }
@@ -317,16 +328,20 @@ than a `copyWithin`'s bounds and its record of the run it replaced. -}
 copyRows : Int -> Int -> Int -> Screen -> Screen
 copyRows pf pt run s =
     if run == 1 then
-        when { row = Builder.get pf s.rows, ext = Builder.get pf s.extent } is
+        let
+            taken =
+                Builder.swap pf holeRow s.rows
+        in
+        when { row = taken.old, ext = Builder.get pf s.extent } is
             { row = Just row, ext = Just ext } ->
-                { s | rows = Builder.set pt row s.rows, extent = Builder.set pt ext s.extent }
+                { s | rows = Builder.set pt row taken.builder, extent = Builder.set pt ext s.extent }
 
             _ ->
                 s
 
     else
         { s
-            | rows = Builder.copyWithin pt pf (pf + run) s.rows
+            | rows = Builder.moveWithin pt pf (pf + run) holeRow s.rows
             , extent = Builder.copyWithin pt pf (pf + run) s.extent
         }
 
@@ -604,15 +619,25 @@ wrapped t =
 
 
 {-| The cursor's row, written by `write` from column `t.x`, and the cursor
-moved to the column `write` answers. -}
-written : Int -> Builder Int -> Term -> Term
-written x row t =
+moved to column `x`. -}
+written : Int -> (Builder Int -> Builder Int) -> Term -> Term
+written x write t =
+    putBack x (Builder.update (phys t.screen t.y) write t.screen.rows) t
+
+
+{-| The screen's rows, the cursor's row in them written up to column `x`, and
+the cursor moved there. -}
+putBack : Int -> Builder (Builder Int) -> Term -> Term
+putBack x rows t =
     let
+        s =
+            t.screen
+
         ext =
-            max x (extentAt t.y t.screen)
+            max x (extentAt t.y s)
     in
     { t
-        | screen = setRow t.y row ext t.screen
+        | screen = { s | rows = rows, extent = Builder.set (phys s t.y) ext s.extent }
         , x = min (cols - 1) x
         , wrapNext = x >= cols
     }
@@ -639,7 +664,7 @@ printAscii bytes n i t0 =
         style =
             Bitwise.shiftLeftBy 22 t.pen
     in
-    ground bytes n end (written (t.x + end - i) (writeAscii bytes i end style t.x (rowAt t.y t.screen)) t)
+    ground bytes n end (written (t.x + end - i) (writeAscii bytes i end style t.x) t)
 
 
 {-| A run of UTF-8, decoded into the row until a byte below 0x20, the row's
@@ -650,15 +675,27 @@ printUnicode bytes n i t0 =
         t =
             wrapped t0
 
+        s =
+            t.screen
+
+        p =
+            phys s t.y
+
+        taken =
+            Builder.swap p holeRow s.rows
+
         r =
-            decodeRun bytes n i (Bitwise.shiftLeftBy 22 t.pen) t.x (rowAt t.y t.screen)
+            decodeRun bytes n i (Bitwise.shiftLeftBy 22 t.pen) t.x (Maybe.withDefault (blankRow {}) taken.old)
+
+        rows =
+            Builder.set p r.row taken.builder
 
         t1 =
             if r.x == t.x then
-                t
+                { t | screen = { s | rows = rows } }
 
             else
-                written r.x r.row t
+                putBack r.x rows t
     in
     if r.cut > 0 then
         { t1 | ps = 5, utf = r.cp, need = r.cut }
@@ -765,18 +802,15 @@ continueUtf8 bytes n i acc need t =
 
             t1 =
                 wrapped t
-
-            row =
-                rowAt t1.y t1.screen
         in
         if w == 0 then
             ground bytes n i t1
 
         else if w == 2 && t1.x + 2 <= cols then
-            ground bytes n i (written (t1.x + 2) (Builder.set (t1.x + 1) (Bitwise.or (Bitwise.or style 0x200000) acc) (Builder.set t1.x (Bitwise.or style acc) row)) t1)
+            ground bytes n i (written (t1.x + 2) (\row -> Builder.set (t1.x + 1) (Bitwise.or (Bitwise.or style 0x200000) acc) (Builder.set t1.x (Bitwise.or style acc) row)) t1)
 
         else
-            ground bytes n i (written (t1.x + 1) (Builder.set t1.x (Bitwise.or style acc) row) t1)
+            ground bytes n i (written (t1.x + 1) (Builder.set t1.x (Bitwise.or style acc)) t1)
 
     else if i >= n then
         { t | ps = 5, utf = acc, need = need }
@@ -1178,7 +1212,14 @@ eraseLine how t =
         t
 
     else
-        { t | screen = setRow t.y (Builder.fill from to blank (rowAt t.y t.screen)) (if to >= ext then min ext from else ext) t.screen }
+        let
+            s =
+                t.screen
+
+            p =
+                phys s t.y
+        in
+        { t | screen = { s | rows = Builder.update p (Builder.fill from to blank) s.rows, extent = Builder.set p (if to >= ext then min ext from else ext) s.extent } }
 
 
 -- RUNNING IT
