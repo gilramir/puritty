@@ -457,3 +457,58 @@ function as what would take the call out.
 D907 is next: the builder probe rewritten on `fill`, `copyWithin` and
 `repeat`, and the scrollback's pages on `fromCodePoints`, measured on all
 thirteen inputs against this machine's budget.
+
+---
+
+## 12. D906 built and D907's measurement (2026-10-25)
+
+geng-lang `m4-visiterm.md` §VA13 and §VA14.
+
+**`Unicode.Grapheme` is exposed** (D906). Its `State` is one opaque `Int`
+(geng-lang D912): `step : Char -> State -> State` and `isBoundary : State ->
+Bool`, the rules UAX #29's at the version `core` pins. A step allocates
+nothing, and a printable ASCII character is answered without a table:
+natively 1.6 ns a character where it was 7.1, a Hangul syllable 4.3, a Thai
+character 14 (a binary search of `core`'s table, registered in geng-lang).
+The core carries the state across reads and asks `isBoundary` to attach a
+character to the cell before it.
+
+**The builder probe on D904's writes.** `probes/geng/core/src/Hot.geng`:
+an erase in line is one `Builder.fill`; the rows a scroll moves are one
+`copyWithin` of the screen and one of the extents for each stretch of the
+ring the move covers, at most three, and one row is two `set`s; an erase in
+display is a `fill` for each stretch; `PACK=points` joins a page's text with
+`Bytes.fromCodePoints`. Printable runs stay a `set` a cell (§11). Every
+input's checksum, pages and styles are what they were. Five runs, least and
+most, against §10:
+
+| ms | budget | §10 (D903) | rewritten (D903–D906) | ÷ budget | joined pages |
+|---|---:|---:|---:|---:|---:|
+| `ls` | 124 | 203–205 | 155–157 | 1.3 | 422–435 |
+| `cup` | 56 | 129–135 | 133–158 | 2.4 | 131–136 |
+| `gitlog` | 132 | 248–252 | 201–209 | 1.5 | 462–468 |
+| vte-cursor_motion | 28 | 62–64 | 63–66 | 2.3 | 64–66 |
+| vte-dense_cells | 28 | 61–63 | 59–61 | 2.1 | 59–63 |
+| vte-light_cells | 24 | 36–37 | 38–39 | 1.6 | 37–39 |
+| vte-scrolling | 42 | 254–256 | 264–266 | 6.3 | 417–428 |
+| vte-scrolling_bottom_region | 37 | 195–197 | 206–211 | 5.6 | 207–208 |
+| vte-scrolling_bottom_small_region | 132 | 858–870 | **247–254** | 1.9 | 247–249 |
+| vte-scrolling_fullscreen | 45 | 62–67 | 45–48 | 1.0 | 136–143 |
+| vte-scrolling_top_region | 223 | 194–200 | 197–204 | **0.9** | 197–203 |
+| vte-scrolling_top_small_region | 125 | 866–875 | **333–343** | 2.7 | 331–338 |
+| vte-unicode | 25 | 59 | 59–62 | 2.4 | 59–61 |
+
+- The two small-region scrolls are 2–2.7× over where they were 7×; `ls` and
+  `gitlog` lost a quarter, from `core`'s one-call `flatten` and `repeat`
+  with the probe unchanged.
+- It meets the budget on `top_region` and is level on `fullscreen`; eleven
+  inputs are 1.3–6.3× over. **D902 stays the bar** (D907).
+- **`ls`'s time is the text**: 39% is `Builder.set` a cell, each a 48-byte
+  handle. Joined pages add 270 ms to `ls`, most of it `core`'s `keepIf` and
+  `map` writing an element at a time and `attrRuns`' `Bytes.Encode`; a
+  page's text through `fromCodePoints` is not where it goes.
+
+geng-lang §VA14.1 puts the next step to Gilbert: survey the compiler
+proving an older builder dead, so a write needs no handle or record (the
+largest cost on every input over the budget), and start the core on the
+builder screen meanwhile.

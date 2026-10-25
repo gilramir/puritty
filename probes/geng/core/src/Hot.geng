@@ -13,12 +13,20 @@ rows outside it, as Alacritty does, and any other region moves its own rows.
 Each row's extent, the column past which it is blank, is kept beside it, so a
 row goes to the scrollback trimmed without a scan.
 
+Since geng-lang D904, an erase is one `Builder.fill` of its row, rows a scroll
+moves are one `Builder.copyWithin` of the screen and one of the extents for
+each stretch of the ring the move covers, and an erase in display is a `fill` of
+the screen for each stretch of the ring it covers. A printable run is still
+written a cell at a time: a `setMany` of an array made for it was no faster
+(geng-lang `m4-visiterm.md` §VA11). `PACK=points` joins a page's text with
+`Bytes.fromCodePoints` (D905).
+
 A builder is correct however it is used: a write to one already handed on
 copies it first. Used linearly, as the core threads its state, every write is
 in place. A renderer's snapshot would be `toArray` of each row, after which a
 row's next write copies it once: the copy-on-write a frame needs.
 
-usage: probe-hot FILE      environment: PACK (seq, string or cells), SCROLLBACK
+usage: probe-hot FILE      environment: PACK (seq, string, points or cells), SCROLLBACK
 
 -}
 
@@ -69,6 +77,7 @@ readSize =
 type PackMode
     = PackSeq
     | PackString
+    | PackPoints
     | PackCells
 
 
@@ -201,12 +210,6 @@ setRow y row ext s =
     { s | rows = Builder.set p row s.rows, extent = Builder.set p ext s.extent }
 
 
-{-| Move logical row `from` to `to`, and its extent. -}
-moveRow : Int -> Int -> Screen -> Screen
-moveRow from to s =
-    setRow to (rowAt from s) (extentAt from s) s
-
-
 {-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom.
 With `keep`, the row that leaves is answered, trimmed to its extent. -}
 screenUp : Bool -> Int -> Int -> Screen -> { screen : Screen, gone : Array (Array Int) }
@@ -247,43 +250,111 @@ rotate s =
     { s | base = phys s 1 }
 
 
-{-| Logical rows `bottom + 1` to `i` each take the row above them, from the
-bottom up. -}
+{-| Logical rows `bottom + 1` to `i` each take the row above them. -}
 downFrom : Int -> Int -> Screen -> Screen
 downFrom i bottom s =
-    if i > bottom then
-        downFrom (i - 1) bottom (moveRow (i - 1) i s)
-
-    else
-        s
+    moveRows bottom (bottom + 1) (i - bottom) s
 
 
-{-| Logical rows 1 to `i` each take the row above them, from `i` up. -}
+{-| Logical rows 1 to `i` each take the row above them. -}
 downTo : Int -> Screen -> Screen
 downTo i s =
-    if i >= 1 then
-        downTo (i - 1) (moveRow (i - 1) i s)
-
-    else
-        s
+    moveRows 0 1 i s
 
 
+{-| Logical rows `i` to `bottom - 1` each take the row below them. -}
 shiftUp : Int -> Int -> Screen -> Screen
 shiftUp i bottom s =
-    if i < bottom then
-        shiftUp (i + 1) bottom (moveRow (i + 1) i s)
-
-    else
-        s
+    moveRows (i + 1) i (bottom - i) s
 
 
+{-| Logical rows `top + 1` to `i` each take the row above them. -}
 shiftDown : Int -> Int -> Screen -> Screen
 shiftDown i top s =
-    if i > top then
-        shiftDown (i - 1) top (moveRow (i - 1) i s)
+    moveRows top (top + 1) (i - top) s
+
+
+{-| `count` logical rows from `from` copied to start at `to`, with their
+extents, each read before it is overwritten. The runs are cut where either
+crosses the ring's end, which makes at most three pieces, and each piece is
+one `copyWithin` of each builder: the last piece first when the rows move
+down, the first when they move up. -}
+moveRows : Int -> Int -> Int -> Screen -> Screen
+moveRows from to count s =
+    if count <= 0 then
+        s
+
+    else if to > from then
+        let
+            lastFrom =
+                phys s (from + count - 1)
+
+            lastTo =
+                phys s (to + count - 1)
+
+            run =
+                min count (min (lastFrom + 1) (lastTo + 1))
+        in
+        moveRows from to (count - run) (copyRows (lastFrom + 1 - run) (lastTo + 1 - run) run s)
 
     else
+        let
+            pf =
+                phys s from
+
+            pt =
+                phys s to
+
+            run =
+                min count (min (lines - pf) (lines - pt))
+        in
+        moveRows (from + run) (to + run) (count - run) (copyRows pf pt run s)
+
+
+{-| `run` rows from physical row `pf` copied to start at physical row `pt`,
+neither run crossing the ring's end. One row is two `set`s, which cost less
+than a `copyWithin`'s bounds and its record of the run it replaced. -}
+copyRows : Int -> Int -> Int -> Screen -> Screen
+copyRows pf pt run s =
+    if run == 1 then
+        when { row = Builder.get pf s.rows, ext = Builder.get pf s.extent } is
+            { row = Just row, ext = Just ext } ->
+                { s | rows = Builder.set pt row s.rows, extent = Builder.set pt ext s.extent }
+
+            _ ->
+                s
+
+    else
+        { s
+            | rows = Builder.copyWithin pt pf (pf + run) s.rows
+            , extent = Builder.copyWithin pt pf (pf + run) s.extent
+        }
+
+
+{-| Logical rows `from` up to `to` made blank, one `fill` of each builder for
+each stretch of the ring they cover, which is one or two. -}
+blankRows : Int -> Int -> Screen -> Screen
+blankRows from to s =
+    if from >= to then
         s
+
+    else
+        let
+            pf =
+                phys s from
+
+            run =
+                min (to - from) (lines - pf)
+
+            row =
+                blankRow {}
+        in
+        blankRows (from + run)
+            to
+            { s
+                | rows = Builder.fill pf (pf + run) row s.rows
+                , extent = Builder.fill pf (pf + run) 0 s.extent
+            }
 
 
 -- THE SCROLLBACK
@@ -333,6 +404,12 @@ join pack rows =
                 , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
                 }
 
+        PackPoints ->
+            Joined
+                { text = Result.withDefault Bytes.empty (Bytes.fromCodePoints (Array.map textPoint (Array.keepIf (\cell -> Bitwise.and 0x200000 cell == 0) (Array.flatten rows))))
+                , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
+                }
+
 
 textChar : Int -> Maybe Char
 textChar cell =
@@ -341,6 +418,22 @@ textChar cell =
 
     else
         Char.fromCode (Bitwise.and 0x1FFFFF cell)
+
+
+{-| A cell's code point. A value no scalar value is, which a malformed
+sequence can decode to, is U+FFFD, so `fromCodePoints` never refuses. The
+right half of a wide character is left out before this is asked. -}
+textPoint : Int -> Int
+textPoint cell =
+    let
+        cp =
+            Bitwise.and 0x1FFFFF cell
+    in
+    if (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF then
+        0xFFFD
+
+    else
+        cp
 
 
 utf8 : Int -> Encode.Encoder
@@ -1045,36 +1138,20 @@ regionDown count top bottom t =
         regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> setRow top (blankRow {}) 0 }
 
 
-fill : Int -> Int -> Builder Int -> Builder Int
-fill from to row =
-    if from < to then
-        fill (from + 1) to (Builder.set from blank row)
-
-    else
-        row
-
-
 eraseDisplay : Int -> Term -> Term
 eraseDisplay how t =
     let
         line =
             eraseLine how t
-
-        blanks from to s =
-            if from < to then
-                blanks (from + 1) to (setRow from (blankRow {}) 0 s)
-
-            else
-                s
     in
     if how == 2 || how == 3 then
-        { t | screen = blanks 0 lines t.screen }
+        { t | screen = blankRows 0 lines t.screen }
 
     else if how == 1 then
-        { line | screen = blanks 0 t.y line.screen }
+        { line | screen = blankRows 0 t.y line.screen }
 
     else
-        { line | screen = blanks (t.y + 1) lines line.screen }
+        { line | screen = blankRows (t.y + 1) lines line.screen }
 
 
 eraseLine : Int -> Term -> Term
@@ -1101,7 +1178,7 @@ eraseLine how t =
         t
 
     else
-        { t | screen = setRow t.y (fill from to (rowAt t.y t.screen)) (if to >= ext then min ext from else ext) t.screen }
+        { t | screen = setRow t.y (Builder.fill from to blank (rowAt t.y t.screen)) (if to >= ext then min ext from else ext) t.screen }
 
 
 -- RUNNING IT
@@ -1142,6 +1219,9 @@ main =
 
                             "string" ->
                                 PackString
+
+                            "points" ->
+                                PackPoints
 
                             _ ->
                                 PackCells
