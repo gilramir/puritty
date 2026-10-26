@@ -210,7 +210,7 @@ extentAt y s =
 
 
 {-| Put a row and its extent at logical row `y`. -}
-setRow : Int -> Builder Int -> Int -> Screen -> Screen
+setRow : Int -> (moved row : Builder Int) -> Int -> (moved s : Screen) -> Screen
 setRow y row ext s =
     let
         p =
@@ -220,7 +220,7 @@ setRow y row ext s =
 
 
 {-| The extent at logical row `y`. -}
-setExtent : Int -> Int -> Screen -> Screen
+setExtent : Int -> Int -> (moved s : Screen) -> Screen
 setExtent y ext s =
     { s | extent = Builder.set (phys s y) ext s.extent }
 
@@ -229,7 +229,7 @@ setExtent y ext s =
 With `keep`, the row that leaves is answered, trimmed to its extent: it is
 taken out of its slot, which every way below writes over before it is read.
 -}
-screenUp : Bool -> Int -> Int -> Screen -> { screen : Screen, gone : Array (Array Int) }
+screenUp : Bool -> Int -> Int -> (moved screen : Screen) -> { screen : Screen, gone : Array (Array Int) }
 screenUp keep top bottom screen =
     let
         { gone, s0 } =
@@ -283,31 +283,31 @@ screenUp keep top bottom screen =
         { screen = shiftUp top bottom s0 |> setRow bottom (blankRow {}) 0, gone = gone }
 
 
-rotate : Screen -> Screen
+rotate : (moved s : Screen) -> Screen
 rotate s =
     { s | base = phys s 1 }
 
 
 {-| Logical rows `bottom + 1` to `i` each take the row above them. -}
-downFrom : Int -> Int -> Screen -> Screen
+downFrom : Int -> Int -> (moved s : Screen) -> Screen
 downFrom i bottom s =
     moveRows bottom (bottom + 1) (i - bottom) s
 
 
 {-| Logical rows 1 to `i` each take the row above them. -}
-downTo : Int -> Screen -> Screen
+downTo : Int -> (moved s : Screen) -> Screen
 downTo i s =
     moveRows 0 1 i s
 
 
 {-| Logical rows `i` to `bottom - 1` each take the row below them. -}
-shiftUp : Int -> Int -> Screen -> Screen
+shiftUp : Int -> Int -> (moved s : Screen) -> Screen
 shiftUp i bottom s =
     moveRows (i + 1) i (bottom - i) s
 
 
 {-| Logical rows `top + 1` to `i` each take the row above them. -}
-shiftDown : Int -> Int -> Screen -> Screen
+shiftDown : Int -> Int -> (moved s : Screen) -> Screen
 shiftDown i top s =
     moveRows top (top + 1) (i - top) s
 
@@ -317,7 +317,7 @@ extents, each read before it is overwritten. The runs are cut where either
 crosses the ring's end, which makes at most three pieces, and each piece is
 one `copyWithin` of each builder: the last piece first when the rows move
 down, the first when they move up. -}
-moveRows : Int -> Int -> Int -> Screen -> Screen
+moveRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
 moveRows from to count s =
     if count <= 0 then
         s
@@ -352,7 +352,7 @@ moveRows from to count s =
 {-| `run` rows from physical row `pf` copied to start at physical row `pt`,
 neither run crossing the ring's end. One row is two `set`s, which cost less
 than a `copyWithin`'s bounds and its record of the run it replaced. -}
-copyRows : Int -> Int -> Int -> Screen -> Screen
+copyRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
 copyRows pf pt run s =
     if run == 1 then
         let
@@ -380,7 +380,7 @@ copyRows pf pt run s =
 
 {-| Logical rows `from` up to `to` made blank, one `fill` of each builder for
 each stretch of the ring they cover, which is one or two. -}
-blankRows : Int -> Int -> Screen -> Screen
+blankRows : Int -> Int -> (moved s : Screen) -> Screen
 blankRows from to s =
     if from >= to then
         s
@@ -582,7 +582,7 @@ asciiEnd bytes stop i =
 -- THE PARSER
 
 
-feed : Bytes -> Term -> Term
+feed : Bytes -> (moved t : Term) -> Term
 feed bytes t =
     let
         n =
@@ -605,7 +605,7 @@ feed bytes t =
             ground bytes n 0 t
 
 
-ground : Bytes -> Int -> Int -> Term -> Term
+ground : Bytes -> Int -> Int -> (moved t : Term) -> Term
 ground bytes n i t =
     if i >= n then
         t
@@ -641,7 +641,7 @@ ground bytes n i t =
 
 
 {-| Wrap first if the last write left the cursor past the end. -}
-wrapped : Term -> Term
+wrapped : (moved t : Term) -> Term
 wrapped t =
     if t.wrapNext then
         lineFeed { t | x = 0, wrapNext = False }
@@ -652,7 +652,7 @@ wrapped t =
 
 {-| The cursor's row, written by `write` from column `t.x`, and the cursor
 moved to column `x`. -}
-written : Int -> (Builder Int -> Builder Int) -> Term -> Term
+written : Int -> (Builder Int -> Builder Int) -> (moved t : Term) -> Term
 written x write t =
     let
         s =
@@ -671,7 +671,7 @@ written x write t =
     }
 
 
-writeAscii : Bytes -> Int -> Int -> Int -> Int -> Builder Int -> Builder Int
+writeAscii : Bytes -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Builder Int
 writeAscii bytes i end style x row =
     if i < end then
         writeAscii bytes (i + 1) end style (x + 1) (Builder.set x (Bitwise.or style (byteAt bytes i)) row)
@@ -680,7 +680,7 @@ writeAscii bytes i end style x row =
         row
 
 
-printAscii : Bytes -> Int -> Int -> Term -> Term
+printAscii : Bytes -> Int -> Int -> (moved t0 : Term) -> Term
 printAscii bytes n i t0 =
     let
         t =
@@ -697,7 +697,7 @@ printAscii bytes n i t0 =
 
 {-| A run of UTF-8, decoded into the row until a byte below 0x20, the row's
 end or a sequence the read cut short. ASCII inside it stays in the run. -}
-printUnicode : Bytes -> Int -> Int -> Term -> Term
+printUnicode : Bytes -> Int -> Int -> (moved t0 : Term) -> Term
 printUnicode bytes n i t0 =
     let
         t =
@@ -747,7 +747,7 @@ type alias Run =
     { row : Builder Int, x : Int, next : Int, cut : Int, cp : Int, wide : Bool }
 
 
-decodeRun : Bytes -> Int -> Int -> Int -> Int -> Builder Int -> Run
+decodeRun : Bytes -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Run
 decodeRun bytes n i style x row =
     if i >= n || x >= cols then
         { row = row, x = x, next = i, cut = 0, cp = 0, wide = False }
@@ -825,7 +825,7 @@ cont bytes i stop acc =
         acc
 
 
-continueUtf8 : Bytes -> Int -> Int -> Int -> Int -> Term -> Term
+continueUtf8 : Bytes -> Int -> Int -> Int -> Int -> (moved t : Term) -> Term
 continueUtf8 bytes n i acc need t =
     if need <= 0 then
         let
@@ -854,7 +854,7 @@ continueUtf8 bytes n i acc need t =
         continueUtf8 bytes n (i + 1) (Bitwise.or (Bitwise.shiftLeftBy 6 acc) (Bitwise.and 0x3F (byteAt bytes i))) (need - 1) t
 
 
-escape : Bytes -> Int -> Int -> Term -> Term
+escape : Bytes -> Int -> Int -> (moved t : Term) -> Term
 escape bytes n i t =
     if i >= n then
         { t | ps = 1 }
@@ -888,7 +888,7 @@ escape bytes n i t =
 
 
 {-| An OSC or a string, skipped to BEL or ST. -}
-skipEsc : Bytes -> Int -> Int -> Term -> Term
+skipEsc : Bytes -> Int -> Int -> (moved t : Term) -> Term
 skipEsc bytes n i t =
     if i >= n then
         { t | ps = 3 }
@@ -908,7 +908,7 @@ skipEsc bytes n i t =
             skipEsc bytes n (i + 1) t
 
 
-csi : Bytes -> Int -> Int -> Term -> Array Int -> Int -> Int -> Term
+csi : Bytes -> Int -> Int -> (moved t : Term) -> Array Int -> Int -> Int -> Term
 csi bytes n i t params cur priv =
     if i >= n then
         { t | ps = 2, params = params, cur = cur, priv = priv }
@@ -960,7 +960,7 @@ isAlt t =
             False
 
 
-dispatch : Int -> Int -> Array Int -> Term -> Term
+dispatch : Int -> Int -> Array Int -> (moved t : Term) -> Term
 dispatch final priv params t =
     if priv == 0x3F then
         if final == 0x68 && param 0 0 params == 1049 then
@@ -1055,7 +1055,7 @@ dispatch final priv params t =
 -- STYLES
 
 
-sgr : Array Int -> Int -> Term -> Term
+sgr : Array Int -> Int -> (moved t : Term) -> Term
 sgr params k t =
     if k >= Array.length params then
         intern t
@@ -1130,7 +1130,7 @@ sgr params k t =
 
 
 {-| The pen's style id, from the table, adding the style if it is new. -}
-intern : Term -> Term
+intern : (moved t : Term) -> Term
 intern t =
     let
         key =
@@ -1152,7 +1152,7 @@ intern t =
 -- SCROLLING AND ERASING
 
 
-lineFeed : Term -> Term
+lineFeed : (moved t : Term) -> Term
 lineFeed t =
     if t.y == t.bottom then
         regionUp 1 t.top t.bottom t
@@ -1164,7 +1164,7 @@ lineFeed t =
         t
 
 
-reverseIndex : Term -> Term
+reverseIndex : (moved t : Term) -> Term
 reverseIndex t =
     if t.y == t.top then
         regionDown 1 t.top t.bottom t
@@ -1178,7 +1178,7 @@ reverseIndex t =
 
 {-| On the main screen, with the region starting at the top, the rows that
 leave go to the scrollback. -}
-regionUp : Int -> Int -> Int -> Term -> Term
+regionUp : Int -> Int -> Int -> (moved t : Term) -> Term
 regionUp count top bottom t =
     if count <= 0 then
         t
@@ -1198,7 +1198,7 @@ regionUp count top bottom t =
             }
 
 
-regionDown : Int -> Int -> Int -> Term -> Term
+regionDown : Int -> Int -> Int -> (moved t : Term) -> Term
 regionDown count top bottom t =
     if count <= 0 then
         t
@@ -1207,7 +1207,7 @@ regionDown count top bottom t =
         regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> setRow top (blankRow {}) 0 }
 
 
-eraseDisplay : Int -> Term -> Term
+eraseDisplay : Int -> (moved t : Term) -> Term
 eraseDisplay how t =
     if how == 2 || how == 3 then
         { t | screen = blankRows 0 lines t.screen }
@@ -1224,7 +1224,7 @@ eraseDisplay how t =
             { line | screen = blankRows (t.y + 1) lines line.screen }
 
 
-eraseLine : Int -> Term -> Term
+eraseLine : Int -> (moved t : Term) -> Term
 eraseLine how t =
     let
         from =
@@ -1275,7 +1275,7 @@ checksum t =
         (Array.range 0 (lines - 1))
 
 
-feedAll : Bytes -> Int -> Term -> Term
+feedAll : Bytes -> Int -> (moved t : Term) -> Term
 feedAll bytes at t =
     if at >= Bytes.length bytes then
         t
