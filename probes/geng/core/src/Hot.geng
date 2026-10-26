@@ -138,9 +138,10 @@ blankRow _ =
 
 {-| What a slot holds while its row is out (`Builder.swap`) or after its row
 moved (`Builder.moveWithin`); always overwritten before it is read
-(geng-lang `m4-unique.md` D913). -}
-holeRow : Builder Int
-holeRow =
+(geng-lang `m4-unique.md` D913). Made at each use, since a builder is used
+once and a top-level one would be shared by every use (`m4-own.md` §OW27). -}
+holeRow : {} -> Builder Int
+holeRow {} =
     Builder.empty 0
 
 
@@ -218,21 +219,47 @@ setRow y row ext s =
     { s | rows = Builder.set p row s.rows, extent = Builder.set p ext s.extent }
 
 
+{-| The extent at logical row `y`. -}
+setExtent : Int -> Int -> Screen -> Screen
+setExtent y ext s =
+    { s | extent = Builder.set (phys s y) ext s.extent }
+
+
 {-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom.
-With `keep`, the row that leaves is answered, trimmed to its extent. -}
+With `keep`, the row that leaves is answered, trimmed to its extent: it is
+taken out of its slot, which every way below writes over before it is read.
+-}
 screenUp : Bool -> Int -> Int -> Screen -> { screen : Screen, gone : Array (Array Int) }
-screenUp keep top bottom s0 =
+screenUp keep top bottom screen =
     let
-        gone =
+        { gone, s0 } =
             if keep then
-                [ Array.takeFirst (extentAt top s0) (Builder.toArray (rowAt top s0)) ]
+                let
+                    ext =
+                        extentAt top screen
+
+                    -- when the whole ring turns, the slot is the new bottom
+                    -- row, so it is made blank here and written once
+                    taken =
+                        Builder.swap (phys screen top) (if whole then blankRow {} else holeRow {}) screen.rows
+                in
+                { gone = [ Array.takeFirst ext (Builder.toArray (Maybe.withDefault (blankRow {}) taken.old)) ]
+                , s0 = { screen | rows = taken.builder }
+                }
 
             else
-                []
+                { gone = [], s0 = screen }
+
+        whole =
+            top == 0 && bottom == lines - 1
     in
-    if top == 0 && bottom == lines - 1 then
+    if whole then
         -- the whole ring turns: the leaving row's slot is the new bottom row
-        { screen = rotate s0 |> setRow (lines - 1) (blankRow {}) 0, gone = gone }
+        if keep then
+            { screen = rotate s0 |> setExtent (lines - 1) 0, gone = gone }
+
+        else
+            { screen = rotate s0 |> setRow (lines - 1) (blankRow {}) 0, gone = gone }
 
     else if top == 0 && lines - 1 - bottom < bottom - top then
         -- turn the ring, then move the rows below the region back down
@@ -241,14 +268,14 @@ screenUp keep top bottom s0 =
     else if bottom == lines - 1 && top < bottom - top then
         -- turn the ring, then move the rows above the region back up
         let
+            ext0 =
+                extentAt 0 s0
+
             taken =
-                Builder.swap (phys s0 0) holeRow s0.rows
+                Builder.swap (phys s0 0) (holeRow {}) s0.rows
 
             row0 =
                 Maybe.withDefault (blankRow {}) taken.old
-
-            ext0 =
-                extentAt 0 s0
         in
         { screen = rotate { s0 | rows = taken.builder } |> setRow (lines - 1) (blankRow {}) 0 |> downTo (top - 1) |> setRow 0 row0 ext0, gone = gone }
 
@@ -330,18 +357,23 @@ copyRows pf pt run s =
     if run == 1 then
         let
             taken =
-                Builder.swap pf holeRow s.rows
+                Builder.swap pf (holeRow {}) s.rows
         in
-        when { row = taken.old, ext = Builder.get pf s.extent } is
-            { row = Just row, ext = Just ext } ->
-                { s | rows = Builder.set pt row taken.builder, extent = Builder.set pt ext s.extent }
+        when taken.old is
+            Just row ->
+                when Builder.get pf s.extent is
+                    Just ext ->
+                        { s | rows = Builder.set pt row taken.builder, extent = Builder.set pt ext s.extent }
 
-            _ ->
-                s
+                    Nothing ->
+                        { s | rows = Builder.set pf row taken.builder }
+
+            Nothing ->
+                { s | rows = taken.builder }
 
     else
         { s
-            | rows = Builder.moveWithin pt pf (pf + run) holeRow s.rows
+            | rows = Builder.moveWithin pt pf (pf + run) (holeRow {}) s.rows
             , extent = Builder.copyWithin pt pf (pf + run) s.extent
         }
 
@@ -622,22 +654,18 @@ wrapped t =
 moved to column `x`. -}
 written : Int -> (Builder Int -> Builder Int) -> Term -> Term
 written x write t =
-    putBack x (Builder.update (phys t.screen t.y) write t.screen.rows) t
-
-
-{-| The screen's rows, the cursor's row in them written up to column `x`, and
-the cursor moved there. -}
-putBack : Int -> Builder (Builder Int) -> Term -> Term
-putBack x rows t =
     let
         s =
             t.screen
+
+        p =
+            phys s t.y
 
         ext =
             max x (extentAt t.y s)
     in
     { t
-        | screen = { s | rows = rows, extent = Builder.set (phys s t.y) ext s.extent }
+        | screen = { s | rows = Builder.update p write s.rows, extent = Builder.set p ext s.extent }
         , x = min (cols - 1) x
         , wrapNext = x >= cols
     }
@@ -681,8 +709,11 @@ printUnicode bytes n i t0 =
         p =
             phys s t.y
 
+        extent =
+            extentAt t.y s
+
         taken =
-            Builder.swap p holeRow s.rows
+            Builder.swap p (holeRow {}) s.rows
 
         r =
             decodeRun bytes n i (Bitwise.shiftLeftBy 22 t.pen) t.x (Maybe.withDefault (blankRow {}) taken.old)
@@ -695,7 +726,11 @@ printUnicode bytes n i t0 =
                 { t | screen = { s | rows = rows } }
 
             else
-                putBack r.x rows t
+                { t
+                    | screen = { s | rows = rows, extent = Builder.set p (max r.x extent) s.extent }
+                    , x = min (cols - 1) r.x
+                    , wrapNext = r.x >= cols
+                }
     in
     if r.cut > 0 then
         { t1 | ps = 5, utf = r.cp, need = r.cut }
@@ -941,7 +976,7 @@ dispatch final priv params t =
                     { t | saved = Nothing, screen = s }
 
                 Nothing ->
-                    t
+                    { t | saved = Nothing }
 
         else
             t
@@ -1174,18 +1209,19 @@ regionDown count top bottom t =
 
 eraseDisplay : Int -> Term -> Term
 eraseDisplay how t =
-    let
-        line =
-            eraseLine how t
-    in
     if how == 2 || how == 3 then
         { t | screen = blankRows 0 lines t.screen }
 
-    else if how == 1 then
-        { line | screen = blankRows 0 t.y line.screen }
-
     else
-        { line | screen = blankRows (t.y + 1) lines line.screen }
+        let
+            line =
+                eraseLine how t
+        in
+        if how == 1 then
+            { line | screen = blankRows 0 t.y line.screen }
+
+        else
+            { line | screen = blankRows (t.y + 1) lines line.screen }
 
 
 eraseLine : Int -> Term -> Term
@@ -1227,7 +1263,16 @@ eraseLine how t =
 
 checksum : Term -> Int
 checksum t =
-    Array.foldl (\y sum -> Array.foldl (\c s -> Bitwise.xor (s * 31) c) sum (Builder.toArray (rowAt y t.screen))) (Array.length t.back.pages) (Array.range 0 (lines - 1))
+    Array.foldl
+        (\y sum ->
+            let
+                row =
+                    rowAt y t.screen
+            in
+            Array.foldl (\c s -> Bitwise.xor (s * 31) c) sum (Builder.slice 0 (Builder.length row) row)
+        )
+        (Array.length t.back.pages)
+        (Array.range 0 (lines - 1))
 
 
 feedAll : Bytes -> Int -> Term -> Term
