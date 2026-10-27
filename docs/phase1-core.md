@@ -557,3 +557,47 @@ most, ms, the same `core` and fork for both:
 - The probe stays on the exchange: it is the shape the proof is built for,
   and the proof makes both writes stores. geng-lang's next piece is a survey
   of ownership in Geng's types (D918), then the proof.
+
+## 14. The screen's ring holds recent scrollback (2026-10-26)
+
+geng-lang's `m4-visiterm.md` §VA15 found where the builder probe's time
+goes, and §VA16 builds Gilbert's answers (D978–D983). In the probe:
+
+- **The ring holds recent scrollback as rows** (D978), as Alacritty's grid
+  does: 563 row builders on the main screen, the screen's 50, up to 512 of
+  scrollback and a free one. A scroll moves `base` and clears the free row
+  in place; when the ring is full the oldest 256 rows of scrollback are
+  copied out trimmed and joined into a page (D901), and their builders are
+  written again. The alternate screen is a ring of 51 and keeps none.
+- **A CSI's parameters are one `Builder`, and a width below U+20000 is two
+  bits of a table** `gen-width.py` writes as a literal (D979).
+- **The ASCII print calls `Builder.update` itself**, so that the compiler
+  makes the row's write one call with no closure (D982).
+
+Five runs, least and most, ms, every checksum, page count and style count
+as it was; "before" is §13's probe on today's runtime, measured in the same
+run (geng-lang §VA16.1 has every step between):
+
+| ms | budget | before | now |
+|---|---:|---:|---:|
+| `ls` | 124 | 82–86 | 67–70 |
+| `cup` | 56 | 91–93 | 72–74 |
+| `gitlog` | 132 | 140–142 | 110–113 |
+| vte-cursor_motion | 28 | 45–47 | 35–37 |
+| vte-dense_cells | 28 | 54–57 | 34–36 |
+| vte-light_cells | 24 | 12–14 | 12–13 |
+| vte-scrolling | 42 | 237–239 | 143–145 |
+| vte-scrolling_bottom_region | 37 | 191–195 | 160–163 |
+| vte-scrolling_bottom_small_region | 132 | 189–192 | 158–160 |
+| vte-scrolling_fullscreen | 45 | 22–24 | 20–22 |
+| vte-scrolling_top_region | 223 | 200–202 | 167–170 |
+| vte-scrolling_top_small_region | 125 | 277–278 | 237–239 |
+| vte-unicode | 25 | 46–47 | 15–16 |
+
+- Six inputs of thirteen meet the budget, `gitlog` and `vte-unicode` new
+  among them. The scrolls are still 1.2–4.4× over.
+- G7's pauses with joined pages are level or better: on one screen with
+  100,000 lines, the longest full collection 0.75–0.85 ms.
+- Writing the `Term` and `Screen` updates in place would be 10–24% more;
+  one update of 55, `feed`'s `csi` call, reads its old record after it.
+  geng-lang has asked Gilbert whether to build it (§VA16.6).

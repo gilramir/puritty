@@ -3,15 +3,23 @@ module Hot exposing (main)
 {-| Phase 1's survey probe, the second way: Main.geng's parser, styles and
 scrollback, over a screen kept as `Array.Builder`s, written in place.
 
-The screen is a ring of 50 row builders in a builder, `base` the physical
-index of row 0. A run is written straight into its row's builder, a cell at a
-time, with no array made for it. A full-screen scroll hands the top row to the
-scrollback (`Builder.toArray`, which gives up the buffer and copies nothing)
-and puts a fresh blank row at the bottom by moving `base`; a region that
-touches the top or bottom edge scrolls the same way and moves back only the
-rows outside it, as Alacritty does, and any other region moves its own rows.
-Each row's extent, the column past which it is blank, is kept beside it, so a
-row goes to the scrollback trimmed without a scan.
+The screen is a ring of row builders in a builder, `base` the physical index
+of row 0, and since geng-lang D978 the ring holds recent scrollback too, as
+Alacritty's grid does: 563 rows on the main screen, the 50 of the screen, up
+to 512 of scrollback before them and a free one after. A run is written
+straight into its row's builder, a cell at a time, with no array made for it.
+A full-screen scroll moves `base`, which makes the top row scrollback, and
+clears the free row in place as the new bottom row; nothing is copied or
+allocated. When the ring is full, the oldest 256 rows of its scrollback are
+copied out trimmed (`Builder.slice`, one copy since D983) and joined into a
+page (D901), and their row builders are free to be written again. A region
+that touches the top scrolls the same way and moves back only the rows below
+it; with scrollback in the ring, any other region moves its own rows, and on
+the alternate screen, which keeps none, the ring turns as before. Each row's
+extent, the column past which it is blank, is kept beside it, so a row goes
+to a page trimmed without a scan. The page count `checksum` and the summary
+print counts the full pages of rows the ring still holds, so that it is the
+count of a probe that paged every row as it left the screen.
 
 Since geng-lang D904, an erase is one `Builder.fill` of its row, rows a scroll
 moves are one `Builder.copyWithin` of the screen and one of the extents for
@@ -88,18 +96,30 @@ type Page
 
 type alias Back =
     { pages : Array Page
-    , page : Array (Array Int)
     , head : Int
     , limit : Int
     , pack : PackMode
     }
 
 
+{-| A ring of `size` row builders: the screen's `lines` rows from physical
+slot `base` on, the `hist` rows of scrollback not yet joined into a page just
+before it, oldest first, and free rows after it. -}
 type alias Screen =
     { rows : Builder (Builder Int)
     , extent : Builder Int
     , base : Int
+    , hist : Int
+    , size : Int
     }
+
+
+{-| The main screen's ring: the screen, two pages of scrollback as rows, and
+a free row. The alternate screen keeps no scrollback, and its ring is the
+screen and one free row. -}
+ringRows : Int
+ringRows =
+    lines + 2 * pageRows + 1
 
 
 type alias Term =
@@ -145,17 +165,19 @@ holeRow {} =
     Builder.empty 0
 
 
-newScreen : {} -> Screen
-newScreen _ =
-    { rows = Array.foldl (\_ b -> Builder.pushLast (blankRow {}) b) (Builder.empty lines) (Array.repeat lines 0)
-    , extent = Builder.fromArray (Array.repeat lines 0)
+newScreen : Int -> Screen
+newScreen size =
+    { rows = Array.foldl (\_ b -> Builder.pushLast (blankRow {}) b) (Builder.empty size) (Array.repeat size 0)
+    , extent = Builder.fromArray (Array.repeat size 0)
     , base = 0
+    , hist = 0
+    , size = size
     }
 
 
 newTerm : PackMode -> Int -> Term
 newTerm pack scrollback =
-    { screen = newScreen {}
+    { screen = newScreen ringRows
     , saved = Nothing
     , x = 0
     , y = 0
@@ -167,7 +189,7 @@ newTerm pack scrollback =
     , bg = 0
     , flags = 0
     , styles = Dict.empty
-    , back = { pages = [], page = [], head = 0, limit = scrollback // pageRows, pack = pack }
+    , back = { pages = [], head = 0, limit = scrollback // pageRows, pack = pack }
     , ps = 0
     , params = []
     , cur = 0
@@ -181,14 +203,19 @@ newTerm pack scrollback =
 -- THE SCREEN
 
 
+{-| The physical slot of logical row `y`; a negative `y` is scrollback in the
+ring, `-1` the newest. -}
 phys : Screen -> Int -> Int
 phys s y =
     let
         p =
             s.base + y
     in
-    if p >= lines then
-        p - lines
+    if p >= s.size then
+        p - s.size
+
+    else if p < 0 then
+        p + s.size
 
     else
         p
@@ -226,61 +253,67 @@ setExtent y ext s =
 
 
 {-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom.
-With `keep`, the row that leaves is answered, trimmed to its extent: it is
-taken out of its slot, which every way below writes over before it is read.
+With `keep`, the row that leaves joins the scrollback in the ring: the ring
+turns, `hist` counts one more, and the free row after the screen, cleared in
+place, is the new bottom row (geng-lang `m4-visiterm.md` §VA16, D978); the
+caller has made room (`pageOut`). Without it, the ring turns only when it
+holds no scrollback, since a turn would make the leaving row scrollback.
 -}
-screenUp : Bool -> Int -> Int -> (moved screen : Screen) -> { screen : Screen, gone : Array (Array Int) }
+screenUp : Bool -> Int -> Int -> (moved screen : Screen) -> Screen
 screenUp keep top bottom screen =
     let
-        { gone, s0 } =
-            if keep then
-                let
-                    ext =
-                        extentAt top screen
-
-                    -- when the whole ring turns, the slot is the new bottom
-                    -- row, so it is made blank here and written once
-                    taken =
-                        Builder.swap (phys screen top) (if whole then blankRow {} else holeRow {}) screen.rows
-                in
-                { gone = [ Array.takeFirst ext (Builder.toArray (Maybe.withDefault (blankRow {}) taken.old)) ]
-                , s0 = { screen | rows = taken.builder }
-                }
-
-            else
-                { gone = [], s0 = screen }
-
         whole =
             top == 0 && bottom == lines - 1
     in
-    if whole then
-        -- the whole ring turns: the leaving row's slot is the new bottom row
-        if keep then
-            { screen = rotate s0 |> setExtent (lines - 1) 0, gone = gone }
+    if keep then
+        if whole then
+            { screen | base = phys screen 1, hist = screen.hist + 1 } |> clearRowAt (lines - 1)
 
         else
-            { screen = rotate s0 |> setRow (lines - 1) (blankRow {}) 0, gone = gone }
+            { screen | base = phys screen 1, hist = screen.hist + 1 } |> downFrom (lines - 1) bottom |> setRow bottom (blankRow {}) 0
+
+    else if screen.hist > 0 then
+        shiftUp top bottom screen |> setRow bottom (blankRow {}) 0
+
+    else if whole then
+        rotate screen |> clearRowAt (lines - 1)
 
     else if top == 0 && lines - 1 - bottom < bottom - top then
         -- turn the ring, then move the rows below the region back down
-        { screen = rotate s0 |> downFrom (lines - 1) bottom |> setRow bottom (blankRow {}) 0, gone = gone }
+        rotate screen |> downFrom (lines - 1) bottom |> setRow bottom (blankRow {}) 0
 
     else if bottom == lines - 1 && top < bottom - top then
         -- turn the ring, then move the rows above the region back up
         let
             ext0 =
-                extentAt 0 s0
+                extentAt 0 screen
 
             taken =
-                Builder.swap (phys s0 0) (holeRow {}) s0.rows
+                Builder.swap (phys screen 0) (holeRow {}) screen.rows
 
             row0 =
                 Maybe.withDefault (blankRow {}) taken.old
         in
-        { screen = rotate { s0 | rows = taken.builder } |> setRow (lines - 1) (blankRow {}) 0 |> downTo (top - 1) |> setRow 0 row0 ext0, gone = gone }
+        rotate { screen | rows = taken.builder } |> setRow (lines - 1) (blankRow {}) 0 |> downTo (top - 1) |> setRow 0 row0 ext0
 
     else
-        { screen = shiftUp top bottom s0 |> setRow bottom (blankRow {}) 0, gone = gone }
+        shiftUp top bottom screen |> setRow bottom (blankRow {}) 0
+
+
+{-| Logical row `y` made blank in place, a `fill` of the row builder there,
+which a row taken from the free part of the ring always is: a full row. -}
+clearRowAt : Int -> (moved s : Screen) -> Screen
+clearRowAt y s =
+    let
+        p =
+            phys s y
+    in
+    { s | rows = Builder.update p clearRow s.rows, extent = Builder.set p 0 s.extent }
+
+
+clearRow : (moved row : Builder Int) -> Builder Int
+clearRow row =
+    Builder.fill 0 cols blank row
 
 
 rotate : (moved s : Screen) -> Screen
@@ -344,7 +377,7 @@ moveRows from to count s =
                 phys s to
 
             run =
-                min count (min (lines - pf) (lines - pt))
+                min count (min (s.size - pf) (s.size - pt))
         in
         moveRows (from + run) (to + run) (count - run) (copyRows pf pt run s)
 
@@ -391,7 +424,7 @@ blankRows from to s =
                 phys s from
 
             run =
-                min (to - from) (lines - pf)
+                min (to - from) (s.size - pf)
 
             row =
                 blankRow {}
@@ -407,30 +440,54 @@ blankRows from to s =
 -- THE SCROLLBACK
 
 
-{-| A row, already trimmed, onto the page being filled. -}
-pushBack : Array Int -> Back -> Back
-pushBack cells back =
+{-| The oldest `pageRows` rows of the ring's scrollback, each copied out
+trimmed to its extent (`Builder.slice`) and joined into a page (D901). Their
+row builders stay where they are, the free part of the ring now, to be
+cleared and written again in place. -}
+pageOut : (moved s : Screen) -> Back -> { screen : Screen, back : Back }
+pageOut s back =
     let
-        filled =
-            Array.pushLast cells back.page
+        rows =
+            Builder.toArray (trimmedRows (0 - s.hist) (pageRows - s.hist) s (Builder.empty pageRows))
     in
-    if Array.length filled < pageRows then
-        { back | page = filled }
+    { screen = { s | hist = s.hist - pageRows }, back = pushPage (join back.pack rows) back }
+
+
+trimmedRows : Int -> Int -> Screen -> (moved acc : Builder (Array Int)) -> Builder (Array Int)
+trimmedRows y stop s acc =
+    if y >= stop then
+        acc
 
     else
-        let
-            page =
-                join back.pack filled
-        in
-        if Array.length back.pages < back.limit then
-            { back | page = [], pages = Array.pushLast page back.pages }
+        trimmedRows (y + 1) stop s (Builder.pushLast (Builder.slice 0 (extentAt y s) (rowAt y s)) acc)
 
-        else
-            { back
-                | page = []
-                , pages = Array.set back.head page back.pages
-                , head = modBy back.limit (back.head + 1)
-            }
+
+pushPage : Page -> Back -> Back
+pushPage page back =
+    if Array.length back.pages < back.limit then
+        { back | pages = Array.pushLast page back.pages }
+
+    else
+        { back
+            | pages = Array.set back.head page back.pages
+            , head = modBy back.limit (back.head + 1)
+        }
+
+
+{-| The scrollback's pages, counting each full page of rows the ring still
+holds, as the probe that paged every row at once counted them. -}
+pageCount : Term -> Int
+pageCount t =
+    let
+        hist =
+            when t.saved is
+                Just s ->
+                    s.hist
+
+                Nothing ->
+                    t.screen.hist
+    in
+    min t.back.limit (Array.length t.back.pages + hist // pageRows)
 
 
 join : PackMode -> Array (Array Int) -> Page
@@ -593,7 +650,7 @@ feed bytes t =
             escape bytes n 0 { t | ps = 0 }
 
         2 ->
-            csi bytes n 0 { t | ps = 0, params = [] } t.params t.cur t.priv
+            csi bytes n 0 { t | ps = 0, params = [] } (Builder.fromArray t.params) t.cur t.priv
 
         3 ->
             skipEsc bytes n 0 { t | ps = 0 }
@@ -680,6 +737,11 @@ writeAscii bytes i end style x row =
         row
 
 
+{-| A run of printable ASCII. `written`'s work is written out here, so that
+the compiler sees `Builder.update` handed a partial application of
+`writeAscii` and makes it one call, with no closure (geng-lang
+`m4-visiterm.md` §VA16, D982). Taking the row out with `Builder.swap` and
+putting it back instead costs more than the closure did. -}
 printAscii : Bytes -> Int -> Int -> (moved t0 : Term) -> Term
 printAscii bytes n i t0 =
     let
@@ -691,8 +753,27 @@ printAscii bytes n i t0 =
 
         style =
             Bitwise.shiftLeftBy 22 t.pen
+
+        x =
+            t.x + end - i
+
+        s =
+            t.screen
+
+        p =
+            phys s t.y
+
+        ext =
+            max x (extentAt t.y s)
     in
-    ground bytes n end (written (t.x + end - i) (writeAscii bytes i end style t.x) t)
+    ground bytes
+        n
+        end
+        { t
+            | screen = { s | rows = Builder.update p (writeAscii bytes i end style t.x) s.rows, extent = Builder.set p ext s.extent }
+            , x = min (cols - 1) x
+            , wrapNext = x >= cols
+        }
 
 
 {-| A run of UTF-8, decoded into the row until a byte below 0x20, the row's
@@ -865,7 +946,7 @@ escape bytes n i t =
                 byteAt bytes i
         in
         if b == 0x5B then
-            csi bytes n (i + 1) t [] 0 0
+            csi bytes n (i + 1) t (Builder.empty 16) 0 0
 
         else if b == 0x5D then
             skipEsc bytes n (i + 1) t
@@ -908,10 +989,10 @@ skipEsc bytes n i t =
             skipEsc bytes n (i + 1) t
 
 
-csi : Bytes -> Int -> Int -> (moved t : Term) -> Array Int -> Int -> Int -> Term
+csi : Bytes -> Int -> Int -> (moved t : Term) -> (moved params : Builder Int) -> Int -> Int -> Term
 csi bytes n i t params cur priv =
     if i >= n then
-        { t | ps = 2, params = params, cur = cur, priv = priv }
+        { t | ps = 2, params = Builder.toArray params, cur = cur, priv = priv }
 
     else
         let
@@ -922,7 +1003,7 @@ csi bytes n i t params cur priv =
             csi bytes n (i + 1) t params (min 65535 (cur * 10 + b - 0x30)) priv
 
         else if b == 0x3B || b == 0x3A then
-            csi bytes n (i + 1) t (if Array.length params < 32 then Array.pushLast cur params else params) 0 priv
+            csi bytes n (i + 1) t (if Builder.length params < 32 then Builder.pushLast cur params else params) 0 priv
 
         else if b >= 0x3C && b <= 0x3F then
             csi bytes n (i + 1) t params cur b
@@ -931,7 +1012,7 @@ csi bytes n i t params cur priv =
             csi bytes n (i + 1) t params cur priv
 
         else if b >= 0x40 && b <= 0x7E then
-            ground bytes n (i + 1) (dispatch b priv (Array.pushLast cur params) t)
+            ground bytes n (i + 1) (dispatch b priv (Builder.toArray (Builder.pushLast cur params)) t)
 
         else
             ground bytes n (i + 1) t
@@ -968,7 +1049,7 @@ dispatch final priv params t =
                 t
 
             else
-                { t | saved = Just t.screen, screen = newScreen {} }
+                { t | saved = Just t.screen, screen = newScreen (lines + 1) }
 
         else if final == 0x6C && param 0 0 params == 1049 then
             when t.saved is
@@ -1188,13 +1269,17 @@ regionUp count top bottom t =
             keep =
                 top == 0 && t.back.limit > 0 && not (isAlt t)
 
-            r =
-                screenUp keep top bottom t.screen
+            room =
+                if keep && t.screen.hist + lines >= t.screen.size then
+                    pageOut t.screen t.back
+
+                else
+                    { screen = t.screen, back = t.back }
         in
         regionUp (count - 1) top bottom
             { t
-                | screen = r.screen
-                , back = Array.foldl pushBack t.back r.gone
+                | screen = screenUp keep top bottom room.screen
+                , back = room.back
             }
 
 
@@ -1271,7 +1356,7 @@ checksum t =
             in
             Array.foldl (\c s -> Bitwise.xor (s * 31) c) sum (Builder.slice 0 (Builder.length row) row)
         )
-        (Array.length t.back.pages)
+        (pageCount t)
         (Array.range 0 (lines - 1))
 
 
@@ -1333,7 +1418,7 @@ main =
                                                             ++ " bytes in "
                                                             ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
                                                             ++ " ms; pages "
-                                                            ++ String.fromInt (Array.length t.back.pages)
+                                                            ++ String.fromInt (pageCount t)
                                                             ++ ", styles "
                                                             ++ String.fromInt (Dict.count t.styles)
                                                             ++ ", replies "
