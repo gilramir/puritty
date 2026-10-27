@@ -678,3 +678,22 @@ The other eight are as in §15, but for `light_cells` (10–13) and
 before (§VA22.1 there). `vte-scrolling` is still 1.9× and `bottom_region`
 2.3×; the scrollback's paging is about 270 of `scrolling`'s 956
 instructions a line, and geng-lang measures it next (§VA23).
+
+## 17. A page read by slot and appended by run (2026-10-27)
+
+geng-lang's `m4-visiterm.md` §VA23 measured the paging, and Gilbert took
+§VA23.3's leanings (§VA24 there, D995 and D996):
+
+- **A page of the `cells` packing is read by physical slot.** `pageOut`
+  takes the page's rows as one or two runs of the ring's slots, from the
+  oldest row's slot to the end of the ring and from its start, and their
+  lengths as one slice of the extents for each run. It turned each logical
+  row into its slot before. `flatRows` is gone.
+- **Each row is appended with `Builder.appendSlice`**, new in core, which
+  copies a run of one builder onto another with no `Array` between them,
+  where `Builder.append (Builder.slice 0 ext row)` made one per row.
+
+Every input's checksum is the same, and so is every page's, checked as §16's
+were. `vte-scrolling` 2,550 → 2,227 M instructions, 78–79 → 68–70 ms;
+`gitlog` 84–85 → 80–82, `ls` 55–60 → 53–56. Two inputs are over the budget,
+`vte-scrolling` 1.6× and `bottom_region` 2.3×.

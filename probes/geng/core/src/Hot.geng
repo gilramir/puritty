@@ -510,10 +510,19 @@ pageOut s back =
             when back.pack is
                 PackCells ->
                     let
-                        flat =
-                            flatRows (0 - s.hist) (pageRows - s.hist) s { cells = Builder.empty (pageRows * 8), ends = Builder.empty pageRows }
+                        first =
+                            phys s (0 - s.hist)
+
+                        firstStop =
+                            min s.size (first + pageRows)
+
+                        rest =
+                            pageRows - (firstStop - first)
                     in
-                    Flat { cells = Builder.toArray flat.cells, ends = Builder.toArray flat.ends }
+                    Flat
+                        { cells = Builder.toArray (physCells 0 rest s (physCells first firstStop s (Builder.empty (pageRows * 8))))
+                        , ends = Array.prepend (Builder.slice first firstStop s.extent) (Builder.slice 0 rest s.extent)
+                        }
 
                 _ ->
                     join back.pack (Builder.toArray (trimmedRows (0 - s.hist) (pageRows - s.hist) s (Builder.empty pageRows)))
@@ -521,19 +530,26 @@ pageOut s back =
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
 
 
-{-| Rows `y` to `stop`, each trimmed to its extent, written into one builder
-of cells and their lengths into another. -}
-flatRows : Int -> Int -> Screen -> (moved acc : { cells : Builder Int, ends : Builder Int }) -> { cells : Builder Int, ends : Builder Int }
-flatRows y stop s acc =
-    if y >= stop then
-        acc
+{-| The rows in physical slots `p` to `stop`, each trimmed to its extent,
+appended to a builder of cells: read by slot, so that the page is the ring's
+two stretches with no index turned at each row, and appended from the row with
+no array between them (geng-lang D995, D996). -}
+physCells : Int -> Int -> Screen -> (moved cells : Builder Int) -> Builder Int
+physCells p stop s cells =
+    if p >= stop then
+        cells
 
     else
         let
             ext =
-                extentAt y s
+                Maybe.withDefault 0 (Builder.get p s.extent)
         in
-        flatRows (y + 1) stop s { cells = Builder.append (Builder.slice 0 ext (rowAt y s)) acc.cells, ends = Builder.pushLast ext acc.ends }
+        when Builder.get p s.rows is
+            Just r ->
+                physCells (p + 1) stop s (Builder.appendSlice 0 ext r cells)
+
+            Nothing ->
+                physCells (p + 1) stop s cells
 
 
 trimmedRows : Int -> Int -> Screen -> (moved acc : Builder (Array Int)) -> Builder (Array Int)
