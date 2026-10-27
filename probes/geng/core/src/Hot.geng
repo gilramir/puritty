@@ -24,7 +24,10 @@ count of a probe that paged every row as it left the screen.
 Since geng-lang D904, an erase is one `Builder.fill` of its row, rows a scroll
 moves are one `Builder.copyWithin` of the screen and one of the extents for
 each stretch of the ring the move covers, and an erase in display is a `fill` of
-the screen for each stretch of the ring it covers. A printable run is still
+the screen for each stretch of the ring it covers. Since D991 a region that is
+one stretch of the ring scrolls as one `Builder.rotate` of its rows and one of
+their extents, the row that leaves coming in at the other end, and a row is
+cleared only up to its extent (geng-lang `m4-visiterm.md` §VA20). A printable run is still
 written a cell at a time: a `setMany` of an array made for it was no faster
 (geng-lang `m4-visiterm.md` §VA11). `PACK=points` joins a page's text with
 `Bytes.fromCodePoints` (D905).
@@ -272,6 +275,11 @@ screenUp keep top bottom screen =
         else
             { screen | base = phys screen 1, hist = screen.hist + 1 } |> downFrom (lines - 1) bottom |> setRow bottom (blankRow {}) 0
 
+    else if not whole && phys screen top <= phys screen bottom then
+        -- the region in one stretch of the ring: its rows turned, the one
+        -- that left coming in at the bottom, cleared (D991)
+        turnRegion top bottom 1 screen |> clearRowAt bottom
+
     else if screen.hist > 0 then
         shiftUp top bottom screen |> setRow bottom (blankRow {}) 0
 
@@ -279,8 +287,27 @@ screenUp keep top bottom screen =
         rotate screen |> clearRowAt (lines - 1)
 
     else if top == 0 && lines - 1 - bottom < bottom - top then
-        -- turn the ring, then move the rows below the region back down
-        rotate screen |> downFrom (lines - 1) bottom |> setRow bottom (blankRow {}) 0
+        -- turn the ring, then move the rows below the region back down; the
+        -- free row the move would overwrite is the region's new bottom row
+        let
+            turned =
+                rotate screen
+
+            ext =
+                extentAt (lines - 1) turned
+
+            taken =
+                Builder.swap (phys turned (lines - 1)) (holeRow {}) turned.rows
+
+            row =
+                when taken.old is
+                    Just free ->
+                        Builder.fill 0 ext blank free
+
+                    Nothing ->
+                        blankRow {}
+        in
+        { turned | rows = taken.builder } |> downFrom (lines - 1) bottom |> setRow bottom row 0
 
     else if bottom == lines - 1 && top < bottom - top then
         -- turn the ring, then move the rows above the region back up
@@ -294,10 +321,44 @@ screenUp keep top bottom screen =
             row0 =
                 Maybe.withDefault (blankRow {}) taken.old
         in
-        rotate { screen | rows = taken.builder } |> setRow (lines - 1) (blankRow {}) 0 |> downTo (top - 1) |> setRow 0 row0 ext0
+        let
+            turned =
+                rotate { screen | rows = taken.builder }
+
+            -- the row leaving the region, which the move would overwrite, is
+            -- its new bottom row
+            ext =
+                extentAt (top - 1) turned
+
+            leaving =
+                Builder.swap (phys turned (top - 1)) (holeRow {}) turned.rows
+
+            row =
+                when leaving.old is
+                    Just old ->
+                        Builder.fill 0 ext blank old
+
+                    Nothing ->
+                        blankRow {}
+        in
+        { turned | rows = leaving.builder } |> setRow (lines - 1) row 0 |> downTo (top - 1) |> setRow 0 row0 ext0
 
     else
         shiftUp top bottom screen |> setRow bottom (blankRow {}) 0
+
+
+{-| Logical rows `top` to `bottom`, which are one stretch of the ring, and
+their extents turned `by` places toward the top. -}
+turnRegion : Int -> Int -> Int -> (moved s : Screen) -> Screen
+turnRegion top bottom by s =
+    let
+        pt =
+            phys s top
+
+        pb =
+            phys s bottom
+    in
+    { s | rows = Builder.rotate pt (pb + 1) by s.rows, extent = Builder.rotate pt (pb + 1) by s.extent }
 
 
 {-| Logical row `y` made blank in place, a `fill` of the row builder there,
@@ -308,12 +369,7 @@ clearRowAt y s =
         p =
             phys s y
     in
-    { s | rows = Builder.update p clearRow s.rows, extent = Builder.set p 0 s.extent }
-
-
-clearRow : (moved row : Builder Int) -> Builder Int
-clearRow row =
-    Builder.fill 0 cols blank row
+    { s | rows = Builder.update p (Builder.fill 0 (extentAt y s) blank) s.rows, extent = Builder.set p 0 s.extent }
 
 
 rotate : (moved s : Screen) -> Screen
@@ -1289,7 +1345,11 @@ regionDown count top bottom t =
         t
 
     else
-        regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> setRow top (blankRow {}) 0 }
+        if phys t.screen top <= phys t.screen bottom then
+            regionDown (count - 1) top bottom { t | screen = turnRegion top bottom -1 t.screen |> clearRowAt top }
+
+        else
+            regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> setRow top (blankRow {}) 0 }
 
 
 eraseDisplay : Int -> (moved t : Term) -> Term

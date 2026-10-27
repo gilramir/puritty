@@ -601,3 +601,46 @@ run (geng-lang §VA16.1 has every step between):
 - Writing the `Term` and `Screen` updates in place would be 10–24% more;
   one update of 55, `feed`'s `csi` call, reads its old record after it.
   geng-lang has asked Gilbert whether to build it (§VA16.6).
+
+## 15. Records in place, tail calls as jumps, and regions turned (2026-10-27)
+
+geng-lang's `m4-visiterm.md` §VA17 to §VA20 build what §14 asked and what
+measuring after it found. The compiler writes 80 of the probe's 84 updates
+of `Term` and `Screen` in place (D984–D988), with nothing in the probe
+changed; the parser's functions call one another with `musttail` jumps
+under clang (D989); and in the probe:
+
+- **A row is cleared only up to its extent** (D990), the column past which
+  it is already blank, as Alacritty clears a row to its occupied width.
+- **A region scroll on the alternate screen reuses the row it drops** (D990)
+  instead of a new blank one, which the next print copied.
+- **A region whose rows are one stretch of the ring turns them with
+  `Builder.rotate`** (D991, new in core), one call for the rows and one for
+  their extents, the row that leaves coming in at the other end; a region
+  that wraps the ring's end keeps the moves.
+
+Five runs, least and most, ms, every checksum as it was; each column is
+geng-lang's own measurement on its day:
+
+| ms | budget | §14 | in place (§VA17) | `musttail` (§VA18) | now (§VA20) |
+|---|---:|---:|---:|---:|---:|
+| `ls` | 124 | 67–70 | 60–62 | 57–60 | 55–58 |
+| `cup` | 56 | 72–74 | 60–63 | 45–48 | 45–57 |
+| `gitlog` | 132 | 110–113 | 90–94 | 82–86 | 87–90 |
+| vte-cursor_motion | 28 | 35–37 | 29–31 | 22–23 | 21–22 |
+| vte-dense_cells | 28 | 34–36 | 25–26 | 17–18 | 17–18 |
+| vte-light_cells | 24 | 12–13 | 9–11 | 9–10 | 9–10 |
+| vte-scrolling | 42 | 143–145 | 109–110 | 100–102 | 90–91 |
+| vte-scrolling_bottom_region | 37 | 160–163 | 114–117 | 105–106 | 90–92 |
+| vte-scrolling_bottom_small_region | 132 | 158–160 | 115–120 | 111–112 | 86–88 |
+| vte-scrolling_fullscreen | 45 | 20–22 | 19–20 | 18–20 | 18–20 |
+| vte-scrolling_top_region | 223 | 167–170 | 112–115 | 103–107 | 89–91 |
+| vte-scrolling_top_small_region | 125 | 237–239 | 190–191 | 180–185 | 85–88 |
+| vte-unicode | 25 | 15–16 | 13–13 | 12–14 | 12–13 |
+
+- Eleven inputs of thirteen meet the budget. `cup`'s 57 is one slow run of
+  five; the other four are 45–48.
+- `vte-scrolling` (2.1×) and `vte-scrolling_bottom_region` (2.4×) are left.
+  Their scroll's own work is small: what is left is the print, and the
+  checks the runtime makes around each `Builder` call, which geng-lang takes
+  next, the print's closure per run first (D992).
