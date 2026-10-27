@@ -368,8 +368,11 @@ clearRowAt y s =
     let
         p =
             phys s y
+
+        ext =
+            extentAt y s
     in
-    { s | rows = Builder.update p (Builder.fill 0 (extentAt y s) blank) s.rows, extent = Builder.set p 0 s.extent }
+    { s | rows = Builder.update p (Builder.fill 0 ext blank) s.rows, extent = Builder.set p 0 s.extent }
 
 
 rotate : (moved s : Screen) -> Screen
@@ -503,10 +506,34 @@ cleared and written again in place. -}
 pageOut : (moved s : Screen) -> Back -> { screen : Screen, back : Back }
 pageOut s back =
     let
-        rows =
-            Builder.toArray (trimmedRows (0 - s.hist) (pageRows - s.hist) s (Builder.empty pageRows))
+        page =
+            when back.pack is
+                PackCells ->
+                    let
+                        flat =
+                            flatRows (0 - s.hist) (pageRows - s.hist) s { cells = Builder.empty (pageRows * 8), ends = Builder.empty pageRows }
+                    in
+                    Flat { cells = Builder.toArray flat.cells, ends = Builder.toArray flat.ends }
+
+                _ ->
+                    join back.pack (Builder.toArray (trimmedRows (0 - s.hist) (pageRows - s.hist) s (Builder.empty pageRows)))
     in
-    { screen = { s | hist = s.hist - pageRows }, back = pushPage (join back.pack rows) back }
+    { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
+
+
+{-| Rows `y` to `stop`, each trimmed to its extent, written into one builder
+of cells and their lengths into another. -}
+flatRows : Int -> Int -> Screen -> (moved acc : { cells : Builder Int, ends : Builder Int }) -> { cells : Builder Int, ends : Builder Int }
+flatRows y stop s acc =
+    if y >= stop then
+        acc
+
+    else
+        let
+            ext =
+                extentAt y s
+        in
+        flatRows (y + 1) stop s { cells = Builder.append (Builder.slice 0 ext (rowAt y s)) acc.cells, ends = Builder.pushLast ext acc.ends }
 
 
 trimmedRows : Int -> Int -> Screen -> (moved acc : Builder (Array Int)) -> Builder (Array Int)

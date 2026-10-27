@@ -644,3 +644,37 @@ geng-lang's own measurement on its day:
   Their scroll's own work is small: what is left is the print, and the
   checks the runtime makes around each `Builder` call, which geng-lang takes
   next, the print's closure per run first (D992).
+
+## 16. A page written straight into its builders (2026-10-27)
+
+geng-lang's `m4-visiterm.md` §VA21 priced a line of `vte-scrolling` by kind
+of cost and measured four changes; Gilbert took all four (§VA22 there). Two
+are the probe's:
+
+- **`clearRowAt` binds the row's extent by a `let`** before handing `update`
+  `Builder.fill 0 ext blank`. The compiler then made the `fill` a direct
+  call, where it made a closure and applied it; since geng-lang D994 it does
+  so without the `let` too, which the probe keeps as the clearer form.
+- **A page of the `cells` packing is written straight into two builders**:
+  `pageOut` appends each row's slice to one builder of cells and pushes its
+  extent onto one of lengths, where it built a builder of rows and
+  flattened it. The other packings are as they were.
+
+The probe's checksum reads the screen, not the pages, so the second was
+checked against a build whose checksum folds every page in too: the same on
+every input. With geng-lang's D993 (a pointer written in place over the same
+pointer is not written), five runs, ms:
+
+| ms | budget | §15 | now |
+|---|---:|---:|---:|
+| vte-scrolling | 42 | 90–91 | 79–81 |
+| vte-scrolling_bottom_region | 37 | 90–92 | 85–89 |
+| vte-scrolling_bottom_small_region | 132 | 86–88 | 80–82 |
+| vte-scrolling_top_region | 223 | 89–91 | 84–87 |
+| vte-scrolling_top_small_region | 125 | 85–88 | 79–80 |
+
+The other eight are as in §15, but for `light_cells` (10–13) and
+`fullscreen` (20–23), which are code layout: aligned, the same cycles as
+before (§VA22.1 there). `vte-scrolling` is still 1.9× and `bottom_region`
+2.3×; the scrollback's paging is about 270 of `scrolling`'s 956
+instructions a line, and geng-lang measures it next (§VA23).
