@@ -808,7 +808,7 @@ ground bytes n i t =
                 byteAt bytes i
         in
         if b >= 0x20 && b < 0x7F then
-            printAscii bytes n i t
+            printAscii bytes n i b t
 
         else if b >= 0x80 then
             printUnicode bytes n i t
@@ -869,29 +869,32 @@ writeAscii bytes i end style x row =
         row
 
 
-{-| A run of printable ASCII written to a row, and its extent at least `xEnd`. -}
-asciiRow : Bytes -> Int -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Builder Int
-asciiRow bytes i end style x xEnd row =
+{-| A run of printable ASCII written to a row, `first` the byte at `i`, which
+`ground` read, and its extent at least `xEnd`. -}
+asciiRow : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Builder Int
+asciiRow bytes i end style x xEnd first row =
     let
         old =
             extentOf row
     in
-    Builder.set cols (max xEnd old) (writeAscii bytes i end style x (reach old x row))
+    Builder.set cols (max xEnd old) (writeAscii bytes (i + 1) end style (x + 1) (Builder.set x (Bitwise.or style first) (reach old x row)))
 
 
 {-| A run of printable ASCII. `written`'s work is written out here, so that
 the compiler sees `Builder.update` handed a partial application of
 `writeAscii` and makes it one call, with no closure (geng-lang
 `m4-visiterm.md` §VA16, D982). Taking the row out with `Builder.swap` and
-putting it back instead costs more than the closure did. -}
-printAscii : Bytes -> Int -> Int -> (moved t0 : Term) -> Term
-printAscii bytes n i t0 =
+putting it back instead costs more than the closure did. `b` is the run's
+first byte, read by `ground`; the scan starts after it (geng-lang
+`m4-visiterm.md` §VA29). -}
+printAscii : Bytes -> Int -> Int -> Int -> (moved t0 : Term) -> Term
+printAscii bytes n i b t0 =
     let
         t =
             wrapped t0
 
         end =
-            asciiEnd bytes (min n (i + cols - t.x)) i
+            asciiEnd bytes (min n (i + cols - t.x)) (i + 1)
 
         style =
             Bitwise.shiftLeftBy 22 t.pen
@@ -909,7 +912,7 @@ printAscii bytes n i t0 =
         n
         end
         { t
-            | screen = { s | rows = Builder.update p (asciiRow bytes i end style t.x x) s.rows }
+            | screen = { s | rows = Builder.update p (asciiRow bytes i end style t.x x b) s.rows }
             , x = min (cols - 1) x
             , wrapNext = x >= cols
         }

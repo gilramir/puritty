@@ -722,3 +722,11 @@ Every input's checksum is the same, and so is every page's.
 `vte-scrolling` 1,969 → 1,482 M instructions (738 → 556 a line), 63–67 →
 51–53 ms; `bottom_region` 2,582 → 1,607 M, 80–81 → 47–49 ms; `gitlog`
 83–87 → 72–74. The two over budget are now 1.2× and 1.3×.
+
+## 19. A run's first byte read once (2026-10-28)
+
+geng-lang's `m4-visiterm.md` §VA29, P8d, which Gilbert took: `ground`
+hands `printAscii` the printable byte it read, `asciiEnd` starts after it,
+and `asciiRow` writes it. `vte-scrolling` 556 → 535 instructions a line,
+the region scrolls 3.5% fewer; the inputs of long runs 1.4–4.5% more,
+level in time. Every checksum and page is the same.
