@@ -16,18 +16,22 @@ page (D901), and their row builders are free to be written again. A region
 that touches the top scrolls the same way and moves back only the rows below
 it; with scrollback in the ring, any other region moves its own rows, and on
 the alternate screen, which keeps none, the ring turns as before. Each row's
-extent, the column past which it is blank, is kept beside it, so a row goes
-to a page trimmed without a scan. The page count `checksum` and the summary
+extent, the column past which it is blank, is kept in the row's own last
+cell, past its `cols`, so a row goes to a page trimmed without a scan and a
+row moves with its extent (geng-lang `m4-visiterm.md` §VA27). The cells past
+a row's extent are never read: they may hold what a row in that slot held
+before, so a row is made blank by setting its extent to 0, and a write that
+starts past the extent blanks the cells between first (`reach`). The page count `checksum` and the summary
 print counts the full pages of rows the ring still holds, so that it is the
 count of a probe that paged every row as it left the screen.
 
 Since geng-lang D904, an erase is one `Builder.fill` of its row, rows a scroll
-moves are one `Builder.copyWithin` of the screen and one of the extents for
+moves are one `Builder.copyWithin` of the screen for
 each stretch of the ring the move covers, and an erase in display is a `fill` of
 the screen for each stretch of the ring it covers. Since D991 a region that is
-one stretch of the ring scrolls as one `Builder.rotate` of its rows and one of
-their extents, the row that leaves coming in at the other end, and a row is
-cleared only up to its extent (geng-lang `m4-visiterm.md` §VA20). A printable run is still
+one stretch of the ring scrolls as one `Builder.rotate` of its rows, the row
+that leaves coming in at the other end (geng-lang `m4-visiterm.md` §VA20).
+The scrollback's pages are a builder, each page set in place (§VA27). A printable run is still
 written a cell at a time: a `setMany` of an array made for it was no faster
 (geng-lang `m4-visiterm.md` §VA11). `PACK=points` joins a page's text with
 `Bytes.fromCodePoints` (D905).
@@ -98,7 +102,7 @@ type Page
 
 
 type alias Back =
-    { pages : Array Page
+    { pages : Builder Page
     , head : Int
     , limit : Int
     , pack : PackMode
@@ -110,7 +114,6 @@ slot `base` on, the `hist` rows of scrollback not yet joined into a page just
 before it, oldest first, and free rows after it. -}
 type alias Screen =
     { rows : Builder (Builder Int)
-    , extent : Builder Int
     , base : Int
     , hist : Int
     , size : Int
@@ -151,7 +154,7 @@ type alias Term =
 
 blankArray : Array Int
 blankArray =
-    Array.repeat cols blank
+    Array.pushLast 0 (Array.repeat cols blank)
 
 
 blankRow : {} -> Builder Int
@@ -171,7 +174,6 @@ holeRow {} =
 newScreen : Int -> Screen
 newScreen size =
     { rows = Array.foldl (\_ b -> Builder.pushLast (blankRow {}) b) (Builder.empty size) (Array.repeat size 0)
-    , extent = Builder.fromArray (Array.repeat size 0)
     , base = 0
     , hist = 0
     , size = size
@@ -192,7 +194,7 @@ newTerm pack scrollback =
     , bg = 0
     , flags = 0
     , styles = Dict.empty
-    , back = { pages = [], head = 0, limit = scrollback // pageRows, pack = pack }
+    , back = { pages = Builder.empty 0, head = 0, limit = scrollback // pageRows, pack = pack }
     , ps = 0
     , params = []
     , cur = 0
@@ -236,7 +238,59 @@ rowAt y s =
 
 extentAt : Int -> Screen -> Int
 extentAt y s =
-    Maybe.withDefault 0 (Builder.get (phys s y) s.extent)
+    when Builder.get (phys s y) s.rows is
+        Just r ->
+            extentOf r
+
+        Nothing ->
+            0
+
+
+{-| A row's extent, kept in its last cell, past its `cols` cells. -}
+extentOf : Builder Int -> Int
+extentOf row =
+    Maybe.withDefault 0 (Builder.get cols row)
+
+
+{-| A row with its extent set. -}
+withExtentOf : Int -> (moved row : Builder Int) -> Builder Int
+withExtentOf ext row =
+    Builder.set cols ext row
+
+
+{-| A row made blank: its extent 0. Its cells past its extent are not read,
+and a write past it clears the cells between first (`reach`). -}
+cleared : (moved row : Builder Int) -> Builder Int
+cleared row =
+    Builder.set cols 0 row
+
+
+{-| A row about to be written from column `x`: when `x` is past its extent
+`ext`, the cells between, which may hold what a row there before held, are
+made blank. -}
+reach : Int -> Int -> (moved row : Builder Int) -> Builder Int
+reach ext x row =
+    if x > ext then
+        Builder.fill ext x blank row
+
+    else
+        row
+
+
+{-| A row about to be written from column `x`, by `reach` of its extent. -}
+reached : Int -> (moved row : Builder Int) -> Builder Int
+reached x row =
+    reach (extentOf row) x row
+
+
+{-| A row written by `write` from column `from`, its extent at least `x`. -}
+withExtent : Int -> Int -> (Builder Int -> Builder Int) -> (moved row : Builder Int) -> Builder Int
+withExtent from x write row =
+    let
+        old =
+            extentOf row
+    in
+    Builder.set cols (max x old) (write (reach old from row))
 
 
 {-| Put a row and its extent at logical row `y`. -}
@@ -246,13 +300,13 @@ setRow y row ext s =
         p =
             phys s y
     in
-    { s | rows = Builder.set p row s.rows, extent = Builder.set p ext s.extent }
+    { s | rows = Builder.set p (Builder.set cols ext row) s.rows }
 
 
 {-| The extent at logical row `y`. -}
 setExtent : Int -> Int -> (moved s : Screen) -> Screen
 setExtent y ext s =
-    { s | extent = Builder.set (phys s y) ext s.extent }
+    { s | rows = Builder.update (phys s y) (withExtentOf ext) s.rows }
 
 
 {-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom.
@@ -347,8 +401,8 @@ screenUp keep top bottom screen =
         shiftUp top bottom screen |> setRow bottom (blankRow {}) 0
 
 
-{-| Logical rows `top` to `bottom`, which are one stretch of the ring, and
-their extents turned `by` places toward the top. -}
+{-| Logical rows `top` to `bottom`, which are one stretch of the ring, turned
+`by` places toward the top. -}
 turnRegion : Int -> Int -> Int -> (moved s : Screen) -> Screen
 turnRegion top bottom by s =
     let
@@ -358,21 +412,14 @@ turnRegion top bottom by s =
         pb =
             phys s bottom
     in
-    { s | rows = Builder.rotate pt (pb + 1) by s.rows, extent = Builder.rotate pt (pb + 1) by s.extent }
+    { s | rows = Builder.rotate pt (pb + 1) by s.rows }
 
 
 {-| Logical row `y` made blank in place, a `fill` of the row builder there,
 which a row taken from the free part of the ring always is: a full row. -}
 clearRowAt : Int -> (moved s : Screen) -> Screen
 clearRowAt y s =
-    let
-        p =
-            phys s y
-
-        ext =
-            extentAt y s
-    in
-    { s | rows = Builder.update p (Builder.fill 0 ext blank) s.rows, extent = Builder.set p 0 s.extent }
+    { s | rows = Builder.update (phys s y) cleared s.rows }
 
 
 rotate : (moved s : Screen) -> Screen
@@ -404,10 +451,9 @@ shiftDown i top s =
     moveRows top (top + 1) (i - top) s
 
 
-{-| `count` logical rows from `from` copied to start at `to`, with their
-extents, each read before it is overwritten. The runs are cut where either
-crosses the ring's end, which makes at most three pieces, and each piece is
-one `copyWithin` of each builder: the last piece first when the rows move
+{-| `count` logical rows from `from` copied to start at `to`, each read
+before it is overwritten. The runs are cut where either crosses the ring's
+end, which makes at most three pieces, and each piece is one `moveWithin`: the last piece first when the rows move
 down, the first when they move up. -}
 moveRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
 moveRows from to count s =
@@ -453,24 +499,16 @@ copyRows pf pt run s =
         in
         when taken.old is
             Just row ->
-                when Builder.get pf s.extent is
-                    Just ext ->
-                        { s | rows = Builder.set pt row taken.builder, extent = Builder.set pt ext s.extent }
-
-                    Nothing ->
-                        { s | rows = Builder.set pf row taken.builder }
+                { s | rows = Builder.set pt row taken.builder }
 
             Nothing ->
                 { s | rows = taken.builder }
 
     else
-        { s
-            | rows = Builder.moveWithin pt pf (pf + run) (holeRow {}) s.rows
-            , extent = Builder.copyWithin pt pf (pf + run) s.extent
-        }
+        { s | rows = Builder.moveWithin pt pf (pf + run) (holeRow {}) s.rows }
 
 
-{-| Logical rows `from` up to `to` made blank, one `fill` of each builder for
+{-| Logical rows `from` up to `to` made blank, one `fill` of the rows for
 each stretch of the ring they cover, which is one or two. -}
 blankRows : Int -> Int -> (moved s : Screen) -> Screen
 blankRows from to s =
@@ -490,10 +528,7 @@ blankRows from to s =
         in
         blankRows (from + run)
             to
-            { s
-                | rows = Builder.fill pf (pf + run) row s.rows
-                , extent = Builder.fill pf (pf + run) 0 s.extent
-            }
+            { s | rows = Builder.fill pf (pf + run) row s.rows }
 
 
 -- THE SCROLLBACK
@@ -503,7 +538,7 @@ blankRows from to s =
 trimmed to its extent (`Builder.slice`) and joined into a page (D901). Their
 row builders stay where they are, the free part of the ring now, to be
 cleared and written again in place. -}
-pageOut : (moved s : Screen) -> Back -> { screen : Screen, back : Back }
+pageOut : (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
 pageOut s back =
     let
         page =
@@ -518,11 +553,14 @@ pageOut s back =
 
                         rest =
                             pageRows - (firstStop - first)
+
+                        older =
+                            physRows first firstStop s (Builder.empty (pageRows * 8)) (Builder.empty pageRows)
+
+                        both =
+                            physRows 0 rest s older.cells older.ends
                     in
-                    Flat
-                        { cells = Builder.toArray (physCells 0 rest s (physCells first firstStop s (Builder.empty (pageRows * 8))))
-                        , ends = Array.prepend (Builder.slice first firstStop s.extent) (Builder.slice 0 rest s.extent)
-                        }
+                    Flat { cells = Builder.toArray both.cells, ends = Builder.toArray both.ends }
 
                 _ ->
                     join back.pack (Builder.toArray (trimmedRows (0 - s.hist) (pageRows - s.hist) s (Builder.empty pageRows)))
@@ -530,26 +568,24 @@ pageOut s back =
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
 
 
-{-| The rows in physical slots `p` to `stop`, each trimmed to its extent,
-appended to a builder of cells: read by slot, so that the page is the ring's
-two stretches with no index turned at each row, and appended from the row with
-no array between them (geng-lang D995, D996). -}
-physCells : Int -> Int -> Screen -> (moved cells : Builder Int) -> Builder Int
-physCells p stop s cells =
+{-| The rows in physical slots `p` to `stop`, each trimmed to its extent and
+appended to `cells`, and their extents to `ends`, each row read once. -}
+physRows : Int -> Int -> Screen -> (moved cells : Builder Int) -> (moved ends : Builder Int) -> { cells : Builder Int, ends : Builder Int }
+physRows p stop s cells ends =
     if p >= stop then
-        cells
+        { cells = cells, ends = ends }
 
     else
-        let
-            ext =
-                Maybe.withDefault 0 (Builder.get p s.extent)
-        in
         when Builder.get p s.rows is
             Just r ->
-                physCells (p + 1) stop s (Builder.appendSlice 0 ext r cells)
+                let
+                    ext =
+                        extentOf r
+                in
+                physRows (p + 1) stop s (Builder.appendSlice 0 ext r cells) (Builder.pushLast ext ends)
 
             Nothing ->
-                physCells (p + 1) stop s cells
+                physRows (p + 1) stop s cells (Builder.pushLast 0 ends)
 
 
 trimmedRows : Int -> Int -> Screen -> (moved acc : Builder (Array Int)) -> Builder (Array Int)
@@ -561,14 +597,14 @@ trimmedRows y stop s acc =
         trimmedRows (y + 1) stop s (Builder.pushLast (Builder.slice 0 (extentAt y s) (rowAt y s)) acc)
 
 
-pushPage : Page -> Back -> Back
+pushPage : Page -> (moved back : Back) -> Back
 pushPage page back =
-    if Array.length back.pages < back.limit then
-        { back | pages = Array.pushLast page back.pages }
+    if Builder.length back.pages < back.limit then
+        { back | pages = Builder.pushLast page back.pages }
 
     else
         { back
-            | pages = Array.set back.head page back.pages
+            | pages = Builder.set back.head page back.pages
             , head = modBy back.limit (back.head + 1)
         }
 
@@ -586,7 +622,7 @@ pageCount t =
                 Nothing ->
                     t.screen.hist
     in
-    min t.back.limit (Array.length t.back.pages + hist // pageRows)
+    min t.back.limit (Builder.length t.back.pages + hist // pageRows)
 
 
 join : PackMode -> Array (Array Int) -> Page
@@ -816,12 +852,9 @@ written x write t =
 
         p =
             phys s t.y
-
-        ext =
-            max x (extentAt t.y s)
     in
     { t
-        | screen = { s | rows = Builder.update p write s.rows, extent = Builder.set p ext s.extent }
+        | screen = { s | rows = Builder.update p (withExtent t.x x write) s.rows }
         , x = min (cols - 1) x
         , wrapNext = x >= cols
     }
@@ -834,6 +867,16 @@ writeAscii bytes i end style x row =
 
     else
         row
+
+
+{-| A run of printable ASCII written to a row, and its extent at least `xEnd`. -}
+asciiRow : Bytes -> Int -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Builder Int
+asciiRow bytes i end style x xEnd row =
+    let
+        old =
+            extentOf row
+    in
+    Builder.set cols (max xEnd old) (writeAscii bytes i end style x (reach old x row))
 
 
 {-| A run of printable ASCII. `written`'s work is written out here, so that
@@ -861,15 +904,12 @@ printAscii bytes n i t0 =
 
         p =
             phys s t.y
-
-        ext =
-            max x (extentAt t.y s)
     in
     ground bytes
         n
         end
         { t
-            | screen = { s | rows = Builder.update p (writeAscii bytes i end style t.x) s.rows, extent = Builder.set p ext s.extent }
+            | screen = { s | rows = Builder.update p (asciiRow bytes i end style t.x x) s.rows }
             , x = min (cols - 1) x
             , wrapNext = x >= cols
         }
@@ -889,17 +929,18 @@ printUnicode bytes n i t0 =
         p =
             phys s t.y
 
-        extent =
-            extentAt t.y s
-
         taken =
             Builder.swap p (holeRow {}) s.rows
 
         r =
-            decodeRun bytes n i (Bitwise.shiftLeftBy 22 t.pen) t.x (Maybe.withDefault (blankRow {}) taken.old)
+            decodeRun bytes n i (Bitwise.shiftLeftBy 22 t.pen) t.x (reached t.x (Maybe.withDefault (blankRow {}) taken.old))
 
         rows =
-            Builder.set p r.row taken.builder
+            if r.x == t.x then
+                Builder.set p r.row taken.builder
+
+            else
+                Builder.set p (Builder.set cols (max r.x (extentOf r.row)) r.row) taken.builder
 
         t1 =
             if r.x == t.x then
@@ -907,7 +948,7 @@ printUnicode bytes n i t0 =
 
             else
                 { t
-                    | screen = { s | rows = rows, extent = Builder.set p (max r.x extent) s.extent }
+                    | screen = { s | rows = rows }
                     , x = min (cols - 1) r.x
                     , wrapNext = r.x >= cols
                 }
@@ -1367,19 +1408,22 @@ regionUp count top bottom t =
         let
             keep =
                 top == 0 && t.back.limit > 0 && not (isAlt t)
-
-            room =
-                if keep && t.screen.hist + lines >= t.screen.size then
-                    pageOut t.screen t.back
-
-                else
-                    { screen = t.screen, back = t.back }
         in
-        regionUp (count - 1) top bottom
-            { t
-                | screen = screenUp keep top bottom room.screen
-                , back = room.back
-            }
+        if keep && t.screen.hist + lines >= t.screen.size then
+            let
+                room =
+                    pageOut t.screen t.back
+            in
+            regionUp (count - 1)
+                top
+                bottom
+                { t
+                    | screen = screenUp keep top bottom room.screen
+                    , back = room.back
+                }
+
+        else
+            regionUp (count - 1) top bottom { t | screen = screenUp keep top bottom t.screen }
 
 
 regionDown : Int -> Int -> Int -> (moved t : Term) -> Term
@@ -1442,8 +1486,21 @@ eraseLine how t =
 
             p =
                 phys s t.y
+
+            left =
+                if to >= ext then
+                    min ext from
+
+                else
+                    ext
         in
-        { t | screen = { s | rows = Builder.update p (Builder.fill from to blank) s.rows, extent = Builder.set p (if to >= ext then min ext from else ext) s.extent } }
+        { t | screen = { s | rows = Builder.update p (erased from to left) s.rows } }
+
+
+{-| A row with columns `from` to `to` blank, and its extent `ext`. -}
+erased : Int -> Int -> Int -> (moved row : Builder Int) -> Builder Int
+erased from to ext row =
+    Builder.set cols ext (Builder.fill from to blank row)
 
 
 -- RUNNING IT
@@ -1457,7 +1514,7 @@ checksum t =
                 row =
                     rowAt y t.screen
             in
-            Array.foldl (\c s -> Bitwise.xor (s * 31) c) sum (Builder.slice 0 (Builder.length row) row)
+            Array.foldl (\c s -> Bitwise.xor (s * 31) c) sum (Array.append (Array.repeat (cols - extentOf row) blank) (Builder.slice 0 (extentOf row) row))
         )
         (pageCount t)
         (Array.range 0 (lines - 1))

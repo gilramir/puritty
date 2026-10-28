@@ -697,3 +697,28 @@ Every input's checksum is the same, and so is every page's, checked as §16's
 were. `vte-scrolling` 2,550 → 2,227 M instructions, 78–79 → 68–70 ms;
 `gitlog` 84–85 → 80–82, `ls` 55–60 → 53–56. Two inputs are over the budget,
 `vte-scrolling` 1.6× and `bottom_region` 2.3×.
+
+## 18. The probe's own logic (2026-10-28)
+
+geng-lang's `m4-visiterm.md` §VA27 surveyed the probe's own logic with
+`geng profile` and `bench/compare`, and Gilbert took §VA27.4's leanings:
+
+- **A row's extent is the row's last cell**, past its `cols`, and the
+  extents builder beside the rows is gone. A write of a run reads and
+  writes one builder, not two, and a scroll that moves rows moves their
+  extents with them.
+- **The cells past a row's extent are never read.** A row is made blank by
+  setting its extent to 0; a write that starts past the extent blanks the
+  cells between first (`reach`), and `checksum` reads a row to its extent
+  and blanks after it.
+- **A line feed that does not page builds no record**, where `regionUp`
+  built `{ screen, back }` for both branches.
+- **The scrollback's pages are a `Builder`**, each page set in place,
+  where an `Array` of 390 was copied at every page.
+- **A page reads each row once**, for its cells and its extent
+  (`physRows`).
+
+Every input's checksum is the same, and so is every page's.
+`vte-scrolling` 1,969 → 1,482 M instructions (738 → 556 a line), 63–67 →
+51–53 ms; `bottom_region` 2,582 → 1,607 M, 80–81 → 47–49 ms; `gitlog`
+83–87 → 72–74. The two over budget are now 1.2× and 1.3×.
