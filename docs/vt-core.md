@@ -24,6 +24,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
 | the timing | `harness/bench/` (`core-bench FILE`) | §VC7 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
+| the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
 
 `Vt`'s interface, as it stands:
 
@@ -156,14 +157,14 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 107 of 107 cases pass
+./harness/replay.py                  # 108 of 108 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**107 cases, every one passing on both sides, none divergent** (2026-10-29;
-98 when the core was begun, nine more with §VC10).
+**108 cases, every one passing on both sides, none divergent** (2026-10-29;
+98 when the core was begun, nine more with §VC10, one with §VC11).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -356,8 +357,8 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
   measures it again once the rest is built.
 - **esctest2** runs headless (§VC10): 297 of 567 tests pass, Ghostty 383.
   Every one of the 92 that Ghostty passes and the core does not needs a
-  feature below. **The fuzzer**: not started; libFuzzer links with devbox's
-  clang (`phase1-core.md` §6).
+  feature below. **The fuzzer** runs (§VC11); its differential against
+  libghostty-vt is not built.
 - **Left and right margins** (DECLRMM, ?69, and DECSLRM): not started, and
   52 of those 92 tests. Every scroll, insert, delete and wrap takes them;
   the scroll paths that §VC7 measured would carry the test.
@@ -534,3 +535,67 @@ input, and the times are §VC7's (five runs each, least and most, ms):
 and the other nine level with §VC7's. This is geng-lang's to know: a Geng
 program's speed on its hottest path turned on a clang heuristic that the
 program cannot see and Geng has no word for (`m4-visiterm.md` §VA50).
+
+---
+
+## VC11. The fuzzer (V7)
+
+G9 of `geng-plan.md`: the core built as a `runtime = "host"` library and
+driven by libFuzzer. `harness/fuzz/` is the library, one module, `Fuzz`,
+exposing `dump : Int -> Int -> Int -> Bytes -> String`, which feeds a term
+of so many columns and rows the bytes, a read of so many at a time or all in
+one, and answers `Vt.dump`. `build.sh` builds it with the passes the core is
+measured with and `--debug-info`, then compiles the C it kept again with
+libFuzzer's coverage into `vt-fuzz` (with `fuzz.c`) and `vt-min` (with
+`min.c`): `geng make` takes no C flags of a library's host, so the second
+step of its build (geng-lang `m3-embed.md` D629) is repeated with them.
+
+A host could not hand the library `Bytes`: the embed ABI's `bytes_from` was
+specified and never built. geng-lang built it for this (D1020, `m3-embed.md`
+§EM22, `m4-visiterm.md` §VA51).
+
+**V7 · The fuzzer's findings are what the core itself can tell.** An
+input's first three bytes choose the columns (1 to 132), the rows (1 to 50)
+and a read's length (1 to 16); the rest is fed. It is a finding when a call
+answers other than `GENG_OK`, a Geng crash among them (an index, a pattern
+not matched, the stack, memory), or **when the dump fed the input in one
+read differs from the dump fed it a read at a time**, which leaves the
+parser and the fast paths in every state they can be cut in, as the replay
+corpus's byte-a-read run does for its cases. libFuzzer adds a time limit
+(10 s an input) and a memory limit (2 GB). A differential against
+libghostty-vt is not one of them yet: on bytes chosen at random it would
+diverge on every sequence §VC9 lists, and needs those built, or inputs
+drawn from what the core has.
+
+```
+./harness/fuzz/build.sh
+./harness/fuzz.py --minutes 10            # one job; a row of corpus/fuzz/runs.tsv
+./harness/fuzz.py --hours 2 --jobs 8
+./harness/fuzz.py --show FILE             # both dumps of an input
+./harness/fuzz/vt-min FILE OUT            # the smallest input that is the same finding
+```
+
+The corpus grows in `.harness-work/fuzz/corpus` from run to run, seeded each
+time from every replay case at its size (or the nearest the tables have),
+read whole and seven bytes at a time. `vt.dict` gives libFuzzer the
+sequences the core parses. Inputs are 4 KB at most: without a limit they
+grew to 40 KB and each job ran 290 inputs a second where it had run 3,800.
+
+### What it found
+
+**A stale spacer past a row's extent.** In its first minute, at 20×2, a dump
+fed a byte at a time had a bold blank cell where the whole read had an empty
+one. `vt-min` cut the 4,540 bytes to 527: bold, `中`, 514 line feeds, `CR J
+LF 中`. After 514 the ring of rows has wrapped, and the new bottom row is a
+slot whose old cells are still there past its extent, which is all that
+clearing a row resets: the bold `中` and its spacer. `printPoint`, which a
+character decoded across reads goes through, made the cells from the extent
+to the cursor empty and then asked `splitWide` whether the cell at the
+cursor was a spacer, which past the extent it only seemed to be; it blanked
+the cell before it in the old style. `printUnicode`, the whole read's path,
+calls the two the other way round, which hid it. ED 2 clears rows the same
+way, so 19 bytes show it at 6×1, and with autowrap off an ASCII character
+takes `printPoint` too and both reads are wrong. Ghostty leaves the cell
+empty. **Fixed:** `splitWide` takes a spacer only inside the extent
+(`wide-stale-spacer`, which fails without the fix). §VC7's times are level.
+

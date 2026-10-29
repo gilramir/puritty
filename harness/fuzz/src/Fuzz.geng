@@ -1,0 +1,33 @@
+module Fuzz exposing (dump)
+
+{-| The core as a library for the fuzzer (docs/vt-core.md §VC11). -}
+
+import Bytes exposing (Bytes)
+import Vt
+
+
+{-| The dump of a terminal of `cols` by `rows` fed `input`, `chunk` bytes a
+read, the whole of it in one read when `chunk` is 0 or less. -}
+dump : Int -> Int -> Int -> Bytes -> String
+dump cols rows chunk input =
+    let
+        n =
+            Bytes.length input
+
+        step =
+            if chunk <= 0 then
+                max 1 n
+
+            else
+                chunk
+    in
+    Vt.dump (feedAll input step 0 (Vt.new { cols = cols, rows = rows, scrollback = 200, checksums = True }))
+
+
+feedAll : Bytes -> Int -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes chunk at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes chunk (at + chunk) (Vt.feed (Bytes.slice at (at + chunk) bytes) t)
