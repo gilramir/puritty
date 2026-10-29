@@ -393,6 +393,8 @@ type alias Term =
     , wrapNext : Bool
     , top : Int
     , bottom : Int
+    , left : Int
+    , right : Int
     , scroll : Int
     , attrs : Attrs
     , pen : Int64
@@ -511,6 +513,8 @@ fresh config =
     , wrapNext = False
     , top = 0
     , bottom = config.rows - 1
+    , left = 0
+    , right = config.cols - 1
     , scroll = scrollFull
     , attrs = plainAttrs
     , pen = 0
@@ -1095,7 +1099,7 @@ feed bytes t =
             Bytes.length bytes
     in
     if t.ps == psGround then
-        ground bytes n 0 t
+        resume bytes n 0 t
 
     else if t.ps == psEscape then
         escape bytes n 0 { t | ps = psGround }
@@ -1164,18 +1168,60 @@ ground bytes n i t =
             ground bytes n (i + 1) (execute b t)
 
 
+{-| Back to the ground state after a sequence, a string or a decoded
+character: `ground`, which takes CR to column 0, or with the margins
+narrowed `groundMargined`. The margins change only inside a sequence, so the
+test is made once a sequence, not at every CR, which on `vte-scrolling` cost
+a cycle a line, 4% of its time (§VC13). -}
+resume : Bytes -> Int -> Int -> (moved t : Term) -> Term
+resume bytes n i t =
+    if t.left == 0 && t.right == t.cols - 1 then
+        ground bytes n i t
+
+    else
+        groundMargined bytes n i t
+
+
+{-| The ground state with the margins narrowed: no fast paths, which
+`plain` turns off anyway, and CR to the left margin. -}
+groundMargined : Bytes -> Int -> Int -> (moved t : Term) -> Term
+groundMargined bytes n i t =
+    if i >= n then
+        t
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            groundMargined bytes n (i + 1) (printPoint (graphic t b) 1 t)
+
+        else if b >= 0x80 then
+            startUtf8 bytes n i b t
+
+        else if b == 13 then
+            groundMargined bytes n (i + 1) { t | x = crX t, wrapNext = False }
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else
+            groundMargined bytes n (i + 1) (execute b t)
+
+
 {-| A C0 control. -}
 execute : Int -> (moved t : Term) -> Term
 execute b t =
     if b == 10 || b == 11 || b == 12 then
         if t.newline then
-            lineFeed { t | x = 0, wrapNext = False }
+            carriageReturn (lineFeed { t | wrapNext = False })
 
         else
             lineFeed { t | wrapNext = False }
 
     else if b == 13 then
-        { t | x = 0, wrapNext = False }
+        { t | x = crX t, wrapNext = False }
 
     else if b == 8 then
         cursorLeft 1 t
@@ -1221,14 +1267,28 @@ decGraphics =
 wrapped : (moved t : Term) -> Term
 wrapped t =
     if t.wrapNext && t.autowrap then
-        let
-            marked =
-                { t | screen = setWrapped t.y True t.screen }
-        in
-        lineFeed { marked | x = 0, wrapNext = False }
+        wrapNow t
 
     else
         t
+
+
+{-| A pending wrap taken: the row marked wrapped and a line feed, the cursor
+at the left margin. The row is marked only when the cursor wraps from the
+screen's last column, not from a right margin, as in Ghostty. Apart from
+`wrapped`, which every character calls, so that `wrapped` stays small
+enough to inline (§VC13). -}
+wrapNow : (moved t : Term) -> Term
+wrapNow t =
+    let
+        marked =
+            if t.x == t.cols - 1 then
+                { t | screen = setWrapped t.y True t.screen }
+
+            else
+                t
+    in
+    lineFeed { marked | x = marked.left, wrapNext = False }
 
 
 writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (moved row : Builder Int64) -> Builder Int64
@@ -1349,7 +1409,7 @@ printPoint cp w t0 =
                 else
                     t1
         in
-        if w == 2 && t.x + 2 > t.cols then
+        if w == 2 && t.x + 2 > rightEdge t then
             if t.autowrap && t.cols >= 2 then
                 let
                     s =
@@ -1359,7 +1419,7 @@ printPoint cp w t0 =
                         rowOffset s t.y
 
                     headed =
-                        { t | screen = { s | cells = extendTo o t.cols t.cols (Builder.set (o + t.x) (Int64.fromInt spacerHead) (reachAt o (extentAt o s) t.x (splitWide o t.x (t.x + 1) (extentAt o s) s.cells))) } }
+                        { t | screen = { s | cells = extendTo o t.cols (t.x + 1) (Builder.set (o + t.x) (Int64.fromInt spacerHead) (reachAt o (extentAt o s) t.x (splitWide o t.x (t.x + 1) (extentAt o s) s.cells))) } }
                 in
                 printPoint cp w { headed | wrapNext = True }
 
@@ -1368,6 +1428,24 @@ printPoint cp w t0 =
 
         else
             let
+                edge =
+                    rightEdge t
+
+                -- 0 no insert, 1 between margins, 2 the whole row
+                inserting =
+                    if not t.insert then
+                        0
+
+                    else if margined t then
+                        if t.x >= t.left && t.x <= t.right then
+                            1
+
+                        else
+                            0
+
+                    else
+                        2
+
                 s0 =
                     t.screen
 
@@ -1375,11 +1453,14 @@ printPoint cp w t0 =
                     rowOffset s0 t.y
 
                 s =
-                    if t.insert then
-                        insertCells o t.x w t.erase s0
+                    if inserting == 0 then
+                        s0
+
+                    else if inserting == 1 then
+                        insertMargined o t.x w t.right t.erase s0
 
                     else
-                        s0
+                        insertCells o t.x w t.erase s0
 
                 ext =
                     extentAt o s
@@ -1399,8 +1480,8 @@ printPoint cp w t0 =
             in
             { t
                 | screen = { s | cells = extendTo o t.cols x written }
-                , x = min (t.cols - 1) x
-                , wrapNext = x >= t.cols
+                , x = min (edge - 1) x
+                , wrapNext = x >= edge
                 , lastPoint = cp
             }
 
@@ -1685,7 +1766,7 @@ startUtf8 bytes n i b t =
             }
 
     else
-        ground bytes n (i + 1) (printDecoded 0xFFFD t)
+        resume bytes n (i + 1) (printDecoded 0xFFFD t)
 
 
 {-| The continuation bytes of a UTF-8 sequence; a read that ends in one
@@ -1695,7 +1776,7 @@ subpart, Unicode §3.9). -}
 continueUtf8 : Bytes -> Int -> Int -> (moved t : Term) -> Term
 continueUtf8 bytes n i t =
     if t.need <= 0 then
-        ground bytes n i (printDecoded t.utf t)
+        resume bytes n i (printDecoded t.utf t)
 
     else if i >= n then
         { t | ps = psUtf8 }
@@ -1709,7 +1790,7 @@ continueUtf8 bytes n i t =
             continueUtf8 bytes n (i + 1) { t | utf = Bitwise.or (Bitwise.shiftLeftBy 6 t.utf) (Bitwise.and 0x3F b), need = t.need - 1, low = 0x80, high = 0xBF }
 
         else
-            ground bytes n i (printDecoded 0xFFFD { t | need = 0 })
+            resume bytes n i (printDecoded 0xFFFD { t | need = 0 })
 
 
 printDecoded : Int -> (moved t : Term) -> Term
@@ -1751,13 +1832,13 @@ escape bytes n i t =
             escape bytes n (i + 1) t
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
         else if b < 0x20 then
             escape bytes n (i + 1) (execute b t)
 
         else
-            ground bytes n (i + 1) (escDispatch b t)
+            resume bytes n (i + 1) (escDispatch b t)
 
 
 escDispatch : Int -> (moved t : Term) -> Term
@@ -1778,7 +1859,7 @@ escDispatch b t =
         lineFeed { t | wrapNext = False }
 
     else if b == 0x45 then
-        lineFeed { t | x = 0, wrapNext = False }
+        carriageReturn (lineFeed { t | wrapNext = False })
 
     else if b == 0x48 then
         { t | tabs = Builder.set t.x 1 t.tabs }
@@ -1819,22 +1900,22 @@ escInter bytes n i t =
             escape bytes n (i + 1) t
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
         else if b < 0x20 then
             escInter bytes n (i + 1) (execute b t)
 
         else if t.inter == 0x28 then
-            ground bytes n (i + 1) (withPlain { t | g0 = charset b })
+            resume bytes n (i + 1) (withPlain { t | g0 = charset b })
 
         else if t.inter == 0x29 then
-            ground bytes n (i + 1) { t | g1 = charset b }
+            resume bytes n (i + 1) { t | g1 = charset b }
 
         else if t.inter == 0x23 && b == 0x38 then
-            ground bytes n (i + 1) (alignment t)
+            resume bytes n (i + 1) (alignment t)
 
         else
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
 
 charset : Int -> Int
@@ -1858,13 +1939,13 @@ oscString bytes n i t =
                 byteAt bytes i
         in
         if b == 7 then
-            ground bytes n (i + 1) (oscDispatch "\u{0007}" t)
+            resume bytes n (i + 1) (oscDispatch "\u{0007}" t)
 
         else if b == 0x1B then
             escape bytes n (i + 1) (oscDispatch "\u{001B}\\" t)
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) { t | str = Builder.empty 0 }
+            resume bytes n (i + 1) { t | str = Builder.empty 0 }
 
         else if b < 0x20 then
             oscString bytes n (i + 1) t
@@ -1898,7 +1979,7 @@ dcsString bytes n i t =
             escape bytes n (i + 1) (dcsDispatch t)
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) { t | str = Builder.empty 0 }
+            resume bytes n (i + 1) { t | str = Builder.empty 0 }
 
         else
             dcsString bytes n (i + 1) (keepByte b t)
@@ -1919,7 +2000,7 @@ ignoreString bytes n i t =
             escape bytes n (i + 1) t
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
         else
             ignoreString bytes n (i + 1) t
@@ -2315,6 +2396,13 @@ requestStatus setting t =
                 )
             ++ " q"
 
+    else if setting == "s" then
+        if Dict.get 69 t.modes == Just True then
+            "1$r" ++ String.fromInt (t.left + 1) ++ ";" ++ String.fromInt (t.right + 1) ++ "s"
+
+        else
+            "0$r"
+
     else if setting == "r" then
         "1$r" ++ String.fromInt (t.top + 1) ++ ";" ++ String.fromInt (t.bottom + 1) ++ "r"
 
@@ -2443,13 +2531,13 @@ csi bytes n i t params cur colons priv inter phase =
             csi bytes n (i + 1) t params cur colons priv b 2
 
         else if b >= 0x40 && b <= 0x7E then
-            ground bytes n (i + 1) (dispatch b priv inter colons (Builder.toArray (Builder.pushLast cur params)) t)
+            resume bytes n (i + 1) (dispatch b priv inter colons (Builder.toArray (Builder.pushLast cur params)) t)
 
         else if b == 0x1B then
             escape bytes n (i + 1) t
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
         else if b < 0x20 then
             csi bytes n (i + 1) (execute b t) params cur colons priv inter phase
@@ -2469,13 +2557,13 @@ csiIgnore bytes n i t =
                 byteAt bytes i
         in
         if b >= 0x40 && b <= 0x7E then
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
         else if b == 0x1B then
             escape bytes n (i + 1) t
 
         else if b == 0x18 || b == 0x1A then
-            ground bytes n (i + 1) t
+            resume bytes n (i + 1) t
 
         else if b < 0x20 then
             csiIgnore bytes n (i + 1) (execute b t)
@@ -2547,7 +2635,7 @@ dispatchRest final priv inter params t =
             eraseLine True (param 0 0 params) t
 
         else if final == 0x6E && param 0 0 params == 6 then
-            reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (t.x + 1) ++ ";1R") t
+            reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
 
         else
             t
@@ -2612,19 +2700,34 @@ dispatchRare final params t =
         { t | y = min (lowerLimit t) (t.y + param 0 1 params), wrapNext = False }
 
     else if final == 0x43 || final == 0x61 then
-        { t | x = min (t.cols - 1) (t.x + param 0 1 params), wrapNext = False }
+        { t
+            | x =
+                min
+                    (if t.x <= t.right then
+                        t.right
+
+                     else
+                        t.cols - 1
+                    )
+                    (t.x + param 0 1 params)
+            , wrapNext = False
+        }
 
     else if final == 0x44 then
         cursorLeft (param 0 1 params) t
 
     else if final == 0x45 then
-        { t | y = min (lowerLimit t) (t.y + param 0 1 params), x = 0, wrapNext = False }
+        { t | y = min (lowerLimit t) (t.y + param 0 1 params), x = crX t, wrapNext = False }
 
     else if final == 0x46 then
-        { t | y = max (upperLimit t) (t.y - param 0 1 params), x = 0, wrapNext = False }
+        { t | y = max (upperLimit t) (t.y - param 0 1 params), x = crX t, wrapNext = False }
 
     else if final == 0x47 || final == 0x60 then
-        { t | x = clamp 0 (t.cols - 1) (param 0 1 params - 1), wrapNext = False }
+        if t.origin then
+            { t | x = clamp t.left t.right (param 0 1 params - 1 + t.left), wrapNext = False }
+
+        else
+            { t | x = clamp 0 (t.cols - 1) (param 0 1 params - 1), wrapNext = False }
 
     else if final == 0x64 then
         cursorTo t.x (param 0 1 params - 1) t
@@ -2645,14 +2748,36 @@ dispatchRare final params t =
         eraseChars (param 0 1 params) t
 
     else if final == 0x40 then
-        let
-            s =
-                t.screen
-        in
-        { t | screen = insertCells (rowOffset s t.y) t.x (param 0 1 params) t.erase s, wrapNext = False }
+        if not (margined t) then
+            let
+                s =
+                    t.screen
+            in
+            { t | screen = insertCells (rowOffset s t.y) t.x (param 0 1 params) t.erase s, wrapNext = False }
+
+        else if t.x >= t.left && t.x <= t.right then
+            let
+                s =
+                    t.screen
+            in
+            { t | screen = insertMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s, wrapNext = False }
+
+        else
+            { t | wrapNext = False }
 
     else if final == 0x50 then
-        deleteChars (param 0 1 params) t
+        if not (margined t) then
+            deleteChars (param 0 1 params) t
+
+        else if t.x >= t.left && t.x <= t.right then
+            let
+                s =
+                    t.screen
+            in
+            { t | screen = deleteMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s, wrapNext = False }
+
+        else
+            t
 
     else if final == 0x72 then
         let
@@ -2669,24 +2794,46 @@ dispatchRare final params t =
             t
 
     else if final == 0x53 then
-        regionUp (param 0 1 params) t.top t.bottom t
+        if margined t then
+            marginUp (param 0 1 params) t.top t.bottom t
+
+        else
+            regionUp (param 0 1 params) t.top t.bottom t
 
     else if final == 0x54 then
-        regionDown (param 0 1 params) t.top t.bottom t
+        if margined t then
+            marginDown (param 0 1 params) t.top t.bottom t
+
+        else
+            regionDown (param 0 1 params) t.top t.bottom t
 
     else if final == 0x4C then
-        if t.y >= t.top && t.y <= t.bottom then
+        if t.y < t.top || t.y > t.bottom then
+            t
+
+        else if margined t then
+            if t.x >= t.left && t.x <= t.right then
+                marginDown (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
+
+            else
+                t
+
+        else
             regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False }
 
-        else
-            t
-
     else if final == 0x4D then
-        if t.y >= t.top && t.y <= t.bottom then
-            regionUp (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False }
+        if t.y < t.top || t.y > t.bottom then
+            t
+
+        else if margined t then
+            if t.x >= t.left && t.x <= t.right then
+                marginUp (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
+
+            else
+                t
 
         else
-            t
+            regionUp (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False }
 
     else if final == 0x62 then
         repeatLast (min 65535 (param 0 1 params)) t
@@ -2706,7 +2853,7 @@ dispatchRare final params t =
                 param 0 0 params
         in
         if p == 6 then
-            reply ("\u{001B}[" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (t.x + 1) ++ "R") t
+            reply ("\u{001B}[" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ "R") t
 
         else if p == 5 then
             reply "\u{001B}[0n" t
@@ -2721,7 +2868,16 @@ dispatchRare final params t =
         reply ("\u{001B}[8;" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ "t") t
 
     else if final == 0x73 then
-        saveCursor t
+        -- CSI s is SCOSC, or with left and right margins on (?69) DECSLRM;
+        -- with parameters it is DECSLRM, which does nothing with them off
+        if Dict.get 69 t.modes == Just True then
+            setMargins (param 0 1 params) (param 1 t.cols params) t
+
+        else if Array.length params == 1 && param 0 0 params == 0 then
+            saveCursor t
+
+        else
+            t
 
     else if final == 0x75 then
         restoreCursor t
@@ -2770,22 +2926,30 @@ cursorLeft n t =
 
                 else
                     n
+
+            -- the left margin, or the first column from left of it
+            lm =
+                if t.x < t.left then
+                    0
+
+                else
+                    t.left
         in
         if count <= 0 then
             { t | wrapNext = False }
 
-        else if t.x == 0 && mode == 1 && t.y <= t.top then
-            { t | y = t.top, wrapNext = False }
+        else if t.x == lm && mode == 1 && t.y <= t.top then
+            { t | x = lm, y = t.top, wrapNext = False }
 
         else
-            reverseLeft mode count { t | wrapNext = False }
+            reverseLeft mode lm count { t | wrapNext = False }
 
 
-reverseLeft : Int -> Int -> (moved t : Term) -> Term
-reverseLeft mode count t0 =
+reverseLeft : Int -> Int -> Int -> (moved t : Term) -> Term
+reverseLeft mode lm count t0 =
     let
         amount =
-            min t0.x count
+            min (t0.x - lm) count
 
         rest =
             count - amount
@@ -2798,7 +2962,7 @@ reverseLeft mode count t0 =
 
     else if t.y == t.top then
         if mode == 2 then
-            reverseLeft mode (rest - 1) { t | x = t.cols - 1, y = t.bottom }
+            reverseLeft mode lm (rest - 1) { t | x = t.right, y = t.bottom }
 
         else
             t
@@ -2810,7 +2974,7 @@ reverseLeft mode count t0 =
         t
 
     else
-        reverseLeft mode (rest - 1) { t | x = t.cols - 1, y = t.y - 1 }
+        reverseLeft mode lm (rest - 1) { t | x = t.right, y = t.y - 1 }
 
 
 rowWrapped : Int -> Screen -> Bool
@@ -2818,12 +2982,271 @@ rowWrapped y s =
     Bitwise.and wrappedBit (metaAt (rowOffset s y) s) /= 0
 
 
+-- LEFT AND RIGHT MARGINS
+
+
+{-| Whether DECSLRM has narrowed the margins. Narrowed, printing takes the
+general path and the scrolls, inserts and deletes work on the columns
+between them (§VC13). -}
+margined : Term -> Bool
+margined t =
+    t.left > 0 || t.right < t.cols - 1
+
+
+{-| NEL's and LNM's CR, after the line feed, so that a cursor right of the
+margins at the region's bottom does not scroll, as in Ghostty. -}
+carriageReturn : (moved t : Term) -> Term
+carriageReturn t =
+    { t | x = crX t, wrapNext = False }
+
+
+{-| Where CR takes the cursor: the left margin, or the first column from
+left of it outside origin mode. -}
+crX : Term -> Int
+crX t =
+    if t.left == 0 then
+        0
+
+    else if t.origin || t.x >= t.left then
+        t.left
+
+    else
+        0
+
+
+{-| The column printing wraps after, plus one: the right margin, or the
+screen's last column from right of it. -}
+rightEdge : Term -> Int
+rightEdge t =
+    if t.x <= t.right then
+        t.right + 1
+
+    else
+        t.cols
+
+
+tabFloor : Term -> Int
+tabFloor t =
+    if t.origin then
+        t.left
+
+    else
+        0
+
+
+{-| DECSLRM, columns from 1, as Ghostty sets them: the cursor home after. -}
+setMargins : Int -> Int -> (moved t : Term) -> Term
+setMargins l r t =
+    let
+        left =
+            max 1 l
+
+        right =
+            min t.cols r
+    in
+    if left >= right then
+        t
+
+    else
+        cursorTo 0 0 (withScroll (withPlain { t | left = left - 1, right = right - 1 }))
+
+
+{-| The cursor's column as a report gives it: from the left margin in origin
+mode. -}
+reportX : Term -> Int
+reportX t =
+    if t.origin then
+        max 0 (t.x - t.left)
+
+    else
+        t.x
+
+
+{-| Rows `top` to `bottom`, between the margins, scrolled up `count`: SU,
+DL, and IND at the region's bottom. -}
+marginUp : Int -> Int -> Int -> (moved t : Term) -> Term
+marginUp count top bottom t =
+    let
+        n =
+            min (max 1 count) (bottom - top + 1)
+    in
+    { t | screen = clearSpans (bottom - n + 1) bottom t.left t.right t.erase (copyUp (top + n) bottom n t.left t.right t.screen) }
+
+
+{-| Rows `top` to `bottom`, between the margins, scrolled down `count`: SD,
+IL, and RI at the region's top. -}
+marginDown : Int -> Int -> Int -> (moved t : Term) -> Term
+marginDown count top bottom t =
+    let
+        n =
+            min (max 1 count) (bottom - top + 1)
+    in
+    { t | screen = clearSpans top (top + n - 1) t.left t.right t.erase (copyDown (bottom - n) top n t.left t.right t.screen) }
+
+
+{-| Rows `y` to `last`, each copied `n` rows up, between the columns. -}
+copyUp : Int -> Int -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyUp y last n left right s =
+    if y > last then
+        s
+
+    else
+        copyUp (y + 1) last n left right (copySpan y (y - n) left right s)
+
+
+{-| Rows `y` down to `first`, each copied `n` rows down. -}
+copyDown : Int -> Int -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyDown y first n left right s =
+    if y < first then
+        s
+
+    else
+        copyDown (y - 1) first n left right (copySpan y (y + n) left right s)
+
+
+clearSpans : Int -> Int -> Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+clearSpans y last left right fill s =
+    if y > last then
+        s
+
+    else
+        clearSpans (y + 1) last left right fill (clearSpan y left right fill s)
+
+
+{-| Columns `left` to `right` of row `src` copied to row `dst`; a wide
+character the margins cut, in either row, goes. -}
+copySpan : Int -> Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+copySpan src dst left right s0 =
+    let
+        so =
+            rowOffset s0 src
+
+        dO =
+            rowOffset s0 dst
+
+        s =
+            widen dO (widen so s0)
+
+        cut =
+            cutAt dO s.cols (right + 1) (cutAt dO s.cols left (cutAt so s.cols (right + 1) (cutAt so s.cols left s.cells)))
+    in
+    trim dO (trim so { s | cells = Builder.copyWithin (dO + left) (so + left) (so + right + 1) cut })
+
+
+clearSpan : Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+clearSpan y left right fill s0 =
+    let
+        o =
+            rowOffset s0 y
+
+        s =
+            widen o s0
+    in
+    trim o { s | cells = Builder.fill (o + left) (o + right + 1) fill (cutAt o s.cols (right + 1) (cutAt o s.cols left s.cells)) }
+
+
+{-| ICH between the margins: the cells from `x` to `right` move right, those
+past `right` lost. -}
+insertMargined : Int -> Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+insertMargined o x count right erase s0 =
+    let
+        s =
+            widen o s0
+
+        n =
+            min (max 1 count) (right - x + 1)
+
+        cut =
+            cutAt o s.cols (right + 1 - n) (cutAt o s.cols (right + 1) (cutAt o s.cols x s.cells))
+
+        moved =
+            if right + 1 - n > x then
+                Builder.copyWithin (o + x + n) (o + x) (o + right + 1 - n) cut
+
+            else
+                cut
+    in
+    trim o { s | cells = Builder.fill (o + x) (o + x + n) erase moved }
+
+
+{-| DCH between the margins: the cells past the deleted ones, to `right`,
+move left, and the erase cell comes in at `right`. -}
+deleteMargined : Int -> Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+deleteMargined o x count right erase s0 =
+    let
+        s =
+            widen o s0
+
+        n =
+            min (max 1 count) (right - x + 1)
+
+        cut =
+            cutAt o s.cols (right + 1) (cutAt o s.cols (x + n) (cutAt o s.cols x s.cells))
+
+        moved =
+            if x + n <= right then
+                Builder.copyWithin (o + x) (o + x + n) (o + right + 1) cut
+
+            else
+                cut
+    in
+    trim o { s | cells = Builder.fill (o + right + 1 - n) (o + right + 1) erase moved }
+
+
+{-| The row at `o` with every cell explicit: those past its extent made
+empty and its extent the row's width, its wrapped flag kept. -}
+widen : Int -> (moved s : Screen) -> Screen
+widen o s =
+    let
+        m =
+            metaAt o s
+    in
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt s.cols)) (reachAt o (metaExtent m) s.cols s.cells) }
+
+
+{-| The row at `o`'s extent brought back to its last cell that is not
+empty. -}
+trim : Int -> (moved s : Screen) -> Screen
+trim o s =
+    let
+        m =
+            metaAt o s
+    in
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt (lastFilled o (metaExtent m) s.cells))) s.cells }
+
+
+lastFilled : Int -> Int -> Builder Int64 -> Int
+lastFilled o e cells =
+    if e <= 0 then
+        0
+
+    else if Maybe.withDefault 0 (Builder.get (o + e - 1) cells) == 0 then
+        lastFilled o (e - 1) cells
+
+    else
+        e
+
+
+{-| A wide character that a boundary before column `c` cuts in two, both
+halves made empty. -}
+cutAt : Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+cutAt o cols c cells =
+    if c <= 0 || c >= cols then
+        cells
+
+    else if cellWide (Maybe.withDefault 0 (Builder.get (o + c) cells)) == wideTail then
+        Builder.set (o + c - 1) 0 (Builder.set (o + c) 0 cells)
+
+    else
+        cells
+
+
 {-| The cursor's row as a report gives it: from the region's top in origin
 mode. -}
 reportY : Term -> Int
 reportY t =
     if t.origin then
-        t.y - t.top
+        max 0 (t.y - t.top)
 
     else
         t.y
@@ -2833,7 +3256,7 @@ reportY t =
 cursorTo : Int -> Int -> (moved t : Term) -> Term
 cursorTo x y t =
     if t.origin then
-        { t | x = clamp 0 (t.cols - 1) x, y = clamp t.top t.bottom (y + t.top), wrapNext = False }
+        { t | x = clamp t.left t.right (x + t.left), y = clamp t.top t.bottom (y + t.top), wrapNext = False }
 
     else
         { t | x = clamp 0 (t.cols - 1) x, y = clamp 0 (t.rows - 1) y, wrapNext = False }
@@ -2882,6 +3305,13 @@ setPrivate p on t =
 
         else
             restoreCursor (toMain False t)
+
+    else if p == 69 then
+        if on then
+            { t | modes = Dict.set 69 True t.modes }
+
+        else
+            withScroll (withPlain { t | modes = Dict.set 69 False t.modes, left = 0, right = t.cols - 1 })
 
     else if p == 1048 then
         if on then
@@ -3199,6 +3629,8 @@ softReset t =
                 , modes = Array.foldl Dict.remove (Dict.set 12 False t.modes) softResetModes
                 , guard = 0
                 , protectMode = 0
+                , left = 0
+                , right = t.cols - 1
                 , pen = Bitwise.and (Bitwise.complement protectBit) t.pen
                 , colours = Dict.keepIf (\k _ -> k > 255) t.colours
             }
@@ -3230,7 +3662,7 @@ off, which is when the ground state's fast paths may write a run (§VC5).
 Set wherever any of the four changes. -}
 withPlain : (moved t : Term) -> Term
 withPlain t =
-    { t | plain = t.gl == 0 && t.g0 == 0 && t.autowrap && not t.insert }
+    { t | plain = t.gl == 0 && t.g0 == 0 && t.autowrap && not t.insert && not (margined t) }
 
 
 -- TABS
@@ -3238,8 +3670,8 @@ withPlain t =
 
 nextTab : Int -> Int -> Term -> Int
 nextTab x count t =
-    if count <= 0 || x >= t.cols - 1 then
-        min (t.cols - 1) x
+    if count <= 0 || x >= t.right then
+        x
 
     else
         nextTab (stopAfter (x + 1) t) (count - 1) t
@@ -3247,8 +3679,8 @@ nextTab x count t =
 
 stopAfter : Int -> Term -> Int
 stopAfter x t =
-    if x >= t.cols - 1 then
-        t.cols - 1
+    if x >= t.right then
+        t.right
 
     else if Builder.get x t.tabs == Just 1 then
         x
@@ -3259,8 +3691,8 @@ stopAfter x t =
 
 previousTab : Int -> Int -> Term -> Int
 previousTab x count t =
-    if count <= 0 || x <= 0 then
-        max 0 x
+    if count <= 0 || x <= tabFloor t then
+        x
 
     else
         previousTab (stopBefore (x - 1) t) (count - 1) t
@@ -3268,8 +3700,8 @@ previousTab x count t =
 
 stopBefore : Int -> Term -> Int
 stopBefore x t =
-    if x <= 0 then
-        0
+    if x <= tabFloor t then
+        tabFloor t
 
     else if Builder.get x t.tabs == Just 1 then
         x
@@ -3628,7 +4060,7 @@ alignment t =
         filled =
             fillRows 0 t.rows s
     in
-    withScroll { t | screen = filled, top = 0, bottom = t.rows - 1, x = 0, y = 0, wrapNext = False }
+    withPlain (withScroll { t | screen = filled, top = 0, bottom = t.rows - 1, left = 0, right = t.cols - 1, origin = False, x = 0, y = 0, wrapNext = False })
 
 
 fillRows : Int -> Int -> (moved s : Screen) -> Screen
@@ -3937,13 +4369,29 @@ lineFeed t =
             feedRegion t
 
         else
-            regionUp 1 t.top t.bottom t
+            feedOther t
 
     else if t.y < t.rows - 1 then
         { t | y = t.y + 1 }
 
     else
         t
+
+
+{-| A line feed at the region's bottom that is neither `feedFull`'s nor
+`feedRegion`'s: between narrowed margins, when the cursor is between them,
+or `regionUp`'s. -}
+feedOther : (moved t : Term) -> Term
+feedOther t =
+    if margined t then
+        if t.x >= t.left && t.x <= t.right then
+            marginUp 1 t.top t.bottom t
+
+        else
+            t
+
+    else
+        regionUp 1 t.top t.bottom t
 
 
 {-| The kinds of line feed at the bottom of the region that `lineFeed` takes
@@ -3980,7 +4428,10 @@ withScroll t =
         whole =
             t.top == 0 && t.bottom == t.rows - 1
     in
-    if keep && whole then
+    if margined t then
+        { t | scroll = scrollOther, screen = withRegion t.top t.bottom t.screen }
+
+    else if keep && whole then
         { t | scroll = scrollFull, screen = withRegion t.top t.bottom t.screen }
 
     else if not keep && not whole then
@@ -4043,7 +4494,14 @@ feedRegion t =
 
 reverseIndex : (moved t : Term) -> Term
 reverseIndex t =
-    if t.y == t.top then
+    if t.y == t.top && margined t then
+        if t.x >= t.left && t.x <= t.right then
+            marginDown 1 t.top t.bottom t
+
+        else
+            t
+
+    else if t.y == t.top then
         regionDown 1 t.top t.bottom t
 
     else if t.y > 0 then
@@ -4444,7 +4902,7 @@ top, left, bottom and right from 1), as xterm's `checksumExtension: 23` makes
 it, which is what esctest2 expects of xterm 334 and later and what Ghostty's
 runner sets: each cell's code point to 16 bits, an empty cell a space, a wide
 character's spacer nothing, no attributes, summed to 16 bits and not negated.
-In origin mode the rectangle is from the region's top; a 0 is the default,
+In origin mode the rectangle is from the region's top and the left margin; a 0 is the default,
 and each edge is held to the screen. -}
 rectChecksum : Array Int -> Term -> Int
 rectChecksum params t =
@@ -4456,6 +4914,13 @@ rectChecksum params t =
             else
                 0
 
+        side =
+            if t.origin then
+                t.left
+
+            else
+                0
+
         edge i default m most =
             clamp 1 most (param i default params + m)
 
@@ -4463,13 +4928,13 @@ rectChecksum params t =
             edge 2 1 margin t.rows
 
         left =
-            edge 3 1 0 t.cols
+            edge 3 1 side t.cols
 
         bottom =
             edge 4 t.rows margin t.rows
 
         right =
-            edge 5 t.cols 0 t.cols
+            edge 5 t.cols side t.cols
     in
     if top > bottom || left > right then
         0

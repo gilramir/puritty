@@ -55,7 +55,9 @@ SRM recorded and the ANSI modes xterm lacks answered as permanently reset;
 XTSAVE and XTRESTORE; DECSCUSR; reverse wraparound, ?45 and ?1045, for BS
 and CUB; protected cells, DECSCA, SPA and EPA, against DECSED, DECSEL and in
 ISO's mode ED, EL and ECH; the palette and the foreground, background and
-cursor colours set, queried and reset (OSC 4, 10–19, 104, 110–112); RIS and DECSTR; OSC 0 and 2 (the title);
+cursor colours set, queried and reset (OSC 4, 10–19, 104, 110–112); left and
+right margins, ?69 and DECSLRM, for printing, every scroll, IL, DL, ICH,
+DCH, CR, the cursor's moves and reports, tabs and DECRQSS (§VC13); RIS and DECSTR; OSC 0 and 2 (the title);
 DECRQSS for `m`, `r` and ` q`; DSR 5 and 6, DECXCPR, DA1 and DECID, DA2, DA3,
 XTVERSION, XTWINOPS 18 (the size in cells), DECRQCRA when the embedder asks
 for it (V5); the main screen's scrollback in D901's pages (§VC6).
@@ -160,15 +162,15 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 116 of 116 cases pass
+./harness/replay.py                  # 124 of 124 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**116 cases, every one passing on both sides, none divergent** (2026-10-29;
+**124 cases, every one passing on both sides, none divergent** (2026-10-29;
 98 when the core was begun, nine more with §VC10, one with §VC11, eight with
-§VC12).
+§VC12, eight with §VC13).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -359,14 +361,14 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
 
 - **Throughput** (§VC7): every input meets the budget. Phase 1's exit
   measures it again once the rest is built.
-- **esctest2** runs headless (§VC10): 334 of 567 tests pass, Ghostty 383
-  (297 at first; §VC12). Every one of the 58 that Ghostty passes and the
-  core does not needs left and right margins (49) or resize (9). **The fuzzer** runs (§VC11); its differential against
+- **esctest2** runs headless (§VC10): 384 of 567 tests pass, Ghostty 383
+  (297 at first; §VC12, §VC13). The ten that Ghostty passes and the core
+  does not need resize: XTWINOPS's resize and maximize, and DECCOLM, which
+  resizes to 132 columns. **The fuzzer** runs (§VC11); its differential against
   libghostty-vt is not built.
-- **Left and right margins** (DECLRMM, ?69, and DECSLRM): not started, and
-  49 of those 58 tests. Every scroll, insert, delete and wrap takes them;
-  the scroll paths that §VC7 measured would carry the test.
-  **XTWINOPS's resize and maximize** wait on resize: 9.
+- **`CSI 0 s` with ?69 reset** saves the cursor in the core, where Ghostty
+  takes it for DECSLRM and does nothing: the core's parser does not tell a
+  parameter of 0 from none (§VC13).
 - **X11's colour names** in OSC 4 and 10–19 (`red`, `DarkSlateGray`):
   Ghostty takes several hundred, from its `x11_color.zig`; the core takes
   none and leaves the colour as it was. No esctest test names one. A table
@@ -654,4 +656,85 @@ counts a term handed to a function value as kept, on every path of the
 parser, and `vte-scrolling` took 123 ms where it took 39, `cup` 69 where it
 took 49. A function of its own, `nextDynamic`, put it back; the times are
 §VC7's, every input within budget (`cup` 49–54, `vte-scrolling` 39–40).
+
+---
+
+## VC13. Left and right margins
+
+?69 (DECLRMM) allows them and DECSLRM (`CSI Pl ; Pr s`) sets them, as
+Ghostty does: with ?69 set, `CSI s` is DECSLRM, and SCOSC only with ?69
+reset; the cursor goes home after; resetting ?69, DECSTR, DECALN and RIS put
+them back at the screen's edges. The term keeps `left` and `right` beside
+`top` and `bottom`, and with them narrowed:
+
+- **Printing** takes the general path (`plain` is false), wraps at the right
+  margin when the cursor is left of it and at the screen's edge when it is
+  right of it, and goes on at the left margin; the row is marked wrapped
+  only when the cursor wraps from the screen's last column. Insert mode
+  pushes cells out at the right margin.
+- **IND, LF, RI, SU, SD, IL and DL** scroll the rectangle between the
+  margins and the region's top and bottom (`marginUp`, `marginDown`), and
+  only when the cursor is between the margins; no row goes to the
+  scrollback. **ICH and DCH** work between the cursor and the right margin
+  and do nothing with the cursor outside the margins. A row they touch is
+  made whole, the work done with the builder's block move and fill, and its
+  extent cut back to its last cell that is not empty; a wide character a
+  margin cuts in two goes, both halves.
+- **CR** goes to the left margin, or to the first column from left of it
+  outside origin mode; NEL and LNM feed the line first and then CR, so a
+  cursor right of the margins at the region's bottom does not scroll.
+  **CUF** stops at the right margin, **CUP**, **HVP**, **CHA** and **HPA** in
+  origin mode count from the left margin, **HT** stops at the right margin
+  and **CBT** at the left in origin mode; reverse wraparound goes to the
+  right margin. The cursor reports in origin mode count from the margins and
+  are never negative; DECRQCRA in origin mode counts from the left margin;
+  DECRQSS answers `s` while ?69 is set.
+
+`lrm-print`, `lrm-scroll`, `lrm-edit`, `lrm-moves`, `lrm-wide`, `lrm-reset`,
+`lrm-nel` and `lrm-decrqcra` hold it to Ghostty. esctest goes from 334 to 384,
+one more than Ghostty's 383; one test it passed before, that DECSLRM does
+nothing at VT level 3, it fails now, as Ghostty does. Ghostty fails
+`test_CHA_RespectsOriginMode`, which the core passes: its CHA goes through
+`setCursorPos` with the cursor's row, which origin mode then moves by the
+region's top too.
+
+**What it cost.** The margins are off the hot paths, and keeping them off
+took four measurements:
+
+1. `wrapped`, which every character calls, and `lineFeed` had grown past
+   what clang inlines into `ground`; each keeps its old body, the margin
+   case in a function of its own (`wrapNow`, `feedOther`).
+2. **CR in the ground state cannot test anything.** Testing for narrowed
+   margins at each CR, by `left`, by `plain`, by the arithmetic written in
+   place or by a branch with `x = 0` kept on one side, cost
+   `vte-scrolling` a cycle a line every way (205 M cycles without, 214–220 M
+   with), 40–47 ms against its budget of 42. So `ground` is as it was, and
+   a term with the margins narrowed has a ground state of its own,
+   `groundMargined`, without the fast paths and with CR at the margin.
+   Where a sequence, a string or a decoded character returns to the ground
+   state, `resume` picks one, since the margins change only inside a
+   sequence. That is a test and a hop a sequence: `ls` and `gitlog`, 1.3
+   million sequences each, take 1.3% more instructions and 3–5 ms more,
+   within their budgets of 124 and 132.
+
+Five runs each, ms, against §VC7's:
+
+| input | budget | §VC7 | **now** |
+|---|---:|---:|---:|
+| `cup` | 56 | 49–56 | **50–54** |
+| `gitlog` | 132 | 107–112 | **107–111** |
+| `ls` | 124 | 85–89 | **91–94** |
+| vte-cursor_motion | 28 | 23–24 | **23–24** |
+| vte-dense_cells | 28 | 19–20 | **19–21** |
+| vte-light_cells | 24 | 7–9 | **8–10** |
+| vte-scrolling | 42 | 39–40 | **39–40** |
+| vte-scrolling_bottom_region | 37 | 23–25 | **23–25** |
+| vte-scrolling_bottom_small_region | 132 | 23–29 | **24–25** |
+| vte-scrolling_fullscreen | 45 | 27–28 | **28–30** |
+| vte-scrolling_top_region | 223 | 23–24 | **24–25** |
+| vte-scrolling_top_small_region | 125 | 24–26 | **24–24** |
+| vte-unicode | 25 | 13–15 | **14–15** |
+
+The fuzzer's coverage went from 3,190 edges to 3,932 with it, and five
+minutes on eight jobs found nothing.
 
