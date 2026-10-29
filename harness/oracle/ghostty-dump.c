@@ -159,6 +159,18 @@ static void dump_row(FILE *o, const char *label, GhosttyPointTag tag,
   }
 }
 
+/* XTWINOPS's size reports: the grid, as the core answers CSI 18 t. */
+static uint16_t rows_of_term;
+static bool on_size(GhosttyTerminal t, void *u, GhosttySizeReportSize *out) {
+  (void)t;
+  (void)u;
+  out->rows = rows_of_term;
+  out->columns = cols;
+  out->cell_width = 10;
+  out->cell_height = 20;
+  return true;
+}
+
 int main(int argc, char **argv) {
   if (argc != 4) {
     fprintf(stderr, "usage: ghostty-dump COLS ROWS FILE\n");
@@ -189,6 +201,16 @@ int main(int argc, char **argv) {
   }
   ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
                        (const void *)on_write_pty);
+  /* DECRQCRA on, as xterm's checksumExtension 23 makes it: the core's
+   * calculation (docs/vt-core.md §VC10). */
+  rows_of_term = rows;
+  ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SIZE, (const void *)on_size);
+  bool checksums = true;
+  uint8_t extension = 23;
+  ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_REPORT,
+                       &checksums);
+  ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_EXTENSION,
+                       &extension);
   ghostty_terminal_vt_write(term, in, len);
 
   uint16_t cx = 0, cy = 0;

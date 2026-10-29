@@ -23,11 +23,12 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE`) | the same for libghostty-vt at the vendored `d8619f1bc`, through its C API |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
 | the timing | `harness/bench/` (`core-bench FILE`) | §VC7 |
+| esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 
 `Vt`'s interface, as it stands:
 
 ```gren
-new : Config -> Term                       -- { cols, rows, scrollback }
+new : Config -> Term                       -- { cols, rows, scrollback, checksums }
 feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
 takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
 dump : Term -> String                      -- §VC3
@@ -47,10 +48,13 @@ DECSTBM, REP, DECALN, tab stops (HTS, TBC, CHT, CBT); SGR with every
 attribute Ghostty keeps, 256 and RGB colours with either separator, the
 underline's kind and colour; erases and scrolls in the background colour;
 DECSC/DECRC and SCOSC/SCORC per screen; modes 4, 20, ?6, ?7, ?25, ?47,
-?1047, ?1049, and every other private mode recorded for DECRQM; RIS and
-DECSTR; OSC 0 and 2 (the title); DECRQSS for `m` and `r`; DSR 5 and 6,
-DECXCPR, DA1, DA2, DA3, XTVERSION; the main screen's scrollback in D901's
-pages (§VC6).
+?1047, ?1048, ?1049 (the alternate screen kept once made, as xterm and
+Ghostty keep it), and every other private mode recorded for DECRQM, KAM and
+SRM recorded and the ANSI modes xterm lacks answered as permanently reset;
+XTSAVE and XTRESTORE; DECSCUSR; RIS and DECSTR; OSC 0 and 2 (the title);
+DECRQSS for `m`, `r` and ` q`; DSR 5 and 6, DECXCPR, DA1 and DECID, DA2, DA3,
+XTVERSION, XTWINOPS 18 (the size in cells), DECRQCRA when the embedder asks
+for it (V5); the main screen's scrollback in D901's pages (§VC6).
 
 What it does not handle yet is §VC9.
 
@@ -152,13 +156,14 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 98 of 98 cases pass
+./harness/replay.py                  # 107 of 107 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**98 cases, every one passing on both sides, none divergent** (2026-10-29).
+**107 cases, every one passing on both sides, none divergent** (2026-10-29;
+98 when the core was begun, nine more with §VC10).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -335,6 +340,12 @@ read without dropping the `let`'s own names, and the C backend refused the
 program: "the local `$n54` is not in scope". Fixed in the fork, with
 `corpus/accept/inplace-hoist-let`.
 
+**The parser's speed turned on clang inlining `dispatch`** into its only
+caller (geng-lang `m4-visiterm.md` §VA50, registered there): §VC10's
+additions took it past LLVM's bonus for a function called once, and every
+CSI became an out-of-line call. Nothing in Geng was changed; §VC10 says
+what the core does about it.
+
 ---
 
 ## VC9. What is not built yet
@@ -343,9 +354,24 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
 
 - **Throughput** (§VC7): every input meets the budget. Phase 1's exit
   measures it again once the rest is built.
-- **esctest2 headless** and **the fuzzer**: not started. `phase1-core.md`
-  §6 found both reachable: esctest2 needs a pty harness that feeds the core
-  and writes its replies back; libFuzzer links with devbox's clang.
+- **esctest2** runs headless (§VC10): 297 of 567 tests pass, Ghostty 383.
+  Every one of the 92 that Ghostty passes and the core does not needs a
+  feature below. **The fuzzer**: not started; libFuzzer links with devbox's
+  clang (`phase1-core.md` §6).
+- **Left and right margins** (DECLRMM, ?69, and DECSLRM): not started, and
+  52 of those 92 tests. Every scroll, insert, delete and wrap takes them;
+  the scroll paths that §VC7 measured would carry the test.
+- **Protected cells** (DECSCA, SPA/EPA, DECSED, DECSEL): 12 tests.
+  **Reverse wraparound** (?45, ?1045): 10. **XTWINOPS's resize and
+  maximize** wait on resize: 9. **OSC 4, 10, 11 and 104, the colours
+  queried and reset**: 8.
+- **DECRQM over-claims**: a private mode the core only records is reported
+  set or reset, so ?45 and ?69 answer as if they worked, and a program that
+  asks before it uses left and right margins would be misled. esctest's
+  DECRQM tests for DECHEBM, DECNRCM, DECPEX and DECPFF and two DECSCL tests
+  pass on the core and not on Ghostty for that reason, and are not passes
+  of the features. To be narrowed to the modes the core has once the list
+  above is decided.
 - **Graphemes by UAX #29**: today a mark of width 0 joins the cell before
   it, which is the legacy model. `core`'s `Unicode.Grapheme` (D906) is what
   mode 2027 and the per-pane width model (S§5.3) will use, with the
@@ -380,3 +406,131 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
   Registered 2026-10-29.
 - **Refinement types for every index** (plan §7): not tried; the core reads
   with `Builder.get` and a default.
+
+---
+
+## VC10. esctest2 (V5, V6)
+
+[esctest2](https://github.com/ThomasDickey/esctest2) runs in the terminal it
+tests: it writes sequences and reads the replies, and it reads the screen
+back through DECRQCRA, a checksum of a rectangle, one cell at a time.
+Headless, it needs a pty. `harness/esctest.py` opens one, runs esctest on the
+slave, and runs the terminal as a program with the master for its standard
+input and output, so nothing relays between them:
+
+| side | program | what it is |
+|---|---|---|
+| the core | `harness/esctest/core-pty` (`build.sh`) | `Os.File.read` of standard input a piece at a time as it comes, `Vt.feed`, `Vt.takeReplies` written to standard output |
+| the oracle | `harness/esctest/ghostty-pty` (`build-oracle.sh`) | the same through libghostty-vt's C API: `vt_write`, the `WRITE_PTY`, `SIZE` and `RESIZE_WINDOW` callbacks |
+
+esctest is the commit Ghostty's own runner pins
+(`vendor/ghostty/test/esctest/build.zig.zon`), `2798f12` of 2026-09-13,
+cloned into `vendor/esctest2`, and is passed what that runner passes it:
+`--expected-terminal=xterm --xterm-checksum=411 --xterm-reverse-wrap=411
+--timeout=0.2`. Each side's passing tests are recorded in
+`corpus/esctest/core.txt` and `ghostty.txt`.
+
+```
+git clone https://github.com/ThomasDickey/esctest2 vendor/esctest2
+git -C vendor/esctest2 checkout 2798f12149a19c3295e9b4853ab2da4b2eff1b2b
+./harness/esctest/build.sh && ./harness/esctest/build-oracle.sh
+./harness/esctest.py                    # both sides; fails if a recorded pass is lost
+./harness/esctest.py --diff             # what one side passes and the other does not
+./harness/esctest.py --side core -- --include=DECSTBM
+./harness/esctest.py --update           # record what passes now
+```
+
+**V5 · DECRQCRA answers only when the embedder asks** (`Config.checksums`),
+as libghostty-vt's does (`GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_REPORT`): a
+program can checksum the screen a cell at a time and so read everything on
+it, other programs' output among it. `core-pty` and `core-dump` turn it on,
+`core-bench` does not. The checksum is xterm's `checksumExtension: 23`, the
+one esctest expects of xterm 334 and later and the one Ghostty's runner
+sets: each cell's code point to 16 bits, an empty cell a space, a wide
+character's spacer nothing, no attributes, summed to 16 bits and not
+negated; in origin mode the rectangle is from the region's top. XTCHECKSUM,
+which changes the calculation, is not taken.
+
+**V6 · The two sides answer as the same terminal.** Ghostty's runner has
+libghostty-vt answer DA as a VT520; `ghostty-pty` leaves the library's own
+VT220, which is what the core answers (V4), so that what differs between
+the two runs is the two cores. esctest's DECXCPR test expects the page only
+of a VT400 or later, so Ghostty, which sends it as the core does, fails the
+test here and passes it under its own runner; that one test is the
+difference between 383 and the 384 the first run had.
+
+**The record is the gate**: a test recorded in `core.txt` that fails fails
+the run, and one newly passing is listed for `--update`. Adding a test the
+core fails to `core.txt` was checked to fail the run. Three runs gave the
+same 297; the 0.2 s read timeout is long beside the core's replies, which
+take microseconds.
+
+### What the first run found
+
+| | core | Ghostty |
+|---|---:|---:|
+| the first run | 0 | 384 |
+| CSI 18 t and DECRQCRA | 269 | 384 |
+| the rest of this section | **297** | **383** |
+
+Of 567 tests, Ghostty fails 142 and esctest records 42 of those as xterm's
+known bugs; the core fails 249, 21 recorded so. Every test failed on the
+core at first: esctest's reset before each test asks the screen's size
+(CSI 18 t), which the core did not answer, and checks every screen through
+DECRQCRA. With both, 269. Then each test Ghostty passes and the core did
+not, by the features its source uses:
+
+- **The alternate screen was made afresh each time it was entered**, where
+  xterm and Ghostty keep it once made, its text and its saved cursor, and
+  clear it only on leaving with ?1047 and entering with ?1049. Kept now
+  (`alt-kept`, `alt-1047-clears`), and ?1048, which saves and restores the
+  cursor, done (`save-cursor-1048`). 8 tests.
+- **DECRQM answered 0 for every ANSI mode but IRM and LNM.** KAM and SRM are
+  recorded now, SRM set by default, and the twelve ANSI modes xterm and
+  Ghostty do not have answer 4, permanently reset (`decrqm-ansi`). 14.
+- **DECID** (ESC Z) answers as DA1 (`decid`); **DECRQSS ` q`** answers
+  DECSCUSR's style, kept as Ghostty keeps it, a shape and mode 12's blink,
+  a steady block after DECSTR (`decrqss-decscusr`); **XTSAVE and
+  XTRESTORE** keep and set back a private mode, one never kept set back to
+  its state in a new terminal, as Ghostty's are (`xtsave`). 4.
+- `decrqcra` and `size-report` hold the two reports to Ghostty.
+
+The other 92 are §VC9's: left and right margins, protected cells, reverse
+wraparound, resize, the colour queries.
+
+### What it cost, and what that found
+
+The additions are off the hot path, yet `cup` went from 49–54 ms to 56–58
+against its budget of 56, and `vte-cursor_motion` from 23–24 to 26–28
+against 28, on 3% more instructions: 15 more cycles for each of `cup`'s two
+million CSIs, an IPC of 5.5 where it was 5.9. Each change alone was free
+(the three new `Term` fields; DECRQCRA's branch; CSI 18 t; DECSCUSR;
+XTSAVE), and all of them together were not: **`dispatch` had sat just
+under clang's limit for inlining a function into its only caller**, and
+past it every CSI is an out-of-line call from `csi`'s loop. clang gives a
+static function called from one place a bonus of 15,000 against its cost
+and inlines it whatever its size below that; the whole of `dispatch` cost
+about 19,000 once over. A smaller part split off does not help, since clang
+inlines that part back into its own one caller first: `dispatchPlain` with
+a `dispatchRare`, and then `dispatch` with a `dispatchRest`, were each
+inlined back together and left out of `csi` (the remarks of
+`-Rpass-missed=inline`). Raising clang's threshold for a cold call site
+changed nothing.
+
+What holds: `dispatch` takes SGR and CUP itself, which are most of what a
+program sends, and hands every other sequence to `dispatchRest`, **called
+from two places** (the plain branch and the marked one), so that clang
+never treats it as called once and keeps it out of line, while `dispatch`
+is small and inlined. Instructions are level or 0.3–0.6% fewer on every
+input, and the times are §VC7's (five runs each, least and most, ms):
+
+| input | budget | before | first | **now** |
+|---|---:|---:|---:|---:|
+| `cup` | 56 | 49–50 | 56–58 | **49–51** |
+| `gitlog` | 132 | 107–109 | 109–112 | **109–111** |
+| vte-cursor_motion | 28 | 23–25 | 26–28 | **24–25** |
+| vte-dense_cells | 28 | 19–20 | 21–23 | **19–20** |
+
+and the other nine level with §VC7's. This is geng-lang's to know: a Geng
+program's speed on its hottest path turned on a clang heuristic that the
+program cannot see and Geng has no word for (`m4-visiterm.md` §VA50).

@@ -313,10 +313,14 @@ cellPoints c clusters =
 -- THE STATE
 
 
+{-| `checksums` turns on DECRQCRA's answer (§VC10). It is off unless asked
+for, as Ghostty's is, since a program can checksum the screen a cell at a
+time and so read everything on it, other programs' output among it. -}
 type alias Config =
     { cols : Int
     , rows : Int
     , scrollback : Int
+    , checksums : Bool
     }
 
 
@@ -371,6 +375,7 @@ type alias Screen =
 type alias Term =
     { screen : Screen
     , other : Maybe Screen
+    , alt : Bool
     , config : Config
     , cols : Int
     , rows : Int
@@ -395,11 +400,13 @@ type alias Term =
     , showCursor : Bool
     , newline : Bool
     , modes : Dict Int Bool
+    , savedModes : Dict Int Bool
     , g0 : Int
     , g1 : Int
     , gl : Int
     , lastPoint : Int
     , title : String
+    , cursorShape : Int
     , ps : Int
     , params : Array Int
     , cur : Int
@@ -469,6 +476,7 @@ new config0 =
             { cols = clamp 1 1000 config0.cols
             , rows = clamp 1 1000 config0.rows
             , scrollback = max 0 config0.scrollback
+            , checksums = config0.checksums
             }
     in
     withScroll (fresh config)
@@ -482,6 +490,7 @@ fresh config =
     in
     { screen = newScreen config.cols config.rows (config.rows + 2 * pageRows + 1)
     , other = Nothing
+    , alt = False
     , config = config
     , cols = config.cols
     , rows = config.rows
@@ -506,11 +515,13 @@ fresh config =
     , showCursor = True
     , newline = False
     , modes = Dict.empty
+    , savedModes = Dict.empty
     , g0 = 0
     , g1 = 0
     , gl = 0
     , lastPoint = 0
     , title = ""
+    , cursorShape = 1
     , ps = psGround
     , params = []
     , cur = 0
@@ -1755,6 +1766,9 @@ escDispatch b t =
     else if b == 0x63 then
         reset t
 
+    else if b == 0x5A then
+        reply primaryAttributes t
+
     else if b == 0x3D then
         { t | modes = Dict.set -66 True t.modes }
 
@@ -1975,6 +1989,19 @@ requestStatus setting t =
     if setting == "m" then
         "1$r" ++ sgrText t.attrs ++ "m"
 
+    else if setting == " q" then
+        "1$r"
+            ++ String.fromInt
+                (t.cursorShape
+                    + (if Dict.get 12 t.modes == Just True then
+                        0
+
+                       else
+                        1
+                      )
+                )
+            ++ " q"
+
     else if setting == "r" then
         "1$r" ++ String.fromInt (t.top + 1) ++ ";" ++ String.fromInt (t.bottom + 1) ++ "r"
 
@@ -2157,10 +2184,35 @@ param k default params =
             default
 
 
+{-| A CSI sequence's action. SGR and CUP, most of what a program sends, are
+taken here, and every other sequence by `dispatchRest`, a call, so that this
+function stays small enough for clang to inline into `csi`. With every
+sequence in one function it sat just under clang's limit for a function
+called once, and three more fields in `Term` pushed it over: an out-of-line
+call for each sequence cost `cup` 15 cycles a sequence, 12% of its time.
+`dispatchRest` is called from two places, since clang inlines a function
+called from only one into its caller whatever its size, and this one would
+be too big again (§VC10). -}
 dispatch : Int -> Int -> Int -> Int -> Array Int -> (moved t : Term) -> Term
 dispatch final priv inter colons params t =
     if priv == 0 && inter == 0 then
-        dispatchPlain final colons params t
+        if final == 0x6D then
+            withPen (sgr params colons 0 t.attrs) t
+
+        else if final == 0x48 || final == 0x66 then
+            cursorTo (param 1 1 params - 1) (param 0 1 params - 1) t
+
+        else
+            dispatchRest final priv inter params t
+
+    else
+        dispatchRest final priv inter params t
+
+
+dispatchRest : Int -> Int -> Int -> Array Int -> (moved t : Term) -> Term
+dispatchRest final priv inter params t =
+    if priv == 0 && inter == 0 then
+        dispatchRare final params t
 
     else if priv == 0x3F && inter == 0 then
         if final == 0x68 then
@@ -2168,6 +2220,12 @@ dispatch final priv inter colons params t =
 
         else if final == 0x6C then
             Array.foldl (\p acc -> setPrivate p False acc) t params
+
+        else if final == 0x73 then
+            Array.foldl saveMode t params
+
+        else if final == 0x72 then
+            Array.foldl restoreMode t params
 
         else if final == 0x4A then
             eraseDisplay (param 0 0 params) t
@@ -2207,22 +2265,20 @@ dispatch final priv inter colons params t =
     else if priv == 0 && inter == 0x21 && final == 0x70 then
         softReset t
 
+    else if priv == 0 && inter == 0x2A && final == 0x79 && t.config.checksums && Array.length params <= 6 then
+        reply ("\u{001B}P" ++ String.fromInt (param 0 0 params) ++ "!~" ++ hex4 (rectChecksum params t) ++ "\u{001B}\\") t
+
     else if priv == 0 && inter == 0x20 && final == 0x71 then
-        { t | modes = Dict.set -12 (param 0 0 params == 0 || modBy 2 (param 0 0 params) == 1) t.modes }
+        cursorStyle (param 0 0 params) t
 
     else
         t
 
 
-dispatchPlain : Int -> Int -> Array Int -> (moved t : Term) -> Term
-dispatchPlain final colons params t =
-    if final == 0x6D then
-        withPen (sgr params colons 0 t.attrs) t
-
-    else if final == 0x48 || final == 0x66 then
-        cursorTo (param 1 1 params - 1) (param 0 1 params - 1) t
-
-    else if final == 0x41 then
+{-| The plain sequences `dispatch` does not take itself. -}
+dispatchRare : Int -> Array Int -> (moved t : Term) -> Term
+dispatchRare final params t =
+    if final == 0x41 then
         { t | y = max (upperLimit t) (t.y - param 0 1 params), wrapNext = False }
 
     else if final == 0x42 || final == 0x65 then
@@ -2332,7 +2388,10 @@ dispatchPlain final colons params t =
             t
 
     else if final == 0x63 then
-        reply "\u{001B}[?62;22c" t
+        reply primaryAttributes t
+
+    else if final == 0x74 && param 0 0 params == 18 then
+        reply ("\u{001B}[8;" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ "t") t
 
     else if final == 0x73 then
         saveCursor t
@@ -2342,6 +2401,13 @@ dispatchPlain final colons params t =
 
     else
         t
+
+
+{-| DA1's answer, and DECID's: a VT220 with ANSI colour, as libghostty-vt
+answers when its embedder does not say otherwise (§VC10). -}
+primaryAttributes : String
+primaryAttributes =
+    "\u{001B}[?62;22c"
 
 
 {-| The cursor's row as a report gives it: from the region's top in origin
@@ -2409,6 +2475,13 @@ setPrivate p on t =
         else
             restoreCursor (toMain False t)
 
+    else if p == 1048 then
+        if on then
+            saveCursor t
+
+        else
+            restoreCursor t
+
     else if p == 1047 then
         if on then
             toAlt False t
@@ -2425,6 +2498,40 @@ setPrivate p on t =
 
     else
         { t | modes = Dict.set p on t.modes }
+
+
+{-| XTSAVE: a private mode's state kept for XTRESTORE, one each. -}
+saveMode : Int -> (moved t : Term) -> Term
+saveMode p t =
+    let
+        state =
+            privateState p t
+    in
+    if state == 1 || state == 2 then
+        { t | savedModes = Dict.set p (state == 1) t.savedModes }
+
+    else
+        t
+
+
+{-| XTRESTORE: a private mode set as XTSAVE kept it, or to its state in a
+new terminal if it was never kept, as Ghostty restores it. -}
+restoreMode : Int -> (moved t : Term) -> Term
+restoreMode p t =
+    when Dict.get p t.savedModes is
+        Just on ->
+            setPrivate p on t
+
+        Nothing ->
+            let
+                state =
+                    privateState p (fresh t.config)
+            in
+            if state == 1 || state == 2 then
+                setPrivate p (state == 1) t
+
+            else
+                t
 
 
 {-| DECRQM's answer for a mode the core keeps: 1 set, 2 reset. -}
@@ -2484,8 +2591,18 @@ setAnsi p on t =
     else if p == 20 then
         { t | newline = on }
 
+    else if p == 2 || p == 12 then
+        { t | modes = Dict.set (ansiKey p) on t.modes }
+
     else
         t
+
+
+{-| Where `modes` keeps an ANSI mode the core only records, apart from the
+private modes. -}
+ansiKey : Int -> Int
+ansiKey p =
+    -1000 - p
 
 
 ansiState : Int -> Term -> Int
@@ -2496,11 +2613,21 @@ ansiState p t =
     else if p == 20 then
         of t.newline
 
+    else if p == 2 || p == 12 then
+        of (Maybe.withDefault (p == 12) (Dict.get (ansiKey p) t.modes))
+
+    else if Array.member p [ 1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19 ] then
+        -- GATM, SRTM, VEM, HEM, PUM, FEAM, FETM, MATM, TTM, SATM, TSM and EBM
+        -- are permanently reset, as in xterm and Ghostty.
+        4
+
     else
         0
 
 
-{-| The alternate screen shown, cleared first when `clear`. -}
+{-| The alternate screen shown, cleared first when `clear`. Once made it is
+kept, its text and its saved cursor, while the main screen is shown, as xterm
+and Ghostty keep it (§VC10). -}
 toAlt : Bool -> (moved t : Term) -> Term
 toAlt clear t =
     if isAlt t then
@@ -2514,30 +2641,64 @@ toAlt clear t =
         let
             main =
                 t.screen
+
+            alt =
+                when t.other is
+                    Just kept ->
+                        if clear then
+                            blankRows 0 t.rows 0 kept
+
+                        else
+                            kept
+
+                    Nothing ->
+                        newScreen t.cols t.rows (t.rows + 1)
         in
-        withScroll { t | other = Just main, screen = newScreen t.cols t.rows (t.rows + 1) }
+        withScroll { t | other = Just main, screen = alt, alt = True }
 
 
 isAlt : Term -> Bool
 isAlt t =
-    when t.other is
-        Just _ ->
-            True
-
-        Nothing ->
-            False
+    t.alt
 
 
 {-| The main screen shown again, the alternate cleared first when `clear`
-(which a new alternate screen is anyway). -}
+and kept. -}
 toMain : Bool -> (moved t : Term) -> Term
 toMain clear t =
-    when t.other is
-        Just main ->
-            withScroll { t | other = Nothing, screen = main }
+    if not t.alt then
+        t
 
-        Nothing ->
-            t
+    else
+        when t.other is
+            Just main ->
+                let
+                    alt =
+                        if clear then
+                            blankRows 0 t.rows 0 t.screen
+
+                        else
+                            t.screen
+                in
+                withScroll { t | other = Just alt, screen = main, alt = False }
+
+            Nothing ->
+                t
+
+
+{-| DECSCUSR: the cursor's shape (1 a block, 3 an underline, 5 a bar) and
+whether it blinks, which is mode 12, as Ghostty keeps it. 0 is the default,
+a steady block. -}
+cursorStyle : Int -> (moved t : Term) -> Term
+cursorStyle p t =
+    if p == 0 then
+        { t | cursorShape = 1, modes = Dict.set 12 False t.modes }
+
+    else if p >= 1 && p <= 6 then
+        { t | cursorShape = p - 1 + modBy 2 p, modes = Dict.set 12 (modBy 2 p == 1) t.modes }
+
+    else
+        t
 
 
 saveCursor : (moved t : Term) -> Term
@@ -2610,6 +2771,8 @@ softReset t =
                 , g1 = 0
                 , gl = 0
                 , wrapNext = False
+                , cursorShape = 1
+                , modes = Dict.set 12 False t.modes
             }
         )
         |> resetSaved
@@ -3764,6 +3927,83 @@ styleText a =
         ++ on 32 " invisible"
         ++ on 64 " strike"
         ++ on 128 " overline"
+
+
+{-| DECRQCRA's checksum of the rectangle `params` names (its id, a page, then
+top, left, bottom and right from 1), as xterm's `checksumExtension: 23` makes
+it, which is what esctest2 expects of xterm 334 and later and what Ghostty's
+runner sets: each cell's code point to 16 bits, an empty cell a space, a wide
+character's spacer nothing, no attributes, summed to 16 bits and not negated.
+In origin mode the rectangle is from the region's top; a 0 is the default,
+and each edge is held to the screen. -}
+rectChecksum : Array Int -> Term -> Int
+rectChecksum params t =
+    let
+        margin =
+            if t.origin then
+                t.top
+
+            else
+                0
+
+        edge i default m most =
+            clamp 1 most (param i default params + m)
+
+        top =
+            edge 2 1 margin t.rows
+
+        left =
+            edge 3 1 0 t.cols
+
+        bottom =
+            edge 4 t.rows margin t.rows
+
+        right =
+            edge 5 t.cols 0 t.cols
+    in
+    if top > bottom || left > right then
+        0
+
+    else
+        checksumRows t.screen t.clusters (left - 1) (right - 1) (top - 1) (bottom - 1) 0
+
+
+checksumRows : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> Int
+checksumRows s clusters left right y bottom sum =
+    if y > bottom then
+        sum
+
+    else
+        checksumRows s clusters left right (y + 1) bottom (checksumCells s clusters (rowOffset s y) left right sum)
+
+
+checksumCells : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int
+checksumCells s clusters o x right sum =
+    if x > right then
+        sum
+
+    else
+        checksumCells s clusters o (x + 1) right (Bitwise.and 0xFFFF (sum + checksumValue (cellAt o x s) clusters))
+
+
+checksumValue : Int64 -> Clusters -> Int
+checksumValue c clusters =
+    if cellWide c == wideTail then
+        0
+
+    else if cellIsCluster c then
+        Bitwise.and 0xFFFF (Maybe.withDefault 0x20 (Array.first (cellPoints c clusters)))
+
+    else if cellPoint c == 0 then
+        0x20
+
+    else
+        Bitwise.and 0xFFFF (cellPoint c)
+
+
+hex4 : Int -> String
+hex4 v =
+    String.toUpper (hex2 (Bitwise.shiftRightZfBy 8 v) ++ hex2 v)
 
 
 hex2 : Int -> String

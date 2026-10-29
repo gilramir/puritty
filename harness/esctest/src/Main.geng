@@ -1,0 +1,64 @@
+module Main exposing (main)
+
+{-| core-pty: the core as the terminal esctest2 runs in (docs/vt-core.md §VC10).
+
+Reads standard input a piece at a time as it comes, feeds each piece to a
+`Vt.Term` of COLS by ROWS, and writes what the core answers to standard
+output. `harness/esctest.py` gives it a pty's master as both, so what esctest
+writes is fed to the core and the core's replies are what esctest reads. It
+ends when standard input does: a pty's master fails its read once the other
+side has closed.
+
+usage: core-pty COLS ROWS
+
+-}
+
+import Bytes exposing (Bytes)
+import Os.Env
+import Os.Error
+import Os.File
+import Task exposing (Task)
+import Vt
+
+
+number : Int -> Int -> Array String -> Int
+number i default args =
+    Maybe.withDefault default (Maybe.andThen String.toInt (Array.get i args))
+
+
+run : Os.File.Handle -> Os.File.Handle -> (moved t : Vt.Term) -> Task Os.Error.Error {}
+run input output t =
+    Os.File.read input
+        |> Task.andThen
+            (\bytes ->
+                if Bytes.isEmpty bytes then
+                    Task.succeed {}
+
+                else
+                    let
+                        r =
+                            Vt.takeReplies (Vt.feed bytes t)
+                    in
+                    if Array.isEmpty r.replies then
+                        run input output r.term
+
+                    else
+                        Os.File.write (Bytes.flatten r.replies) output
+                            |> Task.andThen (\_ -> run input output r.term)
+            )
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Task.map2 (\i o -> { input = i, output = o }) (Os.File.standardInput s.perm) (Os.File.standardOutput s.perm)
+                    |> Task.andThen
+                        (\h ->
+                            run h.input
+                                h.output
+                                (Vt.new { cols = number 0 80 s.args, rows = number 1 25 s.args, scrollback = 1000, checksums = True })
+                                |> Task.onError (\_ -> Task.succeed {})
+                        )
+            )

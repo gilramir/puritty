@@ -734,7 +734,8 @@ written down.
 
 **Phase 1 · The headless core.** *Surveyed 2026-10-24:
 [`phase1-core.md`](phase1-core.md); Gilbert answered its five questions
-(§9). Begun 2026-10-29: [`vt-core.md`](vt-core.md).* S§5 in Geng: parser with a ground-state fast path,
+(§9). Begun 2026-10-29: [`vt-core.md`](vt-core.md); esctest2 headless the same
+day, 297 of 567 (§VC10).* S§5 in Geng: parser with a ground-state fast path,
 cells and styles, scrollback in bytes, graphemes and widths per pane, the modes and
 sequences of S§5.1's minimum list, replies, the bounds on every attacker-controlled
 buffer. Reflow is designed with its tests first (S§5.4) and may land last.
