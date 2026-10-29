@@ -52,7 +52,10 @@ DECSC/DECRC and SCOSC/SCORC per screen; modes 4, 20, ?6, ?7, ?25, ?47,
 ?1047, ?1048, ?1049 (the alternate screen kept once made, as xterm and
 Ghostty keep it), and every other private mode recorded for DECRQM, KAM and
 SRM recorded and the ANSI modes xterm lacks answered as permanently reset;
-XTSAVE and XTRESTORE; DECSCUSR; RIS and DECSTR; OSC 0 and 2 (the title);
+XTSAVE and XTRESTORE; DECSCUSR; reverse wraparound, ?45 and ?1045, for BS
+and CUB; protected cells, DECSCA, SPA and EPA, against DECSED, DECSEL and in
+ISO's mode ED, EL and ECH; the palette and the foreground, background and
+cursor colours set, queried and reset (OSC 4, 10–19, 104, 110–112); RIS and DECSTR; OSC 0 and 2 (the title);
 DECRQSS for `m`, `r` and ` q`; DSR 5 and 6, DECXCPR, DA1 and DECID, DA2, DA3,
 XTVERSION, XTWINOPS 18 (the size in cells), DECRQCRA when the embedder asks
 for it (V5); the main screen's scrollback in D901's pages (§VC6).
@@ -100,8 +103,8 @@ a page holds text and style runs, not cells.
 
 **V1 · A cell is an `Int64`**: bits 0–20 the code point, or with bit 23 set
 the id of a grapheme cluster; bits 21–22 the width state (0 narrow, 1 wide,
-2 the spacer after a wide character, 3 a spacer head); bits 32–47 the style
-id; the rest unused. 0 is an empty cell in the default style. A row's meta
+2 the spacer after a wide character, 3 a spacer head); bit 24 a protected
+cell (§VC12); bits 32–47 the style id; the rest unused. 0 is an empty cell in the default style. A row's meta
 slot, past its `cols` cells, is its extent (bits 0–15) and its wrapped flag
 (bit 16).
 
@@ -157,14 +160,15 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 108 of 108 cases pass
+./harness/replay.py                  # 116 of 116 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**108 cases, every one passing on both sides, none divergent** (2026-10-29;
-98 when the core was begun, nine more with §VC10, one with §VC11).
+**116 cases, every one passing on both sides, none divergent** (2026-10-29;
+98 when the core was begun, nine more with §VC10, one with §VC11, eight with
+§VC12).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -355,17 +359,21 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
 
 - **Throughput** (§VC7): every input meets the budget. Phase 1's exit
   measures it again once the rest is built.
-- **esctest2** runs headless (§VC10): 297 of 567 tests pass, Ghostty 383.
-  Every one of the 92 that Ghostty passes and the core does not needs a
-  feature below. **The fuzzer** runs (§VC11); its differential against
+- **esctest2** runs headless (§VC10): 334 of 567 tests pass, Ghostty 383
+  (297 at first; §VC12). Every one of the 58 that Ghostty passes and the
+  core does not needs left and right margins (49) or resize (9). **The fuzzer** runs (§VC11); its differential against
   libghostty-vt is not built.
 - **Left and right margins** (DECLRMM, ?69, and DECSLRM): not started, and
-  52 of those 92 tests. Every scroll, insert, delete and wrap takes them;
+  49 of those 58 tests. Every scroll, insert, delete and wrap takes them;
   the scroll paths that §VC7 measured would carry the test.
-- **Protected cells** (DECSCA, SPA/EPA, DECSED, DECSEL): 12 tests.
-  **Reverse wraparound** (?45, ?1045): 10. **XTWINOPS's resize and
-  maximize** wait on resize: 9. **OSC 4, 10, 11 and 104, the colours
-  queried and reset**: 8.
+  **XTWINOPS's resize and maximize** wait on resize: 9.
+- **X11's colour names** in OSC 4 and 10–19 (`red`, `DarkSlateGray`):
+  Ghostty takes several hundred, from its `x11_color.zig`; the core takes
+  none and leaves the colour as it was. No esctest test names one. A table
+  generated from Ghostty's, as `Vt.Width` is from Python's, is the way.
+- **The palette is only reported.** The core keeps what OSC 4 and 10–12
+  set and answers for it, and draws nothing with it; the renderer reads it
+  (phase 2).
 - **DECRQM over-claims**: a private mode the core only records is reported
   set or reset, so ?45 and ?69 answer as if they worked, and a program that
   asks before it uses left and right margins would be misled. esctest's
@@ -598,4 +606,52 @@ way, so 19 bytes show it at 6×1, and with autowrap off an ASCII character
 takes `printPoint` too and both reads are wrong. Ghostty leaves the cell
 empty. **Fixed:** `splitWide` takes a spacer only inside the extent
 (`wide-stale-spacer`, which fails without the fix). §VC7's times are level.
+
+---
+
+## VC12. Reverse wraparound, protected cells and the colours
+
+The three smaller of §VC10's remaining groups, in that order, each held to
+Ghostty by new replay cases and to esctest: 297 → 307 → 323 → 334.
+
+- **Reverse wraparound** (`reverse-wrap`, `reverse-wrap-extended`). BS and
+  CUB are one `cursorLeft`, as Ghostty's is: with autowrap and ?45, a move
+  past the first column goes on from the last column of the row above when
+  that row wrapped into this one, and stops at the region's top; with ?1045
+  it goes on whether the row wrapped or not, and from the region's top to
+  its bottom; a pending wrap takes one of the count. The first run lost five
+  tests it had passed: esctest resets with DECSTR before each test, and the
+  core's DECSTR left ?45 set from the one before. **DECSTR resets what
+  Ghostty's soft reset does** now: cursor keys, both reverse wraparounds,
+  the numeric keypad and ESC =, left and right margins, KAM, protection and
+  the palette (`decstr-modes`).
+- **Protected cells** (`protect-dec`, `protect-iso`, `protect-save`).
+  DECSCA 1 protects what the cursor writes from then on in DEC's mode, SPA
+  (ESC V) in ISO's; DECSCA 0 or 2 and EPA (ESC W) stop it and leave the
+  mode. A protected cell is bit 24 of the cell (V1), which the pen carries
+  while protection is on (`guard`), and which a grapheme cluster keeps.
+  DECSED and DECSEL (`CSI ?` J and K) erase only cells without it, and ED,
+  EL and ECH do too in ISO's mode; DECSC saves the flag and DECSTR clears
+  both. A row cleared around protected cells keeps its extent.
+- **Colours** (`osc-colours`, `osc-colours-reset`). OSC 4 sets or queries
+  palette entries in pairs, OSC 10 to 19 the dynamic colours from the one
+  named on, OSC 104 resets entries or all, and OSC 110 to 112 the
+  foreground, background and cursor. A query answers `rgb:` with 16 bits a
+  channel, all of one request's answers in one reply, ended with BEL or ST
+  as the request was. The core keeps only what was set (`colours`) and
+  computes the rest: libghostty-vt's palette (its 16, the cube, the grey
+  ramp), and no foreground or background until one is set, as
+  libghostty-vt has none unless its embedder gives one; the cursor's is the
+  foreground's when it has none. A colour is parsed as Ghostty parses it,
+  each channel's hex digits scaled to 8 bits (so `#fff` is `ffff`, where
+  xterm's is `f0f0`, and esctest's `#rgb` test fails on both), with `rgb:`,
+  `rgbi:` and bare hex; X11's names are §VC9's.
+
+**A function value handed the term made it a copy everywhere.** The first
+build of OSC 10's loop chose its next step as a local function, `next`,
+applied to the term. That is §VC7's first finding again: the in-place pass
+counts a term handed to a function value as kept, on every path of the
+parser, and `vte-scrolling` took 123 ms where it took 39, `cup` 69 where it
+took 49. A function of its own, `nextDynamic`, put it back; the times are
+§VC7's, every input within budget (`cup` 49–54, `vte-scrolling` 39–40).
 

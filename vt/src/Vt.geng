@@ -37,6 +37,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Int64
+import Math
 import UInt8
 import Vt.Width as Width
 
@@ -143,6 +144,13 @@ metaExtent m =
 wrappedBit : Int64
 wrappedBit =
     0x10000
+
+
+{-| A protected cell (DECSCA, SPA): what DECSED and DECSEL, and in ISO's
+mode ED, EL and ECH, leave as it is (§VC12). -}
+protectBit : Int64
+protectBit =
+    0x1000000
 
 
 {-| A cell's style, without its content. -}
@@ -345,12 +353,13 @@ type alias Saved =
     , g0 : Int
     , g1 : Int
     , gl : Int
+    , guard : Int64
     }
 
 
 noSaved : Saved
 noSaved =
-    { x = 0, y = 0, attrs = plainAttrs, wrapNext = False, origin = False, g0 = 0, g1 = 0, gl = 0 }
+    { x = 0, y = 0, attrs = plainAttrs, wrapNext = False, origin = False, g0 = 0, g1 = 0, gl = 0, guard = 0 }
 
 
 {-| A ring of `size` rows, `stride` slots each, in one builder: the screen's
@@ -404,8 +413,11 @@ type alias Term =
     , g0 : Int
     , g1 : Int
     , gl : Int
+    , guard : Int64
+    , protectMode : Int
     , lastPoint : Int
     , title : String
+    , colours : Dict Int Int
     , cursorShape : Int
     , ps : Int
     , params : Array Int
@@ -519,8 +531,11 @@ fresh config =
     , g0 = 0
     , g1 = 0
     , gl = 0
+    , guard = 0
+    , protectMode = 0
     , lastPoint = 0
     , title = ""
+    , colours = Dict.empty
     , cursorShape = 1
     , ps = psGround
     , params = []
@@ -1163,7 +1178,7 @@ execute b t =
         { t | x = 0, wrapNext = False }
 
     else if b == 8 then
-        { t | x = max 0 (t.x - 1), wrapNext = False }
+        cursorLeft 1 t
 
     else if b == 9 then
         { t | x = nextTab t.x 1 t }
@@ -1433,7 +1448,7 @@ joinMark cp t =
             Just k ->
                 let
                     cell =
-                        Bitwise.or (Bitwise.and (Bitwise.or highMask 0x600000) c) (Int64.fromInt (Bitwise.or clusterBit k.id))
+                        Bitwise.or (Bitwise.and (Bitwise.or highMask (Bitwise.or protectBit 0x600000)) c) (Int64.fromInt (Bitwise.or clusterBit k.id))
                 in
                 { t | screen = { s | cells = Builder.set (o + at) cell s.cells }, clusters = k.clusters }
 
@@ -1750,6 +1765,12 @@ escDispatch b t =
     if b == 0x37 then
         saveCursor t
 
+    else if b == 0x56 then
+        protect 1 t
+
+    else if b == 0x57 then
+        protect 0 t
+
     else if b == 0x38 then
         restoreCursor t
 
@@ -1837,10 +1858,10 @@ oscString bytes n i t =
                 byteAt bytes i
         in
         if b == 7 then
-            ground bytes n (i + 1) (oscDispatch t)
+            ground bytes n (i + 1) (oscDispatch "\u{0007}" t)
 
         else if b == 0x1B then
-            escape bytes n (i + 1) (oscDispatch t)
+            escape bytes n (i + 1) (oscDispatch "\u{001B}\\" t)
 
         else if b == 0x18 || b == 0x1A then
             ground bytes n (i + 1) { t | str = Builder.empty 0 }
@@ -1919,8 +1940,8 @@ stringOf text =
     Bytes.toString (Bytes.fromUInt8s text) |> Maybe.withDefault ""
 
 
-oscDispatch : (moved t0 : Term) -> Term
-oscDispatch t0 =
+oscDispatch : String -> (moved t0 : Term) -> Term
+oscDispatch end t0 =
     let
         taken =
             takeString t0
@@ -1947,8 +1968,298 @@ oscDispatch t0 =
         Just 2 ->
             { t | title = rest }
 
-        _ ->
+        Just 4 ->
+            paletteColours end (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
+
+        Just 104 ->
+            resetPalette (Array.dropFirst 1 parts) t
+
+        Just c ->
+            if c >= 10 && c <= 19 then
+                dynamicColours end c (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
+
+            else if c >= 110 && c <= 112 && Array.length parts == 1 then
+                { t | colours = Dict.remove (dynamicKey (c - 100)) t.colours }
+
+            else
+                t
+
+        Nothing ->
             t
+
+
+-- COLOURS
+
+
+{-| OSC 4: pairs of an index and a colour or `?`, each set or answered in
+order, the answers in one reply ended as the request was; the first pair
+that does not parse ends it, as in Ghostty (§VC12). -}
+paletteColours : String -> Array String -> String -> (moved t : Term) -> Term
+paletteColours end words answers t =
+    when { i = Maybe.andThen String.toInt (Array.get 0 words), spec = Array.get 1 words } is
+        { i = Just i, spec = Just spec } ->
+            if i < 0 || i > 255 then
+                withAnswers answers t
+
+            else if spec == "?" then
+                paletteColours end (Array.dropFirst 2 words) (answers ++ "\u{001B}]4;" ++ String.fromInt i ++ ";" ++ rgb16 (paletteColour i t) ++ end) t
+
+            else
+                when parseColour spec is
+                    Just c ->
+                        paletteColours end (Array.dropFirst 2 words) answers { t | colours = Dict.set i c t.colours }
+
+                    Nothing ->
+                        withAnswers answers t
+
+        _ ->
+            withAnswers answers t
+
+
+{-| OSC 10 to 19: colours or `?` for the dynamic colours from `c` on, each
+the next's. The foreground (10), background (11) and cursor (12) are kept;
+the rest are passed over, as Ghostty passes them. -}
+dynamicColours : String -> Int -> Array String -> String -> (moved t : Term) -> Term
+dynamicColours end c words answers t =
+    when Array.first words is
+        Just spec ->
+            if spec == "?" then
+                let
+                    more =
+                        when dynamicColour c t is
+                            Just v ->
+                                answers ++ "\u{001B}]" ++ String.fromInt c ++ ";" ++ rgb16 v ++ end
+
+                            Nothing ->
+                                answers
+                in
+                nextDynamic end c words more t
+
+            else
+                when parseColour spec is
+                    Just v ->
+                        if c <= 12 then
+                            nextDynamic end c words answers { t | colours = Dict.set (dynamicKey c) v t.colours }
+
+                        else
+                            nextDynamic end c words answers t
+
+                    Nothing ->
+                        withAnswers answers t
+
+        Nothing ->
+            withAnswers answers t
+
+
+{-| The next dynamic colour's word, or the end after OSC 19's. A function of
+its own, not a local one handed the term: a term handed to a function value
+is kept by every path of the parser, and each update of it copies (§VC7). -}
+nextDynamic : String -> Int -> Array String -> String -> (moved t : Term) -> Term
+nextDynamic end c words answers t =
+    if c >= 19 then
+        withAnswers answers t
+
+    else
+        dynamicColours end (c + 1) (Array.dropFirst 1 words) answers t
+
+
+withAnswers : String -> (moved t : Term) -> Term
+withAnswers answers t =
+    if answers == "" then
+        t
+
+    else
+        reply answers t
+
+
+{-| OSC 104: the palette entries named set back, or every one. -}
+resetPalette : Array String -> (moved t : Term) -> Term
+resetPalette words t =
+    let
+        named =
+            Array.mapAndKeepJust String.toInt (Array.keepIf (\w -> w /= "") words)
+    in
+    if Array.isEmpty named then
+        { t | colours = Dict.keepIf (\k _ -> k > 255) t.colours }
+
+    else
+        { t | colours = Array.foldl Dict.remove t.colours named }
+
+
+dynamicKey : Int -> Int
+dynamicKey c =
+    1000 + c
+
+
+{-| A dynamic colour: the one set, or none, since the core has no default
+foreground or background, as libghostty-vt has none unless its embedder
+gives one; the cursor's is the foreground's when it has none. -}
+dynamicColour : Int -> Term -> Maybe Int
+dynamicColour c t =
+    if c == 12 then
+        when Dict.get (dynamicKey 12) t.colours is
+            Just v ->
+                Just v
+
+            Nothing ->
+                Dict.get (dynamicKey 10) t.colours
+
+    else if c <= 11 then
+        Dict.get (dynamicKey c) t.colours
+
+    else
+        Nothing
+
+
+paletteColour : Int -> Term -> Int
+paletteColour i t =
+    Maybe.withDefault (defaultColour i) (Dict.get i t.colours)
+
+
+{-| The palette as libghostty-vt has it before anything sets it: its 16,
+the 6×6×6 cube and the grey ramp. -}
+defaultColour : Int -> Int
+defaultColour i =
+    if i < 16 then
+        Maybe.withDefault 0 (Array.get i namedColours)
+
+    else if i < 232 then
+        let
+            level v =
+                if v == 0 then
+                    0
+
+                else
+                    v * 40 + 55
+
+            k =
+                i - 16
+        in
+        rgbOf (level (k // 36)) (level (modBy 6 (k // 6))) (level (modBy 6 k))
+
+    else
+        let
+            v =
+                (i - 232) * 10 + 8
+        in
+        rgbOf v v v
+
+
+namedColours : Array Int
+namedColours =
+    [ 0x1D1F21, 0xCC6666, 0xB5BD68, 0xF0C674, 0x81A2BE, 0xB294BB, 0x8ABEB7, 0xC5C8C6, 0x666666, 0xD54E53, 0xB9CA4A, 0xE7C547, 0x7AA6DA, 0xC397D8, 0x70C0B1, 0xEAEAEA ]
+
+
+rgbOf : Int -> Int -> Int -> Int
+rgbOf r g b =
+    Bitwise.or (Bitwise.shiftLeftBy 16 r) (Bitwise.or (Bitwise.shiftLeftBy 8 g) b)
+
+
+{-| A colour as xterm reports one: `rgb:` and each channel in 16 bits. -}
+rgb16 : Int -> String
+rgb16 c =
+    let
+        channel v =
+            hex2 v ++ hex2 v
+    in
+    "rgb:" ++ channel (Bitwise.shiftRightZfBy 16 c) ++ "/" ++ channel (Bitwise.shiftRightZfBy 8 c) ++ "/" ++ channel c
+
+
+{-| A colour as XParseColor reads one, as Ghostty reads it: `#` and 1 to 4
+hex digits a channel, 3 or 6 hex digits alone, `rgb:` and 1 to 4 a channel,
+or `rgbi:` and an intensity from 0 to 1 a channel; each scaled to 8 bits.
+X11's colour names are not taken (§VC12). -}
+parseColour : String -> Maybe Int
+parseColour spec0 =
+    let
+        spec =
+            String.trim spec0
+
+        n =
+            String.count spec
+
+        groups text k =
+            Maybe.map3 rgbOf (scaledHex (String.slice 0 k text)) (scaledHex (String.slice k (2 * k) text)) (scaledHex (String.slice (2 * k) (3 * k) text))
+
+        parts text f =
+            when String.split "/" text is
+                [ r, g, b ] ->
+                    Maybe.map3 rgbOf (f r) (f g) (f b)
+
+                _ ->
+                    Nothing
+    in
+    if String.startsWith "#" spec then
+        if n == 4 || n == 7 || n == 10 || n == 13 then
+            groups (String.dropFirst 1 spec) ((n - 1) // 3)
+
+        else
+            Nothing
+
+    else if n == 3 || n == 6 then
+        groups spec (n // 3)
+
+    else if String.startsWith "rgbi:" spec then
+        parts (String.dropFirst 5 spec) intensity
+
+    else if String.startsWith "rgb:" spec then
+        parts (String.dropFirst 4 spec) scaledHex
+
+    else
+        Nothing
+
+
+scaledHex : String -> Maybe Int
+scaledHex text =
+    let
+        n =
+            String.count text
+
+        value =
+            String.foldl
+                (\ch acc ->
+                    Maybe.andThen
+                        (\v ->
+                            let
+                                d =
+                                    Char.toCode ch
+                            in
+                            if d >= 0x30 && d <= 0x39 then
+                                Just (v * 16 + d - 0x30)
+
+                            else if d >= 0x61 && d <= 0x66 then
+                                Just (v * 16 + d - 0x57)
+
+                            else if d >= 0x41 && d <= 0x46 then
+                                Just (v * 16 + d - 0x37)
+
+                            else
+                                Nothing
+                        )
+                        acc
+                )
+                (Just 0)
+                text
+    in
+    if n < 1 || n > 4 then
+        Nothing
+
+    else
+        Maybe.map (\v -> v * 255 // (Bitwise.shiftLeftBy (4 * n) 1 - 1)) value
+
+
+intensity : String -> Maybe Int
+intensity text =
+    when String.toFloat text is
+        Just f ->
+            if f >= 0 && f <= 1 then
+                Just (Math.floor (f * 255))
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
 
 
 dcsDispatch : (moved t0 : Term) -> Term
@@ -2230,10 +2541,10 @@ dispatchRest final priv inter params t =
             Array.foldl restoreMode t params
 
         else if final == 0x4A then
-            eraseDisplay (param 0 0 params) t
+            eraseDisplay True (param 0 0 params) t
 
         else if final == 0x4B then
-            eraseLine (param 0 0 params) t
+            eraseLine True (param 0 0 params) t
 
         else if final == 0x6E && param 0 0 params == 6 then
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (t.x + 1) ++ ";1R") t
@@ -2267,6 +2578,20 @@ dispatchRest final priv inter params t =
     else if priv == 0 && inter == 0x21 && final == 0x70 then
         softReset t
 
+    else if priv == 0 && inter == 0x22 && final == 0x71 && Array.length params <= 1 then
+        let
+            p =
+                param 0 0 params
+        in
+        if p == 1 then
+            protect 2 t
+
+        else if p == 0 || p == 2 then
+            protect 0 t
+
+        else
+            t
+
     else if priv == 0 && inter == 0x2A && final == 0x79 && t.config.checksums && Array.length params <= 6 then
         reply ("\u{001B}P" ++ String.fromInt (param 0 0 params) ++ "!~" ++ hex4 (rectChecksum params t) ++ "\u{001B}\\") t
 
@@ -2290,7 +2615,7 @@ dispatchRare final params t =
         { t | x = min (t.cols - 1) (t.x + param 0 1 params), wrapNext = False }
 
     else if final == 0x44 then
-        { t | x = max 0 (t.x - param 0 1 params), wrapNext = False }
+        cursorLeft (param 0 1 params) t
 
     else if final == 0x45 then
         { t | y = min (lowerLimit t) (t.y + param 0 1 params), x = 0, wrapNext = False }
@@ -2311,10 +2636,10 @@ dispatchRare final params t =
         { t | x = previousTab t.x (param 0 1 params) t, wrapNext = False }
 
     else if final == 0x4A then
-        eraseDisplay (param 0 0 params) t
+        eraseDisplay False (param 0 0 params) t
 
     else if final == 0x4B then
-        eraseLine (param 0 0 params) t
+        eraseLine False (param 0 0 params) t
 
     else if final == 0x58 then
         eraseChars (param 0 1 params) t
@@ -2410,6 +2735,87 @@ answers when its embedder does not say otherwise (§VC10). -}
 primaryAttributes : String
 primaryAttributes =
     "\u{001B}[?62;22c"
+
+
+{-| BS and CUB: `n` columns left. With autowrap and reverse wraparound
+(?45), a move past the first column goes on from the last column of the row
+above if that row wrapped into this one, and stops at the region's top; with
+the extended form (?1045) it goes on whether the row wrapped or not, and from
+the region's top to its bottom. A pending wrap takes one of the `n`. As xterm
+and Ghostty do (§VC12). -}
+cursorLeft : Int -> (moved t : Term) -> Term
+cursorLeft n t =
+    let
+        mode =
+            if not t.autowrap then
+                0
+
+            else if Dict.get 1045 t.modes == Just True then
+                2
+
+            else if Dict.get 45 t.modes == Just True then
+                1
+
+            else
+                0
+    in
+    if mode == 0 then
+        { t | x = max 0 (t.x - n), wrapNext = False }
+
+    else
+        let
+            count =
+                if t.wrapNext then
+                    n - 1
+
+                else
+                    n
+        in
+        if count <= 0 then
+            { t | wrapNext = False }
+
+        else if t.x == 0 && mode == 1 && t.y <= t.top then
+            { t | y = t.top, wrapNext = False }
+
+        else
+            reverseLeft mode count { t | wrapNext = False }
+
+
+reverseLeft : Int -> Int -> (moved t : Term) -> Term
+reverseLeft mode count t0 =
+    let
+        amount =
+            min t0.x count
+
+        rest =
+            count - amount
+
+        t =
+            { t0 | x = t0.x - amount }
+    in
+    if rest == 0 then
+        t
+
+    else if t.y == t.top then
+        if mode == 2 then
+            reverseLeft mode (rest - 1) { t | x = t.cols - 1, y = t.bottom }
+
+        else
+            t
+
+    else if t.y == 0 then
+        t
+
+    else if mode == 1 && not (rowWrapped (t.y - 1) t.screen) then
+        t
+
+    else
+        reverseLeft mode (rest - 1) { t | x = t.cols - 1, y = t.y - 1 }
+
+
+rowWrapped : Int -> Screen -> Bool
+rowWrapped y s =
+    Bitwise.and wrappedBit (metaAt (rowOffset s y) s) /= 0
 
 
 {-| The cursor's row as a report gives it: from the region's top in origin
@@ -2703,6 +3109,19 @@ cursorStyle p t =
         t
 
 
+{-| SPA (ESC V, `how` 1), DECSCA 1 (2), and EPA or DECSCA 0 or 2 (0): what
+the cursor writes from now on is protected, or not. The mode, ISO's or
+DEC's, is what ED, EL and ECH go by, and stopping protection does not
+change it, as in Ghostty. -}
+protect : Int -> (moved t : Term) -> Term
+protect how t =
+    if how == 0 then
+        { t | guard = 0, pen = Bitwise.and (Bitwise.complement protectBit) t.pen }
+
+    else
+        { t | guard = protectBit, protectMode = how, pen = Bitwise.or protectBit t.pen }
+
+
 saveCursor : (moved t : Term) -> Term
 saveCursor t =
     let
@@ -2721,6 +3140,7 @@ saveCursor t =
                     , g0 = t.g0
                     , g1 = t.g1
                     , gl = t.gl
+                    , guard = t.guard
                     }
             }
     }
@@ -2741,6 +3161,8 @@ restoreCursor t =
             , g0 = v.g0
             , g1 = v.g1
             , gl = v.gl
+            , guard = v.guard
+            , pen = Bitwise.or v.guard (Bitwise.and (Bitwise.complement protectBit) t.pen)
         }
 
 
@@ -2774,11 +3196,24 @@ softReset t =
                 , gl = 0
                 , wrapNext = False
                 , cursorShape = 1
-                , modes = Dict.set 12 False t.modes
+                , modes = Array.foldl Dict.remove (Dict.set 12 False t.modes) softResetModes
+                , guard = 0
+                , protectMode = 0
+                , pen = Bitwise.and (Bitwise.complement protectBit) t.pen
+                , colours = Dict.keepIf (\k _ -> k > 255) t.colours
             }
         )
         |> resetSaved
         |> withPlain
+
+
+{-| The recorded modes DECSTR resets besides the ones `softReset` names, as
+Ghostty's soft reset does: cursor keys, reverse wraparound and its extended
+form, the numeric keypad, left and right margins, KAM, and ESC = and ESC >'s
+keypad. -}
+softResetModes : Array Int
+softResetModes =
+    [ 1, 45, 66, 69, 1045, ansiKey 2, -66 ]
 
 
 resetSaved : (moved t : Term) -> Term
@@ -2887,7 +3322,7 @@ withPen attrs t =
             in
             { t
                 | attrs = attrs
-                , pen = Bitwise.shiftLeftBy 32 (Bitwise.and 0xFFFF ids)
+                , pen = Bitwise.or t.guard (Bitwise.shiftLeftBy 32 (Bitwise.and 0xFFFF ids))
                 , erase = Bitwise.shiftLeftBy 16 (Bitwise.and 0xFFFF0000 ids)
             }
 
@@ -2897,7 +3332,7 @@ withPen attrs t =
                     withPenInterned attrs t
 
                 ids =
-                    Bitwise.or (Bitwise.shiftRightZfBy 32 set.pen) (Bitwise.shiftRightZfBy 16 set.erase)
+                    Bitwise.or (Bitwise.and 0xFFFF (Bitwise.shiftRightZfBy 32 set.pen)) (Bitwise.shiftRightZfBy 16 set.erase)
             in
             { set | styleCache = Builder.set (h + 1) ids (Builder.set h key set.styleCache) }
 
@@ -2915,7 +3350,7 @@ withPenInterned attrs t =
             else
                 intern { plainAttrs | bg = attrs.bg } pen.styles
     in
-    { t | attrs = attrs, pen = styleBits pen.id, erase = styleBits erase.id, styles = erase.styles }
+    { t | attrs = attrs, pen = Bitwise.or t.guard (styleBits pen.id), erase = styleBits erase.id, styles = erase.styles }
 
 
 styleCacheSize : Int
@@ -3318,13 +3753,13 @@ deleteChars count t =
 
 eraseChars : Int -> (moved t : Term) -> Term
 eraseChars count t =
-    eraseSpan t.x (min t.cols (t.x + max 1 count)) { t | wrapNext = False }
+    eraseSpan (t.protectMode == 1) t.x (min t.cols (t.x + max 1 count)) { t | wrapNext = False }
 
 
 {-| Columns `from` to `to` of the cursor's row made empty, in the erase
 cell. -}
-eraseSpan : Int -> Int -> (moved t : Term) -> Term
-eraseSpan from to t =
+eraseSpan : Bool -> Int -> Int -> (moved t : Term) -> Term
+eraseSpan guarded from to t =
     let
         s =
             t.screen
@@ -3353,36 +3788,94 @@ eraseSpan from to t =
                 if t.erase /= 0 then
                     max ext to
 
-                else if to >= ext then
+                else if to >= ext && not guarded then
                     from
 
                 else
                     ext
 
             filled =
-                Builder.fill (o + from) (o + min to (max ext to)) t.erase cells0
+                if guarded then
+                    eraseUnprotected (o + from) (o + min to (max ext to)) t.erase cells0
+
+                else
+                    Builder.fill (o + from) (o + min to (max ext to)) t.erase cells0
         in
         { t | screen = { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt newExt)) filled } }
 
 
-eraseLine : Int -> (moved t : Term) -> Term
-eraseLine how t =
+{-| EL, and DECSEL when `selective`, which leaves protected cells; EL
+leaves them too in ISO's protection mode. -}
+eraseLine : Bool -> Int -> (moved t : Term) -> Term
+eraseLine selective how t =
+    let
+        guarded =
+            selective || t.protectMode == 1
+    in
     if how == 0 then
-        eraseSpan t.x t.cols { t | wrapNext = False }
+        eraseSpan guarded t.x t.cols { t | wrapNext = False }
 
     else if how == 1 then
-        eraseSpan 0 (t.x + 1) { t | wrapNext = False }
+        eraseSpan guarded 0 (t.x + 1) { t | wrapNext = False }
 
     else if how == 2 then
-        eraseSpan 0 t.cols { t | wrapNext = False }
+        eraseSpan guarded 0 t.cols { t | wrapNext = False }
 
     else
         t
 
 
-eraseDisplay : Int -> (moved t : Term) -> Term
-eraseDisplay how t =
-    if how == 2 then
+{-| The cells from `from` to `to` that are not protected, in the erase cell. -}
+eraseUnprotected : Int -> Int -> Int64 -> (moved cells : Builder Int64) -> Builder Int64
+eraseUnprotected from to fill cells =
+    if from >= to then
+        cells
+
+    else if Bitwise.and protectBit (Maybe.withDefault 0 (Builder.get from cells)) /= 0 then
+        eraseUnprotected (from + 1) to fill cells
+
+    else
+        eraseUnprotected (from + 1) to fill (Builder.set from fill cells)
+
+
+{-| Rows `from` to `to`, their cells that are not protected erased. -}
+blankUnprotected : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+blankUnprotected from to fill s =
+    if from >= to then
+        s
+
+    else
+        let
+            o =
+                rowOffset s from
+
+            m =
+                metaAt o s
+
+            ext =
+                metaExtent m
+
+            newExt =
+                if fill /= 0 then
+                    s.cols
+
+                else
+                    ext
+
+            cells =
+                eraseUnprotected o (o + newExt) fill (reachAt o ext newExt s.cells)
+        in
+        blankUnprotected (from + 1) to fill { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt newExt)) cells }
+
+
+{-| ED, and DECSED when `selective`, which leaves protected cells; ED
+leaves them too in ISO's protection mode. -}
+eraseDisplay : Bool -> Int -> (moved t : Term) -> Term
+eraseDisplay selective how t =
+    if (selective || t.protectMode == 1) && how /= 3 then
+        eraseGuarded selective how t
+
+    else if how == 2 then
         { t | screen = blankRows 0 t.rows t.erase t.screen, wrapNext = False }
 
     else if how == 3 then
@@ -3391,10 +3884,25 @@ eraseDisplay how t =
     else if how == 1 then
         -- the rows first, through the term, so that nothing reads the term
         -- after it is handed on (§VC7)
-        eraseLine 1 { t | screen = blankRows 0 t.y t.erase t.screen }
+        eraseLine False 1 { t | screen = blankRows 0 t.y t.erase t.screen }
 
     else if how == 0 then
-        eraseLine 0 { t | screen = blankRows (t.y + 1) t.rows t.erase t.screen }
+        eraseLine False 0 { t | screen = blankRows (t.y + 1) t.rows t.erase t.screen }
+
+    else
+        t
+
+
+eraseGuarded : Bool -> Int -> (moved t : Term) -> Term
+eraseGuarded selective how t =
+    if how == 2 then
+        { t | screen = blankUnprotected 0 t.rows t.erase t.screen, wrapNext = False }
+
+    else if how == 1 then
+        eraseLine selective 1 { t | screen = blankUnprotected 0 t.y t.erase t.screen }
+
+    else if how == 0 then
+        eraseLine selective 0 { t | screen = blankUnprotected (t.y + 1) t.rows t.erase t.screen }
 
     else
         t
