@@ -117,6 +117,9 @@ type alias Screen =
     , base : Int
     , hist : Int
     , size : Int
+    , top : Int
+    , height : Int
+    , turn : Int
     }
 
 
@@ -178,6 +181,9 @@ newScreen size =
     , base = 0
     , hist = 0
     , size = size
+    , top = 0
+    , height = lines
+    , turn = 0
     }
 
 
@@ -215,10 +221,74 @@ newTermWith pack scrollback =
 -- THE SCREEN
 
 
-{-| The physical slot of logical row `y`; a negative `y` is scrollback in the
-ring, `-1` the newest. -}
+{-| The physical slot of logical row `y`, through the region's turn: a row
+of the region `top` to `top + height - 1` is the one `turn` places below it,
+wrapping within the region (geng-lang `m4-visiterm-scrolls.md` H1). -}
 phys : Screen -> Int -> Int
 phys s y =
+    if s.turn == 0 then
+        slot s y
+
+    else
+        slot s (inRegion s y)
+
+
+inRegion : Screen -> Int -> Int
+inRegion s y =
+    let
+        v =
+            y - s.top
+    in
+    if v >= 0 && v < s.height then
+        let
+            w =
+                v + s.turn
+        in
+        if w >= s.height then
+            s.top + w - s.height
+
+        else
+            s.top + w
+
+    else
+        y
+
+
+{-| The region's rows put where its turn says they are, its turn 0: before
+anything that moves or reads rows as runs of slots, and when the region or
+the screen changes. A turn is only ever made of a region that is one stretch
+of the ring (`feedRegion`), and nothing moves `base` without settling first,
+so the region is one stretch here. -}
+settle : (moved s : Screen) -> Screen
+settle s =
+    if s.turn == 0 then
+        s
+
+    else
+        let
+            pt =
+                slot s s.top
+
+            pb =
+                slot s (s.top + s.height - 1)
+        in
+        { s | rows = Builder.rotate pt (pb + 1) s.turn s.rows, turn = 0 }
+
+
+{-| The screen settled, its region `top` to `bottom`. -}
+withRegion : Int -> Int -> (moved s : Screen) -> Screen
+withRegion top bottom s =
+    let
+        settled =
+            settle s
+    in
+    { settled | top = top, height = bottom - top + 1 }
+
+
+{-| The physical slot of logical row `y` in the ring alone; a negative `y`
+is scrollback in the ring, `-1` the newest. -}
+slot : Screen -> Int -> Int
+slot s y =
     let
         p =
             s.base + y
@@ -323,9 +393,12 @@ place, is the new bottom row (geng-lang `m4-visiterm.md` §VA16, D978); the
 caller has made room (`pageOut`). Without it, the ring turns only when it
 holds no scrollback, since a turn would make the leaving row scrollback.
 -}
-screenUp : Bool -> Int -> Int -> (moved screen : Screen) -> Screen
-screenUp keep top bottom screen =
+screenUp : Bool -> Int -> Int -> (moved screen0 : Screen) -> Screen
+screenUp keep top bottom screen0 =
     let
+        screen =
+            settle screen0
+
         whole =
             top == 0 && bottom == lines - 1
     in
@@ -410,9 +483,12 @@ screenUp keep top bottom screen =
 
 {-| Logical rows `top` to `bottom`, which are one stretch of the ring, turned
 `by` places toward the top. -}
-turnRegion : Int -> Int -> Int -> (moved s : Screen) -> Screen
-turnRegion top bottom by s =
+turnRegion : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+turnRegion top bottom by s0 =
     let
+        s =
+            settle s0
+
         pt =
             phys s top
 
@@ -429,8 +505,12 @@ clearRowAt y s =
     { s | rows = Builder.update (phys s y) cleared s.rows }
 
 
-rotate : (moved s : Screen) -> Screen
-rotate s =
+rotate : (moved s0 : Screen) -> Screen
+rotate s0 =
+    let
+        s =
+            settle s0
+    in
     { s | base = phys s 1 }
 
 
@@ -462,8 +542,12 @@ shiftDown i top s =
 before it is overwritten. The runs are cut where either crosses the ring's
 end, which makes at most three pieces, and each piece is one `moveWithin`: the last piece first when the rows move
 down, the first when they move up. -}
-moveRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
-moveRows from to count s =
+moveRows : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+moveRows from to count s0 =
+    let
+        s =
+            settle s0
+    in
     if count <= 0 then
         s
 
@@ -517,8 +601,12 @@ copyRows pf pt run s =
 
 {-| Logical rows `from` up to `to` made blank, one `fill` of the rows for
 each stretch of the ring they cover, which is one or two. -}
-blankRows : Int -> Int -> (moved s : Screen) -> Screen
-blankRows from to s =
+blankRows : Int -> Int -> (moved s0 : Screen) -> Screen
+blankRows from to s0 =
+    let
+        s =
+            settle s0
+    in
     if from >= to then
         s
 
@@ -1432,13 +1520,13 @@ withScroll t =
             t.top == 0 && t.bottom == lines - 1
     in
     if keep && whole then
-        { t | scroll = scrollFull }
+        { t | scroll = scrollFull, screen = withRegion t.top t.bottom t.screen }
 
     else if not keep && not whole then
-        { t | scroll = scrollRegion }
+        { t | scroll = scrollRegion, screen = withRegion t.top t.bottom t.screen }
 
     else
-        { t | scroll = scrollOther }
+        { t | scroll = scrollOther, screen = withRegion t.top t.bottom t.screen }
 
 
 {-| `regionUp 1` of the whole main screen, scrollback kept: `screenUp`'s first
@@ -1464,11 +1552,27 @@ feedFull t =
 
 
 {-| `regionUp 1` of a region, no scrollback kept: when the region is one
-stretch of the ring, `screenUp`'s region branch, its rows turned. -}
+stretch of the ring, its turn counted on by one, its rows left where they
+are (H1), and the row that left, now its bottom row, cleared. -}
 feedRegion : (moved t : Term) -> Term
 feedRegion t =
-    if phys t.screen t.top <= phys t.screen t.bottom then
-        { t | screen = turnRegion t.top t.bottom 1 t.screen |> clearRowAt t.bottom }
+    if slot t.screen t.top <= slot t.screen t.bottom then
+        let
+            s =
+                t.screen
+        in
+        { t
+            | screen =
+                { s
+                    | turn =
+                        if s.turn + 1 >= s.height then
+                            0
+
+                        else
+                            s.turn + 1
+                }
+                    |> clearRowAt t.bottom
+        }
 
     else
         regionUp 1 t.top t.bottom t
@@ -1515,8 +1619,12 @@ regionUp count top bottom t =
             regionUp (count - 1) top bottom { t | screen = screenUp keep top bottom t.screen }
 
 
-regionDown : Int -> Int -> Int -> (moved t : Term) -> Term
-regionDown count top bottom t =
+regionDown : Int -> Int -> Int -> (moved t0 : Term) -> Term
+regionDown count top bottom t0 =
+    let
+        t =
+            { t0 | screen = settle t0.screen }
+    in
     if count <= 0 then
         t
 

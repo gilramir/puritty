@@ -742,3 +742,20 @@ kinds take `regionUp` and `screenUp`'s chain of tests. `vte-scrolling`
 530 → 464 instructions a line, 46–48 → 42–44 ms against 42;
 `bottom_region` 524 → 461, 41–43 → 36–38 against 37; every region scroll
 10–12% fewer instructions. Every checksum and page is the same.
+
+## 21. A region keeps its own turn (2026-10-29)
+
+geng-lang's `m4-visiterm-scrolls.md` H1 (its `m4-visiterm.md` §VA42). A
+`Screen` keeps its region (`top`, `height`) and a `turn`. `phys` maps a
+row inside the region through the turn, and the rest of the ring through
+`slot`, which is `phys` as it was. A line feed at the bottom of a region
+(`feedRegion`) counts the turn on by one and blanks the row that left,
+where it turned 49 row pointers. `settle` rotates the region's rows into
+place, with the turn back to 0, before anything that works on runs of
+slots (`screenUp`, `turnRegion`, `rotate`, `moveRows`, `blankRows`,
+`regionDown`) and wherever the region or the screen changes
+(`withScroll`). Every region scroll has 18–19% fewer instructions, and
+`bottom_region` takes 30–32 ms against 37. `vte-scrolling` has 13 more
+instructions a line, for the turn's test in `phys`, and is level in time.
+Every checksum and page is the same, and so is the output on 800 random
+mixes of every sequence the probe handles.
