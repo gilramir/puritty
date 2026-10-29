@@ -136,6 +136,7 @@ type alias Term =
     , wrapNext : Bool
     , top : Int
     , bottom : Int
+    , scroll : Int
     , pen : Int
     , fg : Int
     , bg : Int
@@ -182,6 +183,11 @@ newScreen size =
 
 newTerm : PackMode -> Int -> Term
 newTerm pack scrollback =
+    withScroll (newTermWith pack scrollback)
+
+
+newTermWith : PackMode -> Int -> Term
+newTermWith pack scrollback =
     { screen = newScreen ringRows
     , saved = Nothing
     , x = 0
@@ -189,6 +195,7 @@ newTerm pack scrollback =
     , wrapNext = False
     , top = 0
     , bottom = lines - 1
+    , scroll = scrollFull
     , pen = 0
     , fg = 0
     , bg = 0
@@ -1192,15 +1199,15 @@ dispatch final priv params t =
                 t
 
             else
-                { t | saved = Just t.screen, screen = newScreen (lines + 1) }
+                withScroll { t | saved = Just t.screen, screen = newScreen (lines + 1) }
 
         else if final == 0x6C && param 0 0 params == 1049 then
             when t.saved is
                 Just s ->
-                    { t | saved = Nothing, screen = s }
+                    withScroll { t | saved = Nothing, screen = s }
 
                 Nothing ->
-                    { t | saved = Nothing }
+                    withScroll { t | saved = Nothing }
 
         else
             t
@@ -1244,7 +1251,7 @@ dispatch final priv params t =
                 param 1 lines params - 1
         in
         if top < bottom && bottom < lines then
-            { t | top = top, bottom = bottom, x = 0, y = 0, wrapNext = False }
+            withScroll { t | top = top, bottom = bottom, x = 0, y = 0, wrapNext = False }
 
         else
             t
@@ -1379,13 +1386,92 @@ intern t =
 lineFeed : (moved t : Term) -> Term
 lineFeed t =
     if t.y == t.bottom then
-        regionUp 1 t.top t.bottom t
+        if t.scroll == scrollFull then
+            feedFull t
+
+        else if t.scroll == scrollRegion then
+            feedRegion t
+
+        else
+            regionUp 1 t.top t.bottom t
 
     else if t.y < lines - 1 then
         { t | y = t.y + 1 }
 
     else
         t
+
+
+{-| The kinds of line feed at the bottom of the region that `lineFeed` takes
+straight to their work, decided where the region, the screen or the
+scrollback change (`withScroll`), not at each line feed (geng-lang
+`m4-visiterm-scrolls.md` H2): the whole main screen with scrollback kept,
+and a region of the screen with none kept. Any other is `regionUp`'s. -}
+scrollFull : Int
+scrollFull =
+    1
+
+
+scrollRegion : Int
+scrollRegion =
+    2
+
+
+scrollOther : Int
+scrollOther =
+    0
+
+
+withScroll : (moved t : Term) -> Term
+withScroll t =
+    let
+        keep =
+            t.top == 0 && t.back.limit > 0 && not (isAlt t)
+
+        whole =
+            t.top == 0 && t.bottom == lines - 1
+    in
+    if keep && whole then
+        { t | scroll = scrollFull }
+
+    else if not keep && not whole then
+        { t | scroll = scrollRegion }
+
+    else
+        { t | scroll = scrollOther }
+
+
+{-| `regionUp 1` of the whole main screen, scrollback kept: `screenUp`'s first
+branch, after `pageOut` when the ring is full. -}
+feedFull : (moved t : Term) -> Term
+feedFull t =
+    let
+        s =
+            t.screen
+    in
+    if s.hist + lines >= s.size then
+        let
+            room =
+                pageOut s t.back
+
+            r =
+                room.screen
+        in
+        { t | screen = { r | base = phys r 1, hist = r.hist + 1 } |> clearRowAt (lines - 1), back = room.back }
+
+    else
+        { t | screen = { s | base = phys s 1, hist = s.hist + 1 } |> clearRowAt (lines - 1) }
+
+
+{-| `regionUp 1` of a region, no scrollback kept: when the region is one
+stretch of the ring, `screenUp`'s region branch, its rows turned. -}
+feedRegion : (moved t : Term) -> Term
+feedRegion t =
+    if phys t.screen t.top <= phys t.screen t.bottom then
+        { t | screen = turnRegion t.top t.bottom 1 t.screen |> clearRowAt t.bottom }
+
+    else
+        regionUp 1 t.top t.bottom t
 
 
 reverseIndex : (moved t : Term) -> Term

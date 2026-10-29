@@ -730,3 +730,15 @@ hands `printAscii` the printable byte it read, `asciiEnd` starts after it,
 and `asciiRow` writes it. `vte-scrolling` 556 → 535 instructions a line,
 the region scrolls 3.5% fewer; the inputs of long runs 1.4–4.5% more,
 level in time. Every checksum and page is the same.
+
+## 20. A line feed's kind decided once (2026-10-29)
+
+geng-lang's `m4-visiterm-scrolls.md` H2, which Gilbert took (its
+`m4-visiterm.md` §VA41): `Term` keeps a `scroll` kind, set by `withScroll`
+where the region, the screen or the scrollback change. A line feed at the
+region's bottom goes straight to `feedFull` (the whole main screen,
+scrollback kept) or `feedRegion` (a region, none kept), and only the other
+kinds take `regionUp` and `screenUp`'s chain of tests. `vte-scrolling`
+530 → 464 instructions a line, 46–48 → 42–44 ms against 42;
+`bottom_region` 524 → 461, 41–43 → 36–38 against 37; every region scroll
+10–12% fewer instructions. Every checksum and page is the same.
