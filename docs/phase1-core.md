@@ -759,3 +759,20 @@ slots (`screenUp`, `turnRegion`, `rotate`, `moveRows`, `blankRows`,
 instructions a line, for the turn's test in `phys`, and is level in time.
 Every checksum and page is the same, and so is the output on 800 random
 mixes of every sequence the probe handles.
+
+## 22. The screen's cells in one builder (2026-10-29)
+
+geng-lang's `m4-visiterm-scrolls.md` H4, surveyed in its `m4-visiterm.md`
+§VA43 and taken in §VA44. The ring is one `Builder Int` of `cols + 1` cells
+a slot, a row's cells and then its extent. Every row function takes the
+row's offset, so a print is a store into the one builder, and a moved row
+is a `copyWithin` of its cells. The row builders' helpers are gone, and so
+are D913's hole rows, which geng-lang D1016 now refuses, as it refuses the
+old erase's `fill` of one row into many slots.
+
+All thirteen of D902's inputs meet the budget: `vte-scrolling` 39–42 ms
+against 42, the region scrolls 28–30. Inputs of long runs pay 6
+instructions a byte, and an edit that moves rows costs 0.2 µs. Every
+checksum and page matches H4 as surveyed. The survey also found two bugs
+in the old screen, an erase that shared one row and a hole that became a
+row, which this one cannot have.
