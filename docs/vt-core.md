@@ -70,19 +70,19 @@ all thirteen inputs. Five runs each, least and most, ms, and instructions
 
 | input | budget | `Int` cells | `Int64` cells | instructions `Int` | `Int64` | |
 |---|---:|---:|---:|---:|---:|---:|
-| `cup` | 56 | 41–49 | 40–42 | **49–56** | 1,322 | 1,602 |
-| `gitlog` | 132 | 75–80 | 79–82 | **107–112** | 2,644 | 3,364 |
-| `ls` | 124 | 63–64 | 64–65 | **85–89** | 2,340 | 3,017 |
-| vte-cursor_motion | 28 | 18–19 | 19–20 | **23–24** | 687 | 834 |
-| vte-dense_cells | 28 | 14–15 | 15–16 | **19–20** | 552 | 730 |
-| vte-light_cells | 24 | 9 | 10 | **7–9** | 367 | 333 |
-| vte-scrolling | 42 | 36–39 | 37–39 | **39–40** | 1,382 | 1,405 |
-| vte-scrolling_bottom_region | 37 | 22–23 | 23–24 | **23–25** | 916 | 942 |
-| vte-scrolling_bottom_small_region | 132 | 22–24 | 24–25 | **23–29** | 914 | 940 |
-| vte-scrolling_fullscreen | 45 | 19–20 | 20–22 | **27–28** | 753 | 961 |
-| vte-scrolling_top_region | 223 | 22–23 | 23–24 | **23–24** | 916 | 942 |
-| vte-scrolling_top_small_region | 125 | 22–24 | 23–24 | **24–26** | 914 | 940 |
-| vte-unicode | 25 | 10–11 | 10–12 | **13–15** | 453 | 505 |
+| `cup` | 56 | 41–49 | 40–42 | 1,299 | 1,322 | +1.8% |
+| `gitlog` | 132 | 75–80 | 79–82 | 2,641 | 2,644 | +0.1% |
+| `ls` | 124 | 63–64 | 64–65 | 2,331 | 2,340 | +0.4% |
+| vte-cursor_motion | 28 | 18–19 | 19–20 | 676 | 687 | +1.6% |
+| vte-dense_cells | 28 | 14–15 | 15–16 | 547 | 552 | +0.9% |
+| vte-light_cells | 24 | 9 | 10 | 366 | 367 | +0.3% |
+| vte-scrolling | 42 | 36–39 | 37–39 | 1,332 | 1,382 | +3.8% |
+| vte-scrolling_bottom_region | 37 | 22–23 | 23–24 | 878 | 916 | +4.3% |
+| vte-scrolling_bottom_small_region | 132 | 22–24 | 24–25 | 877 | 914 | +4.2% |
+| vte-scrolling_fullscreen | 45 | 19–20 | 20–22 | 752 | 753 | +0.1% |
+| vte-scrolling_top_region | 223 | 22–23 | 23–24 | 878 | 916 | +4.3% |
+| vte-scrolling_top_small_region | 125 | 22–24 | 23–24 | 877 | 914 | +4.2% |
+| vte-unicode | 25 | 10–11 | 10–12 | 441 | 453 | +2.7% |
 
 An `Int64` is an `int64_t` natively (geng-lang `m3-native.md`'s shape `I8`),
 so a `Builder Int64` is 8 bytes an item in one buffer, as Ghostty's page is.
