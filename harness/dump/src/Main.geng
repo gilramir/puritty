@@ -1,0 +1,69 @@
+module Main exposing (main)
+
+{-| core-dump: the core's side of the replay corpus and the oracle.
+
+Feeds FILE to a `Vt.Term` of COLS by ROWS, CHUNK bytes a read (the whole
+file when CHUNK is 0 or left out), and prints `Vt.dump`.
+
+usage: core-dump COLS ROWS FILE [CHUNK]
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Vt
+
+
+feedAll : Bytes -> Int -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes chunk at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes chunk (at + chunk) (Vt.feed (Bytes.slice at (at + chunk) bytes) t)
+
+
+number : Int -> Array String -> Int
+number i args =
+    Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i args))
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                if Array.length s.args < 3 then
+                    Console.write "usage: core-dump COLS ROWS FILE [CHUNK]\n"
+
+                else
+                    Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 2 s.raw)))
+                        |> Task.andThen
+                            (\bytes ->
+                                let
+                                    chunk =
+                                        number 3 s.args
+
+                                    term =
+                                        Vt.new { cols = number 0 s.args, rows = number 1 s.args, scrollback = 100000 }
+                                in
+                                Console.write
+                                    (Vt.dump
+                                        (feedAll bytes
+                                            (if chunk <= 0 then
+                                                max 1 (Bytes.length bytes)
+
+                                             else
+                                                chunk
+                                            )
+                                            0
+                                            term
+                                        )
+                                    )
+                            )
+                        |> Task.onError (\_ -> Console.write "core-dump: cannot read the file\n")
+            )

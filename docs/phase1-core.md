@@ -794,3 +794,14 @@ All thirteen of D902's inputs meet the budget at D901's memory:
 `vte-scrolling` 39–41 ms against 42, `gitlog` 81–86 against 132, `ls`
 68–70 against 124. The pages of `gitlog` and `ls` hold about 22 and 30 MB a
 pane at 100,000 lines, where cells held 59 and 101.
+
+## 24. The core begun (2026-10-29)
+
+The core is a package now, `vt/`, and [`vt-core.md`](vt-core.md) is its
+document. §8's fifth question is answered there by measurement (V1): the
+probe with `Int64` cells, its style id in bits 32–47, costs 0–4.3% more
+instructions and is level in time, so a cell is an `Int64`
+(`Hot64.geng`, `build-hot64.sh`). `build-hot.sh` had been building without
+geng-lang's `inplace` pass, which every geng-lang measurement of this probe
+since D984 has had (`bench/compare/visiterm.toml`); it names it now, and
+without it `vte-scrolling` is 710 instructions a line, not 499.

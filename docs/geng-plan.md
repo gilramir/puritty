@@ -1,6 +1,6 @@
 # Plan: visiterm for Linux, written in Geng
 
-Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of visiterm itself is built yet. Phase 1 is surveyed, 2026-10-24 ([`phase1-core.md`](phase1-core.md)): no grid of immutable rows meets the budget, and `Array.Builder`, which halves it, has a soundness bug in Geng to fix first; its questions wait on Gilbert.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of visiterm itself is built yet. Phase 1 is surveyed, 2026-10-24 ([`phase1-core.md`](phase1-core.md)): no grid of immutable rows meets the budget, and `Array.Builder`, which halves it, has a soundness bug in Geng to fix first; its questions wait on Gilbert. The core is begun, 2026-10-29 ([`vt-core.md`](vt-core.md)): `vt/` agrees with libghostty-vt on the 98 cases of the replay corpus and meets the throughput budget on twelve of thirteen inputs (`vte-scrolling` 1.2× over).** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -733,8 +733,8 @@ wrong C row type fails to compile, and the throughput budget and pause figures a
 written down.
 
 **Phase 1 · The headless core.** *Surveyed 2026-10-24:
-[`phase1-core.md`](phase1-core.md); its five questions (§8) wait on
-Gilbert.* S§5 in Geng: parser with a ground-state fast path,
+[`phase1-core.md`](phase1-core.md); Gilbert answered its five questions
+(§9). Begun 2026-10-29: [`vt-core.md`](vt-core.md).* S§5 in Geng: parser with a ground-state fast path,
 cells and styles, scrollback in bytes, graphemes and widths per pane, the modes and
 sequences of S§5.1's minimum list, replies, the bounds on every attacker-controlled
 buffer. Reflow is designed with its tests first (S§5.4) and may land last.

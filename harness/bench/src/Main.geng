@@ -1,0 +1,76 @@
+module Main exposing (main)
+
+{-| core-bench: the core timed on one of D902's inputs (`docs/vt-core.md`
+§VC7), as the probe was (`probes/geng/core/run.sh`): 160 by 50 with 100,000
+lines of scrollback, fed in 64 KB reads between two readings of the
+monotonic clock. It prints the time, and with `dump` a hash of the term's
+dump (§VC3), so that two builds can be held to the same screen and
+scrollback; the dump is made after the clock is read, but a count of
+instructions sees it, so measure those without it.
+
+usage: core-bench FILE [dump]
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import Vt
+
+
+feedAll : Bytes -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + 65536) (Vt.feed (Bytes.slice at (at + 65536) bytes) t)
+
+
+hash : String -> Int
+hash text =
+    String.foldl (\c h -> Bitwise.xor (h * 31) (Char.toCode c)) 7 text
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            t =
+                                                feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollback = 100000 })
+                                        in
+                                        Time.monotonic
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    Console.write
+                                                        (String.fromInt (Bytes.length bytes)
+                                                            ++ " bytes in "
+                                                            ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                            ++ " ms"
+                                                            ++ (if Array.get 1 s.args == Just "dump" then
+                                                                    "; dump " ++ String.fromInt (hash (Vt.dump t))
+
+                                                                else
+                                                                    ""
+                                                               )
+                                                            ++ "\n"
+                                                        )
+                                                )
+                                    )
+                    )
+                    |> Task.onError (\_ -> Console.write "core-bench: cannot read the file\n")
+            )

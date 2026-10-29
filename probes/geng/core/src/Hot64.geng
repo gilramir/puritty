@@ -1,0 +1,1777 @@
+module Hot64 exposing (main)
+
+{-| Phase 1's survey probe, the second way: Main.geng's parser, styles and
+scrollback, over a screen written in place.
+
+The screen is a ring of rows in one `Array.Builder` of cells, `stride` cells
+a row: its `cols` cells, then its extent, the column past which it is blank
+(geng-lang `m4-visiterm.md` §VA43, H4 of `m4-visiterm-scrolls.md`). Slot
+`p`'s row starts at `p * stride`, and every row function takes that offset,
+so a write is a store into the one builder, with no row taken out and put
+back. `base` is the slot of row 0, and since geng-lang D978 the ring holds
+recent scrollback too, as Alacritty's grid does: 563 rows on the main screen,
+the 50 of the screen, up to 512 of scrollback before them and a free one
+after. A full-screen scroll moves `base`, which makes the top row scrollback,
+and clears the free row as the new bottom row. When the ring is full, the
+oldest 256 rows of its scrollback are copied out trimmed to their extents
+(`appendSlice`) and joined into a page (D901). A region keeps its own turn,
+as the screen keeps `base`, so its line feed moves no rows (H1, §VA42); any
+other move of rows is a `copyWithin` of their cells, and `settle` puts a
+turned region's rows in place before one. The cells past a row's extent are
+never read: they may hold what a row in that slot held before, so a row is
+made blank by setting its extent to 0, and a write that starts past the
+extent blanks the cells between first (`reachAt`). The page count
+`checksum` and the summary print counts the full pages of rows the ring
+still holds, so that it is the count of a probe that paged every row as it
+left the screen.
+
+A line feed's kind is decided where the region, the screen or the
+scrollback change (`withScroll`, H2, §VA41). The scrollback's pages are a
+builder, each page set in place (§VA27). A printable run is written a cell
+at a time (geng-lang `m4-visiterm.md` §VA11). A page is D901's by default
+(`PACK=points`): its text as UTF-8 and its extents and style runs written
+straight from the ring's cells into two `Builder UInt8`, each made `Bytes` by
+`Bytes.fromUInt8s` (geng-lang §VA48, D1018). `PACK=cells` keeps a page as its
+rows' cells, 4 bytes each, which every budget figure before §VA48 used.
+
+A builder is used once, as geng-lang's ownership checker holds every program
+to (D963), and every write is a store in place (D976). A renderer's snapshot
+would be `Builder.slice` of the screen's cells.
+
+usage: probe-hot FILE      environment: PACK (seq, string, points or cells), SCROLLBACK
+
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Encode as Encode
+import Console
+import Dict exposing (Dict)
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import UInt8
+import Width
+
+
+cols : Int
+cols =
+    160
+
+
+lines : Int
+lines =
+    50
+
+
+pageRows : Int
+pageRows =
+    256
+
+
+blank : Int64
+blank =
+    32
+
+
+readSize : Int
+readSize =
+    65536
+
+
+-- THE STATE
+
+
+type PackMode
+    = PackSeq
+    | PackString
+    | PackPoints
+    | PackCells
+
+
+type Page
+    = Joined { text : Bytes, attrs : Bytes }
+    | Flat { cells : Array Int64, ends : Array Int }
+
+
+type alias Back =
+    { pages : Builder Page
+    , head : Int
+    , limit : Int
+    , pack : PackMode
+    }
+
+
+{-| A ring of `size` rows, `stride` cells each, in one builder (geng-lang
+`m4-visiterm-scrolls.md` H4, §VA43): the screen's `lines` rows from physical
+slot `base` on, the `hist` rows of scrollback not yet joined into a page just
+before it, oldest first, and free rows after it. -}
+type alias Screen =
+    { cells : Builder Int64
+    , base : Int
+    , hist : Int
+    , size : Int
+    , top : Int
+    , height : Int
+    , turn : Int
+    }
+
+
+{-| The main screen's ring: the screen, two pages of scrollback as rows, and
+a free row. The alternate screen keeps no scrollback, and its ring is the
+screen and one free row. -}
+ringRows : Int
+ringRows =
+    lines + 2 * pageRows + 1
+
+
+type alias Term =
+    { screen : Screen
+    , saved : Maybe Screen
+    , x : Int
+    , y : Int
+    , wrapNext : Bool
+    , top : Int
+    , bottom : Int
+    , scroll : Int
+    , pen : Int
+    , fg : Int
+    , bg : Int
+    , flags : Int
+    , styles : Dict Int64 Int
+    , back : Back
+    , ps : Int
+    , params : Array Int
+    , cur : Int
+    , priv : Int
+    , utf : Int
+    , need : Int
+    , replies : Array Bytes
+    }
+
+
+blankArray : Array Int64
+blankArray =
+    Array.pushLast 0 (Array.repeat cols blank)
+
+
+{-| A row's cells and its extent, the cell past them: a row is `stride`
+cells of the screen's builder, slot `p`'s from `p * stride`. -}
+stride : Int
+stride =
+    cols + 1
+
+
+newScreen : Int -> Screen
+newScreen size =
+    { cells = Builder.fromArray (Array.flatten (Array.repeat size blankArray))
+    , base = 0
+    , hist = 0
+    , size = size
+    , top = 0
+    , height = lines
+    , turn = 0
+    }
+
+
+newTerm : PackMode -> Int -> Term
+newTerm pack scrollback =
+    withScroll (newTermWith pack scrollback)
+
+
+newTermWith : PackMode -> Int -> Term
+newTermWith pack scrollback =
+    { screen = newScreen ringRows
+    , saved = Nothing
+    , x = 0
+    , y = 0
+    , wrapNext = False
+    , top = 0
+    , bottom = lines - 1
+    , scroll = scrollFull
+    , pen = 0
+    , fg = 0
+    , bg = 0
+    , flags = 0
+    , styles = Dict.empty
+    , back = { pages = Builder.empty 0, head = 0, limit = scrollback // pageRows, pack = pack }
+    , ps = 0
+    , params = []
+    , cur = 0
+    , priv = 0
+    , utf = 0
+    , need = 0
+    , replies = []
+    }
+
+
+-- THE SCREEN
+
+
+{-| The physical slot of logical row `y`, through the region's turn: a row
+of the region `top` to `top + height - 1` is the one `turn` places below it,
+wrapping within the region (geng-lang `m4-visiterm-scrolls.md` H1). -}
+phys : Screen -> Int -> Int
+phys s y =
+    if s.turn == 0 then
+        slot s y
+
+    else
+        slot s (inRegion s y)
+
+
+inRegion : Screen -> Int -> Int
+inRegion s y =
+    let
+        v =
+            y - s.top
+    in
+    if v >= 0 && v < s.height then
+        let
+            w =
+                v + s.turn
+        in
+        if w >= s.height then
+            s.top + w - s.height
+
+        else
+            s.top + w
+
+    else
+        y
+
+
+{-| The region's rows put where its turn says they are, its turn 0: before
+anything that moves or reads rows as runs of slots, and when the region or
+the screen changes. A turn is only ever made of a region that is one stretch
+of the ring (`feedRegion`), and nothing moves `base` without settling first,
+so the region is one stretch here. -}
+settle : (moved s : Screen) -> Screen
+settle s =
+    if s.turn == 0 then
+        s
+
+    else
+        let
+            pt =
+                slot s s.top
+
+            pb =
+                slot s (s.top + s.height - 1)
+        in
+        { s | cells = Builder.rotate (pt * stride) ((pb + 1) * stride) (s.turn * stride) s.cells, turn = 0 }
+
+
+{-| The screen settled, its region `top` to `bottom`. -}
+withRegion : Int -> Int -> (moved s : Screen) -> Screen
+withRegion top bottom s =
+    let
+        settled =
+            settle s
+    in
+    { settled | top = top, height = bottom - top + 1 }
+
+
+{-| The physical slot of logical row `y` in the ring alone; a negative `y`
+is scrollback in the ring, `-1` the newest. -}
+slot : Screen -> Int -> Int
+slot s y =
+    let
+        p =
+            s.base + y
+    in
+    if p >= s.size then
+        p - s.size
+
+    else if p < 0 then
+        p + s.size
+
+    else
+        p
+
+
+{-| Logical row `y` copied out, its cells and its extent. -}
+rowAt : Int -> Screen -> Builder Int64
+rowAt y s =
+    let
+        o =
+            phys s y * stride
+    in
+    Builder.fromArray (Builder.slice o (o + stride) s.cells)
+
+
+extentAt : Int -> Screen -> Int
+extentAt y s =
+    extentIn (phys s y * stride) s.cells
+
+
+{-| The extent of the row whose cells start at `o`. -}
+extentIn : Int -> Builder Int64 -> Int
+extentIn o cells =
+    Int64.toInt (Maybe.withDefault 0 (Builder.get (o + cols) cells))
+
+
+{-| The extent of a row copied out (`rowAt`), kept in its last cell, past
+its `cols` cells. -}
+extentOf : Builder Int64 -> Int
+extentOf row =
+    Int64.toInt (Maybe.withDefault 0 (Builder.get cols row))
+
+
+{-| The row whose cells start at `o`, about to be written from column `x`:
+when `x` is past its extent `ext`, the cells between, which may hold what a
+row there before held, are made blank. -}
+reachAt : Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+reachAt o ext x cells =
+    if x > ext then
+        Builder.fill (o + ext) (o + x) blank cells
+
+    else
+        cells
+
+
+{-| The row at `o` written by `write o` from column `from`, its extent at
+least `x`. -}
+withExtentAt : Int -> Int -> Int -> (Int -> Builder Int64 -> Builder Int64) -> (moved cells : Builder Int64) -> Builder Int64
+withExtentAt o from x write cells =
+    let
+        old =
+            extentIn o cells
+    in
+    Builder.set (o + cols) (Int64.fromInt (max x old)) (write o (reachAt o old from cells))
+
+
+{-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom.
+With `keep`, the row that leaves joins the scrollback in the ring: the ring
+turns, `hist` counts one more, and the free row after the screen, cleared in
+place, is the new bottom row (geng-lang `m4-visiterm.md` §VA16, D978); the
+caller has made room (`pageOut`). Without it, the ring turns only when it
+holds no scrollback, since a turn would make the leaving row scrollback.
+-}
+screenUp : Bool -> Int -> Int -> (moved screen0 : Screen) -> Screen
+screenUp keep top bottom screen0 =
+    let
+        screen =
+            settle screen0
+
+        whole =
+            top == 0 && bottom == lines - 1
+    in
+    if keep then
+        if whole then
+            { screen | base = phys screen 1, hist = screen.hist + 1 } |> clearRowAt (lines - 1)
+
+        else
+            { screen | base = phys screen 1, hist = screen.hist + 1 } |> downFrom (lines - 1) bottom |> clearRowAt bottom
+
+    else if not whole && phys screen top <= phys screen bottom then
+        -- the region in one stretch of the ring: its rows turned, the one
+        -- that left coming in at the bottom, cleared (D991)
+        turnRegion top bottom 1 screen |> clearRowAt bottom
+
+    else if screen.hist > 0 then
+        shiftUp top bottom screen |> clearRowAt bottom
+
+    else if whole then
+        rotate screen |> clearRowAt (lines - 1)
+
+    else if top == 0 && lines - 1 - bottom < bottom - top then
+        -- turn the ring, then move the rows below the region back down, over
+        -- the free row the turn brought in; the region's bottom row cleared
+        rotate screen |> downFrom (lines - 1) bottom |> clearRowAt bottom
+
+    else if bottom == lines - 1 && top < bottom - top then
+        -- turn the ring, then move the rows above the region, now from row
+        -- -1, back up; the free row the turn brought in is the new bottom row
+        rotate screen |> moveRows -1 0 top |> clearRowAt (lines - 1)
+
+    else
+        shiftUp top bottom screen |> clearRowAt bottom
+
+
+{-| Logical rows `top` to `bottom`, which are one stretch of the ring,
+moved `by` places toward the top, a negative `by` toward the bottom: one
+`copyWithin` of their cells. The rows that come in at the other end hold
+what was there, and every caller clears them. -}
+turnRegion : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+turnRegion top bottom by s0 =
+    let
+        s =
+            settle s0
+
+        pt =
+            phys s top
+
+        pb =
+            phys s bottom
+    in
+    if by > 0 then
+        { s | cells = Builder.copyWithin (pt * stride) ((pt + by) * stride) ((pb + 1) * stride) s.cells }
+
+    else
+        { s | cells = Builder.copyWithin ((pt - by) * stride) (pt * stride) ((pb + 1 + by) * stride) s.cells }
+
+
+{-| Logical row `y` made blank in place: its extent set to 0. -}
+clearRowAt : Int -> (moved s : Screen) -> Screen
+clearRowAt y s =
+    { s | cells = Builder.set (phys s y * stride + cols) (Int64.fromInt 0) s.cells }
+
+
+rotate : (moved s0 : Screen) -> Screen
+rotate s0 =
+    let
+        s =
+            settle s0
+    in
+    { s | base = phys s 1 }
+
+
+{-| Logical rows `bottom + 1` to `i` each take the row above them. -}
+downFrom : Int -> Int -> (moved s : Screen) -> Screen
+downFrom i bottom s =
+    moveRows bottom (bottom + 1) (i - bottom) s
+
+
+{-| Logical rows `i` to `bottom - 1` each take the row below them. -}
+shiftUp : Int -> Int -> (moved s : Screen) -> Screen
+shiftUp i bottom s =
+    moveRows (i + 1) i (bottom - i) s
+
+
+{-| Logical rows `top + 1` to `i` each take the row above them. -}
+shiftDown : Int -> Int -> (moved s : Screen) -> Screen
+shiftDown i top s =
+    moveRows top (top + 1) (i - top) s
+
+
+{-| `count` logical rows from `from` copied to start at `to`, each read
+before it is overwritten. The runs are cut where either crosses the ring's
+end, which makes at most three pieces, and each piece is one `moveWithin`: the last piece first when the rows move
+down, the first when they move up. -}
+moveRows : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+moveRows from to count s0 =
+    let
+        s =
+            settle s0
+    in
+    if count <= 0 then
+        s
+
+    else if to > from then
+        let
+            lastFrom =
+                phys s (from + count - 1)
+
+            lastTo =
+                phys s (to + count - 1)
+
+            run =
+                min count (min (lastFrom + 1) (lastTo + 1))
+        in
+        moveRows from to (count - run) (copyRows (lastFrom + 1 - run) (lastTo + 1 - run) run s)
+
+    else
+        let
+            pf =
+                phys s from
+
+            pt =
+                phys s to
+
+            run =
+                min count (min (s.size - pf) (s.size - pt))
+        in
+        moveRows (from + run) (to + run) (count - run) (copyRows pf pt run s)
+
+
+{-| `run` rows from physical row `pf` copied to start at physical row `pt`,
+neither run crossing the ring's end. One row is two `set`s, which cost less
+than a `copyWithin`'s bounds and its record of the run it replaced. -}
+copyRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyRows pf pt run s =
+    { s | cells = Builder.copyWithin (pt * stride) (pf * stride) ((pf + run) * stride) s.cells }
+
+
+{-| Logical rows `from` up to `to` made blank, one `fill` of the rows for
+each stretch of the ring they cover, which is one or two. -}
+blankRows : Int -> Int -> (moved s : Screen) -> Screen
+blankRows from to s =
+    if from >= to then
+        s
+
+    else
+        blankRows (from + 1) to { s | cells = Builder.set (phys s from * stride + cols) (Int64.fromInt 0) s.cells }
+
+
+-- THE SCROLLBACK
+
+
+{-| The oldest `pageRows` rows of the ring's scrollback, each copied out
+trimmed to its extent and joined into a page (D901). Their slots stay where
+they are, the free part of the ring now, to be cleared and written again in
+place. -}
+pageOut : (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pageOut s back =
+    let
+        page =
+            when back.pack is
+                PackCells ->
+                    let
+                        first =
+                            phys s (0 - s.hist)
+
+                        firstStop =
+                            min s.size (first + pageRows)
+
+                        rest =
+                            pageRows - (firstStop - first)
+
+                        older =
+                            physRows first firstStop s (Builder.empty (pageRows * 8)) (Builder.empty pageRows)
+
+                        both =
+                            physRows 0 rest s older.cells older.ends
+                    in
+                    Flat { cells = Builder.toArray both.cells, ends = Builder.toArray both.ends }
+
+                PackPoints ->
+                    let
+                        first =
+                            phys s (0 - s.hist)
+
+                        firstStop =
+                            min s.size (first + pageRows)
+
+                        rest =
+                            pageRows - (firstStop - first)
+
+                        older =
+                            packRows first firstStop s (Builder.empty (pageRows * 8)) (Builder.empty (pageRows * 4))
+
+                        both =
+                            packRows 0 rest s older.text older.runs
+                    in
+                    Joined
+                        { text = Bytes.fromUInt8s (Builder.toArray both.text)
+                        , attrs = Bytes.fromUInt8s (Builder.toArray both.runs)
+                        }
+
+                _ ->
+                    join back.pack (Builder.toArray (trimmedRows (0 - s.hist) (pageRows - s.hist) s (Builder.empty pageRows)))
+    in
+    { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
+
+
+{-| The rows in physical slots `p` to `stop`, each trimmed to its extent and
+appended to `cells`, and their extents to `ends`, each row read once. -}
+physRows : Int -> Int -> Screen -> (moved cells : Builder Int64) -> (moved ends : Builder Int) -> { cells : Builder Int64, ends : Builder Int }
+physRows p stop s cells ends =
+    if p >= stop then
+        { cells = cells, ends = ends }
+
+    else
+        let
+            o =
+                p * stride
+
+            ext =
+                Int64.toInt (Maybe.withDefault 0 (Builder.get (o + cols) s.cells))
+        in
+        physRows (p + 1) stop s (Builder.appendSlice o (o + ext) s.cells cells) (Builder.pushLast ext ends)
+
+
+trimmedRows : Int -> Int -> Screen -> (moved acc : Builder (Array Int64)) -> Builder (Array Int64)
+trimmedRows y stop s acc =
+    if y >= stop then
+        acc
+
+    else
+        trimmedRows (y + 1) stop s (Builder.pushLast (Builder.slice 0 (extentAt y s) (rowAt y s)) acc)
+
+
+{-| The rows in physical slots `p` to `stop`, each row's text appended to
+`text` as UTF-8 and its extent and style runs to `runs`, as `join`'s
+`PackPoints` and `attrRuns` make them. -}
+packRows : Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, runs : Builder UInt8 }
+packRows p stop s text runs =
+    if p >= stop then
+        { text = text, runs = runs }
+
+    else
+        let
+            o =
+                p * stride
+
+            ext =
+                Int64.toInt (Maybe.withDefault 0 (Builder.get (o + cols) s.cells))
+
+            row =
+                packCells o (o + ext) s text (Builder.pushLast (UInt8.fromInt ext) runs) 0 0
+        in
+        packRows (p + 1) stop s row.text row.runs
+
+
+packCells : Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> Int -> Int -> { text : Builder UInt8, runs : Builder UInt8 }
+packCells i stop s text runs style count =
+    if i >= stop then
+        { text = text, runs = pushRun style count runs }
+
+    else
+        let
+            c64 =
+                Maybe.withDefault 0 (Builder.get i s.cells)
+
+            c =
+                Int64.toIntWrap (Bitwise.and 0x3FFFFF c64)
+
+            st =
+                Int64.toIntWrap (Bitwise.shiftRightZfBy 32 c64)
+
+            next =
+                if Bitwise.and 0x200000 c /= 0 then
+                    text
+
+                else
+                    pushUtf8 (textPoint c) text
+        in
+        if count > 0 && st == style then
+            packCells (i + 1) stop s next runs style (count + 1)
+
+        else if count > 0 then
+            packCells (i + 1) stop s next (pushRun style count runs) st 1
+
+        else
+            packCells (i + 1) stop s next runs st 1
+
+
+pushRun : Int -> Int -> (moved runs : Builder UInt8) -> Builder UInt8
+pushRun style count runs =
+    Builder.pushLast (UInt8.fromInt count) (Builder.pushLast (UInt8.fromInt style) runs)
+
+
+pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushUtf8 cp b =
+    if cp < 0x80 then
+        Builder.pushLast (UInt8.fromInt cp) b
+
+    else if cp < 0x800 then
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xC0 (Bitwise.shiftRightZfBy 6 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+    else if cp < 0x10000 then
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xE0 (Bitwise.shiftRightZfBy 12 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+    else
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xF0 (Bitwise.shiftRightZfBy 18 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 12 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+
+pushPage : Page -> (moved back : Back) -> Back
+pushPage page back =
+    if Builder.length back.pages < back.limit then
+        { back | pages = Builder.pushLast page back.pages }
+
+    else
+        { back
+            | pages = Builder.set back.head page back.pages
+            , head = modBy back.limit (back.head + 1)
+        }
+
+
+{-| The scrollback's pages, counting each full page of rows the ring still
+holds, as the probe that paged every row at once counted them. -}
+pageCount : Term -> Int
+pageCount t =
+    let
+        hist =
+            when t.saved is
+                Just s ->
+                    s.hist
+
+                Nothing ->
+                    t.screen.hist
+    in
+    min t.back.limit (Builder.length t.back.pages + hist // pageRows)
+
+
+join : PackMode -> Array (Array Int64) -> Page
+join pack rows64 =
+    let
+        rows =
+            Array.map (Array.map (\c -> Bitwise.or (Bitwise.shiftLeftBy 22 (Int64.toIntWrap (Bitwise.shiftRightZfBy 32 c))) (Int64.toIntWrap (Bitwise.and 0x3FFFFF c)))) rows64
+    in
+    when pack is
+        PackCells ->
+            Flat { cells = Array.flatten rows64, ends = Array.map Array.length rows64 }
+
+        PackSeq ->
+            Joined
+                { text = Encode.encode (Encode.sequence (Array.mapAndFlatten (Array.map utf8) rows))
+                , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
+                }
+
+        PackString ->
+            Joined
+                { text = Bytes.fromString (String.fromArray (Array.mapAndFlatten (Array.mapAndKeepJust textChar) rows))
+                , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
+                }
+
+        -- `pageOut` writes these pages itself, from the ring (§VA48); this is
+        -- how they were made before, kept for a page of rows already joined.
+        PackPoints ->
+            Joined
+                { text = Result.withDefault Bytes.empty (Bytes.fromCodePoints (Array.map textPoint (Array.keepIf (\cell -> Bitwise.and 0x200000 cell == 0) (Array.flatten rows))))
+                , attrs = Encode.encode (Encode.sequence (Array.map attrRuns rows))
+                }
+
+
+textChar : Int -> Maybe Char
+textChar cell =
+    if Bitwise.and 0x200000 cell /= 0 then
+        Nothing
+
+    else
+        Char.fromCode (Bitwise.and 0x1FFFFF cell)
+
+
+{-| A cell's code point. A value no scalar value is, which a malformed
+sequence can decode to, is U+FFFD, so `fromCodePoints` never refuses. The
+right half of a wide character is left out before this is asked. -}
+textPoint : Int -> Int
+textPoint cell =
+    let
+        cp =
+            Bitwise.and 0x1FFFFF cell
+    in
+    if (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF then
+        0xFFFD
+
+    else
+        cp
+
+
+utf8 : Int -> Encode.Encoder
+utf8 cell =
+    let
+        cp =
+            Bitwise.and 0x1FFFFF cell
+
+        u8 v =
+            Encode.unsignedInt8 (UInt8.fromInt v)
+    in
+    if Bitwise.and 0x200000 cell /= 0 then
+        Encode.sequence []
+
+    else if cp < 0x80 then
+        u8 cp
+
+    else if cp < 0x800 then
+        Encode.sequence [ u8 (Bitwise.or 0xC0 (Bitwise.shiftRightZfBy 6 cp)), u8 (Bitwise.or 0x80 (Bitwise.and 0x3F cp)) ]
+
+    else if cp < 0x10000 then
+        Encode.sequence
+            [ u8 (Bitwise.or 0xE0 (Bitwise.shiftRightZfBy 12 cp))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp)))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F cp))
+            ]
+
+    else
+        Encode.sequence
+            [ u8 (Bitwise.or 0xF0 (Bitwise.shiftRightZfBy 18 cp))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 12 cp)))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp)))
+            , u8 (Bitwise.or 0x80 (Bitwise.and 0x3F cp))
+            ]
+
+
+{-| A row's attribute runs: each run of one style as its style id and its
+length, two bytes each, after the row's length in cells. -}
+attrRuns : Array Int -> Encode.Encoder
+attrRuns cells =
+    let
+        step c acc =
+            let
+                style =
+                    Bitwise.shiftRightZfBy 22 c
+            in
+            if acc.count > 0 && style == acc.style then
+                { acc | count = acc.count + 1 }
+
+            else if acc.count > 0 then
+                { style = style, count = 1, out = Array.pushLast (run16 acc.style acc.count) acc.out }
+
+            else
+                { acc | style = style, count = 1 }
+
+        done =
+            Array.foldl step { style = 0, count = 0, out = [ Encode.unsignedInt8 (UInt8.fromInt (Array.length cells)) ] } cells
+    in
+    Encode.sequence (Array.pushLast (run16 done.style done.count) done.out)
+
+
+run16 : Int -> Int -> Encode.Encoder
+run16 style count =
+    Encode.sequence [ Encode.unsignedInt8 (UInt8.fromInt style), Encode.unsignedInt8 (UInt8.fromInt count) ]
+
+
+-- READING BYTES
+
+
+byteAt : Bytes -> Int -> Int
+byteAt bytes i =
+    when Bytes.get i bytes is
+        Just b ->
+            UInt8.toInt b
+
+        Nothing ->
+            -1
+
+
+{-| The index of the first byte at or after `i` that is not printable ASCII,
+or `stop`. -}
+asciiEnd : Bytes -> Int -> Int -> Int
+asciiEnd bytes stop i =
+    if i < stop then
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            asciiEnd bytes stop (i + 1)
+
+        else
+            i
+
+    else
+        i
+
+
+-- THE PARSER
+
+
+feed : Bytes -> (moved t : Term) -> Term
+feed bytes t =
+    let
+        n =
+            Bytes.length bytes
+    in
+    when t.ps is
+        1 ->
+            escape bytes n 0 { t | ps = 0 }
+
+        2 ->
+            csi bytes n 0 { t | ps = 0, params = [] } (Builder.fromArray t.params) t.cur t.priv
+
+        3 ->
+            skipEsc bytes n 0 { t | ps = 0 }
+
+        5 ->
+            continueUtf8 bytes n 0 t.utf t.need { t | ps = 0 }
+
+        _ ->
+            ground bytes n 0 t
+
+
+ground : Bytes -> Int -> Int -> (moved t : Term) -> Term
+ground bytes n i t =
+    if i >= n then
+        t
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            printAscii bytes n i b t
+
+        else if b >= 0x80 then
+            printUnicode bytes n i t
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 10 || b == 11 || b == 12 then
+            ground bytes n (i + 1) (lineFeed { t | wrapNext = False })
+
+        else if b == 13 then
+            ground bytes n (i + 1) { t | x = 0, wrapNext = False }
+
+        else if b == 9 then
+            ground bytes n (i + 1) { t | x = min (cols - 1) ((t.x // 8 + 1) * 8) }
+
+        else if b == 8 then
+            ground bytes n (i + 1) { t | x = max 0 (t.x - 1), wrapNext = False }
+
+        else
+            ground bytes n (i + 1) t
+
+
+{-| Wrap first if the last write left the cursor past the end. -}
+wrapped : (moved t : Term) -> Term
+wrapped t =
+    if t.wrapNext then
+        lineFeed { t | x = 0, wrapNext = False }
+
+    else
+        t
+
+
+{-| The cursor's row, written by `write` from column `t.x`, and the cursor
+moved to column `x`. -}
+written : Int -> (Int -> Builder Int64 -> Builder Int64) -> (moved t : Term) -> Term
+written x write t =
+    let
+        s =
+            t.screen
+
+        o =
+            phys s t.y * stride
+    in
+    { t
+        | screen = { s | cells = withExtentAt o t.x x write s.cells }
+        , x = min (cols - 1) x
+        , wrapNext = x >= cols
+    }
+
+
+writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (moved row : Builder Int64) -> Builder Int64
+writeAscii bytes i end style x row =
+    if i < end then
+        writeAscii bytes (i + 1) end style (x + 1) (Builder.set x (Bitwise.or style (Int64.fromInt (byteAt bytes i))) row)
+
+    else
+        row
+
+
+{-| A run of printable ASCII written to a row, `first` the byte at `i`, which
+`ground` read, and its extent at least `xEnd`. -}
+asciiRow : Bytes -> Int -> Int -> Int64 -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+asciiRow bytes i end style o x xEnd first cells =
+    let
+        old =
+            Int64.toInt (Maybe.withDefault 0 (Builder.get (o + cols) cells))
+    in
+    Builder.set (o + cols) (Int64.fromInt (max xEnd old)) (writeAscii bytes (i + 1) end style (o + x + 1) (Builder.set (o + x) (Bitwise.or style (Int64.fromInt first)) (reachAt o old x cells)))
+
+
+{-| A run of printable ASCII. `written`'s work is written out here, so that
+the compiler sees `Builder.update` handed a partial application of
+`writeAscii` and makes it one call, with no closure (geng-lang
+`m4-visiterm.md` §VA16, D982). Taking the row out with `Builder.swap` and
+putting it back instead costs more than the closure did. `b` is the run's
+first byte, read by `ground`; the scan starts after it (geng-lang
+`m4-visiterm.md` §VA29). -}
+printAscii : Bytes -> Int -> Int -> Int -> (moved t0 : Term) -> Term
+printAscii bytes n i b t0 =
+    let
+        t =
+            wrapped t0
+
+        end =
+            asciiEnd bytes (min n (i + cols - t.x)) (i + 1)
+
+        style =
+            Bitwise.shiftLeftBy 32 (Int64.fromInt t.pen)
+
+        x =
+            t.x + end - i
+
+        s =
+            t.screen
+
+        o =
+            phys s t.y * stride
+    in
+    ground bytes
+        n
+        end
+        { t
+            | screen = { s | cells = asciiRow bytes i end style o t.x x b s.cells }
+            , x = min (cols - 1) x
+            , wrapNext = x >= cols
+        }
+
+
+{-| A run of UTF-8, decoded into the row until a byte below 0x20, the row's
+end or a sequence the read cut short. ASCII inside it stays in the run. -}
+printUnicode : Bytes -> Int -> Int -> (moved t0 : Term) -> Term
+printUnicode bytes n i t0 =
+    let
+        t =
+            wrapped t0
+
+        s =
+            t.screen
+
+        o =
+            phys s t.y * stride
+
+        r =
+            decodeRun bytes n i (Bitwise.shiftLeftBy 32 (Int64.fromInt t.pen)) o t.x (reachAt o (extentIn o s.cells) t.x s.cells)
+
+        cells =
+            if r.x == t.x then
+                r.cells
+
+            else
+                Builder.set (o + cols) (Int64.fromInt (max r.x (extentIn o r.cells))) r.cells
+
+        t1 =
+            if r.x == t.x then
+                { t | screen = { s | cells = cells } }
+
+            else
+                { t
+                    | screen = { s | cells = cells }
+                    , x = min (cols - 1) r.x
+                    , wrapNext = r.x >= cols
+                }
+    in
+    if r.cut > 0 then
+        { t1 | ps = 5, utf = r.cp, need = r.cut }
+
+    else if r.wide then
+        -- a wide character that does not fit: wrap, and go on
+        ground bytes n r.next { t1 | wrapNext = True }
+
+    else
+        ground bytes n r.next t1
+
+
+type alias Run =
+    { cells : Builder Int64, x : Int, next : Int, cut : Int, cp : Int, wide : Bool }
+
+
+decodeRun : Bytes -> Int -> Int -> Int64 -> Int -> Int -> (moved row : Builder Int64) -> Run
+decodeRun bytes n i style o x row =
+    if i >= n || x >= cols then
+        { cells = row, x = x, next = i, cut = 0, cp = 0, wide = False }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b < 0x20 || b == 0x7F then
+            { cells = row, x = x, next = i, cut = 0, cp = 0, wide = False }
+
+        else if b < 0x80 then
+            decodeRun bytes n (i + 1) style o (x + 1) (Builder.set (o + x) (Bitwise.or style (Int64.fromInt b)) row)
+
+        else
+            let
+                len =
+                    if b >= 0xF0 then
+                        4
+
+                    else if b >= 0xE0 then
+                        3
+
+                    else if b >= 0xC0 then
+                        2
+
+                    else
+                        1
+
+                lead =
+                    if len == 4 then
+                        Bitwise.and b 0x07
+
+                    else if len == 3 then
+                        Bitwise.and b 0x0F
+
+                    else if len == 2 then
+                        Bitwise.and b 0x1F
+
+                    else
+                        0xFFFD
+            in
+            if i + len > n then
+                { cells = row, x = x, next = n, cut = len - 1 - (n - i - 1), cp = cont bytes (i + 1) n lead, wide = False }
+
+            else
+                let
+                    cp =
+                        cont bytes (i + 1) (i + len) lead
+
+                    w =
+                        Width.width cp
+                in
+                if w == 0 then
+                    decodeRun bytes n (i + len) style o x row
+
+                else if w == 2 then
+                    if x + 2 > cols then
+                        { cells = row, x = x, next = i, cut = 0, cp = 0, wide = True }
+
+                    else
+                        decodeRun bytes n (i + len) style o (x + 2) (Builder.set (o + x + 1) (Bitwise.or (Bitwise.or style 0x200000) (Int64.fromInt cp)) (Builder.set (o + x) (Bitwise.or style (Int64.fromInt cp)) row))
+
+                else
+                    decodeRun bytes n (i + len) style o (x + 1) (Builder.set (o + x) (Bitwise.or style (Int64.fromInt cp)) row)
+
+
+cont : Bytes -> Int -> Int -> Int -> Int
+cont bytes i stop acc =
+    if i < stop then
+        cont bytes (i + 1) stop (Bitwise.or (Bitwise.shiftLeftBy 6 acc) (Bitwise.and 0x3F (byteAt bytes i)))
+
+    else
+        acc
+
+
+continueUtf8 : Bytes -> Int -> Int -> Int -> Int -> (moved t : Term) -> Term
+continueUtf8 bytes n i acc need t =
+    if need <= 0 then
+        let
+            style =
+                Bitwise.shiftLeftBy 32 (Int64.fromInt t.pen)
+
+            acc64 =
+                Int64.fromInt acc
+
+            w =
+                Width.width acc
+
+            t1 =
+                wrapped t
+        in
+        if w == 0 then
+            ground bytes n i t1
+
+        else if w == 2 && t1.x + 2 <= cols then
+            ground bytes n i (written (t1.x + 2) (\o row -> Builder.set (o + t1.x + 1) (Bitwise.or (Bitwise.or style 0x200000) acc64) (Builder.set (o + t1.x) (Bitwise.or style acc64) row)) t1)
+
+        else
+            ground bytes n i (written (t1.x + 1) (\o row -> Builder.set (o + t1.x) (Bitwise.or style acc64) row) t1)
+
+    else if i >= n then
+        { t | ps = 5, utf = acc, need = need }
+
+    else
+        continueUtf8 bytes n (i + 1) (Bitwise.or (Bitwise.shiftLeftBy 6 acc) (Bitwise.and 0x3F (byteAt bytes i))) (need - 1) t
+
+
+escape : Bytes -> Int -> Int -> (moved t : Term) -> Term
+escape bytes n i t =
+    if i >= n then
+        { t | ps = 1 }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 0x5B then
+            csi bytes n (i + 1) t (Builder.empty 16) 0 0
+
+        else if b == 0x5D then
+            skipEsc bytes n (i + 1) t
+
+        else if b == 0x4D then
+            ground bytes n (i + 1) (reverseIndex t)
+
+        else if b == 0x44 then
+            ground bytes n (i + 1) (lineFeed t)
+
+        else if b == 0x45 then
+            ground bytes n (i + 1) (lineFeed { t | x = 0 })
+
+        else if b >= 0x20 && b < 0x30 then
+            -- a charset designation: its final byte is skipped
+            ground bytes n (i + 2) t
+
+        else
+            ground bytes n (i + 1) t
+
+
+{-| An OSC or a string, skipped to BEL or ST. -}
+skipEsc : Bytes -> Int -> Int -> (moved t : Term) -> Term
+skipEsc bytes n i t =
+    if i >= n then
+        { t | ps = 3 }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 7 then
+            ground bytes n (i + 1) t
+
+        else if b == 0x1B then
+            ground bytes n (i + 2) t
+
+        else
+            skipEsc bytes n (i + 1) t
+
+
+csi : Bytes -> Int -> Int -> (moved t : Term) -> (moved params : Builder Int) -> Int -> Int -> Term
+csi bytes n i t params cur priv =
+    if i >= n then
+        { t | ps = 2, params = Builder.toArray params, cur = cur, priv = priv }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x30 && b <= 0x39 then
+            csi bytes n (i + 1) t params (min 65535 (cur * 10 + b - 0x30)) priv
+
+        else if b == 0x3B || b == 0x3A then
+            csi bytes n (i + 1) t (if Builder.length params < 32 then Builder.pushLast cur params else params) 0 priv
+
+        else if b >= 0x3C && b <= 0x3F then
+            csi bytes n (i + 1) t params cur b
+
+        else if b >= 0x20 && b < 0x30 then
+            csi bytes n (i + 1) t params cur priv
+
+        else if b >= 0x40 && b <= 0x7E then
+            ground bytes n (i + 1) (dispatch b priv (Builder.toArray (Builder.pushLast cur params)) t)
+
+        else
+            ground bytes n (i + 1) t
+
+
+param : Int -> Int -> Array Int -> Int
+param k default params =
+    when Array.get k params is
+        Just 0 ->
+            default
+
+        Just v ->
+            v
+
+        Nothing ->
+            default
+
+
+isAlt : Term -> Bool
+isAlt t =
+    when t.saved is
+        Just _ ->
+            True
+
+        Nothing ->
+            False
+
+
+dispatch : Int -> Int -> Array Int -> (moved t : Term) -> Term
+dispatch final priv params t =
+    if priv == 0x3F then
+        if final == 0x68 && param 0 0 params == 1049 then
+            if isAlt t then
+                t
+
+            else
+                withScroll { t | saved = Just t.screen, screen = newScreen (lines + 1) }
+
+        else if final == 0x6C && param 0 0 params == 1049 then
+            when t.saved is
+                Just s ->
+                    withScroll { t | saved = Nothing, screen = s }
+
+                Nothing ->
+                    withScroll { t | saved = Nothing }
+
+        else
+            t
+
+    else if final == 0x6D then
+        sgr params 0 t
+
+    else if final == 0x48 || final == 0x66 then
+        { t | y = clamp 0 (lines - 1) (param 0 1 params - 1), x = clamp 0 (cols - 1) (param 1 1 params - 1), wrapNext = False }
+
+    else if final == 0x41 then
+        { t | y = max t.top (t.y - param 0 1 params), wrapNext = False }
+
+    else if final == 0x42 then
+        { t | y = min t.bottom (t.y + param 0 1 params), wrapNext = False }
+
+    else if final == 0x43 then
+        { t | x = min (cols - 1) (t.x + param 0 1 params), wrapNext = False }
+
+    else if final == 0x44 then
+        { t | x = max 0 (t.x - param 0 1 params), wrapNext = False }
+
+    else if final == 0x47 then
+        { t | x = clamp 0 (cols - 1) (param 0 1 params - 1), wrapNext = False }
+
+    else if final == 0x64 then
+        { t | y = clamp 0 (lines - 1) (param 0 1 params - 1), wrapNext = False }
+
+    else if final == 0x4A then
+        eraseDisplay (param 0 0 params) t
+
+    else if final == 0x4B then
+        eraseLine (param 0 0 params) t
+
+    else if final == 0x72 then
+        let
+            top =
+                param 0 1 params - 1
+
+            bottom =
+                param 1 lines params - 1
+        in
+        if top < bottom && bottom < lines then
+            withScroll { t | top = top, bottom = bottom, x = 0, y = 0, wrapNext = False }
+
+        else
+            t
+
+    else if final == 0x53 then
+        regionUp (param 0 1 params) t.top t.bottom t
+
+    else if final == 0x54 then
+        regionDown (param 0 1 params) t.top t.bottom t
+
+    else if final == 0x4C then
+        if t.y >= t.top && t.y <= t.bottom then
+            regionDown (param 0 1 params) t.y t.bottom t
+
+        else
+            t
+
+    else if final == 0x4D then
+        if t.y >= t.top && t.y <= t.bottom then
+            regionUp (param 0 1 params) t.y t.bottom t
+
+        else
+            t
+
+    else if final == 0x6E && param 0 0 params == 6 then
+        { t | replies = Array.pushLast (Bytes.fromString ("\u{001B}[" ++ String.fromInt (t.y + 1) ++ ";" ++ String.fromInt (t.x + 1) ++ "R")) t.replies }
+
+    else
+        t
+
+
+-- STYLES
+
+
+sgr : Array Int -> Int -> (moved t : Term) -> Term
+sgr params k t =
+    if k >= Array.length params then
+        intern t
+
+    else
+        let
+            p =
+                Maybe.withDefault 0 (Array.get k params)
+        in
+        if p == 0 then
+            sgr params (k + 1) { t | fg = 0, bg = 0, flags = 0 }
+
+        else if p < 10 then
+            sgr params (k + 1) { t | flags = Bitwise.or t.flags (Bitwise.shiftLeftBy p 1) }
+
+        else if p >= 22 && p <= 29 then
+            sgr params (k + 1) { t | flags = Bitwise.and t.flags (Bitwise.complement (Bitwise.shiftLeftBy (p - 20) 1)) }
+
+        else if p >= 30 && p <= 37 then
+            sgr params (k + 1) { t | fg = p - 30 + 1 }
+
+        else if p == 38 || p == 48 then
+            let
+                kind =
+                    Maybe.withDefault 0 (Array.get (k + 1) params)
+
+                v1 =
+                    Maybe.withDefault 0 (Array.get (k + 2) params)
+
+                colour =
+                    if kind == 5 then
+                        Bitwise.and 0xFF v1 + 1
+
+                    else
+                        Bitwise.or 0x1000000
+                            (Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0xFF v1))
+                                (Bitwise.or (Bitwise.shiftLeftBy 8 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (k + 3) params))))
+                                    (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (k + 4) params)))
+                                )
+                            )
+
+                skip =
+                    if kind == 5 then
+                        3
+
+                    else
+                        5
+            in
+            if p == 38 then
+                sgr params (k + skip) { t | fg = colour }
+
+            else
+                sgr params (k + skip) { t | bg = colour }
+
+        else if p == 39 then
+            sgr params (k + 1) { t | fg = 0 }
+
+        else if p >= 40 && p <= 47 then
+            sgr params (k + 1) { t | bg = p - 40 + 1 }
+
+        else if p == 49 then
+            sgr params (k + 1) { t | bg = 0 }
+
+        else if p >= 90 && p <= 97 then
+            sgr params (k + 1) { t | fg = p - 90 + 9 }
+
+        else if p >= 100 && p <= 107 then
+            sgr params (k + 1) { t | bg = p - 100 + 9 }
+
+        else
+            sgr params (k + 1) t
+
+
+{-| The pen's style id, from the table, adding the style if it is new. -}
+intern : (moved t : Term) -> Term
+intern t =
+    let
+        key =
+            Bitwise.or (Bitwise.shiftLeftBy 39 (Int64.fromInt t.flags))
+                (Bitwise.or (Bitwise.shiftLeftBy 25 (Int64.fromInt t.fg)) (Int64.fromInt t.bg))
+    in
+    when Dict.get key t.styles is
+        Just id ->
+            { t | pen = id }
+
+        Nothing ->
+            let
+                id =
+                    modBy 1024 (Dict.count t.styles)
+            in
+            { t | pen = id, styles = Dict.set key id t.styles }
+
+
+-- SCROLLING AND ERASING
+
+
+lineFeed : (moved t : Term) -> Term
+lineFeed t =
+    if t.y == t.bottom then
+        if t.scroll == scrollFull then
+            feedFull t
+
+        else if t.scroll == scrollRegion then
+            feedRegion t
+
+        else
+            regionUp 1 t.top t.bottom t
+
+    else if t.y < lines - 1 then
+        { t | y = t.y + 1 }
+
+    else
+        t
+
+
+{-| The kinds of line feed at the bottom of the region that `lineFeed` takes
+straight to their work, decided where the region, the screen or the
+scrollback change (`withScroll`), not at each line feed (geng-lang
+`m4-visiterm-scrolls.md` H2): the whole main screen with scrollback kept,
+and a region of the screen with none kept. Any other is `regionUp`'s. -}
+scrollFull : Int
+scrollFull =
+    1
+
+
+scrollRegion : Int
+scrollRegion =
+    2
+
+
+scrollOther : Int
+scrollOther =
+    0
+
+
+withScroll : (moved t : Term) -> Term
+withScroll t =
+    let
+        keep =
+            t.top == 0 && t.back.limit > 0 && not (isAlt t)
+
+        whole =
+            t.top == 0 && t.bottom == lines - 1
+    in
+    if keep && whole then
+        { t | scroll = scrollFull, screen = withRegion t.top t.bottom t.screen }
+
+    else if not keep && not whole then
+        { t | scroll = scrollRegion, screen = withRegion t.top t.bottom t.screen }
+
+    else
+        { t | scroll = scrollOther, screen = withRegion t.top t.bottom t.screen }
+
+
+{-| `regionUp 1` of the whole main screen, scrollback kept: `screenUp`'s first
+branch, after `pageOut` when the ring is full. -}
+feedFull : (moved t : Term) -> Term
+feedFull t =
+    let
+        s =
+            t.screen
+    in
+    if s.hist + lines >= s.size then
+        let
+            room =
+                pageOut s t.back
+
+            r =
+                room.screen
+        in
+        { t | screen = { r | base = phys r 1, hist = r.hist + 1 } |> clearRowAt (lines - 1), back = room.back }
+
+    else
+        { t | screen = { s | base = phys s 1, hist = s.hist + 1 } |> clearRowAt (lines - 1) }
+
+
+{-| `regionUp 1` of a region, no scrollback kept: when the region is one
+stretch of the ring, its turn counted on by one, its rows left where they
+are (H1), and the row that left, now its bottom row, cleared. -}
+feedRegion : (moved t : Term) -> Term
+feedRegion t =
+    if slot t.screen t.top <= slot t.screen t.bottom then
+        let
+            s =
+                t.screen
+        in
+        { t
+            | screen =
+                { s
+                    | turn =
+                        if s.turn + 1 >= s.height then
+                            0
+
+                        else
+                            s.turn + 1
+                }
+                    |> clearRowAt t.bottom
+        }
+
+    else
+        regionUp 1 t.top t.bottom t
+
+
+reverseIndex : (moved t : Term) -> Term
+reverseIndex t =
+    if t.y == t.top then
+        regionDown 1 t.top t.bottom t
+
+    else if t.y > 0 then
+        { t | y = t.y - 1 }
+
+    else
+        t
+
+
+{-| On the main screen, with the region starting at the top, the rows that
+leave go to the scrollback. -}
+regionUp : Int -> Int -> Int -> (moved t : Term) -> Term
+regionUp count top bottom t =
+    if count <= 0 then
+        t
+
+    else
+        let
+            keep =
+                top == 0 && t.back.limit > 0 && not (isAlt t)
+        in
+        if keep && t.screen.hist + lines >= t.screen.size then
+            let
+                room =
+                    pageOut t.screen t.back
+            in
+            regionUp (count - 1)
+                top
+                bottom
+                { t
+                    | screen = screenUp keep top bottom room.screen
+                    , back = room.back
+                }
+
+        else
+            regionUp (count - 1) top bottom { t | screen = screenUp keep top bottom t.screen }
+
+
+regionDown : Int -> Int -> Int -> (moved t0 : Term) -> Term
+regionDown count top bottom t0 =
+    let
+        t =
+            { t0 | screen = settle t0.screen }
+    in
+    if count <= 0 then
+        t
+
+    else
+        if phys t.screen top <= phys t.screen bottom then
+            regionDown (count - 1) top bottom { t | screen = turnRegion top bottom -1 t.screen |> clearRowAt top }
+
+        else
+            regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> clearRowAt top }
+
+
+eraseDisplay : Int -> (moved t : Term) -> Term
+eraseDisplay how t =
+    if how == 2 || how == 3 then
+        { t | screen = blankRows 0 lines t.screen }
+
+    else
+        let
+            line =
+                eraseLine how t
+        in
+        if how == 1 then
+            { line | screen = blankRows 0 t.y line.screen }
+
+        else
+            { line | screen = blankRows (t.y + 1) lines line.screen }
+
+
+eraseLine : Int -> (moved t : Term) -> Term
+eraseLine how t =
+    let
+        from =
+            if how == 0 then
+                t.x
+
+            else
+                0
+
+        to =
+            if how == 1 then
+                t.x + 1
+
+            else
+                cols
+
+        ext =
+            extentAt t.y t.screen
+    in
+    if to <= from then
+        t
+
+    else
+        let
+            s =
+                t.screen
+
+            o =
+                phys s t.y * stride
+
+            left =
+                if to >= ext then
+                    min ext from
+
+                else
+                    ext
+        in
+        { t | screen = { s | cells = Builder.set (o + cols) (Int64.fromInt left) (Builder.fill (o + from) (o + to) blank s.cells) } }
+
+
+-- RUNNING IT
+
+
+checksum : Term -> Int
+checksum t =
+    Array.foldl
+        (\y sum ->
+            let
+                row =
+                    rowAt y t.screen
+            in
+            Array.foldl (\c s -> Bitwise.xor (s * 31) (Bitwise.or (Bitwise.shiftLeftBy 22 (Int64.toIntWrap (Bitwise.shiftRightZfBy 32 c))) (Int64.toIntWrap (Bitwise.and 0x3FFFFF c)))) sum (Array.append (Array.repeat (cols - extentOf row) blank) (Builder.slice 0 (extentOf row) row))
+        )
+        (pageCount t)
+        (Array.range 0 (lines - 1))
+
+
+feedAll : Bytes -> Int -> (moved t : Term) -> Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + readSize) (feed (Bytes.slice at (at + readSize) bytes) t)
+
+
+setting : String -> String -> Dict String String -> String
+setting name default env =
+    Maybe.withDefault default (Dict.get name env)
+
+
+main : Task Never {}
+main =
+    Task.map3 (\e env perm -> { args = e.argsAsBytes, env = env, perm = perm }) Os.Env.getEnvironment Os.Env.getEnvironmentVariables Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                let
+                    path =
+                        Maybe.withDefault Bytes.empty (Array.get 0 s.args)
+
+                    pack =
+                        when setting "PACK" "points" s.env is
+                            "seq" ->
+                                PackSeq
+
+                            "string" ->
+                                PackString
+
+                            "points" ->
+                                PackPoints
+
+                            _ ->
+                                PackCells
+
+                    scrollback =
+                        Maybe.withDefault 100000 (String.toInt (setting "SCROLLBACK" "100000" s.env))
+                in
+                Os.File.readFile s.perm (Os.Path.fromBytes path)
+                    |> Task.andThen
+                        (\bytes ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            t =
+                                                feedAll bytes 0 (newTerm pack scrollback)
+                                        in
+                                        Time.monotonic
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    Console.write
+                                                        (String.fromInt (Bytes.length bytes)
+                                                            ++ " bytes in "
+                                                            ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                            ++ " ms; pages "
+                                                            ++ String.fromInt (pageCount t)
+                                                            ++ ", styles "
+                                                            ++ String.fromInt (Dict.count t.styles)
+                                                            ++ ", replies "
+                                                            ++ String.fromInt (Array.length t.replies)
+                                                            ++ ", checksum "
+                                                            ++ String.fromInt (checksum t)
+                                                            ++ "\n"
+                                                        )
+                                                )
+                                    )
+                        )
+                    |> Task.onError (\_ -> Console.write "cannot read the file\n")
+            )
