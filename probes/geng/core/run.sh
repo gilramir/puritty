@@ -1,10 +1,16 @@
 #!/bin/sh
 # Runs a probe build over every input RUNS times (default 3) and prints the
 # least and most of the times it reports, which leave out start-up and
-# reading the file (a few ms; cores.sh's times include them).
+# reading the file (a few ms; cores.sh's times include them). One untimed
+# run comes first, below.
 #
 # usage: run.sh PROBE INPUTS [RUNS]     environment passes through to the probe
 P=$(realpath "$1"); IN=$(realpath "$2"); RUNS=${3:-3}
+# One untimed run first: the machine's power plan clocks the CPU down when
+# it is idle, and a first run after idle took 63 ms of `cup` where the rest
+# took 50-55, the same cycles at about 4.0 GHz against 5.1 (vt-core.md §VC7).
+first=$(ls "$IN"/*.txt | head -1)
+"$P" "$first" > /dev/null
 for f in "$IN"/*.txt; do
   name=$(basename "$f" .txt)
   times=""

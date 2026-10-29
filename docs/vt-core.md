@@ -70,19 +70,19 @@ all thirteen inputs. Five runs each, least and most, ms, and instructions
 
 | input | budget | `Int` cells | `Int64` cells | instructions `Int` | `Int64` | |
 |---|---:|---:|---:|---:|---:|---:|
-| `cup` | 56 | 41–49 | 40–42 | **49–55** | 1,322 | 1,602 |
-| `gitlog` | 132 | 75–80 | 79–82 | **107–110** | 2,644 | 3,364 |
-| `ls` | 124 | 63–64 | 64–65 | **86–87** | 2,340 | 3,017 |
-| vte-cursor_motion | 28 | 18–19 | 19–20 | **23–25** | 687 | 834 |
-| vte-dense_cells | 28 | 14–15 | 15–16 | **19–21** | 552 | 730 |
-| vte-light_cells | 24 | 9 | 10 | **8–9** | 367 | 333 |
-| vte-scrolling | 42 | 36–39 | 37–39 | **38–40** | 1,382 | 1,405 |
+| `cup` | 56 | 41–49 | 40–42 | **49–56** | 1,322 | 1,602 |
+| `gitlog` | 132 | 75–80 | 79–82 | **107–112** | 2,644 | 3,364 |
+| `ls` | 124 | 63–64 | 64–65 | **85–89** | 2,340 | 3,017 |
+| vte-cursor_motion | 28 | 18–19 | 19–20 | **23–24** | 687 | 834 |
+| vte-dense_cells | 28 | 14–15 | 15–16 | **19–20** | 552 | 730 |
+| vte-light_cells | 24 | 9 | 10 | **7–9** | 367 | 333 |
+| vte-scrolling | 42 | 36–39 | 37–39 | **39–40** | 1,382 | 1,405 |
 | vte-scrolling_bottom_region | 37 | 22–23 | 23–24 | **23–25** | 916 | 942 |
-| vte-scrolling_bottom_small_region | 132 | 22–24 | 24–25 | **24–26** | 914 | 940 |
-| vte-scrolling_fullscreen | 45 | 19–20 | 20–22 | **28** | 753 | 961 |
-| vte-scrolling_top_region | 223 | 22–23 | 23–24 | **24–26** | 916 | 942 |
-| vte-scrolling_top_small_region | 125 | 22–24 | 23–24 | **23–26** | 914 | 940 |
-| vte-unicode | 25 | 10–11 | 10–12 | **13–14** | 453 | 505 |
+| vte-scrolling_bottom_small_region | 132 | 22–24 | 24–25 | **23–29** | 914 | 940 |
+| vte-scrolling_fullscreen | 45 | 19–20 | 20–22 | **27–28** | 753 | 961 |
+| vte-scrolling_top_region | 223 | 22–23 | 23–24 | **23–24** | 916 | 942 |
+| vte-scrolling_top_small_region | 125 | 22–24 | 23–24 | **24–26** | 914 | 940 |
+| vte-unicode | 25 | 10–11 | 10–12 | **13–15** | 453 | 505 |
 
 An `Int64` is an `int64_t` natively (geng-lang `m3-native.md`'s shape `I8`),
 so a `Builder Int64` is 8 bytes an item in one buffer, as Ghostty's page is.
@@ -251,24 +251,33 @@ after the clock is read, which a count of instructions would see).
 
 | input | budget | probe | core, first | **core, now** | instr. probe | instr. core |
 |---|---:|---:|---:|---:|---:|---:|
-| `cup` | 56 | 40–41 | 71–72 | **49–55** | 1,322 | 1,602 |
-| `gitlog` | 132 | 79–80 | 138–143 | **107–110** | 2,644 | 3,364 |
-| `ls` | 124 | 63–66 | 95–98 | **86–87** | 2,340 | 3,017 |
-| vte-cursor_motion | 28 | 18–20 | 35–37 | **23–25** | 687 | 834 |
-| vte-dense_cells | 28 | 14–16 | 43 | **19–21** | 552 | 730 |
-| vte-light_cells | 24 | 9–10 | 9–10 | **8–9** | 367 | 333 |
-| vte-scrolling | 42 | 37–41 | 124–125 | **38–40** | 1,382 | 1,405 |
+| `cup` | 56 | 40–41 | 71–72 | **49–56** | 1,322 | 1,602 |
+| `gitlog` | 132 | 79–80 | 138–143 | **107–112** | 2,644 | 3,364 |
+| `ls` | 124 | 63–66 | 95–98 | **85–89** | 2,340 | 3,017 |
+| vte-cursor_motion | 28 | 18–20 | 35–37 | **23–24** | 687 | 834 |
+| vte-dense_cells | 28 | 14–16 | 43 | **19–20** | 552 | 730 |
+| vte-light_cells | 24 | 9–10 | 9–10 | **7–9** | 367 | 333 |
+| vte-scrolling | 42 | 37–41 | 124–125 | **39–40** | 1,382 | 1,405 |
 | vte-scrolling_bottom_region | 37 | 23–24 | 100–103 | **23–25** | 916 | 942 |
-| vte-scrolling_bottom_small_region | 132 | 24 | 99–104 | **24–26** | 914 | 940 |
-| vte-scrolling_fullscreen | 45 | 20–22 | 27–28 | **28** | 753 | 961 |
-| vte-scrolling_top_region | 223 | 23–25 | 99–103 | **24–26** | 916 | 942 |
-| vte-scrolling_top_small_region | 125 | 23–25 | 99–103 | **23–26** | 914 | 940 |
-| vte-unicode | 25 | 10–12 | 85–86 | **13–14** | 453 | 505 |
+| vte-scrolling_bottom_small_region | 132 | 24 | 99–104 | **23–29** | 914 | 940 |
+| vte-scrolling_fullscreen | 45 | 20–22 | 27–28 | **27–28** | 753 | 961 |
+| vte-scrolling_top_region | 223 | 23–25 | 99–103 | **23–24** | 916 | 942 |
+| vte-scrolling_top_small_region | 125 | 23–25 | 99–103 | **24–26** | 914 | 940 |
+| vte-unicode | 25 | 10–12 | 85–86 | **13–15** | 453 | 505 |
 
-**All thirteen inputs meet the budget**, `vte-scrolling` at 38–40 ms
-against 42. `cup`'s first run after the machine sat idle was 62–63 ms, twice
-in a row of ten, and every other 49–55 against 56; the probe's runs, made
-right after, showed no slow first one, so it was not measured further. The
+**All thirteen inputs meet the budget**, `vte-scrolling` at 39–40 ms
+against 42; `cup`'s slowest run of five is level with its budget, 56. **A first run after the machine sits idle is the clock's, not
+the core's.** `cup`'s was 62–63 ms where the rest were 49–55 against 56. Two
+minutes idle, then three runs of each (`perf stat`): the slow run takes the
+same cycles as the warm ones (274.2 M against 273.0–275.3 M, the
+instructions and page faults the same too) at about 4.0 GHz where they run
+at 5.1, since this machine's power plan clocks the CPU down when it is idle
+(`amd-pstate-epp`, `powersave`). The probe run first does it too (52, 47,
+42 ms, against 40–41 warm, 219 M cycles each), and it had not shown it here
+only because it ran after the core had woken the CPU; three seconds of a
+busy loop first take it away (51, 52, 51). `probes/geng/core/run.sh` now
+makes one untimed run before it times any, and every figure in this section
+is a warm one. The
 core is 0.9–1.3× the probe's instructions on every input; what it does that the probe does not
 (the size and the width as fields, the wrapped flag, the wide-character
 checks, the erase cell, a 40-field `Term` where the probe's had 21) is what
