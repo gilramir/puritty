@@ -321,7 +321,7 @@ type alias Config =
 
 
 type alias Page =
-    { text : Bytes, runs : Bytes }
+    { text : Bytes, heads : Bytes, runs : Bytes }
 
 
 type alias Back =
@@ -389,6 +389,7 @@ type alias Term =
     , back : Back
     , tabs : Builder Int
     , autowrap : Bool
+    , plain : Bool
     , origin : Bool
     , insert : Bool
     , showCursor : Bool
@@ -499,6 +500,7 @@ fresh config =
     , back = { pages = Builder.empty 0, head = 0, limit = limit }
     , tabs = Builder.fromArray (Array.initialize config.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0))
     , autowrap = True
+    , plain = True
     , origin = False
     , insert = False
     , showCursor = True
@@ -877,23 +879,24 @@ pageOut clusters s back =
             pageRows - (firstStop - first)
 
         older =
-            packRows clusters first firstStop s (Builder.empty (pageRows * 8)) (Builder.empty (pageRows * 8))
+            packRows clusters first firstStop s (Builder.empty (pageRows * 8)) (Builder.empty (pageRows * 2)) (Builder.empty (pageRows * 4))
 
         both =
-            packRows clusters 0 rest s older.text older.runs
+            packRows clusters 0 rest s older.text older.heads older.runs
 
         page =
             { text = Bytes.fromUInt8s (Builder.toArray both.text)
+            , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
             , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
             }
     in
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
 
 
-packRows : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, runs : Builder UInt8 }
-packRows clusters p stop s text runs =
+packRows : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved heads : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, heads : Builder UInt8, runs : Builder UInt8 }
+packRows clusters p stop s text heads runs =
     if p >= stop then
-        { text = text, runs = runs }
+        { text = text, heads = heads, runs = runs }
 
     else
         let
@@ -906,11 +909,8 @@ packRows clusters p stop s text runs =
             ext =
                 metaExtent m
 
-            at =
-                Builder.length runs
-
             row =
-                packCells clusters o (o + ext) s text (pushU16 0 runs) 0 0 False
+                packCells clusters o (o + ext) s text runs 0 0 False
 
             header =
                 Bitwise.or ext
@@ -929,7 +929,7 @@ packRows clusters p stop s text runs =
                         )
                     )
         in
-        packRows clusters (p + 1) stop s row.text (Builder.set (at + 1) (UInt8.fromInt (Bitwise.shiftRightZfBy 8 header)) (Builder.set at (UInt8.fromInt (Bitwise.and 0xFF header)) row.runs))
+        packRows clusters (p + 1) stop s row.text (Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 8 header)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF header)) heads)) row.runs
 
 
 {-| A row's cells from `i` to `stop` packed: their text, and their style
@@ -1111,18 +1111,25 @@ ground bytes n i t =
                 byteAt bytes i
         in
         if b >= 0x20 && b < 0x7F then
-            if t.gl == 0 && t.g0 == 0 && t.autowrap && not t.insert then
+            if t.plain then
                 printAscii bytes n i b t
 
             else
                 ground bytes n (i + 1) (printPoint (graphic t b) 1 t)
 
         else if b >= 0x80 then
-            if t.gl == 0 && t.g0 == 0 && t.autowrap && not t.insert && not t.wrapNext then
+            if t.plain && not t.wrapNext then
                 printUnicode bytes n i b t
 
             else
                 startUtf8 bytes n i b t
+
+        else if b == 13 then
+            -- CR and LF here, not through `execute`, as the probe had them
+            ground bytes n (i + 1) { t | x = 0, wrapNext = False }
+
+        else if b == 10 && not t.newline then
+            ground bytes n (i + 1) (lineFeed { t | wrapNext = False })
 
         else if b == 0x1B then
             escape bytes n (i + 1) t
@@ -1151,10 +1158,10 @@ execute b t =
         { t | x = nextTab t.x 1 t }
 
     else if b == 14 then
-        { t | gl = 1 }
+        withPlain { t | gl = 1 }
 
     else if b == 15 then
-        { t | gl = 0 }
+        withPlain { t | gl = 0 }
 
     else
         t
@@ -1284,7 +1291,12 @@ printAscii bytes n i b t0 =
             | screen = { s | cells = asciiRow bytes i end t.pen cols o t.x x b s.cells }
             , x = min (cols - 1) x
             , wrapNext = x >= cols
-            , lastPoint = byteAt bytes (end - 1)
+            , lastPoint =
+                if end == i + 1 then
+                    b
+
+                else
+                    byteAt bytes (end - 1)
         }
 
 
@@ -1776,7 +1788,7 @@ escInter bytes n i t =
             escInter bytes n (i + 1) (execute b t)
 
         else if t.inter == 0x28 then
-            ground bytes n (i + 1) { t | g0 = charset b }
+            ground bytes n (i + 1) (withPlain { t | g0 = charset b })
 
         else if t.inter == 0x29 then
             ground bytes n (i + 1) { t | g1 = charset b }
@@ -2381,7 +2393,7 @@ setPrivate p on t =
         cursorTo 0 0 { t | origin = on }
 
     else if p == 7 then
-        { t | autowrap = on }
+        withPlain { t | autowrap = on }
 
     else if p == 25 then
         { t | showCursor = on }
@@ -2467,7 +2479,7 @@ knownPrivate =
 setAnsi : Int -> Bool -> (moved t : Term) -> Term
 setAnsi p on t =
     if p == 4 then
-        { t | insert = on }
+        withPlain { t | insert = on }
 
     else if p == 20 then
         { t | newline = on }
@@ -2557,7 +2569,7 @@ restoreCursor t =
         v =
             t.screen.saved
     in
-    withPen v.attrs
+    withPlain <| withPen v.attrs
         { t
             | x = min (t.cols - 1) v.x
             , y = min (t.rows - 1) v.y
@@ -2601,6 +2613,7 @@ softReset t =
             }
         )
         |> resetSaved
+        |> withPlain
 
 
 resetSaved : (moved t : Term) -> Term
@@ -2610,6 +2623,14 @@ resetSaved t =
             t.screen
     in
     { t | screen = { s | saved = noSaved } }
+
+
+{-| `plain` kept to what it says: GL is ASCII, autowrap is on and insert is
+off, which is when the ground state's fast paths may write a run (§VC5).
+Set wherever any of the four changes. -}
+withPlain : (moved t : Term) -> Term
+withPlain t =
+    { t | plain = t.gl == 0 && t.g0 == 0 && t.autowrap && not t.insert }
 
 
 -- TABS
@@ -3502,28 +3523,28 @@ historyRows t =
 
 unpackPage : Page -> Array DumpRow
 unpackPage page =
-    unpackRows page 0 0 []
+    unpackRows page 0 0 0 []
 
 
-unpackRows : Page -> Int -> Int -> Array DumpRow -> Array DumpRow
-unpackRows page r ti acc =
-    if r >= Bytes.length page.runs then
+unpackRows : Page -> Int -> Int -> Int -> Array DumpRow -> Array DumpRow
+unpackRows page h r ti acc =
+    if h >= Bytes.length page.heads then
         acc
 
     else
         let
             header =
-                u16At page.runs r
+                u16At page.heads h
 
             ext =
                 Bitwise.and 0x3FFF header
 
             styles =
                 if Bitwise.and 0x4000 header /= 0 then
-                    { styles = Array.repeat ext 0, next = r + 2 }
+                    { styles = Array.repeat ext 0, next = r }
 
                 else
-                    unpackRuns page.runs (r + 2) ext []
+                    unpackRuns page.runs r ext []
 
             row =
                 unpackText page.text ti ext []
@@ -3531,7 +3552,7 @@ unpackRows page r ti acc =
             cells =
                 Array.indexedMap (\x c -> { c | style = Maybe.withDefault 0 (Array.get x styles.styles) }) row.cells
         in
-        unpackRows page styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0 } acc)
+        unpackRows page (h + 2) styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0 } acc)
 
 
 u16At : Bytes -> Int -> Int

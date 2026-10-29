@@ -70,19 +70,19 @@ all thirteen inputs. Five runs each, least and most, ms, and instructions
 
 | input | budget | `Int` cells | `Int64` cells | instructions `Int` | `Int64` | |
 |---|---:|---:|---:|---:|---:|---:|
-| `cup` | 56 | 41–49 | 40–42 | 1,299 | 1,322 | +1.8% |
-| `gitlog` | 132 | 75–80 | 79–82 | 2,641 | 2,644 | +0.1% |
-| `ls` | 124 | 63–64 | 64–65 | 2,331 | 2,340 | +0.4% |
-| vte-cursor_motion | 28 | 18–19 | 19–20 | 676 | 687 | +1.6% |
-| vte-dense_cells | 28 | 14–15 | 15–16 | 547 | 552 | +0.9% |
-| vte-light_cells | 24 | 9 | 10 | 366 | 367 | +0.3% |
-| vte-scrolling | 42 | 36–39 | 37–39 | 1,332 | 1,382 | +3.8% |
-| vte-scrolling_bottom_region | 37 | 22–23 | 23–24 | 878 | 916 | +4.3% |
-| vte-scrolling_bottom_small_region | 132 | 22–24 | 24–25 | 877 | 914 | +4.2% |
-| vte-scrolling_fullscreen | 45 | 19–20 | 20–22 | 752 | 753 | +0.1% |
-| vte-scrolling_top_region | 223 | 22–23 | 23–24 | 878 | 916 | +4.3% |
-| vte-scrolling_top_small_region | 125 | 22–24 | 23–24 | 877 | 914 | +4.2% |
-| vte-unicode | 25 | 10–11 | 10–12 | 441 | 453 | +2.7% |
+| `cup` | 56 | 41–49 | 40–42 | **49–55** | 1,322 | 1,602 |
+| `gitlog` | 132 | 75–80 | 79–82 | **107–110** | 2,644 | 3,364 |
+| `ls` | 124 | 63–64 | 64–65 | **86–87** | 2,340 | 3,017 |
+| vte-cursor_motion | 28 | 18–19 | 19–20 | **23–25** | 687 | 834 |
+| vte-dense_cells | 28 | 14–15 | 15–16 | **19–21** | 552 | 730 |
+| vte-light_cells | 24 | 9 | 10 | **8–9** | 367 | 333 |
+| vte-scrolling | 42 | 36–39 | 37–39 | **38–40** | 1,382 | 1,405 |
+| vte-scrolling_bottom_region | 37 | 22–23 | 23–24 | **23–25** | 916 | 942 |
+| vte-scrolling_bottom_small_region | 132 | 22–24 | 24–25 | **24–26** | 914 | 940 |
+| vte-scrolling_fullscreen | 45 | 19–20 | 20–22 | **28** | 753 | 961 |
+| vte-scrolling_top_region | 223 | 22–23 | 23–24 | **24–26** | 916 | 942 |
+| vte-scrolling_top_small_region | 125 | 22–24 | 23–24 | **23–26** | 914 | 940 |
+| vte-unicode | 25 | 10–11 | 10–12 | **13–14** | 453 | 505 |
 
 An `Int64` is an `int64_t` natively (geng-lang `m3-native.md`'s shape `I8`),
 so a `Builder Int64` is 8 bytes an item in one buffer, as Ghostty's page is.
@@ -217,15 +217,16 @@ gate whole.
 The main screen's ring holds the screen, up to `2 × 256` rows of
 scrollback and a free row, as the probe's does. When it is full, the
 oldest 256 rows of scrollback are packed into a page (geng-lang D901), and
-the pages are a ring of `scrollback / 256` (rounded up). A page is two
-`Bytes`, made with `Bytes.fromUInt8s` from two `Builder UInt8`:
+the pages are a ring of `scrollback / 256` (rounded up). A page is three
+`Bytes`, made with `Bytes.fromUInt8s` from three `Builder UInt8`:
 
 - **text**: each row's cells as UTF-8, a cluster as its code points, an
   empty cell or a spacer head as a 0 byte, a wide character's spacer as
   nothing;
-- **runs**: for each row a header, two bytes low first: its extent in bits
+- **heads**: for each row a header, two bytes low first: its extent in bits
   0–13, bit 14 set when every cell is in the default style, bit 15 when the
-  row wrapped. Unless bit 14 is set, its style runs follow: each a style id
+  row wrapped;
+- **runs**: unless a row's bit 14 is set, its style runs: each a style id
   in two bytes, with bit 15 set when a count of cells (two bytes) follows;
   the last run has no count and reaches the extent. So a style id has 15
   bits and the table holds 32,768 (`styleMax`).
@@ -250,23 +251,25 @@ after the clock is read, which a count of instructions would see).
 
 | input | budget | probe | core, first | **core, now** | instr. probe | instr. core |
 |---|---:|---:|---:|---:|---:|---:|
-| `cup` | 56 | 40–41 | 71–72 | **53–55** | 1,322 | 1,678 |
-| `gitlog` | 132 | 79–80 | 138–143 | **104–110** | 2,644 | 3,430 |
-| `ls` | 124 | 63–66 | 95–98 | **82–86** | 2,340 | 3,047 |
-| vte-cursor_motion | 28 | 18–20 | 35–37 | **25–27** | 687 | 873 |
-| vte-dense_cells | 28 | 14–16 | 43 | **20–21** | 552 | 746 |
-| vte-light_cells | 24 | 9–10 | 9–10 | **8–9** | 367 | 360 |
-| vte-scrolling | 42 | 37–41 | 124–125 | **50–52** | 1,382 | 1,787 |
-| vte-scrolling_bottom_region | 37 | 23–24 | 100–103 | **31–32** | 916 | 1,190 |
-| vte-scrolling_bottom_small_region | 132 | 24 | 99–104 | **32** | 914 | 1,188 |
-| vte-scrolling_fullscreen | 45 | 20–22 | 27–28 | **25–26** | 753 | 923 |
-| vte-scrolling_top_region | 223 | 23–25 | 99–103 | **31–32** | 916 | 1,190 |
-| vte-scrolling_top_small_region | 125 | 23–25 | 99–103 | **31–32** | 914 | 1,188 |
-| vte-unicode | 25 | 10–12 | 85–86 | **14** | 453 | 518 |
+| `cup` | 56 | 40–41 | 71–72 | **49–55** | 1,322 | 1,602 |
+| `gitlog` | 132 | 79–80 | 138–143 | **107–110** | 2,644 | 3,364 |
+| `ls` | 124 | 63–66 | 95–98 | **86–87** | 2,340 | 3,017 |
+| vte-cursor_motion | 28 | 18–20 | 35–37 | **23–25** | 687 | 834 |
+| vte-dense_cells | 28 | 14–16 | 43 | **19–21** | 552 | 730 |
+| vte-light_cells | 24 | 9–10 | 9–10 | **8–9** | 367 | 333 |
+| vte-scrolling | 42 | 37–41 | 124–125 | **38–40** | 1,382 | 1,405 |
+| vte-scrolling_bottom_region | 37 | 23–24 | 100–103 | **23–25** | 916 | 942 |
+| vte-scrolling_bottom_small_region | 132 | 24 | 99–104 | **24–26** | 914 | 940 |
+| vte-scrolling_fullscreen | 45 | 20–22 | 27–28 | **28** | 753 | 961 |
+| vte-scrolling_top_region | 223 | 23–25 | 99–103 | **24–26** | 916 | 942 |
+| vte-scrolling_top_small_region | 125 | 23–25 | 99–103 | **23–26** | 914 | 940 |
+| vte-unicode | 25 | 10–12 | 85–86 | **13–14** | 453 | 505 |
 
-**Twelve of thirteen inputs meet the budget; `vte-scrolling` is 1.2× over**
-(50–52 ms against 42), where the probe is under. The core is 1.0–1.35× the
-probe's instructions on every input; what it does that the probe does not
+**All thirteen inputs meet the budget**, `vte-scrolling` at 38–40 ms
+against 42. `cup`'s first run after the machine sat idle was 62–63 ms, twice
+in a row of ten, and every other 49–55 against 56; the probe's runs, made
+right after, showed no slow first one, so it was not measured further. The
+core is 0.9–1.3× the probe's instructions on every input; what it does that the probe does not
 (the size and the width as fields, the wrapped flag, the wide-character
 checks, the erase cell, a 40-field `Term` where the probe's had 21) is what
 is left. The changes, in the order made, each with every case of the
@@ -301,6 +304,15 @@ corpus passing:
    no runs** (§VC6), where every row wrote a flags byte, its extent and
    four bytes a run. `vte-scrolling` 1,992 → 1,787; `ls` and `gitlog` 4%
    more, for the two writes back into a styled row's header.
+8. **A page's row headers are a builder of their own**, written after the
+   row, so no header is written twice: a page is three `Bytes`, text,
+   headers and runs (§VC6). `vte-scrolling` 1,787 → 1,655. Paging now costs
+   fewer instructions a line than the probe's did.
+9. **Whether the ASCII and UTF-8 runs may be taken is one field**,
+   `plain`, set wherever GL, G0, autowrap or insert changes (`withPlain`),
+   where each run tested all four. 1,655 → 1,515.
+10. **CR and LF are taken in `ground` itself**, as the probe took them,
+    not through `execute`'s call and its tests. 1,515 → 1,405, 38–40 ms.
 
 ## VC8. What it found in Geng
 
@@ -320,7 +332,8 @@ program: "the local `$n54` is not in scope". Fixed in the fork, with
 
 Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
 
-- **Throughput** (§VC7): `vte-scrolling` is 1.2× over. Next.
+- **Throughput** (§VC7): every input meets the budget. Phase 1's exit
+  measures it again once the rest is built.
 - **esctest2 headless** and **the fuzzer**: not started. `phase1-core.md`
   §6 found both reachable: esctest2 needs a pty harness that feeds the core
   and writes its replies back; libFuzzer links with devbox's clang.
@@ -343,5 +356,18 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
   each page's styles and frees them. The same holds for clusters at 2²¹.
   To be decided with the renderer, which reads them.
 - **A spacer head read back from a page** is an empty cell (§VC6).
+- **The oracle is libghostty-vt at `d8619f1bc`** (a `tip` build of
+  2026-10-18), 191 commits before v1.4.0 (2026-10-27). Most of v1.4.0's
+  terminal changes are Kitty graphics, snapshots, tmux layouts and FreeBSD,
+  which no case reaches; two parser fixes may move screens no case holds
+  yet: a continuation restarts at a C1 sequence introducer, and a cancelled
+  or aborted APC is discarded. `vt_write_until_ground` became
+  `vt_write_until`, which `ghostty-dump` does not call. **v1.4.0 needs Zig
+  0.17**, and visiterm's devbox has 0.16 from the nixpkgs commit
+  geng-lang's clang comes from, so the upgrade is that pin moved, the
+  library rebuilt, and `replay.py` run, each case it moves either the core
+  fixed or a `divergence.txt`; a commit of its own, not mixed with the
+  core's work. Best taken with the fuzzer, which makes such sequences.
+  Registered 2026-10-29.
 - **Refinement types for every index** (plan §7): not tried; the core reads
   with `Builder.get` and a default.
