@@ -776,3 +776,21 @@ instructions a byte, and an edit that moves rows costs 0.2 µs. Every
 checksum and page matches H4 as surveyed. The survey also found two bugs
 in the old screen, an erase that shared one row and a hole that became a
 row, which this one cannot have.
+
+## 23. Scrollback pages in D901's form (2026-10-29)
+
+geng-lang `m4-visiterm.md` §VA46–§VA48. Every figure of this probe before
+here was taken with `PACK=cells`, a page as its rows' cells at 4 bytes each,
+which is not D901's form and holds 2.3–3.6× its memory. D901's own form,
+`PACK=points`, took 199 ms of `vte-scrolling` against 42.
+
+`pageOut` now writes D901's pages itself: each row's text as UTF-8, and its
+extent and style runs, straight from the ring's cells into two
+`Array.Builder UInt8`, each made `Bytes` by `core`'s new `Bytes.fromUInt8s`
+(geng-lang D1018, one copy). It is the default; `PACK=cells` stays for
+measuring. The pages are `PACK=points`' byte for byte.
+
+All thirteen of D902's inputs meet the budget at D901's memory:
+`vte-scrolling` 39–41 ms against 42, `gitlog` 81–86 against 132, `ls`
+68–70 against 124. The pages of `gitlog` and `ls` hold about 22 and 30 MB a
+pane at 100,000 lines, where cells held 59 and 101.
