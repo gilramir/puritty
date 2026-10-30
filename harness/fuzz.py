@@ -37,20 +37,30 @@ COLS = [1, 2, 3, 4, 5, 8, 10, 13, 20, 40, 80, 132]
 ROWS = [1, 2, 3, 4, 5, 8, 10, 24, 25, 50]
 
 
+def nearest(table, n):
+    return min(range(len(table)), key=lambda i: abs(table[i] - n))
+
+
 def seeds(into):
     """Every replay case as an input: its size where fuzz.c's tables have
-    it, the nearest otherwise, and reads of 1 and of 7."""
+    it, the nearest otherwise, its resizes as 0xFE and the two indexes
+    (`Fuzz.dump`, §VC14), and reads of 1 and of 7."""
     into.mkdir(parents=True, exist_ok=True)
     n = 0
     for case in sorted(replay.CORPUS.iterdir()):
         f = case / "case.txt"
         if not f.exists():
             continue
-        cols, rows, data = replay.parse_case(f.read_text())
-        c = min(range(len(COLS)), key=lambda i: abs(COLS[i] - cols))
-        r = min(range(len(ROWS)), key=lambda i: abs(ROWS[i] - rows))
+        cols, rows, data, resizes = replay.parse_resizing(f.read_text())
+        # A 0xFE of the case's own would read as a resize; none has one.
+        out, at = bytearray(), 0
+        for off, c, r in resizes:
+            out += data[at:off] + bytes([0xFE, nearest(COLS, c), nearest(ROWS, r)])
+            at = off
+        out += data[at:]
         for chunk in (0, 6):
-            (into / f"{case.name}-{chunk + 1}").write_bytes(bytes([c, r, chunk]) + data)
+            (into / f"{case.name}-{chunk + 1}").write_bytes(
+                bytes([nearest(COLS, cols), nearest(ROWS, rows), chunk]) + bytes(out))
             n += 1
     return n
 

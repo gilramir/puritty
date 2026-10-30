@@ -3,7 +3,9 @@
  * The core is libvtfuzz, `Fuzz.dump` built as a runtime = "host" library and
  * compiled into this program with coverage. An input's first three bytes
  * choose the terminal's columns, its rows and a read's length; the rest is
- * what the terminal is fed. Two things are findings, and each aborts:
+ * what the terminal is fed, but for 0xFE and the two bytes after it, which
+ * resize it to the sizes they index in the same tables (`Fuzz.dump`). Two
+ * things are findings, and each aborts:
  *
  * - a crash: any call into the core answering other than GENG_OK, a Geng
  *   crash (an index out of range, a pattern not matched, the stack) among

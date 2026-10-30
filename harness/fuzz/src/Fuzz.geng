@@ -3,11 +3,19 @@ module Fuzz exposing (dump)
 {-| The core as a library for the fuzzer (docs/vt-core.md §VC11). -}
 
 import Bytes exposing (Bytes)
+import UInt8
 import Vt
 
 
 {-| The dump of a terminal of `cols` by `rows` fed `input`, `chunk` bytes a
-read, the whole of it in one read when `chunk` is 0 or less. -}
+read, the whole of it in one read when `chunk` is 0 or less.
+
+A 0xFE byte of the input is not fed: with the two bytes after it, it
+resizes the terminal, to the columns the first indexes in `colsTable` and
+the rows the second indexes in `rowsTable`, as an input's first two bytes
+choose its size (`fuzz.c`, §VC14). A read never crosses one, so the two
+runs resize between the same bytes. UTF-8 has no 0xFE, and 0xFF still
+tries the decoder with a byte it has no use for. -}
 dump : Int -> Int -> Int -> Bytes -> String
 dump cols rows chunk input =
     let
@@ -21,13 +29,62 @@ dump cols rows chunk input =
             else
                 chunk
     in
-    Vt.dump (feedAll input step 0 (Vt.new { cols = cols, rows = rows, scrollback = 200, checksums = True }))
+    Vt.dump (run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollback = 600, checksums = True }))
 
 
-feedAll : Bytes -> Int -> Int -> (moved t : Vt.Term) -> Vt.Term
-feedAll bytes chunk at t =
+colsTable : Array Int
+colsTable =
+    [ 1, 2, 3, 4, 5, 8, 10, 13, 20, 40, 80, 132 ]
+
+
+rowsTable : Array Int
+rowsTable =
+    [ 1, 2, 3, 4, 5, 8, 10, 24, 25, 50 ]
+
+
+byteAt : Bytes -> Int -> Int
+byteAt bytes i =
+    when Bytes.get i bytes is
+        Just b ->
+            UInt8.toInt b
+
+        Nothing ->
+            0
+
+
+pick : Array Int -> Int -> Int
+pick table b =
+    Maybe.withDefault 1 (Array.get (modBy (Array.length table) b) table)
+
+
+{-| Where the resizes are, in order. -}
+marks : Bytes -> Int -> Array Int -> Array Int
+marks bytes i found =
+    if i >= Bytes.length bytes then
+        found
+
+    else if byteAt bytes i == 0xFE then
+        marks bytes (i + 3) (Array.pushLast i found)
+
+    else
+        marks bytes (i + 1) found
+
+
+run : Bytes -> Int -> Array Int -> Int -> (moved t : Vt.Term) -> Vt.Term
+run bytes chunk resizes at t =
+    let
+        next =
+            Maybe.withDefault (Bytes.length bytes) (Array.first resizes)
+    in
     if at >= Bytes.length bytes then
         t
 
+    else if at == next then
+        run bytes chunk (Array.dropFirst 1 resizes) (at + 3) (Vt.resize (pick colsTable (byteAt bytes (at + 1))) (pick rowsTable (byteAt bytes (at + 2))) t)
+
     else
-        feedAll bytes chunk (at + chunk) (Vt.feed (Bytes.slice at (at + chunk) bytes) t)
+        let
+            stop =
+                min next (at + chunk)
+        in
+        run bytes chunk resizes stop (Vt.feed (Bytes.slice at stop bytes) t)

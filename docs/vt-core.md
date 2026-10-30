@@ -401,8 +401,9 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
   screen's width; to be measured with the view.
 - **What a resize is not yet tested with**: the main screen's cursor
   behind 47 or 1047, which save none (the core carries the main screen's
-  saved cursor, which 1049 made); the fuzzer, whose inputs never resize;
-  XTWINOPS 8 and DECCOLM, which `core-pty` does not answer with a resize,
+  saved cursor, which 1049 made); what a resize leaves on the screen
+  against Ghostty but in the corpus's cases, since the fuzzer's oracle is
+  the core against itself (V7) and resizes only take part in it; XTWINOPS 8 and DECCOLM, which `core-pty` does not answer with a resize,
   so esctest's ten tests of them still fail.
 - **OSC 7, 8, 52, 133, 9 and 777, DCS for tmux and XTGETTCAP, mode 2026's
   synchronized output, the title stack, the kitty keyboard stack, the mouse
@@ -577,7 +578,12 @@ specified and never built. geng-lang built it for this (D1020, `m3-embed.md`
 
 **V7 · The fuzzer's findings are what the core itself can tell.** An
 input's first three bytes choose the columns (1 to 132), the rows (1 to 50)
-and a read's length (1 to 16); the rest is fed. It is a finding when a call
+and a read's length (1 to 16); the rest is fed, but for **a 0xFE byte,
+which with the two bytes after it resizes the terminal** (`Vt.resize`,
+§VC14), to the sizes the two index in the same tables. UTF-8 has no 0xFE,
+so no sequence is lost to it, and 0xFF still tries the decoder. A read
+never crosses a resize, so both runs resize between the same two bytes. It
+is a finding when a call
 answers other than `GENG_OK`, a Geng crash among them (an index, a pattern
 not matched, the stack, memory), or **when the dump fed the input in one
 read differs from the dump fed it a read at a time**, which leaves the
@@ -598,7 +604,9 @@ drawn from what the core has.
 
 The corpus grows in `.harness-work/fuzz/corpus` from run to run, seeded each
 time from every replay case at its size (or the nearest the tables have),
-read whole and seven bytes at a time. `vt.dict` gives libFuzzer the
+its resizes as 0xFE and the nearest sizes, read whole and seven bytes at a
+time. The term keeps 600 lines of scrollback, three pages, so that a
+resize meets pages cut at another width (V10); it kept 200 before. `vt.dict` gives libFuzzer the
 sequences the core parses. Inputs are 4 KB at most: without a limit they
 grew to 40 KB and each job ran 290 inputs a second where it had run 3,800.
 
