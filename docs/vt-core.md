@@ -367,8 +367,9 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
 - **esctest2** runs headless (§VC10): 384 of 567 tests pass, Ghostty 383
   (297 at first; §VC12, §VC13). The ten that Ghostty passes and the core
   does not need resize: XTWINOPS's resize and maximize, and DECCOLM, which
-  resizes to 132 columns. **The fuzzer** runs (§VC11); its differential against
-  libghostty-vt is not built.
+  resizes to 132 columns. **The fuzzer** has run clean for four hours on
+  eight jobs, with resizes (§VC11); its differential against libghostty-vt
+  is not built.
 - **`CSI 0 s` with ?69 reset** saves the cursor in the core, where Ghostty
   takes it for DECSLRM and does nothing: the core's parser does not tell a
   parameter of 0 from none (§VC13).
@@ -676,6 +677,17 @@ before, every finding replayed clean, and §VC7's thirteen times at or under
 its table's but `vte-scrolling`'s, 40–43 ms against 39–40 and a budget of 42
 on an idle machine, at the same instructions (1,401 M against 1,405 M):
 the clock's, as §VC7 found of `cup`.
+
+**With resizes: twenty minutes, then four hours, clean** (2026-10-30, at
+cc44b75, eight jobs, the last two rows of `corpus/fuzz/runs.tsv`). Once the
+fuzzer resized, twenty minutes ran 428,194 inputs to coverage 4,799 edges
+from the two-hour run's 4,173, the new edges `Vt.resize`'s, and found
+nothing. **Four hours** then ran 3,781,817 inputs, about 33 a second a job
+where the first run's 1,826,727 in two hours were 32, to coverage 4,872, and
+found nothing: no call other than `GENG_OK`, no split between the two
+reads, no input over the time or memory limit. This is the recorded clean
+run of phase 1's exit (`geng-plan.md` §6): four hours on eight jobs, with
+resizes, against the core that passes 184 replay cases and esctest's 384.
 
 ---
 
