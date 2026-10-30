@@ -332,8 +332,10 @@ type alias Config =
     }
 
 
+{-| A page of scrollback, and the width its rows were cut at: a resize
+leaves a page as it is and its rows are reflowed when read (V10, §VC14). -}
 type alias Page =
-    { text : Bytes, heads : Bytes, runs : Bytes }
+    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int }
 
 
 type alias Back =
@@ -918,6 +920,7 @@ pageOut clusters s back =
             { text = Bytes.fromUInt8s (Builder.toArray both.text)
             , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
             , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
+            , cols = s.cols
             }
     in
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
@@ -4748,22 +4751,81 @@ type alias Point =
 
 {-| The rows a resize works on, the first `hist` of them scrollback, the
 cursor and the saved cursor, and the row the cursor was on before (`y0`),
-which Ghostty keeps the rows below of (§VC14). -}
+which Ghostty keeps the rows below of (§VC14). `more` says pages of
+scrollback are left above the rows, and `short` that the resize wanted rows
+from them. -}
 type alias Flow =
-    { rows : Array Row, hist : Int, cursor : Point, saved : Point, y0 : Int }
+    { rows : Array Row, hist : Int, cursor : Point, saved : Point, y0 : Int, more : Bool, short : Bool }
 
 
 {-| One screen resized: `reflow` its lines, `keep` its scrollback (the
-main screen's). -}
+main screen's). The pages are left as they are but for the newest, which
+are taken back into the ring for as long as the resize wants rows from them
+or a line runs on from them; all of them when the resize would lose cells,
+with autowrap off or in one column, as a reflow when read would not (V10). -}
 resizeScreen : Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
-resizeScreen reflow keep cols rows cursor saved clusters0 s back =
+resizeScreen reflow keep cols rows cursor saved clusters s back =
     let
-        paged =
+        pages =
             if keep then
-                pagedRows clusters0 back
+                pagesOf back
 
             else
-                { rows = [], clusters = clusters0 }
+                []
+
+        count =
+            Array.length pages
+
+        lossy =
+            cols /= s.cols && (not reflow || cols == 1)
+
+        r =
+            pullUntil reflow keep cols rows cursor saved clusters s pages
+                (if lossy then
+                    count
+
+                 else
+                    lineStart pages count 0
+                )
+
+        flow =
+            r.flow
+
+        built =
+            rebuild cols rows flow r.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.fromArray (Array.takeFirst (count - r.taken) pages), head = 0, limit = back.limit }
+
+        c =
+            flow.cursor
+
+        v =
+            flow.saved
+
+        vy =
+            v.row - flow.hist
+    in
+    { screen = built.screen
+    , back = built.back
+    , clusters = r.clusters
+    , cursor = offEdge cols { x = c.x, y = clamp 0 (rows - 1) (c.row - flow.hist), wrap = c.wrap }
+    , saved =
+        if vy >= 0 && vy < rows then
+            offEdge cols { x = v.x, y = vy, wrap = v.wrap }
+
+        else
+            { x = 0, y = 0, wrap = False }
+    }
+
+
+{-| The resize made with the newest `k` pages taken back, and again with
+more while it wants rows they do not hold. -}
+pullUntil : Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Array Page -> Int -> { flow : Flow, clusters : Clusters, taken : Int }
+pullUntil reflow keep cols rows cursor saved clusters s pages k =
+    let
+        count =
+            Array.length pages
+
+        paged =
+            readPages s.cols clusters (Array.dropFirst (count - k) pages)
 
         history =
             paged.rows ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range (0 - s.hist) -1)
@@ -4777,6 +4839,8 @@ resizeScreen reflow keep cols rows cursor saved clusters0 s back =
             , cursor = { row = h0 + cursor.y, x = cursor.x, wrap = cursor.wrap }
             , saved = { row = h0 + saved.y, x = saved.x, wrap = saved.wrap }
             , y0 = cursor.y
+            , more = k < count
+            , short = False
             }
 
         flow =
@@ -4789,30 +4853,32 @@ resizeScreen reflow keep cols rows cursor saved clusters0 s back =
 
             else
                 changeRows keep rows (cutCols s.cols cols flow0)
-
-        built =
-            rebuild cols rows flow paged.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.empty 0, head = 0, limit = back.limit }
-
-        c =
-            flow.cursor
-
-        v =
-            flow.saved
-
-        vy =
-            v.row - flow.hist
     in
-    { screen = built.screen
-    , back = built.back
-    , clusters = paged.clusters
-    , cursor = offEdge cols { x = c.x, y = clamp 0 (rows - 1) (c.row - flow.hist), wrap = c.wrap }
-    , saved =
-        if vy >= 0 && vy < rows then
-            offEdge cols { x = v.x, y = vy, wrap = v.wrap }
+    if flow.short && k < count then
+        pullUntil reflow keep cols rows cursor saved clusters s pages (lineStart pages count (k + 1))
 
-        else
-            { x = 0, y = 0, wrap = False }
-    }
+    else
+        { flow = flow, clusters = paged.clusters, taken = k }
+
+
+{-| At least the newest `k` of the pages, and as many more as the line the
+oldest of them starts in runs on from. -}
+lineStart : Array Page -> Int -> Int -> Int
+lineStart pages count k =
+    if k >= count then
+        count
+
+    else
+        when Array.get (count - k - 1) pages is
+            Just page ->
+                if lastWrapped page then
+                    lineStart pages count (k + 1)
+
+                else
+                    k
+
+            Nothing ->
+                k
 
 
 {-| A cursor waiting to wrap that a resize moved off the right edge goes on
@@ -4835,42 +4901,86 @@ ringRowOf o s =
     { cells = Builder.slice o (o + metaExtent m) s.cells, wrapped = Bitwise.and wrappedBit m /= 0 }
 
 
-{-| The scrollback's pages read back into rows, oldest first. -}
-pagedRows : Clusters -> Back -> { rows : Array Row, clusters : Clusters }
-pagedRows clusters back =
+{-| The scrollback's pages, oldest first. -}
+pagesOf : Back -> Array Page
+pagesOf back =
     let
         count =
             Builder.length back.pages
     in
-    Array.foldl
-        (\i acc ->
-            when Builder.get (modBy (max 1 count) (i + back.head)) back.pages is
-                Just page ->
-                    Array.foldl
-                        (\row a ->
-                            let
-                                cells =
-                                    Array.foldl
-                                        (\c b ->
-                                            let
-                                                k =
-                                                    pagedCell c b.clusters
-                                            in
-                                            { cells = Array.pushLast k.cell b.cells, clusters = k.clusters }
-                                        )
-                                        { cells = [], clusters = a.clusters }
-                                        row.cells
-                            in
-                            { rows = Array.pushLast { cells = cells.cells, wrapped = row.wrapped } a.rows, clusters = cells.clusters }
-                        )
-                        acc
-                        (unpackPage page)
+    Array.mapAndKeepJust (\i -> Builder.get (modBy (max 1 count) (i + back.head)) back.pages) (Array.range 0 (count - 1))
 
-                Nothing ->
-                    acc
+
+{-| Pages read back into rows at `cols` columns, oldest first: each run of
+pages cut at another width reflowed to `cols` (V10). A run ends at the end
+of a line, since a resize takes back a page a line runs on from (`lineStart`). -}
+readPages : Int -> Clusters -> Array Page -> { rows : Array Row, clusters : Clusters }
+readPages cols clusters pages =
+    let
+        done =
+            Array.foldl
+                (\page acc ->
+                    let
+                        one =
+                            pageRowsOf page acc.clusters
+                    in
+                    if page.cols == acc.width then
+                        { acc | group = acc.group ++ one.rows, clusters = one.clusters }
+
+                    else
+                        { rows = acc.rows ++ reflowed acc.width cols acc.group, group = one.rows, width = page.cols, clusters = one.clusters }
+                )
+                { rows = [], group = [], width = cols, clusters = clusters }
+                pages
+    in
+    { rows = done.rows ++ reflowed done.width cols done.group, clusters = done.clusters }
+
+
+pageRowsOf : Page -> Clusters -> { rows : Array Row, clusters : Clusters }
+pageRowsOf page clusters =
+    Array.foldl
+        (\row a ->
+            let
+                cells =
+                    Array.foldl
+                        (\c b ->
+                            let
+                                k =
+                                    pagedCell c b.clusters
+                            in
+                            { cells = Array.pushLast k.cell b.cells, clusters = k.clusters }
+                        )
+                        { cells = [], clusters = a.clusters }
+                        row.cells
+            in
+            { rows = Array.pushLast { cells = cells.cells, wrapped = row.wrapped } a.rows, clusters = cells.clusters }
         )
         { rows = [], clusters = clusters }
-        (Array.range 0 (count - 1))
+        (unpackPage page)
+
+
+{-| Rows cut at `old` columns cut again at `cols`, with no cursor to carry
+and every line kept. -}
+reflowed : Int -> Int -> Array Row -> Array Row
+reflowed old cols rows =
+    if old == cols || Array.isEmpty rows then
+        rows
+
+    else
+        let
+            none =
+                { row = -1, x = 0, wrap = False }
+
+            joined =
+                joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 } }
+        in
+        Array.mapAndFlatten (\line -> (splitLine cols line [] 0).rows) joined.lines
+
+
+{-| Whether a page's last row wrapped, so that its line goes on past it. -}
+lastWrapped : Page -> Bool
+lastWrapped page =
+    Bitwise.and 0x8000 (u16At page.heads (Bytes.length page.heads - 2)) /= 0
 
 
 {-| A cell read back from a page as the ring keeps it; a cluster's code
@@ -4952,7 +5062,11 @@ changeRows keep rows flow =
                 else
                     0
         in
-        { flow | rows = flow.rows ++ Array.repeat (rows - now - pulled) { cells = [], wrapped = False }, hist = flow.hist - pulled }
+        { flow
+            | rows = flow.rows ++ Array.repeat (rows - now - pulled) { cells = [], wrapped = False }
+            , hist = flow.hist - pulled
+            , short = flow.short || (keep && flow.more && flow.hist < rows - now)
+        }
 
     else
         flow
@@ -5033,7 +5147,8 @@ clampPoint cols p =
 
 {-| The rows' lines reflowed from `old` columns to `cols` (§VC14): each
 line, its wrapped rows joined, is cut again at the new width, a wide
-character that does not fit leaving a spacer head. Blank lines at the end
+character that does not fit leaving a spacer head, or in one column an
+empty cell. Blank lines at the end
 are dropped, and the screen is the last rows, as many blank rows added
 below as keep the rows that were below the cursor (Ghostty's
 `resizeCols`). -}
@@ -5111,6 +5226,8 @@ reflowCols old cols flow =
         else
             { row = split.saved.row, x = split.saved.x, wrap = flow.saved.wrap }
     , y0 = flow.y0
+    , more = flow.more
+    , short = flow.short || (flow.more && Array.length split.rows < now)
     }
 
 
@@ -5280,17 +5397,13 @@ splitAt cols line marks first j p row rows found =
             if p >= cols then
                 splitAt cols line marks first j 0 [] (Array.pushLast { cells = row, wrapped = True } rows) found
 
-            else if cellWide c == wideHead && p == cols - 1 then
-                let
-                    spaced =
-                        Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True } rows
-                in
-                if cols == 1 then
-                    -- No column holds it: it goes, its spacer head left.
-                    splitAt cols line marks first (j + 2) 0 [] spaced (markAt marks j (j + 2) (first + Array.length rows) p found)
+            else if cellWide c == wideHead && cols == 1 then
+                -- No column holds it: it is an empty cell in its style, its
+                -- spacer gone, as in Ghostty.
+                splitAt cols line marks first (j + 2) (p + 1) (Array.pushLast (Bitwise.and highMask c) row) rows (markAt marks j (j + 2) (first + Array.length rows) p found)
 
-                else
-                    splitAt cols line marks first j 0 [] spaced found
+            else if cellWide c == wideHead && p == cols - 1 then
+                splitAt cols line marks first j 0 [] (Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True } rows) found
 
             else
                 splitAt cols line marks first (j + 1) (p + 1) (Array.pushLast c row) rows (markAt marks j (j + 1) (first + Array.length rows) p found)
@@ -5447,7 +5560,8 @@ ringRow o t =
     }
 
 
-{-| The scrollback, oldest first: the pages, then the ring's rows. -}
+{-| The scrollback, oldest first: the pages, each read at the screen's width
+(V10), then the ring's rows. -}
 historyRows : Term -> Array DumpRow
 historyRows t =
     if isAlt t then
@@ -5455,14 +5569,17 @@ historyRows t =
 
     else
         let
-            count =
-                Builder.length t.back.pages
-
-            order =
-                Array.map (\i -> modBy (max 1 count) (i + t.back.head)) (Array.range 0 (count - 1))
+            paged =
+                readPages t.cols t.clusters (pagesOf t.back)
 
             pages =
-                Array.mapAndFlatten (\i -> Maybe.withDefault [] (Maybe.map unpackPage (Builder.get i t.back.pages))) order
+                Array.map
+                    (\row ->
+                        { cells = Array.map (\c -> { points = cellPoints c paged.clusters, wide = cellWide c, style = cellStyle c }) row.cells
+                        , wrapped = row.wrapped
+                        }
+                    )
+                    paged.rows
 
             ring =
                 Array.map (\y -> ringRow (phys t.screen y * t.screen.stride) t) (Array.range (0 - t.screen.hist) -1)
