@@ -1047,4 +1047,6 @@ dropped as text that is not UTF-8.
 The core after it: 188 replay cases on both sides, esctest 386, and §VC7's
 thirteen inputs level, warm, at instructions within 1.4% of §VC7's exit
 table (`cup` 1,581 M from 1,603, `vte-scrolling` 1,393 from 1,390) and
-every time under the budget.
+every time under the budget. The fuzzer, twenty minutes on eight jobs at
+65109b5 (1,490 s with loading its corpus, now 59,905 inputs), ran 482,256
+inputs to coverage 4,887 edges from 4,872, and found nothing.
