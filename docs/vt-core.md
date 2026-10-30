@@ -1602,7 +1602,8 @@ The mask has to be written as a literal, `0x3E00000`: written as
 `Bitwise.or 0xE00000 (Bitwise.or bgBit protectBit)` it is a top-level value
 the program computes on first use, and each read of it in the loop cost
 about 17 instructions, 331 M on `gitlog` (geng-lang `m4-visiterm.md`
-§VA54).
+§VA54). geng-lang D1023 (§VA55) has the inliner fold it into the literal,
+and the core writes the `Bitwise.or` again, at the literal's instructions.
 
 Instructions, millions, one run, and times, warm, five runs, ms, against
 `744bb0f`; every input's dump is the same:
