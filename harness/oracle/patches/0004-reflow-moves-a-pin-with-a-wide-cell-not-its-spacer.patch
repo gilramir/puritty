@@ -1,0 +1,22 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -1781,8 +1789,16 @@ const ReflowCursor = struct {
+                 }
+             }
+ 
+-            // Move any tracked pins from the source.
+-            if (row_has_pins) {
++            // Move any tracked pins from the source. Not onto a spacer
++            // head: a wide cell that does not fit writes one here and is
++            // repeated on the next row, where its pins are moved with it,
++            // as they are not once moved here (visiterm
++            // harness/oracle/patches).
++            const spacer_head = cells[x].wide == .wide and
++                self.page.size.cols > 1 and
++                self.x == self.page.size.cols - 1 and
++                !self.pending_wrap;
++            if (row_has_pins and !spacer_head) {
+                 const pin_keys = list.tracked_pins.keys();
+                 for (pin_keys) |p| {
+                     if (p.node != row.node or

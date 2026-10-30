@@ -7,7 +7,8 @@
  * scrollback; libghostty-vt keeps at least as many, a page more at most, so
  * while the core's history is under LIMIT the two must be the same, and
  * once it reaches it only the screen, the cursor and the replies are
- * compared. */
+ * compared. When it reached it before a resize, which the core's dump says
+ * with a last line `pruned`, only the size and the replies are. */
 #include "../oracle/gdump.h"
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +60,24 @@ static size_t drop_history(char *d, size_t n) {
   return o;
 }
 
+/* The dump with only its `screen` line and its replies, in place: once the
+scrollback reached LIMIT before a resize, a line that runs on from it was
+pruned at another point in each, and a reflow cuts its rows differently. */
+static size_t only_replies(char *d, size_t n) {
+  size_t o = 0;
+  for (size_t i = 0; i < n;) {
+    size_t e = i;
+    while (e < n && d[e] != '\n') e++;
+    if (e < n) e++;
+    if (strncmp(d + i, "screen ", 7) == 0 || strncmp(d + i, "reply ", 6) == 0) {
+      memmove(d + o, d + i, e - i);
+      o += e - i;
+    }
+    i = e;
+  }
+  return o;
+}
+
 static size_t history_of(const char *d, size_t n) {
   const char *h = memmem(d, n, "\nhistory ", 9);
   return h ? strtoul(h + 9, NULL, 10) : 0;
@@ -81,7 +100,15 @@ static int differs(int cols, int rows, const uint8_t *data, size_t n,
   free(fed);
   free(rs);
   if (!*ghostty) return 1;
-  if (history_of(core, *core_len) >= LIMIT) {
+  /* `pruned`: the core's scrollback may have reached LIMIT before a resize,
+   * which can bring it back under with rows the two pruned differently and
+   * reflow a line that runs on from them differently (Fuzz.dump,
+   * docs/vt-core.md §VC17). */
+  int pruned = *core_len >= 7 && memcmp(core + *core_len - 7, "pruned\n", 7) == 0;
+  if (pruned) {
+    *core_len = only_replies(core, *core_len - 7);
+    *ghostty_len = only_replies(*ghostty, *ghostty_len);
+  } else if (history_of(core, *core_len) >= LIMIT) {
     *core_len = drop_history(core, *core_len);
     *ghostty_len = drop_history(*ghostty, *ghostty_len);
   }

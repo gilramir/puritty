@@ -4,7 +4,10 @@
 
 **Found against:** `d8619f1bc` (libghostty-vt, `tip` of 2026-10-18), and
 reproduced against v1.4.0 (`83fb95624`); the code is the same on `main` at
-`cf0ab14ae` (2026-10-30).
+`cf0ab14ae` (2026-10-30). The oracle carries the fix below as
+`harness/oracle/patches/0001-reflow-a-blank-continuation-ends-its-line.patch`
+(`vt-core.md` §VC17), so `resize-blank-continuation` and
+`resize-pages-one-column` no longer diverge.
 
 ## Summary
 

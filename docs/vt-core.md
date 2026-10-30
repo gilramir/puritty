@@ -20,12 +20,12 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 |---|---|---|
 | the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; `Vt.Width`, generated |
 | the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK [RESIZES]]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, resized where `RESIZES` says (§VC14), and prints §VC3 |
-| the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored v1.4.0 (`83fb95624`; `d8619f1bc` before §VC15), through its C API |
+| the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored v1.4.0 (`83fb95624`; `d8619f1bc` before §VC15) with `patches/` applied (V12, §VC17), through its C API; `widths`, its width table (V13) |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
-| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16, §VC17 |
 
 `Vt`'s interface, as it stands:
 
@@ -35,6 +35,7 @@ feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
 takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
 resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
 dump : Term -> String                      -- §VC3
+historyBound : Term -> Int                 -- for the differential fuzzer, §VC17
 ```
 
 `feed` is the whole of what happens to a terminal: no clock, no file, no
@@ -44,8 +45,8 @@ XTVERSION) waits in the term until `takeReplies` takes it.
 What it handles today: printing with deferred wrap, the wrapped flag, wide
 characters (a spacer after one, a spacer head where one did not fit at the
 row's end, half of one overwritten), marks joined to the cell before as a
-grapheme cluster, insert mode, autowrap off, DEC special graphics through
-G0/G1 and SO/SI; C0 controls; CUU to CBT, CUP/HVP with origin mode, HPA, HPR,
+grapheme cluster, insert mode, autowrap off, DEC special graphics and the
+British set through G0 to G3, SO/SI, LS2/LS3 and SS2/SS3 (§VC17); C0 controls; CUU to CBT, CUP/HVP with origin mode, HPA, HPR,
 VPA, VPR, CNL, CPL; ED 0–3, EL, ECH, ICH, DCH, IL, DL, SU, SD, IND, NEL, RI,
 DECSTBM, REP, DECALN, tab stops (HTS, TBC, CHT, CBT); SGR with every
 attribute Ghostty keeps, 256 and RGB colours with either separator, the
@@ -171,10 +172,11 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**207 cases, every one passing on both sides, two divergent** (2026-10-30;
+**246 cases, every one passing on both sides, none divergent** (2026-10-30;
 98 when the core was begun, nine more with §VC10, two with §VC11, eight with
-§VC12, eight with §VC13, fifty-nine with §VC14, the two divergent among
-them, four with §VC15 and nineteen with §VC16).
+§VC12, eight with §VC13, fifty-nine with §VC14, two divergent among them
+until the oracle was patched (V12), four with §VC15, nineteen with §VC16
+and thirty-nine with §VC17).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -214,7 +216,8 @@ code point so far and the range its next byte must fall in.
   a separator ends one, and the last is kept only if a digit came after
   the last separator, so `CSI m` has none and `CSI 3 ; m` one; a colon
   outside SGR makes the sequence ignored, and each command takes only as
-  many parameters as Ghostty's.
+  many parameters as Ghostty's. A second intermediate makes a sequence no
+  command takes (§VC17).
 - **An 8-bit C1 control works outside the ground state** (`c1`, §VC15):
   inside an escape, a CSI, SOS/PM/APC or a DCS's header, 0x9B, 0x9D, 0x90
   and 0x98/0x9E/0x9F start CSI, OSC, DCS and SOS/PM/APC, 0x9C ends what
@@ -417,11 +420,12 @@ the budget. What is below is what is left beside them.
   maximize, and DECCOLM, which resizes to 132 columns. **The fuzzer**
   has run clean for four hours on eight jobs, with resizes (§VC11); its
   differential against libghostty-vt is built and finds differences in
-  its first second (§VC16), which are being fixed.
+  its first second (§VC16), which are being fixed: 492 in three minutes
+  after §VC17's, from 9,751 at first.
 - **X11's colour names** in OSC 4 and 10–19 (`red`, `DarkSlateGray`):
   Ghostty takes several hundred, from its `x11_color.zig`; the core takes
   none and leaves the colour as it was. No esctest test names one. A table
-  generated from Ghostty's, as `Vt.Width` is from Python's, is the way.
+  generated from Ghostty's, as `Vt.Width` is from its widths (V13), is the way.
 - **The palette is only reported.** The core keeps what OSC 4 and 10–12
   set and answers for it, and draws nothing with it; the renderer reads it
   (phase 2).
@@ -437,8 +441,9 @@ the budget. What is below is what is left beside them.
   mode 2027 and the per-pane width model (S§5.3) will use, with the
   previous cell re-opened across reads. VS16, ZWJ sequences and emoji
   modifiers are not joined yet.
-- **Widths** are Python's Unicode 15.0 tables (`vt/gen-width.py`), not the
-  UCD 17.0 `core` pins; `core` carries no UCD files to generate from.
+- **Widths** are libghostty-vt's, UCD 18.0 (V13, `vt/gen-width.py`), not
+  the UCD 17.0 `core` pins; `core` carries no UCD files to generate from,
+  and the oracle's are what the core is held to.
 - **A page cut at another width is reflowed at every read** (V10): one
   read in `dump`, but phase 2's scrollback view, reading a page at a time
   as the view moves, would reflow it each time, and the scrollbar wants the
@@ -952,7 +957,7 @@ one passing on both sides, whole and a byte a read, two of them divergent:
 | the cursor | `cols-cursor-in-wrapped`, `-cursor-past-text`, `-cursor-blank-rows`, `-pending-wrap`, `-pending-wrap-narrow`, `saved-cursor`, `alt-saved-main` |
 | no reflow | `cols-alt-truncates`, `-alt-active`, `alt-wrapped-narrow`, `-wide-cut`, `-widen`, `cols-nowrap-truncates`, `nowrap-history`, `-widen` |
 | what is reset | `cols-tabs`, `-margins-reset` |
-| divergent | `blank-continuation`, `pages-one-column` |
+| divergent, until V12 patched the oracle (§VC17) | `blank-continuation`, `pages-one-column` |
 
 (each named `resize-…`). Ghostty's own were the surprises: a cursor past a
 row's text keeps the blanks before it, so `abc` with the cursor at column 7
@@ -964,7 +969,8 @@ character in one column leaves a spacer head row and is gone
 a reflow drops the wrapped flags, where narrowing keeps them (`alt-widen`,
 `alt-wrapped-narrow`).
 
-**Where the core and Ghostty differ: a line whose last row is blank.**
+**Where the core and Ghostty differed: a line whose last row is blank**
+(until §VC17's V12, which patches the oracle; the two cases pass as any).
 `abcd` wrapped, its second row erased, then `xy` on the next row, widened
 from 4 columns to 8: Ghostty prints `abcdxy` on one row and puts the cursor
 in it; the core prints `abcd` and `xy`. Ghostty's `reflowRow` skips a blank
@@ -1137,7 +1143,8 @@ Ghostty keeps two.
 
 **V11 · A CSI's parameters are Ghostty's.** The count, the colon rule,
 and what each command takes, including that a count of 0 does nothing for
-HPR, VPR, CHT, CBT, IL, DL, DCH, SU and SD, where for the rest 0 is 1.
+HPR, VPR, CHT, CBT, IL, DL, DCH, SU and SD, where for the rest 0 is 1
+(HPR and VPR corrected in §VC17: by 0 they move as CUP does).
 xterm's 0 may be 1 for those too; esctest has no test of it, and with the
 rule the core passes the same 386, so the oracle's answer is taken and
 the fuzzer is not left to stumble over the difference.
@@ -1216,6 +1223,174 @@ Ghostty makes wide; DEC special graphics (`ESC ( 0`) and the locking shifts
 `ESC n` and `ESC o`, which the core does not take; `CSI 4 : m`; a DCS's
 header with a high byte in it; DECRQM for ?66 and ?1048; a combining mark
 with autowrap off; DECSCA's protection with EL; and resizes of the
-alternate screen and with history. The fuzzer is not recorded until they
-are done.
+alternate screen and with history. They are done, in §VC17.
 
+
+## VC17. The differential fuzzer, the second round (V12, V13)
+
+§VC16's second sample of 120 cut-down differences was fixed group by group
+as its first was: Ghostty's code read for each, a case seeded from Ghostty,
+the core brought to it. Then two more three-minute runs, a sample of 120
+from each, the same way. Three minutes found 9,751 differences at §VC16's
+start, 2,647 after its first fixes, 620 after the second sample's and 492
+after the third's; the fourth sample is what is left (below). The replay
+corpus went from 207 cases to 246, **none divergent**: the two that were
+are not, under V12.
+
+**V12 · The oracle is Ghostty with its bugs fixed.** Where Ghostty is wrong
+and the core does not copy it, the vendored Ghostty is fixed, so that the
+differential fuzzer is not left finding the same difference for ever and
+a divergence is not kept as a case. `harness/oracle/patches/` holds the
+fixes, applied by `harness/oracle/build.sh`, which builds the library again
+when the set changes (and `harness/fuzz/build.sh` calls it). Each patch has
+its report in [`upstream/`](upstream/README.md), kept and not filed. Five:
+
+| patch | Ghostty's bug | cases |
+|---|---|---|
+| 0001 | a reflow joins a line to the next after a blank wrap continuation (§VC14's divergence) | `resize-blank-continuation`, `resize-pages-one-column`, no longer divergent |
+| 0002 | widening without a reflow keeps a row's wrapped flag when its page was made at least as wide, and drops it otherwise | `resize-alt-widen-in-capacity` |
+| 0003 | the rows a reflow joins are counted by `wrap_continuation`, which DL and DECALN leave disagreeing with the row above's `wrap` | `resize-dl-continuation`, `resize-decaln-continuation` |
+| 0004 | a reflow moves the cursor onto the spacer head of a wide character that does not fit, not the character | `resize-cursor-wide-respaced` |
+| 0005 | a wide character wrapping over another turns its own new spacer head into an empty cell | `wide-keeps-own-spacer-head` |
+
+DEL, printed by Ghostty (§VC16), is not patched: its fix is in the SIMD
+scan of a printable run as well, and the fuzzer leaves out an input with a
+DEL as before.
+
+**V13 · The widths are the oracle's.** `Vt.Width` is generated from
+libghostty-vt's own table, `ghostty_unicode_codepoint_width`
+(`harness/oracle/widths`; uucode's wcwidth from UCD 18.0), where it was
+Python's `unicodedata` (15.0), so the two lay text out alike by
+construction. 1,552 code points moved: 1,378 that are wide since
+(U+2630's trigrams, U+4DC0's hexagrams, wide since Unicode 16), 124 new
+marks, 41 prepends that take a cell (U+0600), and 9 that were wide and are
+marks (U+302A–U+302D, U+115F). A code point up to 0xFF takes one cell,
+as Ghostty prints it whatever its table says (U+00AD, the soft hyphen).
+`vt/gen-width.py` also writes the Extended_Pictographic ranges, less
+Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
+
+### What the groups were
+
+- **Parsing.** A second intermediate makes a CSI or an escape one no
+  command has (`CSI / * y`, `CSI % " q`, `CSI - ! p`), as none of Ghostty's
+  takes two. A DCS's header skips a control, DEL or high byte, and a colon
+  or a misplaced parameter byte makes it ignored (`dcs-header-bytes`); CAN
+  and SUB end a DCS dispatched, as leaving Ghostty's DCS state unhooks it
+  (`dcs-cancelled`). A high byte in a string that is not UTF-8 stands as
+  0x01, where it stood as `?`, which OSC 4 and 10 read as a query. OSC 4's
+  indexes 256 to 260 are Ghostty's special colours, passed over
+  (`osc-colour-edges`).
+- **Character sets** (`charsets-g0-g3`): G0 to G3, LS2 and LS3 (`ESC n`,
+  `ESC o`), SS2 and SS3 (`ESC N`, `ESC O`, used up by the next character,
+  a mark as well), the British set; a designation Ghostty does not know
+  leaves the slot as it was, and DEC's graphics map `` ` `` to `~`, `_`
+  left as it is. DECSC saves all of it.
+- **SGR 4 with a colon** (`sgr-underline-colon`): `4:` alone does nothing,
+  `4:3:1` skips the group, and a style Ghostty does not know is a single
+  underline.
+- **Modes and reports** (`decrqm-screen-modes`, `decrqm-known-modes`):
+  DECRQM answers from Ghostty's table, `modes.zig`: ?47, ?1047, ?1048 and
+  ?1049 as last set, not as the screen shown; `ESC =` and `ESC >` are ?66;
+  ?8, ?40 and ?2033 known and ?1001 not; ?1007, ?1035 and ?1036 set until
+  changed. The kitty keyboard protocol's flags, a stack of eight a screen,
+  `CSI ? u` answering (`kitty-key-flags`; the core encodes no key with
+  them, phase 2's). CTC (`CSI W`) and DECST8C (`CSI ? 5 W`) set and clear
+  tab stops (`ctc-tabs`).
+- **Editing.** EL 0 and 2 leave the row not wrapping, as Ghostty's
+  `cursorResetWrap` (`el-unwraps`, `ed-unwraps`); RI's scroll unwraps the
+  region as SD does (`ri-unwraps`). The half of a wide character a write
+  or an edit cuts off becomes the erase cell, as Ghostty's `blankCell`,
+  not an empty cell in the old style (`wide-split-blank`). A spacer head is
+  written in the pen, and between margins it is an empty narrow cell
+  (`spacer-head-pen`). Shifting rows between margins empties a wide
+  character a margin cuts, in its style, and a spacer head at the row's end
+  becomes a narrow cell, as `rowWillBeShifted` (`margins-cut-wide-styled`).
+  Writing over a wide character's head in column 0 makes a spacer head at
+  the end of the row above an empty cell, which a reflow keeps
+  (`wide-stale-spacer-head`); `heads` says one has been written, so a
+  screen without one does not pay for the test. DECALN keeps only the
+  pen's colours, and fills in them (`decaln-pen`). HPR and VPR by 0 move as
+  CUP does, to where the cursor is, which ends a pending wrap and in origin
+  mode brings the cursor into the region (`hpr-vpr-zero`): V11 had them do
+  nothing, which held for the rest of its list but not these two.
+- **Marks** (`mark-autowrap-off`, `vs-needs-emoji`): with autowrap off a
+  mark joins the cell before the cursor, the last column too; VS15 and
+  VS16 follow only an Extended_Pictographic code point that is not an
+  Emoji_Modifier_Base (uucode gives a modifier base a grapheme break of its
+  own, so Ghostty's test is false for ✌ and 👍).
+- **The two screens.** Each keeps its own cursor, as Ghostty keeps one a
+  screen: the one not shown is resized with its own, not its saved one
+  (`resize-main-cursor-47`). Each keeps its protection mode
+  (`protect-mode-per-screen`) and its keyboard flags. Leaving ?1047 erases
+  the alternate screen, which ends a pending wrap before the cursor is
+  carried over (`alt-1047-ends-wrap`). Insert mode does not insert again
+  on the row a wide character wraps to (`insert-wide-wraps`).
+- **Resize.** More rows come out of the scrollback only when the cursor
+  was on the last row, as `resizeWithoutReflow` pulls; otherwise blank
+  rows are added below (`resize-rows-grow-no-pull`,
+  `resize-both-grow-no-pull`). The blank rows a shrink takes stop at the
+  saved cursor as at the cursor (`resize-saved-stops-trim`), and a row with
+  no text is blank though its cells are coloured (`resize-trim-bg-rows`).
+  A saved cursor never set is carried as none (`resize-none-saved`). A
+  cursor whose row a shrink of the alternate screen drops goes to the top
+  left, column 0 too (`resize-alt-cursor-dropped`). A wide character in one
+  column is an empty cell in no style, as Ghostty's reflow writes it before
+  it copies a style (`resize-wide-one-column-style`).
+- **An empty cell is Ghostty's `isEmpty`.** A reflow drops a line's
+  trailing empty cells whatever their style, but keeps a cell an erase left
+  in a background colour, which Ghostty keeps as a `bg_color` cell. Every
+  non-zero erase cell carries `bgBit` (0x2000000) to say so, and a page
+  writes such a cell as a 0xFE byte, which UTF-8 never has
+  (`pages-bg-cells`). Reading a page back, a mark after a wide character
+  joined the tail written after the head, and was lost; it joins the head
+  (`pages-wide-mark`), the core's own bug.
+- **The fuzzer's comparison.** It compared the scrollback while the core's
+  history was under 10,000 lines at the end, but a history that reached the
+  limit before a resize, and was pruned at different points in each, can
+  be widened back under it. `Fuzz.dump` now checks `Vt.historyBound` (the
+  ring's rows, and each page's times as many rows as one can become at the
+  width) before each resize and at the end, and says `pruned`; then
+  `diff.h` compares only the size and the replies, since a line that runs on
+  from the pruned rows is cut into rows differently too.
+
+### What it cost
+
+Instructions, millions, one run, against `8a0e706`, and times, warm, five
+runs, ms (§VC7):
+
+| input | budget | ms | ms at `8a0e706` | instr. | at `8a0e706` |
+|---|---:|---:|---:|---:|---:|
+| `cup` | 56 | 50–51 | 50–52 | 1,617 | 1,595 |
+| `gitlog` | 132 | 103–106 | 102–106 | 3,384 | 3,342 |
+| `ls` | 124 | 84–86 | 83–86 | 3,075 | 3,043 |
+| vte-cursor_motion | 28 | 24–25 | 23–24 | 841 | 830 |
+| vte-dense_cells | 28 | 19–21 | 20–21 | 750 | 745 |
+| vte-light_cells | 24 | 9–10 | 8–9 | 335 | 342 |
+| vte-scrolling | 42 | 38–40 | 39–40 | 1,451 | 1,393 |
+| vte-scrolling_bottom_region | 37 | 23–24 | 24–25 | 997 | 934 |
+| vte-scrolling_fullscreen | 45 | 26–31 | 26–27 | 977 | 968 |
+| vte-scrolling_top_region | 223 | 23–24 | 23–24 | 997 | 934 |
+| vte-unicode | 25 | 14–15 | 14–16 | 545 | 527 |
+
+The times are the same. The first build was 7% over on `vte-scrolling`:
+`printAscii` wrote `asciiRow`'s call twice, so clang stopped inlining it
+(§VC10's lesson again), and the stale spacer head's test read the row at
+every line's start, 24 instructions a line; one call, and the test only
+once `heads` is set, took 96 M of the 154. Of what is left, the erase
+cell's parameter to `asciiRow` is 8 M and the page's 0xFE byte 5 M; the
+rest, 4% on the scrolling inputs, is not in any function on their path
+(each change undone in turn, the `Term`'s new fields too, moved nothing)
+and was not found.
+
+esctest2 is at 386 as before, Ghostty at 388 with the patches.
+
+### What is left
+
+The fourth sample, from 492 differences in three minutes, 118 of 120 still
+differing: DECRQM for ?2, ?24, ?46 and ?104; `CSI 19 t`, `CSI 22 J`,
+`CSI > q` and `CSI = + c`; OSC 4 with an index written `+4`, and OSC 112
+then a query; SGR `CSI : ; 1 m`; SPA with the alternate screen and an
+erase in a background colour; a wide character at the last column with
+RI, IL, DL or SD and a resize; a wide character in one column, styled,
+widened; and DECCOLM with ?40. The fuzzer is not recorded until they are
+done.

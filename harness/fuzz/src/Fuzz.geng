@@ -32,7 +32,15 @@ dump cols rows chunk scrollback input =
             else
                 chunk
     in
-    Vt.dump (run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollback = scrollback, checksums = True }))
+    let
+        done =
+            run scrollback input step (marks input 0 []) 0 False (Vt.new { cols = cols, rows = rows, scrollback = scrollback, checksums = True })
+    in
+    if done.full || Vt.historyBound done.term >= scrollback then
+        Vt.dump done.term ++ "pruned\n"
+
+    else
+        Vt.dump done.term
 
 
 colsTable : Array Int
@@ -73,21 +81,29 @@ marks bytes i found =
         marks bytes (i + 1) found
 
 
-run : Bytes -> Int -> Array Int -> Int -> (moved t : Vt.Term) -> Vt.Term
-run bytes chunk resizes at t =
+{-| The input fed, and whether the scrollback may have reached `limit`
+before a resize (`full`), which a widening could bring back under it with
+rows the core and Ghostty pruned differently: then the dump says `pruned`
+and `diff.h` leaves the scrollback out (§VC17). -}
+run : Int -> Bytes -> Int -> Array Int -> Int -> Bool -> (moved t : Vt.Term) -> { term : Vt.Term, full : Bool }
+run limit bytes chunk resizes at full t =
     let
         next =
             Maybe.withDefault (Bytes.length bytes) (Array.first resizes)
     in
     if at >= Bytes.length bytes then
-        t
+        { term = t, full = full }
 
     else if at == next then
-        run bytes chunk (Array.dropFirst 1 resizes) (at + 3) (Vt.resize (pick colsTable (byteAt bytes (at + 1))) (pick rowsTable (byteAt bytes (at + 2))) t)
+        let
+            reached =
+                full || Vt.historyBound t >= limit
+        in
+        run limit bytes chunk (Array.dropFirst 1 resizes) (at + 3) reached (Vt.resize (pick colsTable (byteAt bytes (at + 1))) (pick rowsTable (byteAt bytes (at + 2))) t)
 
     else
         let
             stop =
                 min next (at + chunk)
         in
-        run bytes chunk resizes stop (Vt.feed (Bytes.slice at stop bytes) t)
+        run limit bytes chunk resizes stop full (Vt.feed (Bytes.slice at stop bytes) t)
