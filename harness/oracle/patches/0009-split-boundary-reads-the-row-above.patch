@@ -1,0 +1,18 @@
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -2058,7 +2058,14 @@
+     //
+     // First cell may be a wrapped wide cell with a spacer
+     // head on the previous row that needs to be cleared.
+-    if ((x == 0 or x == 1) and self.cursor.page_row.wrap_continuation) {
++    // The row continues the one above when that one wraps, the test the
++    // reflow joins rows by: DL and IL leave a row that wraps above one that
++    // is not marked a continuation (visiterm harness/oracle/patches).
++    const continues = continues: {
++        const above = self.cursor.page_pin.up(1) orelse break :continues false;
++        break :continues above.rowAndCell().row.wrap;
++    };
++    if ((x == 0 or x == 1) and continues) {
+         const cells = self.cursor.page_pin.cells(.all);
+ 
+         // If the first cell in a row is wide the previous row

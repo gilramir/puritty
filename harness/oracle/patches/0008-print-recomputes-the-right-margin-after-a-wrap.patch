@@ -1,0 +1,57 @@
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -1302,11 +1302,9 @@
+         break :charset state.charsets.get(key);
+     };
+ 
+-    // Our right margin depends where our cursor is now.
+-    const right_limit = if (self.screens.active.cursor.x > self.scrolling_region.right)
+-        self.cols
+-    else
+-        self.scrolling_region.right + 1;
++    // Our right margin depends where our cursor is now, and again after
++    // each wrap, which can take it from outside the margins to inside them.
++    var right_limit = self.rightLimit();
+ 
+     // Perform grapheme clustering if grapheme support is enabled (mode 2027).
+     // This is MUCH slower than the normal path so the conditional below is
+@@ -1414,6 +1412,7 @@
+ 
+                         self.writeCell(0, if (row_wrap) .spacer_head else .narrow);
+                         try self.printWrap();
++                        right_limit = self.rightLimit();
+                         self.writeCell(prev_cp, .wide);
+                         if (prev_grapheme.len > 0) {
+                             try self.screens.active.setGraphemes(
+@@ -1565,6 +1564,7 @@
+     if (self.screens.active.cursor.pending_wrap) {
+         if (self.modes.get(.wraparound)) {
+             try self.printWrap();
++            right_limit = self.rightLimit();
+         } else {
+             // Match xterm's consumption of a pending wrap.
+             self.screens.active.cursor.pending_wrap = false;
+@@ -1615,6 +1615,7 @@
+                     self.writeCell(0, .narrow);
+                 }
+                 try self.printWrap();
++                right_limit = self.rightLimit();
+             }
+ 
+             self.screens.active.cursorMarkDirty();
+@@ -1642,6 +1643,15 @@
+     self.screens.active.cursorRight(1);
+ }
+ 
++/// The column print stops at: the right margin when the cursor is at or
++/// left of it, the screen's edge when it is past it.
++fn rightLimit(self: *const Terminal) usize {
++    return if (self.screens.active.cursor.x > self.scrolling_region.right)
++        self.cols
++    else
++        self.scrolling_region.right + 1;
++}
++
+ /// Prints the character unmapped_c into the cell under the cursor, mapped
+ /// through set, the charset print chose for it. Spacers and cells that
+ /// already hold a mapped character are written with writeCell instead.

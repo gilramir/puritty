@@ -25,12 +25,12 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
-| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16, §VC17, §VC18, §VC19 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 to §VC20 |
 
 `Vt`'s interface, as it stands:
 
 ```gren
-new : Config -> Term                       -- { cols, rows, scrollback, checksums }
+new : Config -> Term                       -- { cols, rows, scrollback, checksums, cellWidth, cellHeight }
 feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
 takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
 resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
@@ -62,8 +62,9 @@ cursor colours set, queried and reset (OSC 4, 10–19, 104, 110–112); left and
 right margins, ?69 and DECSLRM, for printing, every scroll, IL, DL, ICH,
 DCH, CR, the cursor's moves and reports, tabs and DECRQSS (§VC13); RIS and DECSTR; OSC 0 and 2 (the title);
 DECRQSS for `m`, `r` and ` q`; DSR 5 and 6, DECXCPR, DA1 and DECID, DA2, DA3,
-XTVERSION, XTWINOPS 18 (the size in cells), DECRQCRA when the embedder asks
-for it (V5); the main screen's scrollback in D901's pages (§VC6); resize,
+XTVERSION, XTWINOPS 14, 16, 18 and 19 and mode 2048 (the size in cells, and
+in pixels when the embedder gives a cell's, V15), DECRQCRA and XTCHECKSUM
+when the embedder asks for them (V5, V14); the main screen's scrollback in D901's pages (§VC6); resize,
 the main screen's lines and scrollback reflowed (§VC14).
 
 What it does not handle yet is §VC9.
@@ -920,7 +921,9 @@ has, which only widening does). It takes all of them when it would lose
 cells, which a reflow when read could not repeat: with autowrap off, where
 rows are cut, and in one column, where a wide character is lost. Every
 other page stays as it is, and `readPages` reflows a run of pages cut at
-another width to the screen's when it is read (`dump`, a pull), the same
+another width to the screen's when it is read (`dump`, a pull), or at its
+own width once a resize has changed the width since it was packed
+(`Page.moved`, §VC20), the same
 `joinLines` and `splitLine` a resize uses. A run of pages of one width ends
 at a line's end, since a resize took back the page a line ran on from, so a
 reflow when read cuts each line as the resize would have: reflowing twice
@@ -1634,7 +1637,8 @@ from the seeds on eight jobs: 740,822 inputs, no findings.
 ### What is left
 
 The 27 differences of the last three minutes, cut down (two too long for
-the minimizer's two minutes) and grouped but not yet fixed:
+the minimizer's two minutes) and grouped but not yet fixed (they are, in
+§VC20):
 
 - **The window's size in pixels.** `CSI 14 t` and `CSI 16 t`, and mode
   2048's report of the size, answer in pixels, which the oracle's callback
@@ -1649,3 +1653,95 @@ the minimizer's two minutes) and grouped but not yet fixed:
   with left and right margins (2), **DL and DCH over a wide character** (1),
   **OSC 104 with an index past 255** (2), **the saved cursor after three
   resizes** (1), and **an underline one cell short** (1).
+
+---
+
+## VC20. The differential fuzzer, the sixth sample (V15)
+
+§VC19's 27 differences, cut down. Three minutes, eight jobs, now find
+**12** where they found 27 (623,933 inputs). The replay corpus went from
+284 cases to 295, none divergent. Two more Ghostty bugs are patched in the
+oracle (0008, 0009).
+
+### What the groups were
+
+- **The size in pixels**, V15 below (`size-report-pixels`).
+- **The alternate screen's clears are in that screen's own pen.** `?1047l`
+  is Ghostty's ED 2 of the alternate screen before it switches, in the
+  current pen's background (`alt-1047-clear-erase-colour`); `?1049h` is its
+  ED 2 after the switch and before the cursor is copied, so in the pen the
+  alternate screen was left with (`alt-1049-clear-own-pen`). `Term` keeps
+  the hidden screen's erase cell beside its protection (`otherErase`).
+- **OSC 104** names an entry with a palette index or one of the five
+  special colours after it (256 to 260), which the core does not keep;
+  anything else is passed over, and when every parameter is, the whole
+  palette is reset, as with none (`osc104-index-out-of-range`).
+- **Insert mode** inserts only when the character ends before the screen's
+  edge, as Ghostty does; at the edge the core's insert had cut the wide
+  character under the cursor (`insert-at-edge-wide-tail`).
+- **Widening with autowrap off** (no reflow) makes a spacer head at the old
+  last column a plain cell in its style, as Ghostty's `cloneRowFrom` does
+  (`resize-nowrap-spacer-head`).
+- **A wide character that does not fit, written over a wide character in
+  column 0 or 1,** makes a spacer head above a plain cell, as a narrow one
+  written there does (§VC17): the spacer head it writes is a cell like any
+  other to Ghostty's `writeCell` (`wide-edge-unheads-above`).
+- **The saved cursor on a dropped spacer head** goes where the cursor would
+  (§VC18): on the character it was for, or on the new spacer head when that
+  character does not fit (`reflow-saved-dropped-head`).
+- **A page a resize has passed is reflowed at its own width.** V10 left a
+  page cut at the screen's width as it was, on the premise that a reflow
+  does not depend on the widths it went through. It does: Ghostty reflows
+  every row at each resize, and a wrapped row followed by a blank one is a
+  line its blank-continuation rule (patch 0001) ends, so four columns, then
+  three, then four again is not the rows it began with. `Page.moved` is set
+  on every page a width-changing reflow keeps, and `readPages` reflows such
+  a page at its own width too (`scrollback-pages-moved`).
+
+**Patch 0008** ([report](upstream/ghostty-print-right-margin-before-wrap.md)):
+`print` worked out its right limit once, before the wraps in the same call,
+so a wide character that wrapped from past the right margin to the left
+margin kept the screen's edge as its limit. `printSlice`, which works it
+out after each wrap, gives the core's answer; a cell in a style other than
+the default sent the character to `print`.
+
+**Patch 0009** ([report](upstream/ghostty-split-boundary-reads-continuation.md)):
+`splitCellBoundary` cleared the spacer head above a cut wide character only
+when the row was marked a continuation, which DL leaves unmarked under a
+row that still wraps. The patch tests the row above's wrap, as patch 0003
+made the reflow's count do and as the core does throughout.
+
+**V15 · The embedder may give a cell's size in pixels** (`Config.cellWidth`,
+`cellHeight`; 0 is unknown). With it the core answers `CSI 14 t` (`CSI 4 ;
+height ; width t`, the text area), `CSI 16 t` (`CSI 6 ; height ; width t`,
+a cell) and mode 2048's in-band report (`CSI 48 ; rows ; cols ; height ;
+width t`), each with one parameter only, as Ghostty. Mode 2048 reports
+each time it is set and after each resize while it is, the size the same
+or not; DECCOLM's resize does not report. Without a size the three are not
+answered, as Ghostty answers none without its size callback; `CSI 18 t`
+and `19 t` need none. `core-dump`, `core-pty` and the fuzzer give ten by
+twenty, which the oracle's callback and its resizes give; `core-bench`
+gives none.
+
+### What it cost
+
+Instructions within 1 M of §VC19's core with D1023 on all thirteen inputs,
+and every dump the same. `vte-scrolling`'s times, interleaved with that
+build's twice, are 39–41 ms against 38–40 and 38–44: level in instructions,
+a millisecond at the low end. Every other input's times are level.
+
+**esctest2: 392**, as before (Ghostty 388). The self-fuzzer, two minutes
+from the seeds on eight jobs: 741,974 inputs, no findings.
+
+### What is left
+
+The 12 differences of the last three minutes, cut down (eleven written by
+the minimizer) and grouped:
+
+- **REP after a character set changed** (5): Ghostty repeats the character
+  as it was received, through the character set in use when REP comes; the
+  core repeats what it wrote.
+- **OSC 9;12**, ConEmu's mark of a prompt's start, which in Ghostty begins
+  a fresh line (1).
+- **SD, RI and margins before a resize** (3), and **long histories after a
+  resize** (2).

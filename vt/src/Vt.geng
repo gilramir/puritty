@@ -339,19 +339,27 @@ cellPoints c clusters =
 
 {-| `checksums` turns on DECRQCRA's answer (§VC10). It is off unless asked
 for, as Ghostty's is, since a program can checksum the screen a cell at a
-time and so read everything on it, other programs' output among it. -}
+time and so read everything on it, other programs' output among it.
+`cellWidth` and `cellHeight` are a cell's size in pixels, which the reports
+of the size in pixels need (`CSI 14 t`, `CSI 16 t`, mode 2048); 0 is
+unknown, and they are not answered (V15). -}
 type alias Config =
     { cols : Int
     , rows : Int
     , scrollback : Int
     , checksums : Bool
+    , cellWidth : Int
+    , cellHeight : Int
     }
 
 
 {-| A page of scrollback, and the width its rows were cut at: a resize
-leaves a page as it is and its rows are reflowed when read (V10, §VC14). -}
+leaves a page as it is and its rows are reflowed when read (V10, §VC14).
+`moved`: a resize changed the width since it was packed, so its rows are
+reflowed when read even at their own width, as Ghostty's were at each
+resize (§VC20). -}
 type alias Page =
-    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int }
+    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int, moved : Bool }
 
 
 type alias Back =
@@ -533,6 +541,7 @@ type alias Term =
     , keys : Keys
     , otherKeys : Keys
     , otherProtect : Int
+    , otherErase : Int64
     , heads : Bool
     , alt : Bool
     , config : Config
@@ -642,6 +651,8 @@ new config0 =
             , rows = clamp 1 1000 config0.rows
             , scrollback = max 0 config0.scrollback
             , checksums = config0.checksums
+            , cellWidth = max 0 config0.cellWidth
+            , cellHeight = max 0 config0.cellHeight
             }
     in
     withScroll (fresh config)
@@ -659,6 +670,7 @@ fresh config =
     , keys = noKeys
     , otherKeys = noKeys
     , otherProtect = 0
+    , otherErase = 0
     , heads = False
     , alt = False
     , config = config
@@ -1087,6 +1099,7 @@ pageOut clusters s back =
             , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
             , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
             , cols = s.cols
+            , moved = False
             }
     in
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
@@ -1745,9 +1758,11 @@ printPoint cp w t0 =
                 edge =
                     rightEdge t
 
-                -- 0 no insert, 1 between margins, 2 the whole row
+                -- 0 no insert, 1 between margins, 2 the whole row; none
+                -- where the character reaches the screen's edge, as
+                -- Ghostty inserts only before it (§VC20)
                 inserting =
-                    if not t.insert then
+                    if not t.insert || t.x + wc >= t.cols then
                         0
 
                     else if margined t then
@@ -1829,8 +1844,17 @@ edgeWide cp w t =
             o =
                 rowOffset s t.y
 
+            -- a wide character under the cursor in column 0 or 1 written
+            -- over: a spacer head above loses its meaning, as in Ghostty's
+            -- `writeCell` (§VC20)
+            under =
+                cellWide (peekCell o t.x s)
+
+            stale =
+                t.heads && t.x <= 1 && t.y > 0 && (under == wideHead || under == wideTail)
+
             headed =
-                { t | screen = { s | cells = extendTo o t.cols (t.x + 1) (Builder.set (o + t.x) head (reachAt o (extentAt o s) t.x (splitWide t.erase o t.x (t.x + 1) (extentAt o s) s.cells))) }, heads = True }
+                { t | screen = unheadIf stale t.y { s | cells = extendTo o t.cols (t.x + 1) (Builder.set (o + t.x) head (reachAt o (extentAt o s) t.x (splitWide t.erase o t.x (t.x + 1) (extentAt o s) s.cells))) }, heads = True }
 
             inserting =
                 headed.insert
@@ -2707,12 +2731,16 @@ withAnswers answers t =
         reply answers t
 
 
-{-| OSC 104: the palette entries named set back, or every one. -}
+{-| OSC 104: the palette entries named set back, or every one when none is
+named. As in Ghostty, a name counts when it is a palette index or one of
+the five special colours after it (256 to 260), which the core does not
+keep; any other is passed over, and if every one is, the whole palette is
+set back (§VC20). -}
 resetPalette : Array String -> (moved t : Term) -> Term
 resetPalette words t =
     let
         named =
-            Array.mapAndKeepJust digits (Array.keepIf (\w -> w /= "") words)
+            Array.keepIf (\i -> i <= 260) (Array.mapAndKeepJust digits (Array.keepIf (\w -> w /= "") words))
     in
     if Array.isEmpty named then
         { t | colours = Dict.keepIf (\k _ -> k > 255) t.colours }
@@ -3621,6 +3649,12 @@ dispatchRare final params t =
         -- 19, the screen's size, is the text area's as in Ghostty and VTE
         reply ("\u{001B}[" ++ String.fromInt (param 0 0 params - 10) ++ ";" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ "t") t
 
+    else if final == 0x74 && Array.length params == 1 && param 0 0 params == 14 && pixelsKnown t then
+        reply ("\u{001B}[4;" ++ String.fromInt (t.rows * t.config.cellHeight) ++ ";" ++ String.fromInt (t.cols * t.config.cellWidth) ++ "t") t
+
+    else if final == 0x74 && Array.length params == 1 && param 0 0 params == 16 && pixelsKnown t then
+        reply ("\u{001B}[6;" ++ String.fromInt t.config.cellHeight ++ ";" ++ String.fromInt t.config.cellWidth ++ "t") t
+
     else if final == 0x73 then
         -- CSI s is SCOSC, or with left and right margins on (?69) DECSLRM;
         -- with parameters it is DECSLRM, which does nothing with them off
@@ -4193,6 +4227,19 @@ setPrivate p on t =
     else if p == 3 then
         deccolm on t
 
+    else if p == 2048 then
+        -- in-band size reports: one at once each time it is set, and after
+        -- each resize while it is (V15)
+        let
+            set =
+                { t | modes = Dict.set p on t.modes }
+        in
+        if on then
+            sizeReport set
+
+        else
+            set
+
     else if p == 69 then
         if on then
             { t | modes = Dict.set 69 True t.modes }
@@ -4225,7 +4272,7 @@ deccolm on t =
             rows =
                 t.rows
         in
-        cursorTo 0 0 (eraseDisplay False 2 (resize cols rows { t | modes = Dict.set 3 on t.modes }))
+        cursorTo 0 0 (eraseDisplay False 2 (resizeQuiet cols rows { t | modes = Dict.set 3 on t.modes }))
 
 
 screenMode : Int -> Bool -> (moved t : Term) -> Term
@@ -4405,7 +4452,7 @@ toAlt : Bool -> (moved t : Term) -> Term
 toAlt clear t =
     if isAlt t then
         if clear then
-            { t | screen = clearAlt t.protectMode t.rows t.screen }
+            { t | screen = clearAlt t.protectMode t.rows t.erase t.screen }
 
         else
             t
@@ -4419,7 +4466,9 @@ toAlt clear t =
                 when t.other is
                     Just kept ->
                         if clear then
-                            clearAlt t.otherProtect t.rows kept
+                            -- in its own pen, as it was left: Ghostty
+                            -- erases before it copies the cursor (§VC20)
+                            clearAlt t.otherProtect t.rows t.otherErase kept
 
                         else
                             kept
@@ -4427,18 +4476,19 @@ toAlt clear t =
                     Nothing ->
                         newScreen t.cols t.rows (t.rows + 1)
         in
-        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode }
+        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase }
 
 
 {-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
-kept when its protection was last ISO's, SPA's (§VC18). -}
-clearAlt : Int -> Int -> (moved s : Screen) -> Screen
-clearAlt mode rows s =
+kept when its protection was last ISO's, SPA's (§VC18), and in `fill`, the
+erase cell of the screen's own pen (§VC20). -}
+clearAlt : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+clearAlt mode rows fill s =
     if mode == 1 then
-        blankUnprotected 0 rows 0 s
+        blankUnprotected 0 rows fill s
 
     else
-        blankRows 0 rows 0 s
+        blankRows 0 rows fill s
 
 
 isAlt : Term -> Bool
@@ -4459,7 +4509,7 @@ toMain clear t =
                 let
                     alt =
                         if clear then
-                            clearAlt t.protectMode t.rows t.screen
+                            clearAlt t.protectMode t.rows t.erase t.screen
 
                         else
                             t.screen
@@ -4467,7 +4517,7 @@ toMain clear t =
                 -- cleared, the alternate screen is erased as ED 2 does,
                 -- which ends a pending wrap before the cursor is carried
                 -- over, as in Ghostty (§VC17)
-                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, wrapNext = t.wrapNext && not clear }
+                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, wrapNext = t.wrapNext && not clear }
 
             Nothing ->
                 t
@@ -5812,9 +5862,40 @@ Ghostty's rules (§VC14, V8). The main screen's lines reflow to the new
 width, its scrollback with them, unless autowrap is off; the alternate
 screen's rows are cut or extended and never reflow. The cursor and the saved cursors move
 with the cells they are on. The scroll region and the margins are reset,
-and the tab stops when the width changes. -}
+and the tab stops when the width changes. With mode 2048 set the new size
+is reported, as Ghostty reports it even when the size is the same (V15). -}
 resize : Int -> Int -> (moved t : Term) -> Term
-resize cols0 rows0 t =
+resize cols rows t =
+    let
+        r =
+            resizeQuiet cols rows t
+    in
+    if Dict.get 2048 r.modes == Just True then
+        sizeReport r
+
+    else
+        r
+
+
+{-| Mode 2048's report: `CSI 48 ; rows ; cols ; height ; width t`, the last
+two in pixels, when a cell's size is known. -}
+sizeReport : (moved t : Term) -> Term
+sizeReport t =
+    if pixelsKnown t then
+        reply ("\u{001B}[48;" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ ";" ++ String.fromInt (t.rows * t.config.cellHeight) ++ ";" ++ String.fromInt (t.cols * t.config.cellWidth) ++ "t") t
+
+    else
+        t
+
+
+pixelsKnown : Term -> Bool
+pixelsKnown t =
+    t.config.cellWidth > 0 && t.config.cellHeight > 0
+
+
+{-| `resize` without mode 2048's report, as DECCOLM resizes. -}
+resizeQuiet : Int -> Int -> (moved t : Term) -> Term
+resizeQuiet cols0 rows0 t =
     let
         cols =
             clamp 1 1000 cols0
@@ -6016,7 +6097,7 @@ resizeScreen reflow keep cols rows cursor saved clusters s back =
             r.flow
 
         built =
-            rebuild cols rows flow r.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.fromArray (Array.takeFirst (count - r.taken) pages), head = 0, limit = back.limit }
+            rebuild cols rows flow r.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.fromArray (moveAll (reflow && cols /= s.cols) (Array.takeFirst (count - r.taken) pages)), head = 0, limit = back.limit }
 
         c =
             flow.cursor
@@ -6162,16 +6243,26 @@ readPages cols clusters pages =
                         one =
                             pageRowsOf page acc.clusters
                     in
-                    if page.cols == acc.width then
+                    if page.cols == acc.width && page.moved == acc.moved then
                         { acc | group = acc.group ++ one.rows, clusters = one.clusters }
 
                     else
-                        { rows = acc.rows ++ reflowed acc.width cols acc.group, group = one.rows, width = page.cols, clusters = one.clusters }
+                        { rows = acc.rows ++ reflowed acc.moved acc.width cols acc.group, group = one.rows, width = page.cols, moved = page.moved, clusters = one.clusters }
                 )
-                { rows = [], group = [], width = cols, clusters = clusters }
+                { rows = [], group = [], width = cols, moved = False, clusters = clusters }
                 pages
     in
-    { rows = done.rows ++ reflowed done.width cols done.group, clusters = done.clusters }
+    { rows = done.rows ++ reflowed done.moved done.width cols done.group, clusters = done.clusters }
+
+
+{-| Every page marked `moved` when `yes`. -}
+moveAll : Bool -> Array Page -> Array Page
+moveAll yes pages =
+    if yes then
+        Array.map (\p -> { p | moved = True }) pages
+
+    else
+        pages
 
 
 pageRowsOf : Page -> Clusters -> { rows : Array Row, clusters : Clusters }
@@ -6198,10 +6289,11 @@ pageRowsOf page clusters =
 
 
 {-| Rows cut at `old` columns cut again at `cols`, with no cursor to carry
-and every line kept. -}
-reflowed : Int -> Int -> Array Row -> Array Row
-reflowed old cols rows =
-    if old == cols || Array.isEmpty rows then
+and every line kept; at the same width too when `moved`, which a resize in
+between would have reflowed (§VC20). -}
+reflowed : Bool -> Int -> Int -> Array Row -> Array Row
+reflowed moved old cols rows =
+    if (old == cols && not moved) || Array.isEmpty rows then
         rows
 
     else
@@ -6364,10 +6456,26 @@ cutCols old cols flow =
         }
 
     else if cols > old then
-        { flow | rows = Array.map (\row -> { row | wrapped = False }) flow.rows }
+        -- a spacer head at the old edge is a plain cell in its style now,
+        -- as Ghostty's `cloneRowFrom` makes it (§VC20)
+        { flow | rows = Array.map (\row -> { row | wrapped = False, cells = unheadAt (old - 1) row.cells }) flow.rows }
 
     else
         flow
+
+
+unheadAt : Int -> Array Int64 -> Array Int64
+unheadAt x cells =
+    when Array.get x cells is
+        Just c ->
+            if cellWide c == spacerHead then
+                Array.set x (Bitwise.and (Bitwise.complement 0x600000) c) cells
+
+            else
+                cells
+
+        Nothing ->
+            cells
 
 
 cutRow : Int -> Array Int64 -> Array Int64
@@ -6571,6 +6679,10 @@ joinLines old cols flow i j =
                         -- character moved down counted (§VC18)
                         base + min flow.saved.x (cols - 1 - endColumn cols j.line 0 0)
 
+                    else if row.wrapped then
+                        -- on a dropped spacer head, as the cursor (§VC20)
+                        base + min flow.saved.x (max 0 (old - 1))
+
                     else
                         base + min flow.saved.x (max 0 (len - 1))
 
@@ -6591,7 +6703,7 @@ joinLines old cols flow i j =
                 -- head, on the next row's first cell, and adds no blanks
                 need =
                     if row.wrapped then
-                        max len (savedAt - base + 1)
+                        len
 
                     else
                         max len (max (cursorAt - base + 1) (savedAt - base + 1))
@@ -6624,7 +6736,10 @@ joinLines old cols flow i j =
                             else
                                 j.cursor
                         , saved =
-                            if savedAt >= 0 then
+                            if savedAt >= 0 && row.wrapped && flow.saved.x >= len then
+                                { line = li, at = -2 - savedAt }
+
+                            else if savedAt >= 0 then
                                 { line = li, at = savedAt }
 
                             else
