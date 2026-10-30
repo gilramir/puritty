@@ -1557,27 +1557,39 @@ printUnicode bytes n i b t =
         ext =
             extentAt o s
 
-        cells =
-            reachAt o ext t.x (splitWide o t.x (t.x + 1) ext s.cells)
+        -- the cell the run starts on, read before the run writes it: a wide
+        -- character's tail there loses its head, but only once the run has
+        -- written something, since a run that stops at once (a mark, which
+        -- joins the cell before) leaves the row to the general path as it
+        -- was (§VC11's mark on a tail)
+        first =
+            Maybe.withDefault 0 (Builder.get (o + t.x) s.cells)
 
         r =
-            decodeRun bytes n i t.pen o t.cols t.x 0 cells
+            decodeRun bytes n i t.pen o t.cols t.x 0 (reachAt o ext t.x s.cells)
     in
     if r.next == i then
         startUtf8 bytes n i b { t | screen = { s | cells = r.cells } }
 
     else
         let
-            -- a wide character whose head the run overwrote loses its spacer
-            after =
-                Maybe.withDefault 0 (Builder.get (o + r.x) r.cells)
-
-            tidy =
-                if r.x < ext && cellWide after == wideTail then
-                    Builder.set (o + r.x) (Bitwise.and highMask after) r.cells
+            headless =
+                if cellWide first == wideTail && t.x > 0 && t.x < ext then
+                    Builder.set (o + t.x - 1) (Bitwise.and highMask first) r.cells
 
                 else
                     r.cells
+
+            -- a wide character whose head the run overwrote loses its spacer
+            after =
+                Maybe.withDefault 0 (Builder.get (o + r.x) headless)
+
+            tidy =
+                if r.x < ext && cellWide after == wideTail then
+                    Builder.set (o + r.x) (Bitwise.and highMask after) headless
+
+                else
+                    headless
         in
         ground bytes
             n
@@ -3124,8 +3136,11 @@ copySpan src dst left right s0 =
         dO =
             rowOffset s0 dst
 
+        reach =
+            min s0.cols (right + 2)
+
         s =
-            widen dO (widen so s0)
+            widenTo dO reach (widenTo so reach s0)
 
         cut =
             cutAt dO s.cols (right + 1) (cutAt dO s.cols left (cutAt so s.cols (right + 1) (cutAt so s.cols left s.cells)))
@@ -3140,7 +3155,7 @@ clearSpan y left right fill s0 =
             rowOffset s0 y
 
         s =
-            widen o s0
+            widenTo o (min s0.cols (right + 2)) s0
     in
     trim o { s | cells = Builder.fill (o + left) (o + right + 1) fill (cutAt o s.cols (right + 1) (cutAt o s.cols left s.cells)) }
 
@@ -3202,6 +3217,27 @@ widen o s =
             metaAt o s
     in
     { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt s.cols)) (reachAt o (metaExtent m) s.cols s.cells) }
+
+
+{-| The row at `o` with every cell before column `x` explicit, as `widen`
+makes it but only that far. A span between the margins reads its row only to
+the column past the right margin, so it widens that far and not to the row's
+width: a scroll inside narrow margins costs the margins' width a row, not the
+screen's (§VC11's timeout). -}
+widenTo : Int -> Int -> (moved s : Screen) -> Screen
+widenTo o x s =
+    let
+        m =
+            metaAt o s
+
+        e =
+            metaExtent m
+    in
+    if x > e then
+        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt x)) (Builder.fill (o + e) (o + x) 0 s.cells) }
+
+    else
+        s
 
 
 {-| The row at `o`'s extent brought back to its last cell that is not

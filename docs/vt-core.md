@@ -162,14 +162,14 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 124 of 124 cases pass
+./harness/replay.py                  # 125 of 125 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**124 cases, every one passing on both sides, none divergent** (2026-10-29;
-98 when the core was begun, nine more with §VC10, one with §VC11, eight with
+**125 cases, every one passing on both sides, none divergent** (2026-10-29;
+98 when the core was begun, nine more with §VC10, two with §VC11, eight with
 §VC12, eight with §VC13).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
@@ -608,6 +608,55 @@ way, so 19 bytes show it at 6×1, and with autowrap off an ASCII character
 takes `printPoint` too and both reads are wrong. Ghostty leaves the cell
 empty. **Fixed:** `splitWide` takes a spacer only inside the extent
 (`wide-stale-spacer`, which fails without the fix). §VC7's times are level.
+
+**The first long run: two hours, eight jobs** (2026-10-29, at 339e266, the
+row in `corpus/fuzz/runs.tsv`): 1,826,727 inputs, coverage 4,173 edges
+from 3,932, and six findings, five splits and a time limit. `vt-min` cut
+the splits to 41–76 bytes in under a minute each; one fix took all five, and
+an older finding left over from the margins' work.
+
+**A mark on a wide character's tail took the character's head.** At 2×25,
+`中`, a cursor moved onto its spacer (`CSI 3 e`, `CHA`), then U+0301: Ghostty
+joins the mark to `中`; the core dropped the mark and left the spacer
+headless. `printUnicode`, the fast path for UTF-8, cut a wide character the
+cursor stood in before it looked at what it was to write, and a mark makes
+it stop at once and hand the byte to the general path, which found the head
+already gone and nothing to join. Fed whole, the headless spacer was hidden
+until a later run overwrote it in one piece; fed a read at a time, a
+character written onto it alone took the cell before it, a `2` the fuzzer's
+input had written there, and the two dumps differed. **Fixed:**
+`printUnicode` reads the cell it starts on first, and cuts the head only
+once its run has written something (`mark-on-wide-tail`, which fails
+without the fix).
+
+The fix first broke `run-over-wide-tail`, `é` over `中`'s spacer, which the
+reading of the cell before the run was meant to keep: geng-lang's `floatin`
+pass moved the read into the branch that used it, past the run, which writes
+the row in place, and the read saw `é`. A local the inliner made of the
+builder, `$n0 = s.cells`, hid that the read and the write named the same
+buffer. geng-lang fixed the pass (D1021, `m4-visiterm.md` §VA52); nothing
+the core had before read a builder through such a local in a way the pass
+could move.
+
+**A scroll between narrow margins cost the screen's width.** The input that
+took over 10 s was 1,341 bytes: margins of four columns at 132×24 and 18
+REPs of 65,535, the core's cap for one. A margined scroll
+copies each row's span between the margins, and `copySpan` and `clearSpan`
+first made every cell of both rows explicit to the row's width and then
+trimmed back from it, 132 cells twice a row where 4 moved, 24 rows every
+four characters. One such REP took 0.87 s where Ghostty takes under 10 ms.
+**Fixed:** both widen a row only to the column past the right margin, the
+last one a span reads (`widenTo`); the extent a row is trimmed back to is
+the same, since widening further adds only empty cells. The REP takes 0.12
+s, and the input 2.0 s from 13.4, which is 4.7 million repeated cells at
+about 0.4 µs. A REP is still a cell at a time where Ghostty's prints a
+slice; that is left for when a profile asks for it.
+
+The core after these: 125 replay cases on both sides, esctest 384 as
+before, every finding replayed clean, and §VC7's thirteen times at or under
+its table's but `vte-scrolling`'s, 40–43 ms against 39–40 and a budget of 42
+on an idle machine, at the same instructions (1,401 M against 1,405 M):
+the clock's, as §VC7 found of `cup`.
 
 ---
 
