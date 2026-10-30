@@ -1,5 +1,5 @@
 module Vt exposing
-    ( Term, Config, new, feed, takeReplies
+    ( Term, Config, new, feed, takeReplies, resize
     , dump
     )
 
@@ -995,7 +995,7 @@ packCells clusters i stop s text runs style count wrote =
                     Array.foldl pushUtf8 text (cellPoints c clusters)
 
                 else if w == spacerHead then
-                    Builder.pushLast (UInt8.fromInt 0) text
+                    Builder.pushLast (UInt8.fromInt 0xFF) text
 
                 else
                     pushUtf8 (cellPoint c) text
@@ -1015,7 +1015,8 @@ pushU16 v b =
     Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 8 v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) b)
 
 
-{-| A cell's code point as UTF-8; an empty cell is a 0 byte. A value no
+{-| A cell's code point as UTF-8; an empty cell is a 0 byte, a spacer head
+0xFF (`packCells`). A value no
 scalar value is would be U+FFFD, but the decoder never makes one. -}
 pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
 pushUtf8 cp b =
@@ -4593,6 +4594,787 @@ regionDown count top bottom t0 =
         regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> clearRow top t.erase }
 
 
+-- RESIZING
+
+
+{-| The terminal made `cols` by `rows`, as its host resizes it, by
+Ghostty's rules (§VC14, V8). The main screen's lines reflow to the new
+width, its scrollback with them, unless autowrap is off; the alternate
+screen's rows are cut or extended and never reflow. The cursor and the saved cursors move
+with the cells they are on. The scroll region and the margins are reset,
+and the tab stops when the width changes. -}
+resize : Int -> Int -> (moved t : Term) -> Term
+resize cols0 rows0 t =
+    let
+        cols =
+            clamp 1 1000 cols0
+
+        rows =
+            clamp 1 1000 rows0
+    in
+    if cols == t.cols && rows == t.rows then
+        t
+
+    else
+        resizeTo cols rows t
+
+
+resizeTo : Int -> Int -> (moved t : Term) -> Term
+resizeTo cols rows t =
+    let
+        active =
+            settle t.screen
+
+        here =
+            { x = t.x, y = t.y, wrap = t.wrapNext }
+
+        config =
+            t.config
+    in
+    if t.alt then
+        when t.other is
+            Just main0 ->
+                let
+                    main =
+                        settle main0
+
+                    behind =
+                        savedPoint main.saved
+
+                    m =
+                        resizeScreen t.autowrap True cols rows behind behind t.clusters main t.back
+
+                    a =
+                        resizeScreen False False cols rows here (savedPoint active.saved) m.clusters active { pages = Builder.empty 0, head = 0, limit = 0 }
+                in
+                resized cols rows a.cursor
+                    { t
+                        | screen = withSaved a.saved a.screen
+                        , other = Just (withSaved m.saved m.screen)
+                        , back = m.back
+                        , clusters = a.clusters
+                        , config = { config | cols = cols, rows = rows }
+                    }
+
+            Nothing ->
+                { t | screen = active }
+
+    else
+        let
+            m =
+                resizeScreen t.autowrap True cols rows here (savedPoint active.saved) t.clusters active t.back
+        in
+        when t.other is
+            Just alt0 ->
+                let
+                    alt =
+                        settle alt0
+
+                    behind =
+                        savedPoint alt.saved
+
+                    a =
+                        resizeScreen False False cols rows behind behind m.clusters alt { pages = Builder.empty 0, head = 0, limit = 0 }
+                in
+                resized cols rows m.cursor
+                    { t
+                        | screen = withSaved m.saved m.screen
+                        , other = Just (withSaved a.saved a.screen)
+                        , back = m.back
+                        , clusters = a.clusters
+                        , config = { config | cols = cols, rows = rows }
+                    }
+
+            Nothing ->
+                resized cols rows m.cursor
+                    { t
+                        | screen = withSaved m.saved m.screen
+                        , back = m.back
+                        , clusters = m.clusters
+                        , config = { config | cols = cols, rows = rows }
+                    }
+
+
+{-| What follows the size: the cursor, the region and margins, the tabs. -}
+resized : Int -> Int -> { x : Int, y : Int, wrap : Bool } -> (moved t0 : Term) -> Term
+resized cols rows cursor t0 =
+    let
+        t =
+            if cols == t0.cols then
+                t0
+
+            else
+                { t0 | tabs = Builder.fromArray (Array.initialize cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
+    in
+    withScroll
+        { t
+            | cols = cols
+            , rows = rows
+            , x = cursor.x
+            , y = cursor.y
+            , wrapNext = cursor.wrap
+            , top = 0
+            , bottom = rows - 1
+            , left = 0
+            , right = cols - 1
+        }
+
+
+savedPoint : Saved -> { x : Int, y : Int, wrap : Bool }
+savedPoint v =
+    { x = v.x, y = v.y, wrap = v.wrapNext }
+
+
+withSaved : { x : Int, y : Int, wrap : Bool } -> (moved s : Screen) -> Screen
+withSaved p s =
+    let
+        v =
+            s.saved
+    in
+    { s | saved = { v | x = p.x, y = p.y, wrapNext = p.wrap } }
+
+
+{-| A row of a screen or its scrollback out of the ring or a page: its
+cells as the ring keeps them, up to its extent, and whether it wrapped. -}
+type alias Row =
+    { cells : Array Int64, wrapped : Bool }
+
+
+{-| A point carried with its cell through a resize: `row` counts from the
+oldest row of the scrollback. -}
+type alias Point =
+    { row : Int, x : Int, wrap : Bool }
+
+
+{-| The rows a resize works on, the first `hist` of them scrollback, the
+cursor and the saved cursor, and the row the cursor was on before (`y0`),
+which Ghostty keeps the rows below of (§VC14). -}
+type alias Flow =
+    { rows : Array Row, hist : Int, cursor : Point, saved : Point, y0 : Int }
+
+
+{-| One screen resized: `reflow` its lines, `keep` its scrollback (the
+main screen's). -}
+resizeScreen : Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
+resizeScreen reflow keep cols rows cursor saved clusters0 s back =
+    let
+        paged =
+            if keep then
+                pagedRows clusters0 back
+
+            else
+                { rows = [], clusters = clusters0 }
+
+        history =
+            paged.rows ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range (0 - s.hist) -1)
+
+        h0 =
+            Array.length history
+
+        flow0 =
+            { rows = history ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range 0 (s.rows - 1))
+            , hist = h0
+            , cursor = { row = h0 + cursor.y, x = cursor.x, wrap = cursor.wrap }
+            , saved = { row = h0 + saved.y, x = saved.x, wrap = saved.wrap }
+            , y0 = cursor.y
+            }
+
+        flow =
+            if reflow && cols /= s.cols then
+                if cols < s.cols then
+                    reflowCols s.cols cols (changeRows keep rows flow0)
+
+                else
+                    changeRows keep rows (reflowCols s.cols cols flow0)
+
+            else
+                changeRows keep rows (cutCols s.cols cols flow0)
+
+        built =
+            rebuild cols rows flow paged.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.empty 0, head = 0, limit = back.limit }
+
+        c =
+            flow.cursor
+
+        v =
+            flow.saved
+
+        vy =
+            v.row - flow.hist
+    in
+    { screen = built.screen
+    , back = built.back
+    , clusters = paged.clusters
+    , cursor = offEdge cols { x = c.x, y = clamp 0 (rows - 1) (c.row - flow.hist), wrap = c.wrap }
+    , saved =
+        if vy >= 0 && vy < rows then
+            offEdge cols { x = v.x, y = vy, wrap = v.wrap }
+
+        else
+            { x = 0, y = 0, wrap = False }
+    }
+
+
+{-| A cursor waiting to wrap that a resize moved off the right edge goes on
+to the next cell instead, as Ghostty's does. -}
+offEdge : Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool }
+offEdge cols p =
+    if p.wrap && p.x /= cols - 1 then
+        { x = min (cols - 1) (p.x + 1), y = p.y, wrap = False }
+
+    else
+        { x = min (cols - 1) p.x, y = p.y, wrap = p.wrap }
+
+
+ringRowOf : Int -> Screen -> Row
+ringRowOf o s =
+    let
+        m =
+            metaAt o s
+    in
+    { cells = Builder.slice o (o + metaExtent m) s.cells, wrapped = Bitwise.and wrappedBit m /= 0 }
+
+
+{-| The scrollback's pages read back into rows, oldest first. -}
+pagedRows : Clusters -> Back -> { rows : Array Row, clusters : Clusters }
+pagedRows clusters back =
+    let
+        count =
+            Builder.length back.pages
+    in
+    Array.foldl
+        (\i acc ->
+            when Builder.get (modBy (max 1 count) (i + back.head)) back.pages is
+                Just page ->
+                    Array.foldl
+                        (\row a ->
+                            let
+                                cells =
+                                    Array.foldl
+                                        (\c b ->
+                                            let
+                                                k =
+                                                    pagedCell c b.clusters
+                                            in
+                                            { cells = Array.pushLast k.cell b.cells, clusters = k.clusters }
+                                        )
+                                        { cells = [], clusters = a.clusters }
+                                        row.cells
+                            in
+                            { rows = Array.pushLast { cells = cells.cells, wrapped = row.wrapped } a.rows, clusters = cells.clusters }
+                        )
+                        acc
+                        (unpackPage page)
+
+                Nothing ->
+                    acc
+        )
+        { rows = [], clusters = clusters }
+        (Array.range 0 (count - 1))
+
+
+{-| A cell read back from a page as the ring keeps it; a cluster's code
+points are its id again. -}
+pagedCell : { points : Array Int, wide : Int, style : Int } -> Clusters -> { cell : Int64, clusters : Clusters }
+pagedCell c clusters =
+    let
+        high =
+            Bitwise.or (styleBits c.style) (Int64.fromInt c.wide)
+    in
+    when c.points is
+        [] ->
+            { cell = high, clusters = clusters }
+
+        [ p ] ->
+            { cell = Bitwise.or high (Int64.fromInt p), clusters = clusters }
+
+        _ ->
+            when internCluster c.points clusters is
+                Just k ->
+                    { cell = Bitwise.or high (Int64.fromInt (Bitwise.or clusterBit k.id)), clusters = k.clusters }
+
+                Nothing ->
+                    { cell = Bitwise.or high (Int64.fromInt (Maybe.withDefault 0 (Array.first c.points))), clusters = clusters }
+
+
+emptyCell : Int64 -> Bool
+emptyCell c =
+    Bitwise.and (Bitwise.complement protectBit) c == 0
+
+
+blankRow : Row -> Bool
+blankRow row =
+    Array.all emptyCell row.cells
+
+
+{-| The screen's rows made `rows`, no line reflowed. Fewer: blank rows
+below the cursor go first, then rows from the top, into the scrollback when
+`keep`. More: rows come back out of the scrollback, then blank rows below. -}
+changeRows : Bool -> Int -> Flow -> Flow
+changeRows keep rows flow =
+    let
+        total =
+            Array.length flow.rows
+
+        now =
+            total - flow.hist
+    in
+    if rows < now then
+        let
+            blanks =
+                countBlank flow.rows (total - 1) (max flow.hist (flow.cursor.row + 1)) 0
+
+            cut =
+                min blanks (now - rows)
+
+            rest =
+                now - rows - cut
+
+            kept =
+                Array.dropLast cut flow.rows
+        in
+        if keep then
+            { flow | rows = kept, hist = flow.hist + rest }
+
+        else
+            { flow
+                | rows = Array.dropFirst rest kept
+                , cursor = shiftPoint rest flow.cursor
+                , saved = shiftPoint rest flow.saved
+            }
+
+    else if rows > now then
+        let
+            pulled =
+                if keep then
+                    min flow.hist (rows - now)
+
+                else
+                    0
+        in
+        { flow | rows = flow.rows ++ Array.repeat (rows - now - pulled) { cells = [], wrapped = False }, hist = flow.hist - pulled }
+
+    else
+        flow
+
+
+countBlank : Array Row -> Int -> Int -> Int -> Int
+countBlank rows i stop n =
+    if i < stop then
+        n
+
+    else
+        when Array.get i rows is
+            Just row ->
+                if blankRow row then
+                    countBlank rows (i - 1) stop (n + 1)
+
+                else
+                    n
+
+            Nothing ->
+                n
+
+
+shiftPoint : Int -> Point -> Point
+shiftPoint by p =
+    if p.row < by then
+        { row = 0, x = p.x, wrap = p.wrap }
+
+    else
+        { p | row = p.row - by }
+
+
+{-| Every row cut to `cols` or left as it is, no line reflowed: a wide
+character the new edge cuts goes, and a wider row no longer wraps, as in
+Ghostty. -}
+cutCols : Int -> Int -> Flow -> Flow
+cutCols old cols flow =
+    if cols < old then
+        { flow
+            | rows = Array.map (\row -> { row | cells = cutRow cols row.cells }) flow.rows
+            , cursor = clampPoint cols flow.cursor
+            , saved = clampPoint cols flow.saved
+        }
+
+    else if cols > old then
+        { flow | rows = Array.map (\row -> { row | wrapped = False }) flow.rows }
+
+    else
+        flow
+
+
+cutRow : Int -> Array Int64 -> Array Int64
+cutRow cols cells =
+    if Array.length cells <= cols then
+        cells
+
+    else
+        let
+            kept =
+                Array.takeFirst cols cells
+        in
+        when Array.last kept is
+            Just c ->
+                if cellWide c == wideHead then
+                    Array.set (cols - 1) 0 kept
+
+                else
+                    kept
+
+            Nothing ->
+                kept
+
+
+clampPoint : Int -> Point -> Point
+clampPoint cols p =
+    { p | x = min (cols - 1) p.x }
+
+
+{-| The rows' lines reflowed from `old` columns to `cols` (§VC14): each
+line, its wrapped rows joined, is cut again at the new width, a wide
+character that does not fit leaving a spacer head. Blank lines at the end
+are dropped, and the screen is the last rows, as many blank rows added
+below as keep the rows that were below the cursor (Ghostty's
+`resizeCols`). -}
+reflowCols : Int -> Int -> Flow -> Flow
+reflowCols old cols flow =
+    let
+        now =
+            Array.length flow.rows - flow.hist
+
+        before =
+            continuations flow.rows flow.hist flow.cursor.row
+
+        joined =
+            joinLines old cols flow 0 { lines = [], line = [], cursor = { line = 0, at = 0 }, saved = { line = -1, at = 0 } }
+
+        used =
+            lastUsed joined.lines (Array.length joined.lines - 1) (max joined.cursor.line joined.saved.line)
+
+        split =
+            Array.foldl
+                (\li acc ->
+                    let
+                        line =
+                            Maybe.withDefault [] (Array.get li joined.lines)
+
+                        marks =
+                            [ if joined.cursor.line == li then joined.cursor.at else -1
+                            , if joined.saved.line == li then joined.saved.at else -1
+                            ]
+
+                        cut =
+                            splitLine cols line marks (Array.length acc.rows)
+                    in
+                    { rows = acc.rows ++ cut.rows
+                    , cursor = Maybe.withDefault acc.cursor (Array.get 0 cut.found)
+                    , saved = Maybe.withDefault acc.saved (Array.get 1 cut.found)
+                    }
+                )
+                { rows = [], cursor = { row = -1, x = 0 }, saved = { row = -1, x = 0 } }
+                (Array.range 0 used)
+
+        padded =
+            split.rows ++ Array.repeat (now - Array.length split.rows) { cells = [], wrapped = False }
+
+        hist =
+            Array.length padded - now
+
+        cur =
+            split.cursor
+
+        grow =
+            if cur.row >= hist then
+                let
+                    remaining =
+                        max 0 (now - (flow.y0 + 1))
+
+                    after =
+                        continuations padded hist cur.row
+
+                    below =
+                        now - (cur.row - hist + 1)
+                in
+                max 0 (max 0 (remaining - max 0 (after - before)) - below)
+
+            else
+                0
+    in
+    { rows = padded ++ Array.repeat grow { cells = [], wrapped = False }
+    , hist = hist + grow
+    , cursor = { row = cur.row, x = cur.x, wrap = flow.cursor.wrap }
+    , saved =
+        if split.saved.row < 0 then
+            { row = -1, x = 0, wrap = False }
+
+        else
+            { row = split.saved.row, x = split.saved.x, wrap = flow.saved.wrap }
+    , y0 = flow.y0
+    }
+
+
+{-| The rows from `from` to `to` that carry on a row that wrapped. -}
+continuations : Array Row -> Int -> Int -> Int
+continuations rows from to =
+    Array.foldl
+        (\r n ->
+            when Array.get (r - 1) rows is
+                Just prev ->
+                    if prev.wrapped then
+                        n + 1
+
+                    else
+                        n
+
+                Nothing ->
+                    n
+        )
+        0
+        (Array.range (max 1 from) to)
+
+
+lastUsed : Array (Array Int64) -> Int -> Int -> Int
+lastUsed lines i floor =
+    if i <= floor then
+        floor
+
+    else if Array.isEmpty (Maybe.withDefault [] (Array.get i lines)) then
+        lastUsed lines (i - 1) floor
+
+    else
+        i
+
+
+type alias Joined =
+    { lines : Array (Array Int64)
+    , line : Array Int64
+    , cursor : { line : Int, at : Int }
+    , saved : { line : Int, at : Int }
+    }
+
+
+{-| The rows from `i` on joined into lines. A wrapped row is its `old`
+cells, less a spacer head at its end; a row that ends a line is its cells
+up to the last that is not empty, and then up to the cursor, as Ghostty
+keeps the blanks before the cursor. A saved cursor in those blanks is kept
+within a row of the new width. -}
+joinLines : Int -> Int -> Flow -> Int -> Joined -> Joined
+joinLines old cols flow i j =
+    when Array.get i flow.rows is
+        Nothing ->
+            if Array.isEmpty j.line then
+                j
+
+            else
+                { j | lines = Array.pushLast j.line j.lines, line = [] }
+
+        Just row ->
+            let
+                base =
+                    Array.length j.line
+
+                own =
+                    if row.wrapped then
+                        withoutSpacer (row.cells ++ Array.repeat (old - Array.length row.cells) 0)
+
+                    else
+                        trimmed row.cells (Array.length row.cells)
+
+                len =
+                    Array.length own
+
+                li =
+                    Array.length j.lines
+
+                savedAt =
+                    if flow.saved.row /= i then
+                        -1
+
+                    else if not row.wrapped && flow.saved.x >= len then
+                        base + min flow.saved.x (cols - 1 - modBy cols base)
+
+                    else
+                        base + min flow.saved.x (max 0 (len - 1))
+
+                cursorAt =
+                    if flow.cursor.row /= i then
+                        -1
+
+                    else if row.wrapped then
+                        base + min flow.cursor.x (max 0 (len - 1))
+
+                    else
+                        base + flow.cursor.x
+
+                need =
+                    max len (max (cursorAt - base + 1) (savedAt - base + 1))
+
+                line =
+                    j.line ++ own ++ Array.repeat (need - len) 0
+
+                marked =
+                    { j
+                        | line = line
+                        , cursor =
+                            if cursorAt >= 0 then
+                                { line = li, at = cursorAt }
+
+                            else
+                                j.cursor
+                        , saved =
+                            if savedAt >= 0 then
+                                { line = li, at = savedAt }
+
+                            else
+                                j.saved
+                    }
+            in
+            if row.wrapped then
+                joinLines old cols flow (i + 1) marked
+
+            else
+                joinLines old cols flow (i + 1) { marked | lines = Array.pushLast line marked.lines, line = [] }
+
+
+withoutSpacer : Array Int64 -> Array Int64
+withoutSpacer cells =
+    when Array.last cells is
+        Just c ->
+            if cellWide c == spacerHead then
+                Array.dropLast 1 cells
+
+            else
+                cells
+
+        Nothing ->
+            cells
+
+
+trimmed : Array Int64 -> Int -> Array Int64
+trimmed cells n =
+    if n <= 0 then
+        []
+
+    else if emptyCell (Maybe.withDefault 0 (Array.get (n - 1) cells)) then
+        trimmed cells (n - 1)
+
+    else
+        Array.takeFirst n cells
+
+
+{-| A line cut into rows of `cols`, and where each of `marks`, an offset in
+the line or -1, lands: its row, counted from `first`, and its column. -}
+splitLine : Int -> Array Int64 -> Array Int -> Int -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitLine cols line marks first =
+    splitAt cols line marks first 0 0 [] [] (Array.map (\_ -> { row = -1, x = 0 }) marks)
+
+
+splitAt : Int -> Array Int64 -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitAt cols line marks first j p row rows found =
+    when Array.get j line is
+        Nothing ->
+            { rows = Array.pushLast { cells = row, wrapped = False } rows, found = found }
+
+        Just c ->
+            if p >= cols then
+                splitAt cols line marks first j 0 [] (Array.pushLast { cells = row, wrapped = True } rows) found
+
+            else if cellWide c == wideHead && p == cols - 1 then
+                let
+                    spaced =
+                        Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True } rows
+                in
+                if cols == 1 then
+                    -- No column holds it: it goes, its spacer head left.
+                    splitAt cols line marks first (j + 2) 0 [] spaced (markAt marks j (j + 2) (first + Array.length rows) p found)
+
+                else
+                    splitAt cols line marks first j 0 [] spaced found
+
+            else
+                splitAt cols line marks first (j + 1) (p + 1) (Array.pushLast c row) rows (markAt marks j (j + 1) (first + Array.length rows) p found)
+
+
+{-| Each mark at an offset from `from` to `to` found at `row` and `x`. -}
+markAt : Array Int -> Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
+markAt marks from to row x found =
+    Array.indexedMap
+        (\k f ->
+            let
+                at =
+                    Maybe.withDefault -1 (Array.get k marks)
+            in
+            if at >= from && at < to then
+                { row = row, x = x }
+
+            else
+                f
+        )
+        found
+
+
+{-| A screen made of the flow's rows: the scrollback written into the ring
+and paged out as it fills, as line feeds would, then the screen's rows. -}
+rebuild : Int -> Int -> Flow -> Clusters -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+rebuild cols rows flow clusters s back =
+    let
+        hist =
+            pushHistory clusters flow.rows 0 flow.hist s back
+
+        r =
+            hist.screen
+    in
+    { screen = writeRows flow.rows flow.hist 0 rows r, back = hist.back }
+
+
+pushHistory : Clusters -> Array Row -> Int -> Int -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pushHistory clusters rows i stop s back =
+    if i >= stop then
+        { screen = s, back = back }
+
+    else if s.hist + s.rows >= s.size then
+        let
+            room =
+                pageOut clusters s back
+        in
+        pushHistory clusters rows i stop room.screen room.back
+
+    else
+        let
+            written =
+                writeRow (rowOffset s 0) (Maybe.withDefault { cells = [], wrapped = False } (Array.get i rows)) s
+        in
+        pushHistory clusters rows (i + 1) stop { written | base = phys written 1, hist = written.hist + 1 } back
+
+
+writeRows : Array Row -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+writeRows rows from y count s =
+    if y >= count then
+        s
+
+    else
+        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False } (Array.get (from + y) rows)) s)
+
+
+writeRow : Int -> Row -> (moved s : Screen) -> Screen
+writeRow o row s =
+    let
+        cells =
+            Array.takeFirst s.cols row.cells
+
+        meta =
+            Bitwise.or (Int64.fromInt (Array.length cells))
+                (if row.wrapped then
+                    wrappedBit
+
+                 else
+                    0
+                )
+    in
+    { s | cells = Builder.set (o + s.cols) meta (Builder.setMany o cells s.cells) }
+
+
 -- THE DUMP
 
 
@@ -4749,8 +5531,9 @@ unpackRuns runs r left acc =
 
 
 {-| A row's `ext` cells read back from its text: a wide character is its
-cell and a spacer, a code point of width 0 joins the cell before, and a 0
-byte is an empty cell. -}
+cell and a spacer, a code point of width 0 joins the cell before, a 0
+byte is an empty cell and a 0xFF byte, which UTF-8 never has, a spacer head
+(§VC14). -}
 unpackText : Bytes -> Int -> Int -> Array { points : Array Int, wide : Int, style : Int } -> { cells : Array { points : Array Int, wide : Int, style : Int }, next : Int }
 unpackText text i left acc =
     if left <= 0 && not (startsMark text i) then
@@ -4761,7 +5544,10 @@ unpackText text i left acc =
             d =
                 decodeAt text i
         in
-        if d.cp == 0 then
+        if byteAt text i == 0xFF then
+            unpackText text (i + 1) (left - 1) (Array.pushLast { points = [], wide = spacerHead, style = 0 } acc)
+
+        else if d.cp == 0 then
             unpackText text d.next (left - 1) (Array.pushLast { points = [], wide = 0, style = 0 } acc)
 
         else if d.cp >= 0x80 && Width.width d.cp == 0 then
@@ -4785,7 +5571,7 @@ unpackText text i left acc =
 
 startsMark : Bytes -> Int -> Bool
 startsMark text i =
-    if i >= Bytes.length text then
+    if i >= Bytes.length text || byteAt text i == 0xFF then
         False
 
     else

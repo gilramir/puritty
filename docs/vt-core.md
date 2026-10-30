@@ -18,11 +18,11 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 
 | piece | where | what it is |
 |---|---|---|
-| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `dump`; `Vt.Width`, generated |
-| the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, and prints §VC3 |
-| the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE`) | the same for libghostty-vt at the vendored `d8619f1bc`, through its C API |
+| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; `Vt.Width`, generated |
+| the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK [RESIZES]]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, resized where `RESIZES` says (§VC14), and prints §VC3 |
+| the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored `d8619f1bc`, through its C API |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
-| the timing | `harness/bench/` (`core-bench FILE`) | §VC7 |
+| the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
 
@@ -32,6 +32,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 new : Config -> Term                       -- { cols, rows, scrollback, checksums }
 feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
 takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
+resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
 dump : Term -> String                      -- §VC3
 ```
 
@@ -60,7 +61,8 @@ right margins, ?69 and DECSLRM, for printing, every scroll, IL, DL, ICH,
 DCH, CR, the cursor's moves and reports, tabs and DECRQSS (§VC13); RIS and DECSTR; OSC 0 and 2 (the title);
 DECRQSS for `m`, `r` and ` q`; DSR 5 and 6, DECXCPR, DA1 and DECID, DA2, DA3,
 XTVERSION, XTWINOPS 18 (the size in cells), DECRQCRA when the embedder asks
-for it (V5); the main screen's scrollback in D901's pages (§VC6).
+for it (V5); the main screen's scrollback in D901's pages (§VC6); resize,
+the main screen's lines and scrollback reflowed (§VC14).
 
 What it does not handle yet is §VC9.
 
@@ -162,15 +164,15 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 125 of 125 cases pass
+./harness/replay.py                  # 175 of 175 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**125 cases, every one passing on both sides, none divergent** (2026-10-29;
+**175 cases, every one passing on both sides, none divergent** (2026-10-30;
 98 when the core was begun, nine more with §VC10, two with §VC11, eight with
-§VC12, eight with §VC13).
+§VC12, eight with §VC13, fifty with §VC14).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -233,8 +235,8 @@ the pages are a ring of `scrollback / 256` (rounded up). A page is three
 `Bytes`, made with `Bytes.fromUInt8s` from three `Builder UInt8`:
 
 - **text**: each row's cells as UTF-8, a cluster as its code points, an
-  empty cell or a spacer head as a 0 byte, a wide character's spacer as
-  nothing;
+  empty cell as a 0 byte, a spacer head as 0xFF (V9, §VC14), a wide
+  character's spacer as nothing;
 - **heads**: for each row a header, two bytes low first: its extent in bits
   0–13, bit 14 set when every cell is in the default style, bit 15 when the
   row wrapped;
@@ -244,9 +246,9 @@ the pages are a ring of `scrollback / 256` (rounded up). A page is three
   bits and the table holds 32,768 (`styleMax`).
 
 Read back (`dump`'s `unpackPage`), a code point of width 0 joins the cell
-before it, a wide one takes its spacer, and a 0 byte is an empty cell. So a
-page gives back every cell but a spacer head's kind, which comes back as an
-empty cell (§VC9). `scrollback-pages` and `scrollback-pages-styled` page
+before it, a wide one takes its spacer, a 0 byte is an empty cell and 0xFF
+a spacer head. So a page gives back every cell; until V9 a spacer head came
+back as an empty cell. `scrollback-pages` and `scrollback-pages-styled` page
 700 and 600 lines and hold every row of history to Ghostty's.
 
 ---
@@ -390,8 +392,14 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
   modifiers are not joined yet.
 - **Widths** are Python's Unicode 15.0 tables (`vt/gen-width.py`), not the
   UCD 17.0 `core` pins; `core` carries no UCD files to generate from.
-- **Resize and reflow** (S§5.4): not started; reflow is to have its tests
-  first.
+- **Resize is the reference, not the fast one** (§VC14): 225–843 ms
+  with a full scrollback where Ghostty takes 0–26. A resize of the rows
+  only is to leave the pages alone, and a reflow to stream them.
+- **What a resize is not yet tested with**: the main screen's cursor
+  behind 47 or 1047, which save none (the core carries the main screen's
+  saved cursor, which 1049 made); the fuzzer, whose inputs never resize;
+  XTWINOPS 8 and DECCOLM, which `core-pty` does not answer with a resize,
+  so esctest's ten tests of them still fail.
 - **OSC 7, 8, 52, 133, 9 and 777, DCS for tmux and XTGETTCAP, mode 2026's
   synchronized output, the title stack, the kitty keyboard stack, the mouse
   modes' state, hyperlinks**: not started; every private mode is recorded
@@ -401,7 +409,6 @@ Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
   default (`styleMax`), which bounds memory but draws wrong. Ghostty counts
   each page's styles and frees them. The same holds for clusters at 2²¹.
   To be decided with the renderer, which reads them.
-- **A spacer head read back from a page** is an empty cell (§VC6).
 - **The oracle is libghostty-vt at `d8619f1bc`** (a `tip` build of
   2026-10-18), 191 commits before v1.4.0 (2026-10-27). Most of v1.4.0's
   terminal changes are Kitty graphics, snapshots, tmux layouts and FreeBSD,
@@ -787,3 +794,114 @@ Five runs each, ms, against §VC7's:
 The fuzzer's coverage went from 3,190 edges to 3,932 with it, and five
 minutes on eight jobs found nothing.
 
+
+---
+
+## VC14. Resize and reflow (V8, V9)
+
+`Vt.resize cols rows term` is what the host calls when the window changes
+size: there is no sequence for it, since a program only asks (XTWINOPS 8,
+DECCOLM) and the host decides. Ghostty is the oracle here as everywhere, so
+the rules are Ghostty's (`Terminal.resize`, `Screen.resize`,
+`PageList.resize` and `resizeCols` at `d8619f1bc`), read from its source and
+then held to it case by case.
+
+**V8 · A resize does what Ghostty's does.**
+
+- The **main screen reflows** when the width changes and autowrap is on: its
+  lines, the wrapped rows of each joined, the scrollback's among them, are
+  cut again at the new width. A wide character that no longer fits at a
+  row's end leaves a spacer head and goes on to the next row; a spacer head
+  is dropped when its row is joined. A line's blanks at its end are dropped,
+  but not before the cursor, which keeps its line as long as the cursor's
+  column. Blank lines at the very end are dropped.
+- When the width shrinks the rows change first, then the lines reflow; when
+  it grows, the lines first. **Fewer rows** take the blank rows below the
+  cursor first, then rows from the top, into the scrollback. **More rows**
+  come back out of the scrollback, then blank rows are added below.
+- After a reflow the screen is the last rows of the lines, with as many
+  blank rows added below as keep the rows that were below the cursor
+  (Ghostty's preserved cursor), so a cleared screen narrowed does not jump
+  to the bottom.
+- The **alternate screen never reflows**, and with autowrap off nor does
+  the main screen, scrollback and all: a narrower row is cut, a wide
+  character the new edge cuts goes, and the row keeps its wrapped flag; a
+  wider row loses it. The alternate screen keeps no rows it loses.
+- **The cursor and the saved cursors move with the cells they are on.** The
+  main screen's cursor, while the alternate screen is shown, is the one
+  1049 saved. A cursor waiting to wrap that ends up off the right edge goes
+  on to the next cell instead; a saved cursor in a row's trailing blanks is
+  kept within one row of the new width; a saved cursor the resize puts out
+  of the screen goes to the top left.
+- The **scroll region and the left and right margins are reset**, and the
+  **tab stops** to every eighth column when the width changes.
+
+**V9 · A page writes a spacer head as 0xFF**, a byte UTF-8 never has, where
+it wrote a 0 as for an empty cell (§VC6). A reflow joins a wrapped row to
+the next without its spacer head, and must tell one from an empty cell in
+the scrollback too. It closes §VC9's item, a spacer head read back from a
+page as an empty cell.
+
+**How.** Every row of the screen and its scrollback, the pages read back
+oldest first, then the ring's, then the screen's, becomes one array of rows,
+each its cells as the ring keeps them and its wrapped flag. The resize works
+on that (`changeRows`, `cutCols`, `reflowCols`), carrying the cursor and the
+saved cursor as row and column, and `rebuild` writes the result into a new
+ring, paging the scrollback out as line feeds would. A cluster in a page
+comes back as its id again.
+
+**The harness.** A case's `case.txt` takes `\R{COLSxROWS}`, which is no
+byte: the terminal is resized there. `replay.py` hands both dumps the
+offsets as `AT:COLSxROWS,...` (`core-dump COLS ROWS FILE CHUNK RESIZES`,
+`ghostty-dump COLS ROWS FILE RESIZES`), and `core-dump`'s reads of a byte
+each stop at a resize, so a resize between any two bytes is tested.
+
+**The cases, fifty**, every one written by Ghostty first, and every one
+passing on both sides, whole and a byte a read:
+
+| | cases |
+|---|---|
+| rows only | `rows-grow`, `-grow-pulls-history`, `-grow-alt`, `-shrink-cursor-bottom`, `-shrink-cursor-top`, `-shrink-cursor-middle`, `-shrink-alt`, `-shrink-alt-back`, `-region-reset`, `pages-rows` |
+| a line's cells | `cols-widen-unwraps`, `-narrow-wraps`, `-trailing-blanks`, `trailing-spaces`, `empty-rows-kept`, `cols-styles`, `-erase-colour`, `-mark`, `-round-trip`, `both-shrink`, `both-grow` |
+| wide characters | `cols-wide-split`, `-wide-rejoin`, `-wide-one-column`, `wide-at-edge-widen` |
+| the scrollback | `cols-narrow-history`, `-widen-history`, `cursor-follows-history`, `pages-narrow`, `-widen`, `-round-trip`, `-wide-styled`, `-wide-widen` (700 and 600 lines, so pages) |
+| the cursor | `cols-cursor-in-wrapped`, `-cursor-past-text`, `-cursor-blank-rows`, `-pending-wrap`, `-pending-wrap-narrow`, `saved-cursor`, `alt-saved-main` |
+| no reflow | `cols-alt-truncates`, `-alt-active`, `alt-wrapped-narrow`, `-wide-cut`, `-widen`, `cols-nowrap-truncates`, `nowrap-history`, `-widen` |
+| what is reset | `cols-tabs`, `-margins-reset` |
+
+(each named `resize-…`). Ghostty's own were the surprises: a cursor past a
+row's text keeps the blanks before it, so `abc` with the cursor at column 7
+narrowed to 4 is two rows (`cols-cursor-past-text`); a saved cursor in a
+blank row's blanks lands in the first of the rows the blanks become, where
+the cursor on the same cell lands in the second (`saved-cursor`); one wide
+character in one column leaves a spacer head row and is gone
+(`cols-wide-one-column`); and widening without a reflow drops the wrapped
+flags, where narrowing keeps them (`alt-widen`, `alt-wrapped-narrow`).
+
+**What it costs.** `core-bench FILE resize COLS ROWS` feeds the file at 160
+× 50 with 100,000 lines of scrollback, untimed, and times one resize. Ghostty
+the same through its C API with its line limit at 100,000 (one run each,
+ms):
+
+| input | history | 159 × 50 core | Ghostty | 80 × 50 core | Ghostty | 160 × 30 core | Ghostty |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `ls` | 100,367 | 834 | 20.6 | 843 | 17.7 | 554 | 0.0 |
+| `gitlog` | 100,495 | 338 | 23.3 | 337 | 26.4 | 225 | 0.0 |
+| vte-scrolling_fullscreen | 49,351 | 610 | 14.5 | 602 | 4.5 | 403 | 0.0 |
+| vte-scrolling | 100,474 | 21 | 24.4 | 20 | 26.1 | 10 | 0.0 |
+
+(history is the core's; the other nine inputs leave none, and resize in
+at most 1 ms). **The core is 15–40× Ghostty's reflow, and a
+resize of the rows only, which Ghostty does without touching the
+scrollback, costs it nearly as much.** It reads every page back into
+records of arrays, a cell's code points an array each, and rebuilds every
+row; `vte-scrolling`, whose rows are blank, shows what is left when there is
+nothing in them. This is the reference to make fast against, not the
+resize visiterm ships: a resize of the rows only is to leave the pages
+alone, and a reflow to stream the pages through one line's builder, with no
+array a cell, as Ghostty streams its rows (§VC9).
+
+The feed is as it was: `cup` 1,603 M instructions, `ls` 3,039 M,
+vte-scrolling 1,391 M. esctest2 is at 384, the ten tests Ghostty passes and
+the core does not still those that resize, since `core-pty` does not yet
+answer XTWINOPS 8 or DECCOLM with one.

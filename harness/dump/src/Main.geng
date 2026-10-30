@@ -3,9 +3,12 @@ module Main exposing (main)
 {-| core-dump: the core's side of the replay corpus and the oracle.
 
 Feeds FILE to a `Vt.Term` of COLS by ROWS, CHUNK bytes a read (the whole
-file when CHUNK is 0 or left out), and prints `Vt.dump`.
+file when CHUNK is 0 or left out), and prints `Vt.dump`. RESIZES is
+`AT:COLSxROWS` items joined by commas: before byte AT the terminal is
+resized, as its host resizes it (`docs/vt-core.md` §VC14), and a read never
+crosses one.
 
-usage: core-dump COLS ROWS FILE [CHUNK]
+usage: core-dump COLS ROWS FILE [CHUNK [RESIZES]]
 
 -}
 
@@ -18,13 +21,42 @@ import Task exposing (Task)
 import Vt
 
 
-feedAll : Bytes -> Int -> Int -> (moved t : Vt.Term) -> Vt.Term
-feedAll bytes chunk at t =
-    if at >= Bytes.length bytes then
-        t
+feedAll : Bytes -> Int -> Array { at : Int, cols : Int, rows : Int } -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes chunk resizes at t =
+    when Array.first resizes is
+        Just r ->
+            if r.at <= at then
+                feedAll bytes chunk (Array.dropFirst 1 resizes) at (Vt.resize r.cols r.rows t)
 
-    else
-        feedAll bytes chunk (at + chunk) (Vt.feed (Bytes.slice at (at + chunk) bytes) t)
+            else
+                feedAll bytes chunk resizes (min r.at (at + chunk)) (Vt.feed (Bytes.slice at (min r.at (at + chunk)) bytes) t)
+
+        Nothing ->
+            if at >= Bytes.length bytes then
+                t
+
+            else
+                feedAll bytes chunk resizes (at + chunk) (Vt.feed (Bytes.slice at (at + chunk) bytes) t)
+
+
+{-| `AT:COLSxROWS,...`; an item that does not read is left out. -}
+resizesOf : String -> Array { at : Int, cols : Int, rows : Int }
+resizesOf text =
+    Array.mapAndKeepJust
+        (\item ->
+            when String.split ":" item is
+                [ at, size ] ->
+                    when String.split "x" size is
+                        [ c, r ] ->
+                            Maybe.map3 (\a cc rr -> { at = a, cols = cc, rows = rr }) (String.toInt at) (String.toInt c) (String.toInt r)
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+        )
+        (String.split "," text)
 
 
 number : Int -> Array String -> Int
@@ -60,6 +92,7 @@ main =
                                              else
                                                 chunk
                                             )
+                                            (resizesOf (Maybe.withDefault "" (Array.get 4 s.args)))
                                             0
                                             term
                                         )

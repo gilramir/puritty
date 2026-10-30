@@ -4,8 +4,11 @@
  * visiterm's screen dump (docs/vt-core.md §VC3), which the core prints too, so
  * the two are compared as text.
  *
- * usage: ghostty-dump COLS ROWS FILE
- */
+ * usage: ghostty-dump COLS ROWS FILE [RESIZES]
+ *
+ * RESIZES is `AT:COLSxROWS` items joined by commas: before byte AT of the
+ * file the terminal is resized, as a host resizes it (docs/vt-core.md
+ * §VC14). */
 #include <ghostty/vt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,8 +175,8 @@ static bool on_size(GhosttyTerminal t, void *u, GhosttySizeReportSize *out) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
-    fprintf(stderr, "usage: ghostty-dump COLS ROWS FILE\n");
+  if (argc != 4 && argc != 5) {
+    fprintf(stderr, "usage: ghostty-dump COLS ROWS FILE [RESIZES]\n");
     return 2;
   }
   cols = (uint16_t)atoi(argv[1]);
@@ -211,7 +214,30 @@ int main(int argc, char **argv) {
                        &checksums);
   ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_EXTENSION,
                        &extension);
-  ghostty_terminal_vt_write(term, in, len);
+  size_t done = 0;
+  for (const char *r = argc == 5 ? argv[4] : ""; *r;) {
+    char *end;
+    size_t at = strtoul(r, &end, 10);
+    unsigned c = 0, w = 0;
+    if (sscanf(end, ":%ux%u", &c, &w) != 2 || at < done || at > len ||
+        c == 0 || c > 256 || w == 0) {
+      fprintf(stderr, "ghostty-dump: bad RESIZES at %s\n", r);
+      return 2;
+    }
+    ghostty_terminal_vt_write(term, in + done, at - done);
+    done = at;
+    if (ghostty_terminal_resize(term, (uint16_t)c, (uint16_t)w, 10, 20) !=
+        GHOSTTY_SUCCESS) {
+      fprintf(stderr, "ghostty-dump: resize failed\n");
+      return 1;
+    }
+    cols = (uint16_t)c;
+    rows = (uint16_t)w;
+    rows_of_term = rows;
+    r = strchr(end, ',');
+    r = r ? r + 1 : end + strlen(end);
+  }
+  ghostty_terminal_vt_write(term, in + done, len - done);
 
   uint16_t cx = 0, cy = 0;
   bool pending = false, visible = true;

@@ -16,6 +16,8 @@ long inputs can be wrapped) and these escapes are:
     \\e  ESC      \\r  CR      \\n  LF      \\t  HT      \\b  BS
     \\a  BEL      \\\\  a backslash          \\xHH  the byte HH
     \\s  a space (for one at the end of a line, which editors trim)
+    \\R{COLSxROWS}  no byte: the terminal is resized here, as its host
+                    resizes it (docs/vt-core.md §VC14)
 
 Every other byte is itself, UTF-8 as written.
 
@@ -51,12 +53,20 @@ ESCAPES = {
 
 
 def parse_case(text):
+    """The size, and the bytes with no resizes."""
+    cols, rows, data, _ = parse_resizing(text)
+    return cols, rows, data
+
+
+def parse_resizing(text):
+    """The size, the bytes, and the resizes, each (offset, cols, rows)."""
     head, _, body = text.partition("\n")
     words = head.split()
     if len(words) != 2 or words[0] != "size":
         raise ValueError("first line must be `size COLSxROWS`")
     cols, rows = (int(n) for n in words[1].split("x"))
     out = bytearray()
+    resizes = []
     raw = body.replace("\n", "").encode("utf-8")
     i = 0
     while i < len(raw):
@@ -72,13 +82,24 @@ def parse_case(text):
         elif k in ESCAPES:
             out += ESCAPES[k]
             i += 2
+        elif k == "R":
+            end = raw.index(b"}", i)
+            c, r = (int(n) for n in raw[i + 3:end].decode().split("x"))
+            if not (1 <= c <= 256 and r >= 1):
+                raise ValueError(f"resize to {c}x{r} at byte {i}")
+            resizes.append((len(out), c, r))
+            i = end + 1
         else:
             raise ValueError(f"unknown escape \\{k} at byte {i}")
-    return cols, rows, bytes(out)
+    return cols, rows, bytes(out), resizes
 
 
-def run_side(exe, cols, rows, path, chunk=None):
+def run_side(exe, cols, rows, path, chunk=None, resizes=()):
     extra = [] if chunk is None else [str(chunk)]
+    if resizes:
+        if exe == CORE and chunk is None:
+            extra = ["0"]
+        extra.append(",".join(f"{a}:{c}x{r}" for a, c, r in resizes))
     p = subprocess.run(
         ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G",
          "-p", "MemorySwapMax=0", "--", "timeout", "60",
@@ -116,7 +137,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for case in cases:
             try:
-                cols, rows, data = parse_case((case / "case.txt").read_text())
+                cols, rows, data, resizes = parse_resizing(
+                    (case / "case.txt").read_text())
             except ValueError as e:
                 print(f"FAIL {case.name}: case.txt: {e}")
                 failed += 1
@@ -130,7 +152,7 @@ def main():
             if "core" in sides and not args.update and want_core is not None:
                 # The same bytes a read of one byte each: every state the
                 # parser can be cut in is left and picked up again.
-                out, err = run_side(CORE, cols, rows, path, 1)
+                out, err = run_side(CORE, cols, rows, path, 1, resizes)
                 if out is None:
                     notes.append(f"core, a byte a read, crashed: {err}")
                 elif out != want_core:
@@ -138,7 +160,7 @@ def main():
                                  + first_difference(want_core, out))
             for side in sides:
                 out, err = run_side(CORE if side == "core" else GHOSTTY,
-                                    cols, rows, path)
+                                    cols, rows, path, resizes=resizes)
                 if out is None:
                     notes.append(f"{side} crashed: {err}")
                     continue
