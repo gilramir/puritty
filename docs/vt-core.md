@@ -338,6 +338,38 @@ corpus passing:
 10. **CR and LF are taken in `ground` itself**, as the probe took them,
     not through `execute`'s call and its tests. 1,515 → 1,405, 38–40 ms.
 
+### At phase 1's exit
+
+Measured again once the rest was built (2026-10-30, at 69dcf7e: §VC10's
+sequences, §VC12–§VC14's wraparound, protection, colours, margins and
+resize, and the lazy pages of V10), the way the table above was: the CPU
+warmed by five seconds of a busy loop, then `run.sh`'s untimed run, five
+timed runs of each input, the probe measured in the same session, and
+instructions (millions, `/usr/bin/perf stat -e instructions:u`, one run).
+
+| input | budget | probe | **core** | instr. probe | instr. core | core before |
+|---|---:|---:|---:|---:|---:|---:|
+| `cup` | 56 | 40–42 | **50–51** | 1,322 | 1,603 | 1,602 |
+| `gitlog` | 132 | 76–79 | **107–110** | 2,644 | 3,385 | 3,364 |
+| `ls` | 124 | 62–67 | **90–92** | 2,340 | 3,036 | 3,017 |
+| vte-cursor_motion | 28 | 18–20 | **23–24** | 687 | 834 | 834 |
+| vte-dense_cells | 28 | 15–16 | **19–20** | 552 | 727 | 730 |
+| vte-light_cells | 24 | 9–11 | **8–9** | 367 | 341 | 333 |
+| vte-scrolling | 42 | 37–40 | **37–38** | 1,382 | 1,390 | 1,405 |
+| vte-scrolling_bottom_region | 37 | 23–24 | **23–24** | 916 | 934 | 942 |
+| vte-scrolling_bottom_small_region | 132 | 23–24 | **23–24** | 914 | 932 | 940 |
+| vte-scrolling_fullscreen | 45 | 19–22 | **28–29** | 753 | 968 | 961 |
+| vte-scrolling_top_region | 223 | 23–24 | **23–24** | 916 | 934 | 942 |
+| vte-scrolling_top_small_region | 125 | 23–24 | **23–25** | 914 | 932 | 940 |
+| vte-unicode | 25 | 10–11 | **14–15** | 453 | 527 | 505 |
+
+**All thirteen meet the budget**, the closest `cup`, 50–51 ms against
+56, and `vte-scrolling`, 37–38 against 42, which had been the closest at
+39–40. What was built since the table above moved no input's instructions
+by more than 4.4% (`vte-unicode`, 505 → 527 M); `vte-scrolling` and the
+four region scrolls are about 1% fewer.
+This is the throughput item of phase 1's exit (`geng-plan.md` §6).
+
 ## VC8. What it found in Geng
 
 **`Core.Pass.InPlace` lifted a read out of a closure past the `let` that
@@ -360,10 +392,14 @@ what the core does about it.
 
 ## VC9. What is not built yet
 
-Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today:
+Phase 1's exit (`geng-plan.md` §6) and S§5's list, against today. **The
+four items of the exit are met** (2026-10-30): esctest2's rate is recorded,
+the replay corpus passes against libghostty-vt with its two divergences
+explained (§VC4), the fuzzer has run clean four hours, and throughput meets
+the budget. What is below is what is left beside them.
 
-- **Throughput** (§VC7): every input meets the budget. Phase 1's exit
-  measures it again once the rest is built.
+- **Throughput** (§VC7): every input meets the budget, measured again at
+  phase 1's exit with the rest built (2026-10-30).
 - **esctest2** runs headless (§VC10): 384 of 567 tests pass, Ghostty 383
   (297 at first; §VC12, §VC13). The ten that Ghostty passes and the core
   does not need resize: XTWINOPS's resize and maximize, and DECCOLM, which
