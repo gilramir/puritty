@@ -20,7 +20,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 |---|---|---|
 | the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; `Vt.Width`, generated |
 | the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK [RESIZES]]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, resized where `RESIZES` says (§VC14), and prints §VC3 |
-| the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored `d8619f1bc`, through its C API |
+| the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored v1.4.0 (`83fb95624`; `d8619f1bc` before §VC15), through its C API |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
@@ -164,16 +164,16 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 184 of 184 cases pass
+./harness/replay.py                  # 188 of 188 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**184 cases, every one passing on both sides, two divergent** (2026-10-30;
+**188 cases, every one passing on both sides, two divergent** (2026-10-30;
 98 when the core was begun, nine more with §VC10, two with §VC11, eight with
 §VC12, eight with §VC13, fifty-nine with §VC14, the two divergent among
-them).
+them, and four with §VC15).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -209,9 +209,14 @@ code point so far and the range its next byte must fall in.
   not printed (`c1-ignored-utf8`).
 - **C0 controls are executed inside an escape, a CSI or an escape's
   intermediates**; CAN and SUB end the sequence; ESC starts a new one.
+- **An 8-bit C1 control works outside the ground state** (`c1`, §VC15):
+  inside an escape, a CSI, SOS/PM/APC or a DCS's header, 0x9B, 0x9D, 0x90
+  and 0x98/0x9E/0x9F start CSI, OSC, DCS and SOS/PM/APC, 0x9C ends what
+  was being parsed, and the rest are the ESC sequences they stand for. In
+  the ground state such a byte is UTF-8's, as in Ghostty.
 - **Strings**: OSC ends at BEL or ST; DCS at ST, and its bytes above 0x7F
-  are payload (S§5.1). ESC inside either ends it and starts an escape, so
-  `ESC \` is ST.
+  are payload (S§5.1), as are an OSC's. ESC inside either ends it and starts
+  an escape, so `ESC \` is ST.
 
 **V3 · Bounds.** Every buffer the program controls is bounded (S§5.1): a
 CSI's parameters at 24, each at 65,535, a longer CSI ignored whole as
@@ -400,10 +405,10 @@ the budget. What is below is what is left beside them.
 
 - **Throughput** (§VC7): every input meets the budget, measured again at
   phase 1's exit with the rest built (2026-10-30).
-- **esctest2** runs headless (§VC10): 384 of 567 tests pass, Ghostty 383
-  (297 at first; §VC12, §VC13). The ten that Ghostty passes and the core
-  does not need resize: XTWINOPS's resize and maximize, and DECCOLM, which
-  resizes to 132 columns. **The fuzzer** has run clean for four hours on
+- **esctest2** runs headless (§VC10): 386 of 567 tests pass, Ghostty
+  v1.4.0 388 (297 at first; §VC12, §VC13, §VC15). The ten that Ghostty
+  passes and the core does not need resize: XTWINOPS's resize and
+  maximize, and DECCOLM, which resizes to 132 columns. **The fuzzer** has run clean for four hours on
   eight jobs, with resizes (§VC11); its differential against libghostty-vt
   is not built.
 - **`CSI 0 s` with ?69 reset** saves the cursor in the core, where Ghostty
@@ -451,19 +456,6 @@ the budget. What is below is what is left beside them.
   default (`styleMax`), which bounds memory but draws wrong. Ghostty counts
   each page's styles and frees them. The same holds for clusters at 2²¹.
   To be decided with the renderer, which reads them.
-- **The oracle is libghostty-vt at `d8619f1bc`** (a `tip` build of
-  2026-10-18), 191 commits before v1.4.0 (2026-10-27). Most of v1.4.0's
-  terminal changes are Kitty graphics, snapshots, tmux layouts and FreeBSD,
-  which no case reaches; two parser fixes may move screens no case holds
-  yet: a continuation restarts at a C1 sequence introducer, and a cancelled
-  or aborted APC is discarded. `vt_write_until_ground` became
-  `vt_write_until`, which `ghostty-dump` does not call. **v1.4.0 needs Zig
-  0.17**, and visiterm's devbox has 0.16 from the nixpkgs commit
-  geng-lang's clang comes from, so the upgrade is that pin moved, the
-  library rebuilt, and `replay.py` run, each case it moves either the core
-  fixed or a `divergence.txt`; a commit of its own, not mixed with the
-  core's work. Best taken with the fuzzer, which makes such sequences.
-  Registered 2026-10-29.
 - **Refinement types for every index** (plan §7): not tried; the core reads
   with `Builder.get` and a default.
 
@@ -1004,3 +996,55 @@ minutes on eight jobs, unrecorded: the time went on its corpus, each job
 through about 25,000 of its 34,000 inputs, and found nothing. esctest2 is at 384, the ten tests Ghostty passes and
 the core does not still those that resize, since `core-pty` does not yet
 answer XTWINOPS 8 or DECCOLM with one.
+
+---
+
+## VC15. The oracle at v1.4.0
+
+The oracle was libghostty-vt at `d8619f1bc`, a `tip` build of 2026-10-18,
+191 commits before v1.4.0 (2026-10-27). It is now v1.4.0 (`83fb95624`).
+v1.4.0 needs Zig 0.17, and visiterm's devbox had 0.16 from the nixpkgs
+commit geng-lang's clang comes from; Zig alone is pinned to a later one,
+`31ecbaca` (nixos-unstable as fetched on 2026-10-30), which has `zig_0_17` 0.17.0.
+`ghostty-dump.c` and `ghostty-pty.c` built against the new library
+unchanged.
+
+**The replay corpus did not move**: 184 of 184 passed on the new oracle at
+once, the two divergent cases with Ghostty's dump the same as pinned. **The
+reflow report still applies**: the line it names in `reflowRow` is the same
+at v1.4.0 and on Ghostty's main of 2026-10-30, the two cases show the same
+screens, and GitHub's issue search finds no report of it.
+
+**esctest moved: Ghostty 383 → 388.** Its newly passing tests are three of
+CHA, HPR and VPR under origin mode, which the core passed already, and
+two of BS and CUB at the left margin, which it did not: Ghostty's
+`53fb05c6e` stops `cursorLeft` with reverse wrap off at the left margin
+unless the cursor is already left of it, as its reverse-wrap path did. The
+core's did the same only with reverse wrap on; now both paths do
+(`lrm-left-stop`, which fails without it), and the core is at 386. The ten
+tests Ghostty passes and the core does not are §VC9's, the ones that resize.
+
+**v1.4.0's two parser changes** (§VC9 had registered them) are that a
+stream's continuation restarts at a C1 introducer, which is a snapshot's
+export and changes no screen, and that a cancelled or aborted APC is thrown
+away, which the core, running no APC, did already. A case probing them
+(`apc-aborted`) found something else: **an 8-bit C1 control inside a
+sequence**, `ESC _ hi 0x9B 32m`, which Ghostty ends the APC at and starts a
+CSI with, and the core kept in the APC, losing the text after it. The old
+oracle does the same; no case had sent one. Ghostty's parser takes the DEC
+state machine's "anywhere" transitions from every state but three: the
+ground state, where high bytes are UTF-8's; OSC, whose bytes from 0x20 are
+text; and a DCS's payload, and an ignored DCS, where they are data. The
+core now does as it does (`c1` and `dcsHeader`, §VC5): 0x9B, 0x9D, 0x90 and
+0x98/0x9E/0x9F start CSI, OSC, DCS and SOS/PM/APC, 0x9C ends the sequence,
+and the rest run as `ESC` and the byte less 0x40, so 0x85 inside a CSI is
+NEL and 0x9A is DECID's reply. DEL and bytes from 0xA0 inside an escape
+leave it waiting for its final byte, as Ghostty's empty table entries do.
+`c1-anywhere` and `c1-edges` hold it, across every state, and a DECRQSS
+with a high byte, which Ghostty answers as not recognized and the core had
+dropped as text that is not UTF-8.
+
+The core after it: 188 replay cases on both sides, esctest 386, and §VC7's
+thirteen inputs level, warm, at instructions within 1.4% of §VC7's exit
+table (`cup` 1,581 M from 1,603, `vte-scrolling` 1,393 from 1,390) and
+every time under the budget.

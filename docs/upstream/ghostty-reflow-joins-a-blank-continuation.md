@@ -2,8 +2,9 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** `d8619f1bc` (libghostty-vt, `tip` of 2026-10-18); the
-code is the same on `main` at `108d503ac`.
+**Found against:** `d8619f1bc` (libghostty-vt, `tip` of 2026-10-18), and
+reproduced against v1.4.0 (`83fb95624`); the code is the same on `main` at
+`cf0ab14ae` (2026-10-30).
 
 ## Summary
 

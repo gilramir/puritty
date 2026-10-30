@@ -725,7 +725,8 @@ gates, committed at the same checkpoint as the visiterm side.
    clang and gcc come from: libxcb 1.17.0 (with render, xkb, renderutil 0.3.10,
    keysyms 0.4.1), xkbcommon 1.13.2, HarfBuzz 13.2.1, FreeType 2.14.3, fontconfig
    2.18.3, xcb-imdkit 1.0.9, libthai 0.1.30, Zig 0.16.0, tmux 3.7c, Xvfb 21.1.24,
-   xtrace 1.4.0 and xdpyinfo. These are much newer than RHEL8's (§1.1), so the
+   xtrace 1.4.0 and xdpyinfo. Zig moved to 0.17.0 on 2026-10-30, pinned alone to
+   a later nixpkgs commit, for libghostty-vt v1.4.0 (`vt-core.md` §VC15). These are much newer than RHEL8's (§1.1), so the
    AlmaLinux 8 release build is what catches an API RHEL8 lacks.
 
 Exit: a package in this repository links libxcb with no environment variables, a

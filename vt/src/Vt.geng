@@ -1853,6 +1853,12 @@ escape bytes n i t =
         else if b < 0x20 then
             escape bytes n (i + 1) (execute b t)
 
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else if b == 0x7F || b >= 0xA0 then
+            escape bytes n (i + 1) t
+
         else
             resume bytes n (i + 1) (escDispatch b t)
 
@@ -1920,6 +1926,12 @@ escInter bytes n i t =
 
         else if b < 0x20 then
             escInter bytes n (i + 1) (execute b t)
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else if b == 0x7F || b >= 0xA0 then
+            escInter bytes n (i + 1) t
 
         else if t.inter == 0x28 then
             resume bytes n (i + 1) (withPlain { t | g0 = charset b })
@@ -1997,8 +2009,74 @@ dcsString bytes n i t =
         else if b == 0x18 || b == 0x1A then
             resume bytes n (i + 1) { t | str = Builder.empty 0 }
 
+        else if b >= 0x80 && b < 0xA0 && dcsHeader t.str 0 0 then
+            c1 bytes n (i + 1) b { t | str = Builder.empty 0 }
+
         else
             dcsString bytes n (i + 1) (keepByte b t)
+
+
+{-| Whether a DCS kept so far is still in its parameters and
+intermediates, where a C1 control works as anywhere else; past the final
+byte, or once the header is one Ghostty ignores, a high byte is payload,
+as in Ghostty. `phase` is 0 at the start, 1 among the parameters, 2 among
+the intermediates; controls and DEL are skipped, as Ghostty skips them. -}
+dcsHeader : Builder UInt8 -> Int -> Int -> Bool
+dcsHeader str i phase =
+    if i >= Builder.length str then
+        Builder.length str < stringMax
+
+    else
+        let
+            b =
+                when Builder.get i str is
+                    Just v ->
+                        UInt8.toInt v
+
+                    Nothing ->
+                        0
+        in
+        if b < 0x20 || b == 0x7F || b >= 0x80 then
+            dcsHeader str (i + 1) phase
+
+        else if b < 0x30 then
+            dcsHeader str (i + 1) 2
+
+        else if b < 0x40 then
+            if phase == 2 || b == 0x3A || (phase == 1 && b >= 0x3C) then
+                False
+
+            else
+                dcsHeader str (i + 1) 1
+
+        else
+            False
+
+
+{-| A C1 control as an 8-bit byte, outside the ground state and the
+strings that take high bytes as text (OSC, a DCS's payload): Ghostty's
+"anywhere" transitions. It starts CSI, OSC, DCS or SOS/PM/APC, ends what
+was being parsed at ST, and otherwise is the ESC sequence it stands for
+(0x85 is ESC E). In the ground state such a byte is UTF-8's. -}
+c1 : Bytes -> Int -> Int -> Int -> (moved t : Term) -> Term
+c1 bytes n i b t =
+    if b == 0x9B then
+        csi bytes n i t (Builder.empty 16) 0 0 0 0 0
+
+    else if b == 0x9D then
+        oscString bytes n i { t | str = Builder.empty 64 }
+
+    else if b == 0x90 then
+        dcsString bytes n i { t | str = Builder.empty 64 }
+
+    else if b == 0x98 || b == 0x9E || b == 0x9F then
+        ignoreString bytes n i t
+
+    else if b == 0x9C then
+        resume bytes n i t
+
+    else
+        resume bytes n i (escDispatch (b - 0x40) t)
 
 
 {-| SOS, PM or APC: skipped to ST. -}
@@ -2017,6 +2095,9 @@ ignoreString bytes n i t =
 
         else if b == 0x18 || b == 0x1A then
             resume bytes n (i + 1) t
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
 
         else
             ignoreString bytes n (i + 1) t
@@ -2368,15 +2449,27 @@ dcsDispatch t0 =
         t =
             taken.term
 
-        -- the parameters before the intermediates, which DECRQSS has none of
+        -- the parameters before the intermediates, which DECRQSS has none of;
+        -- a high byte is one no setting has, so a request with one is
+        -- answered as not recognized, as Ghostty does, not dropped as text
+        -- that is not UTF-8
         text =
-            dropParams (stringOf taken.text)
+            dropParams (stringOf (Array.map lowByte taken.text))
     in
     if String.startsWith "$q" text then
         reply ("\u{001B}P" ++ requestStatus (String.dropFirst 2 text) t ++ "\u{001B}\\") t
 
     else
         t
+
+
+lowByte : UInt8 -> UInt8
+lowByte b =
+    if UInt8.toInt b >= 0x80 then
+        UInt8.fromInt 0x3F
+
+    else
+        b
 
 
 dropParams : String -> String
@@ -2558,6 +2651,9 @@ csi bytes n i t params cur colons priv inter phase =
         else if b < 0x20 then
             csi bytes n (i + 1) (execute b t) params cur colons priv inter phase
 
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
         else
             csi bytes n (i + 1) t params cur colons priv inter phase
 
@@ -2583,6 +2679,9 @@ csiIgnore bytes n i t =
 
         else if b < 0x20 then
             csiIgnore bytes n (i + 1) (execute b t)
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
 
         else
             csiIgnore bytes n (i + 1) t
@@ -2932,7 +3031,8 @@ cursorLeft n t =
                 0
     in
     if mode == 0 then
-        { t | x = max 0 (t.x - n), wrapNext = False }
+        -- the left margin stops it, unless it starts left of the margin
+        { t | x = max (if t.x < t.left then 0 else t.left) (t.x - n), wrapNext = False }
 
     else
         let
