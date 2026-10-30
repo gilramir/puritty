@@ -25,7 +25,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
-| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16, §VC17 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16, §VC17, §VC18 |
 
 `Vt`'s interface, as it stands:
 
@@ -1392,5 +1392,138 @@ differing: DECRQM for ?2, ?24, ?46 and ?104; `CSI 19 t`, `CSI 22 J`,
 then a query; SGR `CSI : ; 1 m`; SPA with the alternate screen and an
 erase in a background colour; a wide character at the last column with
 RI, IL, DL or SD and a resize; a wide character in one column, styled,
-widened; and DECCOLM with ?40. The fuzzer is not recorded until they are
-done.
+widened; and DECCOLM with ?40. They are done, in §VC18.
+
+
+## VC18. The differential fuzzer, the fourth sample
+
+§VC17's fourth sample, 118 cut-down differences, fixed group by group as
+before. Three minutes, eight jobs, now find **73** differences where they
+found 492 (564,124 inputs). The replay corpus went from 246 cases to 277,
+none divergent. One more Ghostty bug is patched in the oracle (0006).
+
+### What the groups were
+
+- **Replies.** DECRQM answers 0 for a private mode Ghostty's table does
+  not have, set or not, where the core answered for any mode it had
+  recorded (`decrqm-unknown-set`); 5522, kitty's paste events, is in the
+  table but answers 0 without a clipboard, and the core has none.
+  `CSI 19 t` answers the text area's size as `CSI 9 ; rows ; cols t`, as
+  `CSI 18 t` does with 8 (`size-report-19`). DA2, DA3 and XTVERSION take no
+  second intermediate, since Ghostty counts the marker as one
+  (`da-two-intermediates`). XTVERSION's name, `visiterm` against
+  `libghostty`, is an identity, not a difference: `diff.h` writes the core's
+  name into Ghostty's reply before it compares.
+- **OSC.** A colour's index is decimal digits only, as Ghostty's
+  `parseInt` takes an unsigned one: `+1` and `-1` end OSC 4's pairs and are
+  passed over by OSC 104 (`osc4-index-digits`, `osc104-index-digits`).
+  OSC 110 to 112 reset with empty parameters too, as Ghostty's words skip
+  them (`osc112-empty`). A command the core takes is dropped whole when more
+  than 2,048 bytes follow its number, the buffer Ghostty keeps for it
+  (`osc-too-long`).
+- **A colon straight after `CSI`** makes the sequence ignored, as in
+  Ghostty's table, where a colon after a parameter is one more
+  (`sgr-colon-first`).
+- **ED 22**, Ghostty's (and kitty's) `scroll_complete`: the screen scrolled
+  up into the scrollback until its last row that is not empty is gone, past
+  the margins and protection, the rows coming in blank; the cursor goes up
+  with its row, or home when its row goes (`ed-22`, `ed-22-cursor-below`,
+  `ed-22-protected`).
+- **DECCOLM.** `?3` with `?40` set resizes the terminal to 132 columns or
+  80 as a host resizes it, then erases it as ED 2 and puts the cursor home;
+  without `?40` it is recorded reset and nothing else (`deccolm`,
+  `deccolm-needs-40`). Ghostty's dump printed the size it was last resized
+  to, not the terminal's; `gdump` reads the terminal's own now, and the
+  size reports' callback too.
+- **Protection.** The alternate screen's clears (`?1049` on entry, `?1047`
+  on exit) are ED 2's, which keep the protected cells of a screen in ISO's
+  mode (`alt-clear-keeps-iso`). An erase with protection that grew a row's
+  extent left the cells past the old extent as they were, and a protected
+  one came back; they are cleared first (`erase-guarded-past-extent`), the
+  core's own bug.
+- **A wide character at an erase's edge.** ECH that ends on a wide
+  character's head takes its tail too, and EL takes the whole character the
+  cursor is on, as Ghostty widens both, which keeps a protected character
+  whole (`ech-protected-wide-whole`, `el-protected-wide-whole`). Where ECH,
+  DCH, ICH or insert mode cuts a wide character, both halves are cleared in
+  the erase colour, protected or not, as Ghostty's `splitCellBoundary`
+  does, though its own TODO says protection should count; the core copies
+  it (`ech-split-protected-wide`, `insert-margins-wide-tail`).
+- **Spacer heads.** ECH, EL and DCH begin as Ghostty's `cursorResetWrap`:
+  a row that wrapped is unwrapped, and a spacer head at its end becomes a
+  cell in the erase colour (`ech-reset-wrap-spacer-head`). At column 0 or
+  1 of a row that continues a wrapped one and starts with a wide character,
+  ECH and DCH make the spacer head ending the row above such a cell, also
+  when that row is the scrollback's newest, while the ring holds it
+  (`ech-clears-spacer-head-above`, `ech-spacer-head-in-history`). Writing a
+  narrow character over a wide one in column 1, where one wraps to under a
+  left margin, makes a spacer head above a plain cell, as over column 0
+  (`margin-wide-unhead`). The test of column 0 read the row's cell past its
+  extent, where a cleared row keeps old cells (`print-over-cleared-row`),
+  the core's own bug.
+- **Insert mode** makes its blanks for a wide character that does not fit
+  where it is, before the wrap, and with autowrap off before writing
+  nothing, as Ghostty inserts first (`insert-nowrap-wide-edge`).
+- **Reflow.** A spacer head is dropped wherever it is, a row that ends a
+  line too (`reflow-spacer-head-unwrapped`). The cursor's row keeps its own
+  cells up to the cursor, a blank in a style too (`reflow-cursor-row-cells`).
+  A cursor on a dropped spacer head goes where the next cell is written: on
+  the character it was for (`reflow-cursor-dropped-head`), or on the new
+  spacer head when that character does not fit at the new width
+  (`reflow-cursor-head-before-wrap`), or on the row's last cell when the
+  row is full (`reflow-dropped-head-full-row`). A saved cursor past a line's
+  end is held to the row it starts on from the column the line so far ends
+  at, counted with the wide characters a reflow moves down, not from the
+  line's length (`reflow-saved-after-shift`).
+
+**Patch 0006** ([report](upstream/ghostty-reflow-spacer-head-wraps.md)): a
+spacer head that ended a row filling the new width made Ghostty's reflow
+wrap onto an empty row before it dropped the head, which left the row
+before wrapped and an empty row after it when the line ended there. The
+patch skips a spacer head before the pending wrap, its pins moved to where
+the next cell goes.
+
+### What it cost
+
+The first build was 5–6% slower on `gitlog` and `ls` (110–113 ms against
+103–107, interleaved runs) on 0.5% more instructions, the time in the
+scrollback's packing. Undoing one change at a time found it: clearing both
+halves of a cut wide character in `splitWide`, which clang inlines into
+`asciiRow`, where the half inside is written over anyway. The erase, insert
+and delete paths take `splitWhole`, a function of its own, and the
+writers keep `splitWide` as it was.
+
+Instructions, millions, one run, and times, warm, five runs, ms, against
+§VC17's (`bdb1388`):
+
+| input | budget | ms | ms at `bdb1388` | instr. | at `bdb1388` |
+|---|---:|---:|---:|---:|---:|
+| `cup` | 56 | 49–51 | 50–51 | 1,615 | 1,617 |
+| `gitlog` | 132 | 106–108 | 103–106 | 3,402 | 3,384 |
+| `ls` | 124 | 84–86 | 84–86 | 3,096 | 3,075 |
+| vte-cursor_motion | 28 | 23–25 | 24–25 | 840 | 841 |
+| vte-dense_cells | 28 | 20–21 | 19–21 | 756 | 750 |
+| vte-light_cells | 24 | 8–10 | 9–10 | 343 | 335 |
+| vte-scrolling | 42 | 39–40 | 38–40 | 1,454 | 1,451 |
+| vte-scrolling_bottom_region | 37 | 24–25 | 23–24 | 1,003 | 997 |
+| vte-scrolling_fullscreen | 45 | 27–28 | 26–31 | 985 | 977 |
+| vte-scrolling_top_region | 223 | 24 | 23–24 | 1,003 | 997 |
+| vte-unicode | 25 | 14–16 | 14–15 | 547 | 545 |
+
+`gitlog` and `bdb1388`'s build, run in turn, take the same 105–109 ms.
+
+**esctest2: 392**, from 386 (Ghostty 388). DECCOLM passes
+`test_DECSET_Allow80To132`, and `CSI 19 t` the nine `XtermWinops` tests
+that read the display's size with it. Five are lost:
+`test_DECRQM_DEC_DECHEBM`, `…DECNRCM`, `…DECPEX` and `…DECPFF`, and
+`test_DECSCL_Level5_SupportsDECNCSM`, which the core passed by answering
+for modes it only recorded and does not do; it answers 0 for them now, as
+Ghostty does, and so passes `test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM`.
+
+The self-fuzzer, two minutes from the seeds on eight jobs: 653,284 inputs,
+no findings.
+
+### What is left
+
+The 73 differences of the last three minutes, not yet sampled. The fuzzer
+is not recorded in `diff-runs.tsv` until a run is clean.

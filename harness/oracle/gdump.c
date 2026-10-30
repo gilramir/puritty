@@ -159,10 +159,10 @@ static void dump_row(FILE *o, const char *label, GhosttyPointTag tag,
 /* XTWINOPS's size reports: the grid, as the core answers CSI 18 t. */
 static uint16_t rows_of_term;
 static bool on_size(GhosttyTerminal t, void *u, GhosttySizeReportSize *out) {
-  (void)t;
   (void)u;
-  out->rows = rows_of_term;
-  out->columns = cols;
+  /* The terminal's own size, which DECCOLM changes as well as a resize. */
+  ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_ROWS, &out->rows);
+  ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_COLS, &out->columns);
   out->cell_width = 10;
   out->cell_height = 20;
   return true;
@@ -181,6 +181,10 @@ static void dump_terminal(FILE *o) {
   ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, &visible);
   ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &scr);
   ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &history);
+  /* the size the terminal has, which DECCOLM changes (docs/vt-core.md
+   * §VC18) */
+  ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_COLS, &cols);
+  ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_ROWS, &rows_of_term);
 
   fprintf(o, "screen %ux%u %s\n", cols, rows_of_term,
           scr == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? "alt" : "main");

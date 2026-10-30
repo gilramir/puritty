@@ -1,0 +1,27 @@
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -1761,6 +1761,24 @@
+ 
+         var x: usize = 0;
+         while (x < cols_len) {
++            // A spacer head is not written, so it must not wrap either:
++            // one that ended a row which filled the new width wrapped onto
++            // an empty row (visiterm harness/oracle/patches). Its pins go
++            // where the next cell would.
++            if (cells[x].wide == .spacer_head) {
++                if (row_has_pins) for (list.tracked_pins.keys()) |p| {
++                    if (p.node != row.node or
++                        p.y != src_y or
++                        p.x != x) continue;
++
++                    p.node = self.node;
++                    p.x = self.x;
++                    p.y = self.y;
++                };
++                x += 1;
++                continue;
++            }
++
+             if (self.pending_wrap) {
+                 self.page_row.wrap = true;
+                 try self.cursorScrollOrNewPage(list, cap);

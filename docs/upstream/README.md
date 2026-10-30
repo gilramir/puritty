@@ -21,3 +21,4 @@ fuzzer leaves out an input with one.
 | [A reflow counts the rows it joins by a flag DL and DECALN leave behind](ghostty-reflow-miscounts-continuations.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC17 | not to be filed |
 | [A reflow leaves the cursor on the spacer head before a wide character](ghostty-reflow-pin-on-spacer-head.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC17 | not to be filed |
 | [A wide character that wraps over another clears its own spacer head](ghostty-wide-clears-its-own-spacer-head.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC17 | not to be filed |
+| [A reflow wraps onto an empty row for a spacer head it does not write](ghostty-reflow-spacer-head-wraps.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC18 | not to be filed |

@@ -78,6 +78,24 @@ static size_t only_replies(char *d, size_t n) {
   return o;
 }
 
+/* Ghostty's XTVERSION reply with the core's name in it, in place: each
+answers with its own name, which is not a difference (docs/vt-core.md
+§VC18). */
+static size_t own_name(char *d, size_t n) {
+  static const char from[] = "P>|libghostty\\x1b", to[] = "P>|visiterm\\x1b";
+  size_t fl = sizeof from - 1, tl = sizeof to - 1, o = 0;
+  for (size_t i = 0; i < n;) {
+    if (i + fl <= n && memcmp(d + i, from, fl) == 0) {
+      memcpy(d + o, to, tl);
+      o += tl;
+      i += fl;
+    } else {
+      d[o++] = d[i++];
+    }
+  }
+  return o;
+}
+
 static size_t history_of(const char *d, size_t n) {
   const char *h = memmem(d, n, "\nhistory ", 9);
   return h ? strtoul(h + 9, NULL, 10) : 0;
@@ -100,6 +118,7 @@ static int differs(int cols, int rows, const uint8_t *data, size_t n,
   free(fed);
   free(rs);
   if (!*ghostty) return 1;
+  *ghostty_len = own_name(*ghostty, *ghostty_len);
   /* `pruned`: the core's scrollback may have reached LIMIT before a resize,
    * which can bring it back under with rows the two pruned differently and
    * reflow a line that runs on from them differently (Fuzz.dump,
