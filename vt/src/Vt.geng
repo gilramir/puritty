@@ -584,6 +584,7 @@ type alias Term =
     , low : Int
     , high : Int
     , replies : Array Bytes
+    , xtChecksum : Int
     }
 
 
@@ -708,6 +709,7 @@ fresh config =
     , need = 0
     , low = 0x80
     , high = 0xBF
+    , xtChecksum = 23
     , replies = []
     }
 
@@ -1151,33 +1153,63 @@ packCells clusters i stop s text runs style count wrote =
             st =
                 cellStyle c
 
-            w =
-                cellWide c
-
-            next =
-                if w == wideTail then
-                    text
-
-                else if cellIsCluster c then
-                    Array.foldl pushUtf8 text (cellPoints c clusters)
-
-                else if w == spacerHead then
-                    Builder.pushLast (UInt8.fromInt 0xFF) text
-
-                else if Bitwise.and bgBit c /= 0 then
-                    Builder.pushLast (UInt8.fromInt 0xFE) text
+            -- one test for a plain cell, the commonest
+            packed =
+                if Bitwise.and packSpecial c == 0 then
+                    pushUtf8 (cellPoint c) text
 
                 else
-                    pushUtf8 (cellPoint c) text
+                    packOther clusters c text
         in
         if count > 0 && st == style then
-            packCells clusters (i + 1) stop s next runs style (count + 1) wrote
+            packCells clusters (i + 1) stop s packed runs style (count + 1) wrote
 
         else if count > 0 then
-            packCells clusters (i + 1) stop s next (pushU16 count (pushU16 (Bitwise.or 0x8000 style) runs)) st 1 True
+            packCells clusters (i + 1) stop s packed (pushU16 count (pushU16 (Bitwise.or 0x8000 style) runs)) st 1 True
 
         else
-            packCells clusters (i + 1) stop s next runs st 1 wrote
+            packCells clusters (i + 1) stop s packed runs st 1 wrote
+
+
+{-| The bits that make a cell more than its code point to `packCells`: its
+width and a cluster (0xE00000), a background colour alone (`bgBit`) and
+protection (`protectBit`). -}
+packSpecial : Int64
+packSpecial =
+    0x3E00000
+
+
+{-| A cell with a `packSpecial` bit packed: a wide character's spacer as
+nothing, a cluster as its code points, a spacer head as 0xFF, a cell in a
+background colour alone as 0xFE, and a protected cell's text followed by
+0xFD, which UTF-8 never has either (§VC19). -}
+packOther : Clusters -> Int64 -> (moved text : Builder UInt8) -> Builder UInt8
+packOther clusters c text =
+    let
+        w =
+            cellWide c
+
+        next =
+            if w == wideTail then
+                text
+
+            else if cellIsCluster c then
+                Array.foldl pushUtf8 text (cellPoints c clusters)
+
+            else if w == spacerHead then
+                Builder.pushLast (UInt8.fromInt 0xFF) text
+
+            else if Bitwise.and bgBit c /= 0 then
+                Builder.pushLast (UInt8.fromInt 0xFE) text
+
+            else
+                pushUtf8 (cellPoint c) text
+    in
+    if Bitwise.and protectBit c /= 0 && w /= wideTail then
+        Builder.pushLast (UInt8.fromInt 0xFD) next
+
+    else
+        next
 
 
 pushU16 : Int -> (moved b : Builder UInt8) -> Builder UInt8
@@ -1774,7 +1806,7 @@ printPoint cp w t0 =
 
 {-| A wide character where it does not fit, at the right edge or margin:
 with autowrap on, a spacer head in the pen and the character on the next
-row; with it off, nothing. -}
+row; with it off, nothing, but it is the character REP repeats. -}
 edgeWide : Int -> Int -> (moved t : Term) -> Term
 edgeWide cp w t =
     if t.autowrap && t.cols >= 2 then
@@ -1809,7 +1841,9 @@ edgeWide cp w t =
         { r | insert = inserting }
 
     else
-        t
+        -- nothing written, but REP repeats it, as Ghostty keeps every
+        -- printable character before it writes one (§VC19)
+        { t | lastPoint = cp }
 
 
 {-| Insert mode's blanks for a wide character that does not fit, made where
@@ -3351,6 +3385,9 @@ dispatchRest final priv inter params t =
     else if priv == 0 && inter == 0x2A && final == 0x79 && t.config.checksums && Array.length params <= 6 then
         reply ("\u{001B}P" ++ String.fromInt (param 0 0 params) ++ "!~" ++ hex4 (rectChecksum params t) ++ "\u{001B}\\") t
 
+    else if priv == 0 && inter == 0x23 && final == 0x79 && t.config.checksums && Array.length params <= 1 then
+        { t | xtChecksum = Bitwise.and 31 (param 0 0 params) }
+
     else if priv == 0 && inter == 0x20 && final == 0x71 && Array.length params <= 1 then
         cursorStyle (param 0 0 params) t
 
@@ -4522,7 +4559,7 @@ reset t =
     withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours }
 
 
-{-| DECSTR. -}
+{-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14). -}
 softReset : (moved t : Term) -> Term
 softReset t =
     withPen plainAttrs
@@ -4545,6 +4582,7 @@ softReset t =
                 , right = t.cols - 1
                 , pen = Bitwise.and (Bitwise.complement protectBit) t.pen
                 , colours = Dict.keepIf (\k _ -> k > 255) t.colours
+                , xtChecksum = 23
             }
         )
         |> resetSaved
@@ -6953,8 +6991,9 @@ unpackRuns runs r left acc =
 {-| A row's `ext` cells read back from its text: a wide character is its
 cell and a spacer, a code point of width 0 joins the cell before, a 0
 byte is an empty cell, a 0xFF byte, which UTF-8 never has, a spacer head
-(§VC14), and a 0xFE byte, which it never has either, a cell in a background
-colour alone (`bgBit`, §VC17). -}
+(§VC14), a 0xFE byte, which it never has either, a cell in a background
+colour alone (`bgBit`, §VC17), and a 0xFD byte after a cell's text, that the
+cell is protected (§VC19). -}
 unpackText : Bytes -> Int -> Int -> Array { points : Array Int, wide : Int, style : Int } -> { cells : Array { points : Array Int, wide : Int, style : Int }, next : Int }
 unpackText text i left acc =
     if left <= 0 && not (startsMark text i) then
@@ -6972,6 +7011,31 @@ unpackText text i left acc =
             -- a cell in a background colour alone, its bit carried as its
             -- width, which `pagedCell` puts back into the cell
             unpackText text (i + 1) (left - 1) (Array.pushLast { points = [], wide = Int64.toIntWrap bgBit, style = 0 } acc)
+
+        else if byteAt text i == 0xFD then
+            -- the cell before is protected, and a wide character's spacer
+            -- with it; the bit is carried as its width too (§VC19)
+            let
+                n =
+                    Array.length acc
+
+                guarded k a =
+                    when Array.get k a is
+                        Just cell ->
+                            Array.set k { cell | wide = Bitwise.or (Int64.toIntWrap protectBit) cell.wide } a
+
+                        Nothing ->
+                            a
+
+                tail =
+                    when Array.get (n - 1) acc is
+                        Just last ->
+                            last.wide == wideTail
+
+                        Nothing ->
+                            False
+            in
+            unpackText text (i + 1) left (guarded (n - 1) (if tail then guarded (n - 2) acc else acc))
 
         else if d.cp == 0 then
             unpackText text d.next (left - 1) (Array.pushLast { points = [], wide = 0, style = 0 } acc)
@@ -7013,6 +7077,9 @@ startsMark : Bytes -> Int -> Bool
 startsMark text i =
     if i >= Bytes.length text || byteAt text i == 0xFF then
         False
+
+    else if byteAt text i == 0xFD then
+        True
 
     else
         let
@@ -7160,12 +7227,14 @@ styleText a =
 
 
 {-| DECRQCRA's checksum of the rectangle `params` names (its id, a page, then
-top, left, bottom and right from 1), as xterm's `checksumExtension: 23` makes
-it, which is what esctest2 expects of xterm 334 and later and what Ghostty's
-runner sets: each cell's code point to 16 bits, an empty cell a space, a wide
-character's spacer nothing, no attributes, summed to 16 bits and not negated.
-In origin mode the rectangle is from the region's top and the left margin; a 0 is the default,
-and each edge is held to the screen. -}
+top, left, bottom and right from 1), as xterm's `xtermCheckRect` makes it
+with the bits XTCHECKSUM chose (`t.xtChecksum`, V14): 1 not negated, 2 no
+attributes added, 4 no blanks left out, 8 a cell never written to counted
+as a space, 16 the code point rather than the DEC 8-bit value. A new
+terminal's are 23, xterm's `checksumExtension: 23`, which is what esctest2
+expects of xterm 334 and later and what Ghostty's runner sets. In origin
+mode the rectangle is from the region's top and the left margin; a 0 is the
+default, and each edge is held to the screen. -}
 rectChecksum : Array Int -> Term -> Int
 rectChecksum params t =
     let
@@ -7197,45 +7266,152 @@ rectChecksum params t =
 
         right =
             edge 5 t.cols side t.cols
+
+        sum =
+            if top > bottom || left > right then
+                0
+
+            else
+                Bitwise.and 0xFFFF (checksumRows t (left - 1) (right - 1) (top - 1) (bottom - 1) 0x10000)
     in
-    if top > bottom || left > right then
-        0
+    if Bitwise.and 1 t.xtChecksum /= 0 then
+        sum
 
     else
-        checksumRows t.screen t.clusters (left - 1) (right - 1) (top - 1) (bottom - 1) 0
+        Bitwise.and 0xFFFF (0 - sum)
 
 
-checksumRows : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> Int
-checksumRows s clusters left right y bottom sum =
+{-| The sum so far in bits 0–15, and bit 16 while the cell counted next is
+the rectangle's first, the one blank the DEC checksum does not leave out. -}
+checksumRows : Term -> Int -> Int -> Int -> Int -> Int -> Int
+checksumRows t left right y bottom acc =
     if y > bottom then
-        sum
+        acc
 
     else
-        checksumRows s clusters left right (y + 1) bottom (checksumCells s clusters (rowOffset s y) left right sum)
+        checksumRows t left right (y + 1) bottom (Bitwise.and 0xFFFF (checksumCells t (rowOffset t.screen y) left right acc))
 
 
-checksumCells : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int
-checksumCells s clusters o x right sum =
+checksumCells : Term -> Int -> Int -> Int -> Int -> Int
+checksumCells t o x right acc =
     if x > right then
-        sum
+        acc
 
     else
-        checksumCells s clusters o (x + 1) right (Bitwise.and 0xFFFF (sum + checksumValue (cellAt o x s) clusters))
+        let
+            flags =
+                t.xtChecksum
+
+            c =
+                cellAt o x t.screen
+
+            v =
+                checksumValue flags c t.clusters
+        in
+        if v < 0 then
+            checksumCells t o (x + 1) right acc
+
+        else
+            let
+                a =
+                    styleOf (cellStyle c) t.styles
+
+                ch =
+                    if Bitwise.and 2 flags == 0 then
+                        Bitwise.and 0xFFFF (v + checksumAttributes c a)
+
+                    else
+                        v
+
+                sum =
+                    Bitwise.and 0xFFFF acc
+
+                next =
+                    if Bitwise.and 4 flags /= 0 then
+                        -- xterm adds a cluster's marks only to the DEC sum
+                        -- with nothing left out
+                        if Bitwise.and 16 flags == 0 && cellIsCluster c then
+                            Array.foldl (\p n -> n + Bitwise.and 0xFFFF p) (sum + ch) (Array.dropFirst 1 (cellPoints c t.clusters))
+
+                        else
+                            sum + ch
+
+                    else if Bitwise.and 0x10000 acc /= 0 || ch /= 0x20 || checksumKeeps a then
+                        sum + ch
+
+                    else
+                        sum
+            in
+            checksumCells t o (x + 1) right (Bitwise.and 0xFFFF next)
 
 
-checksumValue : Int64 -> Clusters -> Int
-checksumValue c clusters =
+{-| A cell's value before attributes, or -1 when it is not counted. A wide
+character's spacer is ESC in the DEC checksum, as xterm's placeholder there
+is, and nothing with the code point. A cell never written to is a space only
+with bit 4 or 8. The DEC 8-bit value is xterm's `xtermCharSetDec` for ASCII,
+from the code point, since the byte sent is not kept. -}
+checksumValue : Int -> Int64 -> Clusters -> Int
+checksumValue flags c clusters =
     if cellWide c == wideTail then
-        0
+        if Bitwise.and 16 flags /= 0 then
+            -1
 
-    else if cellIsCluster c then
-        Bitwise.and 0xFFFF (Maybe.withDefault 0x20 (Array.first (cellPoints c clusters)))
-
-    else if cellPoint c == 0 then
-        0x20
+        else
+            0x1B
 
     else
-        Bitwise.and 0xFFFF (cellPoint c)
+        let
+            cp =
+                if cellIsCluster c then
+                    Maybe.withDefault 0 (Array.first (cellPoints c clusters))
+
+                else
+                    cellPoint c
+        in
+        if cp == 0 then
+            if Bitwise.and 12 flags /= 0 then
+                0x20
+
+            else
+                -1
+
+        else if Bitwise.and 16 flags /= 0 then
+            Bitwise.and 0xFFFF cp
+
+        else if cp == 0x7F || cp == 0xFF then
+            0
+
+        else if (cp >= 0x20 && cp <= 0x9F) || (cp >= 0xA1 && cp <= 0xFE) then
+            Bitwise.and 0x7F cp
+
+        else
+            0x1B
+
+
+{-| The VT100 attributes xterm adds to a cell's value. -}
+checksumAttributes : Int64 -> Attrs -> Int
+checksumAttributes c a =
+    let
+        on bit weight =
+            if Bitwise.and bit a.flags /= 0 then
+                weight
+
+            else
+                0
+    in
+    (if Bitwise.and protectBit c /= 0 then 0x04 else 0)
+        + on 32 0x08
+        + (if a.ul /= 0 then 0x10 else 0)
+        + on 16 0x20
+        + on 8 0x40
+        + on 1 0x80
+
+
+{-| Faint, italic, struck through or a double underline: not added, but they
+keep a blank from being left out. -}
+checksumKeeps : Attrs -> Bool
+checksumKeeps a =
+    Bitwise.and (Bitwise.or 2 (Bitwise.or 4 64)) a.flags /= 0 || a.ul == 2
 
 
 hex4 : Int -> String

@@ -25,7 +25,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
-| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16, §VC17, §VC18 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16, §VC17, §VC18, §VC19 |
 
 `Vt`'s interface, as it stands:
 
@@ -250,8 +250,9 @@ the pages are a ring of `scrollback / 256` (rounded up). A page is three
 `Bytes`, made with `Bytes.fromUInt8s` from three `Builder UInt8`:
 
 - **text**: each row's cells as UTF-8, a cluster as its code points, an
-  empty cell as a 0 byte, a spacer head as 0xFF (V9, §VC14), a wide
-  character's spacer as nothing;
+  empty cell as a 0 byte, a spacer head as 0xFF (V9, §VC14), a cell in a
+  background colour alone as 0xFE (§VC17), a wide character's spacer as
+  nothing, and a protected cell's text followed by 0xFD (§VC19);
 - **heads**: for each row a header, two bytes low first: its extent in bits
   0–13, bit 14 set when every cell is in the default style, bit 15 when the
   row wrapped;
@@ -510,7 +511,8 @@ one esctest expects of xterm 334 and later and the one Ghostty's runner
 sets: each cell's code point to 16 bits, an empty cell a space, a wide
 character's spacer nothing, no attributes, summed to 16 bits and not
 negated; in origin mode the rectangle is from the region's top. XTCHECKSUM,
-which changes the calculation, is not taken.
+which changes the calculation, is not taken. (V14 takes it, §VC19; 23 is
+where a new terminal starts.)
 
 **V6 · The two sides answer as the same terminal.** Ghostty's runner has
 libghostty-vt answer DA as a VT520; `ghostty-pty` leaves the library's own
@@ -1526,4 +1528,123 @@ no findings.
 ### What is left
 
 The 73 differences of the last three minutes, not yet sampled. The fuzzer
-is not recorded in `diff-runs.tsv` until a run is clean.
+is not recorded in `diff-runs.tsv` until a run is clean. They are done, in
+§VC19.
+
+---
+
+## VC19. The differential fuzzer, the fifth sample (V14)
+
+§VC18's 73 differences, cut down. Three minutes, eight jobs, now find
+**27** where they found 73 (815,138 inputs, where the last run made
+564,124). The replay corpus went from 277 cases to 284, none divergent.
+One more Ghostty bug is patched in the oracle (0007).
+
+### What the groups were
+
+- **66 were the harness's.** §VC18's `own_name` wrote the core's name into
+  Ghostty's XTVERSION reply wherever the text `P>|libghostty\x1b` was in its
+  dump, and the fuzzer printed that text on the screen, where only Ghostty's
+  side was rewritten. It rewrites a `reply` line only now.
+- **ED 22 on the alternate screen** left the rows it scrolled off as
+  Ghostty's history; the alternate screen has none (`ed-22-alt`,
+  `ed-22-alt-cursor-leaves`). Patch 0007, below.
+- **XTCHECKSUM** (`CSI Ps # y`), V14 below (`xtchecksum`, `xtchecksum-reset`).
+- **REP after a wide character that did not fit.** With autowrap off, a
+  wide character at the last column is not written, but Ghostty keeps every
+  printable character for REP before it writes one, so `CSI b` repeats it
+  (`rep-wide-nowrap`).
+- **Protection in the scrollback's pages**, the core's own bug: `packCells`
+  kept a cell's text and its style, not its protection, so a protected row
+  that went into a page and came back on a resize was unprotected, and an
+  erase in ISO's mode cleared it (`scrollback-pages-protected`, and
+  `scrollback-pages-protected-wide` with DECSCA and DECSEL). A protected
+  cell's text is followed by 0xFD now, a third byte UTF-8 never has (§VC6);
+  a wide character's head carries it, and both halves get it back.
+
+**V14 · XTCHECKSUM is taken.** V5 left it out because esctest expected
+xterm's `checksumExtension: 23` and nothing else asked for another. Ghostty
+takes it when DECRQCRA is on, and the fuzzer found it in its first minute,
+so the core does what Ghostty's `xt_checksum.zig` does, which is xterm's
+`xtermCheckRect`: the five bits (1 not negated, 2 no attributes, 4 no
+blanks left out, 8 a cell never written to counted as a space, 16 the code
+point rather than the DEC 8-bit value) are `Term.xtChecksum`, 23 in a new
+terminal and again after RIS and DECSTR, as Ghostty's reset to its default
+does; `CSI Ps # y` sets them when `Config.checksums` is on and there is at
+most one parameter, bits past the fifth dropped. The DEC value is xterm's
+`xtermCharSetDec` from the code point (0x7F and 0xFF are 0, 0x20–0x9F and
+0xA1–0xFE their low seven bits, anything else, a wide character's spacer
+among them, ESC); the attributes are protection 4, invisible 8, any
+underline 16, inverse 32, blink 64 and bold 128; a blank is left out after
+the rectangle's first counted cell unless faint, italic, struck through or
+double underlined; and a cluster's marks are added only to the DEC sum with
+nothing left out. Every value from 0 to 31 gives Ghostty's sum over a row
+of every attribute, a wide character, a cluster, DEC line drawing and
+Latin-1 (`xtchecksum` holds eight of them).
+
+**Patch 0007** ([report](upstream/ghostty-scroll-clear-gives-the-alt-screen-history.md)):
+`Screen.scrollClear` grows the page list a row at a time and does not ask
+whether the screen keeps a scrollback, where `cursorDownScroll` does. The
+patch erases the history after it when the screen has none, as
+`Screen.resize` already does.
+
+### What it cost
+
+The protection test came first as one more test of each cell in
+`packCells`, after the four it made already (a spacer, a cluster, a spacer
+head, a background colour alone): `vte-scrolling` 1.4% more instructions,
+`gitlog` and `ls` 0.7%. One test now finds a plain cell, the commonest: a
+mask of every bit that makes a cell more than its code point (`packSpecial`,
+the width and cluster bits, `bgBit` and `protectBit`), and anything else
+goes to `packOther`. That is fewer instructions than before on everything
+that pages: `gitlog` 8.6%, `ls` 10.4%, `vte-scrolling_fullscreen` 11.9%.
+The mask has to be written as a literal, `0x3E00000`: written as
+`Bitwise.or 0xE00000 (Bitwise.or bgBit protectBit)` it is a top-level value
+the program computes on first use, and each read of it in the loop cost
+about 17 instructions, 331 M on `gitlog` (geng-lang `m4-visiterm.md`
+§VA54).
+
+Instructions, millions, one run, and times, warm, five runs, ms, against
+`744bb0f`; every input's dump is the same:
+
+| input | budget | ms | ms at `744bb0f` | instr. | at `744bb0f` |
+|---|---:|---:|---:|---:|---:|
+| `cup` | 56 | 49–51 | 50–51 | 1,615 | 1,615 |
+| `gitlog` | 132 | 100–103 | 105–107 | 3,109 | 3,402 |
+| `ls` | 124 | 80–83 | 84–88 | 2,774 | 3,097 |
+| vte-cursor_motion | 28 | 23–24 | 23–25 | 840 | 840 |
+| vte-dense_cells | 28 | 20–21 | 19–22 | 756 | 756 |
+| vte-light_cells | 24 | 8–10 | 9–11 | 343 | 343 |
+| vte-scrolling | 42 | 38–40 | 38–41 | 1,414 | 1,454 |
+| vte-scrolling_bottom_region | 37 | 24–26 | 24–25 | 1,003 | 1,003 |
+| vte-scrolling_bottom_small_region | 132 | 24–25 | 24–26 | 1,001 | 1,001 |
+| vte-scrolling_fullscreen | 45 | 27–28 | 27–29 | 868 | 985 |
+| vte-scrolling_top_region | 223 | 24–25 | 24–25 | 1,003 | 1,003 |
+| vte-scrolling_top_small_region | 125 | 25–26 | 24–26 | 1,001 | 1,001 |
+| vte-unicode | 25 | 15–16 | 14–16 | 547 | 547 |
+
+`Term`'s new field costs nothing measured: the build with the old
+`packCells` and everything else of this section's is at `744bb0f`'s
+instructions on every input to within 1 M.
+
+**esctest2: 392**, as before (Ghostty 388). The self-fuzzer, two minutes
+from the seeds on eight jobs: 740,822 inputs, no findings.
+
+### What is left
+
+The 27 differences of the last three minutes, cut down (two too long for
+the minimizer's two minutes) and grouped but not yet fixed:
+
+- **The window's size in pixels.** `CSI 14 t` and `CSI 16 t`, and mode
+  2048's report of the size, answer in pixels, which the oracle's callback
+  gives as ten by twenty a cell and the core has no number for (3).
+- **A wide character in a reflow, a resize to one column among them**:
+  rows that start a column later or earlier in one than the other, and a
+  history a row longer (14).
+- **The alternate screen's clears.** `?1047l` clears the alternate screen
+  in the erase colour, which `?47h` then shows; the core's rows come back
+  without it (3).
+- **A wide character written past the right margin of a one-row screen**
+  with left and right margins (2), **DL and DCH over a wide character** (1),
+  **OSC 104 with an index past 255** (2), **the saved cursor after three
+  resizes** (1), and **an underline one cell short** (1).
