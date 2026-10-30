@@ -969,7 +969,7 @@ the next line is written on in the same row; it is so on upstream main
 (`108d503ac`) too. One column makes such rows of every line with a wide
 character, and widening again joins every two lines
 (`pages-one-column`). Both cases have a `divergence.txt` and pin Ghostty's
-dump, and the report waits for review in
+dump, and the report, kept and not to be filed (`upstream/README.md`), is
 [`upstream/ghostty-reflow-joins-a-blank-continuation.md`](upstream/ghostty-reflow-joins-a-blank-continuation.md).
 
 **What it costs.** `core-bench FILE resize COLS ROWS` feeds the file at 160
