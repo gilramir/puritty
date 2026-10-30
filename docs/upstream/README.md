@@ -25,3 +25,4 @@ fuzzer leaves out an input with one.
 | [ED 22 gives the alternate screen a scrollback](ghostty-scroll-clear-gives-the-alt-screen-history.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC19 | not to be filed |
 | [A wide character that wraps into the margins keeps the screen's edge as its limit](ghostty-print-right-margin-before-wrap.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC20 | not to be filed |
 | [DCH after DL leaves a spacer head that DCH without it clears](ghostty-split-boundary-reads-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC20 | not to be filed |
+| [A reflow keeps a styled blank on the first row, under the viewport pin](ghostty-reflow-pin-copies-a-blank.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC21 | not to be filed |

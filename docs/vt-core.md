@@ -25,7 +25,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
-| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 to §VC20 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 to §VC21 |
 
 `Vt`'s interface, as it stands:
 
@@ -1745,3 +1745,90 @@ the minimizer) and grouped:
   a fresh line (1).
 - **SD, RI and margins before a resize** (3), and **long histories after a
   resize** (2).
+
+They are done, in §VC21.
+
+---
+
+## VC21. The differential fuzzer, the seventh sample
+
+§VC20's 12 differences, cut down. Three minutes, eight jobs, now find
+**3** where they found 12 (751,310 inputs). The replay corpus went from 295
+cases to 300, none divergent. One more Ghostty bug is patched in the oracle
+(0010).
+
+### What the groups were
+
+- **REP repeats the character as it was received**, mapped through the
+  character sets in use when REP comes, a single shift used up, as Ghostty
+  prints its `previous_char` again; the core had repeated what it wrote
+  (`rep-charset-as-received`, `rep-single-shift`). `printGraphic` is the
+  ground state's path for a character set and REP's both.
+- **A fresh line for a semantic prompt.** OSC 133 `A` (with options or
+  none) and `L`, and ConEmu's OSC 9;12, which Ghostty takes as 133 `A`,
+  begin a fresh line: CR and IND unless the cursor is at the left margin, or
+  in the first column when it is left of it (`osc133-fresh-line`). The core
+  keeps no prompt marks; see what is left.
+- **IL, DL, SD and SU make a spacer head ending a row they move a plain
+  cell**, as Ghostty's `rowWillBeShifted` does when the region is the
+  screen's width; the core had kept it, and a reflow then dropped the blanks
+  before it (`il-unheads-row-end`). Ghostty does the same between margins
+  that reach the last column or start in the first two, and the core's
+  scroll between margins already left no spacer head there: no case found a
+  difference.
+- **Patch 0010** ([report](upstream/ghostty-reflow-pin-copies-a-blank.md)):
+  Ghostty's reflow widened a row to cover any tracked pin on it, and the
+  page list's viewport pin is on the first cell of the first row, so the
+  oldest row kept a blank in a style that every other row lost. The patch
+  lets a pin other than the cursor's make the row be processed without
+  adding cells (`reflow-first-row-styled-blank`).
+
+### What it cost
+
+REP's fix first went into the ground state's loop as a call of its own,
+and `vte-scrolling`, which never takes that branch, went from 38–40 ms to
+40–42 against its budget of 42 on the same instructions: 6% more cycles,
+no more branch misses or instruction-cache misses, a function 6 bytes
+longer (`resume`, the parser's step). Reverting the call alone took back
+8 M of the 13 M cycles. `printGraphic`, shared by that path and REP and
+too large to inline, keeps the path out of `resume`, which is 1,278 bytes
+shorter than before; every input takes fewer instructions than §VC20's
+build, `vte-scrolling` 1.3%:
+
+| input | budget | ms | ms at §VC20 | instr. | at §VC20 |
+|---|---:|---:|---:|---:|---:|
+| `cup` | 56 | 49–52 | 50–51 | 1,603 | 1,615 |
+| `gitlog` | 132 | 97–102 | 97–100 | 3,067 | 3,107 |
+| `ls` | 124 | 82–86 | 81–84 | 2,730 | 2,775 |
+| vte-cursor_motion | 28 | 23–24 | 23–25 | 834 | 840 |
+| vte-dense_cells | 28 | 19–21 | 20 | 753 | 756 |
+| vte-light_cells | 24 | 9–11 | 8–9 | 326 | 343 |
+| vte-scrolling | 42 | 38–39 | 39–41 | 1,398 | 1,417 |
+| vte-scrolling_bottom_region | 37 | 24–25 | 25–26 | 981 | 1,003 |
+| vte-scrolling_bottom_small_region | 132 | 24–25 | 25–26 | 980 | 1,001 |
+| vte-scrolling_fullscreen | 45 | 26–28 | 25–27 | 852 | 868 |
+| vte-scrolling_top_region | 223 | 24–26 | 25–26 | 981 | 1,003 |
+| vte-scrolling_top_small_region | 125 | 24–26 | 25–26 | 980 | 1,001 |
+| vte-unicode | 25 | 14–15 | 15–16 | 532 | 547 |
+
+Every input's dump is the same. **esctest2: 392**, as before (Ghostty
+388). The self-fuzzer, two minutes from the seeds on eight jobs: 657,912
+inputs, no findings.
+
+### What is left
+
+Two of the three differences, and one the fuzzer has not met yet:
+
+- **A page reflowed through the widths it passed** (2). V10 reflows a
+  page once, from the width it was cut at to the one it is read at, and
+  §VC20's `moved` does so at its own width too; Ghostty reflows every row
+  at every resize, and with a line that ends in a blank row that wraps (an
+  erase that kept protected cells leaves one) two widths in a row are not
+  the one between them: two columns, then eight, then four is not two,
+  then four. A page would have to be reflowed through each width it went
+  through, or at each resize as Ghostty's are.
+- **Prompt marks.** After OSC 133 `A` or `P`, Ghostty marks the rows of
+  the prompt, and ED 2 with the last row that is not empty a prompt
+  scrolls the screen into the scrollback as ED 22 does (Ghostty's #905: ^L
+  at a prompt keeps what was above it). The core keeps no marks, and its ED
+  2 clears in place.

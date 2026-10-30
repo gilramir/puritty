@@ -1363,7 +1363,7 @@ ground bytes n i t =
                 printAscii bytes n i b t
 
             else
-                ground bytes n (i + 1) (printPoint (graphic t b) 1 (unshift t))
+                ground bytes n (i + 1) (printGraphic b t)
 
         else if b >= 0x80 then
             if t.plain && not t.wrapNext then
@@ -1413,7 +1413,7 @@ groundMargined bytes n i t =
                 byteAt bytes i
         in
         if b >= 0x20 && b < 0x7F then
-            groundMargined bytes n (i + 1) (printPoint (graphic t b) 1 (unshift t))
+            groundMargined bytes n (i + 1) (printGraphic b t)
 
         else if b >= 0x80 then
             startUtf8 bytes n i b t
@@ -1479,6 +1479,22 @@ graphic t b =
 
     else
         b
+
+
+{-| A character printed through the character sets, a single shift used up,
+and kept for REP as it was received, which REP maps through the sets in use
+then, as Ghostty prints it again (§VC21). The ground state's path for a
+character set and REP share it, which keeps it out of the parser's loop. -}
+printGraphic : Int -> (moved t : Term) -> Term
+printGraphic b t =
+    let
+        cp =
+            graphic t b
+
+        r =
+            printPoint cp (printedWidth cp) (unshift t)
+    in
+    { r | lastPoint = b }
 
 
 {-| The set in slot `g` (G0 to G3): 0 ASCII, 1 DEC's special graphics, 2
@@ -2626,6 +2642,23 @@ oscDispatch end t0 =
 
         Just 104 ->
             resetPalette (Array.dropFirst 1 parts) t
+
+        Just 133 ->
+            -- a semantic prompt's start (`A`, with options or none) and
+            -- `L` begin a fresh line; the core keeps no prompt marks (§VC21)
+            if Array.get 1 parts == Just "A" || rest == "L" then
+                freshLine t
+
+            else
+                t
+
+        Just 9 ->
+            -- ConEmu's mark of a prompt's start, Ghostty's 133;A
+            if String.startsWith "12" rest then
+                freshLine t
+
+            else
+                t
 
         Just c ->
             if c >= 10 && c <= 19 then
@@ -3835,6 +3868,18 @@ margins at the region's bottom does not scroll, as in Ghostty. -}
 carriageReturn : (moved t : Term) -> Term
 carriageReturn t =
     { t | x = crX t, wrapNext = False }
+
+
+{-| A fresh line, as Ghostty's for a semantic prompt: CR and IND unless the
+cursor is at the left margin, or in the first column when it is left of the
+margin. -}
+freshLine : (moved t : Term) -> Term
+freshLine t =
+    if t.x == (if t.x < t.left then 0 else t.left) then
+        t
+
+    else
+        lineFeed { t | x = crX t, wrapNext = False }
 
 
 {-| Where CR takes the cursor: the left margin, or the first column from
@@ -5113,7 +5158,7 @@ repeatLast count t =
         t
 
     else
-        repeatLast (count - 1) (printPoint t.lastPoint (printedWidth t.lastPoint) t)
+        repeatLast (count - 1) (printGraphic t.lastPoint t)
 
 
 printedWidth : Int -> Int
@@ -5803,14 +5848,33 @@ regionUp count top bottom t =
 
 
 {-| Rows `top` to `bottom` made not to wrap, as Ghostty's IL and DL leave
-the rows they shift when the region is the screen's width (§VC16). -}
+the rows they shift when the region is the screen's width (§VC16), and a
+spacer head ending one a plain cell, as its `rowWillBeShifted` makes it
+(§VC21). -}
 unwrapRegion : Int -> Int -> (moved t : Term) -> Term
 unwrapRegion top bottom t =
     if top > bottom then
         t
 
     else
-        unwrapRegion (top + 1) bottom { t | screen = setWrapped top False t.screen }
+        unwrapRegion (top + 1) bottom { t | screen = unheadEnd top (setWrapped top False t.screen) }
+
+
+{-| A spacer head ending row `y` made a plain cell in its style. -}
+unheadEnd : Int -> (moved s : Screen) -> Screen
+unheadEnd y s =
+    let
+        o =
+            rowOffset s y
+
+        c =
+            peekCell o (s.cols - 1) s
+    in
+    if cellWide c == spacerHead then
+        { s | cells = Builder.set (o + s.cols - 1) (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
+
+    else
+        s
 
 
 {-| `regionUp` with no scrollback kept, for DL, which keeps none in

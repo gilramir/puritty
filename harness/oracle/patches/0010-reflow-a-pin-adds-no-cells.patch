@@ -1,0 +1,37 @@
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -1684,6 +1684,13 @@
+             if (cols_len == 0 and src_row.semantic_prompt != .none) cols_len = 1;
+         }
+ 
++        // The cells written: the row's own and those up to the cursor. A
++        // pin other than the cursor's, the viewport's among them, makes the
++        // row be processed so that it can be moved, but adds no cells: a
++        // blank in a style under the viewport pin was copied where any
++        // other row's was dropped (visiterm harness/oracle/patches).
++        var content_len = cols_len;
++
+         // Handle tracked pin adjustments. We also note whether any
+         // tracked pin is on this row at all so that the per-cell loop
+         // below can skip pin scans entirely for the overwhelmingly
+@@ -1725,6 +1732,7 @@
+         if (cursor_pin) |p| {
+             if (p.node == row.node and p.y == src_y) {
+                 cols_len = @max(cols_len, p.x + 1);
++                content_len = @max(content_len, p.x + 1);
+             }
+         }
+ 
+@@ -1829,6 +1837,12 @@
+                 }
+             }
+ 
++            if (x >= content_len) {
++                x += 1;
++                self.cursorForward();
++                continue;
++            }
++
+             if (self.writeCell(
+                 list,
+                 &cells[x],
