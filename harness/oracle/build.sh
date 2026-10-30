@@ -10,5 +10,5 @@ PATH=$V/.devbox/nix/profile/default/bin:/home/gram/prj/geng-lang/.devbox/nix/pro
 if [ ! -f "$G/zig-out/lib/libghostty-vt.a" ]; then
   (cd "$G" && zig build -Demit-lib-vt=true -Doptimize=ReleaseFast)
 fi
-clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-dump.c \
+clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-dump.c gdump.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-dump

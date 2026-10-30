@@ -25,6 +25,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 |
 
 `Vt`'s interface, as it stands:
 
@@ -164,16 +165,16 @@ not and `ghostty.txt` pins what Ghostty prints instead.
 
 ```
 ./harness/oracle/build.sh && ./harness/dump/build.sh
-./harness/replay.py                  # 188 of 188 cases pass
+./harness/replay.py                  # 207 of 207 cases pass
 ./harness/replay.py -f wide --side core
 ./harness/replay.py --update         # expected.txt from the core: read the diff
 ./harness/replay.py --update --side ghostty   # a new case's expected.txt from Ghostty
 ```
 
-**188 cases, every one passing on both sides, two divergent** (2026-10-30;
+**207 cases, every one passing on both sides, two divergent** (2026-10-30;
 98 when the core was begun, nine more with §VC10, two with §VC11, eight with
 §VC12, eight with §VC13, fifty-nine with §VC14, the two divergent among
-them, and four with §VC15).
+them, four with §VC15 and nineteen with §VC16).
 Each case's `expected.txt` was written by Ghostty first and the core brought
 to it. Corrupting an expectation fails all three runs, which was checked.
 
@@ -209,6 +210,11 @@ code point so far and the range its next byte must fall in.
   not printed (`c1-ignored-utf8`).
 - **C0 controls are executed inside an escape, a CSI or an escape's
   intermediates**; CAN and SUB end the sequence; ESC starts a new one.
+- **A CSI's parameters are counted as Ghostty counts them** (V11, §VC16):
+  a separator ends one, and the last is kept only if a digit came after
+  the last separator, so `CSI m` has none and `CSI 3 ; m` one; a colon
+  outside SGR makes the sequence ignored, and each command takes only as
+  many parameters as Ghostty's.
 - **An 8-bit C1 control works outside the ground state** (`c1`, §VC15):
   inside an escape, a CSI, SOS/PM/APC or a DCS's header, 0x9B, 0x9D, 0x90
   and 0x98/0x9E/0x9F start CSI, OSC, DCS and SOS/PM/APC, 0x9C ends what
@@ -408,12 +414,10 @@ the budget. What is below is what is left beside them.
 - **esctest2** runs headless (§VC10): 386 of 567 tests pass, Ghostty
   v1.4.0 388 (297 at first; §VC12, §VC13, §VC15). The ten that Ghostty
   passes and the core does not need resize: XTWINOPS's resize and
-  maximize, and DECCOLM, which resizes to 132 columns. **The fuzzer** has run clean for four hours on
-  eight jobs, with resizes (§VC11); its differential against libghostty-vt
-  is not built.
-- **`CSI 0 s` with ?69 reset** saves the cursor in the core, where Ghostty
-  takes it for DECSLRM and does nothing: the core's parser does not tell a
-  parameter of 0 from none (§VC13).
+  maximize, and DECCOLM, which resizes to 132 columns. **The fuzzer**
+  has run clean for four hours on eight jobs, with resizes (§VC11); its
+  differential against libghostty-vt is built and finds differences in
+  its first second (§VC16), which are being fixed.
 - **X11's colour names** in OSC 4 and 10–19 (`red`, `DarkSlateGray`):
   Ghostty takes several hundred, from its `x11_color.zig`; the core takes
   none and leaves the colour as it was. No esctest test names one. A table
@@ -1050,3 +1054,168 @@ table (`cup` 1,581 M from 1,603, `vte-scrolling` 1,393 from 1,390) and
 every time under the budget. The fuzzer, twenty minutes on eight jobs at
 65109b5 (1,490 s with loading its corpus, now 59,905 inputs), ran 482,256
 inputs to coverage 4,887 edges from 4,872, and found nothing.
+
+---
+
+## VC16. The differential fuzzer
+
+§VC11's fuzzer holds the core to itself: a dump fed whole against the same
+dump fed a read at a time. It cannot see the core being wrong the same way
+both times, which is how §VC15's C1 controls went unseen. `vt-diff` holds
+it to libghostty-vt instead, in the same process, on the same inputs.
+
+- **The input** is `vt-fuzz`'s: three bytes of size and read length, the
+  rest fed, a 0xFE and two bytes a resize. The core is fed it in one read
+  (`Fuzz.dump`); Ghostty is fed the bytes between the resizes and resized
+  at each (`diff.h`).
+- **Ghostty's dump** is `ghostty-dump`'s, which is now a function,
+  `gdump` (`harness/oracle/gdump.c`), that `ghostty-dump` and the fuzzer
+  both call. The replay corpus passes on it as before.
+- **Scrollback.** Ghostty prunes its scrollback a page (about 400 KB) at a
+  time, so its history's length cannot be the core's at any limit. Both
+  keep 10,000 lines; Ghostty keeps at least that many, so while the core's
+  history is under 10,000 the two must be the same, and once it reaches it
+  only the screen, the cursor and the replies are compared. Ghostty gets no
+  byte limit. `CSI 65535 S` makes a full history in a few bytes, so an
+  unlimited one is not a choice.
+- **A finding** is a crash, or a dump that differs from Ghostty's.
+  `vt-diff-min` cuts one down while the dumps still differ in the same kind
+  of line (the size, the cursor, the history's length, a row's text, its
+  styles, a reply), so that it does not wander off to another difference.
+- **Left out:** an input with a DEL. Ghostty prints DEL in the ground
+  state, as a cell, where the core and xterm ignore it
+  ([`upstream/ghostty-del-is-printed.md`](upstream/ghostty-del-is-printed.md)).
+- **Seeds** are the replay cases but the two with a `divergence.txt`. Run
+  as inputs, every other case agrees with Ghostty, and those two do not,
+  which checks the comparison itself.
+
+```
+./harness/fuzz/build.sh                       # vt-diff, vt-diff-min too
+./harness/fuzz.py --diff --minutes 10         # a row of corpus/fuzz/diff-runs.tsv
+./harness/fuzz.py --diff --show FILE          # the core's dump and Ghostty's
+./harness/fuzz/vt-diff-min FILE OUT
+```
+
+### What it found first
+
+Eight jobs found a difference each in their first second. Three minutes
+with libFuzzer's `-fork=8 -ignore_crashes=1`, which keeps going past a
+finding, wrote 9,751; 120 of them, picked at random and cut down, fall into
+these groups, most a few bytes long:
+
+- **How a CSI's parameters are counted.** Ghostty's parser ends a
+  parameter at each `;` or `:` and keeps the last only if a digit followed
+  the last separator, so `CSI 3 ; m` has one parameter and `CSI m` none,
+  where the core has `3, 0` and `0`; and every command but SGR is ignored
+  if it has a colon. Each command then takes only so many parameters: CUP
+  and DECSTBM two, the cursor moves, ED, EL, IL, DL, ICH, DCH, ECH, SU, SD,
+  CHT, CBT and REP one, DSR and DECRQM exactly one, DECSTR none, and one
+  with more is ignored (`CSI 9;;9 H` does not move the cursor). `CSI 0 S`
+  scrolls nothing. This is also §VC9's `CSI 0 s`: `CSI s` has no parameter
+  and `CSI 0 s` one.
+- **SGR's colon groups**: a parameter Ghostty does not know followed by a
+  colon is skipped with its subparameters (`CSI : 100 m`).
+- **A string's end**, it seemed: the core answering an OSC or DCS cut at
+  its ESC where Ghostty did not. Ghostty answers those too; what differed
+  was the OSC's number and the DECRQSS's length (below).
+- **A pending wrap kept** by RI, CHT and DECSTR, and set by a wide
+  character at one column, where the core clears it or does not set it.
+- **Scrolling and history**: DL and SU on a one-row screen, and SU by more
+  than the region's rows, send more rows to the scrollback in the core.
+- **DCH between margins** clears the row's wrapped flag in Ghostty.
+- **Re-entering ?1049** on the alternate screen clears it in Ghostty.
+- **RIS keeps OSC 12's cursor colour** in Ghostty; the core resets it.
+- **OSC 4 queries** with a high byte in them.
+
+All of these are fixed, by Ghostty's code read for each (`stream.zig`'s
+`csiDispatch`, `sgr.zig`, `dcs.zig`, `Terminal.zig`), each with replay
+cases seeded from Ghostty, 188 → 207, but the string's end, which was the
+OSC's number instead: `OSC 04` and `OSC +4` are no command to Ghostty,
+whose number is digits with no leading zero, where the core read them as
+4. And a DECRQSS request of more than two bytes is dropped unanswered, as
+Ghostty keeps two.
+
+**V11 · A CSI's parameters are Ghostty's.** The count, the colon rule,
+and what each command takes, including that a count of 0 does nothing for
+HPR, VPR, CHT, CBT, IL, DL, DCH, SU and SD, where for the rest 0 is 1.
+xterm's 0 may be 1 for those too; esctest has no test of it, and with the
+rule the core passes the same 386, so the oracle's answer is taken and
+the fuzzer is not left to stumble over the difference.
+
+What the groups came to, besides the parameters (`csi-param-count`,
+`csi-zero-counts`, `csi-s-params`):
+
+- **SGR** (`sgr-colon-groups`): a colon group Ghostty does not know is
+  skipped whole; `38`, `48` and `58` take `5` and an index (modulo 256) or
+  `2` and three colours, with colons three or four joined parameters and
+  any other count skipped; anything short of that passes over the `38`
+  alone, so `38;5` is blink.
+- **Strings** (`strings-dcs-osc`): an OSC's text that is not UTF-8 is still
+  read, a high byte as one no command or colour has; the core had dropped
+  the whole string.
+- **A pending wrap** (`pending-wrap-kept`): RI keeps it when it scrolls and
+  clears it when it moves up; CHT, CBT, DECSTR and ED 3 keep it.
+- **History** (`scroll-history-counts`): SU sends no more rows to the
+  scrollback than the region has, and DL none.
+- **Wrapped flags** (`wrapped-flags-kept`, `wrapped-flags-shifted`,
+  `dch-margins-wrap`): DCH and ECH leave the row not wrapping, between
+  margins too; ICH and insert mode keep the flag; IL, DL, SD, and an SU
+  that is a DL in Ghostty (its region not the screen's top, or on the
+  alternate screen not its bottom), clear it on every row of the region.
+- **?1049 again** on the alternate screen saves the cursor and erases it
+  (`alt-1049-again`); **RIS** keeps OSC 10–19's colours, as DECSTR does
+  (`ris-keeps-dynamic`).
+- **VPR and HPR** move as CUP does, to the screen's edge or in origin mode
+  the margins', not as CUD and CUF; VPA kept the column wrongly in origin
+  mode with a left margin (`vpr-hpr-origin`).
+- **A wrap from right of the margins** takes the line feed before the
+  carriage return, so it does not scroll the margins
+  (`wrap-right-of-margins`).
+- **A wide character with one column** to write in is an empty narrow
+  cell, the cursor moving on (`wide-one-column`).
+- **Resizes.** A cursor on any line but the last was put at (0,0): the
+  split of each line after the cursor's wrote the cursor's place as not
+  found, which only the last line's did not (`resize-cursor-above`). The
+  core's own bug, and the replay corpus's fifty-nine resize cases had not
+  put the cursor above text. The saved cursor lost its pen and charsets in
+  a resize that rebuilt the screen (`resize-saved-state`); a cursor whose
+  row goes into the scrollback goes home, as Ghostty's `cursorReload`
+  puts it (`resize-cursor-history`); and with nothing saved a resize moves
+  nothing, where the core had moved its (0,0) (`resize-nothing-saved`).
+
+**What it cost.** The first build of these took `cup` from 1,581 M to
+1,688 M instructions and 55–58 ms against a budget of 56: `csi` called
+`dispatch` from two places, and clang inlines only a function called once
+(§VC10). One call put it back to 1,628. The parameter's last digit is now
+in `phase`, which every byte passes on anyway, not a `cur` of -1 that
+every digit tested: 1,595. `vte-scrolling` went from 1,390 M to 1,420 and
+40–42 ms against 42, which ablation put on the one-column case's call of
+`printPoint` from itself; written in place, 1,390 again. Warm, five runs,
+ms, and instructions, against §VC15's:
+
+| input | budget | ms | instr. | §VC15 |
+|---|---:|---:|---:|---:|
+| `cup` | 56 | 48–50 | 1,595 | 1,581 |
+| `gitlog` | 132 | 107–111 | 3,332 | 3,371 |
+| `ls` | 124 | 89–92 | 3,027 | 3,032 |
+| vte-cursor_motion | 28 | 23–24 | 830 | 823 |
+| vte-dense_cells | 28 | 20–21 | 745 | 723 |
+| vte-scrolling | 42 | 37–38 | 1,390 | 1,393 |
+| vte-unicode | 25 | 14–15 | 527 | 527 |
+
+`vte-dense_cells`' 3% is SGR's colon test on every parameter and Ghostty's
+order of `38`'s forms; the rest are within 1%. esctest is at 386, and
+every replay case and every seed passes `vt-fuzz` too.
+
+### What is left
+
+Three minutes again found 2,647 differences where the first three found
+9,751, and 127 of the 128 first cut down agree now. A second sample of 120
+falls into groups not yet looked at: VS16 after a narrow character, which
+Ghostty makes wide; DEC special graphics (`ESC ( 0`) and the locking shifts
+`ESC n` and `ESC o`, which the core does not take; `CSI 4 : m`; a DCS's
+header with a high byte in it; DECRQM for ?66 and ?1048; a combining mark
+with autowrap off; DECSCA's protection with EL; and resizes of the
+alternate screen and with history. The fuzzer is not recorded until they
+are done.
+

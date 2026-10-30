@@ -3,9 +3,13 @@
  *
  * The first three bytes are kept as they are, since they choose the size and
  * the read's length; the rest is cut down for as long as the finding stays
- * a finding. A crash stays a crash and a split stays a split.
+ * a finding. A crash stays a crash and a split stays a split. Built with
+ * VTFUZZ_DIFF it is vt-diff-min (§VC16): a difference from libghostty-vt
+ * stays one, and in the same kind of line of the dump (the screen's size,
+ * the cursor, the history's length, a row's text, its styles, a reply).
  *
  * usage: vt-min IN OUT */
+#define _GNU_SOURCE
 #include "vtfuzz.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,13 +18,58 @@
 static const int COLS[] = {1, 2, 3, 4, 5, 8, 10, 13, 20, 40, 80, 132};
 static const int ROWS[] = {1, 2, 3, 4, 5, 8, 10, 24, 25, 50};
 static int cols, rows, chunk;
+#define NCOLS (sizeof COLS / sizeof *COLS)
+#define NROWS (sizeof ROWS / sizeof *ROWS)
+
+#ifdef VTFUZZ_DIFF
+#include "diff.h"
+
+/* The kind of line two dumps first differ in, from 3 up. */
+static int line_kind(const char *a, size_t la, const char *b, size_t lb) {
+  size_t i = 0, start = 0;
+  while (i < la && i < lb && a[i] == b[i]) {
+    if (a[i] == '\n') start = i + 1;
+    i++;
+  }
+  const char *l = a + start;
+  if (start >= la) return 3;
+  if (*l == 's') return 4;
+  if (*l == 'c') return 5;
+  if (*l == 'h' && l[1] == 'i') return 6;
+  if (*l == 'r') return 7;
+  if (*l == ' ') return 8;
+  return 9;
+}
+
+/* 0 if the core and ghostty dump it the same, 2 if a call failed, and the
+ * kind of line they differ in otherwise. */
+static int kind(const uint8_t *d, size_t n) {
+  geng_handle in, a;
+  if (vtfuzz_bytes_from(d, n, &in) != GENG_OK) return 2;
+  geng_status sa = vtfuzz_dump(cols, rows, 0, LIMIT, in, &a);
+  vtfuzz_release(in);
+  if (sa != GENG_OK) return 2;
+  const uint8_t *pa;
+  size_t la, gl;
+  vtfuzz_string_to_utf8(a, &pa, &la);
+  char *core = malloc(la + 1), *g;
+  memcpy(core, pa, la);
+  vtfuzz_release(a);
+  int k = 0;
+  if (differs(cols, rows, d, n, COLS, NCOLS, ROWS, NROWS, core, &la, &g, &gl))
+    k = g ? line_kind(core, la, g, gl) : 2;
+  free(core);
+  free(g);
+  return k;
+}
+#else
 
 /* 0 if it dumps the same both ways, 1 if not, 2 if a call failed. */
 static int kind(const uint8_t *d, size_t n) {
   geng_handle in, a, b;
   if (vtfuzz_bytes_from(d, n, &in) != GENG_OK) return 2;
-  geng_status sa = vtfuzz_dump(cols, rows, 0, in, &a);
-  geng_status sb = vtfuzz_dump(cols, rows, chunk, in, &b);
+  geng_status sa = vtfuzz_dump(cols, rows, 0, 600, in, &a);
+  geng_status sb = vtfuzz_dump(cols, rows, chunk, 600, in, &b);
   vtfuzz_release(in);
   if (sa != GENG_OK || sb != GENG_OK) {
     if (sa == GENG_OK) vtfuzz_release(a);
@@ -36,6 +85,7 @@ static int kind(const uint8_t *d, size_t n) {
   vtfuzz_release(b);
   return differ;
 }
+#endif
 
 int main(int argc, char **argv) {
   if (argc != 3) {
@@ -93,6 +143,6 @@ int main(int argc, char **argv) {
   fwrite(buf, 1, 3 + n, o);
   fclose(o);
   fprintf(stderr, "vt-min: %zu bytes, %dx%d, reads of %d, %s\n", n, cols, rows,
-          chunk, want == 1 ? "a split" : "a crash");
+          chunk, want == 1 ? "a split" : want == 2 ? "a crash" : "a difference");
   return 0;
 }

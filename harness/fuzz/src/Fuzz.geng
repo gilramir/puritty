@@ -7,8 +7,11 @@ import UInt8
 import Vt
 
 
-{-| The dump of a terminal of `cols` by `rows` fed `input`, `chunk` bytes a
-read, the whole of it in one read when `chunk` is 0 or less.
+{-| The dump of a terminal of `cols` by `rows`, keeping `scrollback` lines,
+fed `input`, `chunk` bytes a read, the whole of it in one read when `chunk`
+is 0 or less. `vt-fuzz` keeps 600, three pages, so that a resize meets
+pages cut at another width (V10); `vt-diff` keeps 10,000, as it has
+Ghostty keep at least (`diff.h`).
 
 A 0xFE byte of the input is not fed: with the two bytes after it, it
 resizes the terminal, to the columns the first indexes in `colsTable` and
@@ -16,8 +19,8 @@ the rows the second indexes in `rowsTable`, as an input's first two bytes
 choose its size (`fuzz.c`, §VC14). A read never crosses one, so the two
 runs resize between the same bytes. UTF-8 has no 0xFE, and 0xFF still
 tries the decoder with a byte it has no use for. -}
-dump : Int -> Int -> Int -> Bytes -> String
-dump cols rows chunk input =
+dump : Int -> Int -> Int -> Int -> Bytes -> String
+dump cols rows chunk scrollback input =
     let
         n =
             Bytes.length input
@@ -29,7 +32,7 @@ dump cols rows chunk input =
             else
                 chunk
     in
-    Vt.dump (run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollback = 600, checksums = True }))
+    Vt.dump (run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollback = scrollback, checksums = True }))
 
 
 colsTable : Array Int

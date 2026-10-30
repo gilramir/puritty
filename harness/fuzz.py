@@ -12,6 +12,15 @@ many jobs, how many inputs, the coverage, and what it found.
   ./harness/fuzz.py --minutes 10                # one job
   ./harness/fuzz.py --hours 4 --jobs 8          # the exit's run
   ./harness/fuzz.py --show FILE                 # both dumps of a finding
+
+With --diff it runs vt-diff instead (§VC16), which holds the core to
+libghostty-vt: a crash, or a dump that differs from Ghostty's, is a finding.
+Its corpus is .harness-work/fuzz/diff-corpus, its seeds leave out the
+replay cases that have a divergence.txt, and its runs are rows of
+corpus/fuzz/diff-runs.tsv.
+
+  ./harness/fuzz.py --diff --minutes 10
+  ./harness/fuzz.py --diff --show FILE          # the core's dump and Ghostty's
 """
 
 import argparse
@@ -41,7 +50,7 @@ def nearest(table, n):
     return min(range(len(table)), key=lambda i: abs(table[i] - n))
 
 
-def seeds(into):
+def seeds(into, divergent=True):
     """Every replay case as an input: its size where fuzz.c's tables have
     it, the nearest otherwise, its resizes as 0xFE and the two indexes
     (`Fuzz.dump`, §VC14), and reads of 1 and of 7."""
@@ -49,7 +58,7 @@ def seeds(into):
     n = 0
     for case in sorted(replay.CORPUS.iterdir()):
         f = case / "case.txt"
-        if not f.exists():
+        if not f.exists() or (not divergent and (case / "divergence.txt").exists()):
             continue
         cols, rows, data, resizes = replay.parse_resizing(f.read_text())
         # A 0xFE of the case's own would read as a resize; none has one.
@@ -80,19 +89,24 @@ def main():
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--show", metavar="FILE", help="print both dumps of one input")
     p.add_argument("--no-record", action="store_true", help="do not add a row to runs.tsv")
+    p.add_argument("--diff", action="store_true", help="hold the core to libghostty-vt (vt-diff)")
     a = p.parse_args()
+    global FUZZ, RUNS
+    if a.diff:
+        FUZZ = FUZZ.with_name("vt-diff")
+        RUNS = RUNS.with_name("diff-runs.tsv")
     if not os.access(FUZZ, os.X_OK):
         sys.exit(f"{FUZZ} is not built: ./harness/fuzz/build.sh")
     if a.show:
         env = dict(os.environ, VTFUZZ_PRINT="1")
         sys.exit(subprocess.run([str(FUZZ), a.show], env=env).returncode)
     seconds = int(a.hours * 3600 + a.minutes * 60) or 60
-    corpus = WORK / "corpus"
-    seed_dir = WORK / "seeds"
+    corpus = WORK / ("diff-corpus" if a.diff else "corpus")
+    seed_dir = WORK / ("diff-seeds" if a.diff else "seeds")
     shutil.rmtree(seed_dir, ignore_errors=True)
-    n = seeds(seed_dir)
+    n = seeds(seed_dir, divergent=not a.diff)
     corpus.mkdir(parents=True, exist_ok=True)
-    logs = WORK / "logs"
+    logs = WORK / ("diff-logs" if a.diff else "logs")
     shutil.rmtree(logs, ignore_errors=True)
     logs.mkdir(parents=True)
     started = datetime.datetime.now().astimezone()
@@ -100,7 +114,7 @@ def main():
     # Each job is capped as every built program's run is in geng-lang.
     cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={3 * a.jobs + 2}G",
            str(FUZZ), f"-max_total_time={seconds}", "-rss_limit_mb=2048", "-timeout=10", "-max_len=4096",
-           f"-dict={DICT}", f"-artifact_prefix={WORK}/", "-print_final_stats=1",
+           f"-dict={DICT}", f"-artifact_prefix={WORK}/{'diff-' if a.diff else ''}", "-print_final_stats=1",
            f"-jobs={a.jobs}", f"-workers={a.jobs}", str(corpus), str(seed_dir)]
     t0 = time.monotonic()
     subprocess.run(cmd, cwd=logs, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

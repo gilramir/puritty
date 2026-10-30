@@ -356,12 +356,14 @@ type alias Saved =
     , g1 : Int
     , gl : Int
     , guard : Int64
+    , isSet : Bool
     }
 
 
+{-| No cursor saved: DECRC goes home with the defaults. -}
 noSaved : Saved
 noSaved =
-    { x = 0, y = 0, attrs = plainAttrs, wrapNext = False, origin = False, g0 = 0, g1 = 0, gl = 0, guard = 0 }
+    { x = 0, y = 0, attrs = plainAttrs, wrapNext = False, origin = False, g0 = 0, g1 = 0, gl = 0, guard = 0, isSet = False }
 
 
 {-| A ring of `size` rows, `stride` slots each, in one builder: the screen's
@@ -1291,8 +1293,14 @@ wrapNow t =
 
             else
                 t
+
+        -- the line feed first, from where the cursor is, so that a wrap
+        -- from right of the margins does not scroll them; then the left
+        -- margin, as Ghostty's printWrap does (§VC16)
+        fed =
+            lineFeed { marked | wrapNext = False }
     in
-    lineFeed { marked | x = marked.left, wrapNext = False }
+    { fed | x = fed.left }
 
 
 writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (moved row : Builder Int64) -> Builder Int64
@@ -1412,8 +1420,29 @@ printPoint cp w t0 =
 
                 else
                     t1
+
+            -- a wide character with one column to write in is an empty
+            -- narrow cell, and the cursor moves on as after a narrow one,
+            -- as in Ghostty (§VC16); written here and not by a call of
+            -- `printPoint`, which costs every character a cycle or more
+            one =
+                w == 2 && rightEdge t - t.left <= 1
+
+            wc =
+                if one then
+                    1
+
+                else
+                    w
+
+            cc =
+                if one then
+                    0
+
+                else
+                    cp
         in
-        if w == 2 && t.x + 2 > rightEdge t then
+        if wc == 2 && t.x + 2 > rightEdge t then
             if t.autowrap && t.cols >= 2 then
                 let
                     s =
@@ -1461,26 +1490,26 @@ printPoint cp w t0 =
                         s0
 
                     else if inserting == 1 then
-                        insertMargined o t.x w t.right t.erase s0
+                        insertMargined o t.x wc t.right t.erase s0
 
                     else
-                        insertCells o t.x w t.erase s0
+                        insertCells o t.x wc t.erase s0
 
                 ext =
                     extentAt o s
 
                 cells =
-                    splitWide o t.x (t.x + w) ext (reachAt o ext t.x s.cells)
+                    splitWide o t.x (t.x + wc) ext (reachAt o ext t.x s.cells)
 
                 written =
-                    if w == 2 then
-                        Builder.set (o + t.x + 1) (Bitwise.or t.pen (Int64.fromInt wideTail)) (Builder.set (o + t.x) (Bitwise.or t.pen (Int64.fromInt (Bitwise.or wideHead cp))) cells)
+                    if wc == 2 then
+                        Builder.set (o + t.x + 1) (Bitwise.or t.pen (Int64.fromInt wideTail)) (Builder.set (o + t.x) (Bitwise.or t.pen (Int64.fromInt (Bitwise.or wideHead cc))) cells)
 
                     else
-                        Builder.set (o + t.x) (Bitwise.or t.pen (Int64.fromInt cp)) cells
+                        Builder.set (o + t.x) (Bitwise.or t.pen (Int64.fromInt cc)) cells
 
                 x =
-                    t.x + w
+                    t.x + wc
             in
             { t
                 | screen = { s | cells = extendTo o t.cols x written }
@@ -1887,7 +1916,7 @@ escDispatch b t =
         { t | tabs = Builder.set t.x 1 t.tabs }
 
     else if b == 0x4D then
-        reverseIndex { t | wrapNext = False }
+        reverseIndex t
 
     else if b == 0x63 then
         reset t
@@ -1980,6 +2009,17 @@ oscString bytes n i t =
 
         else
             oscString bytes n (i + 1) (keepByte b t)
+
+
+{-| An OSC's command number as Ghostty reads one: digits only, and no
+leading zero but in `0` itself, so `04` and `+4` are no command (§VC16). -}
+oscNumber : String -> Maybe Int
+oscNumber text =
+    if text == "" || not (String.all Char.isDigit text) || (String.startsWith "0" text && text /= "0") then
+        Nothing
+
+    else
+        String.toInt text
 
 
 keepByte : Int -> (moved t : Term) -> Term
@@ -2127,14 +2167,21 @@ oscDispatch end t0 =
         t =
             taken.term
 
+        -- text that is not UTF-8 is still read, a high byte as one no
+        -- command or colour has, as Ghostty reads the bytes (§VC16)
         text =
-            stringOf taken.text
+            when Bytes.toString (Bytes.fromUInt8s taken.text) is
+                Just decoded ->
+                    decoded
+
+                Nothing ->
+                    stringOf (Array.map lowByte taken.text)
 
         parts =
             String.split ";" text
 
         command =
-            String.toInt (Maybe.withDefault "" (Array.first parts))
+            oscNumber (Maybe.withDefault "" (Array.first parts))
 
         rest =
             String.join ";" (Array.dropFirst 1 parts)
@@ -2456,7 +2503,9 @@ dcsDispatch t0 =
         text =
             dropParams (stringOf (Array.map lowByte taken.text))
     in
-    if String.startsWith "$q" text then
+    if String.startsWith "$q" text && String.count text <= 4 then
+        -- Ghostty keeps two bytes of a request and drops one longer
+        -- unanswered (§VC16)
         reply ("\u{001B}P" ++ requestStatus (String.dropFirst 2 text) t ++ "\u{001B}\\") t
 
     else
@@ -2580,9 +2629,16 @@ sgrText a =
         )
 
 
-{-| A CSI's parameters and intermediates, then its final byte. `phase` is 0
-before any parameter byte, 1 among them, 2 after an intermediate. `colons`
-has bit `k` set when parameter `k` was followed by a colon. -}
+{-| A CSI's parameters and intermediates, then its final byte. `colons`
+has bit `k` set when parameter `k` was followed by a colon, and `cur` is the
+parameter being read. `phase` is 0 before any parameter byte, 1 among them
+with no digit since the last separator, 2 with one, and 3 or 4 after an
+intermediate, 4 if a digit came after the last separator. A separator ends
+a parameter, 0 if it had no digit, and the final byte keeps the last only
+if it had one, as Ghostty's parser does, so that `CSI 3 ; m` has one
+parameter and `CSI m` none (§VC16); the digit is kept in `phase`, which
+every byte passes on anyway, so that a digit costs what it did. A colon
+outside SGR makes the sequence ignored, as in Ghostty. -}
 csi : Bytes -> Int -> Int -> (moved t : Term) -> (moved params : Builder Int) -> Int -> Int -> Int -> Int -> Int -> Term
 csi bytes n i t params cur colons priv inter phase =
     if i >= n then
@@ -2594,14 +2650,14 @@ csi bytes n i t params cur colons priv inter phase =
                 byteAt bytes i
         in
         if b >= 0x30 && b <= 0x39 then
-            if phase == 2 then
+            if phase >= 3 then
                 csiIgnore bytes n (i + 1) t
 
             else
-                csi bytes n (i + 1) t params (min 65535 (cur * 10 + b - 0x30)) colons priv inter 1
+                csi bytes n (i + 1) t params (min 65535 (cur * 10 + b - 0x30)) colons priv inter 2
 
         else if b == 0x3B || b == 0x3A then
-            if phase == 2 then
+            if phase >= 3 then
                 csiIgnore bytes n (i + 1) t
 
             else
@@ -2637,10 +2693,45 @@ csi bytes n i t params cur colons priv inter phase =
                 csiIgnore bytes n (i + 1) t
 
         else if b >= 0x20 && b < 0x30 then
-            csi bytes n (i + 1) t params cur colons priv b 2
+            csi bytes
+                n
+                (i + 1)
+                t
+                params
+                cur
+                colons
+                priv
+                b
+                (if phase == 2 || phase == 4 then
+                    4
+
+                 else
+                    3
+                )
 
         else if b >= 0x40 && b <= 0x7E then
-            resume bytes n (i + 1) (dispatch b priv inter colons (Builder.toArray (Builder.pushLast cur params)) t)
+            -- one call of `dispatch`, so that clang still inlines it (§VC10)
+            if colons /= 0 && b /= 0x6D then
+                resume bytes n (i + 1) t
+
+            else
+                resume bytes
+                    n
+                    (i + 1)
+                    (dispatch b
+                        priv
+                        inter
+                        colons
+                        (Builder.toArray
+                            (if phase == 2 || phase == 4 then
+                                Builder.pushLast cur params
+
+                             else
+                                params
+                            )
+                        )
+                        t
+                    )
 
         else if b == 0x1B then
             escape bytes n (i + 1) t
@@ -2716,7 +2807,11 @@ dispatch final priv inter colons params t =
             withPen (sgr params colons 0 t.attrs) t
 
         else if final == 0x48 || final == 0x66 then
-            cursorTo (param 1 1 params - 1) (param 0 1 params - 1) t
+            if Array.length params <= 2 then
+                cursorTo (param 1 1 params - 1) (param 0 1 params - 1) t
+
+            else
+                t
 
         else
             dispatchRest final priv inter params t
@@ -2743,6 +2838,9 @@ dispatchRest final priv inter params t =
         else if final == 0x72 then
             Array.foldl restoreMode t params
 
+        else if Array.length params > 1 then
+            t
+
         else if final == 0x4A then
             eraseDisplay True (param 0 0 params) t
 
@@ -2755,14 +2853,14 @@ dispatchRest final priv inter params t =
         else
             t
 
-    else if priv == 0x3F && inter == 0x24 && final == 0x70 then
+    else if priv == 0x3F && inter == 0x24 && final == 0x70 && Array.length params == 1 then
         let
             p =
                 param 0 0 params
         in
         reply ("\u{001B}[?" ++ String.fromInt p ++ ";" ++ String.fromInt (privateState p t) ++ "$y") t
 
-    else if priv == 0 && inter == 0x24 && final == 0x70 then
+    else if priv == 0 && inter == 0x24 && final == 0x70 && Array.length params == 1 then
         let
             p =
                 param 0 0 params
@@ -2778,7 +2876,7 @@ dispatchRest final priv inter params t =
     else if priv == 0x3D && final == 0x63 then
         reply "\u{001B}P!|00000000\u{001B}\\" t
 
-    else if priv == 0 && inter == 0x21 && final == 0x70 then
+    else if priv == 0 && inter == 0x21 && final == 0x70 && Array.length params == 0 then
         softReset t
 
     else if priv == 0 && inter == 0x22 && final == 0x71 && Array.length params <= 1 then
@@ -2798,23 +2896,41 @@ dispatchRest final priv inter params t =
     else if priv == 0 && inter == 0x2A && final == 0x79 && t.config.checksums && Array.length params <= 6 then
         reply ("\u{001B}P" ++ String.fromInt (param 0 0 params) ++ "!~" ++ hex4 (rectChecksum params t) ++ "\u{001B}\\") t
 
-    else if priv == 0 && inter == 0x20 && final == 0x71 then
+    else if priv == 0 && inter == 0x20 && final == 0x71 && Array.length params <= 1 then
         cursorStyle (param 0 0 params) t
 
     else
         t
 
 
-{-| The plain sequences `dispatch` does not take itself. -}
+{-| The plain sequences `dispatch` does not take itself. Each takes as
+many parameters as Ghostty's takes, and one with more is ignored
+(§VC16): one for the cursor moves, the erases, the inserts and deletes,
+the scrolls, the tabs and REP, two for DECSTBM, and exactly one for DSR
+and XTWINOPS 18. -}
 dispatchRare : Int -> Array Int -> (moved t : Term) -> Term
 dispatchRare final params t =
-    if final == 0x41 then
+    if Array.length params > 1 && takesOne final then
+        t
+
+    else if zeroIsNothing final && count0 params == 0 then
+        t
+
+    else if final == 0x41 || final == 0x6B then
         { t | y = max (upperLimit t) (t.y - param 0 1 params), wrapNext = False }
 
-    else if final == 0x42 || final == 0x65 then
+    else if final == 0x42 then
         { t | y = min (lowerLimit t) (t.y + param 0 1 params), wrapNext = False }
 
-    else if final == 0x43 || final == 0x61 then
+    else if final == 0x65 then
+        -- VPR is CUP's row moved, to the screen's bottom or in origin mode
+        -- the region's, not CUD (§VC16)
+        cursorTo (originX t) (originY t + param 0 1 params) t
+
+    else if final == 0x61 then
+        cursorTo (originX t + param 0 1 params) (originY t) t
+
+    else if final == 0x43 then
         { t
             | x =
                 min
@@ -2828,7 +2944,7 @@ dispatchRare final params t =
             , wrapNext = False
         }
 
-    else if final == 0x44 then
+    else if final == 0x44 || final == 0x6A then
         cursorLeft (param 0 1 params) t
 
     else if final == 0x45 then
@@ -2845,13 +2961,13 @@ dispatchRare final params t =
             { t | x = clamp 0 (t.cols - 1) (param 0 1 params - 1), wrapNext = False }
 
     else if final == 0x64 then
-        cursorTo t.x (param 0 1 params - 1) t
+        cursorTo (originX t) (param 0 1 params - 1) t
 
     else if final == 0x49 then
-        { t | x = nextTab t.x (param 0 1 params) t, wrapNext = False }
+        { t | x = nextTab t.x (param 0 1 params) t }
 
     else if final == 0x5A then
-        { t | x = previousTab t.x (param 0 1 params) t, wrapNext = False }
+        { t | x = previousTab t.x (param 0 1 params) t }
 
     else if final == 0x4A then
         eraseDisplay False (param 0 0 params) t
@@ -2889,12 +3005,12 @@ dispatchRare final params t =
                 s =
                     t.screen
             in
-            { t | screen = deleteMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s, wrapNext = False }
+            { t | screen = setWrapped t.y False (deleteMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s), wrapNext = False }
 
         else
             t
 
-    else if final == 0x72 then
+    else if final == 0x72 && Array.length params <= 2 then
         let
             top =
                 param 0 1 params - 1
@@ -2913,14 +3029,35 @@ dispatchRare final params t =
             marginUp (param 0 1 params) t.top t.bottom t
 
         else
-            regionUp (param 0 1 params) t.top t.bottom t
+            -- no more rows to the scrollback than the region has; a
+            -- region that is not the screen's top, or on the alternate
+            -- screen not its bottom, is DL's and its rows stop wrapping, as
+            -- in Ghostty (§VC16)
+            let
+                scrolls =
+                    t.top == 0 && (not (isAlt t) || t.bottom == t.rows - 1)
+
+                top =
+                    t.top
+
+                bottom =
+                    t.bottom
+
+                up =
+                    regionUp (min (count0 params) (bottom - top + 1)) top bottom t
+            in
+            if scrolls then
+                up
+
+            else
+                unwrapRegion top bottom up
 
     else if final == 0x54 then
         if margined t then
             marginDown (param 0 1 params) t.top t.bottom t
 
         else
-            regionDown (param 0 1 params) t.top t.bottom t
+            unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
 
     else if final == 0x4C then
         if t.y < t.top || t.y > t.bottom then
@@ -2934,7 +3071,7 @@ dispatchRare final params t =
                 t
 
         else
-            regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False }
+            unwrapRegion t.y t.bottom (regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False })
 
     else if final == 0x4D then
         if t.y < t.top || t.y > t.bottom then
@@ -2948,7 +3085,7 @@ dispatchRare final params t =
                 t
 
         else
-            regionUp (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False }
+            unwrapRegion t.y t.bottom (scrollUpBy False (count0 params) t.y t.bottom { t | x = 0, wrapNext = False })
 
     else if final == 0x62 then
         repeatLast (min 65535 (param 0 1 params)) t
@@ -2962,7 +3099,7 @@ dispatchRare final params t =
     else if final == 0x6C then
         Array.foldl (\p acc -> setAnsi p False acc) t params
 
-    else if final == 0x6E then
+    else if final == 0x6E && Array.length params == 1 then
         let
             p =
                 param 0 0 params
@@ -2979,16 +3116,20 @@ dispatchRare final params t =
     else if final == 0x63 then
         reply primaryAttributes t
 
-    else if final == 0x74 && param 0 0 params == 18 then
+    else if final == 0x74 && Array.length params == 1 && param 0 0 params == 18 then
         reply ("\u{001B}[8;" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ "t") t
 
     else if final == 0x73 then
         -- CSI s is SCOSC, or with left and right margins on (?69) DECSLRM;
         -- with parameters it is DECSLRM, which does nothing with them off
-        if Dict.get 69 t.modes == Just True then
+        -- (`CSI 0 s` among them, §VC16); with more than two, nothing
+        if Array.length params > 2 then
+            t
+
+        else if Dict.get 69 t.modes == Just True then
             setMargins (param 0 1 params) (param 1 t.cols params) t
 
-        else if Array.length params == 1 && param 0 0 params == 0 then
+        else if Array.length params == 0 then
             saveCursor t
 
         else
@@ -2999,6 +3140,51 @@ dispatchRare final params t =
 
     else
         t
+
+
+{-| A count, 1 when there is no parameter, and 0 when it is 0. -}
+count0 : Array Int -> Int
+count0 params =
+    Maybe.withDefault 1 (Array.first params)
+
+
+{-| The finals whose count of 0 does nothing, as in Ghostty, where for the
+rest 0 is 1 (§VC16): HPR, VPR, CHT, CBT, IL, DL, DCH, SU and SD. -}
+zeroIsNothing : Int -> Bool
+zeroIsNothing final =
+    final == 0x61
+        || final == 0x65
+        || final == 0x49
+        || final == 0x5A
+        || final == 0x4C
+        || final == 0x4D
+        || final == 0x50
+        || final == 0x53
+        || final == 0x54
+
+
+{-| The finals that take one parameter at most. -}
+takesOne : Int -> Bool
+takesOne final =
+    (final >= 0x40 && final <= 0x47)
+        || final == 0x4A
+        || final == 0x4B
+        || final == 0x4C
+        || final == 0x4D
+        || final == 0x50
+        || final == 0x53
+        || final == 0x54
+        || final == 0x58
+        || final == 0x5A
+        || final == 0x49
+        || final == 0x60
+        || final == 0x61
+        || final == 0x62
+        || final == 0x64
+        || final == 0x65
+        || final == 0x67
+        || final == 0x6A
+        || final == 0x6B
 
 
 {-| DA1's answer, and DECID's: a VT220 with ANSI colour, as libghostty-vt
@@ -3402,6 +3588,26 @@ cursorTo x y t =
         { t | x = clamp 0 (t.cols - 1) x, y = clamp 0 (t.rows - 1) y, wrapNext = False }
 
 
+{-| The cursor's column and row as CUP gives them, from the margins in
+origin mode. -}
+originX : Term -> Int
+originX t =
+    if t.origin then
+        max 0 (t.x - t.left)
+
+    else
+        t.x
+
+
+originY : Term -> Int
+originY t =
+    if t.origin then
+        max 0 (t.y - t.top)
+
+    else
+        t.y
+
+
 {-| How far up CUU goes: the region's top when the cursor is in it. -}
 upperLimit : Term -> Int
 upperLimit t =
@@ -3438,7 +3644,9 @@ setPrivate p on t =
     else if p == 1049 then
         if on then
             if isAlt t then
-                t
+                -- again on the alternate screen: the cursor saved and the
+                -- screen erased, as Ghostty does (§VC16)
+                eraseDisplay False 2 (saveCursor t)
 
             else
                 toAlt True (saveCursor t)
@@ -3711,6 +3919,7 @@ saveCursor t =
                     , g1 = t.g1
                     , gl = t.gl
                     , guard = t.guard
+                    , isSet = True
                     }
             }
     }
@@ -3736,7 +3945,9 @@ restoreCursor t =
         }
 
 
-{-| RIS: the terminal as new, its replies kept. -}
+{-| RIS: the terminal as new, its replies kept, and the dynamic colours
+(OSC 10 to 19), which Ghostty's full reset keeps as its DECSTR does; the
+palette is reset (§VC16). -}
 reset : Term -> Term
 reset t =
     let
@@ -3746,7 +3957,7 @@ reset t =
         blank =
             fresh t.config
     in
-    withScroll { blank | replies = replies }
+    withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours }
 
 
 {-| DECSTR. -}
@@ -3764,7 +3975,6 @@ softReset t =
                 , g0 = 0
                 , g1 = 0
                 , gl = 0
-                , wrapNext = False
                 , cursorShape = 1
                 , modes = Array.foldl Dict.remove (Dict.set 12 False t.modes) softResetModes
                 , guard = 0
@@ -3943,7 +4153,12 @@ cacheSlot key =
 
 sgr : Array Int -> Int -> Int -> Attrs -> Attrs
 sgr params colons k a =
-    sgrLoop params colons k a.fg a.bg a.ulc a.flags a.ul
+    if Array.length params == 0 then
+        -- `CSI m`, which has no parameters (§VC16)
+        { fg = 0, bg = 0, ulc = 0, flags = 0, ul = 0 }
+
+    else
+        sgrLoop params colons k a.fg a.bg a.ulc a.flags a.ul
 
 
 {-| SGR's parameters from `k` on, each attribute a number of its own, so
@@ -3961,6 +4176,12 @@ sgrLoop params colons k fg bg ulc flags ul =
             next =
                 k + 1
         in
+        if colons /= 0 && Bitwise.and colons (Bitwise.shiftLeftBy k 1) /= 0 && p /= 4 && p /= 38 && p /= 48 && p /= 58 then
+            -- a colon after a parameter that takes none: it and what the
+            -- colons join to it are skipped, as Ghostty does (§VC16)
+            sgrLoop params colons (pastColons colons next) fg bg ulc flags ul
+
+        else
         when p is
             0 ->
                 sgrLoop params colons next 0 0 0 0 0
@@ -4099,71 +4320,92 @@ packColour colour next =
     Bitwise.or (Bitwise.shiftLeftBy 26 next) (colour + 1)
 
 
+{-| The index past a run of parameters joined by colons, from `i`. -}
+pastColons : Int -> Int -> Int
+pastColons colons i =
+    if Bitwise.and colons (Bitwise.shiftLeftBy i 1) /= 0 then
+        pastColons colons (i + 1)
+
+    else
+        i + 1
+
+
 {-| The colour of SGR 38, 48 or 58 at `k`, and the parameter after it
-(`packColour`): `5` and an index, or `2` and red, green and blue. With
-colons, `2` may carry a colour space before the three, which is skipped. A
-colour that is not one is -1. -}
+(`packColour`), by Ghostty's rules (§VC16): `5` and an index, the index
+taken modulo 256; or `2` and red, green and blue, which with colons may
+carry a colour space before them, three or four parameters joined to the
+`2`, and with any other count the colons' run is skipped. A colour that is
+not one is -1, and then only the 38 is passed over, so that what follows is
+read as SGR of its own (`38;5` is blink). -}
 extendedColour : Array Int -> Int -> Int -> Int
 extendedColour params colons k =
     let
         get j =
             Maybe.withDefault 0 (Array.get j params)
 
-        colonAfter j =
-            Bitwise.and colons (Bitwise.shiftLeftBy j 1) /= 0
+        len =
+            Array.length params - k
 
         kind =
             get (k + 1)
     in
-    if kind == 5 then
-        if Array.length params > k + 2 then
-            packColour (Bitwise.and 0xFF (get (k + 2)) + 1) (k + 3)
+    if len >= 3 && kind == 5 then
+        packColour (Bitwise.and 0xFF (get (k + 2)) + 1) (k + 3)
+
+    else if len >= 2 && kind == 2 then
+        if len < 5 then
+            packColour -1 (k + 1)
+
+        else if Bitwise.and colons (Bitwise.shiftLeftBy k 1) == 0 then
+            packColour (rgbAt params (k + 2)) (k + 5)
 
         else
-            packColour -1 (k + 2)
+            let
+                joined =
+                    colonRun colons (Array.length params - 1) (k + 1) 0
+            in
+            if joined == 3 then
+                packColour (rgbAt params (k + 2)) (k + 5)
 
-    else if kind == 2 then
-        let
-            -- with colons, the sub-parameters run while each is followed by one
-            subs =
-                countSubs colons (k + 1) 1
+            else if joined == 4 then
+                packColour (rgbAt params (k + 3)) (k + 6)
 
-            rgbAt =
-                if colonAfter k && subs >= 5 then
-                    k + 3
-
-                else
-                    k + 2
-
-            next =
-                if colonAfter k then
-                    k + 1 + subs
-
-                else
-                    k + 5
-        in
-        if Array.length params > rgbAt + 2 then
-            packColour
-                (Bitwise.or 0x1000000
-                    (Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0xFF (get rgbAt)))
-                        (Bitwise.or (Bitwise.shiftLeftBy 8 (Bitwise.and 0xFF (get (rgbAt + 1)))) (Bitwise.and 0xFF (get (rgbAt + 2))))
-                    )
-                )
-                next
-
-        else
-            packColour -1 next
+            else
+                packColour -1 (k + 2 + joined)
 
     else
-        packColour -1 (k + 2)
+        packColour -1 (k + 1)
 
 
-{-| How many parameters from `j` on were joined by colons to the one
-before: 1 and one more for each parameter followed by a colon. -}
-countSubs : Int -> Int -> Int -> Int
-countSubs colons j count =
-    if j < 32 && Bitwise.and colons (Bitwise.shiftLeftBy j 1) /= 0 then
-        countSubs colons (j + 1) (count + 1)
+foundOr : { row : Int, x : Int } -> Maybe { row : Int, x : Int } -> { row : Int, x : Int }
+foundOr before found =
+    when found is
+        Just at ->
+            if at.row >= 0 then
+                at
+
+            else
+                before
+
+        Nothing ->
+            before
+
+
+{-| Red, green and blue at `at` of the parameters, as a direct colour. -}
+rgbAt : Array Int -> Int -> Int
+rgbAt params at =
+    Bitwise.or 0x1000000
+        (Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get at params))))
+            (Bitwise.or (Bitwise.shiftLeftBy 8 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (at + 1) params)))) (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (at + 2) params))))
+        )
+
+
+{-| How many parameters from `j` on are followed by a colon, up to the
+last parameter, as Ghostty's `countColon`. -}
+colonRun : Int -> Int -> Int -> Int -> Int
+colonRun colons last j count =
+    if j < last && j < 32 && Bitwise.and colons (Bitwise.shiftLeftBy j 1) /= 0 then
+        colonRun colons last (j + 1) (count + 1)
 
     else
         count
@@ -4268,8 +4510,12 @@ insertCells o x count erase s =
 
                 else
                     max (min s.cols (keepTo + n)) (x + n)
+
+            -- the row's wrapped flag kept, as Ghostty's ICH keeps it (§VC16)
+            m =
+                Maybe.withDefault 0 (Builder.get (o + s.cols) tidy)
         in
-        { s | cells = Builder.set (o + s.cols) (Int64.fromInt newExt) (Builder.fill (o + x) (o + x + n) erase tidy) }
+        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt newExt)) (Builder.fill (o + x) (o + x + n) erase tidy) }
 
 
 deleteChars : Int -> (moved t : Term) -> Term
@@ -4291,7 +4537,8 @@ deleteChars count t =
             min count (s.cols - x)
     in
     if x >= ext && t.erase == 0 then
-        { t | screen = s, wrapNext = False }
+        -- the row no longer wraps, as Ghostty's DCH resets it (§VC16)
+        { t | screen = setWrapped t.y False s, wrapNext = False }
 
     else
         let
@@ -4325,7 +4572,8 @@ deleteChars count t =
 
 eraseChars : Int -> (moved t : Term) -> Term
 eraseChars count t =
-    eraseSpan (t.protectMode == 1) t.x (min t.cols (t.x + max 1 count)) { t | wrapNext = False }
+    -- ECH leaves the row not wrapping, as in Ghostty (§VC16)
+    eraseSpan (t.protectMode == 1) t.x (min t.cols (t.x + max 1 count)) { t | wrapNext = False, screen = setWrapped t.y False t.screen }
 
 
 {-| Columns `from` to `to` of the cursor's row made empty, in the erase
@@ -4451,7 +4699,8 @@ eraseDisplay selective how t =
         { t | screen = blankRows 0 t.rows t.erase t.screen, wrapNext = False }
 
     else if how == 3 then
-        clearScrollback { t | wrapNext = False }
+        -- the scrollback only: a pending wrap stays, as in Ghostty (§VC16)
+        clearScrollback t
 
     else if how == 1 then
         -- the rows first, through the term, so that nothing reads the term
@@ -4634,21 +4883,23 @@ feedRegion t =
 
 reverseIndex : (moved t : Term) -> Term
 reverseIndex t =
+    -- a scroll keeps a pending wrap and a move up clears it, as in
+    -- Ghostty, whose RI is a scroll down or a CUU (§VC16)
     if t.y == t.top && margined t then
         if t.x >= t.left && t.x <= t.right then
             marginDown 1 t.top t.bottom t
 
         else
-            t
+            { t | wrapNext = False }
 
     else if t.y == t.top then
         regionDown 1 t.top t.bottom t
 
     else if t.y > 0 then
-        { t | y = t.y - 1 }
+        { t | y = t.y - 1, wrapNext = False }
 
     else
-        t
+        { t | wrapNext = False }
 
 
 {-| Rows `top` to `bottom` scrolled up `count` times. On the main screen,
@@ -4656,6 +4907,8 @@ with the region starting at the top, the rows that leave go to the
 scrollback. -}
 regionUp : Int -> Int -> Int -> (moved t : Term) -> Term
 regionUp count top bottom t =
+    -- a loop of its own and not a call of `scrollUpBy`, which clang would
+    -- inline into `lineFeed`, and `lineFeed` then not into the ground state
     if count <= 0 then
         t
 
@@ -4679,6 +4932,42 @@ regionUp count top bottom t =
 
         else
             regionUp (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
+
+
+{-| Rows `top` to `bottom` made not to wrap, as Ghostty's IL and DL leave
+the rows they shift when the region is the screen's width (§VC16). -}
+unwrapRegion : Int -> Int -> (moved t : Term) -> Term
+unwrapRegion top bottom t =
+    if top > bottom then
+        t
+
+    else
+        unwrapRegion (top + 1) bottom { t | screen = setWrapped top False t.screen }
+
+
+{-| `regionUp` with no scrollback kept, for DL, which keeps none in
+Ghostty (§VC16). -}
+scrollUpBy : Bool -> Int -> Int -> Int -> (moved t : Term) -> Term
+scrollUpBy keep count top bottom t =
+    if count <= 0 then
+        t
+
+    else if keep && t.screen.hist + t.rows >= t.screen.size then
+        let
+            room =
+                pageOut t.clusters t.screen t.back
+        in
+        scrollUpBy keep
+            (count - 1)
+            top
+            bottom
+            { t
+                | screen = screenUp keep top bottom t.erase room.screen
+                , back = room.back
+            }
+
+    else
+        scrollUpBy keep (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
 
 
 regionDown : Int -> Int -> Int -> (moved t0 : Term) -> Term
@@ -4828,13 +5117,24 @@ savedPoint v =
     { x = v.x, y = v.y, wrap = v.wrapNext }
 
 
+{-| The saved cursor moved where a resize took it; with nothing saved,
+nothing is moved, as Ghostty keeps none (§VC16). -}
 withSaved : { x : Int, y : Int, wrap : Bool } -> (moved s : Screen) -> Screen
 withSaved p s =
     let
         v =
             s.saved
     in
-    { s | saved = { v | x = p.x, y = p.y, wrapNext = p.wrap } }
+    if v.isSet then
+        { s | saved = { v | x = p.x, y = p.y, wrapNext = p.wrap } }
+
+    else
+        s
+
+
+withState : Saved -> (moved s : Screen) -> Screen
+withState v s =
+    { s | saved = v }
 
 
 {-| A row of a screen or its scrollback out of the ring or a page: its
@@ -4866,6 +5166,11 @@ with autowrap off or in one column, as a reflow when read would not (V10). -}
 resizeScreen : Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
 resizeScreen reflow keep cols rows cursor saved clusters s back =
     let
+        -- the saved cursor's state, which the new screen takes over; a
+        -- resize moves only its position (§VC16)
+        before =
+            s.saved
+
         pages =
             if keep then
                 pagesOf back
@@ -4903,10 +5208,17 @@ resizeScreen reflow keep cols rows cursor saved clusters s back =
         vy =
             v.row - flow.hist
     in
-    { screen = built.screen
+    { screen = withState before built.screen
     , back = built.back
     , clusters = r.clusters
-    , cursor = offEdge cols { x = c.x, y = clamp 0 (rows - 1) (c.row - flow.hist), wrap = c.wrap }
+    , cursor =
+        -- a cursor whose row went into the scrollback goes home, as
+        -- Ghostty's cursorReload puts it (§VC16)
+        if c.row < flow.hist then
+            offEdge cols { x = 0, y = 0, wrap = c.wrap }
+
+        else
+            offEdge cols { x = c.x, y = min (rows - 1) (c.row - flow.hist), wrap = c.wrap }
     , saved =
         if vy >= 0 && vy < rows then
             offEdge cols { x = v.x, y = vy, wrap = v.wrap }
@@ -5282,9 +5594,11 @@ reflowCols old cols flow =
                         cut =
                             splitLine cols line marks (Array.length acc.rows)
                     in
+                    -- a line the cursor is not on finds it at row -1, and
+                    -- leaves where an earlier line found it (§VC16)
                     { rows = acc.rows ++ cut.rows
-                    , cursor = Maybe.withDefault acc.cursor (Array.get 0 cut.found)
-                    , saved = Maybe.withDefault acc.saved (Array.get 1 cut.found)
+                    , cursor = foundOr acc.cursor (Array.get 0 cut.found)
+                    , saved = foundOr acc.saved (Array.get 1 cut.found)
                     }
                 )
                 { rows = [], cursor = { row = -1, x = 0 }, saved = { row = -1, x = 0 } }
