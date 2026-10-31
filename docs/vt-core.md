@@ -1996,7 +1996,8 @@ from the seeds on eight jobs: 535,610 inputs, no findings.
 
 ### What is left
 
-A longer run, recorded in `diff-runs.tsv` when it is clean. Reading pages
+A longer run. The first recorded one, `diff-runs.tsv`'s first row: ten
+minutes on eight jobs at `3a26665`, 203,456 inputs, no findings. Reading pages
 after many resizes could be made cheaper by reflowing through `via` only a
 page whose lines a reflow could change, one with a line that ends in
 blanks; it is not measured to matter yet.
