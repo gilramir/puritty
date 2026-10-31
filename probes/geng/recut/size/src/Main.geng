@@ -1,0 +1,106 @@
+module Main exposing (main)
+
+{-| The scrollback's size in bytes at each width (docs/vt-core.md §VC32).
+
+Feeds FILE to a 160 by 50 term whose scrollback is large enough that
+nothing is pruned, then resizes it to each of WIDTHS in turn (50 rows) and
+prints, after each, the pages' number, rows and bytes (text, row headers,
+style runs) and the rows in the ring.
+
+usage: size FILE WIDTH...
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Vt
+import Vt.Pages exposing (pagesOf)
+
+
+feedAll : Bytes -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + 65536) (Vt.feed (Bytes.slice at (at + 65536) bytes) t)
+
+
+report : Int -> Vt.Term -> String
+report cols t =
+    let
+        pages =
+            pagesOf t.back
+
+        sum f =
+            Array.foldl (\p n -> n + f p) 0 pages
+
+        text =
+            sum (\p -> Bytes.length p.text)
+
+        heads =
+            sum (\p -> Bytes.length p.heads)
+
+        runs =
+            sum (\p -> Bytes.length p.runs)
+    in
+    String.join " "
+        [ "cols", String.fromInt cols
+        , "pages", String.fromInt (Array.length pages)
+        , "rows", String.fromInt (heads // 2)
+        , "ring", String.fromInt t.screen.hist
+        , "text", String.fromInt text
+        , "heads", String.fromInt heads
+        , "runs", String.fromInt runs
+        , "total", String.fromInt (text + heads + runs)
+        ]
+        ++ "\n"
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                when Array.get 0 s.args is
+                    Just file ->
+                        Os.File.readFile s.perm (Os.Path.fromString file)
+                            |> Task.map
+                                (\bytes ->
+                                    let
+                                        t0 =
+                                            feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollback = 100000000, checksums = False, cellWidth = 0, cellHeight = 0 })
+
+                                        first =
+                                            report 160 t0
+
+                                        widths =
+                                            Array.mapAndKeepJust String.toInt (Array.dropFirst 1 s.args)
+
+                                        done =
+                                            Array.foldl
+                                                (\w acc ->
+                                                    let
+                                                        t =
+                                                            Vt.resize w 50 acc.t
+
+                                                        line =
+                                                            report w t
+                                                    in
+                                                    { t = t, out = acc.out ++ line }
+                                                )
+                                                { t = t0, out = first }
+                                                widths
+                                    in
+                                    done.out
+                                )
+                            |> Task.onError (\_ -> Task.succeed "cannot read the file\n")
+                            |> Task.andThen Console.write
+
+                    Nothing ->
+                        Console.write "usage: size FILE WIDTH...\n"
+            )

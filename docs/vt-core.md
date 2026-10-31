@@ -2583,3 +2583,80 @@ After all of it: replay 323 of 323, esctest2 392 (Ghostty 388).
   floor for walking its bytes is 17 ms a pass. The headers-only cut for
   plain text that §VC30 measured (0.15 ms) is not built.
 - The lossy resizes still take every page back (above).
+
+## VC32. A scrollback limit in bytes: a survey (V21 proposed)
+
+§VC31's one change of behaviour is that a narrowing past the limit prunes.
+Gilbert: a window narrowed to 7 columns is likely to be widened again soon,
+and the lines it dropped were wanted; a limit that waits (a time) was one
+idea. This section measures what a narrowing costs in memory, which is what
+a limit is for, and proposes V21. Nothing in the core is changed.
+
+**Tool.** `probes/geng/recut/size FILE WIDTH...` feeds FILE to a 160 by 50
+term whose scrollback (100,000,000 lines) prunes nothing, resizes it to
+each width in turn, and prints the pages' rows and bytes after each: text,
+row headers (two bytes a row) and style runs. The ring (the screen and up
+to 513 rows) is fixed in size and not counted.
+
+| input | 160 columns | 80 | 40 | 13 | 7 | 160 again |
+|---|---:|---:|---:|---:|---:|---:|
+| `m3`, rows | 61,696 | 63,879 | 90,536 | 210,187 | 362,359 | 61,982 |
+| `m3`, bytes | 2.56 MB | 2.57 | 2.66 | 3.06 | 3.57 (+39%) | 2.57 |
+| `gitlog`, rows | 542,208 | 564,982 | 779,467 | 1,791,874 | 3,075,341 | 542,574 |
+| `gitlog`, bytes | 21.6 MB | 21.7 | 22.4 | 25.8 | 30.0 (+39%) | 21.6 |
+| 100,000 short lines, rows | 99,584 | 99,584 | 199,680 | 499,456 | 799,641 | 99,872 |
+| 100,000 short lines, bytes | 5.68 MB | 5.68 | 5.89 | 6.49 | 7.10 (+25%) | 5.69 |
+| one line of 100,000 rows, rows | 99,584 | 199,679 | 399,613 | 1,230,346 | 2,285,184 | 99,584 |
+| one line of 100,000 rows, bytes | 16.1 MB | 16.4 | 16.8 | 18.5 | 20.6 (+27%) | 16.1 |
+
+The rows grow with the narrowing, up to 23 times; the bytes by a quarter to
+two fifths at 7 columns and a fifth at 13, since the text does not change
+and each row adds only its header and, in styled text, its style runs again.
+A narrowing and a widening back give the bytes of before, within 0.5%. A limit counted in rows prunes at a narrowing because
+the count goes up, not because the memory does.
+
+**Ghostty's limits.** Ghostty 1.4 has two (`Config.zig`):
+`scrollback-limit-bytes`, 50 MB by default, and `scrollback-limit-lines`,
+unlimited by default, in which soft-wrapped rows count; whichever is
+reached first prunes. With its defaults, then, Ghostty does not prune for
+a narrowing by a count of rows either, only when its bytes grow (its pages
+are grids of cells, so its bytes follow the cells, not the text). The
+oracle sets the line limit and no byte limit (`gdump.c`), which is why
+§VC31's pruning agrees with it.
+
+**V21 (proposed) · The scrollback has a limit in bytes, and optionally one
+in rows.** As Ghostty's: `Config` gets `scrollbackBytes`, the pages' text,
+headers and style runs, and `scrollback` stays, in rows at the screen's
+width, with a value for none; the first reached drops the oldest pages.
+With a byte limit alone, a narrowing keeps every line unless the bytes it
+adds (a quarter to two fifths at 7 columns, above) pass the limit, and a
+widening back finds them all. No clock is needed: what is pruned depends
+only on what was fed and how the term was resized.
+
+- **Why not a time.** The core has no clock (§VC1), so the host would call
+  a prune after an idle time: a new call, a policy, and a dump that depends
+  on when it ran. And the memory a narrowing costs is small and bounded by
+  the byte limit anyway, so waiting buys nothing that the bytes do not.
+- **How it is held.** The differential fuzzer keeps the row limit on both
+  sides, as now: that is a configuration the core ships, so no mode exists
+  for the fuzzer alone. A second set of runs with only a byte limit on
+  both sides compares until either reaches it (the bytes are counted
+  differently, so after it only the screen and replies, as §VC17 does for
+  rows). `recutHolds` and the self-fuzzer cover the history past a limit,
+  where Ghostty is not compared.
+- **What it costs to build.** `Back` keeps a running total of its pages'
+  bytes, added to at a push, taken from at a drop, recomputed after a
+  recut. The pages are now a ring of `limit` slots; with a byte limit
+  their number varies, so they become a queue that drops from the front.
+  `historyReached` is set by either limit. The speed targets do not move,
+  since a push adds three lengths to a total.
+
+**For Gilbert to choose.**
+1. V21 as proposed, or keep §VC31's row limit.
+2. The defaults: a byte limit alone, as Ghostty's defaults, or both. Our
+   bytes are not Ghostty's: 50 MB of our pages holds about 1.25 million
+   rows of `gitlog` at 160 columns (2.3 times the 21.6 MB above); what Ghostty's 50 MB holds is not
+   measured. A default should be chosen by the history it gives, not by
+   matching Ghostty's number.
+3. Whether `Config.scrollback`'s current meaning (rows) is kept for the
+   optional limit, or renamed `scrollbackRows` beside `scrollbackBytes`.
