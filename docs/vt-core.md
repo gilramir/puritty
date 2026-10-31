@@ -2267,3 +2267,15 @@ Replay cases `cursor-shape-per-screen` and `visibility-report`, their
 five-minute self-fuzz on eight jobs from the seeds, clean; and
 `core-bench`'s instructions within 0.05% of `fac1752` on all thirteen
 inputs.
+
+**The corpus merged, startup still nine minutes.** `vt-diff -merge=1` into
+an empty directory, one process, 33 minutes, kept 10,829 of the corpus's
+60,508 inputs with every feature (43,138) and edge (6,182); it replaced
+`diff-corpus` (the old one is `diff-corpus.old`, not in git). The
+recorded ten-minute run after it, row 7 at `3f34881`, clean, still started
+its first job at 537 s: a sixth of the inputs took a quarter of the time,
+as the inputs kept are the larger. So a ten-minute fork run fuzzes for about
+a minute and confirms little. A check after a change wants an hour, or a
+run from the seeds alone into an empty corpus (as the self-fuzz check
+does). Whether `fuzz.py` should merge after each long run, another half
+hour on one CPU, is left open.
