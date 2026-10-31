@@ -17,10 +17,16 @@ GENG_BIN=$C/geng GENG_CORE=$R/vendor/gren-lang/core GENG_CC=$CC NIX_HARDENING_EN
 GENG_CORE_PASSES=specialize,foldspec,transient,arraypop,mono,inline,float,floatin,mutual,case,tailcall,inplace \
   node $C/app make Fuzz --debug-info --output=libvtfuzz.so
 D=libvtfuzz.so.native-build
+# Only the core's own C has coverage: the runtime's (the GC, arrays,
+# allocation) cost 1.75 times the run in libFuzzer's comparison hooks and
+# rewarded inputs for new GC paths (§VC29).
 NIX_HARDENING_ENABLE= "$CC" -std=c11 -O2 -g -ffp-contract=off -fno-fast-math \
   -fsanitize=fuzzer-no-link -DGENG_LIBRARY=vtfuzz \
+  -I "$D/boehm/include/gc" -I "$D/boehm/include" -I "$D" -c "$D/program.c" "$@"
+NIX_HARDENING_ENABLE= "$CC" -std=c11 -O2 -g -ffp-contract=off -fno-fast-math \
+  -DGENG_LIBRARY=vtfuzz \
   -I "$D/boehm/include/gc" -I "$D/boehm/include" -I "$D" -c \
-  "$D/program.c" "$D/geng.c" "$D/geng_rt.c" "$D/geng_embed.c" "$@"
+  "$D/geng.c" "$D/geng_rt.c" "$D/geng_embed.c" "$@"
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer -I . fuzz.c \
   program.o geng.o geng_rt.o geng_embed.o "$D/boehm/gc.o" -lm -o vt-fuzz "$@"
 # vt-min: the same objects, its own main.

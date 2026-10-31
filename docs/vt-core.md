@@ -2279,3 +2279,54 @@ a minute and confirms little. A check after a change wants an hour, or a
 run from the seeds alone into an empty corpus (as the self-fuzz check
 does). Whether `fuzz.py` should merge after each long run, another half
 hour on one CPU, is left open.
+
+
+## VC29. Why a fork run starts slowly: the runtime's coverage, and resizes
+
+§VC28's ten-minute run spent 537 s loading 10,829 inputs, about 45 ms an
+input, in the one process libFuzzer's parent runs them all in before a job
+starts. Measured on 300 inputs drawn from the corpus (1.2 MB, 900 bytes on
+average), `vt-diff -runs=0` over them:
+
+**The runtime had coverage, 1.75 times the run.** `build.sh` compiled
+`geng.c` and `geng_rt.c`, the GC, arrays and allocation, with
+`-fsanitize=fuzzer-no-link` as it did the core, so every comparison the
+collector made called a libFuzzer hook: 64% of the profile was
+`__sanitizer_cov_trace_cmp*`, most of it under `minor_scan` and
+`geng_alloc`. It also counted the collector's own edges, 391 of 5,432 on
+the sample, as coverage, rewarding an input for a new GC path. Only
+`program.c`, the core, has it now: the sample 12.4 s to 7.15 s.
+
+**The rest is the core's resize, 90%.** Ghostty's side of every input is
+about 3%. Half the inputs have no resize and take 2 ms; the 17 with more
+than 200 take 60% of the time, 262 ms each. The slowest is typical: `a`,
+then REP of 99,920,220,279 (`CSI … b`), which fills the 10,000 lines of
+`vt-diff`'s scrollback (`diff.h`, `LIMIT`) with one wrapped line, then
+hundreds of resizes. A resize takes back every page a line runs on from
+(`lineStart`), so each width change reflows the whole scrollback. 10,000
+lines, 80 and 40 columns in turn, the whole run with its dumps:
+
+| width changes | one long line | 12,000 short lines |
+|---:|---:|---:|
+| 0 | 44 ms | 284 ms |
+| 1 | 49 ms | 278 ms |
+| 10 | 159 ms | 586 ms |
+| 50 | 638 ms | 1,983 ms |
+| 200 | 2,435 ms | 7,215 ms |
+
+About 12 ms a width change for the long line, in the resize (`pullUntil`
+98.6%); about 35 ms for the short lines, but in the read after it
+(`historyRows` 94%, the resizes 3.5%), as V16 measured (§VC22): each page
+is reflowed through every width it went through when it is read. Ghostty
+reflows every page at the resize (`PageList.resizeCols`); on the long line
+its resizes were 0.27% of the profile, which puts one near 30 µs against
+the core's 12 ms. That is a sample's share, not a timing of its own.
+
+What it means past the fuzzer: a window dragged wider and narrower over a
+full scrollback, at Ghostty's 25 ms coalescing, is 40 resizes a second; one
+long line makes each 12 ms, and short lines make the next read of the
+scrollback pay 35 ms for each. Where the core's 1.2 µs a row goes
+(`readPages`' unpacking, `splitLine`, the minor collections that are a
+quarter of it) is not yet looked at, and neither is whether V16's widths
+could be cut short, say by reflowing a page back when a resize returns to
+a width it had (§VC22's `moved`).
