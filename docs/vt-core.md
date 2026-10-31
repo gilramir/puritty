@@ -2051,3 +2051,45 @@ After the split: replay 318 passing, esctest2 392 (Ghostty 388), the
 self-fuzzer two minutes on eight jobs with no findings in 524,574 inputs,
 and the differential fuzzer ten minutes on eight jobs at `d66cc97`, no
 findings in 200,197 inputs (`diff-runs.tsv`'s second row).
+
+---
+
+## VC24. The first long run: a quadratic reflow and a harness gap
+
+Started with phase 2's survey (`phase2-window.md` §9): the differential
+fuzzer for four hours on six jobs at `757c4ff` (the core's code is the same
+at `d8b3afa`, which `diff-runs.tsv`'s third row names, the commit when the
+run ended). It ended after 66 minutes, 446,707 inputs, when each job had
+stopped on a finding: five on libFuzzer's 10-second timeout, one on a dump
+that differs. The row stays as recorded.
+
+**The timeouts were the core.** Each input, about 3 KB, took 10.2–11.4 s
+alone on an idle machine in `vt-diff`, and 0.44 s in `vt-fuzz`, which does
+not read the scrollback back. `perf`: 89% in `Vt.Resize.splitLine` and the
+fold in `promptAt`, which `splitAt` called for each row it cut from a line,
+and which folded over every source row of the line: a line's rows times the
+rows it is cut into. The inputs resize about 90 times, down to one column,
+so a line of a few thousand cells is that many rows both ways. A real
+terminal meets it too: a megabyte of minified JSON is 12,500 rows at 80
+columns, and V16 reflows pages when they are read. `promptAt` is now a
+binary search over the starts, which `joinLines` adds in order, each
+greater than the last, so the answer is the same (the last start at or
+before the cell). Each input now takes 1.3–1.4 s under coverage
+instrumentation, spread over the reflow's allocation, which is V16's
+linear cost through 90 widths (§VC22, "What is left").
+
+**The difference was the harness.** `vt-diff-min` cut it to 26 bytes: an
+8×1 terminal, `h`, `REP` 65,535 (one line of 8,192 rows), a resize to 1×1,
+and DECCOLM to 132 columns. The resize to one column makes the line 65,536
+rows, past `diff.h`'s `LIMIT` of 10,000, and the core and Ghostty prune it
+at different rows (the core counts rows at their cut width, §VC14);
+DECCOLM's widening then brings both under the limit, 81 rows of history
+against 141. That is §VC17's case, which `Fuzz.dump` marks `pruned` so that
+only the size and the replies are compared, but it looked only *before*
+each fuzzer resize: not after one, though a narrowing itself can cut past
+the limit, and not inside the bytes fed, where DECCOLM resizes. It now
+looks before and after each resize and after each read.
+
+After both: all six findings pass `vt-diff`, the replay corpus 318 of 318
+with `core-dump` rebuilt. The feed paths are untouched and were not
+re-benched.

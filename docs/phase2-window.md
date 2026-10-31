@@ -359,8 +359,10 @@ In the order the build will meet them:
 ## 9. The fuzzer run alongside
 
 Started with the survey: the differential fuzzer, four hours on six jobs at
-`757c4ff` (`fuzz.py --diff --hours 4 --jobs 6`), recorded in
-`corpus/fuzz/diff-runs.tsv` when it ends.
+`757c4ff` (`fuzz.py --diff --hours 4 --jobs 6`). It stopped after 66
+minutes on six findings: a reflow quadratic in a line's rows, and a gap in
+the harness's rule for a pruned scrollback, both fixed (`vt-core.md`
+§VC24); `corpus/fuzz/diff-runs.tsv`'s third row.
 
 ---
 

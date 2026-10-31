@@ -977,16 +977,40 @@ when the row filled and so waits to wrap, of the cell after it (`k` one
 past the last, §VC22). -}
 promptAt : Array { at : Int, mark : Int } -> Int -> Int
 promptAt starts k =
-    Array.foldl
-        (\st m ->
-            if st.at <= k then
+    promptIn starts k 0 (Array.length starts)
+
+
+{-| `promptAt` by binary search: `starts` is in the order of its rows, each
+`at` greater than the last (`joinLines` adds one only when the line grew),
+so the start sought is the last whose `at` is at most `k`. Every start
+before `lo` is one, none from `hi` on. A fold over every start cost a
+line's rows times the rows it is cut into, which a long line cut narrow
+made seconds (§VC24). -}
+promptIn : Array { at : Int, mark : Int } -> Int -> Int -> Int -> Int
+promptIn starts k lo hi =
+    if lo >= hi then
+        when Array.get (lo - 1) starts is
+            Just st ->
                 st.mark
 
-            else
-                m
-        )
-        0
-        starts
+            Nothing ->
+                0
+
+    else
+        let
+            mid =
+                (lo + hi) // 2
+        in
+        when Array.get mid starts is
+            Just st ->
+                if st.at <= k then
+                    promptIn starts k (mid + 1) hi
+
+                else
+                    promptIn starts k lo mid
+
+            Nothing ->
+                0
 
 
 splitAt : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
