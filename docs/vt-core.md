@@ -18,11 +18,11 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 
 | piece | where | what it is |
 |---|---|---|
-| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; under it, not exposed, `Vt.Cell`, `Vt.Style`, `Vt.Term`, `Vt.Screen`, `Vt.Pages`, `Vt.Resize`, `Vt.Dump` (§VC23) and `Vt.Width`, generated |
+| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; under it, not exposed, `Vt.Cell`, `Vt.Style`, `Vt.Term`, `Vt.Screen`, `Vt.Pages`, `Vt.Recut` (§VC31), `Vt.Resize`, `Vt.Dump` (§VC23) and `Vt.Width`, generated |
 | the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK [RESIZES]]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, resized where `RESIZES` says (§VC14), and prints §VC3 |
 | the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored v1.4.0 (`83fb95624`; `d8619f1bc` before §VC15) with `patches/` applied (V12, §VC17), through its C API; `widths`, its width table (V13) |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
-| the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
+| the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS \| drag N COLS ROWS]`) | §VC7, §VC14, §VC30 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
 | the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 to §VC22 |
@@ -37,6 +37,7 @@ resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
 dump : Term -> String                      -- §VC3
 historyBound : Term -> Int                 -- for the differential fuzzer, §VC17
 historyReached : Term -> Bool              -- the same, sticky and inside a read, §VC25
+recutHolds : Int -> Term -> Bool           -- for the fuzzer: the pages' recut is the reflow, §VC31
 ```
 
 `feed` is the whole of what happens to a terminal: no clock, no file, no
@@ -451,12 +452,9 @@ the budget. What is below is what is left beside them.
 - **Widths** are libghostty-vt's, UCD 18.0 (V13, `vt/gen-width.py`), not
   the UCD 17.0 `core` pins; `core` carries no UCD files to generate from,
   and the oracle's are what the core is held to.
-- **A page cut at another width is reflowed at every read** (V10): one
-  read in `dump`, but phase 2's scrollback view, reading a page at a time
-  as the view moves, would reflow it each time, and the scrollbar wants the
-  scrollback's length in rows at the screen's width, which is every page
-  read. A page reflowed once could be kept, or its row count at the
-  screen's width; to be measured with the view.
+- **A page cut at another width is reflowed at every read** (V10): gone
+  with V20 (§VC31), which cuts every page again at the resize, so a page
+  always has the screen's width and a read reflows nothing.
 - **What a resize is not yet tested with**: the main screen's cursor
   behind 47 or 1047, which save none (the core carries the main screen's
   saved cursor, which 1049 made); what a resize leaves on the screen
@@ -912,7 +910,8 @@ the scrollback too. It closes §VC9's item, a spacer head read back from a
 page as an empty cell.
 
 **V10 · The scrollback's pages are reflowed when they are read, not when
-the terminal is resized.** A page keeps the width its rows were cut at
+the terminal is resized.** (Replaced by V20, §VC31: a resize cuts every
+page again on its bytes.) A page keeps the width its rows were cut at
 (`Page.cols`). A resize works on the ring's rows, the screen and the
 scrollback not yet paged, as one array of rows, each its cells as the ring
 keeps them and its wrapped flag, the cursor and the saved cursor carried as
@@ -1853,6 +1852,8 @@ run. The replay corpus went from 300 cases to 315, none divergent. One
 more Ghostty bug is patched in the oracle (0011).
 
 **V16 · A page is reflowed through every width it went through.**
+(Replaced by V20, §VC31, which reflows a page at each resize, so a page
+has the screen's width and `via` is gone.)
 `Page.via` holds the widths the resizes since the page was packed reflowed
 to, oldest first; a resize that changes the width pushes the new one onto
 every page it keeps, and `readPages` reflows a run of pages from the width
@@ -2438,3 +2439,147 @@ no longer depend on how many resizes came before them.
 a page) stays on arrays: 0.3 to 0.8 ms a resize, measured above. Whether
 plain pages should carry a flag that lets the reflow skip the walk of
 their bytes is for the implementation to measure.
+
+## VC31. V20 built: the pages cut again at a resize, on their bytes
+
+§VC30 proposed V20; Gilbert: try it, and measure its side effects so that
+the speed targets are not broken to get it. It is built as proposed, with
+one change the differential fuzzer forced (the pages' size, below).
+
+**V20 · A resize cuts every page again at the new width, on its bytes.**
+`Vt.Recut.recut` walks the pages line by line. A line whose cells are all
+one column wide (ASCII or a code point of width 1, protected or not, with
+no spacer head, no cell in a background colour alone and no mark of width
+0) is cut without a cell record: its bytes are copied a run at a time into
+the new pages, a header written each time a row fills, its style runs
+merged and cut where its rows are, as `packCells` would have. A wrapped
+source row brings its padding (the old width less its extent, as empty
+cells), the line's last row loses its trailing empty cells, and a row cut
+from it takes the prompt mark of the row its cells came from, which is
+what `joinLines` and `splitLine` do on cells. Any other line is read back
+into rows, reflowed by `reflowed` (the reflow a resize makes of the ring),
+and packed again. The new rows fill pages of `pageRows` rows, as `pageOut`
+cuts the ring's.
+
+When a line runs on from the pages into the ring, only its last row in the
+pages comes back (`popLast`): its cells begin the ring's first line
+(`reflowCols`' `prefix`), so a resize no longer takes back every page a
+long line runs on from. The way before stays, with the pages cut again
+after it, when the screen wants rows the pages hold (the flow is `short`),
+when the prompt to clear may begin in them, and when the resize would lose
+cells (autowrap off, one column), where all pages are taken back as
+§VC14 says.
+
+What goes: `Page.via`, `passWidth` and `reflowedVia` (V16), and the reflow
+when read (V10). A page has the screen's width, so `readPages` reflows
+nothing, and `historyBound` counts rows exactly.
+
+**How it is held.** `Vt.recutHolds cols t` cuts a term's pages to `cols`
+both ways, `reflowed` on the rows read back and `recut` on the bytes, and
+compares every cell's code points, width and style bits, and every row's
+wrapped flag and prompt mark. `Fuzz.dump` checks it at 1, 3, 7, 13 and 80
+columns whenever the scrollback is at most 600 lines, and `vt-fuzz` aborts
+on "recut differs". It caught a bug planted for it, a prompt mark written at the wrong bit. Besides
+it: the replay corpus, `vt-diff` against Ghostty, esctest2, and the dump
+of the old build and the new one after 1, 2 and 5 drags of six inputs to
+six widths.
+
+### What the fuzzer found
+
+The first one-hour run on 16 jobs (`diff-runs.tsv`'s row at `612c70f+`,
+1,167,212 inputs) found seven differences from Ghostty and eleven slow
+inputs; the build before V20 had none of the differences. Three causes:
+
+- **The first row after a prefix** (two inputs). When a screen that grows
+  pulls down every row of the ring's history, the screen's first row is the
+  continuation of the prefix's line, and `reflowCols` counts the rows
+  between the history and the cursor that continue a wrapped row to decide
+  how many blank rows go below the cursor (`continuations`). The prefix is
+  not one of the rows, so that row was not counted, and the core put one row
+  fewer in the history than Ghostty. It is counted now. Also, the opened path
+  now always says that there are rows outside the flow, since the prefix is
+  one, so a flow that wants more rows than the ring has is `short` and goes
+  the way before.
+- **The pages' size** (five inputs). As §VC30 proposed, a new row went into
+  the page its first cell came from, so the pages kept their number. A
+  widening of a long line then left hundreds of pages of a few rows each.
+  The scrollback's limit counts pages, so those used it up early, and the
+  core kept 8,671 rows where Ghostty kept 9,951 of the fuzzer's 10,000.
+  The new rows now fill pages of `pageRows` rows, as the way before did
+  for the rows it took back. A narrowing can then cut more pages than the
+  limit, and the resize drops the oldest and sets `reached`, as a push past
+  the limit does.
+- **Protected cells** (the eleven slow inputs). A protected cell's bytes
+  are followed by 0xFD, and the first version sent every line with one to
+  the slow path. On these inputs, all with long protected lines and
+  200 resizes, V20 took 24.3 G instructions against the old build's 10.5 G
+  (Ghostty: 0.03 s). The fast path now carries the byte with its cell, and
+  counts a protected empty cell (`0 FD`) as an empty one when it trims a
+  line's end, as `emptyCell` does. The check of the byte sits on the
+  non-ASCII branch, since a check on every cell cost a short-line resize
+  80% more. All eleven now take 5.4 to 8.7 G instructions, half the old
+  build's, with the same dump.
+
+After the fixes, the seven inputs agree with Ghostty and the eleven with the
+old build. The self-fuzzer's run (one hour, eight jobs, with the recut
+check, 2,860,914 inputs) found nothing that reproduces; it wrote one crash
+file in its first second, which passes 200 runs. Its 8,670 inputs (seeds
+and corpus) pass the fixed build.
+
+### What it costs
+
+`core-bench … drag 20 80 50` (160 by 50, 100,000 lines of scrollback, 20
+resizes between 160 and 80 columns, then one read of the whole
+scrollback), before V20 (`612c70f`) and after, three runs each, the median:
+
+| input | resizes, before | resizes, V20 | read, before | read, V20 | peak memory, before → V20 |
+|---|---:|---:|---:|---:|---:|
+| one line, 10,000 rows | 2,205 ms | 102 ms | 151 ms | 192 ms | 355 → 169 MB |
+| one line, 100,000 rows | 11,897 ms | 388 ms | 798 ms | 1,021 ms | 1,797 → 1,015 MB |
+| 10,000 short lines | 20 ms | 45 ms | 292 ms | 66 ms | 72 → 65 MB |
+| 100,000 short lines | 16 ms | 274 ms | 3,635 ms | 770 ms | 668 → 770 MB |
+| `gitlog.txt` | 14 ms | 268 ms | 2,814 ms | 525 ms | 607 → 503 MB |
+
+A resize is now 5 ms on the 10,000-row line (Ghostty: 0.53 ms), 19 ms on
+the 100,000-row one (4.5 ms), and 13.5 ms on the short lines and on
+`gitlog` (18 and 19 ms). A resize and a read together are
+faster than before on every input: 2.8 times on 10,000 short lines, 9 on
+the 100,000-row line. The long line's read is slower (192 against 151 ms,
+1,021 against 798); that is not looked into.
+
+**The speed targets.** The thirteen inputs' instructions (`perf stat`,
+no resize) are −0.92% to +0.01% of the build before: `gitlog` −0.65%,
+`ls` −0.87%, `vte-scrolling` −0.66%, `scrolling_fullscreen` −0.92%, the
+other nine within ±0.01%. Their times, measured before the fixes (whose
+instructions are the same), were level and inside budget: `vte-scrolling`
+39–42 ms against 39–41 before (budget 42), its cycles 1% higher (212 M
+against 210 M). Feeding `gitlog` alone peaks at 53 MB in both builds.
+
+**The lossy resizes** (autowrap off, one column) take every page back as
+before: one column, 10,000 short lines, two resizes, 97 → 110 ms; autowrap
+off, 100,000 lines, 706 → 719 ms; the same dumps. Narrowing 100,000
+unwrapped lines still costs about 350 ms a resize; a bytes version of that
+cut would bring it down.
+
+**One behaviour changes: a narrowing past the limit prunes.** V10 and V16
+left a narrowed page at its width, so a narrowing could leave the
+scrollback holding far more rows than it keeps: `m3` (§VC7's) narrowed to
+7 columns held 362,679 rows for 100,000 lines of scrollback. V20 cuts
+those rows into pages and drops the pages past the limit, as Ghostty
+prunes: 100,535 rows, the newest of the 362,679, the screen the same. Of
+the 108 dumps compared (6 inputs, 6 widths, 1, 2 and 5 drags), 96 are the
+same as before and the 12 others are this: `m3` and `m4` at 7 columns, `m3`
+and the 10,000-row line at 13. The `gitlog` drag above keeps 94,221 rows
+where the old build kept 100,495, since every narrowing to 80 columns
+went past the limit.
+
+After all of it: replay 323 of 323, esctest2 392 (Ghostty 388).
+
+### What is left
+
+- The fuzz runs on the fixed build, the self-fuzzer's and a recorded
+  `--diff` run, with their row.
+- The 100,000-row line is 19 ms a resize against Ghostty's 4.5 ms; §VC30's
+  floor for walking its bytes is 17 ms a pass. The headers-only cut for
+  plain text that §VC30 measured (0.15 ms) is not built.
+- The lossy resizes still take every page back (above).

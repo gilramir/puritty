@@ -34,7 +34,7 @@ static const int ROWS[] = {1, 2, 3, 4, 5, 8, 10, 24, 25, 50};
 #include "diff.h"
 #define SCROLLBACK LIMIT
 #else
-/* three pages, so that a resize meets pages cut at another width (V10) */
+/* three pages, so that a resize cuts pages again on their bytes (V20) */
 #define SCROLLBACK 600
 #endif
 
@@ -102,6 +102,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   char *whole = dump(cols, rows, 0, input, &wl);
   char *split = dump(cols, rows, chunk, input, &sl);
   check(vtfuzz_release(input), "release");
+  /* Fuzz.dump begins with this when the pages cut again on their bytes
+   * differ from the reflow of their rows (docs/vt-core.md VC31). */
+  if (strncmp(whole, "recut differs", 13) == 0) {
+    fprintf(stderr, "%dx%d\n%s", cols, rows, whole);
+    fprintf(stderr, "vt-fuzz: the pages cut on their bytes differ from their reflow\n");
+    abort();
+  }
   int same = wl == sl && memcmp(whole, split, wl) == 0;
   if (!same || getenv("VTFUZZ_PRINT")) {
     fprintf(stderr, "%dx%d, reads of %d\n--- in one read\n%s--- a read of %d at a time\n%s",

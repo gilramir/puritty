@@ -1,0 +1,748 @@
+module Vt.Recut exposing
+    ( recut
+    , popLast
+    , packArray
+    )
+
+{-| Part of `Vt` (docs/vt-core.md §VC23): the scrollback's pages reflowed
+at a resize, on their bytes (V20, §VC31).
+
+A line whose cells are all one column wide, ASCII or a code point of width
+1, protected or not, with no spacer head and no cell in a background colour
+alone, is cut again without a cell made of it: its bytes are copied
+from the pages it was on into new pages, a row's header written each time
+it fills, its style runs cut where its rows are. Any other line is read back
+into rows and reflowed by `reflowed`, the reflow a resize makes of the
+ring, and packed again. Either way a page's rows are what `reflowed` makes
+of them, which is what V10 and V16 made of a page when it was read.
+
+The new rows fill pages of `pageRows` rows, as `pageOut` cuts the ring's,
+whatever pages they came from: a widening makes fewer pages, and a
+narrowing more, which can be more than the scrollback keeps; the resize
+drops the oldest then, as a push past the limit does.
+
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Int64
+import UInt8
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Pages exposing (..)
+
+
+{-| The pages being written: those done, and the one being written. -}
+type alias Out =
+    { done : Array Page
+    , text : Builder UInt8
+    , heads : Builder UInt8
+    , runs : Builder UInt8
+    }
+
+
+{-| The row being written: its cells so far, the style run in hand (as
+`packCells` keeps it), and the prompt mark a row cut here takes. -}
+type alias Pen =
+    { n : Int
+    , style : Int
+    , count : Int
+    , wrote : Bool
+    , mark : Int
+    }
+
+
+{-| A row of a source page: its page, its header, and where its text and
+its style runs begin and end; `fast` when its cells are all one column. -}
+type alias Source =
+    { pi : Int
+    , header : Int
+    , ti : Int
+    , tEnd : Int
+    , r : Int
+    , fast : Bool
+    }
+
+
+{-| `pages`, cut at `old` columns and each ending at a line's end, cut again
+at `cols`. `reflow` is `Vt.Resize.reflowed`. -}
+recut : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Clusters -> Array Page -> { pages : Array Page, clusters : Clusters }
+recut reflow old cols clusters pages =
+    let
+        o =
+            lines reflow old cols pages 0 0 0 0 clusters (fresh (Maybe.withDefault 0 (Maybe.map (\p -> Bytes.length p.text) (Array.first pages))))
+    in
+    { pages = finish cols o.out, clusters = o.clusters }
+
+
+fresh : Int -> Out
+fresh size =
+    { done = [], text = Builder.empty (size + 64), heads = Builder.empty 512, runs = Builder.empty 256 }
+
+
+finish : Int -> (moved o : Out) -> Array Page
+finish cols o =
+    if Builder.length o.heads == 0 then
+        o.done
+
+    else
+        Array.pushLast
+            { text = Bytes.fromUInt8s (Builder.toArray o.text)
+            , heads = Bytes.fromUInt8s (Builder.toArray o.heads)
+            , runs = Bytes.fromUInt8s (Builder.toArray o.runs)
+            , cols = cols
+            }
+            o.done
+
+
+{-| A row about to start: the page being written kept, and a new one begun
+when it holds `pageRows` rows. -}
+toPage : Int -> (moved o : Out) -> Out
+toPage cols o =
+    if Builder.length o.heads < 2 * pageRows then
+        o
+
+    else
+        let
+            size =
+                Builder.length o.text
+        in
+        { done = finish cols o, text = Builder.empty (size + 64), heads = Builder.empty 512, runs = Builder.empty 256 }
+
+
+{-| Every line from page `pi`, its header `h`, text `ti` and runs `r` on. -}
+lines : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (moved o : Out) -> { out : Out, clusters : Clusters }
+lines reflow old cols pages pi h ti r clusters o =
+    when Array.get pi pages is
+        Nothing ->
+            { out = o, clusters = clusters }
+
+        Just page ->
+            if h >= Bytes.length page.heads then
+                lines reflow old cols pages (pi + 1) 0 0 0 clusters o
+
+            else
+                let
+                    line =
+                        gather pages pi h ti r []
+
+                    rows =
+                        line.rows
+                in
+                if Array.all .fast rows then
+                    lines reflow old cols pages line.pi line.h line.ti line.r clusters (fastLine old cols pages rows o)
+
+                else
+                    let
+                        slow =
+                            slowLine reflow old cols pages rows clusters o
+                    in
+                    lines reflow old cols pages line.pi line.h line.ti line.r slow.clusters slow.out
+
+
+{-| The source rows of the line that starts at page `pi`, header `h`, up to
+the first that does not wrap, and where the next line starts. -}
+gather : Array Page -> Int -> Int -> Int -> Int -> Array Source -> { rows : Array Source, pi : Int, h : Int, ti : Int, r : Int }
+gather pages pi h ti r acc =
+    when Array.get pi pages is
+        Nothing ->
+            { rows = acc, pi = pi, h = h, ti = ti, r = r }
+
+        Just page ->
+            if h >= Bytes.length page.heads then
+                gather pages (pi + 1) 0 0 0 acc
+
+            else
+                let
+                    header =
+                        u16At page.heads h
+
+                    ext =
+                        Bitwise.and 0x3FF header
+
+                    scanned =
+                        scan page.text ti ext
+
+                    tEnd =
+                        if scanned >= 0 then
+                            scanned
+
+                        else
+                            (unpackText page.text ti ext []).next
+
+                    rEnd =
+                        if Bitwise.and 0x4000 header /= 0 then
+                            r
+
+                        else
+                            runsEnd page.runs r ext
+
+                    row =
+                        { pi = pi, header = header, ti = ti, tEnd = tEnd, r = r, fast = scanned >= 0 }
+
+                    acc2 =
+                        Array.pushLast row acc
+                in
+                if Bitwise.and 0x8000 header /= 0 then
+                    gather pages pi (h + 2) tEnd rEnd acc2
+
+                else
+                    { rows = acc2, pi = pi, h = h + 2, ti = tEnd, r = rEnd }
+
+
+{-| Where a row's `left` cells from byte `i` end, if every one is a single
+column with nothing joined to it but its protection; -1 if one is not. -}
+scan : Bytes -> Int -> Int -> Int
+scan text i left =
+    if left <= 0 then
+        if byteAt text i == 0xFD then
+            -- the last cell's protection
+            scan text (i + 1) 0
+
+        else if startsMark text i then
+            -1
+
+        else
+            i
+
+    else
+        let
+            b =
+                byteAt text i
+        in
+        if b < 0x80 then
+            scan text (i + 1) (left - 1)
+
+        else if b == 0xFD then
+            -- the cell before is protected: the byte is that cell's
+            scan text (i + 1) left
+
+        else if b >= 0xF8 then
+            -1
+
+        else
+            let
+                d =
+                    decodeAt text i
+            in
+            if Width.width d.cp == 1 then
+                scan text d.next (left - 1)
+
+            else
+                -1
+
+
+{-| Where a row's style runs for `left` cells end, as `unpackRuns` reads
+them. -}
+runsEnd : Bytes -> Int -> Int -> Int
+runsEnd runs r left =
+    if left <= 0 then
+        r
+
+    else
+        let
+            v =
+                u16At runs r
+        in
+        if Bitwise.and 0x8000 v /= 0 then
+            runsEnd runs (r + 4) (left - u16At runs (r + 2))
+
+        else
+            r + 2
+
+
+{-| The last row of the last page taken off it, as the ring keeps a row:
+the start of a line the ring's rows go on with, cut at the new width, to
+begin the ring's first line (§VC31). A page left with no row goes. -}
+popLast : Clusters -> Array Page -> { pages : Array Page, prefix : Row, clusters : Clusters }
+popLast clusters pages =
+    when Array.last pages is
+        Nothing ->
+            { pages = pages, prefix = { cells = [], wrapped = False, prompt = 0 }, clusters = clusters }
+
+        Just page ->
+            let
+                n =
+                    Bytes.length page.heads
+
+                src =
+                    lastSource page (Array.length pages - 1) 0 0 0
+
+                one =
+                    rowAt page src clusters
+
+                rest =
+                    { page
+                        | heads = Bytes.slice 0 (n - 2) page.heads
+                        , text = Bytes.slice 0 src.ti page.text
+                        , runs = Bytes.slice 0 src.r page.runs
+                    }
+            in
+            { pages =
+                if n <= 2 then
+                    Array.dropLast 1 pages
+
+                else
+                    Array.set (Array.length pages - 1) rest pages
+            , prefix = one.row
+            , clusters = one.clusters
+            }
+
+
+{-| The page's last row as a source row: its rows walked from header `h`,
+text `ti` and runs `r`. -}
+lastSource : Page -> Int -> Int -> Int -> Int -> Source
+lastSource page pi h ti r =
+    let
+        header =
+            u16At page.heads h
+
+        ext =
+            Bitwise.and 0x3FF header
+    in
+    if h + 2 >= Bytes.length page.heads then
+        { pi = pi, header = header, ti = ti, tEnd = 0, r = r, fast = False }
+
+    else
+        let
+            scanned =
+                scan page.text ti ext
+
+            tEnd =
+                if scanned >= 0 then
+                    scanned
+
+                else
+                    (unpackText page.text ti ext []).next
+
+            rEnd =
+                if Bitwise.and 0x4000 header /= 0 then
+                    r
+
+                else
+                    runsEnd page.runs r ext
+        in
+        lastSource page pi (h + 2) tEnd rEnd
+
+
+-- A LINE ON ITS BYTES
+
+
+{-| A line of single-column cells cut at `cols`: each source row's cells,
+a wrapped row's up to `old` with empty cells after its extent, the last
+row's up to its last cell that is not empty, or its first cell when it has
+none but a prompt mark, as `joinLines` takes them. -}
+fastLine : Int -> Int -> Array Page -> Array Source -> (moved o : Out) -> Out
+fastLine old cols pages rows o =
+    let
+        done =
+            Array.foldl
+                (\row acc ->
+                    let
+                        text =
+                            Maybe.withDefault Bytes.empty (Maybe.map .text (Array.get row.pi pages))
+
+                        runs =
+                            Maybe.withDefault Bytes.empty (Maybe.map .runs (Array.get row.pi pages))
+
+                        ext =
+                            Bitwise.and 0x3FF row.header
+
+                        wrapped =
+                            Bitwise.and 0x8000 row.header /= 0
+
+                        mark =
+                            Bitwise.and 3 (Bitwise.shiftRightZfBy 10 row.header)
+
+                        trailing =
+                            if wrapped then
+                                0
+
+                            else
+                                zeros text (row.tEnd - 1) row.ti 0
+
+                        own =
+                            if wrapped then
+                                ext
+
+                            else if ext - trailing == 0 && mark /= 0 then
+                                min 1 ext
+
+                            else
+                                ext - trailing
+
+                        pad =
+                            if wrapped then
+                                max 0 (old - ext)
+
+                            else if ext - trailing == 0 && mark /= 0 && ext == 0 then
+                                1
+
+                            else
+                                0
+
+                        pen0 =
+                            acc.pen
+
+                        pen =
+                            if own + pad > 0 then
+                                { pen0 | mark = mark }
+
+                            else
+                                pen0
+
+                        src =
+                            { text = text, runs = runs, styled = Bitwise.and 0x4000 row.header == 0 }
+
+                        cells =
+                            chunks cols src row.ti own { at = row.r, left = 0, style = 0 } acc.out pen
+
+                        padded =
+                            chunks cols { src | styled = False } -1 pad { at = 0, left = 0, style = 0 } cells.out cells.pen
+                    in
+                    { out = padded.out, pen = padded.pen, any = acc.any || own + pad > 0 }
+                )
+                { out = o, pen = { n = 0, style = 0, count = 0, wrote = False, mark = 0 }, any = False }
+                rows
+
+        out =
+            if done.any then
+                done.out
+
+            else
+                toPage cols done.out
+    in
+    closeRow False done.pen out
+
+
+{-| How many empty cells end a row's text, from byte `i` back to `from`:
+0 bytes, protected or not, as `emptyCell` does not see protection. -}
+zeros : Bytes -> Int -> Int -> Int -> Int
+zeros text i from n =
+    if i < from then
+        n
+
+    else if byteAt text i == 0 then
+        zeros text (i - 1) from (n + 1)
+
+    else if byteAt text i == 0xFD && i - 1 >= from && byteAt text (i - 1) == 0 then
+        zeros text (i - 2) from (n + 1)
+
+    else
+        n
+
+
+{-| `left` cells of a source row written from byte `i`, or empty cells
+when `i` is -1, as many at a time as the row being written has room for:
+the row closed, wrapped, when it is full and a cell follows, a new page
+begun when a row starts and the page is full. `run`: the style run in hand, `left` cells of
+`style`, the next at `at`. -}
+chunks : Int -> { text : Bytes, runs : Bytes, styled : Bool } -> Int -> Int -> { at : Int, left : Int, style : Int } -> (moved o : Out) -> Pen -> { out : Out, pen : Pen }
+chunks cols src i left run o pen =
+    if left <= 0 then
+        { out = o, pen = pen }
+
+    else
+        let
+            full =
+                pen.n >= cols
+
+            closed =
+                if full then
+                    closeRow True pen o
+
+                else
+                    o
+
+            p0 =
+                if full then
+                    { pen | n = 0, style = 0, count = 0, wrote = False }
+
+                else
+                    pen
+
+            o0 =
+                if p0.n == 0 then
+                    toPage cols closed
+
+                else
+                    closed
+
+            k =
+                min left (cols - p0.n)
+
+            end =
+                if i < 0 then
+                    -1
+
+                else
+                    skipCells src.text i k
+
+            text =
+                if i < 0 then
+                    pushZeros k o0.text
+
+                else
+                    copyRange src.text i end o0.text
+
+            styled =
+                styleCells src.runs src.styled run.at run.left run.style k p0.style p0.count p0.wrote o0.runs
+        in
+        chunks cols src end (left - k) { at = styled.at, left = styled.left, style = styled.rstyle } { o0 | text = text, runs = styled.runs } { p0 | n = p0.n + k, style = styled.style, count = styled.count, wrote = styled.wrote }
+
+
+{-| The byte after `k` single-column cells from byte `i`, each with its
+protection byte if it has one. -}
+skipCells : Bytes -> Int -> Int -> Int
+skipCells text i k =
+    if k <= 0 then
+        if byteAt text i == 0xFD then
+            i + 1
+
+        else
+            i
+
+    else
+        let
+            b =
+                byteAt text i
+        in
+        if b < 0x80 then
+            skipCells text (i + 1) (k - 1)
+
+        else if b == 0xFD then
+            skipCells text (i + 1) k
+
+        else if b < 0xE0 then
+            skipCells text (i + 2) (k - 1)
+
+        else if b < 0xF0 then
+            skipCells text (i + 3) (k - 1)
+
+        else
+            skipCells text (i + 4) (k - 1)
+
+
+copyRange : Bytes -> Int -> Int -> (moved b : Builder UInt8) -> Builder UInt8
+copyRange text i stop b =
+    if i >= stop then
+        b
+
+    else
+        copyRange text (i + 1) stop (Builder.pushLast (UInt8.fromInt (byteAt text i)) b)
+
+
+pushZeros : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushZeros k b =
+    if k <= 0 then
+        b
+
+    else
+        pushZeros (k - 1) (Builder.pushLast (UInt8.fromInt 0) b)
+
+
+{-| `k` cells counted in the row's style run, a source run at a time, as
+`packCells` counts them a cell at a time: `rleft` cells of `rstyle` left in
+the source run in hand, the next at `rr`; an unstyled row's cells are all
+style 0. -}
+styleCells : Bytes -> Bool -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> (moved out : Builder UInt8) -> { at : Int, left : Int, rstyle : Int, style : Int, count : Int, wrote : Bool, runs : Builder UInt8 }
+styleCells runs styled rr rleft rstyle k style count wrote out =
+    if k <= 0 then
+        { at = rr, left = rleft, rstyle = rstyle, style = style, count = count, wrote = wrote, runs = out }
+
+    else if not styled || rleft > 0 then
+        let
+            st =
+                if styled then
+                    rstyle
+
+                else
+                    0
+
+            take =
+                if styled then
+                    min k rleft
+
+                else
+                    k
+        in
+        if count > 0 && st == style then
+            styleCells runs styled rr (rleft - take) rstyle (k - take) style (count + take) wrote out
+
+        else if count > 0 then
+            styleCells runs styled rr (rleft - take) rstyle (k - take) st take True (pushU16 count (pushU16 (Bitwise.or 0x8000 style) out))
+
+        else
+            styleCells runs styled rr (rleft - take) rstyle (k - take) st take wrote out
+
+    else
+        let
+            v =
+                u16At runs rr
+        in
+        if Bitwise.and 0x8000 v /= 0 then
+            styleCells runs styled (rr + 4) (u16At runs (rr + 2)) (Bitwise.and 0x7FFF v) k style count wrote out
+
+        else
+            styleCells runs styled (rr + 2) 1000000 v k style count wrote out
+
+
+{-| The row in hand ended: its last style run written, as `packCells`
+ends one, and its header. -}
+closeRow : Bool -> Pen -> (moved o : Out) -> Out
+closeRow wrapped pen o =
+    let
+        styled =
+            not (pen.count == 0 || (pen.style == 0 && not pen.wrote))
+
+        runs =
+            if styled then
+                pushU16 pen.style o.runs
+
+            else
+                o.runs
+
+        header =
+            Bitwise.or (Bitwise.or pen.n (Bitwise.shiftLeftBy 10 pen.mark))
+                (Bitwise.or
+                    (if wrapped then
+                        0x8000
+
+                     else
+                        0
+                    )
+                    (if styled then
+                        0
+
+                     else
+                        0x4000
+                    )
+                )
+    in
+    { o | runs = runs, heads = pushU16 header o.heads }
+
+
+-- A LINE REFLOWED AS ROWS
+
+
+{-| A line with a cell of another kind read back into rows, reflowed by
+`reflow` and packed again. -}
+slowLine : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Page -> Array Source -> Clusters -> (moved o : Out) -> { out : Out, clusters : Clusters }
+slowLine reflow old cols pages rows clusters o =
+    let
+        read =
+            Array.foldl
+                (\src acc ->
+                    when Array.get src.pi pages is
+                        Just page ->
+                            let
+                                one =
+                                    rowAt page src acc.clusters
+                            in
+                            { rows = Array.pushLast one.row acc.rows, clusters = one.clusters }
+
+                        Nothing ->
+                            acc
+                )
+                { rows = [], clusters = clusters }
+                rows
+
+        out =
+            Array.foldl (\row acc -> packRow read.clusters row (toPage cols acc)) o (reflow old cols read.rows)
+    in
+    { out = out, clusters = read.clusters }
+
+
+{-| A source row read back as the ring keeps it, as `pageRowsOf` reads a
+page's. -}
+rowAt : Page -> Source -> Clusters -> { row : Row, clusters : Clusters }
+rowAt page src clusters =
+    let
+        ext =
+            Bitwise.and 0x3FF src.header
+
+        styles =
+            if Bitwise.and 0x4000 src.header /= 0 then
+                Array.repeat ext 0
+
+            else
+                (unpackRuns page.runs src.r ext []).styles
+
+        text =
+            unpackText page.text src.ti ext []
+
+        cells =
+            Array.foldl
+                (\c acc ->
+                    let
+                        k =
+                            pagedCell { c | style = Maybe.withDefault 0 (Array.get (Array.length acc.cells) styles) } acc.clusters
+                    in
+                    { cells = Array.pushLast k.cell acc.cells, clusters = k.clusters }
+                )
+                { cells = [], clusters = clusters }
+                text.cells
+    in
+    { row = { cells = cells.cells, wrapped = Bitwise.and 0x8000 src.header /= 0, prompt = Bitwise.and 3 (Bitwise.shiftRightZfBy 10 src.header) }, clusters = cells.clusters }
+
+
+packRow : Clusters -> Row -> (moved o : Out) -> Out
+packRow clusters row o =
+    let
+        packed =
+            packArray clusters row.cells 0 o.text o.runs 0 0 False
+
+        header =
+            Bitwise.or (Bitwise.or (Array.length row.cells) (Bitwise.shiftLeftBy 10 row.prompt))
+                (Bitwise.or
+                    (if row.wrapped then
+                        0x8000
+
+                     else
+                        0
+                    )
+                    (if packed.styled then
+                        0
+
+                     else
+                        0x4000
+                    )
+                )
+    in
+    { o | text = packed.text, runs = packed.runs, heads = pushU16 header o.heads }
+
+
+{-| `packCells` for a row's cells in an array. -}
+packArray : Clusters -> Array Int64 -> Int -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> Int -> Int -> Bool -> { text : Builder UInt8, runs : Builder UInt8, styled : Bool }
+packArray clusters cells i text runs style count wrote =
+    when Array.get i cells is
+        Nothing ->
+            if count == 0 || (style == 0 && not wrote) then
+                { text = text, runs = runs, styled = False }
+
+            else
+                { text = text, runs = pushU16 style runs, styled = True }
+
+        Just c ->
+            let
+                st =
+                    cellStyle c
+
+                packed =
+                    if Bitwise.and packSpecial c == 0 then
+                        pushUtf8 (cellPoint c) text
+
+                    else
+                        packOther clusters c text
+            in
+            if count > 0 && st == style then
+                packArray clusters cells (i + 1) packed runs style (count + 1) wrote
+
+            else if count > 0 then
+                packArray clusters cells (i + 1) packed (pushU16 count (pushU16 (Bitwise.or 0x8000 style) runs)) st 1 True
+
+            else
+                packArray clusters cells (i + 1) packed runs st 1 wrote
