@@ -127,24 +127,26 @@ def main():
         subprocess.run(cmd, cwd=logs, stdout=out, stderr=subprocess.STDOUT)
     took = time.monotonic() - t0
     # The parent's lines, `#N: cov: C ft: .. corp: .. exec/s: .. oom/timeout/crash:
-    # a/b/c ..`, count every job's inputs; a job that ends on a finding has
-    # its log copied in, its `vt-fuzz:` line before `Test unit written to`.
+    # a/b/c ..`, count every job's inputs. A job's log is not copied into the
+    # parent's with -ignore_crashes (the first fork run, §VC28), so a finding
+    # is a file the run wrote under -artifact_prefix, and why it differs is
+    # read by running it again (`--show`).
     text = log.read_text(errors="replace")
     m = re.findall(r"^#(\d+): cov: (\d+)", text, re.M)
     execs, cov = (int(m[-1][0]), max(int(c) for _, c in m)) if m else (0, 0)
-    found, why = [], None
-    for line in text.splitlines():
-        w = re.search(r"vt-fuzz: (.*)", line)
-        if w:
-            why = w.group(1)
-        f = re.search(r"Test unit written to (\S+)", line)
-        if f:
-            name = Path(f.group(1)).name
-            if name not in found:
-                found.append(name)
-                kind = why or ("a timeout" if "timeout-" in name else "a crash")
-                print(f"{kind}: {f.group(1)}")
-            why = None
+    counted = re.findall(r"oom/timeout/crash: (\d+)/(\d+)/(\d+)", text)
+    prefix = "diff-" if a.diff else ""
+    found = sorted((f for f in WORK.iterdir()
+                    if f.is_file() and f.name.startswith(prefix)
+                    and re.match(r"(crash|timeout|oom|slow-unit|leak)-", f.name[len(prefix):])
+                    and f.stat().st_mtime >= started.timestamp()),
+                   key=lambda f: f.stat().st_mtime)
+    for f in found:
+        print(f"finding: {f}")
+    found = [f.name for f in found]
+    if counted and sum(map(int, counted[-1])) != len(found):
+        print(f"the parent counted oom/timeout/crash {'/'.join(counted[-1])}, "
+              f"{len(found)} file(s) written")
     print(f"{execs} inputs in {took:.0f} s, coverage {cov}, {len(found)} finding(s)")
     if not a.no_record:
         RUNS.parent.mkdir(parents=True, exist_ok=True)

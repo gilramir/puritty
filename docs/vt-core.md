@@ -2160,7 +2160,8 @@ machine's 60. The parent's log is `diff-logs/fork.log` (`logs/` for
 `vt-fuzz`): its `#N: cov: C …` lines count every child's inputs, and each
 child that ends on a finding has its log copied in, which is where the
 finding's name and its `vt-fuzz:` line are read from; a finding found
-twice is listed once.
+twice is listed once. (It is not, with `-ignore_crashes`; the findings are
+read from the files written, §VC28.)
 
 Not run yet: the parsing was checked against a log made of the fork
 mode's line format and a job log of the third run, and the first fork
@@ -2212,3 +2213,57 @@ earlier runs' nine pass `vt-diff`, the replay corpus 321 of 321 with
 `core-bench`'s instructions within 0.05% of `c40e256` on `ls`, `gitlog`,
 `cup`, vte-cursor_motion and vte-unicode.
 
+
+
+## VC28. The first fork run: a cursor's shape per screen, visibility reports
+
+The first run in fork mode (§VC26), 24 jobs for four hours at `fac1752`,
+row 6 of `diff-runs.tsv`: 3,897,159 inputs, twice the third run's
+1,858,268 on eight jobs. Coverage 6,228 as the parent counts it, below the
+third run's 6,263, which was read from the jobs' own logs; the two counts
+are not known to be the same measure.
+
+**The summary said none; there were five.** libFuzzer's parent counted
+them (`oom/timeout/crash: 0/0/5`), but with `-ignore_crashes` it copies no
+job's log into its own, so `fuzz.py`, which read each finding's name from a
+copied log (§VC26), found none and recorded `none`. A finding is now a file
+the run wrote under `-artifact_prefix` since it started, and the summary
+says so when that number and the parent's count disagree; why one differs
+is read by running it again (`--show`). Row 6 was corrected by hand to the
+five files.
+
+**Startup took 33 minutes.** Before any job starts, the parent runs every
+input of the corpus and the seeds once, in one process, and keeps those
+that add coverage: 59,813 inputs in, 10,285 kept, the first job at 1,973 s.
+The jobs-mode runs did the same in each job, in parallel.
+
+`vt-diff-min` cut the five to 16 and 31 bytes, two groups.
+
+**A cursor's shape is the screen's.** Three were DECSCUSR on the alternate
+screen of 1049, then DECRQSS for it (`DCS $ q SP q ST`) after 1049 was
+reset: the core answered the shape set on the alternate screen, Ghostty the
+main screen's. Ghostty keeps the shape on each screen's cursor
+(`Screen.cursor.cursor_style`) and blinking as mode 12, one for the
+terminal. 47 and 1047 copy the whole cursor, shape with it, each time the
+screen changes, either way; 1049 copies it in and, going out, restores the
+saved cursor, which has no shape, so the main screen's own shape shows
+again. That is how the core already carries the prompt state (§VC22): the
+core keeps `otherShape`, the hidden screen's, swapped as `otherPrompt` is,
+and 1049's reset takes it back. DECSTR and RIS set the shown screen's only,
+as Ghostty's `setCursorStyle(.default)` does, unchanged.
+
+**Visibility reports.** Two were private mode 2033 set: Ghostty at once
+sends `CSI ? 999 ; 1 n`, "potentially visible", and sends the same for
+`CSI ? 998 n`; the core sent neither. It sends both now, always visible:
+libghostty-vt answers from its `flags.visible`, true until its host says
+otherwise, and the core has no host that says so yet. A window that knows
+it is hidden is phase 2's (`phase2-window.md`); with it the core would
+keep the flag and send the report when it changes while 2033 is set.
+
+Replay cases `cursor-shape-per-screen` and `visibility-report`, their
+`expected.txt` written by Ghostty. After it: the five findings pass
+`vt-diff`, cut down and as found; the replay corpus 323 of 323 with
+`core-dump` rebuilt; esctest unchanged (core 392, Ghostty 388); a
+five-minute self-fuzz on eight jobs from the seeds, clean; and
+`core-bench`'s instructions within 0.05% of `fac1752` on all thirteen
+inputs.

@@ -195,6 +195,7 @@ fresh config =
     , title = ""
     , colours = Dict.empty
     , cursorShape = 1
+    , otherShape = 1
     , ps = psGround
     , params = []
     , cur = 0
@@ -2325,6 +2326,9 @@ dispatchRest final priv inter params t =
         else if final == 0x4B then
             eraseLine True (param 0 0 params) t
 
+        else if final == 0x6E && param 0 0 params == 998 then
+            visibilityReport t
+
         else if final == 0x6E && param 0 0 params == 6 then
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
 
@@ -3353,6 +3357,19 @@ setPrivate p on t =
         else
             set
 
+    else if p == 2033 then
+        -- visibility reports: one at once each time it is set, as Ghostty
+        -- sends it (§VC28)
+        let
+            set =
+                { t | modes = Dict.set p on t.modes }
+        in
+        if on then
+            visibilityReport set
+
+        else
+            set
+
     else if p == 69 then
         if on then
             { t | modes = Dict.set 69 True t.modes }
@@ -3362,6 +3379,15 @@ setPrivate p on t =
 
     else
         { t | modes = Dict.set p on t.modes }
+
+
+{-| The visibility report, `CSI ? 999 ; 1 n`, "potentially visible", sent
+when mode 2033 is set and asked for with `CSI ? 998 n`. The core has no
+window to say whether it is hidden, so it answers as libghostty-vt does
+until its host says otherwise: visible (§VC28). -}
+visibilityReport : (moved t : Term) -> Term
+visibilityReport t =
+    reply "\u{001B}[?999;1n" t
 
 
 {-| DECCOLM (?3), Ghostty's `deccolm`: with ?40 set, the terminal resized
@@ -3401,20 +3427,21 @@ screenMode p on t =
                 toAlt True (saveCursor t)
 
         else
-            -- the main screen's own cursor again, its prompt state with it,
-            -- where 47 and 1047 copy the alternate screen's (§VC22)
+            -- the main screen's own cursor again, its prompt state and its
+            -- cursor's shape with it, where 47 and 1047 copy the alternate
+            -- screen's (§VC22, §VC28)
             let
                 own =
                     if t.alt then
-                        t.otherPrompt
+                        { prompt = t.otherPrompt, shape = t.otherShape }
 
                     else
-                        t.prompt
+                        { prompt = t.prompt, shape = t.cursorShape }
 
                 back =
                     toMain False t
             in
-            restoreCursor (withLf { back | prompt = own })
+            restoreCursor (withLf { back | prompt = own.prompt, cursorShape = own.shape })
 
     else if p == 1048 then
         if on then
@@ -3608,7 +3635,7 @@ toAlt clear t =
                     Nothing ->
                         newScreen t.cols t.rows (t.rows + 1)
         in
-        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt }
+        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape }
 
 
 {-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
@@ -3644,7 +3671,7 @@ toMain clear t =
                 -- cleared, the alternate screen is erased as ED 2 does,
                 -- which ends a pending wrap before the cursor is carried
                 -- over, as in Ghostty (§VC17)
-                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, wrapNext = t.wrapNext && not clear }
+                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape, wrapNext = t.wrapNext && not clear }
 
             Nothing ->
                 t
