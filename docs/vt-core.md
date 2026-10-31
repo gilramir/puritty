@@ -2650,9 +2650,10 @@ finds every line. `Vt.scrollbackBytesFor { cols, rows }` is `rows × (cols +
 a header, so that `rows` is what plain full-width text gets at the least.
 Ordinary output gets several times as many; text whose style changes inside
 its rows, or of characters of more bytes than columns, gets fewer. The
-default the host is to use is `scrollbackBytesFor` 100,000 rows of the
-width the terminal starts with (16.2 MB at 160 columns); the core has no
-default of its own, as `Config` has none.
+default the host is to use is `scrollbackBytesFor` 25,000 rows of the
+width the terminal starts with (4.05 MB at 160 columns; it was 100,000
+rows, 16.2 MB, until the costs below were measured, "The default"); the
+core has no default of its own, as `Config` has none.
 
 No clock is needed: what is dropped depends only on what was fed and how
 the term was resized. A limit that waits was set aside: the core has no
@@ -2685,8 +2686,9 @@ holds the pages to the reflow (`recutHolds`) while the history is under
 
 ### What it costs
 
-Everything below gives the core `scrollbackBytesFor` 100,000 rows of 160
-columns (16.2 MB), where it kept 100,000 rows before.
+Everything in this part gives the core `scrollbackBytesFor` 100,000 rows of
+160 columns (16.2 MB), where it kept 100,000 rows before; "The default"
+below measures the 25,000 rows chosen after it.
 
 **The speed targets.** The thirteen inputs' instructions are −2.30% to
 +0.05% of the build before V20 (`vte-scrolling` −2.30%, `scrolling_fullscreen`
@@ -2732,3 +2734,62 @@ times on `gitlog`; neither is chosen here.
 
 After it: replay 323 of 323, esctest2 392 (Ghostty 388); the fuzzers'
 findings of §VC31 and their 10,126 inputs pass.
+
+### The default: 25,000 rows
+
+Gilbert chose a smaller default. `scrollbackBytesFor` 25,000 rows of 160
+columns is 4.05 MB, about what the build before V20 kept of `gitlog` at its
+100,000 rows (40 bytes a row, from the table above: 4.0 MB). `core-bench`,
+`core-dump` and the probes give it; esctest's `core-pty` keeps its 1,000.
+
+**What is kept**, at 160 columns: `gitlog` 93,327 rows (100,000 before
+V20), `ls` 34,063 (100,000; its rows are long and coloured, 119 bytes
+each), `vte-scrolling` 1,350,266 (100,000; rows of a few bytes), `cup` none.
+A host that wants more of `ls`-like output sets more; the bytes are the
+limit, and the rows are what the output makes of them.
+
+**The speed targets.** Instructions against the build before V20: `cup`
++0.01%, `gitlog` −0.68%, `ls` −0.64%, `scrolling_fullscreen` −0.63%,
+`vte-scrolling` −0.48%, the other eight +0.01% to +0.06%. Times, five runs
+after a warm-up, least and most, the build before V20 and V21 in the same
+session: all thirteen inside their budgets (§VC2), and level but for two.
+`gitlog` is 99–106 ms against 96–101 (budget 132), as it was at 16.2 MB.
+`vte-scrolling` is 40–43 ms against 38–41, over 40 runs, and its budget is
+42: one run in 40 was over it. Its instructions are fewer, its cycles 3.1%
+more, its cache misses 9% and its page faults 21%: it keeps 1,350,266
+short rows (29 MB peak, 26 before V20) where the build before kept 100,000.
+Peak memory: `gitlog` 58 MB (53 before V20), `ls` 58 (66).
+
+**Resizes.** `drag 20 80 50`, three runs, the median:
+
+| input | resizes, V20 | 16.2 MB | 4.05 MB | read, 4.05 MB | peak, 4.05 MB |
+|---|---:|---:|---:|---:|---:|
+| one line, 10,000 rows | 102 ms | 107 ms | 105 ms | 187 ms | 173 MB |
+| one line, 100,000 rows | 388 ms | 781 ms | 207 ms | 466 ms | 458 MB |
+| 10,000 short lines | 45 ms | 48 ms | 49 ms | 66 ms | 65 MB |
+| 100,000 short lines | 274 ms | 293 ms | 212 ms | 519 ms | 478 MB |
+| `gitlog.txt` | 268 ms | 1,075 ms | 263 ms | 510 ms | 506 MB |
+
+`gitlog`'s resizes are back to V20's, and the long lines' are faster, since
+V20 pruned to 100,000 rows after the narrowing and the bytes now keep
+fewer before it. Replay 323 of 323.
+
+**The fuzzers on V21** (161d087; they set their own limits, below). The
+differential run, one hour on 16 jobs, ran 678,085 inputs; the self-fuzzer,
+one hour on 8 jobs at the same time, with the seeds and corpus of §VC31's.
+Neither found a crash or a difference. They wrote 40 and 33 slow or
+timed-out inputs (36 and 28 distinct), and each costs 3.5 to 15.8 times
+V20's instructions on V20's own fuzzer build (`vt-diff`'s slowest: 5.7 s
+against 0.38 s, 117 MB against 63). All are many rows of few bytes, then
+hundreds of resizes (43 to 2,699): in the differential run mostly the long
+line of §VC30, a REP of 65,535 to billions narrowed to a few columns, where
+a row takes 3 to 5 bytes; in the self-fuzzer, thousands of one-character
+lines. The fuzzers' limits are the bytes of 10,000 and 600 rows of 132
+columns (1.34 MB and 80 KB, `Fuzz.dump`), so of such rows the core keeps
+tens of times what V20 and Ghostty kept (10,000 and 600), 270,000 to
+450,000 of the line at 1 to 3 columns, and reflows them at every resize.
+This is what "Resizes cost what the rows they reflow cost" measured, met at
+the fuzzers' widths and lines; the slow inputs are the price of a byte
+limit on rows of few bytes, not a defect, and are not saved as findings.
+The lower rate (1,167,212 inputs in §VC31's run) is partly the
+self-fuzzer's 8 jobs beside it.
