@@ -5,4 +5,4 @@ set -e
 cd "$(dirname "$0")"
 V=../../../../vt/src
 cp $V/Vt.geng src/Vt.geng
-for f in Cell Dump Pages Resize Screen Style Term Width; do cp $V/Vt/$f.geng src/Vt/$f.geng; done
+for f in Cell Dump Pages Recut Resize Screen Style Term Width; do cp $V/Vt/$f.geng src/Vt/$f.geng; done

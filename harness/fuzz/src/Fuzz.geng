@@ -7,12 +7,15 @@ import UInt8
 import Vt
 
 
-{-| The dump of a terminal of `cols` by `rows`, keeping `scrollback` lines,
-fed `input`, `chunk` bytes a read, the whole of it in one read when `chunk`
-is 0 or less. `vt-fuzz` keeps 600, three pages, so that a resize cuts
-pages again on their bytes (V20), and the pages are then held to the reflow
-of their rows at five widths (`Vt.recutHolds`, §VC31); `vt-diff` keeps
-10,000, as it has Ghostty keep at least (`diff.h`).
+{-| The dump of a terminal of `cols` by `rows`, keeping the bytes of
+`scrollback` rows of the widest width the fuzzer resizes to (132 columns,
+`Vt.scrollbackBytesFor`, V21), fed `input`, `chunk` bytes a read, the whole
+of it in one read when `chunk` is 0 or less. `vt-fuzz` asks for 600, so that
+a resize cuts pages again on their bytes (V20), and while the scrollback is
+under 1,200 rows the pages are held to the reflow of their rows at five
+widths (`Vt.recutHolds`, §VC31); `vt-diff` asks for 10,000, which it has
+Ghostty keep (`diff.h`), and the dump says `pruned` once either may have
+pruned (`Vt.historyReached`).
 
 A 0xFE byte of the input is not fed: with the two bytes after it, it
 resizes the terminal, to the columns the first indexes in `colsTable` and
@@ -35,19 +38,19 @@ dump cols rows chunk scrollback input =
     in
     let
         done =
-            run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollback = scrollback, checksums = True, cellWidth = 10, cellHeight = 20 })
+            run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollbackBytes = Vt.scrollbackBytesFor { cols = 132, rows = scrollback }, checksums = True, cellWidth = 10, cellHeight = 20 })
 
         -- with a small scrollback, as vt-fuzz keeps, the pages cut again on
         -- their bytes at other widths are held to the rows the reflow of
         -- the ring's rows makes of them (V20, §VC31)
         recut =
-            if scrollback <= 600 && not (Vt.recutHolds 1 done && Vt.recutHolds 3 done && Vt.recutHolds 7 done && Vt.recutHolds 13 done && Vt.recutHolds 80 done) then
+            if scrollback <= 600 && Vt.historyBound done <= 1200 && not (Vt.recutHolds 1 done && Vt.recutHolds 3 done && Vt.recutHolds 7 done && Vt.recutHolds 13 done && Vt.recutHolds 80 done) then
                 "recut differs\n"
 
             else
                 ""
     in
-    if Vt.historyReached done then
+    if Vt.historyReached scrollback done then
         recut ++ Vt.dump done ++ "pruned\n"
 
     else

@@ -30,13 +30,14 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 `Vt`'s interface, as it stands:
 
 ```gren
-new : Config -> Term                       -- { cols, rows, scrollback, checksums, cellWidth, cellHeight }
+new : Config -> Term                       -- { cols, rows, scrollbackBytes, checksums, cellWidth, cellHeight }
 feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
 takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
 resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
 dump : Term -> String                      -- §VC3
 historyBound : Term -> Int                 -- for the differential fuzzer, §VC17
-historyReached : Term -> Bool              -- the same, sticky and inside a read, §VC25
+historyReached : Int -> Term -> Bool       -- the same, sticky and inside a read, §VC25, §VC32
+scrollbackBytesFor : { cols : Int, rows : Int } -> Int   -- the bytes for rows of a width, §VC32
 recutHolds : Int -> Term -> Bool           -- for the fuzzer: the pages' recut is the reflow, §VC31
 ```
 
@@ -2561,7 +2562,8 @@ off, 100,000 lines, 706 → 719 ms; the same dumps. Narrowing 100,000
 unwrapped lines still costs about 350 ms a resize; a bytes version of that
 cut would bring it down.
 
-**One behaviour changes: a narrowing past the limit prunes.** V10 and V16
+**One behaviour changes: a narrowing past the limit prunes** (until V21,
+§VC32, which counts the limit in bytes, so that a narrowing keeps its rows). V10 and V16
 left a narrowed page at its width, so a narrowing could leave the
 scrollback holding far more rows than it keeps: `m3` (§VC7's) narrowed to
 7 columns held 362,679 rows for 100,000 lines of scrollback. V20 cuts
@@ -2584,13 +2586,13 @@ After all of it: replay 323 of 323, esctest2 392 (Ghostty 388).
   plain text that §VC30 measured (0.15 ms) is not built.
 - The lossy resizes still take every page back (above).
 
-## VC32. A scrollback limit in bytes: a survey (V21 proposed)
+## VC32. A scrollback limit in bytes (V21)
 
 §VC31's one change of behaviour is that a narrowing past the limit prunes.
 Gilbert: a window narrowed to 7 columns is likely to be widened again soon,
 and the lines it dropped were wanted; a limit that waits (a time) was one
 idea. This section measures what a narrowing costs in memory, which is what
-a limit is for, and proposes V21. Nothing in the core is changed.
+a limit is for, and builds V21, which Gilbert chose from it.
 
 **Tool.** `probes/geng/recut/size FILE WIDTH...` feeds FILE to a 160 by 50
 term whose scrollback (100,000,000 lines) prunes nothing, resizes it to
@@ -2624,39 +2626,109 @@ are grids of cells, so its bytes follow the cells, not the text). The
 oracle sets the line limit and no byte limit (`gdump.c`), which is why
 §VC31's pruning agrees with it.
 
-**V21 (proposed) · The scrollback has a limit in bytes, and optionally one
-in rows.** As Ghostty's: `Config` gets `scrollbackBytes`, the pages' text,
-headers and style runs, and `scrollback` stays, in rows at the screen's
-width, with a value for none; the first reached drops the oldest pages.
-With a byte limit alone, a narrowing keeps every line unless the bytes it
-adds (a quarter to two fifths at 7 columns, above) pass the limit, and a
-widening back finds them all. No clock is needed: what is pruned depends
-only on what was fed and how the term was resized.
+Two limits, bytes and rows, were proposed first, as Ghostty's. Gilbert:
+two limits confuse; one limit, in bytes, with a helper that gives the bytes
+for a number of rows of a width, knowing that what the lines hold changes
+how many rows the bytes keep.
 
-- **Why not a time.** The core has no clock (§VC1), so the host would call
-  a prune after an idle time: a new call, a policy, and a dump that depends
-  on when it ran. And the memory a narrowing costs is small and bounded by
-  the byte limit anyway, so waiting buys nothing that the bytes do not.
-- **How it is held.** The differential fuzzer keeps the row limit on both
-  sides, as now: that is a configuration the core ships, so no mode exists
-  for the fuzzer alone. A second set of runs with only a byte limit on
-  both sides compares until either reaches it (the bytes are counted
-  differently, so after it only the screen and replies, as §VC17 does for
-  rows). `recutHolds` and the self-fuzzer cover the history past a limit,
-  where Ghostty is not compared.
-- **What it costs to build.** `Back` keeps a running total of its pages'
-  bytes, added to at a push, taken from at a drop, recomputed after a
-  recut. The pages are now a ring of `limit` slots; with a byte limit
-  their number varies, so they become a queue that drops from the front.
-  `historyReached` is set by either limit. The speed targets do not move,
-  since a push adds three lengths to a total.
+**What the bytes of a row depend on.** At 160 columns, from the table
+above: 40 bytes a row of `gitlog`, 41 of `m3`, 57 of the short lines, and
+162 of the one long line, whose rows are full. Lines shorter than the
+screen take less, since a row's trailing blanks are not stored; a cell of
+ASCII is a byte, of CJK 3 bytes for 2 columns, of an emoji 4 for 2, and a
+mark of width 0 adds its bytes; a style changed inside a row adds 4 bytes a
+change. The same bytes keep about four times as many rows of ordinary
+output as of full rows of text.
 
-**For Gilbert to choose.**
-1. V21 as proposed, or keep §VC31's row limit.
-2. The defaults: a byte limit alone, as Ghostty's defaults, or both. Our
-   bytes are not Ghostty's: 50 MB of our pages holds about 1.25 million
-   rows of `gitlog` at 160 columns (2.3 times the 21.6 MB above); what Ghostty's 50 MB holds is not
-   measured. A default should be chosen by the history it gives, not by
-   matching Ghostty's number.
-3. Whether `Config.scrollback`'s current meaning (rows) is kept for the
-   optional limit, or renamed `scrollbackRows` beside `scrollbackBytes`.
+**V21 · The scrollback's limit is in bytes, one limit.** `Config.scrollback`
+(rows) becomes `scrollbackBytes`: the most the pages may hold, their text,
+row headers and style runs together; 0 is none. A page pushed past it drops
+the oldest pages until the pages fit, and so does a resize, so a narrowing
+drops pages only when the bytes it adds pass the limit, and a widening back
+finds every line. `Vt.scrollbackBytesFor { cols, rows }` is `rows × (cols +
+2)`: the bytes of `rows` full rows of text in one style, a byte a cell and
+a header, so that `rows` is what plain full-width text gets at the least.
+Ordinary output gets several times as many; text whose style changes inside
+its rows, or of characters of more bytes than columns, gets fewer. The
+default the host is to use is `scrollbackBytesFor` 100,000 rows of the
+width the terminal starts with (16.2 MB at 160 columns); the core has no
+default of its own, as `Config` has none.
+
+No clock is needed: what is dropped depends only on what was fed and how
+the term was resized. A limit that waits was set aside: the core has no
+clock (§VC1), a prune after an idle time would be a new call, a policy, and
+a dump that depends on when it ran, and the memory a narrowing costs is a
+quarter to two fifths more at 7 columns, which the byte limit bounds anyway.
+
+**As built.** `Back` is a queue: the pages from slot `head` on, the oldest
+first; a page dropped is emptied and `head` moves on, and the slots are
+moved down once half of them are dropped ones. It keeps the pages' `bytes`
+and `rows` as it pushes and drops, so `historyBound` is the ring's rows and
+`rows`, with no walk of the pages (`pagedBound` goes). A resize hands its
+pages to `backOf`, which totals them and applies the limit. For the
+differential fuzzer, `Back` keeps `peak`, the most rows the scrollback may
+have held (noted as a page goes and before and after a resize, as
+`reached` was, §VC25), and `dropped`, whether a page has gone for the
+limit; `historyReached rows t` is `dropped`, or `peak` at least `rows`, and
+RIS keeps both. `reach` and `reached` go.
+
+**The fuzzers.** Ghostty keeps 10,000 rows (`gdump.c` sets its line limit),
+and `Fuzz.dump` gives the core the bytes of 10,000 rows of 132 columns,
+the widest width it resizes to, so that the core rarely drops a page
+before Ghostty prunes; the dump says `pruned` once either may have
+(`historyReached 10000`), and only then do the two compare less. No mode
+exists for the fuzzer alone. `vt-fuzz` asks for 600 rows the same way, and
+holds the pages to the reflow (`recutHolds`) while the history is under
+1,200 rows, which bounds the check's time as the 600 rows did.
+`core-dump`, `core-bench`, esctest's `core-pty` and the probes give
+`scrollbackBytesFor` the rows they kept before.
+
+### What it costs
+
+Everything below gives the core `scrollbackBytesFor` 100,000 rows of 160
+columns (16.2 MB), where it kept 100,000 rows before.
+
+**The speed targets.** The thirteen inputs' instructions are −2.30% to
++0.05% of the build before V20 (`vte-scrolling` −2.30%, `scrolling_fullscreen`
+−0.98%, `ls` −1.05%, `gitlog` −0.65%, the other nine +0.01% to +0.05%): a
+page pushed adds three lengths to two totals, and the walk of every page
+that `pagedBound` made at each push is gone. Times, five runs warm, least
+and most, are level and inside the core's budgets (§VC2) on all thirteen
+but one, which is inside its budget and 3 ms slower: `gitlog`, 100–103 ms
+against 97–100 (budget 132). It keeps more of its scrollback, 415,375 rows
+where it kept 100,000, and its peak memory is 64 MB against 53.
+`vte-scrolling`'s lines are so short that the same bytes keep 2,666,618 rows
+of them, for 4 MB more (30 against 26 MB peak); `ls` and the others are level.
+
+**What is kept.** Of §VC31's 108 dumps after a drag (6 inputs, 6 widths, 1,
+2 and 5 drags), 84 are the same as the build before V20, and in the 24
+others the old history is the newest part of the new and the screen is the
+same: the old build pruned to 100,000 rows where the bytes keep more, at
+one column (all six inputs) and the long line at 7 and 13 columns. The long
+line narrowed to one column and widened back now has the dump of the long
+line never resized: nothing was dropped on the way.
+
+**Resizes cost what the rows they reflow cost.** `drag 20 80 50`, three
+runs, the median, against V20 (§VC31), which kept 100,000 rows:
+
+| input | resizes, V20 | resizes, V21 | read, V20 | read, V21 | peak, V20 → V21 |
+|---|---:|---:|---:|---:|---:|
+| one line, 10,000 rows | 102 ms | 107 ms | 192 ms | 186 ms | 169 → 173 MB |
+| one line, 100,000 rows | 388 ms | 781 ms | 1,021 ms | 2,107 ms | 1,015 → 2,314 MB |
+| 10,000 short lines | 45 ms | 48 ms | 66 ms | 65 ms | 65 → 65 MB |
+| 100,000 short lines | 274 ms | 293 ms | 770 ms | 759 ms | 770 → 737 MB |
+| `gitlog.txt` | 268 ms | 1,075 ms | 525 ms | 1,793 ms | 503 → 1,392 MB |
+
+The peaks include the read, the dump's strings of every row. `gitlog`
+keeps four times the rows, and a resize costs four times as much: 53 ms,
+against Ghostty's 19 ms for the 93,500 rows it keeps at its 100,000-line
+limit; a row costs what it did. The long line keeps its 100,000 rows of
+160 columns and, at 80, the 200,000 they make, where V20 pruned them to
+100,000 at every narrowing. So the byte limit's default decides a resize's
+cost as much as the history's length: the same 16.2 MB is 4 times the rows
+of ordinary output, and 4 times the resize. A smaller default, or the
+headers-only cut for plain text (§VC30), are the two ways back to V20's
+times on `gitlog`; neither is chosen here.
+
+After it: replay 323 of 323, esctest2 392 (Ghostty 388); the fuzzers'
+findings of §VC31 and their 10,126 inputs pass.

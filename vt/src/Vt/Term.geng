@@ -48,11 +48,13 @@ for, as Ghostty's is, since a program can checksum the screen a cell at a
 time and so read everything on it, other programs' output among it.
 `cellWidth` and `cellHeight` are a cell's size in pixels, which the reports
 of the size in pixels need (`CSI 14 t`, `CSI 16 t`, mode 2048); 0 is
-unknown, and they are not answered (V15). -}
+unknown, and they are not answered (V15). `scrollbackBytes` is the most
+the scrollback's pages may hold, in bytes (V21, §VC32); `Vt.scrollbackBytesFor`
+gives the bytes for a number of rows of a width. -}
 type alias Config =
     { cols : Int
     , rows : Int
-    , scrollback : Int
+    , scrollbackBytes : Int
     , checksums : Bool
     , cellWidth : Int
     , cellHeight : Int
@@ -67,18 +69,23 @@ type alias Page =
     { text : Bytes, heads : Bytes, runs : Bytes, cols : Int }
 
 
-{-| The main screen's scrollback in pages. `reach`: the scrollback the
-embedder asked for, in rows, and `reached`: whether the scrollback may have
-held that many, which once true stays true. Ghostty prunes at another point
-than the core, so the differential fuzzer compares the scrollback only
-while it is false (§VC17, §VC25); it is noted inside a read, where a resize
-by DECCOLM can bring a pruned scrollback back under the limit. -}
+{-| The main screen's scrollback in pages, oldest first from slot `head`
+(the slots before it are pages dropped, emptied). `limit`: the most bytes
+the pages may hold (V21, §VC32), none when 0; `bytes` and `rows`: what they
+hold. `peak`: the most rows the scrollback may have held, the ring's with
+the pages', and `dropped`: whether a page has gone for the limit; both stay
+once set, and are noted inside a read, where a resize by DECCOLM can bring
+the scrollback back down. Ghostty prunes at another point than the core, so
+the differential fuzzer compares the scrollback only while neither says it
+may have (§VC17, §VC25, `Vt.historyReached`). -}
 type alias Back =
     { pages : Builder Page
     , head : Int
     , limit : Int
-    , reach : Int
-    , reached : Bool
+    , bytes : Int
+    , rows : Int
+    , peak : Int
+    , dropped : Bool
     }
 
 

@@ -3,12 +3,13 @@
  *
  * An input is fed to both as `Fuzz.dump` feeds it to the core: its 0xFE
  * bytes, each with the two bytes after it, are resizes, to the sizes they
- * index in fuzz.c's tables, and are not fed. Both keep LIMIT lines of
- * scrollback; libghostty-vt keeps at least as many, a page more at most, so
- * while the core's history is under LIMIT the two must be the same, and
- * once it reaches it only the screen, the cursor and the replies are
- * compared. When it reached it before a resize, which the core's dump says
- * with a last line `pruned`, only the size and the replies are. */
+ * index in fuzz.c's tables, and are not fed. libghostty-vt keeps LIMIT
+ * lines of scrollback, a page more at most, and the core the bytes of LIMIT
+ * rows of 132 columns (V21), so while the core's history is under LIMIT and
+ * it has dropped no page the two must be the same; once its history reaches
+ * LIMIT only the screen, the cursor and the replies are compared. When
+ * either may have pruned before a resize, which the core's dump says with a
+ * last line `pruned`, only the size and the replies are. */
 #include "../oracle/gdump.h"
 #include <stdlib.h>
 #include <string.h>
@@ -131,7 +132,8 @@ static int differs(int cols, int rows, const uint8_t *data, size_t n,
   free(rs);
   if (!*ghostty) return 1;
   *ghostty_len = own_name(*ghostty, *ghostty_len);
-  /* `pruned`: the core's scrollback may have reached LIMIT before a resize,
+  /* `pruned`: the core dropped a page, or its scrollback may have reached
+   * LIMIT, before a resize,
    * which can bring it back under with rows the two pruned differently and
    * reflow a line that runs on from them differently (Fuzz.dump,
    * docs/vt-core.md §VC17). */
