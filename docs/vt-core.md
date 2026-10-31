@@ -2330,3 +2330,111 @@ scrollback pay 35 ms for each. Where the core's 1.2 µs a row goes
 quarter of it) is not yet looked at, and neither is whether V16's widths
 could be cut short, say by reflowing a page back when a resize returns to
 a width it had (§VC22's `moved`).
+
+
+## VC30. A resize is the core's slowest operation: a survey (V20 proposed)
+
+§VC29 found a fork run's slow start in the core's resize; Gilbert: the slow
+resize is an issue to solve. This section measures it on the core alone and
+against Ghostty, finds where the time goes, measures how fast a reflow on
+the packed pages can be, and proposes V20. Nothing in the core is changed.
+
+**Tools.** `core-bench FILE drag N COLS ROWS` (160 by 50, 100,000 lines of
+scrollback, as every `core-bench` run) times N resizes, to COLS by ROWS and
+back in turn, then one read of the whole scrollback (`Vt.dump`).
+`probes/geng/recut/ghostty/gdrag` times libghostty-vt on the same; and
+`probes/geng/recut/app` is the floor of a reflow on packed pages (below).
+Inputs: one line of 160 × L `a`s, which fills L rows; L short lines
+(`line 000001 the quick brown fox…`); and `gitlog.txt` of §VC7, styled,
+25 MB. 160 and 80 columns in turn.
+
+| input | core: a resize | core: added to the next read, a resize | Ghostty: a resize |
+|---|---:|---:|---:|
+| one line, 10,000 rows | 118 ms | — | 0.53 ms |
+| one line, 100,000 rows | 740 ms | — | 4.5 ms |
+| 100,000 short lines | 0.3 ms | 140 ms | 18 ms |
+| `gitlog.txt` (93,500 rows) | 0.8 ms | 113 ms | 19 ms |
+
+The read itself, with no resize, is 778 ms for the short lines and 582 ms
+for `gitlog`, most of it the dump's own strings; the column that matters is
+what each resize adds to it.
+
+**Where it goes.** Two costs, one mechanism. A page is read back cell by
+cell into records (`unpackText`: a record and an array of code points a
+cell), each made an `Int64` cell again (`pagedCell`), the rows joined into
+lines and split again as arrays (`joinLines`, `splitLine`), and, when a
+resize takes the pages back, packed again (`rebuild`, `pushHistory`). On
+the long line `readPages` is 55% of a resize, `reflowCols` 26%, and the
+allocations and minor collections in both about 38%: some 7 µs a row of
+160 cells. Short lines are cheap to resize, since V10 leaves their pages
+as they are, but V16 makes every read reflow every page through every width
+it went through, 1.4 µs a row a width. A long line is dear at the resize:
+`lineStart` takes back every page the line runs on from, since the ring's
+part of the line cannot be cut until the line's start is known, so a resize
+reflows the whole line. A `cat` of one large minified file is that line.
+
+**How fast a reflow on the packed bytes is.** A page is its rows' text,
+UTF-8, one header of two bytes a row (the extent, the wrapped flag, the
+prompt mark, whether it has style runs) and the style runs. For plain ASCII
+in the default style a row's bytes are its cells, so a reflow is new
+headers over the same text: `recut` walks each page's headers, carries a
+line's length from one page to the next, and writes a header for each row
+of the new width. Text with wider or longer characters needs the byte where
+each cell starts: a walk of the text counting lead bytes. 20 passes, 160 and
+80 columns in turn:
+
+| input | headers alone, a pass | a walk of every byte, a pass |
+|---|---:|---:|
+| one line, 100,000 rows (16 MB of text) | 0.15 ms | 17 ms |
+| 100,000 short lines (5.5 MB) | 0.35 ms | 6.5 ms |
+| `gitlog.txt` (4 MB of text in pages) | 0.35 ms | 4.8 ms |
+
+About 3.5 ns a row for the headers and 1.1 ns a byte for the walk: a
+reflow on the packed form is as fast as Ghostty's for any text, and much
+faster for plain text, against the core's 1.4 to 7 µs a row now. The
+probe writes headers only; a real one also cuts style runs, and keeps
+§VC14–§VC22's rules (below).
+
+**V20 (proposed) · A resize reflows the pages at once, on their bytes.**
+Each page is cut again to the new width when the width changes, as
+Ghostty's are, by a reflow that reads and writes the packed form and
+never makes a cell record. It replaces two decisions whose premise was
+that a reflow of the scrollback is dear:
+
+- V10, pages left at their width and reflowed when read, goes: a read
+  reads a page at the screen's width and no more.
+- V16, `Page.via`, goes: a page is reflowed through each width at the
+  resize that goes to it, which is what Ghostty does, so the widths it went
+  through need no list, and the blank-continuation rule (patch 0001) comes
+  out the same as Ghostty's by construction.
+- `lineStart` no longer takes back every page a line runs on from: the
+  pages' part of a line is cut on the bytes, and only the line's last row
+  in the pages, which the ring's rows continue, comes back into the ring to
+  be cut with them.
+
+A page then holds as many rows as the cut makes, not `pageRows`; the
+history's bound already counts rows from the headers (`boundFrom`).
+
+**What the bytes reflow must keep.** Everything `joinLines` and
+`splitLine` do now, on the packed form: a wide character that does not fit
+leaves a spacer head (0xFF) and wraps (§VC14, patches 0005, 0006); a spacer
+head is dropped when its line is joined; a mark of width 0 stays with its
+cell; a cell in a background colour alone (0xFE) and protection (0xFD)
+travel with their cells (§VC17, §VC19); a style run is cut where its row is;
+a row cut from a line takes the prompt mark §VC22 says; a blank row that
+ends a wrapped line ends it (patch 0001); and the cursor, the saved cursor
+and the prompt's rows, which are in the ring, are not touched by it.
+
+**How it would be held.** The current reflow is the reference: a fuzz
+target that reflows a random page both ways (`reflowedVia` on the rows,
+and the bytes reflow) and demands the same rows, besides `vt-diff`
+against Ghostty, the replay corpus and `core-bench` (`drag`, and the
+thirteen inputs' instructions, which no resize touches). Expected: a resize
+of a full scrollback in Ghostty's range (tens of milliseconds at most for
+100,000 rows of text, under a millisecond for plain text), and reads that
+no longer depend on how many resizes came before them.
+
+**Open.** The ring's own reflow (the screen and up to 513 rows not yet in
+a page) stays on arrays: 0.3 to 0.8 ms a resize, measured above. Whether
+plain pages should carry a flag that lets the reflow skip the walk of
+their bytes is for the implementation to measure.

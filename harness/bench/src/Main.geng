@@ -10,8 +10,11 @@ instructions sees it, so measure those without it.
 
 With `resize COLS ROWS` it times instead one `Vt.resize` of the term the
 file left, its scrollback full (§VC14), and prints the screen's dump hash.
+With `drag N COLS ROWS` it times N resizes, to COLS by ROWS and back to 160
+by 50 in turn, as a window dragged, then one read of the whole scrollback
+(`Vt.dump`), which pays for the widths the pages went through (§VC29).
 
-usage: core-bench FILE [dump | resize COLS ROWS]
+usage: core-bench FILE [dump | resize COLS ROWS | drag N COLS ROWS]
 
 -}
 
@@ -69,6 +72,57 @@ timeResize cols rows t =
             )
 
 
+drag : Int -> Int -> Int -> Int -> (moved t : Vt.Term) -> Vt.Term
+drag n cols rows i t =
+    if i >= n then
+        t
+
+    else if modBy 2 i == 0 then
+        drag n cols rows (i + 1) (Vt.resize cols rows t)
+
+    else
+        drag n cols rows (i + 1) (Vt.resize 160 50 t)
+
+
+timeDrag : Int -> Int -> Int -> (moved t : Vt.Term) -> Task x {}
+timeDrag n cols rows t =
+    Time.monotonic
+        |> Task.andThen
+            (\t0 ->
+                let
+                    r =
+                        drag n cols rows 0 t
+                in
+                Time.monotonic
+                    |> Task.andThen
+                        (\t1 ->
+                            let
+                                h =
+                                    hash (Vt.dump r)
+                            in
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t2 ->
+                                        Console.write
+                                            (String.fromInt n
+                                                ++ " resizes in "
+                                                ++ ms t0 t1
+                                                ++ " ms; read in "
+                                                ++ ms t1 t2
+                                                ++ " ms; dump "
+                                                ++ String.fromInt h
+                                                ++ "\n"
+                                            )
+                                    )
+                        )
+            )
+
+
+ms : Time.Duration -> Time.Duration -> String
+ms a b =
+    String.fromInt (Int64.toInt (Time.inMilliseconds b) - Int64.toInt (Time.inMilliseconds a))
+
+
 main : Task Never {}
 main =
     Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
@@ -84,7 +138,10 @@ main =
                                             t =
                                                 feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollback = 100000, checksums = False, cellWidth = 0, cellHeight = 0 })
                                         in
-                                        if Array.get 1 s.args == Just "resize" then
+                                        if Array.get 1 s.args == Just "drag" then
+                                            timeDrag (number 2 s.args) (number 3 s.args) (number 4 s.args) t
+
+                                        else if Array.get 1 s.args == Just "resize" then
                                             timeResize (number 2 s.args) (number 3 s.args) t
 
                                         else
