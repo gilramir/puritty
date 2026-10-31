@@ -1,0 +1,350 @@
+module Vt.Term exposing
+    ( Config
+    , Page
+    , Back
+    , Saved
+    , Keys
+    , noKeys
+    , keyFlags
+    , popKeys
+    , noSaved
+    , Screen
+    , Term
+    , psGround
+    , psEscape
+    , psEscInter
+    , psCsi
+    , psCsiIgnore
+    , psUtf8
+    , psOsc
+    , psDcs
+    , psString
+    , newScreen
+    , reply
+    )
+
+{-| Part of `Vt` (docs/vt-core.md §VC23). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+
+
+-- THE STATE
+
+
+{-| `checksums` turns on DECRQCRA's answer (§VC10). It is off unless asked
+for, as Ghostty's is, since a program can checksum the screen a cell at a
+time and so read everything on it, other programs' output among it.
+`cellWidth` and `cellHeight` are a cell's size in pixels, which the reports
+of the size in pixels need (`CSI 14 t`, `CSI 16 t`, mode 2048); 0 is
+unknown, and they are not answered (V15). -}
+type alias Config =
+    { cols : Int
+    , rows : Int
+    , scrollback : Int
+    , checksums : Bool
+    , cellWidth : Int
+    , cellHeight : Int
+    }
+
+
+{-| A page of scrollback, and the width its rows were cut at: a resize
+leaves a page as it is and its rows are reflowed when read (V10, §VC14).
+`via`: the widths the resizes since it was packed went to, oldest first;
+its rows are reflowed through each of them when read, as Ghostty's were at
+each resize, since a reflow depends on the widths it goes through (§VC20,
+§VC22). -}
+type alias Page =
+    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int, via : Array Int }
+
+
+type alias Back =
+    { pages : Builder Page
+    , head : Int
+    , limit : Int
+    }
+
+
+{-| What DECSC saves. -}
+type alias Saved =
+    { x : Int
+    , y : Int
+    , attrs : Attrs
+    , wrapNext : Bool
+    , origin : Bool
+    , sets : Int
+    , gl : Int
+    , single : Int
+    , guard : Int64
+    , isSet : Bool
+    }
+
+
+{-| The kitty keyboard protocol's flags, a stack of eight that wraps, as
+Ghostty keeps one for each screen (§VC17). The core reports them and
+encodes no key with them yet: keys are phase 2's. -}
+type alias Keys =
+    { stack : Array Int, at : Int }
+
+
+noKeys : Keys
+noKeys =
+    { stack = [ 0, 0, 0, 0, 0, 0, 0, 0 ], at = 0 }
+
+
+{-| CSI ? u, > u, < u and = u, as Ghostty takes them: a push of a value
+over 31, or a set of one, does nothing; a pop of eight or more empties the
+stack; `=`'s second parameter sets (1), adds (2) or clears (3) the flags. -}
+keyFlags : Int -> Array Int -> (moved t : Term) -> Term
+keyFlags priv params t =
+    let
+        k =
+            t.keys
+
+        top =
+            Maybe.withDefault 0 (Array.get k.at k.stack)
+
+        first =
+            Maybe.withDefault 0 (Array.get 0 params)
+    in
+    if priv == 0x3F then
+        reply ("\u{001B}[?" ++ String.fromInt top ++ "u") t
+
+    else if priv == 0x3E then
+        let
+            flags =
+                if Array.length params == 1 then
+                    first
+
+                else
+                    0
+
+            at =
+                modBy 8 (k.at + 1)
+        in
+        if flags > 31 then
+            t
+
+        else
+            { t | keys = { stack = Array.set at flags k.stack, at = at } }
+
+    else if priv == 0x3C then
+        let
+            count =
+                if Array.length params == 1 then
+                    first
+
+                else
+                    1
+        in
+        if count >= 8 then
+            { t | keys = noKeys }
+
+        else
+            { t | keys = popKeys count k }
+
+    else
+        let
+            flags =
+                if Array.length params >= 1 then
+                    first
+
+                else
+                    0
+
+            how =
+                Maybe.withDefault 1 (Array.get 1 params)
+
+            set =
+                if how == 1 then
+                    flags
+
+                else if how == 2 then
+                    Bitwise.or top flags
+
+                else
+                    Bitwise.and top (Bitwise.complement flags)
+        in
+        if flags > 31 || how < 1 || how > 3 then
+            t
+
+        else
+            { t | keys = { k | stack = Array.set k.at set k.stack } }
+
+
+popKeys : Int -> Keys -> Keys
+popKeys n k =
+    if n <= 0 then
+        k
+
+    else
+        popKeys (n - 1) { stack = Array.set k.at 0 k.stack, at = modBy 8 (k.at - 1) }
+
+
+{-| No cursor saved: DECRC goes home with the defaults. -}
+noSaved : Saved
+noSaved =
+    { x = 0, y = 0, attrs = plainAttrs, wrapNext = False, origin = False, sets = 0, gl = 0, single = -1, guard = 0, isSet = False }
+
+
+{-| A ring of `size` rows, `stride` slots each, in one builder: the screen's
+`rows` rows from physical slot `base` on, the `hist` rows of scrollback not
+yet packed into a page just before it, oldest first, and free rows after
+it. The region, `top` and `height`, keeps its own `turn`. -}
+type alias Screen =
+    { cells : Builder Int64
+    , cols : Int
+    , rows : Int
+    , stride : Int
+    , base : Int
+    , hist : Int
+    , size : Int
+    , top : Int
+    , height : Int
+    , turn : Int
+    , saved : Saved
+    }
+
+
+type alias Term =
+    { screen : Screen
+    , other : Maybe Screen
+    , hidden : { x : Int, y : Int, wrap : Bool }
+    , keys : Keys
+    , otherKeys : Keys
+    , otherProtect : Int
+    , otherErase : Int64
+    , heads : Bool
+    , alt : Bool
+    , config : Config
+    , cols : Int
+    , rows : Int
+    , x : Int
+    , y : Int
+    , wrapNext : Bool
+    , top : Int
+    , bottom : Int
+    , left : Int
+    , right : Int
+    , scroll : Int
+    , attrs : Attrs
+    , pen : Int64
+    , erase : Int64
+    , styles : Styles
+    , styleCache : Builder Int64
+    , clusters : Clusters
+    , back : Back
+    , tabs : Builder Int
+    , autowrap : Bool
+    , plain : Bool
+    , origin : Bool
+    , insert : Bool
+    , showCursor : Bool
+    , newline : Bool
+    , lfSlow : Bool
+    , prompt : Int
+    , otherPrompt : Int
+    , redraw : Int
+    , modes : Dict Int Bool
+    , savedModes : Dict Int Bool
+    , sets : Int
+    , gl : Int
+    , single : Int
+    , guard : Int64
+    , protectMode : Int
+    , lastPoint : Int
+    , title : String
+    , colours : Dict Int Int
+    , cursorShape : Int
+    , ps : Int
+    , params : Array Int
+    , cur : Int
+    , colons : Int
+    , priv : Int
+    , inter : Int
+    , phase : Int
+    , str : Builder UInt8
+    , utf : Int
+    , need : Int
+    , low : Int
+    , high : Int
+    , replies : Array Bytes
+    , xtChecksum : Int
+    }
+
+
+{-| The parser's states. -}
+psGround : Int
+psGround =
+    0
+
+
+psEscape : Int
+psEscape =
+    1
+
+
+psEscInter : Int
+psEscInter =
+    2
+
+
+psCsi : Int
+psCsi =
+    3
+
+
+psCsiIgnore : Int
+psCsiIgnore =
+    4
+
+
+psUtf8 : Int
+psUtf8 =
+    5
+
+
+psOsc : Int
+psOsc =
+    6
+
+
+psDcs : Int
+psDcs =
+    7
+
+
+psString : Int
+psString =
+    8
+
+
+newScreen : Int -> Int -> Int -> Screen
+newScreen cols rows size =
+    { cells = Builder.fromArray (Array.repeat (size * (cols + 1)) 0)
+    , cols = cols
+    , rows = rows
+    , stride = cols + 1
+    , base = 0
+    , hist = 0
+    , size = size
+    , top = 0
+    , height = rows
+    , turn = 0
+    , saved = noSaved
+    }
+
+
+reply : String -> (moved t : Term) -> Term
+reply text t =
+    { t | replies = Array.pushLast (Bytes.fromString text) t.replies }
