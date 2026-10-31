@@ -1,0 +1,1139 @@
+module Vt.Resize exposing
+    ( sizeReport
+    , pixelsKnown
+    , savedPoint
+    , withSaved
+    , withState
+    , Point
+    , Flow
+    , resizeScreen
+    , redrawMode
+    , clearPrompt
+    , finalRow
+    , promptStartIn
+    , continuationsIn
+    , pullUntil
+    , lineStart
+    , offEdge
+    , ringRowOf
+    , readPages
+    , passWidth
+    , reflowedVia
+    , reflowed
+    , emptyCell
+    , blankRow
+    , changeRows
+    , countBlank
+    , shiftPoint
+    , cutCols
+    , unheadAt
+    , cutRow
+    , clampPoint
+    , reflowCols
+    , continuations
+    , lastUsed
+    , Joined
+    , joinLines
+    , endColumn
+    , withoutSpacer
+    , trimmed
+    , splitLine
+    , promptAt
+    , splitAt
+    , markOffset
+    , headMarks
+    , markAt
+    , rebuild
+    , pushHistory
+    , writeRows
+    , writeRow
+    , foundOr
+    )
+
+{-| Part of `Vt` (docs/vt-core.md §VC23). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+
+
+-- RESIZING
+
+
+{-| Mode 2048's report: `CSI 48 ; rows ; cols ; height ; width t`, the last
+two in pixels, when a cell's size is known. -}
+sizeReport : (moved t : Term) -> Term
+sizeReport t =
+    if pixelsKnown t then
+        reply ("\u{001B}[48;" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ ";" ++ String.fromInt (t.rows * t.config.cellHeight) ++ ";" ++ String.fromInt (t.cols * t.config.cellWidth) ++ "t") t
+
+    else
+        t
+
+
+pixelsKnown : Term -> Bool
+pixelsKnown t =
+    t.config.cellWidth > 0 && t.config.cellHeight > 0
+
+
+savedPoint : Saved -> { x : Int, y : Int, wrap : Bool }
+savedPoint v =
+    { x = v.x, y = v.y, wrap = v.wrapNext }
+
+
+{-| The saved cursor moved where a resize took it; with nothing saved,
+nothing is moved, as Ghostty keeps none (§VC16). -}
+withSaved : { x : Int, y : Int, wrap : Bool } -> (moved s : Screen) -> Screen
+withSaved p s =
+    let
+        v =
+            s.saved
+    in
+    if v.isSet then
+        { s | saved = { v | x = p.x, y = p.y, wrapNext = p.wrap } }
+
+    else
+        s
+
+
+withState : Saved -> (moved s : Screen) -> Screen
+withState v s =
+    { s | saved = v }
+
+
+{-| A point carried with its cell through a resize: `row` counts from the
+oldest row of the scrollback. -}
+type alias Point =
+    { row : Int, x : Int, wrap : Bool }
+
+
+{-| The rows a resize works on, the first `hist` of them scrollback, the
+cursor and the saved cursor, and the row the cursor was on before (`y0`),
+which Ghostty keeps the rows below of (§VC14). `more` says pages of
+scrollback are left above the rows, and `short` that the resize wanted rows
+from them. -}
+type alias Flow =
+    { rows : Array Row, hist : Int, cursor : Point, saved : Point, y0 : Int, more : Bool, short : Bool }
+
+
+{-| One screen resized: `reflow` its lines, `keep` its scrollback (the
+main screen's). The pages are left as they are but for the newest, which
+are taken back into the ring for as long as the resize wants rows from them
+or a line runs on from them; all of them when the resize would lose cells,
+with autowrap off or in one column, as a reflow when read would not (V10). -}
+resizeScreen : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
+resizeScreen clear reflow keep cols rows cursor saved clusters s back =
+    let
+        -- the saved cursor's state, which the new screen takes over; a
+        -- resize moves only its position (§VC16)
+        before =
+            s.saved
+
+        pages =
+            if keep then
+                pagesOf back
+
+            else
+                []
+
+        count =
+            Array.length pages
+
+        lossy =
+            cols /= s.cols && (not reflow || cols == 1)
+
+        r0 =
+            pullUntil reflow keep cols rows cursor saved clusters s pages
+                (if lossy then
+                    count
+
+                 else
+                    lineStart pages count 0
+                )
+
+        -- every page taken back when the prompt to clear may begin in one
+        r =
+            if clear == 1 && r0.taken < count && (promptStartIn r0.flow.rows (finalRow rows r0.flow)).top then
+                pullUntil reflow keep cols rows cursor saved clusters s pages count
+
+            else
+                r0
+
+        flow =
+            clearPrompt clear rows r.flow
+
+        built =
+            rebuild cols rows flow r.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.fromArray (passWidth (reflow && cols /= s.cols) cols (Array.takeFirst (count - r.taken) pages)), head = 0, limit = back.limit }
+
+        c =
+            flow.cursor
+
+        v =
+            flow.saved
+
+        vy =
+            v.row - flow.hist
+    in
+    { screen = withState before built.screen
+    , back = built.back
+    , clusters = r.clusters
+    , cursor =
+        -- a cursor whose row went into the scrollback goes home, as
+        -- Ghostty's cursorReload puts it (§VC16)
+        if c.row < flow.hist then
+            offEdge cols { x = 0, y = 0, wrap = c.wrap }
+
+        else
+            offEdge cols { x = c.x, y = min (rows - 1) (c.row - flow.hist), wrap = c.wrap }
+    , saved =
+        if vy >= 0 && vy < rows then
+            offEdge cols { x = v.x, y = vy, wrap = v.wrap }
+
+        else
+            { x = 0, y = 0, wrap = False }
+    }
+
+
+{-| How a resize of the main screen clears the prompt being written, for the
+shell to write again, as Ghostty does while the main screen's cursor is on a
+prompt or the input (V17, §VC22): 0 not at all (`redraw=0`, which a new
+terminal starts with, or the output), 1 from the prompt's first row to the
+screen's end, 2 the cursor's row alone (kitty's `redraw=last`). -}
+redrawMode : Int -> Int -> Int
+redrawMode redraw content =
+    if redraw == 1 || content == 0 then
+        0
+
+    else if redraw == 2 then
+        2
+
+    else
+        1
+
+
+{-| The rows the prompt being written takes cleared, their marks and flags
+kept, as `redrawMode` says. -}
+clearPrompt : Int -> Int -> Flow -> Flow
+clearPrompt clear rows flow =
+    let
+        at =
+            finalRow rows flow
+
+        from =
+            if clear == 2 then
+                at
+
+            else if clear == 1 then
+                (promptStartIn flow.rows at).start
+
+            else
+                -1
+
+        to =
+            if clear == 2 then
+                at
+
+            else
+                Array.length flow.rows - 1
+    in
+    if from < 0 then
+        flow
+
+    else
+        { flow | rows = Array.indexedMap (\i row -> if i >= from && i <= to then { row | cells = [] } else row) flow.rows }
+
+
+{-| The row the cursor is on once the resize is made, which Ghostty clears
+from, since it puts the cursor back first: the screen's top when its row
+went into the scrollback (as `resizeScreen` places it). -}
+finalRow : Int -> Flow -> Int
+finalRow rows flow =
+    if flow.cursor.row < flow.hist then
+        flow.hist
+
+    else
+        flow.hist + min (rows - 1) (flow.cursor.row - flow.hist)
+
+
+{-| The first row of the prompt the cursor's row `y` is in, as Ghostty's
+`promptIterator` finds it: up from `y` past rows with no mark to a prompt's
+row, or past a prompt's continuations to the row above them that is not
+one, the prompt's row when it is one; -1 when there is none. `top`: the
+search reached the first row, so a row taken back from a page could change
+it. -}
+promptStartIn : Array Row -> Int -> { start : Int, top : Bool }
+promptStartIn rows y =
+    if y < 0 then
+        { start = -1, top = True }
+
+    else
+        let
+            mark =
+                Maybe.withDefault 0 (Maybe.map .prompt (Array.get y rows))
+        in
+        if mark == 0 then
+            promptStartIn rows (y - 1)
+
+        else if mark == 1 then
+            { start = y, top = False }
+
+        else
+            continuationsIn rows y (y - 1)
+
+
+continuationsIn : Array Row -> Int -> Int -> { start : Int, top : Bool }
+continuationsIn rows first y =
+    if y < 0 then
+        { start = first, top = True }
+
+    else
+        let
+            mark =
+                Maybe.withDefault 0 (Maybe.map .prompt (Array.get y rows))
+        in
+        if mark == 0 then
+            { start = y + 1, top = False }
+
+        else if mark == 1 then
+            { start = y, top = False }
+
+        else
+            continuationsIn rows first (y - 1)
+
+
+{-| The resize made with the newest `k` pages taken back, and again with
+more while it wants rows they do not hold. -}
+pullUntil : Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Array Page -> Int -> { flow : Flow, clusters : Clusters, taken : Int }
+pullUntil reflow keep cols rows cursor saved clusters s pages k =
+    let
+        count =
+            Array.length pages
+
+        paged =
+            readPages s.cols clusters (Array.dropFirst (count - k) pages)
+
+        history =
+            paged.rows ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range (0 - s.hist) -1)
+
+        h0 =
+            Array.length history
+
+        flow0 =
+            { rows = history ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range 0 (s.rows - 1))
+            , hist = h0
+            , cursor = { row = h0 + cursor.y, x = cursor.x, wrap = cursor.wrap }
+            -- none saved, none carried: Ghostty tracks a saved cursor
+            -- only when there is one (§VC17)
+            , saved =
+                if s.saved.isSet then
+                    { row = h0 + saved.y, x = saved.x, wrap = saved.wrap }
+
+                else
+                    { row = -1, x = 0, wrap = False }
+            , y0 = cursor.y
+            , more = k < count
+            , short = False
+            }
+
+        flow =
+            if reflow && cols /= s.cols then
+                if cols < s.cols then
+                    reflowCols s.cols cols (changeRows keep s.rows rows flow0)
+
+                else
+                    changeRows keep s.rows rows (reflowCols s.cols cols flow0)
+
+            else
+                changeRows keep s.rows rows (cutCols s.cols cols flow0)
+    in
+    if flow.short && k < count then
+        pullUntil reflow keep cols rows cursor saved clusters s pages (lineStart pages count (k + 1))
+
+    else
+        { flow = flow, clusters = paged.clusters, taken = k }
+
+
+{-| At least the newest `k` of the pages, and as many more as the line the
+oldest of them starts in runs on from. -}
+lineStart : Array Page -> Int -> Int -> Int
+lineStart pages count k =
+    if k >= count then
+        count
+
+    else
+        when Array.get (count - k - 1) pages is
+            Just page ->
+                if lastWrapped page then
+                    lineStart pages count (k + 1)
+
+                else
+                    k
+
+            Nothing ->
+                k
+
+
+{-| A cursor waiting to wrap that a resize moved off the right edge goes on
+to the next cell instead, as Ghostty's does. -}
+offEdge : Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool }
+offEdge cols p =
+    if p.wrap && p.x /= cols - 1 then
+        { x = min (cols - 1) (p.x + 1), y = p.y, wrap = False }
+
+    else
+        { x = min (cols - 1) p.x, y = p.y, wrap = p.wrap }
+
+
+ringRowOf : Int -> Screen -> Row
+ringRowOf o s =
+    let
+        m =
+            metaAt o s
+    in
+    { cells = Builder.slice o (o + metaExtent m) s.cells, wrapped = Bitwise.and wrappedBit m /= 0, prompt = metaPrompt m }
+
+
+{-| Pages read back into rows at `cols` columns, oldest first: each run of
+pages cut at another width reflowed to `cols` (V10). A run ends at the end
+of a line, since a resize takes back a page a line runs on from (`lineStart`). -}
+readPages : Int -> Clusters -> Array Page -> { rows : Array Row, clusters : Clusters }
+readPages cols clusters pages =
+    let
+        done =
+            Array.foldl
+                (\page acc ->
+                    let
+                        one =
+                            pageRowsOf page acc.clusters
+                    in
+                    if page.cols == acc.width && page.via == acc.via then
+                        { acc | group = acc.group ++ one.rows, clusters = one.clusters }
+
+                    else
+                        { rows = acc.rows ++ reflowedVia acc.width acc.via cols acc.group, group = one.rows, width = page.cols, via = page.via, clusters = one.clusters }
+                )
+                { rows = [], group = [], width = cols, via = [], clusters = clusters }
+                pages
+    in
+    { rows = done.rows ++ reflowedVia done.width done.via cols done.group, clusters = done.clusters }
+
+
+{-| Every page given `cols` as one more width it went through, when `yes`:
+a resize that reflowed to it. -}
+passWidth : Bool -> Int -> Array Page -> Array Page
+passWidth yes cols pages =
+    if yes then
+        Array.map (\p -> { p | via = Array.pushLast cols p.via }) pages
+
+    else
+        pages
+
+
+{-| Rows cut at `old` columns reflowed to each width of `via` in turn and
+then to `cols`, as Ghostty reflowed them at each resize (§VC22). -}
+reflowedVia : Int -> Array Int -> Int -> Array Row -> Array Row
+reflowedVia old via cols rows =
+    let
+        passed =
+            Array.foldl (\w acc -> { width = w, rows = reflowed acc.width w acc.rows }) { width = old, rows = rows } via
+    in
+    reflowed passed.width cols passed.rows
+
+
+{-| Rows cut at `old` columns cut again at `cols`, with no cursor to carry
+and every line kept. -}
+reflowed : Int -> Int -> Array Row -> Array Row
+reflowed old cols rows =
+    if old == cols || Array.isEmpty rows then
+        rows
+
+    else
+        let
+            none =
+                { row = -1, x = 0, wrap = False }
+
+            joined =
+                joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
+        in
+        Array.mapAndFlatten (\li -> (splitLine cols (Maybe.withDefault [] (Array.get li joined.lines)) (Maybe.withDefault [] (Array.get li joined.marks)) [] 0).rows) (Array.range 0 (Array.length joined.lines - 1))
+
+
+{-| An empty cell, as Ghostty's `isEmpty`: no text, narrow, and not in a
+background colour alone, whatever its style (§VC17). -}
+emptyCell : Int64 -> Bool
+emptyCell c =
+    Bitwise.and (Bitwise.or bgBit 0xFFFFFF) c == 0
+
+
+{-| A row with no text, which the rows a resize takes away go first:
+Ghostty's `hasTextAny`, for which a cell in a background colour alone, or a
+spacer, is blank (§VC17). -}
+blankRow : Row -> Bool
+blankRow row =
+    Array.all (\c -> cellPoint c == 0 && not (cellIsCluster c)) row.cells
+
+
+{-| The screen's rows made `rows`, no line reflowed. Fewer: blank rows
+below the cursor go first, then rows from the top, into the scrollback when
+`keep`. More: rows come back out of the scrollback, then blank rows below,
+but only when the cursor was on the last of the `old` rows, as Ghostty
+pulls (`resizeWithoutReflow`); otherwise blank rows alone (§VC17). -}
+changeRows : Bool -> Int -> Int -> Flow -> Flow
+changeRows keep old rows flow =
+    let
+        total =
+            Array.length flow.rows
+
+        now =
+            total - flow.hist
+    in
+    if rows < now then
+        let
+            blanks =
+                -- nor past the saved cursor, which Ghostty's resize tracks
+                -- as it does the cursor (§VC17)
+                countBlank flow.rows (total - 1) (max flow.hist (max flow.cursor.row flow.saved.row + 1)) 0
+
+            cut =
+                min blanks (now - rows)
+
+            rest =
+                now - rows - cut
+
+            kept =
+                Array.dropLast cut flow.rows
+        in
+        if keep then
+            { flow | rows = kept, hist = flow.hist + rest }
+
+        else
+            { flow
+                | rows = Array.dropFirst rest kept
+                , cursor = shiftPoint rest flow.cursor
+                , saved = shiftPoint rest flow.saved
+            }
+
+    else if rows > now then
+        let
+            pulled =
+                if keep && flow.y0 >= old - 1 then
+                    min flow.hist (rows - now)
+
+                else
+                    0
+        in
+        { flow
+            | rows = flow.rows ++ Array.repeat (rows - now - pulled) { cells = [], wrapped = False, prompt = 0 }
+            , hist = flow.hist - pulled
+            , short = flow.short || (keep && flow.y0 >= old - 1 && flow.more && flow.hist < rows - now)
+        }
+
+    else
+        flow
+
+
+countBlank : Array Row -> Int -> Int -> Int -> Int
+countBlank rows i stop n =
+    if i < stop then
+        n
+
+    else
+        when Array.get i rows is
+            Just row ->
+                if blankRow row then
+                    countBlank rows (i - 1) stop (n + 1)
+
+                else
+                    n
+
+            Nothing ->
+                n
+
+
+{-| A point moved up `by` rows; one whose row is dropped goes to the top
+left, as Ghostty's `cursorReload` takes a cursor whose row is gone (§VC17). -}
+shiftPoint : Int -> Point -> Point
+shiftPoint by p =
+    if p.row < 0 then
+        p
+
+    else if p.row < by then
+        { row = 0, x = 0, wrap = p.wrap }
+
+    else
+        { p | row = p.row - by }
+
+
+{-| Every row cut to `cols` or left as it is, no line reflowed: a wide
+character the new edge cuts goes, and a wider row no longer wraps, as in
+Ghostty. -}
+cutCols : Int -> Int -> Flow -> Flow
+cutCols old cols flow =
+    if cols < old then
+        { flow
+            | rows = Array.map (\row -> { row | cells = cutRow cols row.cells }) flow.rows
+            , cursor = clampPoint cols flow.cursor
+            , saved = clampPoint cols flow.saved
+        }
+
+    else if cols > old then
+        -- a spacer head at the old edge is a plain cell in its style now,
+        -- as Ghostty's `cloneRowFrom` makes it (§VC20)
+        { flow | rows = Array.map (\row -> { row | wrapped = False, cells = unheadAt (old - 1) row.cells }) flow.rows }
+
+    else
+        flow
+
+
+unheadAt : Int -> Array Int64 -> Array Int64
+unheadAt x cells =
+    when Array.get x cells is
+        Just c ->
+            if cellWide c == spacerHead then
+                Array.set x (Bitwise.and (Bitwise.complement 0x600000) c) cells
+
+            else
+                cells
+
+        Nothing ->
+            cells
+
+
+cutRow : Int -> Array Int64 -> Array Int64
+cutRow cols cells =
+    if Array.length cells <= cols then
+        cells
+
+    else
+        let
+            kept =
+                Array.takeFirst cols cells
+        in
+        when Array.last kept is
+            Just c ->
+                if cellWide c == wideHead then
+                    Array.set (cols - 1) 0 kept
+
+                else
+                    kept
+
+            Nothing ->
+                kept
+
+
+clampPoint : Int -> Point -> Point
+clampPoint cols p =
+    { p | x = min (cols - 1) p.x }
+
+
+{-| The rows' lines reflowed from `old` columns to `cols` (§VC14): each
+line, its wrapped rows joined, is cut again at the new width, a wide
+character that does not fit leaving a spacer head, or in one column an
+empty cell. Blank lines at the end
+are dropped, and the screen is the last rows, as many blank rows added
+below as keep the rows that were below the cursor (Ghostty's
+`resizeCols`). -}
+reflowCols : Int -> Int -> Flow -> Flow
+reflowCols old cols flow =
+    let
+        now =
+            Array.length flow.rows - flow.hist
+
+        before =
+            continuations flow.rows flow.hist flow.cursor.row
+
+        joined =
+            joinLines old cols flow 0 { lines = [], line = [], cursor = { line = 0, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
+
+        used =
+            lastUsed joined.lines (Array.length joined.lines - 1) (max joined.cursor.line joined.saved.line)
+
+        split =
+            Array.foldl
+                (\li acc ->
+                    let
+                        line =
+                            Maybe.withDefault [] (Array.get li joined.lines)
+
+                        marks =
+                            [ if joined.cursor.line == li then joined.cursor.at else -1
+                            , if joined.saved.line == li then joined.saved.at else -1
+                            ]
+
+                        cut =
+                            splitLine cols line (Maybe.withDefault [] (Array.get li joined.marks)) marks (Array.length acc.rows)
+                    in
+                    -- a line the cursor is not on finds it at row -1, and
+                    -- leaves where an earlier line found it (§VC16)
+                    { rows = acc.rows ++ cut.rows
+                    , cursor = foundOr acc.cursor (Array.get 0 cut.found)
+                    , saved = foundOr acc.saved (Array.get 1 cut.found)
+                    }
+                )
+                { rows = [], cursor = { row = -1, x = 0 }, saved = { row = -1, x = 0 } }
+                (Array.range 0 used)
+
+        padded =
+            split.rows ++ Array.repeat (now - Array.length split.rows) { cells = [], wrapped = False, prompt = 0 }
+
+        hist =
+            Array.length padded - now
+
+        cur =
+            split.cursor
+
+        grow =
+            if cur.row >= hist then
+                let
+                    remaining =
+                        max 0 (now - (flow.y0 + 1))
+
+                    after =
+                        continuations padded hist cur.row
+
+                    below =
+                        now - (cur.row - hist + 1)
+                in
+                max 0 (max 0 (remaining - max 0 (after - before)) - below)
+
+            else
+                0
+    in
+    { rows = padded ++ Array.repeat grow { cells = [], wrapped = False, prompt = 0 }
+    , hist = hist + grow
+    , cursor = { row = cur.row, x = cur.x, wrap = flow.cursor.wrap }
+    , saved =
+        if split.saved.row < 0 then
+            { row = -1, x = 0, wrap = False }
+
+        else
+            { row = split.saved.row, x = split.saved.x, wrap = flow.saved.wrap }
+    , y0 = flow.y0
+    , more = flow.more
+    , short = flow.short || (flow.more && Array.length split.rows < now)
+    }
+
+
+{-| The rows from `from` to `to` that carry on a row that wrapped. -}
+continuations : Array Row -> Int -> Int -> Int
+continuations rows from to =
+    Array.foldl
+        (\r n ->
+            when Array.get (r - 1) rows is
+                Just prev ->
+                    if prev.wrapped then
+                        n + 1
+
+                    else
+                        n
+
+                Nothing ->
+                    n
+        )
+        0
+        (Array.range (max 1 from) to)
+
+
+lastUsed : Array (Array Int64) -> Int -> Int -> Int
+lastUsed lines i floor =
+    if i <= floor then
+        floor
+
+    else if Array.isEmpty (Maybe.withDefault [] (Array.get i lines)) then
+        lastUsed lines (i - 1) floor
+
+    else
+        i
+
+
+type alias Joined =
+    { lines : Array (Array Int64)
+    , line : Array Int64
+    , cursor : { line : Int, at : Int }
+    , saved : { line : Int, at : Int }
+    , marks : Array (Array { at : Int, mark : Int })
+    , lineMarks : Array { at : Int, mark : Int }
+    }
+
+
+{-| The rows from `i` on joined into lines. A wrapped row is its `old`
+cells, less a spacer head at its end; a row that ends a line is its cells
+up to the last that is not empty, less a spacer head there, and then up to
+the cursor, as Ghostty keeps the cells before the cursor. A saved cursor in those blanks is kept
+within a row of the new width. -}
+joinLines : Int -> Int -> Flow -> Int -> Joined -> Joined
+joinLines old cols flow i j =
+    when Array.get i flow.rows is
+        Nothing ->
+            if Array.isEmpty j.line then
+                j
+
+            else
+                { j | lines = Array.pushLast j.line j.lines, line = [], marks = Array.pushLast j.lineMarks j.marks, lineMarks = [] }
+
+        Just row ->
+            let
+                base =
+                    Array.length j.line
+
+                own =
+                    if row.wrapped then
+                        withoutSpacer (row.cells ++ Array.repeat (old - Array.length row.cells) 0)
+
+                    else
+                        -- a spacer head is dropped wherever it is, as
+                        -- Ghostty's reflow ignores one; the blanks before
+                        -- it stay (§VC18); a blank row with a prompt mark is
+                        -- its first cell, as Ghostty keeps one (§VC22)
+                        let
+                            cut =
+                                withoutSpacer (trimmed row.cells (Array.length row.cells))
+                        in
+                        if Array.isEmpty cut && row.prompt /= 0 then
+                            Array.takeFirst 1 (row.cells ++ [ 0 ])
+
+                        else
+                            cut
+
+                len =
+                    Array.length own
+
+                li =
+                    Array.length j.lines
+
+                savedAt =
+                    if flow.saved.row /= i then
+                        -1
+
+                    else if not row.wrapped && flow.saved.x >= len then
+                        -- held to the row it starts on at the new width, from
+                        -- the column the line so far ends at, a wide
+                        -- character moved down counted (§VC18)
+                        base + min flow.saved.x (cols - 1 - endColumn cols j.line 0 0)
+
+                    else if row.wrapped then
+                        -- on a dropped spacer head, as the cursor (§VC20)
+                        base + min flow.saved.x (max 0 (old - 1))
+
+                    else
+                        base + min flow.saved.x (max 0 (len - 1))
+
+                cursorAt =
+                    if flow.cursor.row /= i then
+                        -1
+
+                    else if row.wrapped then
+                        -- on a spacer head that is dropped, the cursor goes
+                        -- on to the cell after, the character it was for, as
+                        -- Ghostty moves its pin before it skips the head
+                        base + min flow.cursor.x (max 0 (old - 1))
+
+                    else
+                        base + flow.cursor.x
+
+                -- a wrapped row's cursor is in it or, on a dropped spacer
+                -- head, on the next row's first cell, and adds no blanks
+                need =
+                    if row.wrapped then
+                        len
+
+                    else
+                        max len (max (cursorAt - base + 1) (savedAt - base + 1))
+
+                -- the cells up to the cursor are the row's own, a blank in
+                -- a style kept, as Ghostty copies them; up to a saved
+                -- cursor, which it does not track, they are empty (§VC18)
+                kept =
+                    if not row.wrapped && cursorAt - base + 1 > len then
+                        Array.takeFirst (cursorAt - base + 1) row.cells
+
+                    else
+                        own
+
+                line =
+                    j.line ++ kept ++ Array.repeat (need - Array.length kept) 0
+
+                -- where the row's cells begin in the line, and its prompt
+                -- mark, which the rows they are cut into take (§VC22)
+                lineMarks =
+                    if Array.length line > base then
+                        Array.pushLast { at = base, mark = row.prompt } j.lineMarks
+
+                    else
+                        j.lineMarks
+
+                marked =
+                    { j
+                        | line = line
+                        , lineMarks = lineMarks
+                        -- on a dropped spacer head, the offset is written
+                        -- -2 - at, for `splitAt` to tell (`markOffset`)
+                        , cursor =
+                            if cursorAt >= 0 && row.wrapped && flow.cursor.x >= len then
+                                { line = li, at = -2 - cursorAt }
+
+                            else if cursorAt >= 0 then
+                                { line = li, at = cursorAt }
+
+                            else
+                                j.cursor
+                        , saved =
+                            if savedAt >= 0 && row.wrapped && flow.saved.x >= len then
+                                { line = li, at = -2 - savedAt }
+
+                            else if savedAt >= 0 then
+                                { line = li, at = savedAt }
+
+                            else
+                                j.saved
+                    }
+            in
+            if row.wrapped then
+                joinLines old cols flow (i + 1) marked
+
+            else
+                joinLines old cols flow (i + 1) { marked | lines = Array.pushLast line marked.lines, line = [], marks = Array.pushLast lineMarks marked.marks, lineMarks = [] }
+
+
+{-| The column the next cell of `line` would go to, cut at `cols` as
+`splitAt` cuts it: 0 when a row has just filled. -}
+endColumn : Int -> Array Int64 -> Int -> Int -> Int
+endColumn cols line j p =
+    when Array.get j line is
+        Nothing ->
+            if p >= cols then
+                0
+
+            else
+                p
+
+        Just c ->
+            if p >= cols then
+                endColumn cols line j 0
+
+            else if cellWide c == wideHead && cols == 1 then
+                endColumn cols line (j + 2) (p + 1)
+
+            else if cellWide c == wideHead && p == cols - 1 then
+                endColumn cols line j 0
+
+            else
+                endColumn cols line (j + 1) (p + 1)
+
+
+withoutSpacer : Array Int64 -> Array Int64
+withoutSpacer cells =
+    when Array.last cells is
+        Just c ->
+            if cellWide c == spacerHead then
+                Array.dropLast 1 cells
+
+            else
+                cells
+
+        Nothing ->
+            cells
+
+
+trimmed : Array Int64 -> Int -> Array Int64
+trimmed cells n =
+    if n <= 0 then
+        []
+
+    else if emptyCell (Maybe.withDefault 0 (Array.get (n - 1) cells)) then
+        trimmed cells (n - 1)
+
+    else
+        Array.takeFirst n cells
+
+
+{-| A line cut into rows of `cols`, and where each of `marks`, an offset in
+the line or -1, lands: its row, counted from `first`, and its column. -}
+splitLine : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitLine cols line starts marks first =
+    splitAt cols line starts marks first 0 0 [] [] (Array.map (\_ -> { row = -1, x = 0 }) marks)
+
+
+{-| The prompt mark of a row cut from a line at its `k`th cell: the mark of
+the last source row Ghostty's reflow began while it was on the row, which
+copies the row's mark. That is the source row of the row's last cell, or,
+when the row filled and so waits to wrap, of the cell after it (`k` one
+past the last, §VC22). -}
+promptAt : Array { at : Int, mark : Int } -> Int -> Int
+promptAt starts k =
+    Array.foldl
+        (\st m ->
+            if st.at <= k then
+                st.mark
+
+            else
+                m
+        )
+        0
+        starts
+
+
+splitAt : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitAt cols line starts marks first j p row rows found =
+    when Array.get j line is
+        Nothing ->
+            -- a mark from a dropped spacer head at the end goes where a
+            -- next cell would, or on the last one written when the row is
+            -- full, as the oracle's reflow moves a pin (patch 0006, §VC18)
+            { rows = Array.pushLast { cells = row, wrapped = False, prompt = promptAt starts (j - 1) } rows, found = headMarks marks j (first + Array.length rows) (min p (cols - 1)) found }
+
+        Just c ->
+            if p >= cols then
+                splitAt cols line starts (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = row, wrapped = True, prompt = promptAt starts j } rows) (headMarks marks j (first + Array.length rows) (cols - 1) found)
+
+            else if cellWide c == wideHead && cols == 1 then
+                -- No column holds it: it is an empty cell, its spacer gone,
+                -- as in Ghostty, whose reflow writes it before it copies a
+                -- style, so in none (§VC17)
+                splitAt cols line starts marks first (j + 2) (p + 1) (Array.pushLast 0 row) rows (markAt marks j (j + 2) (first + Array.length rows) p found)
+
+            else if cellWide c == wideHead && p == cols - 1 then
+                -- a mark from a dropped spacer head before it stays on the
+                -- one written here, as Ghostty moves a pin to where the
+                -- next cell goes, here, before the cell wraps (§VC18)
+                splitAt cols line starts (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True, prompt = promptAt starts j } rows) (headMarks marks j (first + Array.length rows) p found)
+
+            else
+                splitAt cols line starts marks first (j + 1) (p + 1) (Array.pushLast c row) rows (markAt marks j (j + 1) (first + Array.length rows) p found)
+
+
+{-| A mark's offset in its line: one written -2 - at was on a spacer head
+the reflow dropped (`joinLines`). -}
+markOffset : Int -> Int
+markOffset at =
+    if at < -1 then
+        -2 - at
+
+    else
+        at
+
+
+{-| Each mark from a dropped spacer head at offset `j` found at `row` and
+`x`. -}
+headMarks : Array Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
+headMarks marks j row x found =
+    Array.indexedMap
+        (\k f ->
+            if Maybe.withDefault -1 (Array.get k marks) == -2 - j then
+                { row = row, x = x }
+
+            else
+                f
+        )
+        found
+
+
+{-| Each mark at an offset from `from` to `to` found at `row` and `x`. -}
+markAt : Array Int -> Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
+markAt marks from to row x found =
+    Array.indexedMap
+        (\k f ->
+            let
+                at =
+                    markOffset (Maybe.withDefault -1 (Array.get k marks))
+            in
+            if at >= from && at < to then
+                { row = row, x = x }
+
+            else
+                f
+        )
+        found
+
+
+{-| A screen made of the flow's rows: the scrollback written into the ring
+and paged out as it fills, as line feeds would, then the screen's rows. -}
+rebuild : Int -> Int -> Flow -> Clusters -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+rebuild cols rows flow clusters s back =
+    let
+        hist =
+            pushHistory clusters flow.rows 0 flow.hist s back
+
+        r =
+            hist.screen
+    in
+    { screen = writeRows flow.rows flow.hist 0 rows r, back = hist.back }
+
+
+pushHistory : Clusters -> Array Row -> Int -> Int -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pushHistory clusters rows i stop s back =
+    if i >= stop then
+        { screen = s, back = back }
+
+    else if s.hist + s.rows >= s.size then
+        let
+            room =
+                pageOut clusters s back
+        in
+        pushHistory clusters rows i stop room.screen room.back
+
+    else
+        let
+            written =
+                writeRow (rowOffset s 0) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get i rows)) s
+        in
+        pushHistory clusters rows (i + 1) stop { written | base = phys written 1, hist = written.hist + 1 } back
+
+
+writeRows : Array Row -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+writeRows rows from y count s =
+    if y >= count then
+        s
+
+    else
+        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (from + y) rows)) s)
+
+
+writeRow : Int -> Row -> (moved s : Screen) -> Screen
+writeRow o row s =
+    let
+        cells =
+            Array.takeFirst s.cols row.cells
+
+        meta =
+            Bitwise.or (Bitwise.shiftLeftBy 17 (Int64.fromInt row.prompt))
+                (Bitwise.or (Int64.fromInt (Array.length cells))
+                    (if row.wrapped then
+                        wrappedBit
+
+                     else
+                        0
+                    )
+                )
+    in
+    { s | cells = Builder.set (o + s.cols) meta (Builder.setMany o cells s.cells) }
+
+
+foundOr : { row : Int, x : Int } -> Maybe { row : Int, x : Int } -> { row : Int, x : Int }
+foundOr before found =
+    when found is
+        Just at ->
+            if at.row >= 0 then
+                at
+
+            else
+                before
+
+        Nothing ->
+            before
