@@ -1,0 +1,326 @@
+module Vt.View exposing (Shadow, shadow, frame)
+
+{-| Phase 2's survey probe (`docs/phase2-window.md` §3): what a renderer
+costs that keeps its own copy of the screen it drew and diffs the core's
+screen against it once a frame, as PuTTY does.
+
+The core's screen is one `Array.Builder` written in place, and a builder is
+used once (geng-lang D963), so the renderer cannot keep last frame's handle.
+It keeps instead:
+
+  - `cells`, the cells it drew, `rows * cols`, `-1` where nothing is known;
+  - `hashes`, a hash of each row it drew. A scroll is found by content: the
+    longest band of rows whose hashes are the last frame's moved by `k`
+    rows, up or down, with at least two rows in it that are not blank. The
+    band is one `CopyArea`, and only what is left is diffed and drawn. The
+    rows a scroll vacates keep their pixels, so the shadow keeps their
+    cells. A false match costs a copy and is then drawn over: the diff is
+    against what the pixels show, so it is never wrong.
+
+The core's ring slots would say which rows moved without hashing, but the
+core settles a region's turn by moving rows when the region changes, so a
+slot is not a row's identity across a frame (§3).
+
+A frame's display list is `Bytes`: a scroll record (`0x01`, top, bottom,
+`k` as a signed 16 bits, rows `top + k` to `bottom + k` copied to `top`) and a run record per changed run (`0x02`, `y`, `x`, `n`, then each
+cell's code point in 3 bytes and style id in 2). A run is a stretch of
+changed cells with gaps of fewer than four unchanged cells merged in, so
+that a glyph overhanging into its neighbour is redrawn with it (S§6.2).
+
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Int64
+import UInt8
+import Vt.Cell exposing (..)
+import Vt.Term exposing (..)
+import Vt.Screen exposing (..)
+
+
+type alias Shadow =
+    { cells : Builder Int64
+    , hashes : Builder Int
+    , cols : Int
+    , rows : Int
+    , frames : Int
+    , scrolls : Int
+    , moved : Int
+    , drawn : Int
+    , runs : Int
+    , bytes : Int
+    }
+
+
+unknown : Int64
+unknown =
+    Int64.fromInt -1
+
+
+shadow : Int -> Int -> Shadow
+shadow cols rows =
+    { cells = Builder.fromArray (Array.repeat (cols * rows) unknown)
+    , hashes = Builder.fromArray (Array.repeat rows -1)
+    , cols = cols
+    , rows = rows
+    , frames = 0
+    , scrolls = 0
+    , moved = 0
+    , drawn = 0
+    , runs = 0
+    , bytes = 0
+    }
+
+
+{-| One frame: the shadow brought up to the term's screen, and the display
+list that does the same to the window. -}
+frame : Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frame t sh0 =
+    let
+        sh1 =
+            if t.cols /= sh0.cols || t.rows /= sh0.rows then
+                let
+                    fresh =
+                        shadow t.cols t.rows
+                in
+                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes }
+
+            else
+                sh0
+
+        rows =
+            sh1.rows
+
+        cols =
+            sh1.cols
+
+        current =
+            Builder.toArray (hashRows t.screen 0 rows cols (Builder.empty rows))
+
+        band =
+            searchK (1 - rows) rows current sh1.hashes { score = 1, top = 0, bottom = -1, k = 0 }
+
+        scrolled =
+            if band.bottom >= band.top then
+                scrollBand band cols sh1
+
+            else
+                { shadow = sh1, list = Builder.empty 4096 }
+
+        sh2 =
+            scrolled.shadow
+
+        diffed =
+            diffRows t.screen 0 rows cols sh2 scrolled.list
+
+        sh3 =
+            diffed.shadow
+
+        bytes =
+            Bytes.fromUInt8s (Builder.toArray diffed.list)
+    in
+    { shadow = { sh3 | hashes = Builder.fromArray current, frames = sh3.frames + 1, bytes = sh3.bytes + Bytes.length bytes }
+    , list = bytes
+    }
+
+
+{-| Each row's hash, pushed onto `acc`. A loop, because a function that
+captures the screen to read it is refused: a capture takes the builder
+(§3.3). -}
+hashRows : Screen -> Int -> Int -> Int -> (moved acc : Builder Int) -> Builder Int
+hashRows s y rows cols acc =
+    if y >= rows then
+        acc
+
+    else
+        hashRows s (y + 1) rows cols (Builder.pushLast (rowHash s (rowOffset s y) cols) acc)
+
+
+{-| A hash of the row at `o`: its cells to its extent, and the extent. A
+blank row's is 7. -}
+rowHash : Screen -> Int -> Int -> Int
+rowHash s o cols =
+    let
+        ext =
+            extentAt o s
+    in
+    Bitwise.xor ext (hashCells s o 0 ext 7)
+
+
+hashCells : Screen -> Int -> Int -> Int -> Int -> Int
+hashCells s o x ext h =
+    if x >= ext then
+        h
+
+    else
+        let
+            c =
+                Maybe.withDefault 0 (Builder.get (o + x) s.cells)
+        in
+        hashCells s o (x + 1) ext (Bitwise.xor (rotl (Bitwise.xor (rotl h) (Int64.toIntWrap c))) (cellStyle c))
+
+
+rotl : Int -> Int
+rotl h =
+    Bitwise.or (Bitwise.shiftLeftBy 5 h) (Bitwise.shiftRightZfBy 27 h)
+
+
+type alias Band =
+    { score : Int, top : Int, bottom : Int, k : Int }
+
+
+{-| The best band over every shift `k` from `k` to `rows - 1`, 0 left out:
+the one with the most rows that are not blank, more than `best.score`. -}
+searchK : Int -> Int -> Array Int -> Builder Int -> Band -> Band
+searchK k rows current hashes best =
+    if k >= rows then
+        best
+
+    else if k == 0 then
+        searchK 1 rows current hashes best
+
+    else
+        searchK (k + 1) rows current hashes (scanY k (max 0 (0 - k)) (min rows (rows - k)) -1 0 current hashes best)
+
+
+{-| Rows `y` to `end` at shift `k`: a run of rows that each match the row
+`k` below it last frame, `start` its first row (`-1` outside a run) and
+`score` its rows that are not blank. -}
+scanY : Int -> Int -> Int -> Int -> Int -> Array Int -> Builder Int -> Band -> Band
+scanY k y end start score current hashes best =
+    let
+        closed =
+            if start >= 0 && score > best.score then
+                { score = score, top = start, bottom = y - 1, k = k }
+
+            else
+                best
+    in
+    if y >= end then
+        closed
+
+    else
+        let
+            h =
+                Maybe.withDefault -2 (Array.get y current)
+        in
+        if h == Maybe.withDefault -3 (Builder.get (y + k) hashes) then
+            scanY k (y + 1) end (if start < 0 then y else start) (if h == 7 then score else score + 1) current hashes best
+
+        else
+            scanY k (y + 1) end -1 0 current hashes closed
+
+
+{-| The band moved in the shadow as one `CopyArea` moves it in the window. -}
+scrollBand : Band -> Int -> (moved sh : Shadow) -> { shadow : Shadow, list : Builder UInt8 }
+scrollBand band cols sh =
+    let
+        list =
+            Builder.empty 4096
+                |> Builder.pushLast (UInt8.fromInt 1)
+                |> push16 band.top
+                |> push16 band.bottom
+                |> push16 (Bitwise.and 0xFFFF band.k)
+    in
+    { shadow =
+        { sh
+            | cells = Builder.copyWithin (band.top * cols) ((band.top + band.k) * cols) ((band.bottom + 1 + band.k) * cols) sh.cells
+            , scrolls = sh.scrolls + 1
+            , moved = sh.moved + (band.bottom + 1 - band.top)
+        }
+    , list = list
+    }
+
+
+diffRows : Screen -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRows s y rows cols sh list =
+    if y >= rows then
+        { shadow = sh, list = list }
+
+    else
+        let
+            o =
+                rowOffset s y
+
+            r =
+                diffRow s o (extentAt o s) y 0 cols sh list
+
+        in
+        diffRows s (y + 1) rows cols r.shadow r.list
+
+
+{-| The cell the core holds at column `x` of the row at `o`. -}
+cellOf : Screen -> Int -> Int -> Int -> Int64
+cellOf s o ext x =
+    if x < ext then
+        Maybe.withDefault 0 (Builder.get (o + x) s.cells)
+
+    else
+        0
+
+
+{-| Row `y` from column `x`: each changed run written to the list and the
+shadow. -}
+diffRow : Screen -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRow s o ext y x cols sh list =
+    if x >= cols then
+        { shadow = sh, list = list }
+
+    else if cellOf s o ext x == Maybe.withDefault unknown (Builder.get (y * cols + x) sh.cells) then
+        diffRow s o ext y (x + 1) cols sh list
+
+    else
+        let
+            end =
+                runEnd s o ext y (x + 1) x cols sh.cells
+
+            n =
+                end - x
+
+            written =
+                writeRun s o ext (y * cols) x end sh.cells (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
+        in
+        diffRow s o ext y end cols { sh | cells = written.cells, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
+
+
+{-| Past the last changed cell of a run that starts before `x`, gaps of
+fewer than four unchanged cells taken in; `last` is the last changed cell
+seen. -}
+runEnd : Screen -> Int -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+runEnd s o ext y x last cols cells =
+    if x >= cols || x - last > 3 then
+        last + 1
+
+    else if cellOf s o ext x == Maybe.withDefault unknown (Builder.get (y * cols + x) cells) then
+        runEnd s o ext y (x + 1) last cols cells
+
+    else
+        runEnd s o ext y (x + 1) x cols cells
+
+
+writeRun : Screen -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved list : Builder UInt8) -> { cells : Builder Int64, list : Builder UInt8 }
+writeRun s o ext row x end cells list =
+    if x >= end then
+        { cells = cells, list = list }
+
+    else
+        let
+            c =
+                cellOf s o ext x
+
+            p =
+                cellPoint c
+        in
+        writeRun s o ext row (x + 1) end
+            (Builder.set (row + x) c cells)
+            (list
+                |> Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 16 p))
+                |> push16 (Bitwise.and 0xFFFF p)
+                |> push16 (cellStyle c)
+            )
+
+
+push16 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+push16 v b =
+    Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 v))) b)

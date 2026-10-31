@@ -484,7 +484,8 @@ Nobody does this fully right:
    fontconfig `lang`, DirectWrite locale and shaper language; per-script/range font
    overrides.
 8. **Bundle or recommend** a CJK and Thai fallback set (Noto Sans CJK / Noto Sans Mono
-   CJK, Noto Sans Thai), since no reference bundles one.
+   CJK, Noto Sans Thai), since no reference bundles one. *Decided 2026-10-30 (Q13,
+   `geng-plan.md` §9.3): recommend, not bundle; visiterm uses the system's.*
 9. **Atlas pages with LRU eviction**, sized for CJK; LRU for server-side X11 glyph sets.
 10. **Async font fallback** (WezTerm), invalidating only affected rows, not the whole
     shape cache.

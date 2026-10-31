@@ -1,0 +1,126 @@
+module Main exposing (main)
+
+{-| The view probe (`docs/phase2-window.md` §3): the core fed one of D902's
+inputs in 64 KB reads at 160 by 50 with 100,000 lines of scrollback, as
+core-bench feeds it, and with `frame` a renderer's frame (`Vt.View.frame`)
+after every read. The difference between the two times, over the frames, is
+what a frame costs; a frame after every read is far more than a window
+paints (§3), so it is the worst case.
+
+usage: view FILE [frame]
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import Vt
+import Vt.View as View
+
+
+feedAll : Bytes -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + 65536) (Vt.feed (Bytes.slice at (at + 65536) bytes) t)
+
+
+type alias Both =
+    { term : Vt.Term, shadow : View.Shadow }
+
+
+feedFrames : Bytes -> Int -> (moved b : Both) -> Both
+feedFrames bytes at b =
+    if at >= Bytes.length bytes then
+        b
+
+    else
+        let
+            t =
+                Vt.feed (Bytes.slice at (at + 65536) bytes) b.term
+
+            f =
+                View.frame t b.shadow
+        in
+        feedFrames bytes (at + 65536) { term = t, shadow = f.shadow }
+
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            config =
+                                                { cols = 160, rows = 50, scrollback = 100000, checksums = False, cellWidth = 0, cellHeight = 0 }
+                                        in
+                                        if Array.get 1 s.args == Just "frame" then
+                                            let
+                                                b =
+                                                    feedFrames bytes 0 { term = Vt.new config, shadow = View.shadow 160 50 }
+
+                                                sh =
+                                                    b.shadow
+                                            in
+                                            Time.monotonic
+                                                |> Task.andThen
+                                                    (\t1 ->
+                                                        Console.write
+                                                            ("frame "
+                                                                ++ String.fromInt (Bytes.length bytes)
+                                                                ++ " bytes in "
+                                                                ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                                ++ " ms; frames "
+                                                                ++ String.fromInt sh.frames
+                                                                ++ " scrolls "
+                                                                ++ String.fromInt sh.scrolls
+                                                                ++ " rows-moved "
+                                                                ++ String.fromInt sh.moved
+                                                                ++ " cells-drawn "
+                                                                ++ String.fromInt sh.drawn
+                                                                ++ " runs "
+                                                                ++ String.fromInt sh.runs
+                                                                ++ " list-bytes "
+                                                                ++ String.fromInt sh.bytes
+                                                                ++ " bound "
+                                                                ++ String.fromInt (Vt.historyBound b.term)
+                                                                ++ "\n"
+                                                            )
+                                                    )
+
+                                        else
+                                            let
+                                                t =
+                                                    feedAll bytes 0 (Vt.new config)
+                                            in
+                                            Time.monotonic
+                                                |> Task.andThen
+                                                    (\t1 ->
+                                                        Console.write
+                                                            ("feed "
+                                                                ++ String.fromInt (Bytes.length bytes)
+                                                                ++ " bytes in "
+                                                                ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                                ++ " ms; bound "
+                                                                ++ String.fromInt (Vt.historyBound t)
+                                                                ++ "\n"
+                                                            )
+                                                    )
+                                    )
+                    )
+                    |> Task.onError (\_ -> Console.write "view: cannot read the file\n")
+            )

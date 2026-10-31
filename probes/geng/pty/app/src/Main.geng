@@ -1,0 +1,115 @@
+module Main exposing (main)
+
+{-| The pty probe (`docs/phase2-window.md` §4): `cat FILE` on a 160 by 50 pty,
+every read of the master fed to the core, and with `frame` a renderer's frame
+(`Vt.View.frame`) whenever 16 ms have passed since the last. It prints the
+time from the spawn to the end of the output, the reads, and the frames.
+
+usage: pty FILE [frame]
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Env
+import Pty
+import Task exposing (Task)
+import Time
+import Vt
+import Vt.View as View
+
+
+type alias Run =
+    { term : Vt.Term
+    , shadow : View.Shadow
+    , frames : Bool
+    , last : Int
+    , reads : Int
+    , bytes : Int
+    }
+
+
+now : Task x Int
+now =
+    Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
+
+
+loop : Int -> (moved r : Run) -> Task x Run
+loop fd r =
+    Pty.read fd
+        |> Task.andThen
+            (\chunk ->
+                if Bytes.length chunk == 0 then
+                    Task.succeed r
+
+                else
+                    let
+                        t =
+                            Vt.feed chunk r.term
+                    in
+                    if r.frames then
+                        now
+                            |> Task.andThen
+                                (\ms ->
+                                    if ms - r.last >= 16 then
+                                        let
+                                            f =
+                                                View.frame t r.shadow
+                                        in
+                                        loop fd { term = t, shadow = f.shadow, frames = True, last = ms, reads = r.reads + 1, bytes = r.bytes + Bytes.length chunk }
+
+                                    else
+                                        loop fd { r | term = t, reads = r.reads + 1, bytes = r.bytes + Bytes.length chunk }
+                                )
+
+                    else
+                        loop fd { r | term = t, reads = r.reads + 1, bytes = r.bytes + Bytes.length chunk }
+            )
+
+
+main : Task Never {}
+main =
+    Os.Env.getEnvironment
+        |> Task.andThen
+            (\e ->
+                now
+                    |> Task.andThen
+                        (\t0 ->
+                            Pty.spawn 160 50 [ "cat", Maybe.withDefault "" (Array.get 0 e.args) ]
+                                |> Task.andThen
+                                    (\fd ->
+                                        if fd < 0 then
+                                            Console.write ("pty: spawn failed, errno " ++ String.fromInt (0 - fd) ++ "\n")
+
+                                        else
+                                            loop fd
+                                                { term = Vt.new { cols = 160, rows = 50, scrollback = 100000, checksums = False, cellWidth = 0, cellHeight = 0 }
+                                                , shadow = View.shadow 160 50
+                                                , frames = Array.get 1 e.args == Just "frame"
+                                                , last = t0
+                                                , reads = 0
+                                                , bytes = 0
+                                                }
+                                                |> Task.andThen
+                                                    (\r ->
+                                                        now
+                                                            |> Task.andThen
+                                                                (\t1 ->
+                                                                    Console.write
+                                                                        (String.fromInt r.bytes
+                                                                            ++ " bytes in "
+                                                                            ++ String.fromInt (t1 - t0)
+                                                                            ++ " ms; reads "
+                                                                            ++ String.fromInt r.reads
+                                                                            ++ " frames "
+                                                                            ++ String.fromInt r.shadow.frames
+                                                                            ++ " bound "
+                                                                            ++ String.fromInt (Vt.historyBound r.term)
+                                                                            ++ "\n"
+                                                                        )
+                                                                )
+                                                    )
+                                    )
+                        )
+            )

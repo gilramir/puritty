@@ -1,0 +1,138 @@
+module Main exposing (main)
+
+{-| The x11 probe (`docs/phase2-window.md` §5): a program on a 160 by 50 pty,
+its output fed to the core, the core's replies written back, and a frame
+drawn in an X window whenever 16 ms have passed since the last, and once at
+the end. It prints the bytes read, the time, the frames and the display
+lists' bytes; the X connection's bytes are counted outside it, by a proxy.
+
+usage: x11 PROGRAM ARGS...
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Env
+import Pty
+import Task exposing (Task)
+import Time
+import Vt
+import Vt.View as View
+import X
+
+
+type alias Run =
+    { term : Vt.Term
+    , shadow : View.Shadow
+    , last : Int
+    , reads : Int
+    , bytes : Int
+    , glyphs : Int
+    }
+
+
+now : Task x Int
+now =
+    Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
+
+
+writeAll : Int -> Array Bytes -> Task x {}
+writeAll fd replies =
+    Array.foldl (\r task -> task |> Task.andThen (\_ -> Pty.write fd r)) (Task.succeed {}) replies
+
+
+drawFrame : Int -> (moved r : Run) -> Task x Run
+drawFrame ms r =
+    let
+        f =
+            View.frame r.term r.shadow
+    in
+    X.draw f.list
+        |> Task.map (\g -> { term = r.term, shadow = f.shadow, last = ms, reads = r.reads, bytes = r.bytes, glyphs = g })
+
+
+loop : Int -> (moved r : Run) -> Task x Run
+loop fd r =
+    Pty.read fd
+        |> Task.andThen
+            (\chunk ->
+                if Bytes.length chunk == 0 then
+                    now |> Task.andThen (\ms -> drawFrame ms r)
+
+                else
+                    let
+                        taken =
+                            Vt.takeReplies (Vt.feed chunk r.term)
+                    in
+                    writeAll fd taken.replies
+                        |> Task.andThen (\_ -> now)
+                        |> Task.andThen
+                            (\ms ->
+                                let
+                                    next =
+                                        { r | term = taken.term, reads = r.reads + 1, bytes = r.bytes + Bytes.length chunk }
+                                in
+                                if ms - next.last >= 16 then
+                                    drawFrame ms next |> Task.andThen (loop fd)
+
+                                else
+                                    loop fd next
+                            )
+            )
+
+
+main : Task Never {}
+main =
+    Os.Env.getEnvironment
+        |> Task.andThen
+            (\e ->
+                X.open 160 50 11
+                    |> Task.andThen
+                        (\code ->
+                            if code < 0 then
+                                Console.write ("x11: cannot open the window, " ++ String.fromInt code ++ "\n")
+
+                            else
+                                now
+                                    |> Task.andThen
+                                        (\t0 ->
+                                            Pty.spawn 160 50 e.args
+                                                |> Task.andThen
+                                                    (\fd ->
+                                                        if fd < 0 then
+                                                            Console.write ("x11: spawn failed, errno " ++ String.fromInt (0 - fd) ++ "\n")
+
+                                                        else
+                                                            loop fd { term = Vt.new { cols = 160, rows = 50, scrollback = 100000, checksums = False, cellWidth = 0, cellHeight = 0 }, shadow = View.shadow 160 50, last = t0, reads = 0, bytes = 0, glyphs = 0 }
+                                                                |> Task.andThen
+                                                                    (\r ->
+                                                                        now
+                                                                            |> Task.andThen
+                                                                                (\t1 ->
+                                                                                    Console.write
+                                                                                        (String.fromInt r.bytes
+                                                                                            ++ " bytes in "
+                                                                                            ++ String.fromInt (t1 - t0)
+                                                                                            ++ " ms; reads "
+                                                                                            ++ String.fromInt r.reads
+                                                                                            ++ " frames "
+                                                                                            ++ String.fromInt r.shadow.frames
+                                                                                            ++ " scrolls "
+                                                                                            ++ String.fromInt r.shadow.scrolls
+                                                                                            ++ " cells "
+                                                                                            ++ String.fromInt r.shadow.drawn
+                                                                                            ++ " runs "
+                                                                                            ++ String.fromInt r.shadow.runs
+                                                                                            ++ " list-bytes "
+                                                                                            ++ String.fromInt r.shadow.bytes
+                                                                                            ++ " glyphs "
+                                                                                            ++ String.fromInt r.glyphs
+                                                                                            ++ "\n"
+                                                                                        )
+                                                                                )
+                                                                    )
+                                                    )
+                                        )
+                        )
+            )

@@ -64,7 +64,7 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
   on a VM with no GPU, so the server-side X11 renderer is the product's main path
   on both. One process per window. Every
   recommendation was taken. Geng-side tracking is in geng-lang's register (D888–D890).
-  Only bundled fonts is still open.
+  Q13 was answered 2026-10-30: system fonts, none shipped (§9.3).
 
 ---
 
@@ -139,7 +139,7 @@ which is 4.18. §9 asks Gilbert for what only a real host shows.
 | fcitx5 | **not packaged** | — | The RHEL8 IME is **ibus 1.5.19** |
 | libthai | 0.1.27 | runtime only | Fine |
 | Mesa EGL | 23.1.4 | — | GLES 3 possible locally; irrelevant over `ssh -X` |
-| Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts can come from the system, or be bundled (Q13) |
+| Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts come from the system; visiterm ships none (Q13, §9.3) |
 | **tmux** | 2.7 packaged; **3.6 installed** where visiterm will run | 3.4 | The packaged 2.7 predates 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Gilbert's hosts have 3.6, so visiterm requires 3.2 (Q11) |
 
 ### 1.2 The reference terminals' throughput, measured 2026-10-24
@@ -748,7 +748,10 @@ Exit:
 - the fuzzer has run clean for a recorded number of hours;
 - throughput meets the phase 0 budget (§1.3, with 100,000 lines of scrollback).
 
-**Phase 2 · A window on X11.** PTY backend, XCB window, the server-side X11 renderer
+**Phase 2 · A window on X11.** *Survey begun 2026-10-30:
+[`phase2-window.md`](phase2-window.md): the renderer diffs its own copy of
+the screen and finds scrolls by row hashes, a pty fits the one loop, and a
+vim scroll costs 374 bytes a line on the wire.* PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).
@@ -756,7 +759,8 @@ language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4
 Exit: runs a shell on **this Mint desktop**, and over `ssh -X` from another
 host, which stands in for ETX until phase 6. Bytes per update are
 measured with an X protocol tracer and recorded for `tail -f`, `htop` and a vim
-scroll. The C§9 script corpus renders correctly under bundled fonts.
+scroll. The C§9 script corpus renders correctly under the fonts the tests pin (Q13:
+visiterm ships none).
 
 **Phase 3 · Input, clipboard, IME, EUC-KR.** XKB modifiers, legacy and kitty
 keyboard encodings, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
@@ -882,6 +886,11 @@ The main risk is a crash, and the plan attacks it on several fronts:
 
 ### 9.2 Open
 
-- **Q13, fallback fonts:** ship Noto Sans Mono CJK and Noto Sans Thai (about 100 MB),
-  or rely on the system's? Gilbert hasn't decided. Until he does, visiterm uses the
-  system's, and the rendering tests (S§11 item 9) pin their own copies.
+None.
+
+### 9.3 Answered later
+
+- **Q13, fallback fonts, 2026-10-30:** visiterm does **not** ship fonts. It
+  uses the system's, found through fontconfig, Noto Sans Mono CJK and Noto Sans
+  Thai included when the system has them. The rendering tests (S§11 item 9) pin
+  their own copies as test fixtures, which are not shipped.
