@@ -153,6 +153,32 @@ wrappedBit =
     0x10000
 
 
+{-| A row's flags in its meta slot: wrapped, and its prompt mark in bits
+17–18 (0 none, 1 a prompt, 2 a prompt's continuation, §VC22), which a write
+that moves the extent keeps. -}
+rowFlags : Int64
+rowFlags =
+    0x70000
+
+
+metaPrompt : Int64 -> Int
+metaPrompt m =
+    Int64.toIntWrap (Bitwise.and 3 (Bitwise.shiftRightZfBy 17 m))
+
+
+{-| Row `y`'s prompt mark set to `mark`. -}
+setPrompt : Int -> Int -> (moved s : Screen) -> Screen
+setPrompt y mark s =
+    let
+        o =
+            rowOffset s y + s.cols
+
+        m =
+            Maybe.withDefault 0 (Builder.get o s.cells)
+    in
+    { s | cells = Builder.set o (Bitwise.or (Bitwise.and (Bitwise.complement 0x60000) m) (Bitwise.shiftLeftBy 17 (Int64.fromInt mark))) s.cells }
+
+
 {-| A protected cell (DECSCA, SPA): what DECSED and DECSEL, and in ISO's
 mode ED, EL and ECH, leave as it is (§VC12). -}
 protectBit : Int64
@@ -355,11 +381,12 @@ type alias Config =
 
 {-| A page of scrollback, and the width its rows were cut at: a resize
 leaves a page as it is and its rows are reflowed when read (V10, §VC14).
-`moved`: a resize changed the width since it was packed, so its rows are
-reflowed when read even at their own width, as Ghostty's were at each
-resize (§VC20). -}
+`via`: the widths the resizes since it was packed went to, oldest first;
+its rows are reflowed through each of them when read, as Ghostty's were at
+each resize, since a reflow depends on the widths it goes through (§VC20,
+§VC22). -}
 type alias Page =
-    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int, moved : Bool }
+    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int, via : Array Int }
 
 
 type alias Back =
@@ -569,6 +596,9 @@ type alias Term =
     , insert : Bool
     , showCursor : Bool
     , newline : Bool
+    , lfSlow : Bool
+    , prompt : Int
+    , otherPrompt : Int
     , modes : Dict Int Bool
     , savedModes : Dict Int Bool
     , sets : Int
@@ -698,6 +728,9 @@ fresh config =
     , insert = False
     , showCursor = True
     , newline = False
+    , lfSlow = False
+    , prompt = 0
+    , otherPrompt = 0
     , modes = Dict.empty
     , savedModes = Dict.empty
     , sets = 0
@@ -891,7 +924,7 @@ extendTo o cols x cells =
             Maybe.withDefault 0 (Builder.get (o + cols) cells)
     in
     if x > metaExtent m then
-        Builder.set (o + cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt x)) cells
+        Builder.set (o + cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt x)) cells
 
     else
         cells
@@ -913,7 +946,7 @@ setWrapped y on s =
                     Bitwise.or wrappedBit m
 
                  else
-                    Bitwise.and 0xFFFF m
+                    Bitwise.and (Bitwise.complement wrappedBit) m
                 )
                 s.cells
     }
@@ -1099,7 +1132,7 @@ pageOut clusters s back =
             , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
             , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
             , cols = s.cols
-            , moved = False
+            , via = []
             }
     in
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
@@ -1124,8 +1157,9 @@ packRows clusters p stop s text heads runs =
             row =
                 packCells clusters o (o + ext) s text runs 0 0 False
 
+            -- the prompt mark, bits 17–18 of the meta slot, in bits 10–11
             header =
-                Bitwise.or ext
+                Bitwise.or (Bitwise.or ext (Int64.toIntWrap (Bitwise.and 0xC00 (Bitwise.shiftRightZfBy 7 m))))
                     (Bitwise.or
                         (if Bitwise.and wrappedBit m /= 0 then
                             0x8000
@@ -1376,7 +1410,7 @@ ground bytes n i t =
             -- CR and LF here, not through `execute`, as the probe had them
             ground bytes n (i + 1) { t | x = 0, wrapNext = False }
 
-        else if b == 10 && not t.newline then
+        else if b == 10 && not t.lfSlow then
             ground bytes n (i + 1) (lineFeed { t | wrapNext = False })
 
         else if b == 0x1B then
@@ -1433,10 +1467,10 @@ execute : Int -> (moved t : Term) -> Term
 execute b t =
     if b == 10 || b == 11 || b == 12 then
         if t.newline then
-            carriageReturn (lineFeed { t | wrapNext = False })
+            promptFeed (carriageReturn (lineFeed { t | wrapNext = False }))
 
         else
-            lineFeed { t | wrapNext = False }
+            promptFeed (lineFeed { t | wrapNext = False })
 
     else if b == 13 then
         { t | x = crX t, wrapNext = False }
@@ -1538,6 +1572,10 @@ enough to inline (§VC13). -}
 wrapNow : (moved t : Term) -> Term
 wrapNow t =
     let
+        -- read before `t` is handed on, which keeps it written in place
+        prompting =
+            t.prompt /= 0
+
         marked =
             if t.x == t.cols - 1 then
                 { t | screen = setWrapped t.y True t.screen }
@@ -1551,7 +1589,11 @@ wrapNow t =
         fed =
             lineFeed { marked | wrapNext = False }
     in
-    { fed | x = fed.left }
+    if prompting then
+        promptAfter True { fed | x = fed.left }
+
+    else
+        { fed | x = fed.left }
 
 
 writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (moved row : Builder Int64) -> Builder Int64
@@ -1582,7 +1624,7 @@ asciiRow bytes i end pen erase cols o x xEnd first cells =
             else
                 cells
     in
-    Builder.set (o + cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt (max xEnd old))) (writeAscii bytes (i + 1) end pen (o + x + 1) (Builder.set (o + x) (Bitwise.or pen (Int64.fromInt first)) (reachAt o old x cut)))
+    Builder.set (o + cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt (max xEnd old))) (writeAscii bytes (i + 1) end pen (o + x + 1) (Builder.set (o + x) (Bitwise.or pen (Int64.fromInt first)) (reachAt o old x cut)))
 
 
 {-| Before columns `x` to `xEnd` of the row at `o` are written, a wide
@@ -2321,10 +2363,10 @@ escDispatch b t =
         restoreCursor t
 
     else if b == 0x44 then
-        lineFeed { t | wrapNext = False }
+        promptFeed (lineFeed { t | wrapNext = False })
 
     else if b == 0x45 then
-        carriageReturn (lineFeed { t | wrapNext = False })
+        promptFeed (carriageReturn (lineFeed { t | wrapNext = False }))
 
     else if b == 0x48 then
         { t | tabs = Builder.set t.x 1 t.tabs }
@@ -2644,18 +2686,12 @@ oscDispatch end t0 =
             resetPalette (Array.dropFirst 1 parts) t
 
         Just 133 ->
-            -- a semantic prompt's start (`A`, with options or none) and
-            -- `L` begin a fresh line; the core keeps no prompt marks (§VC21)
-            if Array.get 1 parts == Just "A" || rest == "L" then
-                freshLine t
-
-            else
-                t
+            semanticPrompt (Maybe.withDefault "" (Array.get 1 parts)) (Array.dropFirst 2 parts) (rest == "L") t
 
         Just 9 ->
             -- ConEmu's mark of a prompt's start, Ghostty's 133;A
             if String.startsWith "12" rest then
-                freshLine t
+                semanticPrompt "A" [] False t
 
             else
                 t
@@ -3870,6 +3906,120 @@ carriageReturn t =
     { t | x = crX t, wrapNext = False }
 
 
+{-| OSC 133, the semantic prompts (§VC22), as Ghostty takes them: `A` and
+`N` a fresh line and a prompt, `P` a prompt, `B` and `I` the input (`I`
+to the line's end), `C` and `D` output, `L` (alone) a fresh line. A
+prompt marks the cursor's row, a continuation with `k=c` or `k=s`, and the
+rows a line feed or a wrap goes to while the prompt or the input lasts are
+continuations; `C` at a row's start takes its mark away. -}
+semanticPrompt : String -> Array String -> Bool -> (moved t : Term) -> Term
+semanticPrompt action options onlyL t =
+    when action is
+        "A" ->
+            promptStart options (freshLine t)
+
+        "N" ->
+            promptStart options (freshLine t)
+
+        "P" ->
+            promptStart options t
+
+        "B" ->
+            withLf { t | prompt = 2 }
+
+        "I" ->
+            withLf { t | prompt = 3 }
+
+        "C" ->
+            outputStart t
+
+        "D" ->
+            withLf { t | prompt = 0 }
+
+        "L" ->
+            if onlyL then
+                freshLine t
+
+            else
+                t
+
+        _ ->
+            t
+
+
+{-| `C`: output, and a prompt mark taken off the cursor's row when the
+cursor is at its start. -}
+outputStart : (moved t : Term) -> Term
+outputStart t =
+    let
+        s =
+            t.screen
+
+        unmark =
+            t.x == 0 && metaPrompt (metaAt (rowOffset s t.y) s) /= 0
+    in
+    if unmark then
+        withLf { t | prompt = 0, screen = setPrompt t.y 0 s }
+
+    else
+        withLf { t | prompt = 0, screen = s }
+
+
+{-| A prompt begins at the cursor: its row marked a prompt, or with `k=c` or
+`k=s`, the first `k` option, a continuation. -}
+promptStart : Array String -> (moved t : Term) -> Term
+promptStart options t =
+    let
+        kind =
+            when Array.findFirst (\o -> String.startsWith "k=" o) options is
+                Just found ->
+                    String.dropFirst 2 found.value
+
+                Nothing ->
+                    ""
+
+        mark =
+            if kind == "c" || kind == "s" then
+                2
+
+            else
+                1
+    in
+    withLf { t | prompt = 1, screen = setPrompt t.y mark t.screen }
+
+
+{-| After a line feed, or a wrap when `wrap`, while a prompt or the input
+lasts: the row it went to a continuation, as Ghostty's `index` and
+`printWrap` mark it; with the input to the line's end (`I`), a line feed
+ends the input and marks nothing, and a wrap neither (§VC22). -}
+promptAfter : Bool -> (moved t : Term) -> Term
+promptAfter wrap t =
+    if t.prompt == 0 then
+        t
+
+    else if t.prompt == 3 then
+        if wrap then
+            t
+
+        else
+            withLf { t | prompt = 0 }
+
+    else
+        { t | screen = setPrompt t.y 2 t.screen }
+
+
+promptFeed : (moved t : Term) -> Term
+promptFeed t =
+    promptAfter False t
+
+
+{-| LF takes `execute`'s path when LNM is set or a prompt or the input
+lasts, which the ground state's tests in one field. -}
+withLf : (moved t : Term) -> Term
+withLf t =
+    { t | lfSlow = t.newline || t.prompt /= 0 }
+
+
 {-| A fresh line, as Ghostty's for a semantic prompt: CR and IND unless the
 cursor is at the left margin, or in the first column when it is left of the
 margin. -}
@@ -3879,7 +4029,7 @@ freshLine t =
         t
 
     else
-        lineFeed { t | x = crX t, wrapNext = False }
+        promptFeed (lineFeed { t | x = crX t, wrapNext = False })
 
 
 {-| Where CR takes the cursor: the left margin, or the first column from
@@ -4086,7 +4236,7 @@ widen o s =
         m =
             metaAt o s
     in
-    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt s.cols)) (reachAt o (metaExtent m) s.cols s.cells) }
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt s.cols)) (reachAt o (metaExtent m) s.cols s.cells) }
 
 
 {-| The row at `o` with every cell before column `x` explicit, as `widen`
@@ -4104,7 +4254,7 @@ widenTo o x s =
             metaExtent m
     in
     if x > e then
-        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt x)) (Builder.fill (o + e) (o + x) 0 s.cells) }
+        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt x)) (Builder.fill (o + e) (o + x) 0 s.cells) }
 
     else
         s
@@ -4118,7 +4268,7 @@ trim o s =
         m =
             metaAt o s
     in
-    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt (lastFilled o (metaExtent m) s.cells))) s.cells }
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt (lastFilled o (metaExtent m) s.cells))) s.cells }
 
 
 lastFilled : Int -> Int -> Builder Int64 -> Int
@@ -4333,7 +4483,16 @@ screenMode p on t =
                 toAlt True (saveCursor t)
 
         else
-            restoreCursor (toMain False t)
+            -- the main screen's own cursor again, its prompt state with it,
+            -- where 47 and 1047 copy the alternate screen's (§VC22)
+            let
+                own =
+                    t.otherPrompt
+
+                back =
+                    toMain False t
+            in
+            restoreCursor (withLf { back | prompt = own })
 
     else if p == 1048 then
         if on then
@@ -4454,7 +4613,7 @@ setAnsi p on t =
         withPlain { t | insert = on }
 
     else if p == 20 then
-        { t | newline = on }
+        withLf { t | newline = on }
 
     else if p == 2 || p == 12 then
         { t | modes = Dict.set (ansiKey p) on t.modes }
@@ -4521,7 +4680,7 @@ toAlt clear t =
                     Nothing ->
                         newScreen t.cols t.rows (t.rows + 1)
         in
-        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase }
+        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt }
 
 
 {-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
@@ -4562,7 +4721,7 @@ toMain clear t =
                 -- cleared, the alternate screen is erased as ED 2 does,
                 -- which ends a pending wrap before the cursor is carried
                 -- over, as in Ghostty (§VC17)
-                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, wrapNext = t.wrapNext && not clear }
+                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, wrapNext = t.wrapNext && not clear }
 
             Nothing ->
                 t
@@ -5261,7 +5420,7 @@ insertCells o x count erase s =
             m =
                 Maybe.withDefault 0 (Builder.get (o + s.cols) tidy)
         in
-        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt newExt)) (Builder.fill (o + x) (o + x + n) erase tidy) }
+        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt newExt)) (Builder.fill (o + x) (o + x + n) erase tidy) }
 
 
 deleteChars : Int -> (moved t : Term) -> Term
@@ -5275,6 +5434,10 @@ deleteChars count t =
 
         ext =
             extentAt o s
+
+        -- the prompt mark kept, as Ghostty's DCH resets the wrap alone
+        mark =
+            Bitwise.and 0x60000 (metaAt o s)
 
         x =
             t.x
@@ -5308,10 +5471,10 @@ deleteChars count t =
             -- the last `n` are the erase cell
             filled =
                 if t.erase == 0 then
-                    Builder.set (o + s.cols) (Int64.fromInt left) moved
+                    Builder.set (o + s.cols) (Bitwise.or mark (Int64.fromInt left)) moved
 
                 else
-                    Builder.set (o + s.cols) (Int64.fromInt s.cols) (Builder.fill (o + s.cols - n) (o + s.cols) t.erase (Builder.fill (o + left) (o + s.cols - n) 0 moved))
+                    Builder.set (o + s.cols) (Bitwise.or mark (Int64.fromInt s.cols)) (Builder.fill (o + s.cols - n) (o + s.cols) t.erase (Builder.fill (o + left) (o + s.cols - n) 0 moved))
         in
         { t | screen = { s | cells = filled }, wrapNext = False }
 
@@ -5451,7 +5614,7 @@ eraseSpan guarded from to t =
                 else
                     Builder.fill (o + from) (o + min to (max ext to)) t.erase cells0
         in
-        { t | screen = { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt newExt)) filled } }
+        { t | screen = { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt newExt)) filled } }
 
 
 {-| EL, and DECSEL when `selective`, which leaves protected cells; EL
@@ -5535,13 +5698,66 @@ blankUnprotected from to fill s =
             cells =
                 eraseUnprotected o (o + newExt) fill (reachAt o ext newExt s.cells)
         in
-        blankUnprotected (from + 1) to fill { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and wrappedBit m) (Int64.fromInt newExt)) cells }
+        blankUnprotected (from + 1) to fill { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt newExt)) cells }
 
 
 {-| ED, and DECSED when `selective`, which leaves protected cells; ED
-leaves them too in ISO's protection mode. -}
+leaves them too in ISO's protection mode. On the main screen, ED 2 with the
+last row that is not blank a prompt's, or its continuation's, scrolls the
+screen into the scrollback first, as ED 22 does: Ghostty's way of keeping
+what was above a prompt cleared with ^L (#905, §VC22). -}
 eraseDisplay : Bool -> Int -> (moved t : Term) -> Term
 eraseDisplay selective how t =
+    if how == 2 && not t.alt && atPrompt (t.rows - 1) t.screen then
+        erasePlain selective 2 (scrollClear t)
+
+    else
+        erasePlain selective how t
+
+
+{-| From row `y` up, the first row with a prompt mark or text: a mark. -}
+atPrompt : Int -> Screen -> Bool
+atPrompt y s =
+    if y < 0 then
+        False
+
+    else
+        let
+            o =
+                rowOffset s y
+
+            m =
+                metaAt o s
+        in
+        if metaPrompt m /= 0 then
+            True
+
+        else if rowHasText o (metaExtent m) 0 s then
+            False
+
+        else
+            atPrompt (y - 1) s
+
+
+rowHasText : Int -> Int -> Int -> Screen -> Bool
+rowHasText o ext x s =
+    if x >= ext then
+        False
+
+    else
+        let
+            c =
+                Maybe.withDefault 0 (Builder.get (o + x) s.cells)
+        in
+        if cellPoint c /= 0 || cellIsCluster c then
+            True
+
+        else
+            rowHasText o ext (x + 1) s
+
+
+erasePlain : Bool -> Int -> (moved t : Term) -> Term
+erasePlain selective how t =
     if (selective || t.protectMode == 1) && how /= 3 && how /= 22 then
         eraseGuarded selective how t
 
@@ -6104,7 +6320,7 @@ withState v s =
 {-| A row of a screen or its scrollback out of the ring or a page: its
 cells as the ring keeps them, up to its extent, and whether it wrapped. -}
 type alias Row =
-    { cells : Array Int64, wrapped : Bool }
+    { cells : Array Int64, wrapped : Bool, prompt : Int }
 
 
 {-| A point carried with its cell through a resize: `row` counts from the
@@ -6161,7 +6377,7 @@ resizeScreen reflow keep cols rows cursor saved clusters s back =
             r.flow
 
         built =
-            rebuild cols rows flow r.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.fromArray (moveAll (reflow && cols /= s.cols) (Array.takeFirst (count - r.taken) pages)), head = 0, limit = back.limit }
+            rebuild cols rows flow r.clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) { pages = Builder.fromArray (passWidth (reflow && cols /= s.cols) cols (Array.takeFirst (count - r.taken) pages)), head = 0, limit = back.limit }
 
         c =
             flow.cursor
@@ -6281,7 +6497,7 @@ ringRowOf o s =
         m =
             metaAt o s
     in
-    { cells = Builder.slice o (o + metaExtent m) s.cells, wrapped = Bitwise.and wrappedBit m /= 0 }
+    { cells = Builder.slice o (o + metaExtent m) s.cells, wrapped = Bitwise.and wrappedBit m /= 0, prompt = metaPrompt m }
 
 
 {-| The scrollback's pages, oldest first. -}
@@ -6307,26 +6523,38 @@ readPages cols clusters pages =
                         one =
                             pageRowsOf page acc.clusters
                     in
-                    if page.cols == acc.width && page.moved == acc.moved then
+                    if page.cols == acc.width && page.via == acc.via then
                         { acc | group = acc.group ++ one.rows, clusters = one.clusters }
 
                     else
-                        { rows = acc.rows ++ reflowed acc.moved acc.width cols acc.group, group = one.rows, width = page.cols, moved = page.moved, clusters = one.clusters }
+                        { rows = acc.rows ++ reflowedVia acc.width acc.via cols acc.group, group = one.rows, width = page.cols, via = page.via, clusters = one.clusters }
                 )
-                { rows = [], group = [], width = cols, moved = False, clusters = clusters }
+                { rows = [], group = [], width = cols, via = [], clusters = clusters }
                 pages
     in
-    { rows = done.rows ++ reflowed done.moved done.width cols done.group, clusters = done.clusters }
+    { rows = done.rows ++ reflowedVia done.width done.via cols done.group, clusters = done.clusters }
 
 
-{-| Every page marked `moved` when `yes`. -}
-moveAll : Bool -> Array Page -> Array Page
-moveAll yes pages =
+{-| Every page given `cols` as one more width it went through, when `yes`:
+a resize that reflowed to it. -}
+passWidth : Bool -> Int -> Array Page -> Array Page
+passWidth yes cols pages =
     if yes then
-        Array.map (\p -> { p | moved = True }) pages
+        Array.map (\p -> { p | via = Array.pushLast cols p.via }) pages
 
     else
         pages
+
+
+{-| Rows cut at `old` columns reflowed to each width of `via` in turn and
+then to `cols`, as Ghostty reflowed them at each resize (§VC22). -}
+reflowedVia : Int -> Array Int -> Int -> Array Row -> Array Row
+reflowedVia old via cols rows =
+    let
+        passed =
+            Array.foldl (\w acc -> { width = w, rows = reflowed acc.width w acc.rows }) { width = old, rows = rows } via
+    in
+    reflowed passed.width cols passed.rows
 
 
 pageRowsOf : Page -> Clusters -> { rows : Array Row, clusters : Clusters }
@@ -6346,18 +6574,17 @@ pageRowsOf page clusters =
                         { cells = [], clusters = a.clusters }
                         row.cells
             in
-            { rows = Array.pushLast { cells = cells.cells, wrapped = row.wrapped } a.rows, clusters = cells.clusters }
+            { rows = Array.pushLast { cells = cells.cells, wrapped = row.wrapped, prompt = row.prompt } a.rows, clusters = cells.clusters }
         )
         { rows = [], clusters = clusters }
         (unpackPage page)
 
 
 {-| Rows cut at `old` columns cut again at `cols`, with no cursor to carry
-and every line kept; at the same width too when `moved`, which a resize in
-between would have reflowed (§VC20). -}
-reflowed : Bool -> Int -> Int -> Array Row -> Array Row
-reflowed moved old cols rows =
-    if (old == cols && not moved) || Array.isEmpty rows then
+and every line kept. -}
+reflowed : Int -> Int -> Array Row -> Array Row
+reflowed old cols rows =
+    if old == cols || Array.isEmpty rows then
         rows
 
     else
@@ -6366,9 +6593,9 @@ reflowed moved old cols rows =
                 { row = -1, x = 0, wrap = False }
 
             joined =
-                joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 } }
+                joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
         in
-        Array.mapAndFlatten (\line -> (splitLine cols line [] 0).rows) joined.lines
+        Array.mapAndFlatten (\li -> (splitLine cols (Maybe.withDefault [] (Array.get li joined.lines)) (Maybe.withDefault [] (Array.get li joined.marks)) [] 0).rows) (Array.range 0 (Array.length joined.lines - 1))
 
 
 {-| Whether a page's last row wrapped, so that its line goes on past it. -}
@@ -6466,7 +6693,7 @@ changeRows keep old rows flow =
                     0
         in
         { flow
-            | rows = flow.rows ++ Array.repeat (rows - now - pulled) { cells = [], wrapped = False }
+            | rows = flow.rows ++ Array.repeat (rows - now - pulled) { cells = [], wrapped = False, prompt = 0 }
             , hist = flow.hist - pulled
             , short = flow.short || (keep && flow.y0 >= old - 1 && flow.more && flow.hist < rows - now)
         }
@@ -6586,7 +6813,7 @@ reflowCols old cols flow =
             continuations flow.rows flow.hist flow.cursor.row
 
         joined =
-            joinLines old cols flow 0 { lines = [], line = [], cursor = { line = 0, at = 0 }, saved = { line = -1, at = 0 } }
+            joinLines old cols flow 0 { lines = [], line = [], cursor = { line = 0, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
 
         used =
             lastUsed joined.lines (Array.length joined.lines - 1) (max joined.cursor.line joined.saved.line)
@@ -6604,7 +6831,7 @@ reflowCols old cols flow =
                             ]
 
                         cut =
-                            splitLine cols line marks (Array.length acc.rows)
+                            splitLine cols line (Maybe.withDefault [] (Array.get li joined.marks)) marks (Array.length acc.rows)
                     in
                     -- a line the cursor is not on finds it at row -1, and
                     -- leaves where an earlier line found it (§VC16)
@@ -6617,7 +6844,7 @@ reflowCols old cols flow =
                 (Array.range 0 used)
 
         padded =
-            split.rows ++ Array.repeat (now - Array.length split.rows) { cells = [], wrapped = False }
+            split.rows ++ Array.repeat (now - Array.length split.rows) { cells = [], wrapped = False, prompt = 0 }
 
         hist =
             Array.length padded - now
@@ -6642,7 +6869,7 @@ reflowCols old cols flow =
             else
                 0
     in
-    { rows = padded ++ Array.repeat grow { cells = [], wrapped = False }
+    { rows = padded ++ Array.repeat grow { cells = [], wrapped = False, prompt = 0 }
     , hist = hist + grow
     , cursor = { row = cur.row, x = cur.x, wrap = flow.cursor.wrap }
     , saved =
@@ -6694,6 +6921,8 @@ type alias Joined =
     , line : Array Int64
     , cursor : { line : Int, at : Int }
     , saved : { line : Int, at : Int }
+    , marks : Array (Array { at : Int, mark : Int })
+    , lineMarks : Array { at : Int, mark : Int }
     }
 
 
@@ -6710,7 +6939,7 @@ joinLines old cols flow i j =
                 j
 
             else
-                { j | lines = Array.pushLast j.line j.lines, line = [] }
+                { j | lines = Array.pushLast j.line j.lines, line = [], marks = Array.pushLast j.lineMarks j.marks, lineMarks = [] }
 
         Just row ->
             let
@@ -6724,8 +6953,17 @@ joinLines old cols flow i j =
                     else
                         -- a spacer head is dropped wherever it is, as
                         -- Ghostty's reflow ignores one; the blanks before
-                        -- it stay (§VC18)
-                        withoutSpacer (trimmed row.cells (Array.length row.cells))
+                        -- it stay (§VC18); a blank row with a prompt mark is
+                        -- its first cell, as Ghostty keeps one (§VC22)
+                        let
+                            cut =
+                                withoutSpacer (trimmed row.cells (Array.length row.cells))
+                        in
+                        if Array.isEmpty cut && row.prompt /= 0 then
+                            Array.takeFirst 1 (row.cells ++ [ 0 ])
+
+                        else
+                            cut
 
                 len =
                     Array.length own
@@ -6785,9 +7023,19 @@ joinLines old cols flow i j =
                 line =
                     j.line ++ kept ++ Array.repeat (need - Array.length kept) 0
 
+                -- where the row's cells begin in the line, and its prompt
+                -- mark, which the rows they are cut into take (§VC22)
+                lineMarks =
+                    if Array.length line > base then
+                        Array.pushLast { at = base, mark = row.prompt } j.lineMarks
+
+                    else
+                        j.lineMarks
+
                 marked =
                     { j
                         | line = line
+                        , lineMarks = lineMarks
                         -- on a dropped spacer head, the offset is written
                         -- -2 - at, for `splitAt` to tell (`markOffset`)
                         , cursor =
@@ -6814,7 +7062,7 @@ joinLines old cols flow i j =
                 joinLines old cols flow (i + 1) marked
 
             else
-                joinLines old cols flow (i + 1) { marked | lines = Array.pushLast line marked.lines, line = [] }
+                joinLines old cols flow (i + 1) { marked | lines = Array.pushLast line marked.lines, line = [], marks = Array.pushLast lineMarks marked.marks, lineMarks = [] }
 
 
 {-| The column the next cell of `line` would go to, cut at `cols` as
@@ -6871,38 +7119,55 @@ trimmed cells n =
 
 {-| A line cut into rows of `cols`, and where each of `marks`, an offset in
 the line or -1, lands: its row, counted from `first`, and its column. -}
-splitLine : Int -> Array Int64 -> Array Int -> Int -> { rows : Array Row, found : Array { row : Int, x : Int } }
-splitLine cols line marks first =
-    splitAt cols line marks first 0 0 [] [] (Array.map (\_ -> { row = -1, x = 0 }) marks)
+splitLine : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitLine cols line starts marks first =
+    splitAt cols line starts marks first 0 0 [] [] (Array.map (\_ -> { row = -1, x = 0 }) marks)
 
 
-splitAt : Int -> Array Int64 -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
-splitAt cols line marks first j p row rows found =
+{-| The prompt mark of a row whose last cell is the line's `k`th: the mark of
+the source row that cell came from, the last whose cells Ghostty's reflow
+copied into the row (§VC22). -}
+promptAt : Array { at : Int, mark : Int } -> Int -> Int
+promptAt starts k =
+    Array.foldl
+        (\st m ->
+            if st.at <= k then
+                st.mark
+
+            else
+                m
+        )
+        0
+        starts
+
+
+splitAt : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitAt cols line starts marks first j p row rows found =
     when Array.get j line is
         Nothing ->
             -- a mark from a dropped spacer head at the end goes where a
             -- next cell would, or on the last one written when the row is
             -- full, as the oracle's reflow moves a pin (patch 0006, §VC18)
-            { rows = Array.pushLast { cells = row, wrapped = False } rows, found = headMarks marks j (first + Array.length rows) (min p (cols - 1)) found }
+            { rows = Array.pushLast { cells = row, wrapped = False, prompt = promptAt starts (j - 1) } rows, found = headMarks marks j (first + Array.length rows) (min p (cols - 1)) found }
 
         Just c ->
             if p >= cols then
-                splitAt cols line (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = row, wrapped = True } rows) (headMarks marks j (first + Array.length rows) (cols - 1) found)
+                splitAt cols line starts (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = row, wrapped = True, prompt = promptAt starts (j - 1) } rows) (headMarks marks j (first + Array.length rows) (cols - 1) found)
 
             else if cellWide c == wideHead && cols == 1 then
                 -- No column holds it: it is an empty cell, its spacer gone,
                 -- as in Ghostty, whose reflow writes it before it copies a
                 -- style, so in none (§VC17)
-                splitAt cols line marks first (j + 2) (p + 1) (Array.pushLast 0 row) rows (markAt marks j (j + 2) (first + Array.length rows) p found)
+                splitAt cols line starts marks first (j + 2) (p + 1) (Array.pushLast 0 row) rows (markAt marks j (j + 2) (first + Array.length rows) p found)
 
             else if cellWide c == wideHead && p == cols - 1 then
                 -- a mark from a dropped spacer head before it stays on the
                 -- one written here, as Ghostty moves a pin to where the
                 -- next cell goes, here, before the cell wraps (§VC18)
-                splitAt cols line (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True } rows) (headMarks marks j (first + Array.length rows) p found)
+                splitAt cols line starts (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True, prompt = promptAt starts (j - 1) } rows) (headMarks marks j (first + Array.length rows) p found)
 
             else
-                splitAt cols line marks first (j + 1) (p + 1) (Array.pushLast c row) rows (markAt marks j (j + 1) (first + Array.length rows) p found)
+                splitAt cols line starts marks first (j + 1) (p + 1) (Array.pushLast c row) rows (markAt marks j (j + 1) (first + Array.length rows) p found)
 
 
 {-| A mark's offset in its line: one written -2 - at was on a spacer head
@@ -6978,7 +7243,7 @@ pushHistory clusters rows i stop s back =
     else
         let
             written =
-                writeRow (rowOffset s 0) (Maybe.withDefault { cells = [], wrapped = False } (Array.get i rows)) s
+                writeRow (rowOffset s 0) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get i rows)) s
         in
         pushHistory clusters rows (i + 1) stop { written | base = phys written 1, hist = written.hist + 1 } back
 
@@ -6989,7 +7254,7 @@ writeRows rows from y count s =
         s
 
     else
-        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False } (Array.get (from + y) rows)) s)
+        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (from + y) rows)) s)
 
 
 writeRow : Int -> Row -> (moved s : Screen) -> Screen
@@ -6999,12 +7264,14 @@ writeRow o row s =
             Array.takeFirst s.cols row.cells
 
         meta =
-            Bitwise.or (Int64.fromInt (Array.length cells))
-                (if row.wrapped then
-                    wrappedBit
+            Bitwise.or (Bitwise.shiftLeftBy 17 (Int64.fromInt row.prompt))
+                (Bitwise.or (Int64.fromInt (Array.length cells))
+                    (if row.wrapped then
+                        wrappedBit
 
-                 else
-                    0
+                     else
+                        0
+                    )
                 )
     in
     { s | cells = Builder.set (o + s.cols) meta (Builder.setMany o cells s.cells) }
@@ -7051,6 +7318,7 @@ state and style, and whether it wrapped. -}
 type alias DumpRow =
     { cells : Array { points : Array Int, wide : Int, style : Int }
     , wrapped : Bool
+    , prompt : Int
     }
 
 
@@ -7079,6 +7347,7 @@ ringRow o t =
             )
             (Array.range 0 (ext - 1))
     , wrapped = Bitwise.and wrappedBit m /= 0
+    , prompt = metaPrompt m
     }
 
 
@@ -7099,6 +7368,7 @@ historyRows t =
                     (\row ->
                         { cells = Array.map (\c -> { points = cellPoints c paged.clusters, wide = cellWide c, style = cellStyle c }) row.cells
                         , wrapped = row.wrapped
+                        , prompt = row.prompt
                         }
                     )
                     paged.rows
@@ -7124,8 +7394,10 @@ unpackRows page h r ti acc =
             header =
                 u16At page.heads h
 
+            -- the extent in bits 0–9 (no row is wider than 1,000), the
+            -- prompt mark in 10–11 (§VC22)
             ext =
-                Bitwise.and 0x3FFF header
+                Bitwise.and 0x3FF header
 
             styles =
                 if Bitwise.and 0x4000 header /= 0 then
@@ -7140,7 +7412,7 @@ unpackRows page h r ti acc =
             cells =
                 Array.indexedMap (\x c -> { c | style = Maybe.withDefault 0 (Array.get x styles.styles) }) row.cells
         in
-        unpackRows page (h + 2) styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0 } acc)
+        unpackRows page (h + 2) styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0, prompt = Bitwise.and 3 (Bitwise.shiftRightZfBy 10 header) } acc)
 
 
 u16At : Bytes -> Int -> Int

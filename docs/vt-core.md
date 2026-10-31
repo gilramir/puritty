@@ -25,7 +25,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 | the timing | `harness/bench/` (`core-bench FILE [dump \| resize COLS ROWS]`) | §VC7, §VC14 |
 | esctest2 | `harness/esctest.py`, `harness/esctest/` (`core-pty`, `ghostty-pty`), `corpus/esctest/` | §VC10 |
 | the fuzzer | `harness/fuzz.py`, `harness/fuzz/` (`vt-fuzz`, `vt-min`), `corpus/fuzz/runs.tsv` | §VC11 |
-| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 to §VC21 |
+| the differential fuzzer | `harness/fuzz.py --diff`, `harness/fuzz/` (`vt-diff`, `vt-diff-min`), `corpus/fuzz/diff-runs.tsv` | §VC16 to §VC22 |
 
 `Vt`'s interface, as it stands:
 
@@ -255,7 +255,8 @@ the pages are a ring of `scrollback / 256` (rounded up). A page is three
   background colour alone as 0xFE (§VC17), a wide character's spacer as
   nothing, and a protected cell's text followed by 0xFD (§VC19);
 - **heads**: for each row a header, two bytes low first: its extent in bits
-  0–13, bit 14 set when every cell is in the default style, bit 15 when the
+  0–13 (0–9 since §VC22, its prompt mark in 10–11), bit 14 set when every
+  cell is in the default style, bit 15 when the
   row wrapped;
 - **runs**: unless a row's bit 14 is set, its style runs: each a style id
   in two bytes, with bit 15 set when a count of cells (two bytes) follows;
@@ -923,7 +924,8 @@ rows are cut, and in one column, where a wide character is lost. Every
 other page stays as it is, and `readPages` reflows a run of pages cut at
 another width to the screen's when it is read (`dump`, a pull), or at its
 own width once a resize has changed the width since it was packed
-(`Page.moved`, §VC20), the same
+(`Page.moved`, §VC20; through every width it went through, `Page.via`,
+V16, §VC22), the same
 `joinLines` and `splitLine` a resize uses. A run of pages of one width ends
 at a line's end, since a resize took back the page a line ran on from, so a
 reflow when read cuts each line as the resize would have: reflowing twice
@@ -1817,7 +1819,8 @@ inputs, no findings.
 
 ### What is left
 
-Two of the three differences, and one the fuzzer has not met yet:
+Two of the three differences, and one the fuzzer has not met yet (both
+done, in §VC22, as Gilbert chose):
 
 - **A page reflowed through the widths it passed** (2). V10 reflows a
   page once, from the width it was cut at to the one it is read at, and
@@ -1832,3 +1835,117 @@ Two of the three differences, and one the fuzzer has not met yet:
   scrolls the screen into the scrollback as ED 22 does (Ghostty's #905: ^L
   at a prompt keeps what was above it). The core keeps no marks, and its ED
   2 clears in place.
+
+---
+
+## VC22. Pages through every width, and prompt marks (V16, V17)
+
+§VC21 left two differences that were choices, and Gilbert made them: a page
+reflowed through each width it went through, and Ghostty's prompt marks
+with its ED 2 at a prompt. With both, and patch 0010's case, **three
+minutes on eight jobs find no difference** (652,337 inputs), the first clean
+run. The replay corpus went from 300 cases to 310, none divergent.
+
+**V16 · A page is reflowed through every width it went through.**
+`Page.via` holds the widths the resizes since the page was packed reflowed
+to, oldest first; a resize that changes the width pushes the new one onto
+every page it keeps, and `readPages` reflows a run of pages from the width
+they were cut at through each of `via` to the width they are read at. It
+replaces §VC20's `moved`, which was the one case of it a resize back to the
+page's width makes. A reflow depends on the widths it goes through, since
+Ghostty's blank-continuation rule (patch 0001) ends a line at a blank row
+that wraps, and a line that ends in blanks can make one at one width and not
+at another: two columns, then eight, then four is not two, then four
+(`scrollback-pages-via-widths`).
+
+What it costs is reads, not resizes. 20,000 lines of scrollback, 80
+columns, the widths changed and then everything read (`core-dump`, which
+reads all of the history):
+
+| resizes | before | V16 |
+|---:|---:|---:|
+| 1 | 0.23 s | 0.23 s |
+| 2 | 0.23 s | 0.26 s |
+| 8 | 0.25 s | 0.48 s |
+| 50 | 0.26 s | 1.91 s |
+
+A read of one page costs a reflow for each width it went through; a
+resize's own cost does not change. Taking every page back once one had gone
+through eight widths, and so reflowing them all at that resize, was tried
+and measured worse: 0.49 s after 8 resizes and 2.33 s after 50, and a
+resize of 0.2 s every eighth, which is a stall in a window being dragged.
+
+**V17 · The core keeps Ghostty's prompt marks** (OSC 133, §VC21's
+fresh line with them). A row's meta slot holds its mark in bits 17–18: a
+prompt (`A`, `N` or `P`), or a prompt's continuation (`k=c` or `k=s`, or a
+row a line feed or a wrap went to while the prompt or the input lasted). The
+cursor's state is `Term.prompt` (output, prompt, input, or input to the
+line's end, `I`), the hidden screen's `otherPrompt`: 47 and 1047 copy the
+cursor's both ways and 1049 gives the main screen its own back, as
+Ghostty's `cursorCopy` and its saved cursor do. A line feed while the input
+to the line's end lasts ends it and marks nothing; a wrap marks a
+continuation while the prompt or the input lasts, but not the input to the
+line's end, which `printWrap` keeps. `C` at a row's start takes its mark
+away. A write that moves a row's extent keeps the mark, and so do DCH and
+the wrapped bit's own clear (`setWrapped`, which took it away until a case
+found it, `prompt-il-moves-mark`); a row cleared whole loses it, as
+Ghostty's `row.reset` does. The marks go into the pages (§VC6) and through
+a reflow: a row cut from a line takes the mark of the row its last cell came
+from, the last Ghostty's reflow copies into it, and a blank row with a mark
+is its first cell, as Ghostty keeps one (`prompt-reflow-blank-row`). What
+the marks change: ED 2 on the main screen, when the last row that is not
+blank is marked, scrolls the screen into the scrollback first, as ED 22
+does, Ghostty's way of keeping what was above a prompt cleared with ^L
+(#905): `prompt-ed2-scrolls`, `prompt-ed2-wrapped`, `prompt-il-moves-mark`,
+`prompt-dch-keeps-mark`, `prompt-c-unmarks-row`, `prompt-alt-screens`, and
+two where it must not, `prompt-ed2-after-output` and
+`prompt-ed2-input-to-eol`.
+
+A line feed in the ground state takes `execute`'s path while a prompt or the
+input lasts, as it does with LNM: the loop tests one field (`lfSlow`) where
+it tested `newline`, and the mark is set out of it.
+
+### What it cost
+
+Two things on the hot paths, both found by measuring and one put right. The
+wrap's test of the prompt state first read `t.prompt` after `t` was handed
+to `lineFeed`, so that the term could not be written in place: a copy of it
+at every wrap, `vte-scrolling` 21% more instructions and 60% more cycles,
+`clearRow` with the copy in it at 38% of them. Read first, the copy is gone.
+What is left is the test itself, which makes `wrapNow` too large for clang
+to inline, a call at every wrap: 15 M instructions of `vte-scrolling`'s
+27 M (callgrind, and with the test taken out again); the rest is the pages'
+`via` (7 M) and the header's mark. Merging the line feed's and the wrap's
+marking into one function shared by five callers left it out of line all
+the same.
+
+Against §VC21's build (`4e2915f`), every dump the same:
+
+| input | budget | ms | ms at `4e2915f` | instr. | at `4e2915f` |
+|---|---:|---:|---:|---:|---:|
+| `cup` | 56 | 50–52 | 49–52 | 1,619 | 1,603 |
+| `gitlog` | 132 | 97–101 | 98–102 | 3,075 | 3,067 |
+| `ls` | 124 | 80–84 | 81–85 | 2,736 | 2,730 |
+| vte-cursor_motion | 28 | 24 | 23–24 | 842 | 834 |
+| vte-dense_cells | 28 | 20–22 | 20–21 | 757 | 753 |
+| vte-light_cells | 24 | 9–11 | 9–11 | 327 | 326 |
+| vte-scrolling | 42 | 40–41 | 39–40 | 1,428 | 1,401 |
+| vte-scrolling_bottom_region | 37 | 24–26 | 23–25 | 997 | 981 |
+| vte-scrolling_bottom_small_region | 132 | 24–26 | 24–25 | 996 | 980 |
+| vte-scrolling_fullscreen | 45 | 25–27 | 26–28 | 852 | 852 |
+| vte-scrolling_top_region | 223 | 25–26 | 24–25 | 998 | 981 |
+| vte-scrolling_top_small_region | 125 | 24–26 | 24–25 | 996 | 980 |
+| vte-unicode | 25 | 15 | 14–15 | 533 | 532 |
+
+`vte-scrolling` is a millisecond from its budget, as it was at §VC20; its
+cycles are 4% more than §VC21's, all within the budget.
+
+**esctest2: 392**, as before (Ghostty 388). The self-fuzzer, two minutes
+from the seeds on eight jobs: 535,610 inputs, no findings.
+
+### What is left
+
+A longer run, recorded in `diff-runs.tsv` when it is clean. Reading pages
+after many resizes could be made cheaper by reflowing through `via` only a
+page whose lines a reflow could change, one with a line that ends in
+blanks; it is not measured to matter yet.
