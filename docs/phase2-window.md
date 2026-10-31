@@ -1,6 +1,7 @@
 # Phase 2 · A window on X11: a survey
 
-Status: **survey begun 2026-10-30; nothing of the window is built.** Phase 2
+Status: **survey begun 2026-10-30; nothing of the window is built. Gilbert
+took §8's first three leanings the same day (§10: D1024, V18, V19).** Phase 2
 of [`geng-plan.md`](geng-plan.md) §6 starts here, as every phase does, by
 measuring before building. It asks three things first, the three that
 decide the shape of the rest: how a renderer reads the core's screen now
@@ -360,3 +361,28 @@ In the order the build will meet them:
 Started with the survey: the differential fuzzer, four hours on six jobs at
 `757c4ff` (`fuzz.py --diff --hours 4 --jobs 6`), recorded in
 `corpus/fuzz/diff-runs.tsv` when it ends.
+
+---
+
+## 10. Gilbert's answers (2026-10-30)
+
+Gilbert took §8's first three leanings. The fourth, the host for `ssh -X`,
+is open.
+
+**D1024 (geng-lang) · A pty is `os`'s.** `Os.Process` starts a program on a
+pty as a terminal `Connection` of a given size; the master is a handle that
+reads and writes as a pipe's does, and resizes (geng-lang `m4-visiterm.md`
+§VA57). visiterm has no `pty` package (`geng-plan.md` §5). It is built in
+geng-lang, designed first in `m3-os.md`; until then §4's probe stands in.
+
+**V18 · The renderer finds scrolls; the core records no damage.** The
+renderer keeps a shadow of what it drew and a hash of each row, diffs the
+screen against the shadow each frame, and finds a scroll as the longest
+band of rows whose hashes moved by one shift (§3.2). The core keeps no
+dirty flags and no scroll deltas, so its throughput is untouched. If a
+measurement later asks for it, the core recording deltas is the fallback.
+
+**V19 · `Vt.View` lives in the core's package.** It reads the screen's own
+representation (`Vt.Screen`, `Term`'s fields) with no copy and no wider
+API for it; its display list, `Bytes`, is the boundary to the C that draws
+(§3.1, §5.1). `Vt` exposes `Vt.View` beside itself.

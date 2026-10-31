@@ -652,7 +652,7 @@ its own repository once its API settles (Q5).
 | `unicode-width` | pure Geng, generated | Width tables from UCD 17.0.0 (the version `core` pins), the per-pane width model of S§5.3 |
 | `euckr` | pure Geng | Streaming CP949 decoder and EUC-KR/CP949 encoder with the rules of S§3.4 |
 | `tmux-control` | pure Geng | Control-mode protocol, layout parser, pane demultiplexing |
-| `pty` | C rows | `openpty`, spawn with a controlling terminal, resize, exit status through a pidfd, signals to the child's process group |
+| ~~`pty`~~ | — | Not a package: a pty is `os`'s (geng-lang D1024, `phase2-window.md` §10) |
 | `xcb` | C rows + Geng | Connection, atoms, windows, events, XRender, XKB, selections, RandR for DPI. The protocol knowledge is in Geng and the C is thin |
 | `xkb` | C rows | libxkbcommon and xkbcommon-x11 |
 | `xim` | C rows | xcb-imdkit (the XIM client fcitx5 maintains) |
