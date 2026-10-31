@@ -1,0 +1,235 @@
+module Vt.Pages exposing
+    ( pageOut
+    , packRows
+    , packCells
+    , packSpecial
+    , packOther
+    , pushU16
+    , pushUtf8
+    , pushPage
+    )
+
+{-| Part of `Vt` (docs/vt-core.md §VC23). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Screen exposing (..)
+
+
+-- THE SCROLLBACK
+
+
+{-| The oldest `pageRows` rows of the ring's scrollback packed into a page
+(geng-lang D901): each row's text as UTF-8 and its header and style runs
+(§VC6). Their slots stay where they are, the free part of the ring now. -}
+pageOut : Clusters -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pageOut clusters s back =
+    let
+        first =
+            phys s (0 - s.hist)
+
+        firstStop =
+            min s.size (first + pageRows)
+
+        rest =
+            pageRows - (firstStop - first)
+
+        older =
+            packRows clusters first firstStop s (Builder.empty (pageRows * 8)) (Builder.empty (pageRows * 2)) (Builder.empty (pageRows * 4))
+
+        both =
+            packRows clusters 0 rest s older.text older.heads older.runs
+
+        page =
+            { text = Bytes.fromUInt8s (Builder.toArray both.text)
+            , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
+            , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
+            , cols = s.cols
+            , via = []
+            }
+    in
+    { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
+
+
+packRows : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved heads : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, heads : Builder UInt8, runs : Builder UInt8 }
+packRows clusters p stop s text heads runs =
+    if p >= stop then
+        { text = text, heads = heads, runs = runs }
+
+    else
+        let
+            o =
+                p * s.stride
+
+            m =
+                Maybe.withDefault 0 (Builder.get (o + s.cols) s.cells)
+
+            ext =
+                metaExtent m
+
+            row =
+                packCells clusters o (o + ext) s text runs 0 0 False
+
+            -- the prompt mark, bits 17–18 of the meta slot, in bits 10–11
+            header =
+                Bitwise.or (Bitwise.or ext (Int64.toIntWrap (Bitwise.and 0xC00 (Bitwise.shiftRightZfBy 7 m))))
+                    (Bitwise.or
+                        (if Bitwise.and wrappedBit m /= 0 then
+                            0x8000
+
+                         else
+                            0
+                        )
+                        (if row.styled then
+                            0
+
+                         else
+                            0x4000
+                        )
+                    )
+        in
+        packRows clusters (p + 1) stop s row.text (Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 8 header)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF header)) heads)) row.runs
+
+
+{-| A row's cells from `i` to `stop` packed: their text, and their style
+runs after the row's header (§VC6). `wrote` says a run has been written;
+the run in hand, `count` cells of `style`, is written when the style changes
+or the row ends, the last without its count. A row all in the default style
+writes no run (`styled` is false). -}
+packCells : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> Int -> Int -> Bool -> { text : Builder UInt8, runs : Builder UInt8, styled : Bool }
+packCells clusters i stop s text runs style count wrote =
+    if i >= stop then
+        if count == 0 || (style == 0 && not wrote) then
+            { text = text, runs = runs, styled = False }
+
+        else
+            { text = text, runs = pushU16 style runs, styled = True }
+
+    else
+        let
+            c =
+                Maybe.withDefault 0 (Builder.get i s.cells)
+
+            st =
+                cellStyle c
+
+            -- one test for a plain cell, the commonest
+            packed =
+                if Bitwise.and packSpecial c == 0 then
+                    pushUtf8 (cellPoint c) text
+
+                else
+                    packOther clusters c text
+        in
+        if count > 0 && st == style then
+            packCells clusters (i + 1) stop s packed runs style (count + 1) wrote
+
+        else if count > 0 then
+            packCells clusters (i + 1) stop s packed (pushU16 count (pushU16 (Bitwise.or 0x8000 style) runs)) st 1 True
+
+        else
+            packCells clusters (i + 1) stop s packed runs st 1 wrote
+
+
+{-| The bits that make a cell more than its code point to `packCells`: its
+width and a cluster (0xE00000), a background colour alone (`bgBit`) and
+protection (`protectBit`). The compiler folds it into a literal (geng-lang
+D1023); before, it was a value computed on first use and cost 17
+instructions a cell here (§VC19). -}
+packSpecial : Int64
+packSpecial =
+    Bitwise.or 0xE00000 (Bitwise.or bgBit protectBit)
+
+
+{-| A cell with a `packSpecial` bit packed: a wide character's spacer as
+nothing, a cluster as its code points, a spacer head as 0xFF, a cell in a
+background colour alone as 0xFE, and a protected cell's text followed by
+0xFD, which UTF-8 never has either (§VC19). -}
+packOther : Clusters -> Int64 -> (moved text : Builder UInt8) -> Builder UInt8
+packOther clusters c text =
+    let
+        w =
+            cellWide c
+
+        next =
+            if w == wideTail then
+                text
+
+            else if cellIsCluster c then
+                Array.foldl pushUtf8 text (cellPoints c clusters)
+
+            else if w == spacerHead then
+                Builder.pushLast (UInt8.fromInt 0xFF) text
+
+            else if Bitwise.and bgBit c /= 0 then
+                Builder.pushLast (UInt8.fromInt 0xFE) text
+
+            else
+                pushUtf8 (cellPoint c) text
+    in
+    if Bitwise.and protectBit c /= 0 && w /= wideTail then
+        Builder.pushLast (UInt8.fromInt 0xFD) next
+
+    else
+        next
+
+
+pushU16 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushU16 v b =
+    Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 8 v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) b)
+
+
+{-| A cell's code point as UTF-8; an empty cell is a 0 byte, a spacer head
+0xFF (`packCells`). A value no
+scalar value is would be U+FFFD, but the decoder never makes one. -}
+pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushUtf8 cp b =
+    if cp < 0x80 then
+        Builder.pushLast (UInt8.fromInt cp) b
+
+    else if cp < 0x800 then
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xC0 (Bitwise.shiftRightZfBy 6 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+    else if cp < 0x10000 then
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xE0 (Bitwise.shiftRightZfBy 12 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+    else
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xF0 (Bitwise.shiftRightZfBy 18 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 12 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+
+pushPage : Page -> (moved back : Back) -> Back
+pushPage page back =
+    if back.limit == 0 then
+        back
+
+    else if Builder.length back.pages < back.limit then
+        { back | pages = Builder.pushLast page back.pages }
+
+    else
+        { back
+            | pages = Builder.set back.head page back.pages
+            , head = modBy back.limit (back.head + 1)
+        }
