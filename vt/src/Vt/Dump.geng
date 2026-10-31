@@ -1,0 +1,388 @@
+module Vt.Dump exposing
+    ( screenRow
+    , ringRow
+    , historyRows
+    , rowLines
+    , styleRuns
+    , runEnd
+    , styleText
+    , checksumRows
+    , checksumCells
+    , checksumValue
+    , checksumAttributes
+    , checksumKeeps
+    , hex4
+    , hex2
+    , escapeReply
+    )
+
+{-| Part of `Vt` (docs/vt-core.md §VC23). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+
+
+-- THE DUMP
+
+
+screenRow : Int -> Term -> DumpRow
+screenRow y t =
+    ringRow (rowOffset t.screen y) t
+
+
+ringRow : Int -> Term -> DumpRow
+ringRow o t =
+    let
+        m =
+            metaAt o t.screen
+
+        ext =
+            metaExtent m
+    in
+    { cells =
+        Array.map
+            (\x ->
+                let
+                    c =
+                        Maybe.withDefault 0 (Builder.get (o + x) t.screen.cells)
+                in
+                { points = cellPoints c t.clusters, wide = cellWide c, style = cellStyle c }
+            )
+            (Array.range 0 (ext - 1))
+    , wrapped = Bitwise.and wrappedBit m /= 0
+    , prompt = metaPrompt m
+    }
+
+
+{-| The scrollback, oldest first: the pages, each read at the screen's width
+(V10), then the ring's rows. -}
+historyRows : Term -> Array DumpRow
+historyRows t =
+    if isAlt t then
+        []
+
+    else
+        let
+            paged =
+                readPages t.cols t.clusters (pagesOf t.back)
+
+            pages =
+                Array.map
+                    (\row ->
+                        { cells = Array.map (\c -> { points = cellPoints c paged.clusters, wide = cellWide c, style = cellStyle c }) row.cells
+                        , wrapped = row.wrapped
+                        , prompt = row.prompt
+                        }
+                    )
+                    paged.rows
+
+            ring =
+                Array.map (\y -> ringRow (phys t.screen y * t.screen.stride) t) (Array.range (0 - t.screen.hist) -1)
+        in
+        Array.append ring pages
+
+
+rowLines : String -> DumpRow -> Styles -> Array String
+rowLines label row styles =
+    let
+        lastText =
+            Array.foldl
+                (\c acc ->
+                    { x = acc.x + 1
+                    , last =
+                        if Array.length c.points > 0 then
+                            acc.x
+
+                        else
+                            acc.last
+                    }
+                )
+                { x = 0, last = -1 }
+                row.cells
+
+        text =
+            Array.foldl
+                (\c acc ->
+                    if acc.x > lastText.last then
+                        { acc | x = acc.x + 1 }
+
+                    else if c.wide == wideTail || c.wide == spacerHead then
+                        { acc | x = acc.x + 1 }
+
+                    else if Array.length c.points == 0 then
+                        { x = acc.x + 1, out = acc.out ++ " " }
+
+                    else
+                        { x = acc.x + 1, out = acc.out ++ String.fromArray (Array.mapAndKeepJust Char.fromCode c.points) }
+                )
+                { x = 0, out = "" }
+                row.cells
+
+        runs =
+            styleRuns (Array.map .style row.cells) 0 [] styles
+
+        mark =
+            if row.wrapped then
+                "+"
+
+            else
+                ""
+    in
+    Array.prepend [ label ++ mark ++ " |" ++ text.out ++ "|" ] runs
+
+
+styleRuns : Array Int -> Int -> Array String -> Styles -> Array String
+styleRuns ids x acc styles =
+    when Array.get x ids is
+        Nothing ->
+            acc
+
+        Just id ->
+            let
+                end =
+                    runEnd ids id (x + 1)
+
+                text =
+                    styleText (styleOf id styles)
+            in
+            if text == "" then
+                styleRuns ids end acc styles
+
+            else
+                styleRuns ids end (Array.pushLast ("  " ++ String.fromInt x ++ "-" ++ String.fromInt (end - 1) ++ text) acc) styles
+
+
+runEnd : Array Int -> Int -> Int -> Int
+runEnd ids id x =
+    if Array.get x ids == Just id then
+        runEnd ids id (x + 1)
+
+    else
+        x
+
+
+styleText : Attrs -> String
+styleText a =
+    let
+        colour name c =
+            if c == 0 then
+                ""
+
+            else if c <= 256 then
+                " " ++ name ++ "=" ++ String.fromInt (c - 1)
+
+            else
+                " " ++ name ++ "=#" ++ hex2 (Bitwise.shiftRightZfBy 16 c) ++ hex2 (Bitwise.shiftRightZfBy 8 c) ++ hex2 c
+
+        on bit text =
+            if Bitwise.and bit a.flags /= 0 then
+                text
+
+            else
+                ""
+    in
+    colour "fg" a.fg
+        ++ colour "bg" a.bg
+        ++ on 1 " bold"
+        ++ on 2 " faint"
+        ++ on 4 " italic"
+        ++ (if a.ul == 0 then
+                ""
+
+            else
+                " ul=" ++ String.fromInt a.ul
+           )
+        ++ colour "ulc" a.ulc
+        ++ on 8 " blink"
+        ++ on 16 " inverse"
+        ++ on 32 " invisible"
+        ++ on 64 " strike"
+        ++ on 128 " overline"
+
+
+{-| The sum so far in bits 0–15, and bit 16 while the cell counted next is
+the rectangle's first, the one blank the DEC checksum does not leave out. -}
+checksumRows : Term -> Int -> Int -> Int -> Int -> Int -> Int
+checksumRows t left right y bottom acc =
+    if y > bottom then
+        acc
+
+    else
+        checksumRows t left right (y + 1) bottom (Bitwise.and 0xFFFF (checksumCells t (rowOffset t.screen y) left right acc))
+
+
+checksumCells : Term -> Int -> Int -> Int -> Int -> Int
+checksumCells t o x right acc =
+    if x > right then
+        acc
+
+    else
+        let
+            flags =
+                t.xtChecksum
+
+            c =
+                cellAt o x t.screen
+
+            v =
+                checksumValue flags c t.clusters
+        in
+        if v < 0 then
+            checksumCells t o (x + 1) right acc
+
+        else
+            let
+                a =
+                    styleOf (cellStyle c) t.styles
+
+                ch =
+                    if Bitwise.and 2 flags == 0 then
+                        Bitwise.and 0xFFFF (v + checksumAttributes c a)
+
+                    else
+                        v
+
+                sum =
+                    Bitwise.and 0xFFFF acc
+
+                next =
+                    if Bitwise.and 4 flags /= 0 then
+                        -- xterm adds a cluster's marks only to the DEC sum
+                        -- with nothing left out
+                        if Bitwise.and 16 flags == 0 && cellIsCluster c then
+                            Array.foldl (\p n -> n + Bitwise.and 0xFFFF p) (sum + ch) (Array.dropFirst 1 (cellPoints c t.clusters))
+
+                        else
+                            sum + ch
+
+                    else if Bitwise.and 0x10000 acc /= 0 || ch /= 0x20 || checksumKeeps a then
+                        sum + ch
+
+                    else
+                        sum
+            in
+            checksumCells t o (x + 1) right (Bitwise.and 0xFFFF next)
+
+
+{-| A cell's value before attributes, or -1 when it is not counted. A wide
+character's spacer is ESC in the DEC checksum, as xterm's placeholder there
+is, and nothing with the code point. A cell never written to is a space only
+with bit 4 or 8. The DEC 8-bit value is xterm's `xtermCharSetDec` for ASCII,
+from the code point, since the byte sent is not kept. -}
+checksumValue : Int -> Int64 -> Clusters -> Int
+checksumValue flags c clusters =
+    if cellWide c == wideTail then
+        if Bitwise.and 16 flags /= 0 then
+            -1
+
+        else
+            0x1B
+
+    else
+        let
+            cp =
+                if cellIsCluster c then
+                    Maybe.withDefault 0 (Array.first (cellPoints c clusters))
+
+                else
+                    cellPoint c
+        in
+        if cp == 0 then
+            if Bitwise.and 12 flags /= 0 then
+                0x20
+
+            else
+                -1
+
+        else if Bitwise.and 16 flags /= 0 then
+            Bitwise.and 0xFFFF cp
+
+        else if cp == 0x7F || cp == 0xFF then
+            0
+
+        else if (cp >= 0x20 && cp <= 0x9F) || (cp >= 0xA1 && cp <= 0xFE) then
+            Bitwise.and 0x7F cp
+
+        else
+            0x1B
+
+
+{-| The VT100 attributes xterm adds to a cell's value. -}
+checksumAttributes : Int64 -> Attrs -> Int
+checksumAttributes c a =
+    let
+        on bit weight =
+            if Bitwise.and bit a.flags /= 0 then
+                weight
+
+            else
+                0
+    in
+    (if Bitwise.and protectBit c /= 0 then 0x04 else 0)
+        + on 32 0x08
+        + (if a.ul /= 0 then 0x10 else 0)
+        + on 16 0x20
+        + on 8 0x40
+        + on 1 0x80
+
+
+{-| Faint, italic, struck through or a double underline: not added, but they
+keep a blank from being left out. -}
+checksumKeeps : Attrs -> Bool
+checksumKeeps a =
+    Bitwise.and (Bitwise.or 2 (Bitwise.or 4 64)) a.flags /= 0 || a.ul == 2
+
+
+hex4 : Int -> String
+hex4 v =
+    String.toUpper (hex2 (Bitwise.shiftRightZfBy 8 v) ++ hex2 v)
+
+
+hex2 : Int -> String
+hex2 v =
+    let
+        digit d =
+            String.slice d (d + 1) "0123456789abcdef"
+
+        b =
+            Bitwise.and 0xFF v
+    in
+    digit (b // 16) ++ digit (modBy 16 b)
+
+
+escapeReply : Bytes -> String
+escapeReply bytes =
+    String.join ""
+        (Array.map
+            (\i ->
+                let
+                    c =
+                        byteAt bytes i
+                in
+                if c >= 0x21 && c < 0x7F && c /= 0x5C then
+                    String.fromChar (Maybe.withDefault '?' (Char.fromCode c))
+
+                else
+                    "\\x" ++ hex2 c
+            )
+            (Array.range 0 (Bytes.length bytes - 1))
+        )
