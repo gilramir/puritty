@@ -62,14 +62,22 @@ static size_t drop_history(char *d, size_t n) {
 
 /* The dump with only its `screen` line and its replies, in place: once the
 scrollback reached LIMIT before a resize, a line that runs on from it was
-pruned at another point in each, and a reflow cuts its rows differently. */
+pruned at another point in each, and a reflow cuts its rows differently.
+Not the replies that read the screen, DECRQCRA's checksum (`!~`) and the
+cursor's report (`R`), which then differ too (docs/vt-core.md §VC22). */
+static int reads_screen(const char *l, size_t len) {
+  if (memmem(l, len, "!~", 2)) return 1;
+  return len >= 2 && l[len - 2] == 'R' && l[len - 1] == '\n';
+}
+
 static size_t only_replies(char *d, size_t n) {
   size_t o = 0;
   for (size_t i = 0; i < n;) {
     size_t e = i;
     while (e < n && d[e] != '\n') e++;
     if (e < n) e++;
-    if (strncmp(d + i, "screen ", 7) == 0 || strncmp(d + i, "reply ", 6) == 0) {
+    if (strncmp(d + i, "screen ", 7) == 0 ||
+        (strncmp(d + i, "reply ", 6) == 0 && !reads_screen(d + i, e - i))) {
       memmove(d + o, d + i, e - i);
       o += e - i;
     }

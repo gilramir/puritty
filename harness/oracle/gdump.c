@@ -94,7 +94,9 @@ static void dump_row(FILE *o, const char *label, GhosttyPointTag tag,
                      uint32_t y) {
   char styles[256][160];
   int wide[256];
-  uint32_t text[256][16];
+  /* a cell's code points: its own and Ghostty's 64 more at most
+   * (`grapheme_max_len`) */
+  uint32_t text[256][65];
   size_t tlen[256];
   int last = -1;
   GhosttyGridRef ref;
@@ -112,7 +114,7 @@ static void dump_row(FILE *o, const char *label, GhosttyPointTag tag,
     ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &has_text);
     if (has_text) {
       size_t n = 0;
-      if (ghostty_grid_ref_graphemes(&ref, text[x], 16, &n) == GHOSTTY_SUCCESS)
+      if (ghostty_grid_ref_graphemes(&ref, text[x], 65, &n) == GHOSTTY_SUCCESS)
         tlen[x] = n;
       last = x;
     }

@@ -232,7 +232,8 @@ code point so far and the range its next byte must fall in.
 CSI's parameters at 24, each at 65,535, a longer CSI ignored whole as
 Ghostty does; an OSC's or DCS's kept bytes at 4,096 (the rest dropped; tmux
 control mode in phase 4 will want 1 MiB for its DCS, S§5.1); a grapheme
-cluster at 32 code points, a mark past them dropped.
+cluster at 32 code points, a mark past them dropped (65 since §VC22, the
+character and 64 marks, as Ghostty keeps them).
 
 **V4 · The replies are Ghostty's for now**: DA1 `?62;22c`, DA2 `>1;0;0c`,
 DA3 `!|00000000`, DECRQM's answers, DECRQSS's forms; XTVERSION answers
@@ -1844,7 +1845,8 @@ done, in §VC22, as Gilbert chose):
 reflowed through each width it went through, and Ghostty's prompt marks
 with its ED 2 at a prompt. With both, and patch 0010's case, **three
 minutes on eight jobs find no difference** (652,337 inputs), the first clean
-run. The replay corpus went from 300 cases to 310, none divergent.
+run. The replay corpus went from 300 cases to 315, none divergent. One
+more Ghostty bug is patched in the oracle (0011).
 
 **V16 · A page is reflowed through every width it went through.**
 `Page.via` holds the widths the resizes since the page was packed reflowed
@@ -1890,8 +1892,10 @@ away. A write that moves a row's extent keeps the mark, and so do DCH and
 the wrapped bit's own clear (`setWrapped`, which took it away until a case
 found it, `prompt-il-moves-mark`); a row cleared whole loses it, as
 Ghostty's `row.reset` does. The marks go into the pages (§VC6) and through
-a reflow: a row cut from a line takes the mark of the row its last cell came
-from, the last Ghostty's reflow copies into it, and a blank row with a mark
+a reflow: a row cut from a line takes the mark of the last source row
+Ghostty's reflow began while it was on the row, which copies the row's mark:
+the source row of the row's last cell, or, when the row filled and so waits
+to wrap, of the cell after it; and a blank row with a mark
 is its first cell, as Ghostty keeps one (`prompt-reflow-blank-row`). What
 the marks change: ED 2 on the main screen, when the last row that is not
 blank is marked, scrolls the screen into the scrollback first, as ED 22
@@ -1904,6 +1908,49 @@ two where it must not, `prompt-ed2-after-output` and
 A line feed in the ground state takes `execute`'s path while a prompt or the
 input lasts, as it does with LNM: the loop tests one field (`lfSlow`) where
 it tested `newline`, and the mark is set out of it.
+
+**A resize clears the prompt being written**, for the shell to write again,
+as Ghostty does on the main screen while its cursor is on a prompt or the
+input: from the prompt's first row (up from the cursor's row past rows with
+no mark to a prompt's row, or past continuations to the row above them) to
+the screen's end, or only the cursor's row with kitty's `redraw=last`; the
+rows keep their marks. While the alternate screen shows, the main screen's
+own cursor and state decide (`prompt-redraw-main-under-alt`). Whether to
+clear is `Term.redraw`, set by `A` and `N`'s first `redraw` option (`0`,
+`1`, `last`), and **off in a new terminal and after RIS**, as libghostty-vt
+starts one, since the core's embedder need not install a shell integration
+that writes its prompt again (`prompt-redraw-clears`, `prompt-redraw-last`,
+`prompt-redraw-off`). Ghostty itself starts with it on. The clear goes by the
+row the cursor is on once the resize is made, the screen's top when its own
+went into the scrollback, as Ghostty puts the cursor back before it clears
+(`prompt-redraw-cursor-home`). It is made on the resize's rows before they
+are written back, and when the search for the
+prompt's first row reaches the first row taken back while pages are left,
+the resize takes every page back, so that a prompt taller than the ring's
+scrollback, which one column makes of a long one, is cleared from its first
+row as Ghostty's is (`prompt-redraw-tall`); a resize at a prompt that
+begins on the screen takes no more than it did.
+
+**Patch 0011** ([report](upstream/ghostty-full-reset-forgets-prompt-redraw.md)):
+libghostty-vt turns the prompt's clearing off when it makes a terminal, and
+RIS turned it back on, Ghostty's default, so a reset terminal cleared
+prompts on resize where a new one did not. The patch keeps the embedder's
+choice beside the flag, as `default_xt_checksum` is kept, and RIS restores
+it.
+
+The ten-minute runs that followed the first clean three found three more:
+`?1049l` on the main screen, with nothing to leave, gave the main screen the
+hidden screen's prompt state (`prompt-1049l-on-main`); a full row took the
+mark of its last cell's source row where Ghostty's waiting wrap gives it the
+next one's; a prompt that began in a page was not cleared from there; and the
+clear went by the cursor's row before the resize moved the cursor home. One
+more was the harness's: once the scrollback was pruned before a resize, the
+fuzzer compared the replies still, and a checksum of the screen, or the
+cursor's report, reads what the two pruned differently; `diff.h` leaves
+those two out of a pruned run's comparison. And one was the oracle's dump:
+`gdump` read a cell's code points into 16, and a cell with more printed
+empty; it reads 65 now, Ghostty's most, and the core keeps 65 where it kept
+32 (V3).
 
 ### What it cost
 
@@ -1935,9 +1982,13 @@ Against §VC21's build (`4e2915f`), every dump the same:
 | vte-scrolling_fullscreen | 45 | 25–27 | 26–28 | 852 | 852 |
 | vte-scrolling_top_region | 223 | 25–26 | 24–25 | 998 | 981 |
 | vte-scrolling_top_small_region | 125 | 24–26 | 24–25 | 996 | 980 |
-| vte-unicode | 25 | 15 | 14–15 | 533 | 532 |
+| vte-unicode | 25 | 15–18 | 14–15 | 574 | 532 |
 
-`vte-scrolling` is a millisecond from its budget, as it was at §VC20; its
+`vte-unicode`'s 8% more instructions are the clusters it keeps since the
+limit is Ghostty's 65 code points: it has runs of up to 76 Hangul medial
+vowels, which are of width 0 and join the cell before, so a cell holds 65
+of them where it held 32; its screen is Ghostty's. The rest are level with
+the build before the prompt's clearing. `vte-scrolling` is a millisecond from its budget, as it was at §VC20; its
 cycles are 4% more than §VC21's, all within the budget.
 
 **esctest2: 392**, as before (Ghostty 388). The self-fuzzer, two minutes

@@ -26,3 +26,4 @@ fuzzer leaves out an input with one.
 | [A wide character that wraps into the margins keeps the screen's edge as its limit](ghostty-print-right-margin-before-wrap.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC20 | not to be filed |
 | [DCH after DL leaves a spacer head that DCH without it clears](ghostty-split-boundary-reads-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC20 | not to be filed |
 | [A reflow keeps a styled blank on the first row, under the viewport pin](ghostty-reflow-pin-copies-a-blank.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC21 | not to be filed |
+| [A full reset undoes libghostty-vt's choice not to clear prompts on resize](ghostty-full-reset-forgets-prompt-redraw.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC22 | not to be filed |

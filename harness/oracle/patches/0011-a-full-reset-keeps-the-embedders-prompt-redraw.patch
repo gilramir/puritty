@@ -1,0 +1,32 @@
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -90,6 +90,11 @@
+ /// variant is in `flags.xt_checksum`.
+ default_xt_checksum: xt_checksum.Flags = .{},
+ 
++/// Whether a shell is taken to redraw its prompt after a resize, as a full
++/// reset leaves it; the embedder may change it, as libghostty-vt does
++/// (visiterm harness/oracle/patches).
++default_shell_redraws_prompt: osc.semantic_prompt.Redraw = .true,
++
+ /// The most recently set mouse shape for the terminal.
+ mouse_shape: mouse.Shape = .text,
+ 
+@@ -5138,6 +5143,7 @@
+         .resize_pull_scrollback = self.flags.resize_pull_scrollback,
+ 
+         .xt_checksum = self.default_xt_checksum,
++        .shell_redraws_prompt = self.default_shell_redraws_prompt,
+     };
+     self.modes.reset();
+     self.tabstops.reset(TABSTOP_INTERVAL);
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -1045,6 +1045,7 @@
+     // integration, so don't assume OSC 133 prompts can be redrawn on resize.
+     // Shells can still opt in with OSC 133;A;redraw=1.
+     t.flags.shell_redraws_prompt = .false;
++    t.default_shell_redraws_prompt = .false;
+ 
+     return try wrap(
+         alloc,
