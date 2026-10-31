@@ -18,7 +18,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 
 | piece | where | what it is |
 |---|---|---|
-| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; `Vt.Width`, generated |
+| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; under it, not exposed, `Vt.Cell`, `Vt.Style`, `Vt.Term`, `Vt.Screen`, `Vt.Pages`, `Vt.Resize`, `Vt.Dump` (§VC23) and `Vt.Width`, generated |
 | the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK [RESIZES]]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, resized where `RESIZES` says (§VC14), and prints §VC3 |
 | the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored v1.4.0 (`83fb95624`; `d8619f1bc` before §VC15) with `patches/` applied (V12, §VC17), through its C API; `widths`, its width table (V13) |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
@@ -2001,3 +2001,53 @@ minutes on eight jobs at `3a26665`, 203,456 inputs, no findings. Reading pages
 after many resizes could be made cheaper by reflowing through `via` only a
 page whose lines a reflow could change, one with a line that ends in
 blanks; it is not measured to matter yet.
+
+---
+
+## VC23. Vt.geng split into modules
+
+`Vt.geng` had grown to 8,059 lines. It is split in seven steps, a commit
+each, every one a move of definitions as they were, with no other change,
+and each held to the build before it, so that a change in the core's
+speed would point at one step: the replay corpus, every bench input's dump
+(the same hash), and its instructions and cycles (`perf stat`, cycles three
+runs each), against the build of `96e1c68`. The instructions of a build
+measured against itself vary by up to 0.03%, `vte-scrolling`'s by 2.5 M
+(1,428.5 M to 1,431 M) now and then, and its cycles by up to 2.3%.
+
+Geng allows no cycle of imports, so the modules go from the bottom up, each
+importing those below it `exposing (..)`, and `Vt` all of them:
+
+| step | module | what it holds | from `Vt` | instructions |
+|---|---|---|---:|---|
+| 1 | `Vt.Cell` | the limits, a cell's and a row's meta bits, `byteAt` | 23 + 2 | level |
+| 2 | `Vt.Style` | the interned styles and the clusters' table | 13 | level |
+| 3 | `Vt.Term` | `Term`, `Config`, `Screen`, `Page`, `Back`, the parser's states, the kitty keyboard stack, `reply` | 22 + 1 | level |
+| 4 | `Vt.Screen` | the ring, `rowOffset`, `cellAt`, `settle`, `clearRow`, the row moves | 23 | level |
+| 5 | `Vt.Pages` | packing the scrollback | 8 | level |
+| 6a | `Vt.Pages` | reading pages back, `Row`, `DumpRow` | 13 | level |
+| 6b | `Vt.Resize` | the reflow, `resizeScreen`, `rebuild`, `readPages` | 49 | level |
+| 7 | `Vt.Dump` | the dump's rows, the styles' text, the checksum of cells | 15 | level |
+
+Every step's dump was the same on all thirteen inputs and its instructions
+within the spread above; no step moved cycles past it. Step 4 is the one
+that could have: the screen's helpers are the core's hottest, and clang
+inlines them across the move as it did, since a program is one C file
+however many modules it is written in. A resize of `gitlog`'s 100,000
+lines after step 6b gives the same dump.
+
+`Vt` keeps what it exposes (`new`, `feed`, `takeReplies`, `resize`,
+`dump`, `historyBound`), with `Term` and `Config` as aliases of `Vt.Term`'s,
+which Geng accepts beside the import exposing all of it; and what the
+modules below would otherwise need from it: `fresh`, which reads
+constants of the sections still in `Vt`, `resizeTo` and `resized`, which
+set the term's state with `withScroll`, and `rectChecksum`, which reads a
+CSI's parameters. What is left in `Vt.geng`, 5,235 lines, is the parser
+and everything the dispatch does: the colours, the margins, the modes, the
+tabs, SGR, printing, editing a row and scrolling, which call each other and
+would take a choice of seams of their own to split.
+
+After the split: replay 318 passing, esctest2 392 (Ghostty 388), the
+self-fuzzer two minutes on eight jobs with no findings in 524,574 inputs,
+and the differential fuzzer ten minutes on eight jobs at `d66cc97`, no
+findings in 200,197 inputs (`diff-runs.tsv`'s second row).
