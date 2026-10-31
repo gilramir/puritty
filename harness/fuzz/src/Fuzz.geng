@@ -34,13 +34,13 @@ dump cols rows chunk scrollback input =
     in
     let
         done =
-            run scrollback input step (marks input 0 []) 0 False (Vt.new { cols = cols, rows = rows, scrollback = scrollback, checksums = True, cellWidth = 10, cellHeight = 20 })
+            run input step (marks input 0 []) 0 (Vt.new { cols = cols, rows = rows, scrollback = scrollback, checksums = True, cellWidth = 10, cellHeight = 20 })
     in
-    if done.full || Vt.historyBound done.term >= scrollback then
-        Vt.dump done.term ++ "pruned\n"
+    if Vt.historyReached done then
+        Vt.dump done ++ "pruned\n"
 
     else
-        Vt.dump done.term
+        Vt.dump done
 
 
 colsTable : Array Int
@@ -81,43 +81,24 @@ marks bytes i found =
         marks bytes (i + 1) found
 
 
-{-| The input fed, and whether the scrollback may have reached `limit`
-(`full`), which a widening could bring back under it with rows the core and
-Ghostty pruned differently: then the dump says `pruned` and `diff.h` leaves
-the scrollback out (§VC17). It is looked at before and after each resize,
-since a narrowing can itself cut the rows past it, and after each read,
-since DECCOLM resizes inside one (§VC24). -}
-run : Int -> Bytes -> Int -> Array Int -> Int -> Bool -> (moved t : Vt.Term) -> { term : Vt.Term, full : Bool }
-run limit bytes chunk resizes at full t =
+{-| The input fed. Whether the scrollback may have reached its limit is the
+core's to say (`Vt.historyReached`), since a resize by DECCOLM inside a read
+can bring a pruned scrollback back under it before the read ends (§VC25). -}
+run : Bytes -> Int -> Array Int -> Int -> (moved t : Vt.Term) -> Vt.Term
+run bytes chunk resizes at t =
     let
         next =
             Maybe.withDefault (Bytes.length bytes) (Array.first resizes)
     in
     if at >= Bytes.length bytes then
-        { term = t, full = full }
+        t
 
     else if at == next then
-        let
-            before =
-                full || Vt.historyBound t >= limit
-
-            resized =
-                Vt.resize (pick colsTable (byteAt bytes (at + 1))) (pick rowsTable (byteAt bytes (at + 2))) t
-
-            reached =
-                before || Vt.historyBound resized >= limit
-        in
-        run limit bytes chunk (Array.dropFirst 1 resizes) (at + 3) reached resized
+        run bytes chunk (Array.dropFirst 1 resizes) (at + 3) (Vt.resize (pick colsTable (byteAt bytes (at + 1))) (pick rowsTable (byteAt bytes (at + 2))) t)
 
     else
         let
             stop =
                 min next (at + chunk)
-
-            fed =
-                Vt.feed (Bytes.slice at stop bytes) t
-
-            reached =
-                full || Vt.historyBound fed >= limit
         in
-        run limit bytes chunk resizes stop reached fed
+        run bytes chunk resizes stop (Vt.feed (Bytes.slice at stop bytes) t)

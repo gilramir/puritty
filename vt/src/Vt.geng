@@ -1,6 +1,6 @@
 module Vt exposing
     ( Term, Config, new, feed, takeReplies, resize
-    , dump, historyBound
+    , dump, historyBound, historyReached
     )
 
 {-| visiterm's headless terminal core (`docs/vt-core.md`).
@@ -78,7 +78,8 @@ the ring's, and each page's times as many rows as one of its rows can become
 (V10 leaves a page at the width it was cut at). For the differential fuzzer,
 which compares the scrollback only while it has never reached its limit,
 where the core and Ghostty prune it differently (§VC17); reading the pages
-would cost a reflow each time. -}
+would cost a reflow each time. `historyReached` says whether it ever has
+(§VC25). -}
 historyBound : Term -> Int
 historyBound t =
     let
@@ -94,7 +95,30 @@ historyBound t =
             else
                 t.screen.hist
     in
-    Array.foldl (\p n -> n + (Bytes.length p.heads // 2) * max 1 ((p.cols + t.cols - 1) // t.cols)) ring (pagesOf t.back)
+    ring + pagedBound t.cols t.back
+
+
+{-| Whether the scrollback may have held as many rows as the embedder asked
+for, at any time since the term was made, inside a read as well as
+between them (`Back`'s `reached`, §VC25). For the differential fuzzer. -}
+historyReached : Term -> Bool
+historyReached t =
+    t.back.reached || historyBound t >= t.config.scrollback
+
+
+{-| `t` with `reached` set if its scrollback holds as many rows as asked
+for now. -}
+noteReach : (moved t : Term) -> Term
+noteReach t =
+    if t.back.reached || historyBound t < t.config.scrollback then
+        t
+
+    else
+        let
+            b =
+                t.back
+        in
+        { t | back = { b | reached = True } }
 
 
 new : Config -> Term
@@ -144,7 +168,7 @@ fresh config =
     , styles = noStyles
     , styleCache = Builder.fromArray (Array.repeat (2 * styleCacheSize) -1)
     , clusters = noClusters
-    , back = { pages = Builder.empty 0, head = 0, limit = limit }
+    , back = { pages = Builder.empty 0, head = 0, limit = limit, reach = config.scrollback, reached = False }
     , tabs = Builder.fromArray (Array.initialize config.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0))
     , autowrap = True
     , plain = True
@@ -5035,7 +5059,9 @@ resizeQuiet cols0 rows0 t =
         t
 
     else
-        resizeTo cols rows t
+        -- before, as a narrowing can cut rows past the limit, and after,
+        -- as a widening can bring a pruned scrollback back under it (§VC25)
+        noteReach (resizeTo cols rows (noteReach t))
 
 
 resizeTo : Int -> Int -> (moved t : Term) -> Term
@@ -5070,7 +5096,7 @@ resizeTo cols rows t =
                         resizeScreen hiddenClear t.autowrap True cols rows t.hidden (savedPoint main.saved) t.clusters main t.back
 
                     a =
-                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active { pages = Builder.empty 0, head = 0, limit = 0 }
+                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active { pages = Builder.empty 0, head = 0, limit = 0, reach = 0, reached = False }
                 in
                 resized cols rows a.cursor
                     { t
@@ -5097,7 +5123,7 @@ resizeTo cols rows t =
                         settle alt0
 
                     a =
-                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt { pages = Builder.empty 0, head = 0, limit = 0 }
+                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt { pages = Builder.empty 0, head = 0, limit = 0, reach = 0, reached = False }
                 in
                 resized cols rows m.cursor
                     { t

@@ -7,6 +7,7 @@ module Vt.Pages exposing
     , pushU16
     , pushUtf8
     , pushPage
+    , pagedBound
     , Row
     , DumpRow
     , unpackPage
@@ -74,8 +75,32 @@ pageOut clusters s back =
             , cols = s.cols
             , via = []
             }
+
+        -- the ring takes `pageRows` rows more before the next page goes
+        reached =
+            back.reached || s.hist + pagedBound s.cols back + pageRows >= back.reach
     in
-    { screen = { s | hist = s.hist - pageRows }, back = pushPage page back }
+    { screen = { s | hist = s.hist - pageRows }, back = pushPage page { back | reached = reached } }
+
+
+{-| At least as many rows as the pages hold at width `cols`: each page's
+times as many as one of its rows can become (V10 leaves a page at the width
+it was cut at). -}
+pagedBound : Int -> Back -> Int
+pagedBound cols back =
+    boundFrom cols back.pages 0 0
+
+
+{-| A loop over the builder's slots, in any order, as a sum does not care:
+`pagesOf` would make an array of them each time a page goes. -}
+boundFrom : Int -> Builder Page -> Int -> Int -> Int
+boundFrom cols pages i n =
+    when Builder.get i pages is
+        Just p ->
+            boundFrom cols pages (i + 1) (n + (Bytes.length p.heads // 2) * max 1 ((p.cols + cols - 1) // cols))
+
+        Nothing ->
+            n
 
 
 packRows : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved heads : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, heads : Builder UInt8, runs : Builder UInt8 }

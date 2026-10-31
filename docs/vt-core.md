@@ -36,6 +36,7 @@ takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
 resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
 dump : Term -> String                      -- §VC3
 historyBound : Term -> Int                 -- for the differential fuzzer, §VC17
+historyReached : Term -> Bool              -- the same, sticky and inside a read, §VC25
 ```
 
 `feed` is the whole of what happens to a terminal: no clock, no file, no
@@ -1359,7 +1360,8 @@ Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
   ring's rows, and each page's times as many rows as one can become at the
   width) before each resize and at the end, and says `pruned`; then
   `diff.h` compares only the size and the replies, since a line that runs on
-  from the pruned rows is cut into rows differently too.
+  from the pruned rows is cut into rows differently too. (The core says
+  it itself now, `Vt.historyReached`, §VC25.)
 
 ### What it cost
 
@@ -2088,8 +2090,51 @@ against 141. That is §VC17's case, which `Fuzz.dump` marks `pruned` so that
 only the size and the replies are compared, but it looked only *before*
 each fuzzer resize: not after one, though a narrowing itself can cut past
 the limit, and not inside the bytes fed, where DECCOLM resizes. It now
-looks before and after each resize and after each read.
+looks before and after each resize and after each read. (Not enough:
+§VC25.)
 
 After both: all six findings pass `vt-diff`, the replay corpus 318 of 318
 with `core-dump` rebuilt. The feed paths are untouched and were not
 re-benched.
+
+
+## VC25. The second long run: a limit reached inside one read
+
+The differential fuzzer for four hours on eight jobs at `4163c3e`, after
+§VC24: it ran the four hours, 3,083,225 inputs, coverage 6,254, with no
+timeout and three dumps that differ (`diff-runs.tsv`'s fourth row).
+
+**All three were §VC24's gap again, one level down.** `vt-diff-min` cut
+them to 23 and 26 bytes, each the same shape: a narrow terminal (1×4,
+10×1, 1×25), one printed character, `REP` with a count of 22,202 to
+65,535, mode 40 and DECCOLM to 132 columns. All of it is one read. The
+`REP` takes the history past `LIMIT` and the core and Ghostty prune it at
+different rows; DECCOLM's widening brings it back under (78 rows against
+138, 313 against 130, 56 against 144). §VC24 has `Fuzz.dump` look after
+each read, but by the end of this one the history is under the limit again,
+and nothing outside `feed` can see inside it.
+
+**The core says it now.** `Back` keeps `reach`, the scrollback asked for in
+rows, and `reached`, which once set stays set. `pageOut` sets it when the
+history it pages from, plus the `pageRows` rows the ring takes before the
+next page goes, could reach `reach`: it can be up to a page early, never
+late, and a page early only leaves out a scrollback compared that was
+close to the limit. `resizeQuiet`, which `resize` and DECCOLM both go
+through, sets it before and after a resize from `historyBound`, since a
+narrowing can take the history past the limit with no page going. And
+`Vt.historyReached` is the flag or `historyBound` at or past the limit
+now. `Fuzz.dump` asks it at the end and no longer keeps its own; its `run`
+only feeds and resizes.
+
+**What it costs.** `pageOut`'s check is a sum over the pages (`pagedBound`,
+which `historyBound` shares), once per 256 rows until the flag is set. As
+a fold over `pagesOf` it cost 4–5% of `ls` and `gitlog` on `core-bench`,
+whose 100,000 lines are 391 pages; as a loop over the builder's slots,
+3.05 million instructions of `ls`'s 2,737 million (0.11%), and a build
+with the check taken out counts the same as the core before it. The
+wall-clock difference left (77–80 ms against 82–85) is within the
+ablated build's own spread (78–85).
+
+After it: the three findings and §VC24's six pass `vt-diff`, and the replay
+corpus 318 of 318 with `core-dump` rebuilt.
+
