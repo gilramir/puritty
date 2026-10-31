@@ -22,6 +22,8 @@ module Vt.Cell exposing
     , protectBit
     , bgBit
     , highMask
+    , byteAt
+    , asciiEnd
     )
 
 {-| Part of `Vt` (docs/vt-core.md §VC23). -}
@@ -181,3 +183,32 @@ bgBit =
 highMask : Int64
 highMask =
     Bitwise.complement 0xFFFFFFFF
+
+
+byteAt : Bytes -> Int -> Int
+byteAt bytes i =
+    when Bytes.get i bytes is
+        Just b ->
+            UInt8.toInt b
+
+        Nothing ->
+            -1
+
+
+{-| The index of the first byte at or after `i` that is not printable ASCII,
+or `stop`. -}
+asciiEnd : Bytes -> Int -> Int -> Int
+asciiEnd bytes stop i =
+    if i < stop then
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            asciiEnd bytes stop (i + 1)
+
+        else
+            i
+
+    else
+        i

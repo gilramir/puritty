@@ -7,6 +7,19 @@ module Vt.Pages exposing
     , pushU16
     , pushUtf8
     , pushPage
+    , Row
+    , DumpRow
+    , unpackPage
+    , unpackRows
+    , u16At
+    , unpackRuns
+    , unpackText
+    , startsMark
+    , decodeAt
+    , pagesOf
+    , pagedCell
+    , pageRowsOf
+    , lastWrapped
     )
 
 {-| Part of `Vt` (docs/vt-core.md §VC23). -}
@@ -233,3 +246,263 @@ pushPage page back =
             | pages = Builder.set back.head page back.pages
             , head = modBy back.limit (back.head + 1)
         }
+
+
+{-| A row of a screen or its scrollback out of the ring or a page: its
+cells as the ring keeps them, up to its extent, and whether it wrapped. -}
+type alias Row =
+    { cells : Array Int64, wrapped : Bool, prompt : Int }
+
+
+{-| The scrollback's pages, oldest first. -}
+pagesOf : Back -> Array Page
+pagesOf back =
+    let
+        count =
+            Builder.length back.pages
+    in
+    Array.mapAndKeepJust (\i -> Builder.get (modBy (max 1 count) (i + back.head)) back.pages) (Array.range 0 (count - 1))
+
+
+pageRowsOf : Page -> Clusters -> { rows : Array Row, clusters : Clusters }
+pageRowsOf page clusters =
+    Array.foldl
+        (\row a ->
+            let
+                cells =
+                    Array.foldl
+                        (\c b ->
+                            let
+                                k =
+                                    pagedCell c b.clusters
+                            in
+                            { cells = Array.pushLast k.cell b.cells, clusters = k.clusters }
+                        )
+                        { cells = [], clusters = a.clusters }
+                        row.cells
+            in
+            { rows = Array.pushLast { cells = cells.cells, wrapped = row.wrapped, prompt = row.prompt } a.rows, clusters = cells.clusters }
+        )
+        { rows = [], clusters = clusters }
+        (unpackPage page)
+
+
+{-| Whether a page's last row wrapped, so that its line goes on past it. -}
+lastWrapped : Page -> Bool
+lastWrapped page =
+    Bitwise.and 0x8000 (u16At page.heads (Bytes.length page.heads - 2)) /= 0
+
+
+{-| A cell read back from a page as the ring keeps it; a cluster's code
+points are its id again. -}
+pagedCell : { points : Array Int, wide : Int, style : Int } -> Clusters -> { cell : Int64, clusters : Clusters }
+pagedCell c clusters =
+    let
+        high =
+            Bitwise.or (styleBits c.style) (Int64.fromInt c.wide)
+    in
+    when c.points is
+        [] ->
+            { cell = high, clusters = clusters }
+
+        [ p ] ->
+            { cell = Bitwise.or high (Int64.fromInt p), clusters = clusters }
+
+        _ ->
+            when internCluster c.points clusters is
+                Just k ->
+                    { cell = Bitwise.or high (Int64.fromInt (Bitwise.or clusterBit k.id)), clusters = k.clusters }
+
+                Nothing ->
+                    { cell = Bitwise.or high (Int64.fromInt (Maybe.withDefault 0 (Array.first c.points))), clusters = clusters }
+
+
+{-| A row as the dump reads it: its cells, each its code points, width
+state and style, and whether it wrapped. -}
+type alias DumpRow =
+    { cells : Array { points : Array Int, wide : Int, style : Int }
+    , wrapped : Bool
+    , prompt : Int
+    }
+
+
+unpackPage : Page -> Array DumpRow
+unpackPage page =
+    unpackRows page 0 0 0 []
+
+
+unpackRows : Page -> Int -> Int -> Int -> Array DumpRow -> Array DumpRow
+unpackRows page h r ti acc =
+    if h >= Bytes.length page.heads then
+        acc
+
+    else
+        let
+            header =
+                u16At page.heads h
+
+            -- the extent in bits 0–9 (no row is wider than 1,000), the
+            -- prompt mark in 10–11 (§VC22)
+            ext =
+                Bitwise.and 0x3FF header
+
+            styles =
+                if Bitwise.and 0x4000 header /= 0 then
+                    { styles = Array.repeat ext 0, next = r }
+
+                else
+                    unpackRuns page.runs r ext []
+
+            row =
+                unpackText page.text ti ext []
+
+            cells =
+                Array.indexedMap (\x c -> { c | style = Maybe.withDefault 0 (Array.get x styles.styles) }) row.cells
+        in
+        unpackRows page (h + 2) styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0, prompt = Bitwise.and 3 (Bitwise.shiftRightZfBy 10 header) } acc)
+
+
+u16At : Bytes -> Int -> Int
+u16At bytes i =
+    byteAt bytes i + 256 * byteAt bytes (i + 1)
+
+
+unpackRuns : Bytes -> Int -> Int -> Array Int -> { styles : Array Int, next : Int }
+unpackRuns runs r left acc =
+    if left <= 0 then
+        { styles = acc, next = r }
+
+    else
+        let
+            v =
+                u16At runs r
+        in
+        if Bitwise.and 0x8000 v /= 0 then
+            let
+                count =
+                    u16At runs (r + 2)
+            in
+            unpackRuns runs (r + 4) (left - count) (Array.prepend acc (Array.repeat count (Bitwise.and 0x7FFF v)))
+
+        else
+            { styles = Array.prepend acc (Array.repeat left v), next = r + 2 }
+
+
+{-| A row's `ext` cells read back from its text: a wide character is its
+cell and a spacer, a code point of width 0 joins the cell before, a 0
+byte is an empty cell, a 0xFF byte, which UTF-8 never has, a spacer head
+(§VC14), a 0xFE byte, which it never has either, a cell in a background
+colour alone (`bgBit`, §VC17), and a 0xFD byte after a cell's text, that the
+cell is protected (§VC19). -}
+unpackText : Bytes -> Int -> Int -> Array { points : Array Int, wide : Int, style : Int } -> { cells : Array { points : Array Int, wide : Int, style : Int }, next : Int }
+unpackText text i left acc =
+    if left <= 0 && not (startsMark text i) then
+        { cells = acc, next = i }
+
+    else
+        let
+            d =
+                decodeAt text i
+        in
+        if byteAt text i == 0xFF then
+            unpackText text (i + 1) (left - 1) (Array.pushLast { points = [], wide = spacerHead, style = 0 } acc)
+
+        else if byteAt text i == 0xFE then
+            -- a cell in a background colour alone, its bit carried as its
+            -- width, which `pagedCell` puts back into the cell
+            unpackText text (i + 1) (left - 1) (Array.pushLast { points = [], wide = Int64.toIntWrap bgBit, style = 0 } acc)
+
+        else if byteAt text i == 0xFD then
+            -- the cell before is protected, and a wide character's spacer
+            -- with it; the bit is carried as its width too (§VC19)
+            let
+                n =
+                    Array.length acc
+
+                guarded k a =
+                    when Array.get k a is
+                        Just cell ->
+                            Array.set k { cell | wide = Bitwise.or (Int64.toIntWrap protectBit) cell.wide } a
+
+                        Nothing ->
+                            a
+
+                tail =
+                    when Array.get (n - 1) acc is
+                        Just last ->
+                            last.wide == wideTail
+
+                        Nothing ->
+                            False
+            in
+            unpackText text (i + 1) left (guarded (n - 1) (if tail then guarded (n - 2) acc else acc))
+
+        else if d.cp == 0 then
+            unpackText text d.next (left - 1) (Array.pushLast { points = [], wide = 0, style = 0 } acc)
+
+        else if d.cp >= 0x80 && Width.width d.cp == 0 then
+            let
+                n =
+                    Array.length acc
+
+                -- a mark after a wide character joins its head, not the
+                -- tail written after it (§VC17)
+                at =
+                    when Array.get (n - 1) acc is
+                        Just last ->
+                            if last.wide == wideTail then
+                                n - 2
+
+                            else
+                                n - 1
+
+                        Nothing ->
+                            -1
+            in
+            when Array.get at acc is
+                Just cell ->
+                    unpackText text d.next left (Array.set at { cell | points = Array.pushLast d.cp cell.points } acc)
+
+                Nothing ->
+                    unpackText text d.next left acc
+
+        else if d.cp >= 0x80 && Width.width d.cp == 2 then
+            unpackText text d.next (left - 2) (Array.pushLast { points = [], wide = wideTail, style = 0 } (Array.pushLast { points = [ d.cp ], wide = wideHead, style = 0 } acc))
+
+        else
+            unpackText text d.next (left - 1) (Array.pushLast { points = [ d.cp ], wide = 0, style = 0 } acc)
+
+
+startsMark : Bytes -> Int -> Bool
+startsMark text i =
+    if i >= Bytes.length text || byteAt text i == 0xFF then
+        False
+
+    else if byteAt text i == 0xFD then
+        True
+
+    else
+        let
+            d =
+                decodeAt text i
+        in
+        d.cp >= 0x80 && Width.width d.cp == 0
+
+
+decodeAt : Bytes -> Int -> { cp : Int, next : Int }
+decodeAt text i =
+    let
+        b =
+            byteAt text i
+    in
+    if b < 0x80 then
+        { cp = b, next = i + 1 }
+
+    else if b < 0xE0 then
+        { cp = Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x1F b)) (Bitwise.and 0x3F (byteAt text (i + 1))), next = i + 2 }
+
+    else if b < 0xF0 then
+        { cp = Bitwise.or (Bitwise.shiftLeftBy 12 (Bitwise.and 0x0F b)) (Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x3F (byteAt text (i + 1)))) (Bitwise.and 0x3F (byteAt text (i + 2)))), next = i + 3 }
+
+    else
+        { cp = Bitwise.or (Bitwise.shiftLeftBy 18 (Bitwise.and 0x07 b)) (Bitwise.or (Bitwise.shiftLeftBy 12 (Bitwise.and 0x3F (byteAt text (i + 1)))) (Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x3F (byteAt text (i + 2)))) (Bitwise.and 0x3F (byteAt text (i + 3))))), next = i + 4 }
