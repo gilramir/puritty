@@ -2793,3 +2793,53 @@ the fuzzers' widths and lines; the slow inputs are the price of a byte
 limit on rows of few bytes, not a defect, and are not saved as findings.
 The lower rate (1,167,212 inputs in §VC31's run) is partly the
 self-fuzzer's 8 jobs beside it.
+
+### A resize against Ghostty's, compared alike
+
+The comparisons with Ghostty above, and §VC30's and §VC31's, gave the two
+terminals different limits: the core its rows or bytes, Ghostty 100,000
+lines, which counts wrapped rows and drops half of a long line at a
+narrowing to 80 columns. Each then reflowed a different history, and the
+times compared the limits as much as the resizes. Gilbert asked for a
+comparison of like with like. This is it, and later ones are to be made
+the same way:
+
+- **The same history.** Neither terminal has a limit: `core-bench FILE drag
+  20 80 50 2000000000` (BYTES, after the drag, is the limit) and `gdrag FILE
+  20 80 50 0 0` (LINES and BYTES, 0 none), so neither drops a row.
+  `core-dump` takes the limit after RESIZES, and `ghostty-dump` a line limit
+  after its RESIZES, 0 none, so that the dumps can be compared too.
+- **The same result.** After the 20 resizes (to 80 columns and back to 160,
+  in turn, given to both dump tools at the input's end), the core's dump and
+  Ghostty's are the same, byte for byte, on all five inputs: the history,
+  its rows at each width, and the screen.
+- **The same work timed.** Only the resizes. Both are eager: the core's
+  since V20, and Ghostty's `resizeCols` (`PageList.zig`) walks every row
+  into new pages at the resize. Neither leaves work for a later read.
+- **A unit of work.** A resize's time over the rows it reflows, the mean of
+  the history at 160 and at 80 columns.
+
+Three runs each, the median:
+
+| input | rows, 160 / 80 | core, a resize | Ghostty, a resize | core, ns a row | Ghostty, ns a row | core ÷ Ghostty |
+|---|---:|---:|---:|---:|---:|---:|
+| one line, 10,000 rows | 9,950 / 19,950 | 4.95 ms | 0.46 ms | 331 | 31 | 10.8 |
+| one line, 100,000 rows | 99,950 / 199,950 | 34.8 ms | 8.65 ms | 232 | 58 | 4.0 |
+| 10,000 short lines | 9,951 / 9,951 | 2.25 ms | 0.80 ms | 226 | 80 | 2.8 |
+| 100,000 short lines | 99,951 / 99,951 | 13.6 ms | 19.0 ms | 136 | 190 | 0.72 |
+| `gitlog.txt` | 542,607 / 565,403 | 70.4 ms | 114 ms | 127 | 207 | 0.61 |
+
+On ordinary output at length the core's resize is faster than Ghostty's,
+0.61 and 0.72 of its time, and its cost a row falls as the history grows
+where Ghostty's rises (80 to 190 ns). It is slower in two places. A small
+history costs the core about a millisecond a resize whatever its rows, so
+10,000 short lines take 2.8 times Ghostty's time. A long line wrapped
+across many rows costs it 4 to 11 times Ghostty's a row; this is §VC30's
+gap, which the cut of plain text by its row headers alone would close and
+which neither V20 nor V21 built. Neither is chosen here.
+
+What each terminal keeps by default is a separate question, of policy and
+not of speed: with its own default (50 MB, no line limit) Ghostty keeps all
+542,607 rows of `gitlog` and takes 114 ms a resize, where the core's
+default (4.05 MB) keeps 93,327 and takes 13 ms (263 ms for the 20, "The
+default" above).

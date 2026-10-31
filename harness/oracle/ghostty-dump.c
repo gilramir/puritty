@@ -16,8 +16,11 @@
 #include <string.h>
 
 int main(int argc, char **argv) {
-  if (argc != 4 && argc != 5) {
-    fprintf(stderr, "usage: ghostty-dump COLS ROWS FILE [RESIZES]\n");
+  /* LINES, after RESIZES, is the scrollback's limit in lines; 0 is none, so
+   * that a comparison with the core can give both terminals none (§VC32).
+   * Left out, the library's default stays. */
+  if (argc < 4 || argc > 6) {
+    fprintf(stderr, "usage: ghostty-dump COLS ROWS FILE [RESIZES [LINES]]\n");
     return 2;
   }
   int cols = atoi(argv[1]), rows = atoi(argv[2]);
@@ -40,7 +43,7 @@ int main(int argc, char **argv) {
 
   GResize rs[256];
   size_t nrs = 0, done = 0;
-  for (const char *r = argc == 5 ? argv[4] : ""; *r;) {
+  for (const char *r = argc >= 5 ? argv[4] : ""; *r;) {
     char *end;
     size_t at = strtoul(r, &end, 10);
     unsigned c = 0, w = 0;
@@ -55,7 +58,10 @@ int main(int argc, char **argv) {
     r = r ? r + 1 : end + strlen(end);
   }
   size_t n;
-  char *out = gdump((uint16_t)cols, (uint16_t)rows, in, len, rs, nrs, NULL, &n);
+  size_t lines = argc == 6 ? strtoul(argv[5], NULL, 10) : 0;
+  if (argc == 6 && lines == 0) lines = SIZE_MAX;
+  char *out = gdump((uint16_t)cols, (uint16_t)rows, in, len, rs, nrs,
+                    argc == 6 ? &lines : NULL, &n);
   if (!out) {
     fprintf(stderr, "ghostty-dump: a libghostty-vt call failed\n");
     return 1;

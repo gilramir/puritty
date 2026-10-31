@@ -14,8 +14,10 @@ file left, its scrollback full (§VC14), and prints the screen's dump hash.
 With `drag N COLS ROWS` it times N resizes, to COLS by ROWS and back to 160
 by 50 in turn, as a window dragged, then one read of the whole scrollback
 (`Vt.dump`), which pays for the widths the pages went through (§VC29).
+BYTES, after it, is the scrollback's limit instead of the default, so that
+a comparison with Ghostty can give both terminals none (§VC32).
 
-usage: core-bench FILE [dump | resize COLS ROWS | drag N COLS ROWS]
+usage: core-bench FILE [dump | resize COLS ROWS | drag N COLS ROWS [BYTES]]
 
 -}
 
@@ -137,7 +139,13 @@ main =
                                     (\t0 ->
                                         let
                                             t =
-                                                feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollbackBytes = Vt.scrollbackBytesFor { cols = 160, rows = 25000 }, checksums = False, cellWidth = 0, cellHeight = 0 })
+                                                feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollbackBytes =
+                                                            if Array.get 1 s.args == Just "drag" && number 5 s.args > 0 then
+                                                                number 5 s.args
+
+                                                            else
+                                                                Vt.scrollbackBytesFor { cols = 160, rows = 25000 }
+                                                        , checksums = False, cellWidth = 0, cellHeight = 0 })
                                         in
                                         if Array.get 1 s.args == Just "drag" then
                                             timeDrag (number 2 s.args) (number 3 s.args) (number 4 s.args) t

@@ -1,5 +1,7 @@
 // Times libghostty-vt on core-bench's drag: 160x50, 100,000 lines of
 // scrollback, the file fed, then N resizes to COLS x ROWS and back.
+// usage: gdrag FILE N COLS ROWS [LINES [BYTES]]: a LINES or BYTES limit
+// of 0 is none; both given replace the 100,000 lines.
 #include <ghostty/vt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,9 +12,10 @@ int main(int argc,char**argv){
   unsigned char*b=malloc(n);fread(b,1,n,f);fclose(f);
   int N=atoi(argv[2]),C=atoi(argv[3]),R=atoi(argv[4]);
   GhosttyTerminal term; ghostty_terminal_new(NULL,&term,160,50);
-  size_t lines=100000;
-  ghostty_terminal_set(term,GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,NULL);
-  ghostty_terminal_set(term,GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,&lines);
+  size_t lines=argc>5?strtoul(argv[5],0,10):100000;
+  size_t bytes=argc>6?strtoul(argv[6],0,10):0;
+  ghostty_terminal_set(term,GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,bytes?&bytes:NULL);
+  ghostty_terminal_set(term,GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,lines?&lines:NULL);
   double t0=now();
   for(long i=0;i<n;i+=65536) ghostty_terminal_vt_write(term,b+i,(n-i<65536)?n-i:65536);
   double t1=now();

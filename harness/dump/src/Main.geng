@@ -6,9 +6,11 @@ Feeds FILE to a `Vt.Term` of COLS by ROWS, CHUNK bytes a read (the whole
 file when CHUNK is 0 or left out), and prints `Vt.dump`. RESIZES is
 `AT:COLSxROWS` items joined by commas: before byte AT the terminal is
 resized, as its host resizes it (`docs/vt-core.md` §VC14), and a read never
-crosses one.
+crosses one. SCROLLBACK is the scrollback's limit in bytes, the bytes of
+25,000 rows of COLS when it is left out (V21), so that a comparison with
+Ghostty can give both terminals none (§VC32).
 
-usage: core-dump COLS ROWS FILE [CHUNK [RESIZES]]
+usage: core-dump COLS ROWS FILE [CHUNK [RESIZES [SCROLLBACK]]]
 
 -}
 
@@ -81,7 +83,13 @@ main =
                                         number 3 s.args
 
                                     term =
-                                        Vt.new { cols = number 0 s.args, rows = number 1 s.args, scrollbackBytes = Vt.scrollbackBytesFor { cols = number 0 s.args, rows = 25000 }, checksums = True, cellWidth = 10, cellHeight = 20 }
+                                        Vt.new { cols = number 0 s.args, rows = number 1 s.args, scrollbackBytes =
+                                            if number 5 s.args > 0 then
+                                                number 5 s.args
+
+                                            else
+                                                Vt.scrollbackBytesFor { cols = number 0 s.args, rows = 25000 }
+                                        , checksums = True, cellWidth = 10, cellHeight = 20 }
                                 in
                                 Console.write
                                     (Vt.dump
