@@ -56,7 +56,9 @@ DECSC/DECRC and SCOSC/SCORC per screen; modes 4, 20, ?6, ?7, ?25, ?47,
 ?1047, ?1048, ?1049 (the alternate screen kept once made, as xterm and
 Ghostty keep it), and every other private mode recorded for DECRQM, KAM and
 SRM recorded and the ANSI modes xterm lacks answered as permanently reset;
-XTSAVE and XTRESTORE; DECSCUSR; reverse wraparound, ?45 and ?1045, for BS
+XTSAVE and XTRESTORE; DECSCUSR; DECSASD, where the status line takes
+the printing and shows none of it, and DECECM (?117) answered as
+permanently reset, as Ghostty (§VC27); reverse wraparound, ?45 and ?1045, for BS
 and CUB; protected cells, DECSCA, SPA and EPA, against DECSED, DECSEL and in
 ISO's mode ED, EL and ECH; the palette and the foreground, background and
 cursor colours set, queried and reset (OSC 4, 10–19, 104, 110–112); left and
@@ -2163,3 +2165,50 @@ twice is listed once.
 Not run yet: the parsing was checked against a log made of the fork
 mode's line format and a job log of the third run, and the first fork
 run waits for Gilbert, who needs the machine.
+
+
+## VC27. The third long run: RIS, DECSASD, DECECM and CHA
+
+The differential fuzzer for four hours on eight jobs, started 02:33 on
+2026-10-31 at `c40e256` (§VC25). `diff-runs.tsv`'s fifth row names
+`c4a39f0`, the commit when it ended, which changed only `fuzz.py` (§VC26);
+the row stays as recorded. 1,858,268 inputs, coverage 6,263, six dumps
+that differ, the run's first at 04:11 and its jobs down to three by 04:58
+(§VC26). `vt-diff-min` cut them to 6 to 36 bytes.
+
+**Three were §VC25's flag, cleared by RIS.** A `REP` past the limit, a
+resize or none, DECRQCRA (`CSI * y`), whose checksum reads the screen
+(§VC22), then RIS. `reset` builds the term again with `fresh`, a new
+`Back` with `reached` false, so the harness compared a checksum read from a
+screen reflowed from rows pruned differently. Before §VC25 the flag was
+the harness's own and RIS could not touch it. `reset` now keeps it, set as
+well if the history is at the limit then.
+
+**DECSASD.** `CSI 1 $ }` makes the status line the active display; Ghostty
+shows none and its `print` returns before anything while it is active: no
+cell written, no single shift used up, REP's character kept. Every other
+sequence acts on the main display as before. `CSI 0 $ }`, RIS and DECSTR
+bring the main display back; another value, no parameter or more than one
+is ignored. The core has `statusLine`, which turns `plain` off so that
+every character takes `printGraphic` or `printDecoded`, and both return
+first while it is set. Found as a 0xFF byte (U+FFFD) printed after
+`CSI 1 $ }`.
+
+**DECECM.** DECRQM for private mode 117 is answered 4, permanently reset:
+Ghostty's erases always take the current background, which is DECECM
+reset, and the core's do too. It was answered 0, not recognised.
+
+**CHA and HPA in origin mode.** Ghostty's `setCursorCol` sets the column
+through `setCursorPos` with the row as CUP reads it back
+(`cursorPosForSet`), so a cursor above or below the scroll region in origin
+mode comes into it. ED 22 puts one there, at the top left, above a region
+that starts lower. The core set the column alone; it now goes through
+`cursorTo` with `originY`, as its VPR and HPR do.
+
+Replay cases `decsasd`, `decrqm-dececm` and `cha-origin-outside`, their
+`expected.txt` written by Ghostty. After it: the six findings and the
+earlier runs' nine pass `vt-diff`, the replay corpus 321 of 321 with
+`core-dump` rebuilt, esctest unchanged (core 392, Ghostty 388), and
+`core-bench`'s instructions within 0.05% of `c40e256` on `ls`, `gitlog`,
+`cup`, vte-cursor_motion and vte-unicode.
+

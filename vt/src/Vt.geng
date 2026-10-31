@@ -172,6 +172,7 @@ fresh config =
     , tabs = Builder.fromArray (Array.initialize config.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0))
     , autowrap = True
     , plain = True
+    , statusLine = False
     , origin = False
     , insert = False
     , showCursor = True
@@ -404,6 +405,12 @@ then, as Ghostty prints it again (§VC21). The ground state's path for a
 character set and REP share it, which keeps it out of the parser's loop. -}
 printGraphic : Int -> (moved t : Term) -> Term
 printGraphic b t =
+    if t.statusLine then
+        -- not printed, its single shift not used up, REP's character
+        -- not changed, as Ghostty's `print` returns first (§VC26)
+        t
+
+    else
     let
         cp =
             graphic t b
@@ -1179,7 +1186,7 @@ continueUtf8 bytes n i t =
 
 printDecoded : Int -> (moved t : Term) -> Term
 printDecoded cp t =
-    if cp < 0xA0 then
+    if cp < 0xA0 || t.statusLine then
         -- a C1 control as UTF-8 is not printed
         t
 
@@ -2324,6 +2331,12 @@ dispatchRest final priv inter params t =
         else
             t
 
+    else if priv == 0 && inter == 0x24 && final == 0x7D && Array.length params == 1 && param 0 0 params <= 1 then
+        -- DECSASD: 1 makes the status line the active display, which the
+        -- core has none of, so printing goes nowhere until 0; as Ghostty,
+        -- which shows no status line either (§VC26)
+        withPlain { t | statusLine = param 0 0 params == 1 }
+
     else if priv == 0x3F && inter == 0x24 && final == 0x70 && Array.length params == 1 then
         let
             p =
@@ -2429,11 +2442,10 @@ dispatchRare final params t =
         { t | y = max (upperLimit t) (t.y - param 0 1 params), x = crX t, wrapNext = False }
 
     else if final == 0x47 || final == 0x60 then
-        if t.origin then
-            { t | x = clamp t.left t.right (param 0 1 params - 1 + t.left), wrapNext = False }
-
-        else
-            { t | x = clamp 0 (t.cols - 1) (param 0 1 params - 1), wrapNext = False }
+        -- CHA and HPA are CUP's column set, its row kept as CUP gives it:
+        -- in origin mode a cursor outside the region comes into it, as in
+        -- Ghostty's `setCursorCol` (§VC26)
+        cursorTo (param 0 1 params - 1) (originY t) t
 
     else if final == 0x64 then
         cursorTo (originX t) (param 0 1 params - 1) t
@@ -3473,7 +3485,8 @@ of on =
         2
 
 
-{-| DECRQM's state of private mode `p`: 1 set, 2 reset, 0 not recognised.
+{-| DECRQM's state of private mode `p`: 1 set, 2 reset, 4 permanently
+reset, 0 not recognised.
 `of` is a function of its own, not a `let`'s: a local function is a value
 to geng-lang's `inplace` pass, and a call of one with a field of `t` kept
 `t`, which made every update of the term along the parser's paths a copy
@@ -3488,6 +3501,11 @@ privateState p t =
 
     else if p == 25 then
         of t.showCursor
+
+    else if p == 117 then
+        -- DECECM: erases are always in the background colour, as DECECM
+        -- reset, which Ghostty answers as permanently so (§VC26)
+        4
 
     else if not (Array.member p knownPrivate) then
         -- a mode Ghostty does not know is not recognised, set or not
@@ -3707,20 +3725,29 @@ restoreCursor t =
 
 {-| RIS: the terminal as new, its replies kept, and the dynamic colours
 (OSC 10 to 19), which Ghostty's full reset keeps as its DECSTR does; the
-palette is reset (§VC16). -}
+palette is reset (§VC16). The scrollback's `reached` is kept too: a reply
+made before the reset may have read a screen reflowed from rows the core
+and Ghostty pruned differently (§VC26). -}
 reset : Term -> Term
 reset t =
     let
         replies =
             t.replies
 
+        reached =
+            historyReached t
+
         blank =
             fresh t.config
+
+        back =
+            blank.back
     in
-    withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours }
+    withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours, back = { back | reached = reached } }
 
 
-{-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14). -}
+{-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14)
+and the main display (DECSASD, §VC26). -}
 softReset : (moved t : Term) -> Term
 softReset t =
     withPen plainAttrs
@@ -3731,6 +3758,7 @@ softReset t =
                 , insert = False
                 , origin = False
                 , autowrap = True
+                , statusLine = False
                 , showCursor = True
                 , sets = 0
                 , gl = 0
@@ -3773,7 +3801,7 @@ off, which is when the ground state's fast paths may write a run (§VC5).
 Set wherever any of the four changes. -}
 withPlain : (moved t : Term) -> Term
 withPlain t =
-    { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) }
+    { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) && not t.statusLine }
 
 
 -- TABS
