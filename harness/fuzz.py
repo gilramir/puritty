@@ -4,13 +4,16 @@
 `harness/fuzz/vt-fuzz` is libFuzzer over the core: a crash, or a dump that
 differs when the input is fed in pieces, is a finding (`fuzz/fuzz.c`). Its
 corpus grows in .harness-work/fuzz/corpus across runs, seeded from every
-replay case; a finding is written to .harness-work/fuzz/ and stops its job.
-Each run is a row of corpus/fuzz/runs.tsv: when, the commit, how long, how
-many jobs, how many inputs, the coverage, and what it found.
+replay case. It runs in libFuzzer's fork mode (§VC26): `--jobs` processes,
+24 unless told, each started again when one ends, so that a finding, a
+timeout or a run out of memory is written to .harness-work/fuzz/ and the
+run goes on with every job until its time is up. Each run is a row of
+corpus/fuzz/runs.tsv: when, the commit, how long, how many jobs, how many
+inputs, the coverage, and what it found.
 
   ./harness/fuzz/build.sh
-  ./harness/fuzz.py --minutes 10                # one job
-  ./harness/fuzz.py --hours 4 --jobs 8          # the exit's run
+  ./harness/fuzz.py --minutes 10 --jobs 1       # one job
+  ./harness/fuzz.py --hours 4                   # 24 jobs
   ./harness/fuzz.py --show FILE                 # both dumps of a finding
 
 With --diff it runs vt-diff instead (§VC16), which holds the core to
@@ -86,7 +89,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--minutes", type=float, default=0)
     p.add_argument("--hours", type=float, default=0)
-    p.add_argument("--jobs", type=int, default=1)
+    p.add_argument("--jobs", type=int, default=24)
     p.add_argument("--show", metavar="FILE", help="print both dumps of one input")
     p.add_argument("--no-record", action="store_true", help="do not add a row to runs.tsv")
     p.add_argument("--diff", action="store_true", help="hold the core to libghostty-vt (vt-diff)")
@@ -111,25 +114,37 @@ def main():
     logs.mkdir(parents=True)
     started = datetime.datetime.now().astimezone()
     print(f"{a.jobs} job(s) for {seconds} s, {n} seeds, corpus {len(list(corpus.iterdir()))} inputs")
-    # Each job is capped as every built program's run is in geng-lang.
-    cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={3 * a.jobs + 2}G",
+    # Capped as every built program's run is in geng-lang: a job holds
+    # about 200 MB, and libFuzzer stops one at 2 GB.
+    cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={2 * a.jobs + 2}G",
            str(FUZZ), f"-max_total_time={seconds}", "-rss_limit_mb=2048", "-timeout=10", "-max_len=4096",
            f"-dict={DICT}", f"-artifact_prefix={WORK}/{'diff-' if a.diff else ''}", "-print_final_stats=1",
-           f"-jobs={a.jobs}", f"-workers={a.jobs}", str(corpus), str(seed_dir)]
+           f"-fork={a.jobs}", "-ignore_crashes=1", "-ignore_timeouts=1", "-ignore_ooms=1",
+           str(corpus), str(seed_dir)]
     t0 = time.monotonic()
-    subprocess.run(cmd, cwd=logs, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log = logs / "fork.log"
+    with log.open("w") as out:
+        subprocess.run(cmd, cwd=logs, stdout=out, stderr=subprocess.STDOUT)
     took = time.monotonic() - t0
-    execs, cov, found = 0, 0, []
-    for log in sorted(logs.glob("fuzz-*.log")):
-        text = log.read_text(errors="replace")
-        m = re.findall(r"stat::number_of_executed_units:\s*(\d+)", text)
-        execs += int(m[-1]) if m else 0
-        c = re.findall(r"cov: (\d+)", text)
-        cov = max(cov, int(c[-1]) if c else 0)
-        for f in re.findall(r"Test unit written to (\S+)", text):
-            found.append(Path(f).name)
-            why = re.findall(r"vt-fuzz: (.*)", text)
-            print(f"{log.name}: {why[-1] if why else 'a crash'}: {f}")
+    # The parent's lines, `#N: cov: C ft: .. corp: .. exec/s: .. oom/timeout/crash:
+    # a/b/c ..`, count every job's inputs; a job that ends on a finding has
+    # its log copied in, its `vt-fuzz:` line before `Test unit written to`.
+    text = log.read_text(errors="replace")
+    m = re.findall(r"^#(\d+): cov: (\d+)", text, re.M)
+    execs, cov = (int(m[-1][0]), max(int(c) for _, c in m)) if m else (0, 0)
+    found, why = [], None
+    for line in text.splitlines():
+        w = re.search(r"vt-fuzz: (.*)", line)
+        if w:
+            why = w.group(1)
+        f = re.search(r"Test unit written to (\S+)", line)
+        if f:
+            name = Path(f.group(1)).name
+            if name not in found:
+                found.append(name)
+                kind = why or ("a timeout" if "timeout-" in name else "a crash")
+                print(f"{kind}: {f.group(1)}")
+            why = None
     print(f"{execs} inputs in {took:.0f} s, coverage {cov}, {len(found)} finding(s)")
     if not a.no_record:
         RUNS.parent.mkdir(parents=True, exist_ok=True)

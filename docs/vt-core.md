@@ -2138,3 +2138,28 @@ ablated build's own spread (78–85).
 After it: the three findings and §VC24's six pass `vt-diff`, and the replay
 corpus 318 of 318 with `core-dump` rebuilt.
 
+
+## VC26. The fuzzer in fork mode, 24 jobs
+
+Gilbert asked why the third four-hour run used three CPUs. `fuzz.py` ran
+libFuzzer with `-jobs=8 -workers=8`: eight jobs, each stopped for good on
+its first finding and none started in its place. The second run (§VC25)
+and the third each lost five of their eight jobs to findings within two
+and a half hours, the third from 04:11 to 04:58 of a run started at 02:33,
+and the machine has 32 CPUs.
+
+`fuzz.py` now runs libFuzzer's fork mode, `-fork=N` with
+`-ignore_crashes=1`, `-ignore_timeouts=1` and `-ignore_ooms=1`: the parent
+starts a child again when one ends, so all N CPUs work until the time is up
+and every finding of the run is kept, not one a job. `--jobs` is 24 unless
+told (Gilbert, 2026-10-31), which leaves eight CPUs; a job holds about
+200 MB, so the scope's cap is 2 GB a job and 2 more, 50 GB, under the
+machine's 60. The parent's log is `diff-logs/fork.log` (`logs/` for
+`vt-fuzz`): its `#N: cov: C …` lines count every child's inputs, and each
+child that ends on a finding has its log copied in, which is where the
+finding's name and its `vt-fuzz:` line are read from; a finding found
+twice is listed once.
+
+Not run yet: the parsing was checked against a log made of the fork
+mode's line format and a job log of the third run, and the first fork
+run waits for Gilbert, who needs the machine.
