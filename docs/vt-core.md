@@ -2946,3 +2946,82 @@ every resize. They are not saved as findings.
 
 After it: replay 324 of 324, esctest2 392 (Ghostty 388), and the five
 inputs of the comparison above still the same as Ghostty's byte for byte.
+
+## VC34. A check on the core's speed
+
+Replay, esctest2 and the fuzzers hold the core to what it does, and nothing
+held it to how fast it does it: each speed figure in this document was
+measured by hand for the change it describes. Gilbert asked for a check.
+
+**What it counts.** `harness/perf.py` counts user-space instructions
+(`perf stat -e instructions:u`) for two kinds of case:
+
+- **Throughput:** the thirteen inputs of §VC7, `core-bench FILE`.
+- **Resizes:** `core-bench FILE resizes 20 80 50 [BYTES]`, a new mode that
+  is the drag without the read. It is counted less `resizes 0`, which is
+  the feeding alone, so the count is the twenty resizes' own. The five
+  inputs are §VC31's, each with the default limit and with none, as §VC32
+  compares with Ghostty.
+
+`drag` itself would not do: its read of the whole scrollback is most of
+its count (for the 10,000-row line, 187 ms of reading against 25 ms of
+resizing), and would hide a resize that doubled.
+
+**Why instructions, and with randomization off.** Times vary by a few
+percent from run to run (`vte-scrolling` 40 to 43 ms), and so did the
+counts at first: twenty resizes of the 10,000-row line counted 675 M to
+703 M. One GC marker thread (`GC_MARKERS=1`) did not settle them. With
+address-space randomization off (`setarch -R`), they repeat to within 20
+instructions of 686 M, and every case of a second run is 0.00% from the
+first. The randomized layout of the heap, which Boehm's collector walks,
+was the variation.
+
+**The record.** `corpus/perf/baseline.tsv` holds each case's count and
+its input's SHA-256, so a changed input is an error and not a comparison.
+A count more than 1% over its record fails a throughput case, and more
+than 3% fails a resize case (`--tolerance` changes both). A count that
+far under its record is reported, to be recorded with `--update`, so that
+a gain does not hide a later loss. Each throughput case is also timed as
+§VC7 times it, one untimed run and then the least of five, against
+`geng-plan.md` §1.4's budget. That half needs a quiet machine, and
+`--no-times` leaves it out. The counts take about five seconds, and the
+times about a minute.
+
+**The inputs.** The thirteen throughput inputs are not generated: the ten
+of vtebench are a pty's capture (`probes/throughput/gen-vtebench.py`).
+`--inputs DIR` copies them into `.harness-work/perf/inputs` once, and the
+recorded hashes are those of the copies every measurement in this document
+used. The resize inputs are written by the script, and `gitlog` is the
+throughput one.
+
+**It fails when it should.** With V22's cut switched off (`plainSpans`
+never tried), the eight resize cases of plain lines failed, 13% to 459%
+over their record (the 100,000-row line without a limit, 896 M to 5,005 M).
+The same build counted `gitlog`'s resizes 3.5% and 3.9% *under* the
+record. V22 costs a resize of lines that are not plain that much, which
+is left for the next change to look at.
+
+**At 9731647**, all within their budgets:
+
+| input | budget | ms, least–most of five |
+|---|---:|---:|
+| `cup` | 56 | 49–51 |
+| `gitlog` | 132 | 95–97 |
+| `ls` | 124 | 76–79 |
+| vte-cursor_motion | 28 | 23–24 |
+| vte-dense_cells | 28 | 20–22 |
+| vte-light_cells | 24 | 8–9 |
+| vte-scrolling | 42 | 40–43 |
+| vte-scrolling_bottom_region | 37 | 24–26 |
+| vte-scrolling_bottom_small_region | 132 | 25–26 |
+| vte-scrolling_fullscreen | 45 | 23–25 |
+| vte-scrolling_top_region | 223 | 25–26 |
+| vte-scrolling_top_small_region | 125 | 26 |
+| vte-unicode | 25 | 16–17 |
+
+`vte-scrolling` is the closest, at 40 ms against 42 as its least run, and
+its most is over. The least of five is what the budget is held to.
+
+**When to run it.** Run it before committing a change to `vt/src`, on a
+quiet machine. A count that moves is explained in the commit that moves
+it, and recorded with `--update` in the same commit.

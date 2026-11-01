@@ -16,8 +16,12 @@ by 50 in turn, as a window dragged, then one read of the whole scrollback
 (`Vt.dump`), which pays for the widths the pages went through (§VC29).
 BYTES, after it, is the scrollback's limit instead of the default, so that
 a comparison with Ghostty can give both terminals none (§VC32).
+`resizes N COLS ROWS [BYTES]` is the drag without the read, for a count of
+instructions: N 0 counts the feeding alone, which the drag's count less it
+leaves the resizes' (`harness/perf.py`).
 
-usage: core-bench FILE [dump | resize COLS ROWS | drag N COLS ROWS [BYTES]]
+usage: core-bench FILE [dump | resize COLS ROWS | drag N COLS ROWS [BYTES]
+                        | resizes N COLS ROWS [BYTES]]
 
 -}
 
@@ -121,6 +125,25 @@ timeDrag n cols rows t =
             )
 
 
+timeResizes : Int -> Int -> Int -> (moved t : Vt.Term) -> Task x {}
+timeResizes n cols rows t =
+    Time.monotonic
+        |> Task.andThen
+            (\t0 ->
+                let
+                    r =
+                        drag n cols rows 0 t
+                in
+                Time.monotonic
+                    |> Task.andThen
+                        (\t1 ->
+                            -- the rows the history holds, read so that the
+                            -- resizes are made
+                            Console.write (String.fromInt n ++ " resizes in " ++ ms t0 t1 ++ " ms; " ++ String.fromInt (Vt.historyBound r) ++ " rows\n")
+                        )
+            )
+
+
 ms : Time.Duration -> Time.Duration -> String
 ms a b =
     String.fromInt (Int64.toInt (Time.inMilliseconds b) - Int64.toInt (Time.inMilliseconds a))
@@ -140,7 +163,7 @@ main =
                                         let
                                             t =
                                                 feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollbackBytes =
-                                                            if Array.get 1 s.args == Just "drag" && number 5 s.args > 0 then
+                                                            if (Array.get 1 s.args == Just "drag" || Array.get 1 s.args == Just "resizes") && number 5 s.args > 0 then
                                                                 number 5 s.args
 
                                                             else
@@ -149,6 +172,9 @@ main =
                                         in
                                         if Array.get 1 s.args == Just "drag" then
                                             timeDrag (number 2 s.args) (number 3 s.args) (number 4 s.args) t
+
+                                        else if Array.get 1 s.args == Just "resizes" then
+                                            timeResizes (number 2 s.args) (number 3 s.args) (number 4 s.args) t
 
                                         else if Array.get 1 s.args == Just "resize" then
                                             timeResize (number 2 s.args) (number 3 s.args) t
