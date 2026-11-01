@@ -1071,6 +1071,35 @@ promptIn starts k lo hi =
 
 splitAt : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
 splitAt cols line starts marks first j p row rows found =
+    if p == 0 && not (anyIn marks j (j + cols + 1) 0) && noWide line j (min (Array.length line) (j + cols)) then
+        -- a row with no wide character and no mark on it or at the cell
+        -- after it is a slice of the line, as the cells pushed one at a
+        -- time would make it (§VC35)
+        if Array.length line - j > cols then
+            splitAt cols line starts marks first (j + cols) 0 [] (Array.pushLast { cells = Array.slice j (j + cols) line, wrapped = True, prompt = promptAt starts (j + cols) } rows) found
+
+        else
+            { rows = Array.pushLast { cells = Array.slice j (Array.length line) line, wrapped = False, prompt = promptAt starts (Array.length line - 1) } rows, found = found }
+
+    else
+        splitCell cols line starts marks first j p row rows found
+
+
+{-| No cell from `j` to `to` is the head of a wide character. -}
+noWide : Array Int64 -> Int -> Int -> Bool
+noWide line j to =
+    if j >= to then
+        True
+
+    else if cellWide (Maybe.withDefault 0 (Array.get j line)) == wideHead then
+        False
+
+    else
+        noWide line (j + 1) to
+
+
+splitCell : Int -> Array Int64 -> Array { at : Int, mark : Int } -> Array Int -> Int -> Int -> Int -> Array Int64 -> Array Row -> Array { row : Int, x : Int } -> { rows : Array Row, found : Array { row : Int, x : Int } }
+splitCell cols line starts marks first j p row rows found =
     when Array.get j line is
         Nothing ->
             -- a mark from a dropped spacer head at the end goes where a

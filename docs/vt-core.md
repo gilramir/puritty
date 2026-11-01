@@ -3025,3 +3025,76 @@ its most is over. The least of five is what the budget is held to.
 **When to run it.** Run it before committing a change to `vt/src`, on a
 quiet machine. A count that moves is explained in the commit that moves
 it, and recorded with `--update` in the same commit.
+
+## VC35. The ring's rows cut as slices, and made with `Builder.repeat`
+
+§VC33 left "about a millisecond a resize whatever the scrollback holds":
+the ring's reflow (`reflowCols`), whose rows are cells in arrays, cut a
+cell at a time. Two changes take it to about half.
+
+**A row cut as a slice.** `splitAt`, which cuts a line of the ring into
+rows of the new width, pushed each cell onto the row it was making. A row
+with no wide character in it and no mark (the cursor, the saved cursor)
+on it or on the cell after it is the same as `Array.slice` of the line, so
+it is now cut so, and only the other rows are cut a cell at a time
+(`splitCell`, the old body). 50 full rows at 80 by 50 went from 3.9 M
+instructions a resize to 0.95 M, 500 short lines from 13.2 M to 3.3 M.
+
+**The ring made with `Builder.repeat`.** `newScreen` made the ring, `rows
++ 513` rows of `cols + 1` cells, as `Builder.fromArray (Array.repeat n
+0)`: the array, then the builder's copy of it at its first write. geng-lang
+added `Builder.repeat` to `core` for it (its D1025, `m4-visiterm.md`
+§VA58), which makes the builder alone. In instructions it looks worse on
+the larger inputs (4.2 M a resize on 1,000 short lines against 3.7 M),
+because the copies it saves are `memcpy` and `memset`, which count as one
+instruction whatever their length. Timed, it is better everywhere, and the
+collector runs less (46 times in 400 resizes of the 1,000 lines, against
+79).
+
+`core-bench FILE resizes N 80 50`, the least of eight runs, the three
+builds interleaved; "before" is c30d54d:
+
+| input | resizes | before | slice | slice and `repeat` |
+|---|---:|---:|---:|---:|
+| empty | 2000 | 49 ms | 49 | 30 |
+| 50 full rows | 2000 | 301 | 116 | 67 |
+| 1,000 short lines | 400 | 195 | 57 | 42 |
+| one line of 500 rows | 400 | 240 | 76 | 57 |
+| 10,000 short lines | 100 | 91 | 57 | 52 |
+| one line of 10,000 rows | 100 | 81 | 42 | 39 |
+| `gitlog.txt` | 100 | 1,254 | 1,249 | 1,211 |
+
+A full screen's resize is 34 µs, from 150.
+
+**Against Ghostty**, compared as §VC32 says, five runs, the median, and
+the dumps after the 20 resizes still the same as Ghostty's byte for byte
+on all five:
+
+| input | core, a resize | Ghostty, a resize | core, ns a row | Ghostty, ns a row | core ÷ Ghostty | §VC33 |
+|---|---:|---:|---:|---:|---:|---:|
+| one line, 10,000 rows | 0.65 ms | 0.48 ms | 43 | 32 | 1.35 | 2.6 |
+| one line, 100,000 rows | 2.90 ms | 8.65 ms | 19 | 58 | 0.34 | 0.38 |
+| 10,000 short lines | 0.60 ms | 0.84 ms | 60 | 84 | 0.72 | 1.37 |
+| 100,000 short lines | 4.05 ms | 18.6 ms | 41 | 185 | 0.22 | 0.23 |
+| `gitlog.txt` | 72.4 ms | 114 ms | 131 | 206 | 0.64 | 0.61 |
+
+The core is now faster than Ghostty's on 10,000 short lines too, and
+only the 10,000-row line is slower, by a third. `gitlog`, whose lines have colour
+and so are not plain, is where it was: §VC34's note on what V22 costs
+such lines stands.
+
+**`perf.py`.** The resize cases' counts fall 15% to 64% (the 10,000-row
+line 516 M to 185 M, 10,000 short lines 486 M to 242 M), the 100,000
+short lines without a limit 4.7%, and `gitlog` 0.6% and 2.5%. Recorded
+with `--update`; the throughput counts move by under 0.5% and are
+recorded with them. All thirteen inputs within their budgets, as before
+(`vte-scrolling` 41–42 ms against 42).
+
+**The fuzzers.** The slice path ran an hour under both, side by side (the
+diff-runs.tsv row of 03:37, 559,286 inputs, and the self-fuzzer on 8
+jobs): no crash and no difference; the 43 inputs the differential run
+wrote as slow or timed out are §VC32's kind, as before. Rebuilt with
+`Builder.repeat`, every saved input passes both: the differential run's
+13,066 and the self-fuzzer's 14,634.
+
+After it: replay 324 of 324, esctest2 392 (Ghostty 388).
