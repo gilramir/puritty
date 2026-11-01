@@ -3193,3 +3193,24 @@ it, so the time is the corpus's size and not the drops; a smaller corpus,
 or `-runs=0` over it, is the way to a longer search next time.
 
 After it: replay 324 of 324, esctest2 392 (Ghostty 388).
+
+## VC38. ED 3 forgot what the pages held
+
+geng-lang's rewrite of the pages for `Bytes.Owned` (`m4-owned-pages.md`
+§OP15) found it, and it is older than that work. `clearScrollback` (ED 3)
+emptied `Back.pages` but left `Back.bytes` and `rows` as they were. With a
+full scrollback, every page pushed after ED 3 was then over the limit as
+`dropOver` counts it, and dropped as soon as it was made: on `core-dump`,
+20×5 with a 12,000-byte limit, 3,000 lines, ED 3 and 1,500 more kept 476
+rows of scrollback, where the 1,500 alone keep 1,500. `rows` was wrong
+too, so `historyBound` counted rows that were gone.
+
+ED 3 now sets both to 0, as `backOf` does when a resize leaves no pages.
+`peak` and `dropped` stay, as §VC25 has them.
+
+The replay case `scrollback-erase-3-limit`, seeded from Ghostty, fills the
+default limit in one column (26,000 cells, each wrapping onto its own row),
+erases with ED 3 and writes 2,000 more. Ghostty and the core now keep all
+of them. The core before the fix kept 464.
+
+After it: replay 325 of 325, esctest2 392.
