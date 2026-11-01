@@ -3103,11 +3103,13 @@ After it: replay 324 of 324, esctest2 392 (Ghostty 388).
 
 §VC35 left one input slower than Ghostty's, the line of 10,000 rows, at
 1.35 times its time over 20 resizes. Gilbert asked why. It is the first
-resizes of a process, not the resize. In user time the core's first 20 are
-within 7% of Ghostty's (8.0 ms against 7.5), and each after them is 0.31 ms
-against 0.35. At 100 resizes the totals are level, 41 ms each. The gap is
-system time, 4.2 ms against 0.8: 7,400 page faults as the collector's heap
-grows from 8 MB to 33 MB. Each resize builds a new ring and new pages and
+resizes of a process, not the resize. Each resize after the first 20 costs
+0.31 ms of user time against Ghostty's 0.35, and at 100 resizes the totals
+are level, 41 ms each. The first 20 pay for the collector's small heap:
+about 10 full collections of 0.5 ms, where later resizes need one every
+other resize, and 7,400 page faults as the heap grows from 8 MB to 33 MB.
+A heap that starts at 32 MB has the same faults and 4 collections, and
+takes 3 ms off the 20 (`m4-free.md` §FR10). Each resize builds a new ring and new pages and
 leaves the old ones for the collector, 2.1 MB a resize on this input,
 where Ghostty's reflow hands each old page straight to the next new one.
 
@@ -3115,7 +3117,28 @@ geng-lang's `m4-free.md` measures it. The resize's dead buffers, freed by
 hand at the point an ownership proof would free them, take the 20 resizes
 from 16 ms to 11 (Ghostty 10.4) and the 100 from 46 to 33 (Ghostty 42),
 with the same dumps on all five inputs. `gitlog` does not move, since its
-time is the cut of coloured lines (§VC34). The comparison with Ghostty
-counted the core's start-up; `m4-free.md` §FR8 asks whether later
-comparisons report the first 20 resizes and the cost a resize after them
-both. Nothing in the core changed.
+time is the cut of coloured lines (§VC34). Nothing in the core changed.
+
+**How resizes are compared with Ghostty from now on** (geng-lang D1029):
+as §VC32 says, and reported as two numbers, the first 20 resizes of a
+process and the cost of a resize after them, so that the collector's
+start-up and the resize's own cost are not one figure.
+
+### What is left
+
+geng-lang decided (`m4-free.md` §FR9) that a builder's buffer is freed
+where the ownership checker sees the builder dropped (D1026), and that the
+core's pages hold their bytes affinely after it (D1027), which is the
+change on visiterm's side: a survey first of what reads a page and whether
+each read can borrow. Two costs it found are registered here (D1030), for
+after those, since what a resize allocates changes once the pages are
+owned:
+
+- **The rows between the old ring and the new.** `flowFrom` makes an array
+  a row (`ringRowOf`), `splitLine` makes them again at the new width, and
+  `rebuild` copies them into the new ring; the nursery promotes 22 MB of
+  them in 20 resizes of the 10,000-row line. Rows written straight from the
+  old ring into the new would not be allocated.
+- **`gitlog`'s cut of coloured lines**, 73 ms a resize of 542,000 rows
+  without a limit, all of it work (§VC34's note on what V22 costs lines
+  that are not plain).
