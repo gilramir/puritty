@@ -1124,9 +1124,34 @@ headMarks marks j row x found =
         found
 
 
-{-| Each mark at an offset from `from` to `to` found at `row` and `x`. -}
+{-| Each mark at an offset from `from` to `to` found at `row` and `x`.
+It runs for every cell of a line the ring reflows, and almost none has a
+mark, so `found` is made again only when one does (§VC33). -}
 markAt : Array Int -> Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
 markAt marks from to row x found =
+    if anyIn marks from to 0 then
+        foundAt marks from to row x found
+
+    else
+        found
+
+
+anyIn : Array Int -> Int -> Int -> Int -> Bool
+anyIn marks from to k =
+    when Array.get k marks is
+        Nothing ->
+            False
+
+        Just m ->
+            let
+                at =
+                    markOffset m
+            in
+            (at >= from && at < to) || anyIn marks from to (k + 1)
+
+
+foundAt : Array Int -> Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
+foundAt marks from to row x found =
     Array.indexedMap
         (\k f ->
             let

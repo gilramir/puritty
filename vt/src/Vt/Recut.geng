@@ -16,6 +16,12 @@ into rows and reflowed by `reflowed`, the reflow a resize makes of the
 ring, and packed again. Either way a page's rows are what `reflowed` makes
 of them, which is what V10 and V16 made of a page when it was read.
 
+A line on plain pages (`Page.plain`: no style, a byte a cell) is cut on its
+headers alone (§VC33): a row's text ends at its extent, so no byte is
+walked, and its cells are copied as slices of the page's text, joined at
+the end, so no byte is copied one at a time. A page written is plain when
+every row put in it was.
+
 The new rows fill pages of `pageRows` rows, as `pageOut` cuts the ring's,
 whatever pages they came from: a widening makes fewer pages, and a
 narrowing more, which can be more than the scrollback keeps; the resize
@@ -35,12 +41,22 @@ import Vt.Term exposing (..)
 import Vt.Pages exposing (..)
 
 
-{-| The pages being written: those done, and the one being written. -}
+{-| The pages being written: those done, and the one being written. Its
+text is `pieces`, then the slice `pendFrom` to `pendTo` of `pend` (page
+`pendPi`'s text), which a slice that follows it in the same page grows,
+then the bytes in `text`; one of the last two is always empty. `plain`:
+every row put in the page was plain. -}
 type alias Out =
     { done : Array Page
     , text : Builder UInt8
+    , pieces : Builder Bytes
+    , pend : Bytes
+    , pendPi : Int
+    , pendFrom : Int
+    , pendTo : Int
     , heads : Builder UInt8
     , runs : Builder UInt8
+    , plain : Bool
     }
 
 
@@ -73,14 +89,25 @@ recut : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Clusters -> Arra
 recut reflow old cols clusters pages =
     let
         o =
-            lines reflow old cols pages 0 0 0 0 clusters (fresh (Maybe.withDefault 0 (Maybe.map (\p -> Bytes.length p.text) (Array.first pages))))
+            lines reflow old cols (Array.map settlePlain pages) 0 0 0 0 clusters (blank [])
     in
     { pages = finish cols o.out, clusters = o.clusters }
 
 
-fresh : Int -> Out
-fresh size =
-    { done = [], text = Builder.empty (size + 64), heads = Builder.empty 512, runs = Builder.empty 256 }
+{-| A page begun after `done`. -}
+blank : Array Page -> Out
+blank done =
+    { done = done
+    , text = Builder.empty 256
+    , pieces = Builder.empty 16
+    , pend = Bytes.empty
+    , pendPi = -1
+    , pendFrom = 0
+    , pendTo = 0
+    , heads = Builder.empty 512
+    , runs = Builder.empty 256
+    , plain = True
+    }
 
 
 finish : Int -> (moved o : Out) -> Array Page
@@ -89,13 +116,70 @@ finish cols o =
         o.done
 
     else
+        let
+            f =
+                flushPend (flushLoose o)
+        in
         Array.pushLast
-            { text = Bytes.fromUInt8s (Builder.toArray o.text)
-            , heads = Bytes.fromUInt8s (Builder.toArray o.heads)
-            , runs = Bytes.fromUInt8s (Builder.toArray o.runs)
+            { text = Bytes.flatten (Builder.toArray f.pieces)
+            , heads = Bytes.fromUInt8s (Builder.toArray f.heads)
+            , runs = Bytes.fromUInt8s (Builder.toArray f.runs)
             , cols = cols
+            , plain =
+                if f.plain then
+                    Plain
+
+                else
+                    NotPlain
             }
-            o.done
+            f.done
+
+
+{-| The bytes in hand made a piece. -}
+flushLoose : (moved o : Out) -> Out
+flushLoose o =
+    if Builder.length o.text == 0 then
+        o
+
+    else
+        let
+            bytes =
+                Bytes.fromUInt8s (Builder.toArray o.text)
+        in
+        { o | text = Builder.empty 256, pieces = Builder.pushLast bytes o.pieces }
+
+
+{-| The slice in hand made a piece. -}
+flushPend : (moved o : Out) -> Out
+flushPend o =
+    if o.pendTo <= o.pendFrom then
+        o
+
+    else
+        let
+            piece =
+                Bytes.slice o.pendFrom o.pendTo o.pend
+        in
+        { o | pieces = Builder.pushLast piece o.pieces, pend = Bytes.empty, pendPi = -1, pendFrom = 0, pendTo = 0 }
+
+
+{-| Bytes `from` to `to` of page `pi`'s `text` put after the page's text:
+the slice in hand grown when they follow it. -}
+sliceIn : Int -> Bytes -> Int -> Int -> (moved o : Out) -> Out
+sliceIn pi text from to o =
+    let
+        o1 =
+            flushLoose o
+    in
+    if o1.pendPi == pi && o1.pendTo == from && o1.pendTo > o1.pendFrom then
+        { o1 | pendTo = to }
+
+    else
+        let
+            o2 =
+                flushPend o1
+        in
+        { o2 | pend = text, pendPi = pi, pendFrom = from, pendTo = to }
 
 
 {-| A row about to start: the page being written kept, and a new one begun
@@ -106,11 +190,7 @@ toPage cols o =
         o
 
     else
-        let
-            size =
-                Builder.length o.text
-        in
-        { done = finish cols o, text = Builder.empty (size + 64), heads = Builder.empty 512, runs = Builder.empty 256 }
+        blank (finish cols o)
 
 
 {-| Every line from page `pi`, its header `h`, text `ti` and runs `r` on. -}
@@ -125,22 +205,34 @@ lines reflow old cols pages pi h ti r clusters o =
                 lines reflow old cols pages (pi + 1) 0 0 0 clusters o
 
             else
-                let
-                    line =
-                        gather pages pi h ti r []
+                when plainSpans old pages pi h ti ti [] is
+                    Just plain ->
+                        lines reflow old cols pages plain.pi plain.h plain.ti 0 clusters (plainLine cols plain.spans plain.last o)
 
-                    rows =
-                        line.rows
-                in
-                if Array.all .fast rows then
-                    lines reflow old cols pages line.pi line.h line.ti line.r clusters (fastLine old cols pages rows o)
+                    Nothing ->
+                        anyLine reflow old cols pages pi h ti r clusters o
 
-                else
-                    let
-                        slow =
-                            slowLine reflow old cols pages rows clusters o
-                    in
-                    lines reflow old cols pages line.pi line.h line.ti line.r slow.clusters slow.out
+
+{-| The line from page `pi`, header `h`, text `ti` and runs `r`, cut on its
+bytes, or reflowed as rows, and the lines after it. -}
+anyLine : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (moved o : Out) -> { out : Out, clusters : Clusters }
+anyLine reflow old cols pages pi h ti r clusters o =
+    let
+        line =
+            gather pages pi h ti r []
+
+        rows =
+            line.rows
+    in
+    if Array.all .fast rows then
+        lines reflow old cols pages line.pi line.h line.ti line.r clusters (fastLine old cols pages rows o)
+
+    else
+        let
+            slow =
+                slowLine reflow old cols pages rows clusters o
+        in
+        lines reflow old cols pages line.pi line.h line.ti line.r slow.clusters slow.out
 
 
 {-| The source rows of the line that starts at page `pi`, header `h`, up to
@@ -164,7 +256,11 @@ gather pages pi h ti r acc =
                         Bitwise.and 0x3FF header
 
                     scanned =
-                        scan page.text ti ext
+                        if page.plain == Plain then
+                            ti + ext
+
+                        else
+                            scan page.text ti ext
 
                     tEnd =
                         if scanned >= 0 then
@@ -309,7 +405,11 @@ lastSource page pi h ti r =
     else
         let
             scanned =
-                scan page.text ti ext
+                if page.plain == Plain then
+                    ti + ext
+
+                else
+                    scan page.text ti ext
 
             tEnd =
                 if scanned >= 0 then
@@ -326,6 +426,170 @@ lastSource page pi h ti r =
                     runsEnd page.runs r ext
         in
         lastSource page pi (h + 2) tEnd rEnd
+
+
+-- A PLAIN LINE ON ITS HEADERS
+
+
+{-| The line from page `pi`, header `h`, text `ti` as spans of its pages'
+text, one a page, when it is plain (§VC33): on plain pages, with no prompt
+mark, and every row that wraps full, so that no empty cells pad it; and
+where the next line starts. `from`: where this page's part began. Nothing
+when it is not, and the line is cut otherwise. -}
+plainSpans : Int -> Array Page -> Int -> Int -> Int -> Int -> Array Span -> Maybe { spans : Array Span, last : Int, pi : Int, h : Int, ti : Int }
+plainSpans old pages pi h ti from acc =
+    when Array.get pi pages is
+        Nothing ->
+            -- the pages end inside the line: every row of it wraps, and
+            -- none has its empty cells trimmed
+            when Array.last acc is
+                Nothing ->
+                    Nothing
+
+                Just span ->
+                    Just { spans = acc, last = span.to, pi = pi, h = h, ti = ti }
+
+        Just page ->
+            if page.plain /= Plain then
+                Nothing
+
+            else if h >= Bytes.length page.heads then
+                plainSpans old pages (pi + 1) 0 0 0 (pushSpan pi page.text from ti acc)
+
+            else
+                let
+                    header =
+                        u16At page.heads h
+
+                    ext =
+                        Bitwise.and 0x3FF header
+
+                    wraps =
+                        Bitwise.and 0x8000 header /= 0
+                in
+                if Bitwise.and 0xC00 header /= 0 || (wraps && ext /= old) then
+                    Nothing
+
+                else if wraps then
+                    plainSpans old pages pi (h + 2) (ti + ext) from acc
+
+                else
+                    Just { spans = Array.pushLast { pi = pi, text = page.text, from = from, to = ti + ext } acc, last = ti, pi = pi, h = h + 2, ti = ti + ext }
+
+
+type alias Span =
+    { pi : Int, text : Bytes, from : Int, to : Int }
+
+
+{-| A page's part of a line, when it has bytes. -}
+pushSpan : Int -> Bytes -> Int -> Int -> Array Span -> Array Span
+pushSpan pi text from to acc =
+    if to > from || Array.isEmpty acc then
+        Array.pushLast { pi = pi, text = text, from = from, to = to } acc
+
+    else
+        acc
+
+
+{-| A plain line cut at `cols`, as `fastLine` cuts it: its cells the spans'
+text, without the empty cells that end its last row (which begins at byte
+`last` of the last span); every row full and wrapped but the last; its text
+copied as slices, a page's worth at a time. -}
+plainLine : Int -> Array Span -> Int -> (moved o : Out) -> Out
+plainLine cols spans0 last o =
+    let
+        spans =
+            when Array.last spans0 is
+                Just span ->
+                    Array.set (Array.length spans0 - 1) { span | to = span.to - zeros span.text (span.to - 1) (max span.from last) 0 } spans0
+
+                Nothing ->
+                    spans0
+
+        total =
+            Array.foldl (\sp n -> n + sp.to - sp.from) 0 spans
+
+        count =
+            if total == 0 then
+                1
+
+            else
+                (total + cols - 1) // cols
+    in
+    plainRows cols spans total count 0 0 (Maybe.withDefault 0 (Maybe.map .from (Array.first spans))) o
+
+
+{-| Rows `r` on of a plain line of `count` rows, `left` cells to go, its
+text from span `j` byte `at`: as many as the page has room for, then the
+rest on a new page. -}
+plainRows : Int -> Array Span -> Int -> Int -> Int -> Int -> Int -> (moved o : Out) -> Out
+plainRows cols spans left count r j at o =
+    if r >= count then
+        o
+
+    else
+        let
+            o0 =
+                toPage cols o
+
+            b =
+                min (pageRows - Builder.length o0.heads // 2) (count - r)
+
+            cells =
+                min left (b * cols)
+
+            taken =
+                takeSpans spans cells j at o0
+
+            out =
+                taken.out
+
+            heads =
+                plainHeads cols (cells - (b - 1) * cols) (left - cells == 0) b out.heads
+        in
+        plainRows cols spans (left - cells) count (r + b) taken.j taken.at { out | heads = heads }
+
+
+{-| `b` rows' headers: full and wrapped, all but the last, which has
+`lastN` cells and, when it `ends` the line, does not wrap. -}
+plainHeads : Int -> Int -> Bool -> Int -> (moved heads : Builder UInt8) -> Builder UInt8
+plainHeads cols lastN ends b heads =
+    if b <= 0 then
+        heads
+
+    else if b == 1 then
+        if ends then
+            pushU16 (Bitwise.or 0x4000 lastN) heads
+
+        else
+            pushU16 (Bitwise.or 0xC000 cols) heads
+
+    else
+        plainHeads cols lastN ends (b - 1) (pushU16 (Bitwise.or 0xC000 cols) heads)
+
+
+{-| `n` bytes of the spans from span `j` byte `at` put after the page's
+text. -}
+takeSpans : Array Span -> Int -> Int -> Int -> (moved o : Out) -> { out : Out, j : Int, at : Int }
+takeSpans spans n j at o =
+    if n <= 0 then
+        { out = o, j = j, at = at }
+
+    else
+        when Array.get j spans is
+            Nothing ->
+                { out = o, j = j, at = at }
+
+            Just span ->
+                if at >= span.to then
+                    takeSpans spans n (j + 1) (Maybe.withDefault 0 (Maybe.map .from (Array.get (j + 1) spans))) o
+
+                else
+                    let
+                        t =
+                            min n (span.to - at)
+                    in
+                    takeSpans spans (n - t) j (at + t) (sliceIn span.pi span.text at (at + t) o)
 
 
 -- A LINE ON ITS BYTES
@@ -394,14 +658,20 @@ fastLine old cols pages rows o =
                             else
                                 pen0
 
+                        -- a byte a cell and no style: copied as slices
                         src =
-                            { text = text, runs = runs, styled = Bitwise.and 0x4000 row.header == 0 }
+                            { text = text
+                            , runs = runs
+                            , styled = Bitwise.and 0x4000 row.header == 0
+                            , pi = row.pi
+                            , plain = Bitwise.and 0x4000 row.header /= 0 && row.tEnd - row.ti == ext
+                            }
 
                         cells =
                             chunks cols src row.ti own { at = row.r, left = 0, style = 0 } acc.out pen
 
                         padded =
-                            chunks cols { src | styled = False } -1 pad { at = 0, left = 0, style = 0 } cells.out cells.pen
+                            chunks cols { src | styled = False, plain = True } -1 pad { at = 0, left = 0, style = 0 } cells.out cells.pen
                     in
                     { out = padded.out, pen = padded.pen, any = acc.any || own + pad > 0 }
                 )
@@ -440,7 +710,7 @@ when `i` is -1, as many at a time as the row being written has room for:
 the row closed, wrapped, when it is full and a cell follows, a new page
 begun when a row starts and the page is full. `run`: the style run in hand, `left` cells of
 `style`, the next at `at`. -}
-chunks : Int -> { text : Bytes, runs : Bytes, styled : Bool } -> Int -> Int -> { at : Int, left : Int, style : Int } -> (moved o : Out) -> Pen -> { out : Out, pen : Pen }
+chunks : Int -> Src -> Int -> Int -> { at : Int, left : Int, style : Int } -> (moved o : Out) -> Pen -> { out : Out, pen : Pen }
 chunks cols src i left run o pen =
     if left <= 0 then
         { out = o, pen = pen }
@@ -478,20 +748,49 @@ chunks cols src i left run o pen =
                 if i < 0 then
                     -1
 
+                else if src.plain then
+                    i + k
+
                 else
                     skipCells src.text i k
 
-            text =
-                if i < 0 then
-                    pushZeros k o0.text
-
-                else
-                    copyRange src.text i end o0.text
+            written =
+                put src i end k o0
 
             styled =
-                styleCells src.runs src.styled run.at run.left run.style k p0.style p0.count p0.wrote o0.runs
+                styleCells src.runs src.styled run.at run.left run.style k p0.style p0.count p0.wrote written.runs
         in
-        chunks cols src end (left - k) { at = styled.at, left = styled.left, style = styled.rstyle } { o0 | text = text, runs = styled.runs } { p0 | n = p0.n + k, style = styled.style, count = styled.count, wrote = styled.wrote }
+        chunks cols src end (left - k) { at = styled.at, left = styled.left, style = styled.rstyle } { written | runs = styled.runs, plain = written.plain && src.plain } { p0 | n = p0.n + k, style = styled.style, count = styled.count, wrote = styled.wrote }
+
+
+{-| A source row's cells, read from `chunks`: its page's text and runs and
+the page's place, whether the row has style runs, and whether it is plain,
+a byte a cell and no style. -}
+type alias Src =
+    { text : Bytes, runs : Bytes, styled : Bool, pi : Int, plain : Bool }
+
+
+{-| `k` cells, bytes `i` to `end` of the source, put after the page's text:
+empty cells when `i` is -1, a slice when the row is plain, else a byte at a
+time. -}
+put : Src -> Int -> Int -> Int -> (moved o : Out) -> Out
+put src i end k o =
+    if i < 0 then
+        let
+            l =
+                flushPend o
+        in
+        { l | text = pushZeros k l.text }
+
+    else if src.plain then
+        sliceIn src.pi src.text i end o
+
+    else
+        let
+            l =
+                flushPend o
+        in
+        { l | text = copyRange src.text i end l.text }
 
 
 {-| The byte after `k` single-column cells from byte `i`, each with its
@@ -690,8 +989,11 @@ rowAt page src clusters =
 
 
 packRow : Clusters -> Row -> (moved o : Out) -> Out
-packRow clusters row o =
+packRow clusters row o0 =
     let
+        o =
+            flushPend o0
+
         packed =
             packArray clusters row.cells 0 o.text o.runs 0 0 False
 
@@ -712,7 +1014,7 @@ packRow clusters row o =
                     )
                 )
     in
-    { o | text = packed.text, runs = packed.runs, heads = pushU16 header o.heads }
+    { o | text = packed.text, runs = packed.runs, heads = pushU16 header o.heads, plain = False }
 
 
 {-| `packCells` for a row's cells in an array. -}

@@ -7,6 +7,7 @@ module Vt.Pages exposing
     , pushU16
     , pushUtf8
     , pushPage
+    , settlePlain
     , backOf
     , emptyBack
     , Row
@@ -74,6 +75,7 @@ pageOut clusters s back =
             , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
             , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
             , cols = s.cols
+            , plain = Unsure
             }
 
         -- the ring takes `pageRows` rows more before the next page goes
@@ -293,7 +295,7 @@ dropOver back =
             Just oldest ->
                 dropOver
                     { back
-                        | pages = Builder.set back.head { text = Bytes.empty, heads = Bytes.empty, runs = Bytes.empty, cols = 0 } back.pages
+                        | pages = Builder.set back.head { text = Bytes.empty, heads = Bytes.empty, runs = Bytes.empty, cols = 0, plain = NotPlain } back.pages
                         , head = back.head + 1
                         , bytes = back.bytes - pageBytes oldest
                         , rows = back.rows - Bytes.length oldest.heads // 2
@@ -311,6 +313,48 @@ compact back =
 
     else
         back
+
+
+{-| A page whose plainness is `Unsure` decided (§VC33): it is `Plain` when
+it has no style runs, its text is as many bytes as its rows' cells, and no
+row that wraps ends in a spacer head (0xFF). A byte a cell and no style
+leaves ASCII, an empty cell's 0, or a spacer head, which ends only a row
+that wraps; a cell in a background colour alone (0xFE) carries its colour
+(`eraseCell`), so it has a style run. The headers are walked, not the text:
+with a byte a cell, a row's text ends where the sum of the extents says. -}
+settlePlain : Page -> Page
+settlePlain page =
+    if page.plain /= Unsure then
+        page
+
+    else if Bytes.length page.runs == 0 && plainHeads page 0 0 then
+        { page | plain = Plain }
+
+    else
+        { page | plain = NotPlain }
+
+
+plainHeads : Page -> Int -> Int -> Bool
+plainHeads page h at =
+    if h >= Bytes.length page.heads then
+        at == Bytes.length page.text
+
+    else
+        let
+            header =
+                u16At page.heads h
+
+            next =
+                at + Bitwise.and 0x3FF header
+        in
+        if next > Bytes.length page.text then
+            False
+
+        else if Bitwise.and 0x8000 header /= 0 && next > at && byteAt page.text (next - 1) == 0xFF then
+            False
+
+        else
+            plainHeads page (h + 2) next
 
 
 {-| A row of a screen or its scrollback out of the ring or a page: its

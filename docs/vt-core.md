@@ -2583,7 +2583,8 @@ After all of it: replay 323 of 323, esctest2 392 (Ghostty 388).
   `--diff` run, with their row.
 - The 100,000-row line is 19 ms a resize against Ghostty's 4.5 ms; §VC30's
   floor for walking its bytes is 17 ms a pass. The headers-only cut for
-  plain text that §VC30 measured (0.15 ms) is not built.
+  plain text that §VC30 measured (0.15 ms) is not built. (Built: V22,
+  §VC33.)
 - The lossy resizes still take every page back (above).
 
 ## VC32. A scrollback limit in bytes (V21)
@@ -2843,3 +2844,105 @@ not of speed: with its own default (50 MB, no line limit) Ghostty keeps all
 542,607 rows of `gitlog` and takes 114 ms a resize, where the core's
 default (4.05 MB) keeps 93,327 and takes 13 ms (263 ms for the 20, "The
 default" above).
+
+## VC33. A plain line cut on its headers alone (V22)
+
+§VC32's comparison with Ghostty left the core 4 to 11 times slower a row on
+a long wrapped line, the gap §VC30 measured and proposed to close by
+cutting plain text on its row headers alone (0.15 ms a pass for the
+100,000-row line, against 17 ms for a walk of its bytes). Gilbert: build
+it.
+
+**V22 · A resize cuts a plain line by arithmetic.** A page is *plain* when
+it has no style runs and a byte a cell: its rows' text is as long as their
+extents. A line all on plain pages, with no prompt mark and every row that
+wraps full, so that no empty cells pad it, is cut at the new width without
+a byte read: every row full and wrapped but the last, its text the pages'
+text in order, less the empty cells that end the last row. `Recut` walks
+the headers to find where the line ends (`plainSpans`), and moves its text
+as one slice a page it runs over, merged with the slice before when it
+follows it, and joins a new page's slices when the page is done
+(`Bytes.flatten`), so no byte is copied one at a time either. A line on
+other pages is cut as before (§VC31).
+
+`Page.plain` is `Unsure | Plain | NotPlain`. A page paged out of the ring is
+`Unsure`, so paging out costs nothing for it, and the first resize decides
+it from the headers (`settlePlain`): no style runs, text as many bytes as
+the extents sum to, and no row that wraps ending in a spacer head (0xFF),
+read at the offset the sum gives. With no style runs and a byte a cell, a
+cell is ASCII, an empty cell's 0, or a spacer head, which ends only a row
+that wraps; a cell in a background colour alone (0xFE) carries its colour
+(`eraseCell`), so it has a style run. A page `Recut` writes is `Plain`
+when every row put in it was. A first version decided it in `pageOut`, a
+row at a time: `vte-scrolling`, 2,666,667 one-character lines, cost 9.9%
+more instructions, then 3.0% and 1.5% with cheaper tests, which is why it
+waits for a resize.
+
+**The ring's reflow.** Profiled after it, the 10,000-row line's resize was
+three quarters the ring's own reflow (`reflowCols`), and half of that
+`markAt`, which made the array of marks found again for every cell of the
+line (the cursor and the saved cursor, two or three). It now does so only
+for a cell a mark is on: the line's resize 2.05 to 1.3 ms, and 10,000
+short lines' 1.45 to 1.25 ms, and to 1.2 and 1.1 with the marks tested in a
+loop rather than by `Array.any`, whose closure was a call a cell.
+
+**Against Ghostty**, compared as §VC32 says (neither with a limit, the
+dumps the same byte for byte after the 20 resizes, a resize's time over
+the rows it reflows), three runs, the median:
+
+| input | core, a resize | Ghostty, a resize | core, ns a row | Ghostty, ns a row | core ÷ Ghostty | before V22 |
+|---|---:|---:|---:|---:|---:|---:|
+| one line, 10,000 rows | 1.20 ms | 0.47 ms | 80 | 31 | 2.6 | 10.8 |
+| one line, 100,000 rows | 3.25 ms | 8.65 ms | 22 | 58 | 0.38 | 4.0 |
+| 10,000 short lines | 1.10 ms | 0.81 ms | 111 | 81 | 1.37 | 2.8 |
+| 100,000 short lines | 4.25 ms | 18.6 ms | 43 | 186 | 0.23 | 0.72 |
+| `gitlog.txt` | 69.6 ms | 115 ms | 126 | 207 | 0.61 | 0.61 |
+
+The long line is now faster than Ghostty's at 100,000 rows. What is left
+at 10,000 rows, and of the short lines', is the ring's reflow, about a
+millisecond a resize whatever the scrollback holds: its rows are cells in
+arrays, cut a cell at a time (`splitLine`), and §VC30 left them so. The
+short lines gain because their pages are plain too, a line a span.
+`gitlog`'s pages are not plain, since its lines have colour, and it is cut
+as before.
+
+**With the default limit** (4.05 MB, §VC32), `drag 20 80 50`, the dumps the
+same as 6ea1ecd's: the long line of 10,000 rows 105 to 28 ms, of 100,000
+rows 207 to 24, 10,000 short lines 49 to 22, 100,000 short lines 212 to
+69, `gitlog` 263 to 244.
+
+**The speed targets.** Instructions against 6ea1ecd: −0.40% to +0.02% on
+the thirteen inputs (against the build before V20, −1.02% to +0.01%).
+Times, five runs after a warm-up, against the build before V20 in the same
+session: as at 6ea1ecd, all inside their budgets, `gitlog` 102–105 ms
+against 97–99 (budget 132) and `vte-scrolling` 40–43 against 40–41 (budget
+42), the rest level.
+
+**The fuzzers found a bug.** The first runs on V22, the recorded
+differential run (the row of 19:53) and the self-fuzzer beside it, one
+hour each, ran 590,135 and 423,235 inputs. The differential run found
+no difference. The self-fuzzer found six inputs where the pages cut on
+their bytes differ from the reflow of their rows (§VC31's check). All six
+were one bug. When the pages end inside a line, every row of it wraps and
+none has its empty cells trimmed. `plainSpans` answered the start of the
+last row as 0 there, the offset it begins a new page at, so `plainLine`
+trimmed the empty cells off the whole of the last page's part. Minimized,
+the input is one wide character repeated at one column, which writes rows
+of empty cells. It shows in an ordinary resize too: `中\e[2000b` at 1 by 1,
+widened to 3, lost 85 rows of history and the wrap of the last, where
+Ghostty keeps them. The pages now end such a line at the last span's end,
+and nothing is trimmed. The replay case `resize-cols-plain-blank-line`
+holds it, and it fails without the fix.
+
+On the fixed build, every saved input passes both fuzzers: the
+differential run's 12,760 seeds, corpus and findings, and the
+self-fuzzer's 6,288, the six inputs among them. The two fuzzers then ran an
+hour again, side by side (the diff-runs.tsv row of 21:19). The
+differential run, on 16 jobs, ran 568,853 inputs, and the self-fuzzer, on 8
+jobs, ran 332,295. Neither found a crash or a difference. The 41 inputs
+the differential run wrote as slow or timed out, 1.2 to 4.0 KB with 53 to
+2,309 resizes each, are §VC32's kind, many rows of few bytes reflowed at
+every resize. They are not saved as findings.
+
+After it: replay 324 of 324, esctest2 392 (Ghostty 388), and the five
+inputs of the comparison above still the same as Ghostty's byte for byte.
