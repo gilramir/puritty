@@ -14,7 +14,7 @@ C=$R/vendor/gren-lang/compiler
 CC=$R/.devbox/nix/profile/default/bin/clang
 PATH=$R/.devbox/nix/profile/default/bin:$PATH \
 GENG_BIN=$C/geng GENG_CORE=$R/vendor/gren-lang/core GENG_CC=$CC NIX_HARDENING_ENABLE= \
-GENG_CORE_PASSES=specialize,foldspec,transient,arraypop,mono,inline,float,floatin,mutual,case,tailcall,inplace \
+GENG_CORE_PASSES=specialize,foldspec,transient,arraypop,mono,inline,float,floatin,mutual,case,tailcall,inplace,drop \
   node $C/app make Fuzz --debug-info --output=libvtfuzz.so
 D=libvtfuzz.so.native-build
 # Only the core's own C has coverage: the runtime's (the GC, arrays,

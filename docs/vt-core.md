@@ -3142,3 +3142,54 @@ owned:
 - **`gitlog`'s cut of coloured lines**, 73 ms a resize of 542,000 rows
   without a limit, all of it work (§VC34's note on what V22 costs lines
   that are not plain).
+
+## VC37. The old screen freed at a resize (geng-lang D1026)
+
+geng-lang built D1026 (`m4-free.md` §FR11): native's last pass, `drop`,
+gives a builder's buffer back to the allocator where a record holding it is
+read for the last time and nothing else can reach it. The harness's builds
+(`bench`, `dump`, `esctest`, `fuzz`) name `drop` in their passes.
+
+**What it drops in the core.** `resizeTo`'s screens: `active` (and `main`
+and `alt` with the alternate screen shown) is the old screen, taken out of
+the term by `settle`, which `resizeScreen` only reads; it is freed once the
+new screen is made, 20 buffers and 10.9 MB over 20 resizes on every input,
+§VC36's ring. `reset` frees the old term's builders whole, RIS keeping none
+of them. Nothing on the output path is dropped, and the thirteen
+throughput counts do not move.
+
+**The pages are not**: their text is `Bytes`, which no pass can show is the
+pages' alone, and `Back.pages` is a buffer of pointers, which the runtime
+does not give back. D1027 holds them affinely.
+
+**Resizes**, `core-bench FILE resizes N 80 50 2000000000`, the median of
+nine (five for the large inputs), before and after interleaved, reported as
+D1029 asks:
+
+| input | first 20 resizes, before | after | each of the next 80, before | after |
+|---|---:|---:|---:|---:|
+| one line of 10,000 rows | 15 ms | 12 | 0.33 ms | 0.35 |
+| 10,000 short lines | 12 | 12 | 0.50 | 0.46 |
+
+The 100,000-row line and 100,000 short lines are level over 20 resizes (57
+and 81 ms against 57 and 82).
+
+**`perf.py`.** The resize cases move both ways: 10,000 short lines +7.7%,
+the 10,000-row line +3.2%, the 100,000-row line −5.1% and −7.6%, the rest
+within 1.2%. Under callgrind the drop itself is 0.2 M instructions over 20
+resizes of the short lines (`GC_freehblk`); the +18 M is the collector's
+marking, as many collections at other moments (three each), and on the
+10,000-row line two more of them. A freed block changes when Boehm next
+collects, and an instruction count counts the marking (§VC35's lesson that
+counts are not times holds the other way too). Recorded with `--update`;
+all thirteen inputs inside their budgets.
+
+**The fuzzers**, 20 minutes each, side by side. The differential run, on
+12 jobs, ran 86,018 inputs with no finding. The self-fuzzer, on 4, spent the
+run loading its corpus: libFuzzer's fork mode runs every saved input once
+to merge them, 59,905 here into 7,845, with no crash, timeout or OOM, and
+then ran 89. 600 of the saved inputs take 19.2 s with `drop` and without
+it, so the time is the corpus's size and not the drops; a smaller corpus,
+or `-runs=0` over it, is the way to a longer search next time.
+
+After it: replay 324 of 324, esctest2 392 (Ghostty 388).
