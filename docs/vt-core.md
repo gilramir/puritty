@@ -3098,3 +3098,24 @@ wrote as slow or timed out are §VC32's kind, as before. Rebuilt with
 13,066 and the self-fuzzer's 14,634.
 
 After it: replay 324 of 324, esctest2 392 (Ghostty 388).
+
+## VC36. Why the 10,000-row line trailed Ghostty: the heap's growth
+
+§VC35 left one input slower than Ghostty's, the line of 10,000 rows, at
+1.35 times its time over 20 resizes. Gilbert asked why. It is the first
+resizes of a process, not the resize. In user time the core's first 20 are
+within 7% of Ghostty's (8.0 ms against 7.5), and each after them is 0.31 ms
+against 0.35. At 100 resizes the totals are level, 41 ms each. The gap is
+system time, 4.2 ms against 0.8: 7,400 page faults as the collector's heap
+grows from 8 MB to 33 MB. Each resize builds a new ring and new pages and
+leaves the old ones for the collector, 2.1 MB a resize on this input,
+where Ghostty's reflow hands each old page straight to the next new one.
+
+geng-lang's `m4-free.md` measures it. The resize's dead buffers, freed by
+hand at the point an ownership proof would free them, take the 20 resizes
+from 16 ms to 11 (Ghostty 10.4) and the 100 from 46 to 33 (Ghostty 42),
+with the same dumps on all five inputs. `gitlog` does not move, since its
+time is the cut of coloured lines (§VC34). The comparison with Ghostty
+counted the core's start-up; `m4-free.md` §FR8 asks whether later
+comparisons report the first 20 resizes and the cost a resize after them
+both. Nothing in the core changed.
