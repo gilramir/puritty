@@ -23,6 +23,11 @@ read alone and `race2` the read and the X events, to price each branch
 
 A frame's lateness is the time from the first read it shows to the frame.
 
+Keys (§14) are read with the X events and written to the terminal in
+legacy xterm encoding. A read that comes after a key, before a frame,
+is drawn at once, not when 16 ms have passed: the 16 ms cap held the
+echo of fast typing back by 6 ms.
+
 The terminal is `os`'s (geng-lang D1042), which replaced the probe's own
 `Pty` package.
 
@@ -30,6 +35,7 @@ usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...
 
 -}
 
+import Bitwise
 import Bytes exposing (Bytes)
 import Console
 import Int64
@@ -40,6 +46,7 @@ import Os.Process as Process exposing (Connection(..))
 import Process as Sleep
 import Task exposing (Task)
 import Time
+import UInt8
 import Vt
 import Vt.View as View
 import X
@@ -61,6 +68,7 @@ type alias Run =
     , stress : Bool
     , double : Bool
     , branches : Int
+    , keyed : Bool
     }
 
 
@@ -101,6 +109,7 @@ drawFrame ms r =
                     | shadow = f.shadow
                     , last = ms
                     , pending = -1
+                    , keyed = False
                     , glyphs = g
                     , lateMax = max r.lateMax late
                     , lateSum = r.lateSum + late
@@ -208,7 +217,7 @@ raceLoop fd r =
                                                     feed fd chunk ms counted
                                                         |> Task.andThen
                                                             (\next ->
-                                                                if ms - next.last >= 16 then
+                                                                if ms - next.last >= 16 || next.keyed then
                                                                     drawFrame ms next |> Task.andThen (raceLoop fd)
 
                                                                 else
@@ -216,13 +225,115 @@ raceLoop fd r =
                                                             )
 
                                             Events _ ->
-                                                X.take |> Task.andThen (\n -> raceLoop fd { counted | events = counted.events + n })
+                                                X.take
+                                                    |> Task.andThen
+                                                        (\n ->
+                                                            X.keys
+                                                                |> Task.andThen
+                                                                    (\k ->
+                                                                        writeAll fd (keyBytes k 0 [])
+                                                                            |> Task.andThen (\_ -> raceLoop fd { counted | events = counted.events + n, keyed = counted.keyed || Bytes.length k > 0 })
+                                                                    )
+                                                        )
 
                                             Due ->
                                                 drawFrame ms counted |> Task.andThen (raceLoop fd)
                                     )
                         )
             )
+
+
+{-| What the keys send to the program (§14): legacy xterm encoding, the
+smallest set that a shell and an editor need. The key's text, which
+xkbcommon has already turned to a control character under ctrl; ESC
+before it under alt; and a sequence for each named key. Cursor keys in
+application mode (DECCKM), the function keys, modifiers on named keys and
+the kitty protocol are phase 3's. -}
+keyBytes : Bytes -> Int -> Array Bytes -> Array Bytes
+keyBytes records at acc =
+    if at + 6 > Bytes.length records then
+        acc
+
+    else
+        let
+            byte i =
+                Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) records))
+
+            sym =
+                Bitwise.or (Bitwise.shiftLeftBy 24 (byte 0)) (Bitwise.or (Bitwise.shiftLeftBy 16 (byte 1)) (Bitwise.or (Bitwise.shiftLeftBy 8 (byte 2)) (byte 3)))
+
+            mods =
+                byte 4
+
+            n =
+                byte 5
+
+            text =
+                Bytes.slice (at + 6) (at + 6 + n) records
+        in
+        keyBytes records (at + 6 + n) (Array.pushLast (encodeKey sym mods text) acc)
+
+
+encodeKey : Int -> Int -> Bytes -> Bytes
+encodeKey sym mods text =
+    let
+        named =
+            when sym is
+                0xFF0D ->
+                    Just "\r"
+
+                0xFF08 ->
+                    Just "\u{007F}"
+
+                0xFF09 ->
+                    Just "\t"
+
+                0xFF1B ->
+                    Just "\u{001B}"
+
+                0xFF52 ->
+                    Just "\u{001B}[A"
+
+                0xFF54 ->
+                    Just "\u{001B}[B"
+
+                0xFF53 ->
+                    Just "\u{001B}[C"
+
+                0xFF51 ->
+                    Just "\u{001B}[D"
+
+                0xFF50 ->
+                    Just "\u{001B}[H"
+
+                0xFF57 ->
+                    Just "\u{001B}[F"
+
+                0xFFFF ->
+                    Just "\u{001B}[3~"
+
+                0xFF55 ->
+                    Just "\u{001B}[5~"
+
+                0xFF56 ->
+                    Just "\u{001B}[6~"
+
+                _ ->
+                    Nothing
+
+        body =
+            when named is
+                Just s ->
+                    Bytes.fromString s
+
+                Nothing ->
+                    text
+    in
+    if Bitwise.and mods 4 /= 0 && Bytes.length body > 0 && named == Nothing then
+        Bytes.flatten [ Bytes.fromString "\u{001B}", body ]
+
+    else
+        body
 
 
 main : Task Never {}
@@ -290,6 +401,7 @@ run cp mode program args t0 =
                                 , late16 = 0
                                 , stress = stress
                                 , double = mode == "double"
+                                , keyed = False
                                 , branches =
                                     if mode == "race1" then
                                         1

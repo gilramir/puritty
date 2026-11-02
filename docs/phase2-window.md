@@ -323,7 +323,7 @@ In the order the build will meet them:
    and positions, and the bytes per cell with it. *Surveyed 2026-11-02:
    §13.*
 3. **Input**: keys through xkbcommon, and the latency from a key to its
-   pixel.
+   pixel. *Surveyed 2026-11-02: §14.*
 4. **Time to draw** on a real server, the desktop's and ETX's, and the
    frame pacing S§6.2 asks for ("latest frame wins").
 5. **`ssh -X` from another host**, which the exit asks for: needs a second
@@ -883,3 +883,123 @@ Built in the x11 probe:
 
 What §13.6 left that is still open: synthesised bold and italic for
 fallback faces, procedural box drawing, and ink extents tracked per row.
+
+---
+
+## 14. Keys, and the time from a key to its pixel: a survey (2026-11-02)
+
+§7's third item. Phase 3 builds input: XKB modifiers, the legacy and kitty
+encodings, mouse, selection, IME. What phase 2 asks first is narrower:
+whether keys through xkbcommon fit the one loop, and what a key costs
+from its press to its pixel, here and over `ssh -X`.
+
+### 14.1 What was built
+
+- **The x11 probe reads keys.**
+  - **In C.** xkbcommon-x11 reads the keymap from the server's XKB at
+    start and again on its `NewKeyboardNotify` and `MapNotify`. Its state
+    follows `StateNotify`.
+  - **To Geng.** Each key press becomes a record of keysym, modifiers
+    and UTF-8 text. `X.keys` hands the records over after the race's
+    events branch.
+  - **The encoding is in Geng**, since it decides something (§3.2). It
+    is legacy xterm's, the smallest set a shell needs: the key's text,
+    which xkbcommon has already made a control character under ctrl; ESC
+    before it under alt; and a sequence for Return, BackSpace, Tab,
+    Escape, the arrows, Home, End, Delete, PgUp and PgDn.
+  - **Phase 3's, not here:** DECCKM's application cursor keys, modifiers
+    on named keys, the function keys and kitty's protocol.
+- **`probes/input/typo`** measures from outside, as Typometer does.
+  - **How.** It gives a window the focus and, for each key, reads the
+    window's top 40 rows with `GetImage`, presses and releases `x`
+    through XTest, and polls the same rows until they differ. A poll
+    costs 0.08–0.12 ms.
+  - **What the terminal runs.** Each one runs
+    `stty raw -echo; exec dd bs=1 count=KEYS+1`, so a key's echo is one
+    glyph. One extra key, not timed, ends the program: a terminal that
+    closes as its program ends dropped the last key's echo.
+  - **`run.sh`** runs it against the probe and against xterm 411,
+    st 0.9.3 and Alacritty 0.17.0 (llvmpipe) from the pinned nixpkgs, all
+    in DejaVu Sans Mono 11 at 160×50 on Xvfb.
+
+### 14.2 Key to pixel, on one machine
+
+100 keys each:
+
+| terminal | a key every 100 ms: median | p95 | max | every 10 ms: median | p95 | max |
+|---|---|---|---|---|---|---|
+| the probe, as §12 drew | 0.30 ms | 0.37 | 0.72 | 6.21 | 6.25 | 6.29 |
+| the probe, a frame after a key at once | 0.28 | 0.36 | 0.65 | 0.16 | 0.21 | 0.59 |
+| xterm | 0.29 | 0.42 | 0.66 | 0.13 | 0.34 | 1.08 |
+| st | 2.60 | 2.65 | 2.72 | 2.31 | 2.39 | 2.63 |
+| Alacritty | 2.16 | 2.46 | 2.68 | 6.49 | 7.01 | 7.15 |
+
+- **Slow typing.** The probe is level with xterm: about 0.3 ms, of which
+  the probe's own part is 0.13–0.18 ms from the key's event to its frame,
+  echo included. st holds about 2.5 ms, its own minimum latency. Alacritty
+  takes about 2 ms, on Mesa's software GL.
+- **Fast typing.** The probe held the echo back: with keys 10 ms apart,
+  a read came less than 16 ms after the last frame, so §12's loop waited
+  for the frame's timer. 6.2 ms a key is the same wait Alacritty shows.
+- **The fix, measured.** A read that comes after a key, before a frame,
+  is drawn at once. That gives 0.16 ms a key at 10 ms apart and 0.24 at
+  30. Output with no key before it keeps the cap: `cat` of `gitlog` takes
+  212–249 ms in 14–16 frames, as in §13.4.
+- **Its cost.** At most one frame a key, so autorepeat at 30 keys a
+  second is 30 frames.
+
+### 14.3 Key to pixel over `ssh -X`
+
+The probe on gmktec7, its display this machine's Xvfb, `typo` here:
+
+| a key every | median | p95 | max | ping, at the time |
+|---|---|---|---|---|
+| 100 ms | 4.65–4.69 ms | 5.12–29.94 | 19.1–49.0 | 3.3–28.4 ms |
+| 10 ms | 3.85 | 5.18 | 20.9 | 3.5–4.8 |
+
+- **One round trip.** A key costs about one network round trip: the key
+  event to gmktec7, and the frame's requests back. The probe's own part
+  stays 0.24–0.33 ms. The 29 ms tails came in a run whose pings reached
+  28 ms. In a later run whose pings stayed within 3.5–4.8 ms, the p95 was
+  5.2.
+- **Nothing to win in visiterm.** Nothing in the path waits on a reply;
+  the X requests are written and flushed.
+- **The keymap.** It costs 36–39 ms to load over the link, against
+  0.35–0.74 ms here: `xkb_x11_keymap_new_from_device` makes its requests
+  one after another. It is paid at start and when the keymap changes.
+
+### 14.4 What a key costs inside
+
+- **xkbcommon.** It takes 0.8–6.4 µs a key, for its keysym, text and four
+  modifier tests, the higher figure when keys come 100 ms apart and the
+  caches are cold. It is far below a frame.
+- **Geng.** The encoding and the write to the pty are inside the probe's
+  0.08–0.18 ms from the key's event to its frame.
+
+### 14.5 Not measured
+
+- **A real server.** On a desktop with a compositor, a frame waits for
+  the next vertical blank and adds up to a refresh. Xvfb has none, so the
+  table is the terminal's part alone. This needs Gilbert's desktop
+  (`:0`, §6).
+- **ETX.** It needs the RHEL8 VM (phase 6).
+- **Keys held down.** Autorepeat is the server's, and only the frames it
+  causes are counted above.
+- **Phase 3's input:** the IME, the kitty protocol, mouse reports and
+  selection.
+
+### 14.6 For Gilbert
+
+1. **Keys through xkbcommon-x11 in C, the encoding in Geng.** The cost is
+   up to 6.4 µs a key, and the keymap's 36–39 ms over `ssh -X` at start.
+   Leaning: yes. C turns a key into a keysym, modifiers and text, and
+   Geng decides what the program is sent, so the legacy and kitty
+   encodings, DECCKM and the profile's settings are Geng's.
+2. **A frame after a key is drawn at once** (§14.2). The cost is a frame
+   a key at most, and none when no key is typed. Fast typing's echo went
+   from 6.2 ms to 0.16. Leaning: yes, with the 16 ms cap kept for output
+   no key caused. Later phases' paint cooldown and synchronized output
+   (§12.4) apply to output and not to this.
+3. **Over `ssh -X`, a key is a round trip.** The cost is the network's,
+   3.9–4.7 ms median to gmktec7. Leaning: nothing to build; record it
+   with ETX's number in phase 6.

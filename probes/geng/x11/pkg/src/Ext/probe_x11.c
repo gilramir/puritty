@@ -27,6 +27,8 @@
 #include <xcb/render.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_renderutil.h>
+#include <xcb/xkb.h>
+#include <xkbcommon/xkbcommon-x11.h>
 
 #include "geng.h"
 
@@ -120,7 +122,12 @@ static hb_buffer_t *hbuf;
 static struct {
     long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, elements, requests, colour, squeezed, joined;
     double fc_ns, shape_ns, raster_ns, draw_ns;
+    long keys, key_frames;
+    double keymap_ns, xkb_ns, key_sum_ns, key_max_ns;
 } st;
+
+static double key_at;
+static void key_setup(void);
 
 static double ns(void) {
     struct timespec t;
@@ -495,6 +502,9 @@ static void draw_run(int y, int x, int n, const uint8_t *p) {
 
 static void stats(void) {
     if (!getenv("PROBE_STATS")) return;
+    fprintf(stderr, "keys %ld: keymap %.2f ms, xkb %.0f ns a key; %ld frames after a key, key to frame mean %.2f ms, max %.2f ms\n",
+            st.keys, st.keymap_ns / 1e6, st.keys ? st.xkb_ns / st.keys : 0, st.key_frames,
+            st.key_frames ? st.key_sum_ns / st.key_frames / 1e6 : 0, st.key_max_ns / 1e6);
     fprintf(stderr,
             "shaping %s lang %s: clusters %ld (fallback %ld), fontconfig queries %ld (%.2f ms, %ld found none), segments %ld, "
             "glyphs %ld in %ld elements and %ld requests; colour %ld, squeezed %ld, spaces joined %ld; uploaded %d; shape %.2f ms, raster %.2f ms, draw %.2f ms\n",
@@ -561,6 +571,13 @@ geng_cancel probe_x_draw(void *list, geng_wait *wait) {
     xcb_flush(conn);
     drain();
     st.draw_ns += ns() - t0;
+    if (key_at > 0 && last >= first) {
+        double d = ns() - key_at;
+        st.key_frames++;
+        st.key_sum_ns += d;
+        if (d > st.key_max_ns) st.key_max_ns = d;
+        key_at = 0;
+    }
     geng_succeed(wait, geng_slot_I4(uploaded));
     return (geng_cancel) {0};
 }
@@ -602,9 +619,11 @@ geng_cancel probe_x_open(int32_t c, int32_t r, int32_t points, geng_wait *wait) 
     }
     int w = cols * cw, h = rows * ch;
     window = xcb_generate_id(conn);
-    uint32_t values[2] = {screen->black_pixel, XCB_EVENT_MASK_EXPOSURE};
+    uint32_t values[2] = {screen->black_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_FOCUS_CHANGE};
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) w, (uint16_t) h, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, 14, "visiterm-probe");
+    key_setup();
     pixmap = xcb_generate_id(conn);
     xcb_create_pixmap(conn, screen->root_depth, pixmap, window, (uint16_t) w, (uint16_t) h);
     gc = xcb_generate_id(conn);
@@ -636,10 +655,97 @@ geng_cancel probe_x_open(int32_t c, int32_t r, int32_t points, geng_wait *wait) 
  * `probe_x_take`, after the race, takes them. */
 static int seen;
 
+/* Keys (docs/phase2-window.md §14): xkbcommon's keymap and state, read from
+ * the server's XKB and kept in step by its StateNotify events. Each key
+ * press is a record for Geng, which decides what it sends: its keysym (4
+ * bytes, big-endian), its modifiers (1: shift 1, ctrl 2, alt 4, super 8),
+ * and its text (a byte of length, then UTF-8). `key_at` is when the first
+ * key not yet shown in a frame came, for the key-to-frame time. */
+static struct xkb_context *xctx;
+static struct xkb_keymap *keymap;
+static struct xkb_state *kstate;
+static int32_t kbd = -1;
+static uint8_t xkb_event;
+static uint8_t keybuf[16384];
+static int keylen;
+
+static void key_setup(void) {
+    double t0 = ns();
+    if (!xkb_x11_setup_xkb_extension(conn, XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION,
+                                     XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS, NULL, NULL, &xkb_event, NULL))
+        return;
+    if (!xctx) xctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    kbd = xkb_x11_get_core_keyboard_device_id(conn);
+    if (keymap) xkb_keymap_unref(keymap);
+    if (kstate) xkb_state_unref(kstate);
+    keymap = xkb_x11_keymap_new_from_device(xctx, conn, kbd, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    kstate = keymap ? xkb_x11_state_new_from_device(keymap, conn, kbd) : NULL;
+    uint16_t events = XCB_XKB_EVENT_TYPE_NEW_KEYBOARD_NOTIFY | XCB_XKB_EVENT_TYPE_MAP_NOTIFY | XCB_XKB_EVENT_TYPE_STATE_NOTIFY;
+    uint16_t parts = XCB_XKB_MAP_PART_KEY_TYPES | XCB_XKB_MAP_PART_KEY_SYMS | XCB_XKB_MAP_PART_MODIFIER_MAP |
+                     XCB_XKB_MAP_PART_EXPLICIT_COMPONENTS | XCB_XKB_MAP_PART_KEY_ACTIONS | XCB_XKB_MAP_PART_VIRTUAL_MODS |
+                     XCB_XKB_MAP_PART_VIRTUAL_MOD_MAP;
+    xcb_xkb_select_events(conn, (xcb_xkb_device_spec_t) kbd, events, 0, events, parts, parts, NULL);
+    st.keymap_ns += ns() - t0;
+}
+
+static void key_press(uint8_t keycode) {
+    if (!kstate) return;
+    double t0 = ns();
+    xkb_keysym_t sym = xkb_state_key_get_one_sym(kstate, keycode);
+    char text[64];
+    int n = xkb_state_key_get_utf8(kstate, keycode, text, sizeof text);
+    if (n < 0) n = 0;
+    if (n > 63) n = 63;
+    int mods = (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0 ? 1 : 0) |
+               (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0 ? 2 : 0) |
+               (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0 ? 4 : 0) |
+               (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0 ? 8 : 0);
+    st.xkb_ns += ns() - t0;
+    st.keys++;
+    if (keylen + 6 + n > (int) sizeof keybuf) return;
+    keybuf[keylen++] = (uint8_t) (sym >> 24);
+    keybuf[keylen++] = (uint8_t) (sym >> 16);
+    keybuf[keylen++] = (uint8_t) (sym >> 8);
+    keybuf[keylen++] = (uint8_t) sym;
+    keybuf[keylen++] = (uint8_t) mods;
+    keybuf[keylen++] = (uint8_t) n;
+    memcpy(keybuf + keylen, text, (size_t) n);
+    keylen += n;
+    if (key_at == 0) key_at = ns();
+}
+
+static void xkb_event_in(xcb_generic_event_t *e) {
+    uint8_t type = ((uint8_t *) e)[1];
+    if (type == XCB_XKB_STATE_NOTIFY) {
+        xcb_xkb_state_notify_event_t *s = (xcb_xkb_state_notify_event_t *) e;
+        if (kstate)
+            xkb_state_update_mask(kstate, s->baseMods, s->latchedMods, s->lockedMods, (xkb_layout_index_t) s->baseGroup,
+                                  (xkb_layout_index_t) s->latchedGroup, s->lockedGroup);
+    } else if (type == XCB_XKB_NEW_KEYBOARD_NOTIFY || type == XCB_XKB_MAP_NOTIFY) {
+        key_setup();
+    }
+}
+
+/* The key records since the last call (see above). */
+geng_cancel probe_x_keys(geng_wait *wait) {
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + (size_t) keylen, GENG_HEADER_BYTES(sizeof *b + (size_t) keylen));
+    b->length = keylen;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    memcpy(b->data, keybuf, (size_t) keylen);
+    keylen = 0;
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
 static void drain(void) {
     xcb_generic_event_t *e;
     while ((e = xcb_poll_for_event(conn)) != NULL) {
-        if ((e->response_type & 0x7f) == XCB_EXPOSE) {
+        if (xkb_event && (e->response_type & 0x7f) == xkb_event) xkb_event_in(e);
+        else if ((e->response_type & 0x7f) == XCB_KEY_PRESS) key_press(((xcb_key_press_event_t *) e)->detail);
+        else if ((e->response_type & 0x7f) == XCB_EXPOSE) {
             xcb_expose_event_t *x = (xcb_expose_event_t *) e;
             xcb_copy_area(conn, pixmap, window, gc, (int16_t) x->x, (int16_t) x->y, (int16_t) x->x, (int16_t) x->y,
                           x->width, x->height);
