@@ -1,0 +1,181 @@
+module X11 exposing
+    ( Settings, Cell, open
+    , draw, shot, setTitle
+    , events, take, Event(..)
+    )
+
+{-| visiterm's window on X11 (`docs/renderer.md`, V34–V37).
+
+One window a process (`geng-plan.md` Q6): [`open`](#open) makes it, and
+every other call is about it. A frame is drawn by handing
+[`draw`](#draw) the display list `Vt.View.frame` makes; the C executes it
+with XRender, shaping and rasterising as it draws (V34), and resolves
+nothing, since the list carries its styles' colours (V35).
+
+The loop waits on [`events`](#events) in its race, and after the race
+[`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
+in cells, the focus, a request to close (V36).
+
+@docs Settings, Cell, open, draw, shot, setTitle, events, take, Event
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Task exposing (Task)
+import UInt8
+
+
+{-| What the window is opened with: its size in cells, the primary font as
+fontconfig names it and its size in points, the language fallback fonts
+are asked for (V25; empty for none), the bytes of glyphs the X server may
+hold before the glyph set is begun again (V37), and the title. -}
+type alias Settings =
+    { cols : Int
+    , rows : Int
+    , font : String
+    , points : Int
+    , lang : String
+    , glyphCap : Int
+    , title : String
+    }
+
+
+{-| A cell's size in pixels. -}
+type alias Cell =
+    { width : Int
+    , height : Int
+    }
+
+
+{-| Opens the window, and answers its cell, or why it could not: no such
+font, no X server, or no RENDER formats it needs. -}
+open : Settings -> Task x (Result String Cell)
+open s =
+    openExtern s.cols s.rows s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap (Bytes.fromString s.title)
+        |> Task.map
+            (\code ->
+                if code == -1 then
+                    Err ("no font for " ++ s.font)
+
+                else if code == -2 then
+                    Err "no X server"
+
+                else if code < 0 then
+                    Err "the X server has no RENDER formats for it"
+
+                else
+                    Ok { width = code // 65536, height = modBy 65536 code }
+            )
+
+
+@extern(c, "visiterm_x11_open")
+openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Task x Int
+
+
+{-| Executes one frame's display list. Answers `False` once the connection
+to the X server has failed. -}
+draw : Bytes -> Task x Bool
+draw list =
+    drawExtern list |> Task.map (\code -> code == 0)
+
+
+@extern(c, "visiterm_x11_draw")
+drawExtern : Bytes -> Task x Int
+
+
+{-| Writes the window as it is on the screen, as a PPM, to a file: the
+pixel gate's picture (V38). Answers `False` if it could not. -}
+shot : String -> Task x Bool
+shot path =
+    shotExtern (Bytes.fromString path) |> Task.map (\code -> code == 0)
+
+
+@extern(c, "visiterm_x11_shot")
+shotExtern : Bytes -> Task x Int
+
+
+{-| Sets the window's title. -}
+setTitle : String -> Task x {}
+setTitle title =
+    titleExtern (Bytes.fromString title) |> Task.map (\_ -> {})
+
+
+@extern(c, "visiterm_x11_title")
+titleExtern : Bytes -> Task x Int
+
+
+{-| Waits for events: answers `True` once there are some, or `False` once
+the connection has failed. It takes none, so a race that cancels it after
+it answered loses nothing; [`take`](#take) takes them. -}
+events : Task x Bool
+events =
+    eventsExtern |> Task.map (\code -> code > 0)
+
+
+@extern(c, "visiterm_x11_events")
+eventsExtern : Task x Int
+
+
+{-| What happened to the window. A key is its keysym, its modifiers (shift
+1, ctrl 2, alt 4, super 8) and its text, which xkbcommon has made (V30);
+what it sends the program is Geng's to decide. -}
+type Event
+    = Key { sym : Int, mods : Int, text : Bytes }
+    | Resized { cols : Int, rows : Int }
+    | Focus Bool
+    | Close
+
+
+{-| The events since the last take. -}
+take : Task x (Array Event)
+take =
+    takeExtern |> Task.map (\b -> decode b 0 [])
+
+
+@extern(c, "visiterm_x11_take")
+takeExtern : Task x Bytes
+
+
+decode : Bytes -> Int -> Array Event -> Array Event
+decode b at acc =
+    let
+        byte i =
+            Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) b))
+
+        u16 i =
+            Bitwise.or (Bitwise.shiftLeftBy 8 (byte i)) (byte (i + 1))
+    in
+    if at >= Bytes.length b then
+        acc
+
+    else
+        when byte 0 is
+            1 ->
+                let
+                    n =
+                        byte 6
+                in
+                decode b
+                    (at + 7 + n)
+                    (Array.pushLast
+                        (Key
+                            { sym = Bitwise.or (Bitwise.shiftLeftBy 16 (u16 1)) (u16 3)
+                            , mods = byte 5
+                            , text = Bytes.slice (at + 7) (at + 7 + n) b
+                            }
+                        )
+                        acc
+                    )
+
+            2 ->
+                decode b (at + 5) (Array.pushLast (Resized { cols = u16 1, rows = u16 3 }) acc)
+
+            3 ->
+                decode b (at + 2) (Array.pushLast (Focus (byte 1 == 1)) acc)
+
+            4 ->
+                decode b (at + 1) (Array.pushLast Close acc)
+
+            _ ->
+                acc

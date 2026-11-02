@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame, Look, defaultLook)
+module Vt.View exposing (Shadow, shadow, frame, Look, defaultLook, Focus, focused)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -39,6 +39,23 @@ of code points below them, its style id in 2 bytes, and its code points in
 changed cells with gaps of fewer than four unchanged cells merged in, so
 that a glyph overhanging into its neighbour is redrawn with it (S§6.2),
 and never starts on a wide character's tail or ends on its head.
+
+**The cursor** is drawn as its cell's run, in a cursor style: the cell's
+style id with its top bit set, `0x8000 + id`, whose record this frame
+carries the cursor's colours and shape. The shape is the underline byte's
+top four bits (1 a block, 2 an underline, 3 a bar, 4 a hollow block, which
+is any cursor while the window does not have the focus); its bottom four
+are the underline's kind. A block's record has the cell's background as
+its foreground and the cursor's colour (OSC 12, else the cell's
+foreground) as its background; the others keep the cell's colours and
+carry the cursor's as the underline colour, which whatever executes the
+list draws the shape in. A wide character's two cells both take it. The
+shadow keeps the cursor's cells marked (their shape in bits 56 and up, which
+no cell of the core's has), so a cell the cursor leaves differs from what
+the shadow says was drawn and is drawn again, and so is one whose cursor
+changes shape. Nothing is drawn for a cursor DECTCEM hides, or for a
+blinking one (mode 12) while `Focus.blinkOn` is false: blinking is the
+loop's, which knows the time.
 
 A style's colours are resolved here, from the core's palette and dynamic
 colours (OSC 4, 10, 11) and the profile's `Look`: inverse and the screen's
@@ -91,6 +108,19 @@ type alias Look =
     }
 
 
+{-| What the window says of the cursor: whether the window has the focus,
+and whether a blinking cursor is in the half of its blink that shows it. -}
+type alias Focus =
+    { focused : Bool
+    , blinkOn : Bool
+    }
+
+
+focused : Focus
+focused =
+    { focused = True, blinkOn = True }
+
+
 {-| The core's palette's own: its white on its black. -}
 defaultLook : Look
 defaultLook =
@@ -115,18 +145,21 @@ shadow cols rows =
     , runs = 0
     , bytes = 0
     , colourKey = -1
-    , stamps = Builder.fromArray (Array.repeat styleMax -1)
+    , stamps = Builder.fromArray (Array.repeat (2 * styleMax) -1)
     , styleIds = Builder.empty 64
     }
 
 
 {-| One frame: the shadow brought up to the term's screen, and the display
 list that does the same to the window. -}
-frame : Look -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
-frame look t sh0 =
+frame : Look -> Focus -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frame look focus t sh0 =
     let
         key =
             colourKey look t
+
+        cursor =
+            cursorOf focus t
 
         sh1 =
             if t.cols /= sh0.cols || t.rows /= sh0.rows || key /= sh0.colourKey then
@@ -162,7 +195,7 @@ frame look t sh0 =
             scrolled.shadow
 
         diffed =
-            diffRows t.screen t.clusters 0 rows cols sh2 scrolled.list
+            diffRows t.screen t.clusters cursor 0 rows cols sh2 scrolled.list
 
         sh3 =
             diffed.shadow
@@ -171,7 +204,7 @@ frame look t sh0 =
             Builder.toArray sh3.styleIds
 
         styles =
-            Array.foldl (styleRecord look t) (Builder.empty (14 * Array.length ids)) ids
+            Array.foldl (styleRecord look t cursor.shape) (Builder.empty (14 * Array.length ids)) ids
 
         size =
             if sh0.frames == 0 || t.cols /= sh0.cols || t.rows /= sh0.rows then
@@ -296,8 +329,8 @@ scrollBand band cols sh =
     }
 
 
-diffRows : Screen -> Clusters -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
-diffRows s clusters y rows cols sh list =
+diffRows : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRows s clusters cursor y rows cols sh list =
     if y >= rows then
         { shadow = sh, list = list }
 
@@ -307,10 +340,10 @@ diffRows s clusters y rows cols sh list =
                 rowOffset s y
 
             r =
-                diffRow s clusters o (extentAt o s) y 0 cols sh list
+                diffRow s clusters cursor o (extentAt o s) y 0 cols sh list
 
         in
-        diffRows s clusters (y + 1) rows cols r.shadow r.list
+        diffRows s clusters cursor (y + 1) rows cols r.shadow r.list
 
 
 {-| The cell the core holds at column `x` of the row at `o`. -}
@@ -325,13 +358,13 @@ cellOf s o ext x =
 
 {-| Row `y` from column `x`: each changed run written to the list and the
 shadow. -}
-diffRow : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
-diffRow s clusters o ext y x0 cols sh list =
+diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRow s clusters cursor o ext y x0 cols sh list =
     if x0 >= cols then
         { shadow = sh, list = list }
 
-    else if cellOf s o ext x0 == Maybe.withDefault unknown (Builder.get (y * cols + x0) sh.cells) then
-        diffRow s clusters o ext y (x0 + 1) cols sh list
+    else if drawnAs s cursor o ext (y * cols) x0 == Maybe.withDefault unknown (Builder.get (y * cols + x0) sh.cells) then
+        diffRow s clusters cursor o ext y (x0 + 1) cols sh list
 
     else
         let
@@ -343,7 +376,7 @@ diffRow s clusters o ext y x0 cols sh list =
                     x0
 
             end0 =
-                runEnd s o ext y (x0 + 1) x0 cols sh.cells
+                runEnd s cursor o ext y (x0 + 1) x0 cols sh.cells
 
             end =
                 if end0 < cols && cellWide (cellOf s o ext (end0 - 1)) == wideHead then
@@ -356,30 +389,30 @@ diffRow s clusters o ext y x0 cols sh list =
                 end - x
 
             written =
-                writeRun s clusters o ext (y * cols) x end sh.frames sh.cells sh.stamps sh.styleIds (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
+                writeRun s clusters cursor o ext (y * cols) x end sh.frames sh.cells sh.stamps sh.styleIds (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
         in
-        diffRow s clusters o ext y end cols { sh | cells = written.cells, stamps = written.stamps, styleIds = written.styleIds, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
+        diffRow s clusters cursor o ext y end cols { sh | cells = written.cells, stamps = written.stamps, styleIds = written.styleIds, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
 
 
 {-| Past the last changed cell of a run that starts before `x`, gaps of
 fewer than four unchanged cells taken in; `last` is the last changed cell
 seen. -}
-runEnd : Screen -> Int -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
-runEnd s o ext y x last cols cells =
+runEnd : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+runEnd s cursor o ext y x last cols cells =
     if x >= cols || x - last > 3 then
         last + 1
 
-    else if cellOf s o ext x == Maybe.withDefault unknown (Builder.get (y * cols + x) cells) then
-        runEnd s o ext y (x + 1) last cols cells
+    else if drawnAs s cursor o ext (y * cols) x == Maybe.withDefault unknown (Builder.get (y * cols + x) cells) then
+        runEnd s cursor o ext y (x + 1) last cols cells
 
     else
-        runEnd s o ext y (x + 1) x cols cells
+        runEnd s cursor o ext y (x + 1) x cols cells
 
 
 {-| The cells of a run, written to the list and the shadow; each style id
 the first time this frame (`stamp`) is added to `styleIds`. -}
-writeRun : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved stamps : Builder Int) -> (moved styleIds : Builder Int) -> (moved list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
-writeRun s clusters o ext row x end stamp cells stamps styleIds list =
+writeRun : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved stamps : Builder Int) -> (moved styleIds : Builder Int) -> (moved list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
+writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
     if x >= end then
         { cells = cells, stamps = stamps, styleIds = styleIds, list = list }
 
@@ -391,20 +424,27 @@ writeRun s clusters o ext row x end stamp cells stamps styleIds list =
             points =
                 Array.takeFirst 63 (cellPoints c clusters)
 
+            under =
+                isCursor cursor (row + x)
+
             id =
-                cellStyle c
+                if under then
+                    0x8000 + Bitwise.and 0x7FFF (cellStyle c)
+
+                else
+                    Bitwise.and 0x7FFF (cellStyle c)
 
             seen =
                 Builder.get id stamps == Just stamp
         in
-        writeRun s clusters o ext row (x + 1) end stamp
-            (Builder.set (row + x) c cells)
+        writeRun s clusters cursor o ext row (x + 1) end stamp
+            (Builder.set (row + x) (drawnAs s cursor o ext row x) cells)
             (if seen then stamps else Builder.set id stamp stamps)
             (if seen then styleIds else Builder.pushLast id styleIds)
             (Array.foldl push24
                 (list
                     |> Builder.pushLast (UInt8.fromInt (Bitwise.or (Bitwise.shiftRightZfBy 15 (cellWide c)) (Array.length points)))
-                    |> push16 (cellStyle c)
+                    |> push16 id
                 )
                 points
             )
@@ -436,12 +476,90 @@ colourKey look t =
         t.colours
 
 
-{-| A style id's record: its colours resolved (see the module's comment). -}
-styleRecord : Look -> Term -> Int -> (moved b : Builder UInt8) -> Builder UInt8
-styleRecord look t id b =
+-- THE CURSOR
+
+
+{-| Where the cursor is drawn, as an index into the shadow's cells (`-1`
+for none), how many cells it covers, and its shape (1 a block, 2 an
+underline, 3 a bar, 4 a hollow block). -}
+type alias Cursor =
+    { at : Int, cells : Int, shape : Int }
+
+
+cursorOf : Focus -> Term -> Cursor
+cursorOf focus t =
+    let
+        blinking =
+            Dict.get 12 t.modes == Just True
+
+        o =
+            rowOffset t.screen t.y
+
+        head =
+            if t.x > 0 && cellWide (cellOf t.screen o (extentAt o t.screen) t.x) == wideTail then
+                t.x - 1
+
+            else
+                t.x
+
+        wide =
+            cellWide (cellOf t.screen o (extentAt o t.screen) head) == wideHead && head + 1 < t.cols
+    in
+    if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || t.y >= t.rows || t.x < 0 || t.y < 0 then
+        { at = -1, cells = 0, shape = 0 }
+
+    else
+        { at = t.y * t.cols + head
+        , cells = if wide then 2 else 1
+        , shape =
+            if not focus.focused then
+                4
+
+            else if t.cursorShape == 3 then
+                2
+
+            else if t.cursorShape == 5 then
+                3
+
+            else
+                1
+        }
+
+
+isCursor : Cursor -> Int -> Bool
+isCursor cursor i =
+    cursor.at >= 0 && i >= cursor.at && i < cursor.at + cursor.cells
+
+
+{-| The cell as the shadow keeps it once it is drawn: the core's, marked
+with the cursor's shape where the cursor is. -}
+drawnAs : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int64
+drawnAs s cursor o ext row x =
+    let
+        c =
+            cellOf s o ext x
+    in
+    if isCursor cursor (row + x) then
+        Bitwise.or c (Bitwise.shiftLeftBy 56 (Int64.fromInt cursor.shape))
+
+    else
+        c
+
+
+{-| A style id's record: its colours resolved (see the module's comment);
+for an id of `0x8000` and more, its cell's under the cursor. -}
+styleRecord : Look -> Term -> Int -> Int -> (moved b : Builder UInt8) -> Builder UInt8
+styleRecord look t shape id b =
     let
         a =
-            styleOf id t.styles
+            styleOf (Bitwise.and 0x7FFF id) t.styles
+
+        cursorShape =
+            if id >= 0x8000 then
+                shape
+
+            else
+                0
 
         bold =
             Bitwise.and a.flags 1 /= 0
@@ -481,15 +599,28 @@ styleRecord look t id b =
 
             else
                 colourOf look t True False a.ulc
+
+        cursorColour =
+            Maybe.withDefault fg (dynamicColour 12 t)
+
+        out =
+            if cursorShape == 1 then
+                { fg = bg, bg = cursorColour, ulc = bg }
+
+            else if cursorShape > 1 then
+                { fg = fg, bg = bg, ulc = cursorColour }
+
+            else
+                { fg = fg, bg = bg, ulc = ulc }
     in
     b
         |> Builder.pushLast (UInt8.fromInt 3)
         |> push16 id
-        |> push24 fg
-        |> push24 bg
-        |> push24 ulc
+        |> push24 out.fg
+        |> push24 out.bg
+        |> push24 out.ulc
         |> Builder.pushLast (UInt8.fromInt (Bitwise.and a.flags 0xFF))
-        |> Builder.pushLast (UInt8.fromInt a.ul)
+        |> Builder.pushLast (UInt8.fromInt (Bitwise.or (Bitwise.shiftLeftBy 4 cursorShape) a.ul))
 
 
 {-| A colour of `Attrs` as RGB: 0 the default (OSC 10 or 11, else the

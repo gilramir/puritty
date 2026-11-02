@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The display-list gate (docs/renderer.md §R8).
 
-Every case of corpus/replay/ and of corpus/view/cases/ (the same
+A case whose name says `unfocused` is drawn as a window without the focus
+draws it. Every case of corpus/replay/ and of corpus/view/cases/ (the same
 `case.txt` format, harness/replay.py's) is fed to the core and Vt.View by
 harness/view/core-view, CHUNK bytes a read with a frame after each, and
 each frame's display list is decoded here and held to its pin,
@@ -13,6 +14,8 @@ frame, pinned or not:
     exactly when it changes;
   - every style a run uses has its record earlier in the same frame, and
     no style has two (V35: what executes a list keeps no table);
+  - a style has a cursor shape exactly when its id is a cursor's (0x8000
+    and more);
   - a scroll's band and shift stay on the screen, and its shift is not 0;
   - a run is on the screen, does not start on a wide character's tail,
     and does not end on its head;
@@ -42,6 +45,7 @@ CASES = ROOT / "corpus" / "view" / "cases"
 PINS = ROOT / "corpus" / "view"
 VIEW = ROOT / "harness" / "view" / "core-view"
 CHUNK = 16
+SHAPES = {1: "block", 2: "underline", 3: "bar", 4: "hollow"}
 
 
 def frames_of(size, resizes):
@@ -91,8 +95,12 @@ def decode(data, size):
             if sid in styles:
                 errors.append(f"style {sid} twice")
             styles.add(sid)
-            lines.append(f"  style {sid} fg #{u24(i + 3):06x} bg #{u24(i + 6):06x} "
-                         f"ul #{u24(i + 9):06x} flags {data[i + 12]:#04x} ul {data[i + 13]}")
+            ul, shape = data[i + 13] & 15, data[i + 13] >> 4
+            if (sid >= 0x8000) != (shape != 0) or shape > 4:
+                errors.append(f"style {sid} with cursor shape {shape}")
+            name = f"cursor {SHAPES[shape]} on {sid - 0x8000}" if sid >= 0x8000 else f"style {sid}"
+            lines.append(f"  {name} fg #{u24(i + 3):06x} bg #{u24(i + 6):06x} "
+                         f"ul #{u24(i + 9):06x} flags {data[i + 12]:#04x} ul {ul}")
             i += 14
         elif kind == 1:
             if i + 7 > len(data):
@@ -135,7 +143,7 @@ def decode(data, size):
             line = f"  run {y},{x}+{n} {json.dumps(''.join(text), ensure_ascii=False)}"
             if any(w != "n" for w in widths):
                 line += " widths " + "".join(widths)
-            line += " styles " + " ".join(f"{s}*{m}" if m > 1 else str(s) for s, m in runs)
+            line += " styles " + " ".join((f"c{s - 0x8000}" if s >= 0x8000 else str(s)) + (f"*{m}" if m > 1 else "") for s, m in runs)
             lines.append(line)
             i = j
         elif kind == 4:
@@ -152,6 +160,8 @@ def view_of(name, text, tmp):
     path = Path(tmp) / "input"
     path.write_bytes(data)
     extra = [",".join(f"{a}:{c}x{r}" for a, c, r in resizes)] if resizes else []
+    if "unfocused" in name:
+        extra = (extra or [""]) + ["unfocused"]
     p = subprocess.run(
         ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G", "-p", "MemorySwapMax=0", "--",
          "timeout", "60", str(VIEW), str(cols), str(rows), str(path), str(CHUNK)] + extra,

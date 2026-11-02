@@ -7,10 +7,11 @@ each read draws a frame with `Vt.View` and the default look, printing its
 display list as a line, `frame` and the list in hex (nothing after `frame`
 when the frame changes nothing). RESIZES is `AT:COLSxROWS` items joined by
 commas, as `core-dump` reads them: before byte AT the terminal is resized,
-and a read never crosses one. `harness/view.py` decodes the lists and holds
-them to their pins.
+and a read never crosses one. FOCUS `unfocused` draws as a window without
+the focus does. `harness/view.py` decodes the lists and holds them to their
+pins.
 
-usage: core-view COLS ROWS FILE CHUNK [RESIZES]
+usage: core-view COLS ROWS FILE CHUNK [RESIZES [FOCUS]]
 
 -}
 
@@ -28,6 +29,7 @@ import Vt.View as View
 type alias Run =
     { term : Vt.Term
     , shadow : View.Shadow
+    , focus : View.Focus
     , out : Builder String
     }
 
@@ -64,7 +66,7 @@ framed : (moved r : Run) -> Run
 framed r =
     let
         f =
-            View.frame View.defaultLook r.term r.shadow
+            View.frame View.defaultLook r.focus r.term r.shadow
     in
     { r | shadow = f.shadow, out = Builder.pushLast ("frame " ++ Bytes.toHexString { padding = True } f.list ++ "\n") r.out }
 
@@ -121,7 +123,11 @@ main =
                                             (max 1 (number 3 s.args))
                                             (resizesOf (Maybe.withDefault "" (Array.get 4 s.args)))
                                             0
-                                            { term = term, shadow = View.shadow cols rows, out = Builder.empty 16 }
+                                            { term = term
+                                            , shadow = View.shadow cols rows
+                                            , focus = { focused = Array.get 5 s.args /= Just "unfocused", blinkOn = True }
+                                            , out = Builder.empty 16
+                                            }
                                 in
                                 Console.write (String.join "" (Builder.toArray r.out))
                             )

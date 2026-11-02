@@ -1,8 +1,8 @@
 # The renderer: what the probes leave, and how it is built (survey, 2026-11-02)
 
 Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
-(§R7, V34–V38). Steps 1 and 2 of §R6 are built (§R8); step 3,
-`packages/x11`, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+(§R7, V34–V38). Steps 1 to 3 of §R6 are built (§R8, §R9); step 4, the
+app, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -272,3 +272,96 @@ read takes `gitlog` in 148–168 ms, `ls` 101–102, `vte-scrolling` 146–150
 and `vte-unicode` 33–34, three runs each, against phase2 §13's 144–145,
 98–99, 154–155 and 32–33: within the spread of runs on different days,
 not an A/B of one build against another.
+
+## R9. Step 3 built: `packages/x11`, and the cursor in the view (2026-11-02)
+
+**The package** (V36), `packages/x11`: `X11.geng`, the API, and
+`src/Ext/visiterm_x11.c`, the probe's C taken over and the probe's own
+package (`probes/geng/x11/pkg`) removed. The x11 probe builds on it.
+
+- `X11.open` takes a `Settings` record (cells, the font as fontconfig names
+  it and its points, the fallback language, the glyph cap, the title) and
+  answers the cell's size in pixels, or why not.
+- `X11.draw` executes a display list; `X11.events` and `X11.take` are the
+  probe's wait and take, `take` now answering decoded `X11.Event`s: a key
+  (keysym, modifiers, text, as V30 has it), a new size in cells, the
+  focus, a close. An expose is answered in C from the pixmap.
+- `X11.setTitle` sets `_NET_WM_NAME` and `WM_NAME`; `X11.shot` writes the
+  window as a PPM, for the pixel gate (step 5). `X11_STATS=1` and
+  `X11_SHOT=FILE` do at exit what the probe's `PROBE_STATS` and
+  `PROBE_SHOT` did; §14's key-to-frame counters, a survey's instrument,
+  were left behind with the probe's C.
+
+What the C draws that the probe's did not:
+
+- **Bold and italic** from the primary font's own faces, `FONT:bold`,
+  `:italic` and `:bold:italic` asked of fontconfig; a font with no such
+  face gives its regular, and a fallback face draws them as its regular.
+- **Lines**: the underline in each of its kinds (single, double, curly,
+  dotted, dashed) in the style's underline colour, at the font's underline
+  position and thickness; strikethrough and overline in the foreground;
+  none for invisible text.
+- **The window's size.** A size record makes a pixmap of that many cells;
+  the window may be larger or smaller, and what lies past the cells is the
+  window's background, set to style 0's background. WM_NORMAL_HINTS asks
+  a window manager for steps of a cell. A resize of the window becomes an
+  `X11.Resized` in cells, which the probe gives to the core
+  (`Vt.resize`) and the terminal (`Process.resize`); the next frame's size
+  record answers it.
+- **The glyph set's bound** (V37): past the cap the glyph set is freed and
+  a new one begun, every face's record of its uploads cleared and its
+  colour pictures freed. V37 said the next frame redraws the screen; it
+  need not, since the pixmap keeps what the old glyphs drew, so nothing is
+  redrawn and glyphs are uploaded again as frames use them.
+- `WM_DELETE_WINDOW`, `WM_CLASS` `visiterm`, and the focus, reported once
+  each time it changes (pointer-only focus events left out).
+
+**The cursor, in `Vt.View`.** C keeps nothing between frames (V35), so
+the cursor is the view's: its cell is drawn in a cursor style, id
+`0x8000` and the cell's style, whose record carries the cursor's colours
+and its shape in the underline byte's top four bits (block, underline,
+bar, hollow). The shadow marks the cursor's cells, so a cell the cursor
+leaves is drawn again. `View.frame` now takes a `Focus` (has the window
+the focus; is a blinking cursor in its shown half): unfocused, the cursor
+is hollow; hidden by DECTCEM, or blinking and off, it is not drawn.
+Blinking's timer is the app's (step 4). The view gate decodes the cursor
+records, checks a shape comes with a cursor id and only then, and has four
+cases more (shapes, OSC 12's colour, a wide character, unfocused): 338
+pass.
+
+**Checked on Xvfb**, with `probes/geng/x11/poke`, a window manager's part
+played by hand (resize, focus, unfocus, close, the title), since Xvfb has
+none:
+
+- an attribute screen (bold, italic, bold italic, the five underlines, a
+  red curly one, strikethrough, overline, ideographs and emoji from
+  fallback faces, a block cursor) draws as each should;
+- focus, a resize to 900×500, unfocus and close, with `stty size` printed
+  twice a second inside: 4 events taken, `stty` reads 50 160 and then
+  29 100, the cursor is hollow after the focus left, the 7 pixels under
+  the last row are the background, and the probe ends on the close, at
+  4 s of its program's 8. `poke` first left a request undone: a
+  connection that closes having only flushed it may not be served, so it
+  makes a round trip before it leaves;
+- `cjk.txt` fed a screen at a time (§R4): at the 8 MB cap, 6,094 glyphs
+  held in 2,076,676 bytes, 341 a glyph, and no reset; at a cap of 200 KB,
+  596 resets in 601 frames and 7.3 s rasterising, since every screen
+  passes the cap; the last screen's pixels the same in both. A cap under
+  one screen's glyphs (a screen of new ideographs is some 2.7 MB) makes
+  every frame upload its glyphs again; the app's config should not allow
+  one (step 4).
+
+**What it costs on the wire** (`run.sh race`, two runs each, against §R8):
+a vim scroll 404–417 bytes a line, against 338–346, about 70 bytes a frame
+for the cursor's two cells, the one left and the one reached, which vim
+moves every frame; `tail` 339, as before; `htop` 8.2–8.5 KB a second,
+against 8.0–8.1; `cat` 188–194 KB; the opening 2,816 bytes, against
+2,448, the atoms, the hints and the title. The replies from the server are
+16,900 bytes, against 16,740, the atoms'. Core-font xterm's vim scroll is
+500 a line (phase2 §16).
+
+**Found in geng-lang:** a package summary of 80 characters or more, which
+the backend refuses, is passed to it by the front end, and `geng make`
+dies with `DecodeProblem` and the outline as JSON (geng-lang
+`open-items.md`).
+

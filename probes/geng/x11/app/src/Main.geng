@@ -29,7 +29,11 @@ is drawn at once, not when 16 ms have passed: the 16 ms cap held the
 echo of fast typing back by 6 ms.
 
 The terminal is `os`'s (geng-lang D1042), which replaced the probe's own
-`Pty` package.
+`Pty` package. The window is `packages/x11`'s (`docs/renderer.md` §R9),
+which replaced the probe's own C: a resize of the window resizes the core
+and the terminal, the focus is drawn in the cursor, and a close ends the
+probe. `PROBE_FONT` and `PROBE_LANG` choose the font and the fallback
+language, and `PROBE_GLYPH_CAP` the glyph set's cap in bytes (V37).
 
 usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...
 
@@ -51,7 +55,7 @@ import Time
 import UInt8
 import Vt
 import Vt.View as View
-import X
+import X11
 
 
 type alias Run =
@@ -61,7 +65,6 @@ type alias Run =
     , pending : Int
     , reads : Int
     , bytes : Int
-    , glyphs : Int
     , turns : Int
     , events : Int
     , lateMax : Int
@@ -71,13 +74,15 @@ type alias Run =
     , double : Bool
     , branches : Int
     , keyed : Bool
+    , focus : View.Focus
+    , closed : Bool
     , ballast : Array Vt.Term
     }
 
 
 type Turn
     = Read Bytes
-    | Events Int
+    | Events Bool
     | Due
 
 
@@ -96,7 +101,7 @@ drawFrame : Int -> (moved r : Run) -> Task x Run
 drawFrame ms r =
     let
         f =
-            View.frame View.defaultLook r.term r.shadow
+            View.frame View.defaultLook r.focus r.term r.shadow
 
         late =
             if r.pending < 0 then
@@ -105,15 +110,15 @@ drawFrame ms r =
             else
                 ms - r.pending
     in
-    X.draw f.list
+    X11.draw f.list
         |> Task.map
-            (\g ->
+            (\up ->
                 { r
                     | shadow = f.shadow
                     , last = ms
                     , pending = -1
                     , keyed = False
-                    , glyphs = g
+                    , closed = r.closed || not up
                     , lateMax = max r.lateMax late
                     , lateSum = r.lateSum + late
                     , late16 =
@@ -175,23 +180,23 @@ readLoop fd r =
             )
 
 
-raceLoop : File.Handle -> (moved r : Run) -> Task Error Run
-raceLoop fd r =
+raceLoop : Process.Terminal -> File.Handle -> (moved r : Run) -> Task Error Run
+raceLoop terminal fd r =
     now
         |> Task.andThen
             (\ms0 ->
                 let
                     waits =
                         if r.stress then
-                            [ X.events |> Task.map Events
+                            [ X11.events |> Task.map Events
                             , Sleep.sleep 1 |> Task.map (\_ -> Due)
                             ]
 
                         else if r.pending < 0 then
-                            [ X.events |> Task.map Events ]
+                            [ X11.events |> Task.map Events ]
 
                         else
-                            [ X.events |> Task.map Events
+                            [ X11.events |> Task.map Events
                             , Sleep.sleep (toFloat (max 0 (r.last + 16 - ms0))) |> Task.map (\_ -> Due)
                             ]
                 in
@@ -221,29 +226,66 @@ raceLoop fd r =
                                                         |> Task.andThen
                                                             (\next ->
                                                                 if ms - next.last >= 16 || next.keyed then
-                                                                    drawFrame ms next |> Task.andThen (raceLoop fd)
+                                                                    drawFrame ms next |> Task.andThen (again terminal fd)
 
                                                                 else
-                                                                    raceLoop fd next
+                                                                    raceLoop terminal fd next
                                                             )
 
-                                            Events _ ->
-                                                X.take
-                                                    |> Task.andThen
-                                                        (\n ->
-                                                            X.keys
-                                                                |> Task.andThen
-                                                                    (\k ->
-                                                                        writeAll fd (keyBytes k 0 [])
-                                                                            |> Task.andThen (\_ -> raceLoop fd { counted | events = counted.events + n, keyed = counted.keyed || Bytes.length k > 0 })
-                                                                    )
-                                                        )
+                                            Events up ->
+                                                if not up then
+                                                    Task.succeed counted
+
+                                                else
+                                                    X11.take
+                                                        |> Task.andThen (\evs -> handle terminal fd evs { counted | events = counted.events + Array.length evs })
+                                                        |> Task.andThen (again terminal fd)
 
                                             Due ->
-                                                drawFrame ms counted |> Task.andThen (raceLoop fd)
+                                                drawFrame ms counted |> Task.andThen (again terminal fd)
                                     )
                         )
             )
+
+
+{-| The loop again, unless the window has closed. -}
+again : Process.Terminal -> File.Handle -> (moved r : Run) -> Task Error Run
+again terminal fd r =
+    if r.closed then
+        Task.succeed r
+
+    else
+        raceLoop terminal fd r
+
+
+{-| The window's events: keys sent to the program, a new size given to the
+core and the terminal, the focus kept for the cursor, a close ending the
+loop. A frame follows a key or a resize at once. -}
+handle : Process.Terminal -> File.Handle -> Array X11.Event -> (moved r : Run) -> Task Error Run
+handle terminal fd evs r =
+    when Array.first evs is
+        Nothing ->
+            Task.succeed r
+
+        Just ev ->
+            let
+                rest =
+                    Array.dropFirst 1 evs
+            in
+            when ev is
+                X11.Key k ->
+                    File.write (encodeKey k.sym k.mods k.text) fd
+                        |> Task.andThen (\_ -> handle terminal fd rest { r | keyed = True })
+
+                X11.Resized size ->
+                    Process.resize terminal { columns = size.cols, rows = size.rows }
+                        |> Task.andThen (\_ -> handle terminal fd rest { r | term = Vt.resize size.cols size.rows r.term, keyed = True })
+
+                X11.Focus on ->
+                    handle terminal fd rest { r | focus = { focused = on, blinkOn = True }, keyed = True }
+
+                X11.Close ->
+                    Task.succeed { r | closed = True }
 
 
 {-| What the keys send to the program (§14): legacy xterm encoding, the
@@ -252,31 +294,6 @@ xkbcommon has already turned to a control character under ctrl; ESC
 before it under alt; and a sequence for each named key. Cursor keys in
 application mode (DECCKM), the function keys, modifiers on named keys and
 the kitty protocol are phase 3's. -}
-keyBytes : Bytes -> Int -> Array Bytes -> Array Bytes
-keyBytes records at acc =
-    if at + 6 > Bytes.length records then
-        acc
-
-    else
-        let
-            byte i =
-                Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) records))
-
-            sym =
-                Bitwise.or (Bitwise.shiftLeftBy 24 (byte 0)) (Bitwise.or (Bitwise.shiftLeftBy 16 (byte 1)) (Bitwise.or (Bitwise.shiftLeftBy 8 (byte 2)) (byte 3)))
-
-            mods =
-                byte 4
-
-            n =
-                byte 5
-
-            text =
-                Bytes.slice (at + 6) (at + 6 + n) records
-        in
-        keyBytes records (at + 6 + n) (Array.pushLast (encodeKey sym mods text) acc)
-
-
 encodeKey : Int -> Int -> Bytes -> Bytes
 encodeKey sym mods text =
     let
@@ -393,14 +410,27 @@ start cp ballast args =
                 Console.write "usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...\n"
 
             else
-                X.open 160 50 11
+                Os.Env.getEnvironmentVariables
                     |> Task.andThen
-                        (\code ->
-                            if code < 0 then
-                                Console.write ("x11: cannot open the window, " ++ String.fromInt code ++ "\n")
+                        (\vars ->
+                            X11.open
+                                { cols = 160
+                                , rows = 50
+                                , font = Maybe.withDefault "DejaVu Sans Mono" (Dict.get "PROBE_FONT" vars)
+                                , points = 11
+                                , lang = Maybe.withDefault "" (Dict.get "PROBE_LANG" vars)
+                                , glyphCap = Maybe.withDefault (8 * 1024 * 1024) (Dict.get "PROBE_GLYPH_CAP" vars |> Maybe.andThen String.toInt)
+                                , title = "visiterm-probe"
+                                }
+                        )
+                    |> Task.andThen
+                        (\opened ->
+                            when opened is
+                                Err why ->
+                                    Console.write ("x11: cannot open the window: " ++ why ++ "\n")
 
-                            else
-                                now |> Task.andThen (\t0 -> run cp ballast mode program (Array.dropFirst 2 args) t0)
+                                Ok _ ->
+                                    now |> Task.andThen (\t0 -> run cp ballast mode program (Array.dropFirst 2 args) t0)
                         )
 
         _ ->
@@ -435,7 +465,6 @@ run cp ballast mode program args t0 =
                                 , pending = -1
                                 , reads = 0
                                 , bytes = 0
-                                , glyphs = 0
                                 , turns = 0
                                 , events = 0
                                 , lateMax = 0
@@ -444,6 +473,8 @@ run cp ballast mode program args t0 =
                                 , stress = stress
                                 , double = mode == "double"
                                 , keyed = False
+                                , focus = View.focused
+                                , closed = False
                                 , ballast = ballast
                                 , branches =
                                     if mode == "race1" then
@@ -457,7 +488,7 @@ run cp ballast mode program args t0 =
                                 }
                         in
                         (if race then
-                            raceLoop fd r0
+                            raceLoop terminal fd r0
 
                          else
                             readLoop fd r0
@@ -494,8 +525,6 @@ report r ms t0 =
             ++ String.fromInt r.shadow.runs
             ++ " list-bytes "
             ++ String.fromInt r.shadow.bytes
-            ++ " glyphs "
-            ++ String.fromInt r.glyphs
             ++ " start "
             ++ String.fromInt t0
             ++ " panes "
