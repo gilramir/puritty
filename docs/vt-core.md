@@ -30,7 +30,8 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 `Vt`'s interface, as it stands:
 
 ```gren
-new : Config -> Term                       -- { cols, rows, scrollbackBytes, checksums, cellWidth, cellHeight }
+new : Config -> Term                       -- { cols, rows, scrollbackBytes, pageRows, checksums, cellWidth, cellHeight }
+defaultPageRows : Int                      -- 1,024, Config.pageRows unless a test wants smaller (V33)
 feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
 takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
 resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
@@ -249,6 +250,12 @@ gate whole.
 ---
 
 ## VC6. Scrollback pages
+
+*Since V33 (`phase2-window.md` §15.6) a page is `Config.pageRows` rows,
+`Vt.defaultPageRows` (1,024) unless a caller says otherwise, and the ring
+holds up to twice that; the harnesses (`core-dump`, the fuzzers,
+`core-pty`) use 256, the size this section and the corpus were written
+for. What follows is as it was built, at 256.*
 
 The main screen's ring holds the screen, up to `2 × 256` rows of
 scrollback and a free row, as the probe's does. When it is full, the

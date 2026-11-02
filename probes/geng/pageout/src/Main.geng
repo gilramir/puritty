@@ -1,0 +1,92 @@
+module Main exposing (main)
+
+{-| The time of one page-out (docs/phase2-window.md §15.6): the core is fed
+FILE at 160 by 50 with the default scrollback, then its ring's oldest
+`ROWS` rows are packed into a page N times over, the same rows each
+time, each page pushed onto the scrollback as a read pushes one, and the
+time is divided by N.
+
+usage: pageout FILE N [ROWS]   ROWS the page's rows, Vt.defaultPageRows unless given
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import Vt
+import Vt.Pages exposing (pageOut)
+import Vt.Term exposing (Term)
+
+
+feedAll : Bytes -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + 65536) (Vt.feed (Bytes.slice at (at + 65536) bytes) t)
+
+
+repeat : Int -> (moved t : Term) -> Term
+repeat n t =
+    if n <= 0 then
+        t
+
+    else
+        let
+            room =
+                pageOut t.clusters { t.screen | hist = t.back.pageRows } t.back
+        in
+        repeat (n - 1) { t | screen = room.screen, back = room.back }
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            let
+                                n =
+                                    Maybe.withDefault 1000 (Maybe.andThen String.toInt (Array.get 1 s.args))
+
+                                t =
+                                    feedAll bytes 0 (Vt.new { cols = 160, rows = 50, scrollbackBytes = Vt.scrollbackBytesFor { cols = 160, rows = 25000 }, pageRows = Maybe.withDefault Vt.defaultPageRows (Maybe.andThen String.toInt (Array.get 2 s.args)), checksums = False, cellWidth = 0, cellHeight = 0 })
+                            in
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            done =
+                                                repeat n t
+                                        in
+                                        Time.monotonic
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    let
+                                                        ms =
+                                                            Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0)
+                                                    in
+                                                    Console.write
+                                                        (String.fromInt done.back.pageRows
+                                                            ++ " rows: "
+                                                            ++ String.fromInt n
+                                                            ++ " page-outs in "
+                                                            ++ String.fromInt ms
+                                                            ++ " ms, "
+                                                            ++ String.fromInt (ms * 1000 // n)
+                                                            ++ " us each; scrollback "
+                                                            ++ String.fromInt done.back.rows
+                                                            ++ " rows\n"
+                                                        )
+                                                )
+                                    )
+                        )
+                    |> Task.onError (\_ -> Console.write "pageout: cannot read the file\n")
+            )

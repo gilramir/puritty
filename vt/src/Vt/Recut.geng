@@ -47,6 +47,7 @@ text, headers and style runs. `plain`: every row put in the page was
 plain. -}
 type alias Out =
     { done : Array Page
+    , pageRows : Int
     , text : Builder UInt8
     , heads : Builder UInt8
     , runs : Builder UInt8
@@ -82,11 +83,11 @@ line's end, cut again at `cols`. `reflow` is `Vt.Resize.reflowed`. The pages
 are only read, and each one's plainness decided once (`plainPage`), in
 `plains`, which the walk reads for whether a page is plain and how many
 pages it walks. -}
-recut : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Clusters -> Int -> Array Page -> { pages : Array Page, clusters : Clusters }
-recut reflow old cols clusters n pages =
+recut : Int -> (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Clusters -> Int -> Array Page -> { pages : Array Page, clusters : Clusters }
+recut pageRows reflow old cols clusters n pages =
     let
         o =
-            lines reflow old cols (plainsOf n pages 0 []) pages 0 0 0 0 clusters (blank [])
+            lines reflow old cols (plainsOf n pages 0 []) pages 0 0 0 0 clusters (blank pageRows [])
     in
     { pages = finish cols o.out, clusters = o.clusters }
 
@@ -112,10 +113,11 @@ plainAt plains pi =
     Maybe.withDefault False (Array.get pi plains)
 
 
-{-| A page begun after `done`. -}
-blank : (moved done : Array Page) -> Out
-blank done =
+{-| A page of `pageRows` rows begun after `done`. -}
+blank : Int -> (moved done : Array Page) -> Out
+blank pageRows done =
     { done = done
+    , pageRows = pageRows
     , text = Builder.empty 256
     , heads = Builder.empty 512
     , runs = Builder.empty 256
@@ -162,11 +164,15 @@ sliceIn pages pi from to o =
 when it holds `pageRows` rows. -}
 toPage : Int -> (moved o : Out) -> Out
 toPage cols o =
+    let
+        pageRows =
+            o.pageRows
+    in
     if Builder.length o.heads < 2 * pageRows then
         o
 
     else
-        blank (finish cols o)
+        blank pageRows (finish cols o)
 
 
 {-| Every line from page `pi`, its header `h`, text `ti` and runs `r` on. -}
@@ -544,7 +550,7 @@ plainRows cols pages spans left count r j at o =
                 toPage cols o
 
             b =
-                min (pageRows - Builder.length o0.heads // 2) (count - r)
+                min (o0.pageRows - Builder.length o0.heads // 2) (count - r)
 
             cells =
                 min left (b * cols)

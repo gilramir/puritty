@@ -52,11 +52,14 @@ time and so read everything on it, other programs' output among it.
 of the size in pixels need (`CSI 14 t`, `CSI 16 t`, mode 2048); 0 is
 unknown, and they are not answered (V15). `scrollbackBytes` is the most
 the scrollback's pages may hold, in bytes (V21, §VC32); `Vt.scrollbackBytesFor`
-gives the bytes for a number of rows of a width. -}
+gives the bytes for a number of rows of a width. `pageRows` is the rows a
+page of scrollback holds, 16 to 4,096: `Vt.defaultPageRows` unless a test
+wants pages that fill sooner (V33). -}
 type alias Config =
     { cols : Int
     , rows : Int
     , scrollbackBytes : Int
+    , pageRows : Int
     , checksums : Bool
     , cellWidth : Int
     , cellHeight : Int
@@ -88,7 +91,8 @@ type Plainness
 
 
 {-| The main screen's scrollback in pages, oldest first from slot `head`
-(the slots before it are pages dropped, emptied). `limit`: the most bytes
+(the slots before it are pages dropped, emptied), each of `pageRows` rows
+as `pageOut` cuts them (`Config.pageRows`). `limit`: the most bytes
 the pages may hold (V21, §VC32), none when 0; `bytes` and `rows`: what they
 hold. `peak`: the most rows the scrollback may have held, the ring's with
 the pages', and `dropped`: whether a page has gone for the limit; both stay
@@ -99,6 +103,7 @@ may have (§VC17, §VC25, `Vt.historyReached`). -}
 type alias Back =
     { pages : Builder Page
     , head : Int
+    , pageRows : Int
     , limit : Int
     , bytes : Int
     , rows : Int

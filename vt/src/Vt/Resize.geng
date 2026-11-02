@@ -142,6 +142,9 @@ lose cells, with autowrap off or in one column (§VC14). -}
 resizeScreen : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (moved back : Back) -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
 resizeScreen clear reflow keep cols rows cursor saved clusters s back =
     let
+        pageRows =
+            back.pageRows
+
         -- the scrollback with no pages, its limit and notes kept, read
         -- before its pages are taken out of it
         left =
@@ -158,7 +161,7 @@ resizeScreen clear reflow keep cols rows cursor saved clusters s back =
             -- last use, and natively they are given back here (geng-lang
             -- D1027, D1032, §VC39)
             made =
-                recutPages clear keep cols rows cursor saved clusters s pages
+                recutPages pageRows clear keep cols rows cursor saved clusters s pages
         in
         resized clear keep cols rows s.saved made left
 
@@ -171,8 +174,8 @@ pages run on into the ring leaves only its last row to be taken back, to
 begin the ring's first line (V20, §VC31); the way before it when the screen
 wants rows the pages hold, or the prompt to clear may begin in them. The
 pages are only read. -}
-recutPages : Int -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Array Page -> { flow : Flow, pages : Array Page, clusters : Clusters }
-recutPages clear keep cols rows cursor saved clusters s pages =
+recutPages : Int -> Int -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> Array Page -> { flow : Flow, pages : Array Page, clusters : Clusters }
+recutPages pageRows clear keep cols rows cursor saved clusters s pages =
     let
         count =
             Array.length pages
@@ -185,7 +188,7 @@ recutPages clear keep cols rows cursor saved clusters s pages =
             if not lossy && count > 0 && Maybe.withDefault False (Maybe.map lastWrapped (Array.last pages)) then
                 let
                     all =
-                        recut reflowed s.cols cols clusters count pages
+                        recut pageRows reflowed s.cols cols clusters count pages
 
                     popped =
                         popLast all.clusters all.pages
@@ -219,7 +222,7 @@ recutPages clear keep cols rows cursor saved clusters s pages =
                 -- on their bytes, as Ghostty reflows every page at a resize
                 -- (V20)
                 cut =
-                    recut reflowed s.cols cols r.clusters (count - r.taken) pages
+                    recut pageRows reflowed s.cols cols r.clusters (count - r.taken) pages
             in
             { flow = r.flow, pages = cut.pages, clusters = cut.clusters }
 
@@ -279,7 +282,7 @@ resized clear keep cols rows before made left =
         -- the pages the resize leaves, under the byte limit as a push
         -- keeps them (V21, §VC32)
         built =
-            rebuild cols rows flow clusters (newScreen cols rows (if keep then rows + 2 * pageRows + 1 else rows + 1)) (backOf made.pages left)
+            rebuild cols rows flow clusters (newScreen cols rows (if keep then rows + 2 * left.pageRows + 1 else rows + 1)) (backOf made.pages left)
 
         c =
             flow.cursor

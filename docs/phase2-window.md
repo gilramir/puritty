@@ -1190,3 +1190,82 @@ any difference under 0.5 ms.
 **Leaning: F**, after its page-out is measured. It is a constant, it meets
 the goal with margin in every run, and the throughput does not move. G
 only if F's page-out or limit turns out to cost something visible; H not.
+
+### 15.6 F built: 1,024-row pages (V33)
+
+**One page-out.** `probes/geng/pageout` feeds the core an input at 160 by
+50, then packs the ring's oldest rows into a page N times over, the same
+rows each time, each page pushed onto the scrollback as a read pushes
+one, and divides the time by N:
+
+| input | 256 rows | 512 | 1,024 |
+|---|---:|---:|---:|
+| `gitlog` | 18 µs | 36 | 75 |
+| `ls` | 53 | 109 | 215 |
+| `cjk.txt` | 84 | | 328 |
+| every cell its own colour, 160 columns | 226 | | 918 |
+
+A page-out is linear in its rows, and the worst, a page of rows styled
+cell by cell, is 0.92 ms, paid once in the read that fills a page: a
+seventeenth of a frame. The vtebench inputs came out flat across the three
+sizes (`dense_cells` 86–90 µs, `light_cells` 29–32, `unicode` 61–64),
+which says the rows above their screens at the end are not like the rows
+they scroll; they are left out.
+
+**V33 · A page of scrollback is 1,024 rows by default** (§15.5's F). It is
+`Config.pageRows`, `Vt.defaultPageRows` unless a caller says otherwise,
+and `Back` carries it to every place a page is cut. The harnesses ask for
+256, so that the replay corpus, esctest and the fuzzers still fill pages
+with the short inputs they were written for; a dump does not depend on the
+page's size, and the corpus passed unchanged at both.
+
+**The pauses with it**, the 211 MB `cat`, the core's own default now:
+
+| panes | runs | longest full | its marking | heap |
+|---|---:|---|---|---|
+| 1 | 2 | 1.74–2.66 ms | 1.50–1.58 | 51–60 MB |
+| 4 | 2 | 2.12–2.46 | 1.76–2.00 | 118–143 |
+| 8 | 3 | 2.63–3.16 | 2.07–2.53 | 219–244 |
+
+The 4 ms goal holds at every count of panes, eight with 0.8 ms to spare.
+
+**What it costs**:
+
+- **A resize takes twice as long** with a short history. The ring holds
+  the screen and up to two pages of rows, now 2,049 rows of history where
+  it was 513, and a resize reflows the ring's rows a cell at a time where
+  it cuts a page's on their bytes. `core-bench`'s twenty-resize drag,
+  five runs each:
+
+  | input | 256 rows | 1,024 |
+  |---|---|---|
+  | `long-10000` | 9–13 ms | 20–22 |
+  | `short-10000` | 10–11 | 16–18 |
+  | `long-100000` | 10 | 18–20 |
+  | `short-100000` | 48–51 | 57–60 |
+
+  About 1 ms a resize where it was 0.5, inside a frame, but no longer the
+  9 ms of Ghostty's drag that §VC31 matched. `harness/perf.py`'s counts
+  are recorded again: the resizes 3.6% to 104% higher, the throughput
+  inputs within 0.3% but for `vte-scrolling` (3.8% lower) and
+  `vte-scrolling_fullscreen` (1.1% lower).
+- **The ring is 2.7 MB a pane** at 160 by 50 where it was 0.7, all atomic.
+- **The limit is kept to a page**, as before, but a page is 1,024 rows: a
+  scrollback at its limit holds up to 1,024 rows fewer than the bytes
+  allow, where it was 256. The drag's dump after `long-100000` and
+  `short-100000`, both over the default limit, differs between the two
+  sizes for that reason.
+
+If the resize's cost matters, G (one `Owned` a page) cuts the objects a
+page without growing the ring; it is not built.
+
+**A compiler bug it found.** The first 20 minutes of `fuzz.py` after the
+change found an input that crashed the core natively in `resizeScreen`,
+which now reads `back.pageRows` before taking the pages out. geng-lang's
+drop pass took the later uses of that `Int` for reads of `back` and dropped
+the pages a second time, through the builder `Builder.toArray` had already
+taken. The core was right; the pass is fixed as geng-lang D1046
+(`m4-owned-pages.md` §OP23; geng-lang 83e539f8, compiler 46b9278d), and
+the input runs clean with it. With the fixed compiler a second 20 minutes
+found nothing (coverage 6,144, `runs.tsv`), and the `--diff` fuzzer's run
+was clean (coverage 6,307).

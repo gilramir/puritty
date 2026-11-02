@@ -1,6 +1,7 @@
 module Vt exposing
     ( Term, Config, new, feed, takeReplies, resize
     , dump, historyBound, historyReached, recutHolds, scrollbackBytesFor
+    , defaultPageRows
     )
 
 {-| visiterm's headless terminal core (`docs/vt-core.md`).
@@ -16,7 +17,7 @@ program asked for. Everything that happens to a terminal's state happens in
 the column past which the row is blank, and the wrapped flag). Slot `p`'s
 row starts at `p * stride`. `base` is the slot of row 0; on the main screen
 the ring holds recent scrollback before it, and when the ring is full the
-oldest `pageRows` rows of it are packed into a page (geng-lang D901). A
+oldest `Config.pageRows` rows of it are packed into a page (geng-lang D901). A
 region keeps its own turn, so its line feed moves no rows. The cells past a
 row's extent are never read.
 
@@ -107,6 +108,16 @@ historyReached rows t =
     t.back.dropped || max t.back.peak (historyBound t) >= rows
 
 
+{-| The rows a page of scrollback holds unless `Config.pageRows` says
+otherwise: 1,024, so that a full collection, whose marking follows a page's
+objects and not its bytes, meets G7's 4 ms goal at eight panes (visiterm
+`docs/phase2-window.md` §15.4, V33). The harnesses use 256, so that a short
+case still fills pages. -}
+defaultPageRows : Int
+defaultPageRows =
+    1024
+
+
 {-| The bytes of scrollback (`Config.scrollbackBytes`) that hold at least
 `rows` rows `cols` wide of text in one style, a byte a cell: a row's cells
 and its header. Text of shorter lines takes fewer bytes a row and so gets
@@ -135,7 +146,7 @@ recutHolds cols t =
             copyPages t.back
 
         cut =
-            recut reflowed t.cols cols read.clusters (Array.length pages) pages
+            recut t.back.pageRows reflowed t.cols cols read.clusters (Array.length pages) pages
 
         got =
             readPages cols cut.clusters cut.pages 0
@@ -171,6 +182,7 @@ new config0 =
             { cols = clamp 1 1000 config0.cols
             , rows = clamp 1 1000 config0.rows
             , scrollbackBytes = max 0 config0.scrollbackBytes
+            , pageRows = clamp 16 4096 config0.pageRows
             , checksums = config0.checksums
             , cellWidth = max 0 config0.cellWidth
             , cellHeight = max 0 config0.cellHeight
@@ -181,7 +193,7 @@ new config0 =
 
 fresh : Config -> Term
 fresh config =
-    { screen = newScreen config.cols config.rows (config.rows + 2 * pageRows + 1)
+    { screen = newScreen config.cols config.rows (config.rows + 2 * config.pageRows + 1)
     , other = Nothing
     , hidden = { x = 0, y = 0, wrap = False }
     , keys = noKeys
@@ -207,7 +219,7 @@ fresh config =
     , styles = noStyles
     , styleCache = Builder.fromArray (Array.repeat (2 * styleCacheSize) -1)
     , clusters = noClusters
-    , back = emptyBack config.scrollbackBytes
+    , back = emptyBack config.pageRows config.scrollbackBytes
     , tabs = Builder.fromArray (Array.initialize config.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0))
     , autowrap = True
     , plain = True
@@ -5195,7 +5207,7 @@ resizeTo cols rows t =
                         resizeScreen hiddenClear t.autowrap True cols rows t.hidden (savedPoint main.saved) t.clusters main t.back
 
                     a =
-                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active (emptyBack 0)
+                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active (emptyBack config.pageRows 0)
                 in
                 resized cols rows a.cursor
                     { t
@@ -5222,7 +5234,7 @@ resizeTo cols rows t =
                         settle alt0
 
                     a =
-                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt (emptyBack 0)
+                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt (emptyBack config.pageRows 0)
                 in
                 resized cols rows m.cursor
                     { t

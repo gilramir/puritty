@@ -501,7 +501,7 @@ attribute runs (WezTerm's scheme, S§5.2), suits immutable rows well. Whether a 
 an `Array Int` or a `Bytes` is measured, not guessed.
 
 **Cold scrollback is kept in pages, decided 2026-10-24** (geng-lang D901, from G7).
-When a page of 256 rows fills, its rows' text is joined into one `Bytes` and their
+When a page of 256 rows fills (1,024 since visiterm V33, `phase2-window.md` §15.6), its rows' text is joined into one `Bytes` and their
 attribute runs into another, and the page, not the row, is the unit of cold storage.
 A cold row is read by slicing its page; reflow and search decode a page at a time.
 The screen and the page being filled stay rows. Pages sit in a ring (`Array.set`),
