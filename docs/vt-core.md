@@ -3576,3 +3576,15 @@ about 28. The page's share is the probe's too (`packRows` and `pushRun`,
    looked at then. If room is wanted before then, the page's 137
    instructions a line is the largest block the probe and the core share,
    and would be a survey of its own; registered here.
+
+**Answered** (2026-11-02): all three leanings, and `wrap` built. It did
+not hold: `perf.py` over every case found it 0.37% fewer on
+`vte-scrolling` (1,434.2 M) and 0.5% fewer on the region scrolls, but
+2.44% more on `vte-light_cells`, 2.63% more on `vte-unicode` and 5.44%
+more on the 10,000-row line's resizes, the code-shape effect above
+again. Replay, esctest2, the dumps and both fuzzers had passed with it.
+It is not kept: the edit stays in `vc43/edits/` with these numbers, and
+the survey's two inputs were too few to judge an edit to the print by.
+Gilbert's remark: in the far future Geng might emit LLVM IR itself, which
+could take such choices back from clang (geng-lang `open-items.md`, the
+entry on clang's inlining).
