@@ -406,3 +406,118 @@ over ten runs each in turn, in the same instructions and CPU time; its
 reads fall differently from run to run on either. The probe's
 `Vt.new` call now gives `scrollbackBytes`, as the core's `Config` asks;
 it had not been built since the core changed it.
+
+---
+
+## 12. The loop: a survey (2026-11-02)
+
+§7's first item. §5's probe draws only when a read comes, so output that
+stops inside a frame waits for the next read. The plan (`geng-plan.md`
+§3.1) has one loop on Geng's one thread, waiting on the terminal, the X
+connection and the frame's timer at once. The probe now has both loops:
+`x11 read`, §5's, and `x11 race`, in which each turn is a `Task.race` of
+`Os.File.read` on the terminal, `X.events`, and, while a read is not drawn
+yet, `Process.sleep` until the frame is due (16 ms after the last). A read
+that comes when a frame is due draws it at once, as before. `X.events` is a
+`geng_io_wait` on xcb's descriptor, answered at once when xcb has already
+queued events (it reads the socket in its own calls, a flush or a reply,
+so the descriptor can be quiet with events waiting). An expose is redrawn
+from the pixmap in C. All runs on Xvfb on this machine, `DISPLAY=:77`, no
+proxy, the core at b9bebb2.
+
+### 12.1 Frames that came late
+
+A frame's lateness is the time from the first read it shows to the frame.
+`burst.py` writes two lines 5 ms apart, then is quiet for 300 ms, twenty
+times; `tail` is §5's line every 10 ms.
+
+| | `read`: frames | late, max / mean | `race`: frames | late, max / mean |
+|---|---|---|---|---|
+| burst | 20 | 306 / 300 ms, all 20 over 16 | 40 | 12 / 5 ms, none over 16 |
+| tail | 250 | 20 / 10 ms | 316 | 17 / 10 ms |
+| `gitlog` | 15 | 16 / 15 ms | 15 | 16 / 15 ms |
+
+Under `read`, each burst's second line is drawn with the next burst, 300
+ms on. Under `race`, the timer draws it. On the throughput inputs the
+frames under `race` are 16 to 21 ms late at most: a timer that is due
+waits for the read being fed to the core.
+
+### 12.2 What a turn costs
+
+Five runs each, `perf stat` over the probe and `cat`, medians:
+
+| input | loop | instructions | CPU | wall | reads |
+|---|---|---|---|---|---|
+| `gitlog` | read | 3,890 M | 389 ms | 200 ms | 46,071 |
+| | race | 4,342 M | 416 | 216 | 23,719 |
+| `ls` | read | 3,112 M | 221 | 121 | 2,022 |
+| | race | 3,176 M | 227 | 126 | 1,979 |
+| `vte-scrolling` | read | 5,258 M | 1,351 | 747 | 612,748 |
+| | race | 10,507 M | 1,531 | 807 | 314,051 |
+| `cup` | read | 2,224 M | 127 | 89 | 4,412 |
+| | race | 2,342 M | 133 | 97 | 4,336 |
+
+`vte-scrolling` comes 17 bytes a read, so it is the worst case: twice the
+instructions and 8% of the wall time. Each branch priced on it, three runs
+(`x11 race1`, the read raced alone; `race2`, the read and the X events):
+
+| race of | instructions over `read`, a turn | wall |
+|---|---|---|
+| the read | 8,300 | 737–779 ms |
+| the read, the X events | 12,600 | 793–805 |
+| the read, the X events, the timer | 16,900 | 801–807 |
+| (`read`, no race) | | 737–750 |
+
+The race's own processes cost the most, a process a branch spawned and
+cancelled each turn; the X wait and the timer, a `poll` entry and a heap
+entry made and cancelled each turn, the rest. A slower loop reads less
+often and more each time, so the reads fall to half. The byte counts are
+the same in every run.
+
+### 12.3 What a race loses
+
+Racing a read is safe only if the race never drops what a branch took.
+`x11 double` races two reads of the terminal, and loses a fifth of
+`gitlog`: 21,051,866, 19,476,696 and 19,387,076 bytes of 26,344,379. A read
+answers at once when bytes are there, and when two branches answer in one
+drain of the run queue, the loser is killed with its answer in it
+(geng-lang `m3-os.md` §OS27). The probe's own loop does not lose: a read
+or an event that answers from `poll`, or a timer, settles the race before
+anything else runs, and `x11 stress`, with a 1 ms timer in every turn,
+read every byte of 3,000 lines 0.7 ms apart in five runs (`drip.py`) and
+of `gitlog` in three. But that rests on the read being the branch that
+steps first, which `Task.race` does not promise. So `X.events` now answers
+only that events are there and takes none, and `X.take`, after the race,
+takes them; and the terminal's read waits on §OS27's question.
+
+### 12.4 Not measured
+
+- An expose with a real window manager: Xvfb has none, and the one
+  probe counted one or two events a run, from the map.
+- The paint cooldown (PuTTY's 20 ms) and the synchronized output timeout:
+  the loop has the timer they need, and neither is written.
+- A loop that is not a race each turn: the plan's diagram has C rows
+  emitting into one `Source` and the loop reading it, with no process per
+  branch. `os` cannot read a handle into a `Source`; it would need a
+  reader that emits a piece and waits to be asked for the next, or the
+  kernel's flow control is lost and a fast program's output queues in
+  memory.
+- `ssh -X` (§8's fourth question): `192.168.1.100` answers a ping in 3.7 ms
+  and its `sshd` answers, but refuses this machine's key, `Permission denied
+  (publickey,password)`; its ED25519 key is
+  `SHA256:dTtdQoxwA6OwuJfwdIaNc/tj4nhraUbdCQ6rMIypmQI`.
+
+### 12.5 For Gilbert
+
+1. **A race that loses nothing** (geng-lang `m3-os.md` §OS27). Leaning:
+   the give-back geng-lang made for `Source` (D377), for C rows, with
+   `os`'s read giving its bytes back to the handle. The loop is built on
+   it.
+2. **The loop is a race each turn.** Leaning: yes, as §12.1 shows it draws
+   what the old loop left undrawn, for 8% of the wall time on the worst
+   input. The `Source` form is registered, to be surveyed if a loop budget
+   is missed, and not built now.
+3. **`ssh -X` from `192.168.1.100`.** Its key is not authorized here:
+   `ssh-copy-id -i ~/.ssh/id_ed25519.pub gram@192.168.1.100` from this
+   machine, after checking the fingerprint above. visiterm and the X
+   libraries also have to build or be copied there.

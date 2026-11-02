@@ -1,8 +1,9 @@
-module X exposing (open, draw)
+module X exposing (open, draw, events, take)
 
 {-| Phase 2's survey probe (`docs/phase2-window.md` §5): the C side of the
 renderer, which executes `Vt.View`'s display list on an X server with
-XRender (S§6.2). One window, one font, no events read but drained. -}
+XRender (S§6.2). One window, one font; events are counted, and an expose
+redrawn. -}
 
 import Bytes exposing (Bytes)
 import Task exposing (Task)
@@ -17,3 +18,16 @@ open : Int -> Int -> Int -> Task x Int
 {-| Executes one frame's display list; answers the glyphs uploaded so far. -}
 @extern(c, "probe_x_draw")
 draw : Bytes -> Task x Int
+
+
+{-| Waits for X events: answers 1 once there are some, or -1 once the
+connection has failed. It takes none, so a race that cancels it after it
+answered loses nothing; [`take`](#take) takes them (`docs/phase2-window.md`
+§12). An expose is redrawn from the pixmap in C. -}
+@extern(c, "probe_x_events")
+events : Task x Int
+
+
+{-| Takes the X events that came since the last take: answers how many. -}
+@extern(c, "probe_x_take")
+take : Task x Int

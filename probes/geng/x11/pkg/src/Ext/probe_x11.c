@@ -11,10 +11,12 @@
  *
  * What the probe leaves out, said in §5: shaping (no HarfBuzz: one glyph a
  * code point, from the one face), fallback fonts, wide glyphs drawn at two
- * cells, the cursor, events, and the colours of the core's styles: a style
- * id picks a colour from a fixed palette, which costs the same requests. */
+ * cells, the cursor, every event but an expose, and the colours of the
+ * core's styles: a style id picks a colour from a fixed palette, which
+ * costs the same requests. */
 #define _GNU_SOURCE
 #include <fontconfig/fontconfig.h>
+#include <poll.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <stdlib.h>
@@ -122,6 +124,8 @@ geng_cancel probe_x_open(int32_t c, int32_t r, int32_t points, geng_wait *wait) 
     return (geng_cancel) {0};
 }
 
+static void drain(void);
+
 static void upload(uint32_t cp) {
     if (loaded[cp >> 3] & (1 << (cp & 7))) return;
     loaded[cp >> 3] |= (uint8_t) (1 << (cp & 7));
@@ -198,8 +202,89 @@ geng_cancel probe_x_draw(void *list, geng_wait *wait) {
         xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * ch), 0, (int16_t) (first * ch), (uint16_t) (cols * cw),
                       (uint16_t) ((last - first + 1) * ch));
     xcb_flush(conn);
-    xcb_generic_event_t *e;
-    while ((e = xcb_poll_for_event(conn)) != NULL) free(e);
+    drain();
     geng_succeed(wait, geng_slot_I4(uploaded));
     return (geng_cancel) {0};
+}
+
+/* The loop's wait on the X connection (docs/phase2-window.md §12). xcb reads
+ * the socket in its own calls (a flush, a reply) and queues what events it
+ * finds, so the descriptor can be quiet while events wait: `drain` reads
+ * what is queued and what the socket has, `seen` keeps the count between a
+ * drain in `probe_x_draw` and the next `probe_x_take`, and only when both
+ * are empty does the loop wait on the descriptor. An expose copies the
+ * pixmap's rectangle to the window; no other event means anything yet.
+ *
+ * `probe_x_events` answers only that events are there, and takes none:
+ * `Task.race` drops a losing branch's answer when two branches answer in
+ * one round (§12), so a branch that took the events could lose them.
+ * `probe_x_take`, after the race, takes them. */
+static int seen;
+
+static void drain(void) {
+    xcb_generic_event_t *e;
+    while ((e = xcb_poll_for_event(conn)) != NULL) {
+        if ((e->response_type & 0x7f) == XCB_EXPOSE) {
+            xcb_expose_event_t *x = (xcb_expose_event_t *) e;
+            xcb_copy_area(conn, pixmap, window, gc, (int16_t) x->x, (int16_t) x->y, (int16_t) x->x, (int16_t) x->y,
+                          x->width, x->height);
+            xcb_flush(conn);
+        }
+        seen++;
+        free(e);
+    }
+}
+
+typedef struct xwait {
+    geng_wait *wait;
+    geng_io *io;
+} xwait;
+
+#define XWAIT_HEADER (GENG_HEADER_WORDS(xwait) | GENG_HEADER_POINTER(xwait, wait) | GENG_HEADER_POINTER(xwait, io))
+
+/* Answers 1 once events are there, or -1 once the connection has failed. */
+static int answer(geng_wait *wait) {
+    if (xcb_connection_has_error(conn)) {
+        geng_succeed(wait, geng_slot_I4(-1));
+        return 1;
+    }
+    drain();
+    if (seen == 0) return 0;
+    geng_succeed(wait, geng_slot_I4(1));
+    return 1;
+}
+
+/* Takes the events seen since the last take: answers how many. */
+geng_cancel probe_x_take(geng_wait *wait) {
+    drain();
+    int n = seen;
+    seen = 0;
+    geng_succeed(wait, geng_slot_I4(n));
+    return (geng_cancel) {0};
+}
+
+static void x_ready(void *env, short revents) {
+    (void) revents;
+    xwait *w = env;
+    w->io = NULL;
+    if (!answer(w->wait)) {
+        w->io = geng_io_wait(xcb_get_file_descriptor(conn), POLLIN, x_ready, w);
+        geng_write_barrier(w, &w->io, w->io);
+    }
+}
+
+static geng_task *x_stop(void *env) {
+    xwait *w = env;
+    if (w->io != NULL) geng_io_cancel(w->io);
+    w->io = NULL;
+    return NULL;
+}
+
+geng_cancel probe_x_events(geng_wait *wait) {
+    if (answer(wait)) return (geng_cancel) {0};
+    xwait *w = geng_alloc(sizeof *w, XWAIT_HEADER);
+    *w = (xwait) {.wait = wait, .io = NULL};
+    w->io = geng_io_wait(xcb_get_file_descriptor(conn), POLLIN, x_ready, w);
+    geng_write_barrier(w, &w->io, w->io);
+    return (geng_cancel) {x_stop, w};
 }

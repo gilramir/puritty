@@ -1,12 +1,32 @@
 module Main exposing (main)
 
-{-| The x11 probe (`docs/phase2-window.md` §5): a program on a 160 by 50 pty,
-its output fed to the core, the core's replies written back, and a frame
-drawn in an X window whenever 16 ms have passed since the last, and once at
-the end. It prints the bytes read, the time, the frames and the display
-lists' bytes; the X connection's bytes are counted outside it, by a proxy.
+{-| The x11 probe (`docs/phase2-window.md` §5, §12): a program on a 160 by
+50 terminal, its output fed to the core, the core's replies written back,
+and frames drawn in an X window. It prints the bytes read, the time, the
+frames, the display lists' bytes, and how late the frames came; the X
+connection's bytes are counted outside it, by a proxy.
 
-usage: x11 PROGRAM ARGS...
+Two loops, to be compared (§12):
+
+  - `read`, §5's: a frame is drawn when a read comes and 16 ms have passed
+    since the last, and once at the end, so output that stops inside a
+    frame waits for the next read;
+  - `race`, the plan's (`geng-plan.md` §3.1): each turn races the
+    terminal's read, the X connection's events and, while something read
+    is not drawn yet, a timer for the frame that is due.
+
+`stress` is `race` with a 1 ms timer in every turn, so that a read and a
+timer often finish together, and `double` races two reads of the
+terminal, which both take bytes when they are there; `race1` races the
+read alone and `race2` the read and the X events, to price each branch
+(§12).
+
+A frame's lateness is the time from the first read it shows to the frame.
+
+The terminal is `os`'s (geng-lang D1042), which replaced the probe's own
+`Pty` package.
+
+usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...
 
 -}
 
@@ -14,7 +34,10 @@ import Bytes exposing (Bytes)
 import Console
 import Int64
 import Os.Env
-import Pty
+import Os.Error exposing (Error)
+import Os.File as File
+import Os.Process as Process exposing (Connection(..))
+import Process as Sleep
 import Task exposing (Task)
 import Time
 import Vt
@@ -26,10 +49,25 @@ type alias Run =
     { term : Vt.Term
     , shadow : View.Shadow
     , last : Int
+    , pending : Int
     , reads : Int
     , bytes : Int
     , glyphs : Int
+    , turns : Int
+    , events : Int
+    , lateMax : Int
+    , lateSum : Int
+    , late16 : Int
+    , stress : Bool
+    , double : Bool
+    , branches : Int
     }
+
+
+type Turn
+    = Read Bytes
+    | Events Int
+    | Due
 
 
 now : Task x Int
@@ -37,56 +75,171 @@ now =
     Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
 
 
-writeAll : Int -> Array Bytes -> Task x {}
+writeAll : File.Handle -> Array Bytes -> Task Error {}
 writeAll fd replies =
-    Array.foldl (\r task -> task |> Task.andThen (\_ -> Pty.write fd r)) (Task.succeed {}) replies
+    Array.foldl (\r task -> task |> Task.andThen (\_ -> File.write r fd)) (Task.succeed {}) replies
 
 
+{-| Draws a frame at `ms`, and counts how late it is if it shows a read. -}
 drawFrame : Int -> (moved r : Run) -> Task x Run
 drawFrame ms r =
     let
         f =
             View.frame r.term r.shadow
+
+        late =
+            if r.pending < 0 then
+                0
+
+            else
+                ms - r.pending
     in
     X.draw f.list
-        |> Task.map (\g -> { term = r.term, shadow = f.shadow, last = ms, reads = r.reads, bytes = r.bytes, glyphs = g })
+        |> Task.map
+            (\g ->
+                { r
+                    | shadow = f.shadow
+                    , last = ms
+                    , pending = -1
+                    , glyphs = g
+                    , lateMax = max r.lateMax late
+                    , lateSum = r.lateSum + late
+                    , late16 =
+                        if late > 16 then
+                            r.late16 + 1
+
+                        else
+                            r.late16
+                }
+            )
 
 
-loop : Int -> (moved r : Run) -> Task x Run
-loop fd r =
-    Pty.read fd
+{-| A read fed to the core and its replies written back. -}
+feed : File.Handle -> Bytes -> Int -> (moved r : Run) -> Task Error Run
+feed fd chunk ms r =
+    let
+        taken =
+            Vt.takeReplies (Vt.feed chunk r.term)
+    in
+    writeAll fd taken.replies
+        |> Task.map
+            (\_ ->
+                { r
+                    | term = taken.term
+                    , reads = r.reads + 1
+                    , bytes = r.bytes + Bytes.length chunk
+                    , pending =
+                        if r.pending < 0 then
+                            ms
+
+                        else
+                            r.pending
+                }
+            )
+
+
+readLoop : File.Handle -> (moved r : Run) -> Task Error Run
+readLoop fd r =
+    File.read fd
         |> Task.andThen
             (\chunk ->
-                if Bytes.length chunk == 0 then
-                    now |> Task.andThen (\ms -> drawFrame ms r)
+                now
+                    |> Task.andThen
+                        (\ms ->
+                            if Bytes.length chunk == 0 then
+                                drawFrame ms r
 
-                else
-                    let
-                        taken =
-                            Vt.takeReplies (Vt.feed chunk r.term)
-                    in
-                    writeAll fd taken.replies
-                        |> Task.andThen (\_ -> now)
-                        |> Task.andThen
-                            (\ms ->
-                                let
-                                    next =
-                                        { r | term = taken.term, reads = r.reads + 1, bytes = r.bytes + Bytes.length chunk }
-                                in
-                                if ms - next.last >= 16 then
-                                    drawFrame ms next |> Task.andThen (loop fd)
+                            else
+                                feed fd chunk ms r
+                                    |> Task.andThen
+                                        (\next ->
+                                            if ms - next.last >= 16 then
+                                                drawFrame ms next |> Task.andThen (readLoop fd)
 
-                                else
-                                    loop fd next
-                            )
+                                            else
+                                                readLoop fd next
+                                        )
+                        )
+            )
+
+
+raceLoop : File.Handle -> (moved r : Run) -> Task Error Run
+raceLoop fd r =
+    now
+        |> Task.andThen
+            (\ms0 ->
+                let
+                    waits =
+                        if r.stress then
+                            [ X.events |> Task.map Events
+                            , Sleep.sleep 1 |> Task.map (\_ -> Due)
+                            ]
+
+                        else if r.pending < 0 then
+                            [ X.events |> Task.map Events ]
+
+                        else
+                            [ X.events |> Task.map Events
+                            , Sleep.sleep (toFloat (max 0 (r.last + 16 - ms0))) |> Task.map (\_ -> Due)
+                            ]
+                in
+                Task.race (File.read fd |> Task.map Read)
+                    (if r.double then
+                        [ File.read fd |> Task.map Read ]
+
+                     else
+                        Array.takeFirst (r.branches - 1) waits
+                    )
+                    |> Task.andThen
+                        (\turn ->
+                            now
+                                |> Task.andThen
+                                    (\ms ->
+                                        let
+                                            counted =
+                                                { r | turns = r.turns + 1 }
+                                        in
+                                        when turn is
+                                            Read chunk ->
+                                                if Bytes.length chunk == 0 then
+                                                    drawFrame ms counted
+
+                                                else
+                                                    feed fd chunk ms counted
+                                                        |> Task.andThen
+                                                            (\next ->
+                                                                if ms - next.last >= 16 then
+                                                                    drawFrame ms next |> Task.andThen (raceLoop fd)
+
+                                                                else
+                                                                    raceLoop fd next
+                                                            )
+
+                                            Events _ ->
+                                                X.take |> Task.andThen (\n -> raceLoop fd { counted | events = counted.events + n })
+
+                                            Due ->
+                                                drawFrame ms counted |> Task.andThen (raceLoop fd)
+                                    )
+                        )
             )
 
 
 main : Task Never {}
 main =
-    Os.Env.getEnvironment
-        |> Task.andThen
-            (\e ->
+    Process.initialize
+        |> Task.andThen (\cp -> Os.Env.getEnvironment |> Task.andThen (\e -> start cp e.args))
+        |> Task.onError (\err -> Console.write ("x11: " ++ Os.Error.toString err ++ "\n"))
+
+
+start : Process.Permission -> Array String -> Task Error {}
+start cp args =
+    when { mode = Array.get 0 args, program = Array.get 1 args } is
+        { mode = Just mode, program = Just program } ->
+            if mode /= "read" && mode /= "race" && mode /= "stress" && mode /= "double" && mode /= "race1" && mode /= "race2" then
+                Console.write "usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...\n"
+
+            else
                 X.open 160 50 11
                     |> Task.andThen
                         (\code ->
@@ -94,45 +247,99 @@ main =
                                 Console.write ("x11: cannot open the window, " ++ String.fromInt code ++ "\n")
 
                             else
-                                now
-                                    |> Task.andThen
-                                        (\t0 ->
-                                            Pty.spawn 160 50 e.args
-                                                |> Task.andThen
-                                                    (\fd ->
-                                                        if fd < 0 then
-                                                            Console.write ("x11: spawn failed, errno " ++ String.fromInt (0 - fd) ++ "\n")
-
-                                                        else
-                                                            loop fd { term = Vt.new { cols = 160, rows = 50, scrollback = 100000, checksums = False, cellWidth = 0, cellHeight = 0 }, shadow = View.shadow 160 50, last = t0, reads = 0, bytes = 0, glyphs = 0 }
-                                                                |> Task.andThen
-                                                                    (\r ->
-                                                                        now
-                                                                            |> Task.andThen
-                                                                                (\t1 ->
-                                                                                    Console.write
-                                                                                        (String.fromInt r.bytes
-                                                                                            ++ " bytes in "
-                                                                                            ++ String.fromInt (t1 - t0)
-                                                                                            ++ " ms; reads "
-                                                                                            ++ String.fromInt r.reads
-                                                                                            ++ " frames "
-                                                                                            ++ String.fromInt r.shadow.frames
-                                                                                            ++ " scrolls "
-                                                                                            ++ String.fromInt r.shadow.scrolls
-                                                                                            ++ " cells "
-                                                                                            ++ String.fromInt r.shadow.drawn
-                                                                                            ++ " runs "
-                                                                                            ++ String.fromInt r.shadow.runs
-                                                                                            ++ " list-bytes "
-                                                                                            ++ String.fromInt r.shadow.bytes
-                                                                                            ++ " glyphs "
-                                                                                            ++ String.fromInt r.glyphs
-                                                                                            ++ "\n"
-                                                                                        )
-                                                                                )
-                                                                    )
-                                                    )
-                                        )
+                                now |> Task.andThen (\t0 -> run cp mode program (Array.dropFirst 2 args) t0)
                         )
+
+        _ ->
+            Console.write "usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...\n"
+
+
+run : Process.Permission -> String -> String -> Array String -> Int -> Task Error {}
+run cp mode program args t0 =
+    let
+        race =
+            mode /= "read"
+
+        stress =
+            mode == "stress"
+    in
+    Process.spawn cp program args (Process.defaultSpawnOptions (Terminal { columns = 160, rows = 50, utf8 = True }))
+        |> Task.andThen
+            (\child ->
+                when Process.terminal child is
+                    Nothing ->
+                        Console.write "x11: no terminal\n"
+
+                    Just terminal ->
+                        let
+                            fd =
+                                Process.terminalHandle terminal
+
+                            r0 =
+                                { term = Vt.new { cols = 160, rows = 50, scrollbackBytes = Vt.scrollbackBytesFor { cols = 160, rows = 100000 }, checksums = False, cellWidth = 0, cellHeight = 0 }
+                                , shadow = View.shadow 160 50
+                                , last = t0
+                                , pending = -1
+                                , reads = 0
+                                , bytes = 0
+                                , glyphs = 0
+                                , turns = 0
+                                , events = 0
+                                , lateMax = 0
+                                , lateSum = 0
+                                , late16 = 0
+                                , stress = stress
+                                , double = mode == "double"
+                                , branches =
+                                    if mode == "race1" then
+                                        1
+
+                                    else if mode == "race2" then
+                                        2
+
+                                    else
+                                        3
+                                }
+                        in
+                        (if race then
+                            raceLoop fd r0
+
+                         else
+                            readLoop fd r0
+                        )
+                            |> Task.andThen (\r -> now |> Task.andThen (\t1 -> report r (t1 - t0)))
             )
+
+
+report : Run -> Int -> Task x {}
+report r ms =
+    Console.write
+        (String.fromInt r.bytes
+            ++ " bytes in "
+            ++ String.fromInt ms
+            ++ " ms; reads "
+            ++ String.fromInt r.reads
+            ++ " turns "
+            ++ String.fromInt r.turns
+            ++ " events "
+            ++ String.fromInt r.events
+            ++ " frames "
+            ++ String.fromInt r.shadow.frames
+            ++ " late max "
+            ++ String.fromInt r.lateMax
+            ++ " mean "
+            ++ String.fromInt (r.lateSum // max 1 r.shadow.frames)
+            ++ " over16 "
+            ++ String.fromInt r.late16
+            ++ " scrolls "
+            ++ String.fromInt r.shadow.scrolls
+            ++ " cells "
+            ++ String.fromInt r.shadow.drawn
+            ++ " runs "
+            ++ String.fromInt r.shadow.runs
+            ++ " list-bytes "
+            ++ String.fromInt r.shadow.bytes
+            ++ " glyphs "
+            ++ String.fromInt r.glyphs
+            ++ "\n"
+        )
