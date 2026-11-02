@@ -3421,3 +3421,41 @@ heap ends at 16.8 MB (33 MB before; `GENG_NURSERY_STATS`).
    correctness rests on, to save at most 0.4 ms a resize where the core
    is not behind. Registered with these numbers, and D1030 closed with
    them.
+
+**Answered** (2026-11-01): all three leanings. A is built (§VC41). B and C
+are registered here with the numbers above, and D1030 is closed.
+
+## VC41. A coloured row with a byte a cell is cut by arithmetic (§VC40's A)
+
+`Recut`'s `Src` has a fourth field, `narrow`: the row's text is as many
+bytes as its extent. `chunks` finds where a new row's text ends by
+arithmetic when it is set. Before, it did so only when the row was also
+unstyled, since `plain` decided both; `plain` still decides whether the
+page written is plain. A row reaches `fastLine` only when `scan` found
+every cell one column wide, so a byte a cell means each byte is a cell's:
+ASCII, or an empty cell's 0, with no protection byte.
+
+**Held.** Replay 325 of 325, esctest2 392, the dumps the same as 60a4d07's
+on 153 of 153. `fuzz.py --diff`, 24 jobs for 600 s, coverage 6,269, and
+the core's own, coverage 6,147: nothing found.
+
+**Instructions** (`perf.py`, recorded): `gitlog`'s 20 resizes 5,219 M →
+4,376 M (−16%), and 30,685 M → 26,104 M without a limit (−15%). The
+10,000-row line 149.4 M → 142.6 M (−4.5%). Throughput does not move. Four
+resize counts rise by 0.2% to 1.3%: the line of 100,000 rows without a
+limit 656.1 M → 664.8 M, and 10,000 and 100,000 short lines by 0.2% to
+0.35%. Their lines are plain, so they gain nothing, and they build the
+wider `Src` all the same.
+
+**Time**, the median of seven of `core-bench FILE resizes N 80 50
+2000000000`, against 7e99431 built with the same compiler: the first 20,
+then each resize after them:
+
+| input | before | after | Ghostty (§VC39) |
+|---|---:|---:|---:|
+| `gitlog` | 1,088 ms / 53.9 | 964 / 48.1 | 2,276 / 114 |
+| `ls` | 705 / 34.8 | 529 / 26.1 | |
+| one line of 10,000 rows | 9 / 0.26 | 9 / 0.26 | 9.1 / 0.42 |
+
+`ls` gains the most because its coloured names are ASCII. Every time is
+within its budget.
