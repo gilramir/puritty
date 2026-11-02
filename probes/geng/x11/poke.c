@@ -3,8 +3,9 @@
  * focus or takes the focus away, asks it to close as a window manager does
  * (WM_DELETE_WINDOW), or prints its title (_NET_WM_NAME). Xvfb has no
  * window manager, so this is how the x11 package's events are made there.
+ * `shot` writes the window as it is now, as a PPM.
  *
- * usage: poke NAME resize WIDTH HEIGHT | focus | unfocus | close | title
+ * usage: poke NAME resize WIDTH HEIGHT | focus | unfocus | close | title | shot FILE
  * build: cc -O2 -o poke poke.c $(pkg-config --cflags --libs xcb) */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,7 @@ static char *title_of(xcb_window_t w, xcb_atom_t prop, xcb_atom_t type) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: poke NAME resize WIDTH HEIGHT | focus | unfocus | close | title\n");
+        fprintf(stderr, "usage: poke NAME resize WIDTH HEIGHT | focus | unfocus | close | title | shot FILE\n");
         return 2;
     }
     c = xcb_connect(NULL, NULL);
@@ -75,6 +76,23 @@ int main(int argc, char **argv) {
         m.data.data32[0] = atom("WM_DELETE_WINDOW");
         m.data.data32[1] = XCB_CURRENT_TIME;
         xcb_send_event(c, 0, w, XCB_EVENT_MASK_NO_EVENT, (const char *) &m);
+    } else if (strcmp(what, "shot") == 0 && argc == 4) {
+        xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(c, xcb_get_geometry(c, w), NULL);
+        xcb_get_image_reply_t *r = g ? xcb_get_image_reply(c, xcb_get_image(c, XCB_IMAGE_FORMAT_Z_PIXMAP, w, 0, 0, g->width, g->height, ~0u), NULL) : NULL;
+        FILE *o = r ? fopen(argv[3], "wb") : NULL;
+        if (!o) {
+            fprintf(stderr, "poke: no shot\n");
+            return 1;
+        }
+        const uint8_t *d = xcb_get_image_data(r);
+        fprintf(o, "P6\n%d %d\n255\n", g->width, g->height);
+        for (int i = 0; i < g->width * g->height; i++) {
+            uint8_t px[3] = {d[i * 4 + 2], d[i * 4 + 1], d[i * 4]};
+            fwrite(px, 1, 3, o);
+        }
+        fclose(o);
+        free(r);
+        free(g);
     } else if (strcmp(what, "title") == 0) {
         char *name = title_of(w, net_wm_name, utf8);
         printf("%s\n", name ? name : "");

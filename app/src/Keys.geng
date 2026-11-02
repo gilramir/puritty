@@ -1,0 +1,93 @@
+module Keys exposing (encode)
+
+{-| What a key sends the program (`docs/phase2-window.md` §14, V30): legacy
+xterm encoding, the smallest set a shell and an editor need. The key's
+text, which xkbcommon has already made a control character under ctrl;
+ESC before it under alt; and a sequence for each named key, the cursor
+keys and Home and End as SS3 in application mode (DECCKM, mode 1). The
+function keys, modifiers on named keys and the kitty protocol are phase
+3's (`geng-plan.md` §6).
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+
+
+{-| The bytes for a key: its keysym, modifiers (alt 4) and text, and
+whether the cursor keys are in application mode. -}
+encode : Bool -> Int -> Int -> Bytes -> Bytes
+encode application sym mods text =
+    let
+        cursor letter =
+            if application then
+                "\u{001B}O" ++ letter
+
+            else
+                "\u{001B}[" ++ letter
+
+        named =
+            when sym is
+                0xFF0D ->
+                    Just "\r"
+
+                0xFF8D ->
+                    Just "\r"
+
+                0xFF08 ->
+                    Just "\u{007F}"
+
+                0xFF09 ->
+                    Just "\t"
+
+                0xFE20 ->
+                    Just "\u{001B}[Z"
+
+                0xFF1B ->
+                    Just "\u{001B}"
+
+                0xFF52 ->
+                    Just (cursor "A")
+
+                0xFF54 ->
+                    Just (cursor "B")
+
+                0xFF53 ->
+                    Just (cursor "C")
+
+                0xFF51 ->
+                    Just (cursor "D")
+
+                0xFF50 ->
+                    Just (cursor "H")
+
+                0xFF57 ->
+                    Just (cursor "F")
+
+                0xFF63 ->
+                    Just "\u{001B}[2~"
+
+                0xFFFF ->
+                    Just "\u{001B}[3~"
+
+                0xFF55 ->
+                    Just "\u{001B}[5~"
+
+                0xFF56 ->
+                    Just "\u{001B}[6~"
+
+                _ ->
+                    Nothing
+
+        body =
+            when named is
+                Just s ->
+                    Bytes.fromString s
+
+                Nothing ->
+                    text
+    in
+    if Bitwise.and mods 4 /= 0 && Bytes.length body > 0 && named == Nothing then
+        Bytes.flatten [ Bytes.fromString "\u{001B}", body ]
+
+    else
+        body

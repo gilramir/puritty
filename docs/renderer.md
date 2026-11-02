@@ -1,8 +1,9 @@
 # The renderer: what the probes leave, and how it is built (survey, 2026-11-02)
 
 Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
-(§R7, V34–V38). Steps 1 to 3 of §R6 are built (§R8, §R9); step 4, the
-app, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+(§R7, V34–V38). Steps 1 to 3 of §R6 are built (§R8, §R9), and step 4,
+the app, all but its command line, which waits on Gilbert (§R10,
+§R11).** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -364,4 +365,97 @@ against 8.0–8.1; `cat` 188–194 KB; the opening 2,816 bytes, against
 the backend refuses, is passed to it by the front end, and `geng make`
 dies with `DecodeProblem` and the outline as JSON (geng-lang
 `open-items.md`).
+
+## R10. Step 4 built: the app (2026-11-02)
+
+`app/` is visiterm: `Main.geng`, the loop; `Config.geng`, the settings;
+`Keys.geng`, what a key sends. It builds with `app/build.sh` from
+visiterm's devbox, and is native (`runtime = "os"`).
+
+**Settings** are a TOML file, `$XDG_CONFIG_HOME/visiterm/config.toml` or
+`~/.config/visiterm/config.toml`, read with `gren-toml`; none at all is
+the defaults. `Config.geng`'s comment lists every key: the window's
+columns, rows and title; the font's family, size, fallback language and
+glyph cache (V37, 4 MB at least, since a smaller cap than a screen's
+glyphs uploads them every frame, §R9); the default colours and whether
+bold brightens; the cursor's blink; the frame interval and the
+synchronized-output timeout; the scrollback in lines; the program. A key
+the file does not know is refused, naming it and the keys there are, as
+the compiler's own manifest does, and visiterm exits 2; so does a value
+out of its range. The fallback language defaults to the locale's
+(`LC_ALL`, `LC_CTYPE`, `LANG`, as fontconfig names it: `ja`, `ko`,
+`zh-tw`), as V25 says.
+
+**The program** is the settings' `program.command`, or `$SHELL`, or
+`/bin/sh`, on `os`'s terminal (D1024) with `TERM=xterm-256color` and
+`COLORTERM=truecolor` added to the environment. visiterm ends with the
+program's exit status (1 when a signal ended it); when the window is
+closed, it asks the program to end (`Process.kill`, SIGTERM) and exits 0.
+
+**The loop** is the x11 probe's race (V23) with what §R2 found missing:
+
+- a frame is due `frames.every_ms` (16) after the last when output is
+  waiting, and at once after a key, a resize, a focus change or a blink
+  (V31);
+- synchronized output (mode 2026): while the program holds it, its output
+  is not drawn, for at most `frames.sync_timeout_ms` (150) from the first
+  read the hold kept back; a hold that times out begins again at the next
+  read. 150 ms is a choice, not a measurement;
+- a blinking cursor (mode 12, DECSCUSR's odd shapes) blinks every
+  `cursor.blink_ms` (500) while the window has the focus, the timer one
+  more branch of the race, and is shown again at once by a key;
+- the focus is drawn in the cursor (§R9) and, under mode 1004, reported as
+  `CSI I` and `CSI O`;
+- the program's title (OSC 0, 2) is the window's, the settings' title
+  while it has none;
+- a key is the probe's legacy encoding with application cursor keys
+  (DECCKM, mode 1) added, Shift-Tab, Insert and the keypad's Enter;
+  the rest of input is phase 3's.
+
+**Checked on Xvfb**, with `probes/geng/x11/poke`, which now also takes a
+picture of the window (`shot`), so a frame can be looked at while the
+program runs:
+
+| what | how | seen |
+|---|---|---|
+| exit status | `sh -c '…; exit 3'` | visiterm exits 3 |
+| title | OSC 2 `a title` | `poke` finds the window by it |
+| synchronized output, a 1 s timeout | `A`, then under `?2026h` `B`, 0.6 s, `C`, `?2026l` | 0.3 s into the hold only `A` shows; after it `ABC` |
+| the same, 150 ms | | 0.3 s into the hold `AB` shows |
+| blink | `?12h` | the cursor shown, hidden, shown at 0.6, 1.1, 1.6 s |
+| close | `sleep 7.25`, then `WM_DELETE_WINDOW` | exits 0, and the `sleep` is gone |
+| resize | 40×5, the window made 360×170 | `stty size` reads 5 40, then 10 40 |
+| a misspelt key | `colums = 40` | `…: at window: "colums" is not a key here; the keys are columns, rows, title`, exit 2 |
+
+Not checked: typing into a shell (the key path is the probe's, measured in
+phase2 §14, with DECCKM added); a desktop's window manager; `ssh -X`. Those
+are step 6's.
+
+**Its command line is not built** (§R11): visiterm reads no arguments
+yet.
+
+## R11. For Gilbert: `gren-argparse` on `os`
+
+The plan's command line is `gilramir/gren-argparse` (`geng-plan.md` §3.2),
+which is a `node` package: `Argparse.Program`, the runner, uses `Node`,
+`Terminal` and `Node.setExitCode`, and `Argparse.Parser`'s `pathParser`
+answers node's `FileSystem.Path`. The rest of the parser and
+`Argparse.PrettyPrinter` use nothing of a platform. An `os` program cannot
+depend on a `node` package, so visiterm cannot use it as it is.
+
+**Leaning: make it two packages.** `gren-argparse` 3.0.0 becomes
+`runtime = "any"`: `Argparse.Parser` and `Argparse.PrettyPrinter`, with
+`pathParser` taking the platform's `fromString`
+(`pathParser : (String -> path) -> ValueParser path`), so a node program
+passes `Path.fromPosixString` and an `os` one `Os.Path.fromString`. The
+runners are each platform's: `Argparse.Program` for node in a package of
+its own (`gren-argparse-node`), and one for `os` beside it
+(`gren-argparse-os`), each a few hundred lines over the same parser. The
+cost is a major version: node programs import their runner from a new
+package and pass `pathParser` a function. visiterm then takes
+`gren-argparse` and `gren-argparse-os`, and its command line is `-e
+PROGRAM ARGS...`, `--config FILE`, `--title` and `--class` to begin with.
+
+The alternative, one package for each runtime with the parser copied, keeps
+two parsers to keep alike.
 

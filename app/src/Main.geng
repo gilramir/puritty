@@ -1,0 +1,489 @@
+module Main exposing (main)
+
+{-| visiterm (`docs/renderer.md` §R10): a program on a terminal, drawn in
+an X window.
+
+It reads its settings (`Config`), opens the window (`packages/x11`), and
+starts the program the settings name, or `$SHELL`, on a terminal of the
+window's size. Then each turn races the terminal's read, the window's
+events and a timer (V23), and draws a frame with `Vt.View` when one is
+due:
+
+  - output is drawn at most every `frames.every_ms` (16 ms); a read that
+    comes after a key is drawn at once (V31), and so is a resize;
+  - while the program holds synchronized output (mode 2026), its output is
+    not drawn, for at most `frames.sync_timeout_ms` from the first read it
+    held back;
+  - a blinking cursor (mode 12) blinks every `cursor.blink_ms` while the
+    window has the focus, and shows at once again after a key.
+
+A resize of the window is given to the core and to the terminal; the
+focus is drawn in the cursor and, under mode 1004, reported to the
+program; the program's title (OSC 0 and 2) is the window's. visiterm ends
+when the program does, with its exit status (1 for one a signal ended),
+or when the window is closed, asking the program to end.
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Config exposing (Config)
+import Console
+import Dict exposing (Dict)
+import Int64
+import Keys
+import Os.Env
+import Os.Error exposing (Error)
+import Os.File as File
+import Os.Path as Path
+import Os.Process as Process exposing (Connection(..))
+import Process as Sleep
+import Task exposing (Task)
+import Time
+import Vt
+import Vt.View as View
+import X11
+
+
+type alias Model =
+    { config : Config
+    , look : View.Look
+    , term : Vt.Term
+    , shadow : View.Shadow
+    , focus : View.Focus
+    , last : Int
+    , pending : Int
+    , urgent : Bool
+    , blinkAt : Int
+    , syncSince : Int
+    , title : String
+    , closed : Bool
+    , lost : Bool
+    }
+
+
+type Turn
+    = Read Bytes
+    | Events Bool
+    | Due
+
+
+now : Task x Int
+now =
+    Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
+
+
+main : Task Never {}
+main =
+    Task.map3 (\cp fs vars -> { cp = cp, fs = fs, vars = vars }) Process.initialize File.initialize Os.Env.getEnvironmentVariables
+        |> Task.andThen (\s -> settings s.fs s.vars |> Task.andThen (\config -> start s.cp s.vars config))
+        |> Task.onError (\why -> Console.writeErr ("visiterm: " ++ why ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 2))
+
+
+{-| The settings file, or the defaults when there is none. -}
+settings : File.Permission -> Dict String String -> Task String Config
+settings fs vars =
+    let
+        dir =
+            when Dict.get "XDG_CONFIG_HOME" vars is
+                Just d ->
+                    if d /= "" then
+                        Just d
+
+                    else
+                        Maybe.map (\h -> h ++ "/.config") (Dict.get "HOME" vars)
+
+                Nothing ->
+                    Maybe.map (\h -> h ++ "/.config") (Dict.get "HOME" vars)
+    in
+    when dir is
+        Nothing ->
+            Task.succeed Config.defaults
+
+        Just d ->
+            let
+                path =
+                    d ++ "/visiterm/config.toml"
+            in
+            File.readFile fs (Path.fromString path)
+                |> Task.map Just
+                |> Task.onError
+                    (\err ->
+                        if err.kind == Os.Error.NotFound then
+                            Task.succeed Nothing
+
+                        else
+                            Task.fail (Os.Error.toString err)
+                    )
+                |> Task.andThen
+                    (\read ->
+                        when read is
+                            Nothing ->
+                                Task.succeed Config.defaults
+
+                            Just bytes ->
+                                when Config.decode (Bytes.toStringLossy bytes) is
+                                    Ok config ->
+                                        Task.succeed config
+
+                                    Err why ->
+                                        Task.fail (path ++ ": " ++ why)
+                    )
+
+
+start : Process.Permission -> Dict String String -> Config -> Task String {}
+start cp vars config =
+    X11.open
+        { cols = config.columns
+        , rows = config.rows
+        , font = config.font
+        , points = config.points
+        , lang = Maybe.withDefault (Config.languageOf vars) config.language
+        , glyphCap = config.glyphCacheMb * 1024 * 1024
+        , title = config.title
+        }
+        |> Task.andThen
+            (\opened ->
+                when opened is
+                    Err why ->
+                        Task.fail ("cannot open the window: " ++ why)
+
+                    Ok cell ->
+                        let
+                            command =
+                                if Array.isEmpty config.command then
+                                    [ Maybe.withDefault "/bin/sh" (Dict.get "SHELL" vars |> Maybe.andThen (\s -> if s == "" then Nothing else Just s)) ]
+
+                                else
+                                    config.command
+
+                            options =
+                                Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = True })
+                        in
+                        Process.spawn cp
+                            (Maybe.withDefault "/bin/sh" (Array.first command))
+                            (Array.dropFirst 1 command)
+                            { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                            |> Task.mapError Os.Error.toString
+                            |> Task.andThen (\child -> run config cell child)
+            )
+
+
+run : Config -> X11.Cell -> Process.Child -> Task String {}
+run config cell child =
+    when Process.terminal child is
+        Nothing ->
+            Task.fail "the program has no terminal"
+
+        Just terminal ->
+            now
+                |> Task.andThen
+                    (\t0 ->
+                        loop terminal
+                            (Process.terminalHandle terminal)
+                            { config = config
+                            , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
+                            , term =
+                                Vt.new
+                                    { cols = config.columns
+                                    , rows = config.rows
+                                    , scrollbackBytes = Vt.scrollbackBytesFor { cols = config.columns, rows = config.scrollbackLines }
+                                    , pageRows = Vt.defaultPageRows
+                                    , checksums = False
+                                    , cellWidth = cell.width
+                                    , cellHeight = cell.height
+                                    }
+                            , shadow = View.shadow config.columns config.rows
+                            , focus = View.focused
+                            , last = t0
+                            , pending = -1
+                            , urgent = True
+                            , blinkAt = -1
+                            , syncSince = -1
+                            , title = ""
+                            , closed = False
+                            , lost = False
+                            }
+                            |> Task.mapError Os.Error.toString
+                    )
+                |> Task.andThen (\m -> finish child m)
+
+
+{-| The end: the program's exit status when it ended, 0 when the window
+was closed, after asking the program to end. -}
+finish : Process.Child -> Model -> Task String {}
+finish child m =
+    if m.lost then
+        Process.kill child |> Task.andThen (\_ -> Task.fail "the connection to the X server is lost")
+
+    else if m.closed then
+        Process.kill child |> Task.andThen (\_ -> Os.Env.exitWithCode 0)
+
+    else
+        Process.waitForExit child
+            |> Task.andThen
+                (\code ->
+                    Os.Env.exitWithCode
+                        (if code < 0 then
+                            1
+
+                         else
+                            code
+                        )
+                )
+
+
+syncHeld : Vt.Term -> Bool
+syncHeld t =
+    Dict.get 2026 t.modes == Just True
+
+
+blinking : Model -> Bool
+blinking m =
+    m.config.blinkMs > 0 && m.focus.focused && m.term.showCursor && Dict.get 12 m.term.modes == Just True
+
+
+{-| When the next frame is due, or -1 for none waiting. -}
+frameAt : Model -> Int
+frameAt m =
+    if m.pending < 0 && not m.urgent then
+        -1
+
+    else if syncHeld m.term && m.syncSince >= 0 then
+        m.syncSince + m.config.syncTimeoutMs
+
+    else if m.urgent then
+        0
+
+    else
+        m.last + m.config.frameMs
+
+
+{-| The time the timer branch waits for: the frame's, or the blink's. -}
+nextAt : Model -> Int
+nextAt m =
+    let
+        f =
+            frameAt m
+
+        b =
+            if blinking m then
+                m.blinkAt
+
+            else
+                -1
+    in
+    if f < 0 then
+        b
+
+    else if b < 0 then
+        f
+
+    else
+        min f b
+
+
+loop : Process.Terminal -> File.Handle -> (moved m : Model) -> Task Error Model
+loop terminal fd m0 =
+    now
+        |> Task.andThen
+            (\ms0 ->
+                let
+                    m =
+                        if blinking m0 && m0.blinkAt < 0 then
+                            { m0 | blinkAt = ms0 + m0.config.blinkMs }
+
+                        else
+                            m0
+
+                    at =
+                        nextAt m
+
+                    timer =
+                        if at < 0 then
+                            []
+
+                        else
+                            [ Sleep.sleep (toFloat (max 0 (at - ms0))) |> Task.map (\_ -> Due) ]
+                in
+                Task.race (File.read fd |> Task.map Read) ([ X11.events |> Task.map Events ] ++ timer)
+                    |> Task.andThen
+                        (\turn ->
+                            now
+                                |> Task.andThen
+                                    (\ms ->
+                                        when turn is
+                                            Read chunk ->
+                                                if Bytes.length chunk == 0 then
+                                                    Task.succeed m
+
+                                                else
+                                                    feed fd chunk ms m |> Task.andThen (\next -> step terminal fd ms next)
+
+                                            Events up ->
+                                                if not up then
+                                                    Task.succeed { m | lost = True }
+
+                                                else
+                                                    X11.take
+                                                        |> Task.andThen (\evs -> handle terminal fd ms evs m)
+                                                        |> Task.andThen (\next -> step terminal fd ms next)
+
+                                            Due ->
+                                                step terminal fd ms (blink ms m)
+                                    )
+                        )
+            )
+
+
+{-| A frame if one is due, then the loop again, unless the window is gone. -}
+step : Process.Terminal -> File.Handle -> Int -> (moved m : Model) -> Task Error Model
+step terminal fd ms m =
+    if m.closed || m.lost then
+        Task.succeed m
+
+    else
+        let
+            at =
+                frameAt m
+        in
+        if at >= 0 && ms >= at then
+            draw ms m |> Task.andThen (\next -> if next.lost then Task.succeed next else loop terminal fd next)
+
+        else
+            loop terminal fd m
+
+
+blink : Int -> (moved m : Model) -> Model
+blink ms m =
+    if blinking m && m.blinkAt >= 0 && ms >= m.blinkAt then
+        { m | focus = { focused = m.focus.focused, blinkOn = not m.focus.blinkOn }, blinkAt = ms + m.config.blinkMs, urgent = True }
+
+    else
+        m
+
+
+{-| A read fed to the core and its replies written back. -}
+feed : File.Handle -> Bytes -> Int -> (moved m : Model) -> Task Error Model
+feed fd chunk ms m =
+    let
+        taken =
+            Vt.takeReplies (Vt.feed chunk m.term)
+
+        held =
+            syncHeld taken.term
+    in
+    Array.foldl (\r task -> task |> Task.andThen (\_ -> File.write r fd)) (Task.succeed {}) taken.replies
+        |> Task.map
+            (\_ ->
+                { m
+                    | term = taken.term
+                    , pending =
+                        if m.pending < 0 then
+                            ms
+
+                        else
+                            m.pending
+                    , syncSince =
+                        if not held then
+                            -1
+
+                        else if m.syncSince < 0 then
+                            ms
+
+                        else
+                            m.syncSince
+                }
+            )
+
+
+{-| The window's events: a key sent to the program, a new size given to the
+core and the terminal, the focus kept for the cursor and reported under
+mode 1004, a close. -}
+handle : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (moved m : Model) -> Task Error Model
+handle terminal fd ms evs m =
+    when Array.first evs is
+        Nothing ->
+            Task.succeed m
+
+        Just ev ->
+            let
+                rest =
+                    Array.dropFirst 1 evs
+            in
+            when ev is
+                X11.Key k ->
+                    File.write (Keys.encode (Dict.get 1 m.term.modes == Just True) k.sym k.mods k.text) fd
+                        |> Task.andThen
+                            (\_ ->
+                                handle terminal fd ms rest
+                                    { m
+                                        | urgent = True
+                                        , focus = { focused = m.focus.focused, blinkOn = True }
+                                        , blinkAt = if blinking m then ms + m.config.blinkMs else -1
+                                    }
+                            )
+
+                X11.Resized size ->
+                    Process.resize terminal { columns = size.cols, rows = size.rows }
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True })
+
+                X11.Focus on ->
+                    (if Dict.get 1004 m.term.modes == Just True then
+                        File.write
+                            (Bytes.fromString
+                                (if on then
+                                    "\u{001B}[I"
+
+                                 else
+                                    "\u{001B}[O"
+                                )
+                            )
+                            fd
+
+                     else
+                        Task.succeed {}
+                    )
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
+
+                X11.Close ->
+                    Task.succeed { m | closed = True }
+
+
+{-| A frame drawn, and the window's title made the program's. -}
+draw : Int -> (moved m : Model) -> Task x Model
+draw ms m =
+    let
+        f =
+            View.frame m.look m.focus m.term m.shadow
+
+        title =
+            if m.term.title == "" then
+                m.config.title
+
+            else
+                m.term.title
+    in
+    X11.draw f.list
+        |> Task.andThen
+            (\up ->
+                (if title /= m.title then
+                    X11.setTitle title
+
+                 else
+                    Task.succeed {}
+                )
+                    |> Task.map
+                        (\_ ->
+                            { m
+                                | shadow = f.shadow
+                                , last = ms
+                                , pending = -1
+                                , urgent = False
+                                , title = title
+                                , lost = m.lost || not up
+                                -- A hold that timed out begins again at the next read.
+                                , syncSince = -1
+                            }
+                        )
+            )

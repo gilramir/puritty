@@ -1,0 +1,319 @@
+module Config exposing (Config, defaults, decode, languageOf)
+
+{-| visiterm's settings (`docs/renderer.md` §R10), read from
+`$XDG_CONFIG_HOME/visiterm/config.toml`, or `~/.config/visiterm/config.toml`.
+Every key may be left out, and a key the file does not know is refused, so
+that a misspelt one is not a setting silently left at its default:
+
+    [window]
+    columns = 80
+    rows = 24
+    title = "visiterm"
+
+    [font]
+    family = "DejaVu Sans Mono"   # as fontconfig names it
+    size = 11                     # points
+    language = "ja"               # what fallback fonts are asked for (V25);
+                                  # the locale's when left out
+    glyph_cache_mb = 8            # the X server's glyph set (V37), 4 or more
+
+    [colours]
+    foreground = "#c5c8c6"
+    background = "#1d1f21"
+    bold_is_bright = false
+
+    [cursor]
+    blink_ms = 500                # the half of a blink; 0 does not blink
+
+    [frames]
+    every_ms = 16                 # output is drawn at most this often (V31)
+    sync_timeout_ms = 150         # how long mode 2026 may hold a frame back
+
+    [scrollback]
+    lines = 25000                 # in bytes, as many as so many full lines take
+
+    [program]
+    command = ["htop"]            # what runs; $SHELL when left out
+
+-}
+
+import Bitwise
+import Dict exposing (Dict)
+import Toml.Decode as Decode exposing (Decoder)
+import Toml.Table
+
+
+type alias Config =
+    { columns : Int
+    , rows : Int
+    , title : String
+    , font : String
+    , points : Int
+    , language : Maybe String
+    , glyphCacheMb : Int
+    , foreground : Int
+    , background : Int
+    , boldIsBright : Bool
+    , blinkMs : Int
+    , frameMs : Int
+    , syncTimeoutMs : Int
+    , scrollbackLines : Int
+    , command : Array String
+    }
+
+
+defaults : Config
+defaults =
+    { columns = 80
+    , rows = 24
+    , title = "visiterm"
+    , font = "DejaVu Sans Mono"
+    , points = 11
+    , language = Nothing
+    , glyphCacheMb = 8
+    , foreground = 0xC5C8C6
+    , background = 0x1D1F21
+    , boldIsBright = False
+    , blinkMs = 500
+    , frameMs = 16
+    , syncTimeoutMs = 150
+    , scrollbackLines = 25000
+    , command = []
+    }
+
+
+{-| The settings a file gives, each left out its default's. -}
+decode : String -> Result String Config
+decode text =
+    Decode.fromString decoder text
+        |> Result.mapError Decode.errorToString
+
+
+decoder : Decoder Config
+decoder =
+    Decode.succeed
+        (\{} window font colours cursor frames scrollback program ->
+            { columns = window.columns
+            , rows = window.rows
+            , title = window.title
+            , font = font.family
+            , points = font.size
+            , language = font.language
+            , glyphCacheMb = font.glyphCacheMb
+            , foreground = colours.foreground
+            , background = colours.background
+            , boldIsBright = colours.boldIsBright
+            , blinkMs = cursor
+            , frameMs = frames.everyMs
+            , syncTimeoutMs = frames.syncTimeoutMs
+            , scrollbackLines = scrollback
+            , command = program
+            }
+        )
+        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program" ])
+        |> Decode.andMap
+            (section "window"
+                { columns = defaults.columns, rows = defaults.rows, title = defaults.title }
+                (Decode.succeed (\{} c r t -> { columns = c, rows = r, title = t })
+                    |> Decode.andMap (onlyKeys [ "columns", "rows", "title" ])
+                    |> Decode.andMap (setting "columns" (bounded 2 1000 Decode.int) defaults.columns)
+                    |> Decode.andMap (setting "rows" (bounded 1 1000 Decode.int) defaults.rows)
+                    |> Decode.andMap (setting "title" Decode.string defaults.title)
+                )
+            )
+        |> Decode.andMap
+            (section "font"
+                { family = defaults.font, size = defaults.points, language = defaults.language, glyphCacheMb = defaults.glyphCacheMb }
+                (Decode.succeed (\{} f s l g -> { family = f, size = s, language = l, glyphCacheMb = g })
+                    |> Decode.andMap (onlyKeys [ "family", "size", "language", "glyph_cache_mb" ])
+                    |> Decode.andMap (setting "family" Decode.string defaults.font)
+                    |> Decode.andMap (setting "size" (bounded 4 200 Decode.int) defaults.points)
+                    |> Decode.andMap (Decode.optionalField "language" Decode.string)
+                    -- A screen of new ideographs is some 2.7 MB of glyphs:
+                    -- under a cap below that every frame uploads its
+                    -- glyphs again (renderer.md §R9).
+                    |> Decode.andMap (setting "glyph_cache_mb" (bounded 4 1024 Decode.int) defaults.glyphCacheMb)
+                )
+            )
+        |> Decode.andMap
+            (section "colours"
+                { foreground = defaults.foreground, background = defaults.background, boldIsBright = defaults.boldIsBright }
+                (Decode.succeed (\{} f b bb -> { foreground = f, background = b, boldIsBright = bb })
+                    |> Decode.andMap (onlyKeys [ "foreground", "background", "bold_is_bright" ])
+                    |> Decode.andMap (setting "foreground" colour defaults.foreground)
+                    |> Decode.andMap (setting "background" colour defaults.background)
+                    |> Decode.andMap (setting "bold_is_bright" Decode.bool defaults.boldIsBright)
+                )
+            )
+        |> Decode.andMap
+            (section "cursor"
+                defaults.blinkMs
+                (Decode.succeed (\{} b -> b)
+                    |> Decode.andMap (onlyKeys [ "blink_ms" ])
+                    |> Decode.andMap (setting "blink_ms" (bounded 0 10000 Decode.int) defaults.blinkMs)
+                )
+            )
+        |> Decode.andMap
+            (section "frames"
+                { everyMs = defaults.frameMs, syncTimeoutMs = defaults.syncTimeoutMs }
+                (Decode.succeed (\{} e s -> { everyMs = e, syncTimeoutMs = s })
+                    |> Decode.andMap (onlyKeys [ "every_ms", "sync_timeout_ms" ])
+                    |> Decode.andMap (setting "every_ms" (bounded 1 1000 Decode.int) defaults.frameMs)
+                    |> Decode.andMap (setting "sync_timeout_ms" (bounded 0 10000 Decode.int) defaults.syncTimeoutMs)
+                )
+            )
+        |> Decode.andMap
+            (section "scrollback"
+                defaults.scrollbackLines
+                (Decode.succeed (\{} l -> l)
+                    |> Decode.andMap (onlyKeys [ "lines" ])
+                    |> Decode.andMap (setting "lines" (bounded 0 10000000 Decode.int) defaults.scrollbackLines)
+                )
+            )
+        |> Decode.andMap
+            (section "program"
+                defaults.command
+                (Decode.succeed (\{} c -> c)
+                    |> Decode.andMap (onlyKeys [ "command" ])
+                    |> Decode.andMap (setting "command" (Decode.array Decode.string) defaults.command)
+                )
+            )
+
+
+{-| A table of the file, or the defaults when it is left out. -}
+section : String -> a -> Decoder a -> Decoder a
+section name fallback inner =
+    Decode.optionalField name inner |> Decode.map (Maybe.withDefault fallback)
+
+
+setting : String -> Decoder a -> a -> Decoder a
+setting name inner fallback =
+    Decode.optionalField name inner |> Decode.map (Maybe.withDefault fallback)
+
+
+bounded : Int -> Int -> Decoder Int -> Decoder Int
+bounded low high inner =
+    inner
+        |> Decode.andThen
+            (\n ->
+                if n < low || n > high then
+                    Decode.fail (String.fromInt n ++ " is not from " ++ String.fromInt low ++ " to " ++ String.fromInt high)
+
+                else
+                    Decode.succeed n
+            )
+
+
+{-| A colour as `#rrggbb`. -}
+colour : Decoder Int
+colour =
+    Decode.string
+        |> Decode.andThen
+            (\text ->
+                let
+                    digits =
+                        String.dropFirst 1 text
+
+                    value =
+                        String.foldl
+                            (\c acc ->
+                                Maybe.andThen
+                                    (\v ->
+                                        Maybe.map (\d -> v * 16 + d) (hexDigit c)
+                                    )
+                                    acc
+                            )
+                            (Just 0)
+                            digits
+                in
+                when value is
+                    Just v ->
+                        if String.startsWith "#" text && String.count digits == 6 then
+                            Decode.succeed v
+
+                        else
+                            Decode.fail ("\"" ++ text ++ "\" is not a colour as #rrggbb")
+
+                    Nothing ->
+                        Decode.fail ("\"" ++ text ++ "\" is not a colour as #rrggbb")
+            )
+
+
+hexDigit : Char -> Maybe Int
+hexDigit c =
+    let
+        code =
+            Char.toCode c
+    in
+    if code >= 48 && code <= 57 then
+        Just (code - 48)
+
+    else if code >= 97 && code <= 102 then
+        Just (code - 87)
+
+    else if code >= 65 && code <= 70 then
+        Just (code - 55)
+
+    else
+        Nothing
+
+
+{-| Refuse a key a table does not have, naming it, as the compiler's own
+manifest does. -}
+onlyKeys : Array String -> Decoder {}
+onlyKeys allowed =
+    Decode.table
+        |> Decode.andThen
+            (\table ->
+                when Array.findFirst (\key -> not (Array.member key allowed)) (Toml.Table.keys table) is
+                    Just { value = key } ->
+                        Decode.fail ("\"" ++ key ++ "\" is not a key here; the keys are " ++ String.join ", " allowed)
+
+                    Nothing ->
+                        Decode.succeed {}
+            )
+
+
+{-| The language fallback fonts are asked for when the file names none
+(V25): the locale's, from `LC_ALL`, `LC_CTYPE` or `LANG` in that order,
+as fontconfig names a language (`ja`, `ko`, `zh-tw`); none for `C` and
+`POSIX`. -}
+languageOf : Dict String String -> String
+languageOf vars =
+    let
+        locale =
+            [ "LC_ALL", "LC_CTYPE", "LANG" ]
+                |> Array.mapAndKeepJust (\name -> Dict.get name vars)
+                |> Array.findFirst (\v -> v /= "")
+                |> Maybe.map .value
+                |> Maybe.withDefault ""
+
+        base =
+            locale
+                |> String.split "."
+                |> Array.first
+                |> Maybe.withDefault ""
+                |> String.split "@"
+                |> Array.first
+                |> Maybe.withDefault ""
+
+        parts =
+            String.split "_" base
+    in
+    when parts is
+        [ lang, region ] ->
+            if lang == "zh" then
+                "zh-" ++ String.toLower region
+
+            else
+                String.toLower lang
+
+        [ lang ] ->
+            if lang == "C" || lang == "POSIX" then
+                ""
+
+            else
+                String.toLower lang
+
+        _ ->
+            ""
