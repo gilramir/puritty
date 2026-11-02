@@ -505,7 +505,8 @@ takes them; and the terminal's read waits on §OS27's question.
 - `ssh -X` (§8's fourth question): `192.168.1.100` answers a ping in 3.7 ms
   and its `sshd` answers, but refuses this machine's key, `Permission denied
   (publickey,password)`; its ED25519 key is
-  `SHA256:dTtdQoxwA6OwuJfwdIaNc/tj4nhraUbdCQ6rMIypmQI`.
+  `SHA256:dTtdQoxwA6OwuJfwdIaNc/tj4nhraUbdCQ6rMIypmQI`. *Set up the same
+  day, as gmktec7: §12.6.*
 
 ### 12.5 For Gilbert
 
@@ -521,3 +522,39 @@ takes them; and the terminal's read waits on §OS27's question.
    `ssh-copy-id -i ~/.ssh/id_ed25519.pub gram@192.168.1.100` from this
    machine, after checking the fingerprint above. visiterm and the X
    libraries also have to build or be copied there.
+
+### 12.6 `ssh -X` from gmktec7, and the answers (2026-11-02)
+
+Gilbert took §12.5's first two leanings, and set up the host for the
+third.
+
+**D1045 (geng-lang) · A race loses nothing a branch took.** `m3-os.md`
+§OS27's leaning, to be built there: D377's give-back for C rows, and
+`os`'s read giving its bytes back to the handle.
+
+**V23 · The loop is a race each turn**, of the terminal's read, the X
+connection's events and the frame's timer (§12). The `Source` form is
+registered, to be surveyed if a loop budget is missed.
+
+**`ssh -X` works from gmktec7** (`192.168.1.100`, an AMD Ryzen 7 8845HS;
+this machine is a Ryzen 9 9950X), 3.5 to 7.3 ms a ping, 4.3 on average.
+gmktec7's nix store already holds every library the probe links against,
+so the binary built here runs there as it is. This shell has no display,
+so its `DISPLAY` was this machine's Xvfb (`:77`): the X server is here and
+the program there, which is the exit's shape; the server is not a desktop's.
+Three runs each, every byte read in every run:
+
+| input | `read`: wall | late max | `race`: wall | late max |
+|---|---|---|---|---|
+| burst | 6,115 ms | 305–306 ms | 6,115 ms | 11–12 ms |
+| `gitlog` | 299–343 | 16 | 367–381 | 16–17 |
+| `ls` | 185–199 | 16 | 199–247 | 16 |
+| `cup` | 150–172 | 16 | 169–187 | 16–19 |
+| `vte-scrolling` | 748–759 | 16 | 860–899 | 18–19 |
+
+The burst's frames come as they do on one machine. Throughput is slower
+than §12.2's, and `race` costs more against `read` here (15% to 22% on
+`gitlog` and `vte-scrolling`, against 8%): the CPU is slower, and
+whether the forwarding adds to it is not separated, since gmktec7 has no
+Xvfb to run the probe against locally. Not measured either: a key's
+latency to its pixel over `ssh -X`, which needs input.
