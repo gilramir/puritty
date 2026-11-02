@@ -23,9 +23,13 @@ slot is not a row's identity across a frame (§3).
 
 A frame's display list is `Bytes`: a scroll record (`0x01`, top, bottom,
 `k` as a signed 16 bits, rows `top + k` to `bottom + k` copied to `top`) and a run record per changed run (`0x02`, `y`, `x`, `n`, then each
-cell's code point in 3 bytes and style id in 2). A run is a stretch of
+cell: a byte of its width state in the top two bits (0 narrow, 1 the head
+of a wide character, 2 its tail, 3 a spacer at a row's end) and its count
+of code points below them, its style id in 2 bytes, and its code points in
+3 bytes each: its cluster's, up to 63, §13). A run is a stretch of
 changed cells with gaps of fewer than four unchanged cells merged in, so
-that a glyph overhanging into its neighbour is redrawn with it (S§6.2).
+that a glyph overhanging into its neighbour is redrawn with it (S§6.2),
+and never starts on a wide character's tail or ends on its head.
 
 -}
 
@@ -37,6 +41,7 @@ import UInt8
 import Vt.Cell exposing (..)
 import Vt.Term exposing (..)
 import Vt.Screen exposing (..)
+import Vt.Style exposing (Clusters, cellPoints)
 
 
 type alias Shadow =
@@ -112,7 +117,7 @@ frame t sh0 =
             scrolled.shadow
 
         diffed =
-            diffRows t.screen 0 rows cols sh2 scrolled.list
+            diffRows t.screen t.clusters 0 rows cols sh2 scrolled.list
 
         sh3 =
             diffed.shadow
@@ -233,8 +238,8 @@ scrollBand band cols sh =
     }
 
 
-diffRows : Screen -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
-diffRows s y rows cols sh list =
+diffRows : Screen -> Clusters -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRows s clusters y rows cols sh list =
     if y >= rows then
         { shadow = sh, list = list }
 
@@ -244,10 +249,10 @@ diffRows s y rows cols sh list =
                 rowOffset s y
 
             r =
-                diffRow s o (extentAt o s) y 0 cols sh list
+                diffRow s clusters o (extentAt o s) y 0 cols sh list
 
         in
-        diffRows s (y + 1) rows cols r.shadow r.list
+        diffRows s clusters (y + 1) rows cols r.shadow r.list
 
 
 {-| The cell the core holds at column `x` of the row at `o`. -}
@@ -262,26 +267,40 @@ cellOf s o ext x =
 
 {-| Row `y` from column `x`: each changed run written to the list and the
 shadow. -}
-diffRow : Screen -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
-diffRow s o ext y x cols sh list =
-    if x >= cols then
+diffRow : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRow s clusters o ext y x0 cols sh list =
+    if x0 >= cols then
         { shadow = sh, list = list }
 
-    else if cellOf s o ext x == Maybe.withDefault unknown (Builder.get (y * cols + x) sh.cells) then
-        diffRow s o ext y (x + 1) cols sh list
+    else if cellOf s o ext x0 == Maybe.withDefault unknown (Builder.get (y * cols + x0) sh.cells) then
+        diffRow s clusters o ext y (x0 + 1) cols sh list
 
     else
         let
+            x =
+                if x0 > 0 && cellWide (cellOf s o ext x0) == wideTail then
+                    x0 - 1
+
+                else
+                    x0
+
+            end0 =
+                runEnd s o ext y (x0 + 1) x0 cols sh.cells
+
             end =
-                runEnd s o ext y (x + 1) x cols sh.cells
+                if end0 < cols && cellWide (cellOf s o ext (end0 - 1)) == wideHead then
+                    end0 + 1
+
+                else
+                    end0
 
             n =
                 end - x
 
             written =
-                writeRun s o ext (y * cols) x end sh.cells (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
+                writeRun s clusters o ext (y * cols) x end sh.cells (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
         in
-        diffRow s o ext y end cols { sh | cells = written.cells, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
+        diffRow s clusters o ext y end cols { sh | cells = written.cells, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
 
 
 {-| Past the last changed cell of a run that starts before `x`, gaps of
@@ -299,8 +318,8 @@ runEnd s o ext y x last cols cells =
         runEnd s o ext y (x + 1) x cols cells
 
 
-writeRun : Screen -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved list : Builder UInt8) -> { cells : Builder Int64, list : Builder UInt8 }
-writeRun s o ext row x end cells list =
+writeRun : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved list : Builder UInt8) -> { cells : Builder Int64, list : Builder UInt8 }
+writeRun s clusters o ext row x end cells list =
     if x >= end then
         { cells = cells, list = list }
 
@@ -309,16 +328,23 @@ writeRun s o ext row x end cells list =
             c =
                 cellOf s o ext x
 
-            p =
-                cellPoint c
+            points =
+                Array.takeFirst 63 (cellPoints c clusters)
         in
-        writeRun s o ext row (x + 1) end
+        writeRun s clusters o ext row (x + 1) end
             (Builder.set (row + x) c cells)
-            (list
-                |> Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 16 p))
-                |> push16 (Bitwise.and 0xFFFF p)
-                |> push16 (cellStyle c)
+            (Array.foldl push24
+                (list
+                    |> Builder.pushLast (UInt8.fromInt (Bitwise.or (Bitwise.shiftRightZfBy 15 (cellWide c)) (Array.length points)))
+                    |> push16 (cellStyle c)
+                )
+                points
             )
+
+
+push24 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+push24 v b =
+    push16 (Bitwise.and 0xFFFF v) (Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 16 v)) b)
 
 
 push16 : Int -> (moved b : Builder UInt8) -> Builder UInt8

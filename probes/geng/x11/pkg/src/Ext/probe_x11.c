@@ -6,12 +6,12 @@
  *   - a scroll record is one CopyArea within the pixmap, up or down;
  *   - a run is one RenderFillRectangles for its background and a
  *     RenderCompositeGlyphs32 per stretch of one foreground colour;
- *   - a glyph is rasterised by FreeType and uploaded with RenderAddGlyphs
- *     the first time it is drawn, its id its code point.
+ *   - a run's clusters are shaped by HarfBuzz, in fallback faces where the
+ *     primary lacks them (§13), and a glyph is rasterised by FreeType and
+ *     uploaded with RenderAddGlyphs the first time it is drawn.
  *
- * What the probe leaves out, said in §5: shaping (no HarfBuzz: one glyph a
- * code point, from the one face), fallback fonts, wide glyphs drawn at two
- * cells, the cursor, every event but an expose, and the colours of the
+ * What the probe leaves out, said in §5 and §13.6: colour emoji,
+ * synthesised bold and italic, the cursor, every event but an expose, and the colours of the
  * core's styles: a style id picks a colour from a fixed palette, which
  * costs the same requests. */
 #define _GNU_SOURCE
@@ -19,6 +19,10 @@
 #include <poll.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <hb-ft.h>
+#include <hb.h>
+#include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xcb/render.h>
@@ -34,9 +38,7 @@ static xcb_gcontext_t gc;
 static xcb_render_picture_t target;
 static xcb_render_glyphset_t glyphs;
 static FT_Library library;
-static FT_Face face;
 static int cw, ch, ascent, cols, rows, uploaded;
-static uint8_t loaded[0x110000 / 8];
 static xcb_render_picture_t solid[256];
 
 static const uint32_t palette[16] = {0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5,
@@ -76,18 +78,386 @@ static char *font_file(const char *spec) {
     return out;
 }
 
+static void drain(void);
+
+/* Fonts and shaping (docs/phase2-window.md §13). Face 0 is the primary
+ * font; a cluster it lacks goes, whole, to the first loaded face that has
+ * every code point of it, and only then to fontconfig, which is asked with
+ * the cluster's code points and the profile's language (PROBE_LANG). A
+ * face with 水 is sized so 水 fills two cells and its ink stays within the
+ * primary cell's ascent and descent; a wide glyph is centred in its two
+ * cells. A segment of clusters in one face is shaped as one HarfBuzz run,
+ * with each code point's cluster its cell, so glyphs map back to cells by
+ * the core's widths, not the shaper's advances. PROBE_SHAPE=0 draws as §5
+ * did: the cell's first code point, from face 0 alone. */
+#define FACES 32
+typedef struct {
+    FT_Face ft;
+    hb_font_t *hb;
+    char *file;
+    int index;
+    double scale;
+    uint8_t *uploaded; /* a bit a glyph index */
+    int16_t *advance;  /* the x_off each glyph was uploaded with */
+} Face;
+static Face faces[FACES];
+static int nfaces, shaping = 1, points0;
+static hb_language_t language;
+static const char *lang_name;
+static hb_buffer_t *hbuf;
+static struct {
+    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, elements, requests;
+    double fc_ns, shape_ns, raster_ns, draw_ns;
+} st;
+
+static double ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e9 + t.tv_nsec;
+}
+
+/* Code points that select a form rather than need a glyph of their own. */
+static int ignorable(uint32_t cp) {
+    return cp == 0x200D || cp == 0x200C || (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0xE0100 && cp <= 0xE01EF);
+}
+
+static int covers(int f, const uint32_t *cps, int n) {
+    for (int i = 0; i < n; i++) {
+        hb_codepoint_t g;
+        if (!ignorable(cps[i]) && !hb_font_get_nominal_glyph(faces[f].hb, cps[i], &g)) return 0;
+    }
+    return 1;
+}
+
+static int load_face(const char *file, int index) {
+    for (int f = 0; f < nfaces; f++)
+        if (faces[f].index == index && strcmp(faces[f].file, file) == 0) return f;
+    if (nfaces == FACES) return -1;
+    Face *F = &faces[nfaces];
+    if (FT_New_Face(library, file, index, &F->ft) != 0) return -1;
+    F->file = strdup(file);
+    F->index = index;
+    F->scale = 1.0;
+    FT_Set_Char_Size(F->ft, 0, points0 * 64, 96, 96);
+    if (nfaces > 0) {
+        FT_UInt gi = FT_Get_Char_Index(F->ft, 0x6C34);
+        if (gi && FT_Load_Glyph(F->ft, gi, FT_LOAD_NO_HINTING) == 0) {
+            double adv = F->ft->glyph->advance.x / 64.0;
+            double top = F->ft->glyph->metrics.horiBearingY / 64.0;
+            double bottom = F->ft->glyph->metrics.height / 64.0 - top;
+            double sc = 2.0 * cw / adv;
+            if (top > 0 && ascent / top < sc) sc = ascent / top;
+            if (bottom > 0 && (ch - ascent) / bottom < sc) sc = (ch - ascent) / bottom;
+            F->scale = sc;
+            FT_Set_Char_Size(F->ft, 0, (FT_F26Dot6) (points0 * 64 * sc + 0.5), 96, 96);
+        }
+    }
+    F->hb = hb_ft_font_create_referenced(F->ft);
+    F->uploaded = calloc(131072 / 8, 1);
+    F->advance = calloc(131072, sizeof *F->advance);
+    if (getenv("PROBE_STATS"))
+        fprintf(stderr, "face %d: %s#%d scale %.3f\n", nfaces, F->file, index, F->scale);
+    return nfaces++;
+}
+
+/* A small cache from a cluster's first missing code point to its face, so
+ * that fontconfig is asked once a code point; -1 where it found none. */
+#define FCACHE 4096
+static struct { uint32_t cp; int face; } fcache[FCACHE];
+
+static int fallback(const uint32_t *cps, int n) {
+    for (int f = 0; f < nfaces; f++)
+        if (covers(f, cps, n)) return f;
+    uint32_t key = 0;
+    for (int i = 0; i < n && !key; i++)
+        if (!ignorable(cps[i])) key = cps[i];
+    unsigned h = (key * 2654435761u) % FCACHE;
+    for (unsigned k = 0; k < FCACHE; k++) {
+        unsigned j = (h + k) % FCACHE;
+        if (fcache[j].cp == key + 1) return fcache[j].face;
+        if (fcache[j].cp == 0) { h = j; break; }
+    }
+    double t0 = ns();
+    st.fc_queries++;
+    FcPattern *p = FcNameParse((const FcChar8 *) "monospace");
+    if (lang_name) FcPatternAddString(p, FC_LANG, (const FcChar8 *) lang_name);
+    FcCharSet *cs = FcCharSetCreate();
+    for (int i = 0; i < n; i++)
+        if (!ignorable(cps[i])) FcCharSetAddChar(cs, cps[i]);
+    FcPatternAddCharSet(p, FC_CHARSET, cs);
+    FcCharSetDestroy(cs);
+    FcConfigSubstitute(NULL, p, FcMatchPattern);
+    FcDefaultSubstitute(p);
+    FcResult r;
+    FcPattern *m = FcFontMatch(NULL, p, &r);
+    FcPatternDestroy(p);
+    int face = -1;
+    FcChar8 *file;
+    int index = 0;
+    if (m && FcPatternGetString(m, FC_FILE, 0, &file) == FcResultMatch) {
+        FcPatternGetInteger(m, FC_INDEX, 0, &index);
+        int f = load_face((const char *) file, index);
+        if (f >= 0 && covers(f, cps, n)) face = f;
+    }
+    if (m) FcPatternDestroy(m);
+    if (face < 0) st.fc_failed++;
+    fcache[h].cp = key + 1;
+    fcache[h].face = face;
+    st.fc_ns += ns() - t0;
+    return face;
+}
+
+/* A glyph's advance on the server is fixed when it is uploaded: the pen
+ * moves by it inside an element, whatever the run asks. The first use
+ * chooses it; a glyph placed elsewhere starts a new element. */
+/* A glyph alone in a cluster narrower than its cells is uploaded a second
+ * time with its centring in its bearing (`shift`), so that it is placed at
+ * its cell like any other and a line of them stays in one element. */
+static uint32_t upload(int f, uint32_t g, int advance, int shift) {
+    uint32_t k = (g & 0xFFFF) | (shift ? 0x10000 : 0);
+    uint32_t id = ((uint32_t) f << 17) | k;
+    Face *F = &faces[f];
+    if (F->uploaded[k >> 3] & (1 << (k & 7))) return id;
+    F->uploaded[k >> 3] |= (uint8_t) (1 << (k & 7));
+    F->advance[k] = (int16_t) advance;
+    uploaded++;
+    double t0 = ns();
+    FT_Load_Glyph(F->ft, g, FT_LOAD_RENDER);
+    FT_Bitmap *b = &F->ft->glyph->bitmap;
+    int stride = ((int) b->width + 3) & ~3;
+    size_t size = (size_t) stride * b->rows;
+    uint8_t *data = calloc(size > 0 ? size : 4, 1);
+    for (unsigned y = 0; y < b->rows; y++) memcpy(data + y * stride, b->buffer + y * b->pitch, b->width);
+    xcb_render_glyphinfo_t info = {.width = (uint16_t) b->width, .height = (uint16_t) b->rows,
+                                   .x = (int16_t) (-F->ft->glyph->bitmap_left - shift), .y = (int16_t) F->ft->glyph->bitmap_top,
+                                   .x_off = (int16_t) advance, .y_off = 0};
+    xcb_render_add_glyphs(conn, glyphs, 1, &id, &info, (uint32_t) size, data);
+    free(data);
+    st.raster_ns += ns() - t0;
+    return id;
+}
+
+/* The glyphs a run draws, in order, before they go out as requests. */
+typedef struct { uint32_t id; int x, y, fg, advance; } Placed;
+static Placed placed[8192];
+static int nplaced;
+
+static void place(int f, uint32_t g, int x, int y, int fg, int advance, int shift) {
+    if (nplaced == 8192) return;
+    uint32_t id = upload(f, g, advance, shift);
+    placed[nplaced++] = (Placed) {id, x, y, fg, faces[f].advance[(g & 0xFFFF) | (shift ? 0x10000 : 0)]};
+}
+
+/* Each stretch of one colour as one CompositeGlyphs32, a new element where
+ * a glyph is not where the last one's advance left the pen. */
+static void flush_placed(void) {
+    static uint8_t buffer[65536];
+    int i = 0;
+    while (i < nplaced) {
+        int fg = placed[i].fg, len = 0, penx = 0, peny = 0, count_at = -1, count = 0;
+        st.requests++;
+        for (; i < nplaced && placed[i].fg == fg && len < 60000; i++) {
+            Placed *P = &placed[i];
+            if (count_at < 0 || P->x != penx || P->y != peny || count == 254) {
+                count_at = len;
+                buffer[len] = 0;
+                buffer[len + 1] = buffer[len + 2] = buffer[len + 3] = 0;
+                int16_t dx = (int16_t) (P->x - penx), dy = (int16_t) (P->y - peny);
+                memcpy(buffer + len + 4, &dx, 2);
+                memcpy(buffer + len + 6, &dy, 2);
+                len += 8;
+                count = 0;
+                st.elements++;
+            }
+            memcpy(buffer + len, &P->id, 4);
+            len += 4;
+            buffer[count_at] = (uint8_t) ++count;
+            penx = P->x + P->advance;
+            peny = P->y;
+            st.glyphs++;
+        }
+        xcb_render_composite_glyphs_32(conn, XCB_RENDER_PICT_OP_OVER, solid_of(fg_of(fg)), target, 0, glyphs, 0, 0,
+                                       (uint32_t) len, buffer);
+    }
+    nplaced = 0;
+}
+
+typedef struct { int cell, width, style, n; const uint32_t *cps; int face; } Cluster;
+
+/* A segment of clusters in one face, shaped as one run. */
+static void shape_segment(const Cluster *cl, int n, int x0, int y) {
+    int f = cl[0].face < 0 ? 0 : cl[0].face;
+    double t0 = ns();
+    hb_buffer_clear_contents(hbuf);
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < cl[i].n; k++) hb_buffer_add(hbuf, cl[i].cps[k], (unsigned) i);
+    hb_buffer_set_direction(hbuf, HB_DIRECTION_LTR);
+    hb_buffer_guess_segment_properties(hbuf);
+    if (language) hb_buffer_set_language(hbuf, language);
+    hb_buffer_set_cluster_level(hbuf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
+    hb_shape(faces[f].hb, hbuf, NULL, 0);
+    st.shape_ns += ns() - t0;
+    st.segments++;
+    unsigned gn;
+    hb_glyph_info_t *gi = hb_buffer_get_glyph_infos(hbuf, &gn);
+    hb_glyph_position_t *gp = hb_buffer_get_glyph_positions(hbuf, &gn);
+    unsigned g = 0;
+    while (g < gn) {
+        unsigned c = gi[g].cluster, e = g;
+        int adv = 0;
+        while (e < gn && gi[e].cluster == c) adv += gp[e++].x_advance;
+        const Cluster *C = &cl[c];
+        int box = C->width * cw;
+        /* Centred in its cells if it is narrower than them (a wide glyph
+         * from a fallback face); left where it is wider. */
+        int pad = box > (adv >> 6) ? (box - (adv >> 6)) / 2 : 0;
+        int pen = 0;
+        for (unsigned k = g; k < e; k++) {
+            int x = (x0 + C->cell) * cw + pad + ((pen + gp[k].x_offset) >> 6);
+            int yy = y * ch + ascent - (gp[k].y_offset >> 6);
+            int a = k + 1 < e ? 0 : box - pad - (pen >> 6);
+            /* The advance kept with the glyph: what it takes to reach the
+             * next cell when it ends its cluster, so runs of one width stay
+             * in one element. */
+            if (k + 1 < e) a = (gp[k].x_advance + gp[k + 1].x_offset - gp[k].x_offset) >> 6;
+            if (e - g == 1 && pad > 0 && gp[k].x_offset == 0)
+                place(f, gi[k].codepoint, x - pad, yy, C->style, box, pad);
+            else
+                place(f, gi[k].codepoint, x, yy, C->style, a, 0);
+            pen += gp[k].x_advance;
+        }
+        g = e;
+    }
+}
+
+static void draw_run(int y, int x, int n, const uint8_t *p) {
+    static Cluster cl[1024];
+    static uint32_t cps[1024 * 64];
+    int ncl = 0, ncps = 0;
+    for (int i = 0; i < n; i++) {
+        int wide = p[0] >> 6, count = p[0] & 63, style = (p[1] << 8) | p[2];
+        p += 3;
+        uint32_t *mine = cps + ncps;
+        for (int k = 0; k < count; k++, p += 3) mine[k] = ((uint32_t) p[0] << 16) | ((uint32_t) p[1] << 8) | p[2];
+        if (wide == 2 || wide == 3) continue; /* a tail or a spacer: its head draws it */
+        if (count == 0) continue;            /* blank: the fill draws it */
+        ncps += count;
+        cl[ncl++] = (Cluster) {i, wide == 1 ? 2 : 1, style, count, mine, 0};
+    }
+    st.clusters += ncl;
+    if (!shaping) {
+        for (int i = 0; i < ncl; i++) {
+            FT_UInt g = FT_Get_Char_Index(faces[0].ft, cl[i].cps[0]);
+            place(0, g, (x + cl[i].cell) * cw, y * ch + ascent, cl[i].style, cl[i].width * cw, 0);
+        }
+        return;
+    }
+    for (int i = 0; i < ncl; i++) {
+        if (covers(0, cl[i].cps, cl[i].n)) cl[i].face = 0;
+        else {
+            st.fallback_clusters++;
+            cl[i].face = fallback(cl[i].cps, cl[i].n);
+        }
+    }
+    int from = 0;
+    for (int i = 1; i <= ncl; i++)
+        if (i == ncl || cl[i].face != cl[from].face) {
+            shape_segment(cl + from, i - from, x, y);
+            from = i;
+        }
+}
+
+static void stats(void) {
+    if (!getenv("PROBE_STATS")) return;
+    fprintf(stderr,
+            "shaping %s lang %s: clusters %ld (fallback %ld), fontconfig queries %ld (%.2f ms, %ld found none), segments %ld, "
+            "glyphs %ld in %ld elements and %ld requests; uploaded %d; shape %.2f ms, raster %.2f ms, draw %.2f ms\n",
+            shaping ? "on" : "off", lang_name ? lang_name : "-", st.clusters, st.fallback_clusters, st.fc_queries, st.fc_ns / 1e6,
+            st.fc_failed, st.segments, st.glyphs, st.elements, st.requests, uploaded, st.shape_ns / 1e6, st.raster_ns / 1e6,
+            st.draw_ns / 1e6);
+}
+
+/* PROBE_SHOT=FILE writes the pixmap, as a PPM, when the program ends. */
+static void shot(void) {
+    const char *path = getenv("PROBE_SHOT");
+    if (!path || !conn) return;
+    xcb_get_image_reply_t *r = xcb_get_image_reply(
+        conn, xcb_get_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, 0, 0, (uint16_t) (cols * cw), (uint16_t) (rows * ch), ~0u), NULL);
+    if (!r) return;
+    FILE *o = fopen(path, "wb");
+    if (o) {
+        const uint8_t *d = xcb_get_image_data(r);
+        fprintf(o, "P6\n%d %d\n255\n", cols * cw, rows * ch);
+        for (int i = 0; i < cols * cw * rows * ch; i++) {
+            uint8_t px[3] = {d[i * 4 + 2], d[i * 4 + 1], d[i * 4]};
+            fwrite(px, 1, 3, o);
+        }
+        fclose(o);
+    }
+    free(r);
+}
+
+static void at_exit(void) {
+    stats();
+    shot();
+}
+
+geng_cancel probe_x_draw(void *list, geng_wait *wait) {
+    double t0 = ns();
+    geng_bytes *b = list;
+    const uint8_t *p = b->data, *end = b->data + b->length;
+    int first = rows, last = -1;
+    while (p < end) {
+        if (p[0] == 1) {
+            int top = (p[1] << 8) | p[2], bottom = (p[3] << 8) | p[4], k = (int16_t) ((p[5] << 8) | p[6]);
+            xcb_copy_area(conn, pixmap, pixmap, gc, 0, (int16_t) ((top + k) * ch), 0, (int16_t) (top * ch),
+                          (uint16_t) (cols * cw), (uint16_t) ((bottom - top + 1) * ch));
+            if (top < first) first = top;
+            if (bottom > last) last = bottom;
+            p += 7;
+        } else {
+            int y = (p[1] << 8) | p[2], x = (p[3] << 8) | p[4], n = (p[5] << 8) | p[6];
+            const uint8_t *cell = p + 7, *q = cell;
+            for (int i = 0; i < n; i++) q += 3 + 3 * (q[0] & 63);
+            int style0 = (cell[1] << 8) | cell[2];
+            xcb_rectangle_t r = {(int16_t) (x * cw), (int16_t) (y * ch), (uint16_t) (n * cw), (uint16_t) ch};
+            xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, colour(bg_of(style0)), 1, &r);
+            draw_run(y, x, n, cell);
+            flush_placed();
+            if (y < first) first = y;
+            if (y > last) last = y;
+            p = q;
+        }
+    }
+    if (last >= first)
+        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * ch), 0, (int16_t) (first * ch), (uint16_t) (cols * cw),
+                      (uint16_t) ((last - first + 1) * ch));
+    xcb_flush(conn);
+    drain();
+    st.draw_ns += ns() - t0;
+    geng_succeed(wait, geng_slot_I4(uploaded));
+    return (geng_cancel) {0};
+}
+
 geng_cancel probe_x_open(int32_t c, int32_t r, int32_t points, geng_wait *wait) {
     cols = c;
     rows = r;
-    char *file = font_file("DejaVu Sans Mono");
-    if (file == NULL || FT_Init_FreeType(&library) != 0 || FT_New_Face(library, file, 0, &face) != 0 ||
-        FT_Set_Char_Size(face, 0, points * 64, 96, 96) != 0) {
+    points0 = points;
+    const char *s = getenv("PROBE_SHAPE");
+    shaping = !(s && strcmp(s, "0") == 0);
+    lang_name = getenv("PROBE_LANG");
+    if (lang_name) language = hb_language_from_string(lang_name, -1);
+    hbuf = hb_buffer_create();
+    char *file = font_file(getenv("PROBE_FONT") ? getenv("PROBE_FONT") : "DejaVu Sans Mono");
+    if (file == NULL || FT_Init_FreeType(&library) != 0 || load_face(file, 0) != 0) {
         geng_succeed(wait, geng_slot_I4(-1));
         return (geng_cancel) {0};
     }
+    FT_Face face = faces[0].ft;
     cw = (int) (face->size->metrics.max_advance >> 6);
     ch = (int) (face->size->metrics.height >> 6);
     ascent = (int) (face->size->metrics.ascender >> 6);
+    atexit(at_exit);
 
     conn = xcb_connect(NULL, NULL);
     if (xcb_connection_has_error(conn)) {
@@ -121,89 +491,6 @@ geng_cancel probe_x_open(int32_t c, int32_t r, int32_t points, geng_wait *wait) 
     xcb_map_window(conn, window);
     xcb_flush(conn);
     geng_succeed(wait, geng_slot_I4(0));
-    return (geng_cancel) {0};
-}
-
-static void drain(void);
-
-static void upload(uint32_t cp) {
-    if (loaded[cp >> 3] & (1 << (cp & 7))) return;
-    loaded[cp >> 3] |= (uint8_t) (1 << (cp & 7));
-    uploaded++;
-    FT_Load_Char(face, cp, FT_LOAD_RENDER);
-    FT_Bitmap *b = &face->glyph->bitmap;
-    int stride = ((int) b->width + 3) & ~3;
-    size_t size = (size_t) stride * b->rows;
-    uint8_t *data = calloc(size > 0 ? size : 4, 1);
-    for (unsigned y = 0; y < b->rows; y++) memcpy(data + y * stride, b->buffer + y * b->pitch, b->width);
-    xcb_render_glyphinfo_t info = {.width = (uint16_t) b->width, .height = (uint16_t) b->rows,
-                                   .x = (int16_t) -face->glyph->bitmap_left, .y = (int16_t) face->glyph->bitmap_top,
-                                   .x_off = (int16_t) cw, .y_off = 0};
-    xcb_render_add_glyphs(conn, glyphs, 1, &cp, &info, (uint32_t) size, data);
-    free(data);
-}
-
-/* A stretch of glyphs in one colour, at most 254 to an element. */
-static void glyph_run(const uint32_t *ids, int n, int x, int y, uint32_t fg) {
-    uint8_t buffer[8 + 254 * 4];
-    for (int at = 0; at < n; at += 254) {
-        int m = n - at < 254 ? n - at : 254;
-        buffer[0] = (uint8_t) m;
-        buffer[1] = buffer[2] = buffer[3] = 0;
-        int16_t dx = (int16_t) ((x + at) * cw), dy = (int16_t) (y * ch + ascent);
-        memcpy(buffer + 4, &dx, 2);
-        memcpy(buffer + 6, &dy, 2);
-        memcpy(buffer + 8, ids + at, (size_t) m * 4);
-        xcb_render_composite_glyphs_32(conn, XCB_RENDER_PICT_OP_OVER, solid_of(fg), target, 0, glyphs, 0, 0,
-                                       (uint32_t) (8 + m * 4), buffer);
-    }
-}
-
-geng_cancel probe_x_draw(void *list, geng_wait *wait) {
-    geng_bytes *b = list;
-    const uint8_t *p = b->data, *end = b->data + b->length;
-    int first = rows, last = -1;
-    while (p < end) {
-        if (p[0] == 1) {
-            int top = (p[1] << 8) | p[2], bottom = (p[3] << 8) | p[4], k = (int16_t) ((p[5] << 8) | p[6]);
-            xcb_copy_area(conn, pixmap, pixmap, gc, 0, (int16_t) ((top + k) * ch), 0, (int16_t) (top * ch),
-                          (uint16_t) (cols * cw), (uint16_t) ((bottom - top + 1) * ch));
-            if (top < first) first = top;
-            if (bottom > last) last = bottom;
-            p += 7;
-        } else {
-            int y = (p[1] << 8) | p[2], x = (p[3] << 8) | p[4], n = (p[5] << 8) | p[6];
-            const uint8_t *cell = p + 7;
-            uint32_t ids[1024];
-            int style0 = (cell[3] << 8) | cell[4];
-            xcb_rectangle_t r = {(int16_t) (x * cw), (int16_t) (y * ch), (uint16_t) (n * cw), (uint16_t) ch};
-            xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, colour(bg_of(style0)), 1, &r);
-            int from = 0, style = style0;
-            for (int i = 0; i <= n; i++) {
-                int s = i < n ? (cell[i * 5 + 3] << 8) | cell[i * 5 + 4] : -1;
-                if (s != style) {
-                    glyph_run(ids + from, i - from, x + from, y, fg_of(style));
-                    from = i;
-                    style = s;
-                }
-                if (i < n) {
-                    uint32_t cp = ((uint32_t) cell[i * 5] << 16) | ((uint32_t) cell[i * 5 + 1] << 8) | cell[i * 5 + 2];
-                    if (cp == 0 || cp >= 0x110000) cp = ' ';
-                    upload(cp);
-                    ids[i] = cp;
-                }
-            }
-            if (y < first) first = y;
-            if (y > last) last = y;
-            p += 7 + n * 5;
-        }
-    }
-    if (last >= first)
-        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * ch), 0, (int16_t) (first * ch), (uint16_t) (cols * cw),
-                      (uint16_t) ((last - first + 1) * ch));
-    xcb_flush(conn);
-    drain();
-    geng_succeed(wait, geng_slot_I4(uploaded));
     return (geng_cancel) {0};
 }
 

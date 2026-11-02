@@ -96,7 +96,8 @@ and writes a run for each stretch of changed cells, gaps of fewer than four
 unchanged cells merged in so that an overhanging glyph is redrawn with its
 neighbour. The list is `Bytes`: a run is its row, column and length and each
 cell's code point and style id, five bytes a cell; a scroll is its band and
-shift.
+shift. *Since §13 a cell carries its width state and its cluster's code
+points.*
 
 The core fed in 64 KB reads at 160×50, alone and with a frame after every
 read, three runs each, ms. A frame per read is the worst case: at 60 frames
@@ -319,7 +320,8 @@ In the order the build will meet them:
    fontconfig on a C thread (G5); the ideograph-width fit; Thai and SARA AM
    with ink extents (C§4.3); the Han language per profile; procedural box
    drawing. These change the display list from code points to glyph ids
-   and positions, and the bytes per cell with it.
+   and positions, and the bytes per cell with it. *Surveyed 2026-11-02:
+   §13.*
 3. **Input**: keys through xkbcommon, and the latency from a key to its
    pixel.
 4. **Time to draw** on a real server, the desktop's and ETX's, and the
@@ -573,3 +575,244 @@ reads all of `gitlog` (26,344,379 bytes) and `vte-scrolling` (10,666,668),
 three runs each, where §12.3 lost a fifth; `read` on `gitlog` takes 204–208
 ms and `race` 215–228, as in §12.2. V23's loop no longer rests on which
 branch steps first.
+
+---
+
+## 13. Shaping and fonts: a survey (2026-11-02)
+
+§7's second item. The plan (S§6.5, C§4–§5, C§9) asks for HarfBuzz on
+every run, whole clusters moved to fallback fonts, fallback found off the
+loop thread, CJK fallback faces scaled to the primary cell, a CJK language
+per profile, and ink that may leave its cell. §5's probe drew one glyph
+per code point from one face. Two probes now measure it:
+
+- `probes/fonts/bench`, C alone: fontconfig's matching, HarfBuzz over the
+  throughput inputs, each CJK face's ideograph width, the Han forms per
+  language, ink extents, and FreeType's rasterising;
+- the x11 probe, drawing as the plan says. `Vt.View`'s run record now
+  carries each cell's width state and all its code points (a cluster's,
+  up to 63), and a run never starts on a wide character's tail or ends on
+  its head. In C:
+  - a cluster the primary face lacks goes whole to the first loaded face
+    that has all of it, and only then to fontconfig, asked with the
+    cluster's code points and `PROBE_LANG`, the answer cached by the
+    cluster's first code point;
+  - clusters in one face are one HarfBuzz run, each code point's cluster
+    its cell, so glyphs go back to cells by the core's widths;
+  - a face with 水 is sized so 水 fills two cells without its ink leaving
+    the primary cell, and a wide glyph is centred.
+
+  `PROBE_SHAPE=0` keeps §5's drawing in the same binary, and
+  `PROBE_STATS`/`PROBE_SHOT` print counts and save the pixmap.
+
+The new run record costs `View.frame` little. The view probe, built with
+the old `View` and the new one and run three times each, takes:
+
+| input | old `View` | new `View` |
+|---|---|---|
+| `gitlog` | 140–162 ms | 144–145 |
+| `ls` | 97–100 | 98–99 |
+| `vte-scrolling` | 152–154 | 154–155 |
+| `vte-unicode` | 28–30 | 32–33 |
+
+The `vte-unicode` difference is 25 µs a frame. The list itself:
+
+- **Size.** It is 6 bytes for an ASCII cell, against 5, and 3 for a blank
+  one: `ls`'s list grew 14%, and `vte-scrolling`'s shrank 38%.
+- **Wide characters.** A run widened to a whole wide character draws 0.5%
+  more cells of `vte-unicode`.
+
+`probes/fonts/corpus.txt` is C§9's test text, in a row each. `gen.py`
+writes `cjk.txt` (20,000 lines of 70 ideographs and kana from 6,000 code
+points, so that most of a screen is glyphs not seen before) and
+`thai.txt` (20,000 lines of Thai words with stacked marks).
+
+### 13.1 What draws right
+
+Rendered on Xvfb and read off the screenshots:
+
+- **Thai.** It stacks (กี้ ปั๊ม), SARA AM is reordered (น้ำ), and
+  ญุ and ฐุ are drawn.
+- **Hangul.** It is drawn, and conjoining ᄒᆞᆫ composes to one glyph.
+- **Han.** The forms change with the language.
+- **Mixed text.** CJK beside Latin, fullwidth punctuation, Devanagari
+  क्षि, box drawing, and combining marks (n̈, a̧, é from e + U+0301) are
+  drawn.
+- **Colour emoji draw nothing** (§13.6).
+
+Two of the probe's own bugs were found and fixed on the way:
+
+- **Marks drawn a cell late.** Inside an XRender glyph element the
+  server moves the pen by each glyph's advance as uploaded, not as the run
+  computes it. An `n` uploaded with one cell's advance put its mark in the
+  next cell, and the same bug dropped a Thai vowel: ภาษาไทย was drawn
+  ภษไทย. A glyph placed anywhere but the pen now starts a new element.
+- **An element per CJK glyph.** A centred wide glyph never sat where the
+  last one's advance left the pen, so every one was its own element, 12
+  bytes a glyph and not 4. A glyph alone in a cluster narrower than its
+  cells is now uploaded with its centring in its bearing: 11,702 CJK
+  glyphs went from 11,702 elements to 174.
+
+### 13.2 The Han forms come from the shaper's language
+
+Noto Sans CJK is one collection with a face per region (`#5` JP, `#6` KR,
+`#7` SC, `#8` TC, `#9` HK) and `locl` lookups per language. fontconfig with
+`lang` picks the region's face, but the glyph each region needs is in
+every face. On one face, `#5`, HarfBuzz's buffer language alone gives the
+same glyph ids as each region's own face, for all four of 直 骨 返 刃 in all
+five languages: for example 刃 is glyph 11138 in `ja`, 62118 in `ko` and
+`zh-Hans`, and 11139 in `zh-Hant` and `zh-HK`. With no language, every
+region gets the Japanese form.
+
+The language still matters to fontconfig. With it, `monospace` for 水
+gives *Noto Sans Mono CJK*. Without it, fontconfig gives the proportional
+*Noto Sans CJK*. Ideographs are the same width in both; Latin and
+punctuation in the CJK face are not.
+
+### 13.3 Fallback is cheap enough to do on the loop
+
+- **Cost.** `FcFontMatch` takes 0.17–0.24 ms a call, first or later:
+  fontconfig keeps no cache of its own. `FcInit` takes 4.2 ms.
+- **In the probe.** The cache by first code point, and loaded faces asked
+  first, leave one query for each script. C§9's text, in six faces, took 5
+  queries and 1.4–2.1 ms. `cjk.txt`, 4,576 distinct glyphs, took 1 query
+  (0.6 ms), and `thai.txt` took 1.
+- **Two queries need more than the code points.**
+  - Colour emoji come only when asked: `monospace:charset=2764` gives
+    DejaVu Sans Mono's monochrome heart, and `:color=true` (or
+    `lang=und-zsye`) gives Noto Color Emoji. U+1F600 with no flag gives
+    DejaVu Sans.
+  - A cluster with U+FE0F went to Noto Color Emoji only because DejaVu
+    lacks the selector.
+
+  The query needs an emoji-presentation flag from the cluster.
+
+S§6.5 and C§5.1 ask for fallback discovery off the loop thread
+(WezTerm's), because a lookup can take milliseconds. Here it takes a fifth
+of one, once a script.
+
+### 13.4 Shaping costs nothing measurable on Latin text
+
+- **The bench.** HarfBuzz over each line as one run takes 22–43 ns a cell
+  (`ls` 21.8, `gitlog` 27.9, `vte-unicode` 43.2), against 7–10 for
+  `FT_Get_Char_Index`. A whole 160×50 screen is 0.2–0.35 ms. A hash of
+  the run, a shape cache's lower bound (G§5.5), is 0.5 ns a cell.
+- **The loop.** Three runs each on `race`, the same binary with and
+  without shaping:
+
+| input | wall: §5's | shaped | instructions: §5's | shaped | shape | rasterise |
+|---|---|---|---|---|---|---|
+| `gitlog` | 221–244 ms | 212–220 | 4.47–4.80 G | 4.68–4.80 | 0.8–0.9 ms | 0.3 ms |
+| `vte-scrolling` | 806–822 | 767–790 | 10.5–11.6 G | 11.0–11.1 | 0.06 | 0.03 |
+| `thai.txt` | 134–139 | 150–155 | 2.99–3.05 G | 3.30–3.37 | 12.6–13.1 | 0.4 |
+| `cjk.txt` | 21–26 | 59–75 | 0.63 G | 1.09–1.10 | 0.9 | 32–47 |
+
+- **Latin.** `gitlog` and `vte-scrolling` are within run-to-run spread.
+- **Thai.** It costs about 10%: each word is a segment of its own (a space
+  is the primary face's), so it is shaped as 28,846 runs of a word each.
+- **CJK.** §5's column drew `.notdef`, and its whole cost is
+  rasterising (§13.5).
+
+### 13.5 A screen of new ideographs costs a frame and more
+
+- **Per glyph.** FreeType takes about 6 µs to rasterise an ideograph of
+  Noto Sans Mono CJK at the probe's size: 6.07 µs hinted, 6.09 light,
+  5.59 unhinted, and 3.01 to load the outline alone. Hinting is not the
+  cost. In the probe, with the copy and the request, it is 7–10 µs a
+  glyph.
+- **Per screen.** A screen of 80×50 new ideographs is 4,000 glyphs:
+  25–40 ms of rasterising, over G7's 16 ms.
+- **Afterwards.** The glyph is the server's, and costs 4 bytes a use.
+- **On the wire.** 299 bytes of A8 bitmap an ideograph: `cjk.txt` sent
+  1,615,036 bytes for 4,576 glyphs over 4 frames. Each glyph is sent once
+  a session, and C§6's LRU on the glyph set bounds the server's copy.
+
+| input | X bytes: §5's | shaped | elements, shaped |
+|---|---|---|---|
+| `gitlog` | 173,020 | 161,960 | 715 for 25,569 glyphs |
+| `vte-scrolling` | 6,900 | 6,872 | 50 for 50 |
+| `thai.txt` | 285,240 | 484,956 | 14,844 for 80,591 |
+| `cjk.txt` | 34,412 | 1,615,036 | 174 for 11,702 |
+| C§9's text | 14,012 | 27,564 | 26 for 472 |
+
+`thai.txt` costs 70% more bytes because a mark is placed by its base's
+anchors, so each one is an element of its own.
+
+### 13.6 Not measured
+
+- **Colour emoji.** fontconfig gives Noto Color Emoji when asked (§13.3),
+  but its glyphs are CBDT bitmaps (`FT_LOAD_COLOR`, a 109 px strike)
+  that need an ARGB32 glyph set and scaling to the cell; the probe draws
+  nothing for them.
+- **Bold and italic.** Synthesised bold and italic for fallback
+  faces are not measured.
+- **Box drawing.** It is the font's, not drawn procedurally. Across rows,
+  its gaps are not looked at.
+- **Narrow cells.** PuTTY's compression of a glyph the font draws wide
+  in one cell is not done, and the screenshots show why it is needed: ①
+  ② ★, one cell each in the core, come from a fallback face wider than a
+  cell and cover the space after them.
+- **Ink outside the run.** A row's ink extents beyond its run are not
+  tracked. Noto Sans Thai's tallest stack rises 0.8 px above DejaVu's
+  ascent at 11 points, and its lowest mark stays inside the descent, so a
+  neighbour's repaint cuts less than a pixel.
+
+### 13.7 Ligatures: Fira Code
+
+Gilbert programs in Fira Code (installed the same day, Debian's
+`fonts-firacode`). Its ligatures keep a glyph per cell:
+
+- `!=` is a spacer glyph, empty, in the first cell and the ligature in the
+  last, its ink reaching back over the spacer
+  (`exclam.spacer|exclam_equal.liga`);
+- `===` is two spacers and a ligature;
+- `=>` is two glyphs that join (`equal_start.seq|greater_equal_end.seq`);
+- `fi` is `f` and a different `i`.
+
+Every glyph has one cell's advance. The grid holds, and the probe draws
+them (→ ≠ ⇒ ≡) with nothing added. What follows from the shape:
+
+- **Colour.** A ligature takes its last cell's colour, since its ink is
+  that cell's glyph. A colour change inside one draws it in one colour.
+- **Redraw.** A change to one cell of a ligature must reshape and redraw
+  all of its cells, or the old form and its ink stay. A run's context is
+  the row's, not only the changed cells'. The probe's gap-of-four merging
+  covers it by chance, not by rule.
+- **The cursor.** On the first cell of `!=` the cursor covers a spacer,
+  and the ink is the next cell's.
+
+On `gitlog`, with Fira Code as the primary font, shaping takes 3.3–3.7 ms
+over the run, against 0.8–0.9 with DejaVu, for `calt`'s lookups. The wall
+time, 222–231 ms against 215–231 unshaped, is within the spread.
+
+### 13.8 For Gilbert
+
+1. **Shape every run, every frame, with no shape cache.** The cost is
+   shaping time per frame: 0.2–0.35 ms a full screen, nothing measurable
+   on `gitlog`, and 10% on Thai. Leaning: yes, and a space between two
+   clusters of one fallback face joins their run, so Thai is a run a line
+   and not a word.
+2. **Han forms from the shaper's language.** The cost is one profile
+   setting, which feeds HarfBuzz's buffer language (the forms) and
+   fontconfig's `lang` (the Mono face). Leaning: yes; the language
+   defaults from the locale.
+3. **Fallback found on the loop thread.** The cost is up to 0.24 ms the
+   first time a script is drawn. S§6.5 and C§5.1 say off the loop;
+   measured, it is not worth a thread. Leaning: on the loop, loaded faces
+   asked first, cached by code point; move it to a C thread (G5) only if
+   a font set is measured slow. A cluster with emoji presentation asks for
+   colour.
+4. **Rasterising a screen of new ideographs.** The cost is 25–40 ms, once
+   per glyph. Leaning: register it and measure it in daily use (phase 3).
+   The fix, if it is needed, is to rasterise on a C thread and draw the
+   frame when the glyphs come, which latest-frame-wins pacing allows. It
+   is the only frame-budget miss found.
+5. **Ligatures on, by the font's `calt`, reshaped as a row.** The cost is
+   3.3–3.7 ms of shaping over `gitlog` in Fira Code, and nothing in wall
+   time. Fira Code keeps a glyph per cell (§13.7). Leaning: yes. A
+   changed cell redraws the stretch of the row it is shaped with, out to
+   the nearest space on each side, and the cursor and colours apply per
+   glyph, not by splitting runs, as C§4.2 says. A setting turns `calt`
+   off.
+6. **Next, before the renderer is written:** colour emoji (an ARGB glyph
+   set), and the narrow compression the screenshots showed is needed.
