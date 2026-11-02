@@ -329,7 +329,8 @@ In the order the build will meet them:
 5. **`ssh -X` from another host**, which the exit asks for: needs a second
    host (§8).
 6. **A reference**: xterm under the same proxy on the same workloads, so
-   that the bytes per update have a bar beside them.
+   that the bytes per update have a bar beside them. *Measured 2026-11-02:
+   §16, with st and alacritty beside it.*
 7. **GC**: pauses with the renderer's allocation (a display list a frame)
    on top of the core's, against G7's 16 ms and 4 ms. *Measured 2026-11-02: §15.*
 
@@ -1269,3 +1270,87 @@ taken. The core was right; the pass is fixed as geng-lang D1046
 the input runs clean with it. With the fixed compiler a second 20 minutes
 found nothing (coverage 6,144, `runs.tsv`), and the `--diff` fuzzer's run
 was clean (coverage 6,307).
+
+---
+
+## 16. A reference: xterm, st and alacritty on §5's workloads (2026-11-02)
+
+§7's sixth item: the bytes of §5.2's six workloads, drawn by xterm and two
+more terminals under the same proxy, beside the probe as it is now.
+
+**How.** `probes/geng/x11/run.sh` takes a drawer for its third argument:
+the probe's loop (`race`, §12's, here), or `xterm`, `xterm-core`, `st` or
+`alacritty`, each from the nixpkgs pin the devbox uses, at 160×50, each
+running the workload with the probe's `TERM=xterm-256color` so that every
+one is sent the same bytes. `xterm` and `st` draw DejaVu Sans Mono 11
+through Xft as the probe does; `xterm-core` is xterm with its default
+core font, the way it is usually run across ssh. It asks for an ISO 10646
+`fixed` that Xvfb does not have and falls back to `fixed`, 6×13.
+`xcount.py` now sums all of a run's connections, since alacritty opens
+five, and `run.sh` waits 2 s after a workload instead of 0.5, since
+xterm's connection after `htop` closed later than that and was counted
+in the next run's.
+
+Xvfb ran at `-dpi 96`, the probe's FreeType size, so the Xft terminals'
+cells match the probe's (9 px wide; xterm's and st's 18 px high to the
+probe's 17: windows 1444×904 and 1440×850). It ran without MIT-SHM, as a
+server across ssh is: a terminal that would put a frame in shared memory
+then sends it on the wire. No other drawer here uses it. visiterm
+babea81, the compiler 58d59f90; two runs of each, and a third of xterm
+(below).
+
+**To the server.** The opening is the idle run's bytes, which come off
+the others before dividing, as in §5.2. Where the two runs differ, both
+are given.
+
+| | probe | xterm-core | xterm (Xft) | st | alacritty |
+|---|---:|---:|---:|---:|---:|
+| opening | **2,448** | 13,780 | 350,368 | 158,940 | 10,619,440 |
+| `tail`, a line | **337** | 375 | 703 | 12,688 | 3.20 MB |
+| vim `Ctrl-E`, a line | **346** | 500 | 935 | 18,577 | 5.32–5.33 MB |
+| vim `Ctrl-Y`, a line | **338** | 499 | 931 | 18,525 | 5.33 MB |
+| `htop`, a second | 7.5–7.8 KB | **4.5–5.0 KB** | 10.6–11.2 KB | 45.8–49.4 KB | 4.8–5.3 MB |
+| `cat` of `gitlog`, all | 187–197 KB | 3.7–4.8 MB | 6.5–6.8 MB | **184–207 KB** | 69–74 MB |
+
+**From the server**, per run: the probe 16,740 bytes every time (its
+replies at opening, now with xkbcommon's keymap, §14), st 2.6 KB,
+xterm and xterm-core 30–31 KB idle and up to 45 KB on `tail`, 14,432
+bytes more, which is 451 events of 32 bytes: xtrace of a 20-line vim
+scroll in xterm-core shows 19 `NoExposure` events, one for each scroll's
+`CopyArea` with graphics exposures on. alacritty 31–40 KB.
+
+What the numbers say:
+
+- **The probe sends the fewest bytes on five of the six.** A scroll is
+  one `CopyArea` and the new row's text for both it and xterm; per line
+  the probe is 337–346 bytes to core-font xterm's 375–500 and Xft xterm's
+  703–935.
+- **Core-font xterm beats it on `htop`**, 4.5–5.0 KB a second to
+  7.5–7.8. A core-font run is one `ImageText8`, a byte a character with
+  its background in the same request; the probe's is a 28-byte fill and
+  `28 + 4n` bytes of glyphs. `htop` redraws short runs in many colours,
+  where that header and the 4 bytes a cell tell. §5.3's 16-bit glyph ids
+  halve the cell's 4 bytes. Shaping (§13) makes the ids glyph indices,
+  which fit 16 bits, so the real renderer can take them at no cost.
+- **`cat` is where frame pacing shows.** The probe and st draw at most a
+  frame in 16 ms, and send 184–207 KB for 26 MB. xterm draws as it
+  reads, jump-scrolling, and sends 18 to 36 times as much.
+- **Xft xterm's opening is its glyphs.** xtrace (`xtrace -n`) puts 332,060
+  of its 350,340 bytes in 808 `AddGlyphs` at start, before any text is
+  drawn. Each is 32 bits a pixel (an 11×2 glyph's data is 88 bytes),
+  where the probe's glyph set is A8, a byte a pixel.
+- **st redraws every row on a scroll**: 12.7–18.6 KB a line. xtrace of a
+  20-line vim scroll shows 2,046 `CompositeGlyphs` over 24 frames, about
+  85 runs a frame, every row's, and one `CopyArea` a frame, its back
+  buffer to the window.
+- **alacritty sends its window as an image a frame**, about 5.3 MB, as
+  S§6.1 said of the GL terminals over ssh: Mesa's software GL puts each
+  frame with `PutImage` when the server has no MIT-SHM. `tail` and the vim
+  runs sent the same 1.61 GB, about 300 frames each: vim's 300 redraws,
+  and `tail`'s 5 s at about 60 frames a second, whatever the lines.
+  Against it a probe frame is 1/15,000th.
+
+**Not measured.** Time to draw, on any of them; the desktop's server;
+alacritty's window size, which the image's 5.3 MB stands in for. Two
+runs of each, and three of xterm.
+
