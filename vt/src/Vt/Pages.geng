@@ -7,7 +7,7 @@ module Vt.Pages exposing
     , pushU16
     , pushUtf8
     , pushPage
-    , settlePlain
+    , plainPage
     , backOf
     , emptyBack
     , Row
@@ -19,7 +19,12 @@ module Vt.Pages exposing
     , unpackText
     , startsMark
     , decodeAt
-    , pagesOf
+    , takePages
+    , copyPages
+    , emptyPage
+    , withoutPages
+    , copyPage
+    , ownedAt
     , pagedCell
     , pageRowsOf
     , lastWrapped
@@ -30,6 +35,7 @@ module Vt.Pages exposing
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Owned as Owned exposing (Owned)
 import Dict exposing (Dict)
 import Int64
 import Math
@@ -71,9 +77,9 @@ pageOut clusters s back =
             packRows clusters 0 rest s older.text older.heads older.runs
 
         page =
-            { text = Bytes.fromUInt8s (Builder.toArray both.text)
-            , heads = Bytes.fromUInt8s (Builder.toArray both.heads)
-            , runs = Bytes.fromUInt8s (Builder.toArray both.runs)
+            { text = Owned.fromBuilder both.text
+            , heads = Owned.fromBuilder both.heads
+            , runs = Owned.fromBuilder both.runs
             , cols = s.cols
             , plain = Unsure
             }
@@ -240,17 +246,25 @@ pushUtf8 cp b =
             |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
 
 
-pushPage : Page -> (moved back : Back) -> Back
+pushPage : (moved page : Page) -> (moved back : Back) -> Back
 pushPage page back =
     if back.limit == 0 then
         back
 
     else
+        let
+            -- read before the page is moved into the builder
+            bytes =
+                pageBytes page
+
+            rows =
+                pageRowCount page
+        in
         dropOver
             { back
                 | pages = Builder.pushLast page back.pages
-                , bytes = back.bytes + pageBytes page
-                , rows = back.rows + Bytes.length page.heads // 2
+                , bytes = back.bytes + bytes
+                , rows = back.rows + rows
             }
 
 
@@ -261,25 +275,105 @@ emptyBack limit =
 
 
 {-| `back` holding `pages`, oldest first, instead of its own: a resize's,
-which cut them again (§VC31), its limit applied. -}
-backOf : Array Page -> Back -> Back
+which cut them again (§VC31), its limit applied. `back`'s own pages are
+taken out first (`takePages`). -}
+backOf : (moved pages : Array Page) -> Back -> Back
 backOf pages back =
     if back.limit == 0 then
         { back | pages = Builder.empty 0, head = 0, bytes = 0, rows = 0 }
 
     else
+        let
+            bytes =
+                Array.foldl (\p n -> n + pageBytes p) 0 pages
+
+            rows =
+                Array.foldl (\p n -> n + pageRowCount p) 0 pages
+        in
         dropOver
             { back
                 | pages = Builder.fromArray pages
                 , head = 0
-                , bytes = Array.foldl (\p n -> n + pageBytes p) 0 pages
-                , rows = Array.foldl (\p n -> n + Bytes.length p.heads // 2) 0 pages
+                , bytes = bytes
+                , rows = rows
             }
+
+
+{-| The scrollback's pages taken out of it, oldest first, for a resize to
+cut again or take back into the ring. -}
+takePages : (moved back : Back) -> Array Page
+takePages back =
+    let
+        head =
+            back.head
+    in
+    Array.dropFirst head (Builder.toArray back.pages)
+
+
+{-| The scrollback with no pages, its limit and its notes kept, for
+`backOf` to put a resize's pages in. Made new, so that it holds nothing of
+`back`'s. -}
+withoutPages : Back -> Back
+withoutPages back =
+    { pages = Builder.empty 0, head = 0, limit = back.limit, bytes = 0, rows = 0, peak = back.peak, dropped = back.dropped }
+
+
+{-| Copies of the scrollback's pages, oldest first, held apart from them:
+for a check that cuts the scrollback again without taking it
+(`Vt.recutHolds`). A loop, not a fold with a function: a part of the term
+handed to a function value is kept for all the program's in-place updates
+(§VC39). -}
+copyPages : Back -> Array Page
+copyPages back =
+    copySlots back back.head []
+
+
+copySlots : Back -> Int -> (moved acc : Array Page) -> Array Page
+copySlots back i acc =
+    when Builder.get i back.pages is
+        Just page ->
+            copySlots back (i + 1) (Array.pushLast (copyPage page) acc)
+
+        Nothing ->
+            acc
+
+
+{-| A page with no rows, which holds no bytes: a slot a dropped page
+leaves. -}
+emptyPage : {} -> Page
+emptyPage {} =
+    { text = Owned.fromBuilder (Builder.empty 0), heads = Owned.fromBuilder (Builder.empty 0), runs = Owned.fromBuilder (Builder.empty 0), cols = 0, plain = NotPlain }
+
+
+copyPage : Page -> Page
+copyPage page =
+    { text = copyOwned page.text, heads = copyOwned page.heads, runs = copyOwned page.runs, cols = page.cols, plain = page.plain }
+
+
+copyOwned : Owned -> Owned
+copyOwned bytes =
+    Owned.fromBuilder (Owned.appendTo 0 (Owned.length bytes) bytes (Builder.empty (Owned.length bytes)))
 
 
 pageBytes : Page -> Int
 pageBytes page =
-    Bytes.length page.text + Bytes.length page.heads + Bytes.length page.runs
+    Owned.length page.text + Owned.length page.heads + Owned.length page.runs
+
+
+pageRowCount : Page -> Int
+pageRowCount page =
+    Owned.length page.heads // 2
+
+
+{-| A byte of a page, as `byteAt` reads one of `Bytes`: -1 outside it. -}
+ownedAt : Owned -> Int -> Int
+ownedAt bytes i =
+    when Owned.get i bytes is
+        Just b ->
+            UInt8.toInt b
+
+        Nothing ->
+            -1
 
 
 {-| The oldest pages dropped while the pages hold more bytes than the limit
@@ -291,53 +385,69 @@ dropOver back =
         compact back
 
     else
-        when Builder.get back.head back.pages is
-            Just oldest ->
-                dropOver
-                    { back
-                        | pages = Builder.set back.head { text = Bytes.empty, heads = Bytes.empty, runs = Bytes.empty, cols = 0, plain = NotPlain } back.pages
-                        , head = back.head + 1
-                        , bytes = back.bytes - pageBytes oldest
-                        , rows = back.rows - Bytes.length oldest.heads // 2
-                        , dropped = True
-                    }
+        let
+            head =
+                back.head
 
-            Nothing ->
-                compact back
+            -- read before the slot is emptied
+            gone =
+                when Builder.get head back.pages is
+                    Just oldest ->
+                        { bytes = pageBytes oldest, rows = pageRowCount oldest }
+
+                    Nothing ->
+                        { bytes = 0, rows = 0 }
+        in
+        dropOver
+            { back
+                | pages = Builder.set head (emptyPage {}) back.pages
+                , head = head + 1
+                , bytes = back.bytes - gone.bytes
+                , rows = back.rows - gone.rows
+                , dropped = True
+            }
 
 
 compact : (moved back : Back) -> Back
 compact back =
     if back.head > 0 && 2 * back.head >= Builder.length back.pages then
-        { back | pages = Builder.fromArray (Builder.slice back.head (Builder.length back.pages) back.pages), head = 0 }
+        let
+            head =
+                back.head
+        in
+        { back | pages = Builder.fromArray (Array.dropFirst head (Builder.toArray back.pages)), head = 0 }
 
     else
         back
 
 
-{-| A page whose plainness is `Unsure` decided (§VC33): it is `Plain` when
-it has no style runs, its text is as many bytes as its rows' cells, and no
-row that wraps ends in a spacer head (0xFF). A byte a cell and no style
-leaves ASCII, an empty cell's 0, or a spacer head, which ends only a row
-that wraps; a cell in a background colour alone (0xFE) carries its colour
-(`eraseCell`), so it has a style run. The headers are walked, not the text:
-with a byte a cell, a row's text ends where the sum of the extents says. -}
-settlePlain : Page -> Page
-settlePlain page =
-    if page.plain /= Unsure then
-        page
+{-| Whether a page is plain, its plainness decided when it is `Unsure`
+(§VC33): it is plain when it has no style runs, its text is as many bytes
+as its rows' cells, and no row that wraps ends in a spacer head (0xFF). A
+byte a cell and no style leaves ASCII, an empty cell's 0, or a spacer head,
+which ends only a row that wraps; a cell in a background colour alone
+(0xFE) carries its colour (`eraseCell`), so it has a style run. The headers
+are walked, not the text: with a byte a cell, a row's text ends where the
+sum of the extents says. A resize decides it of each page it cuts, and the
+pages it writes carry theirs, so it is not kept in the old page, which the
+resize drops (§VC39). -}
+plainPage : Page -> Bool
+plainPage page =
+    when page.plain is
+        Plain ->
+            True
 
-    else if Bytes.length page.runs == 0 && plainHeads page 0 0 then
-        { page | plain = Plain }
+        NotPlain ->
+            False
 
-    else
-        { page | plain = NotPlain }
+        Unsure ->
+            Owned.length page.runs == 0 && plainHeads page 0 0
 
 
 plainHeads : Page -> Int -> Int -> Bool
 plainHeads page h at =
-    if h >= Bytes.length page.heads then
-        at == Bytes.length page.text
+    if h >= Owned.length page.heads then
+        at == Owned.length page.text
 
     else
         let
@@ -347,10 +457,10 @@ plainHeads page h at =
             next =
                 at + Bitwise.and 0x3FF header
         in
-        if next > Bytes.length page.text then
+        if next > Owned.length page.text then
             False
 
-        else if Bitwise.and 0x8000 header /= 0 && next > at && byteAt page.text (next - 1) == 0xFF then
+        else if Bitwise.and 0x8000 header /= 0 && next > at && ownedAt page.text (next - 1) == 0xFF then
             False
 
         else
@@ -361,12 +471,6 @@ plainHeads page h at =
 cells as the ring keeps them, up to its extent, and whether it wrapped. -}
 type alias Row =
     { cells : Array Int64, wrapped : Bool, prompt : Int }
-
-
-{-| The scrollback's pages, oldest first. -}
-pagesOf : Back -> Array Page
-pagesOf back =
-    Builder.slice back.head (Builder.length back.pages) back.pages
 
 
 pageRowsOf : Page -> Clusters -> { rows : Array Row, clusters : Clusters }
@@ -395,7 +499,7 @@ pageRowsOf page clusters =
 {-| Whether a page's last row wrapped, so that its line goes on past it. -}
 lastWrapped : Page -> Bool
 lastWrapped page =
-    Bitwise.and 0x8000 (u16At page.heads (Bytes.length page.heads - 2)) /= 0
+    Bitwise.and 0x8000 (u16At page.heads (Owned.length page.heads - 2)) /= 0
 
 
 {-| A cell read back from a page as the ring keeps it; a cluster's code
@@ -438,7 +542,7 @@ unpackPage page =
 
 unpackRows : Page -> Int -> Int -> Int -> Array DumpRow -> Array DumpRow
 unpackRows page h r ti acc =
-    if h >= Bytes.length page.heads then
+    if h >= Owned.length page.heads then
         acc
 
     else
@@ -467,12 +571,12 @@ unpackRows page h r ti acc =
         unpackRows page (h + 2) styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0, prompt = Bitwise.and 3 (Bitwise.shiftRightZfBy 10 header) } acc)
 
 
-u16At : Bytes -> Int -> Int
+u16At : Owned -> Int -> Int
 u16At bytes i =
-    byteAt bytes i + 256 * byteAt bytes (i + 1)
+    ownedAt bytes i + 256 * ownedAt bytes (i + 1)
 
 
-unpackRuns : Bytes -> Int -> Int -> Array Int -> { styles : Array Int, next : Int }
+unpackRuns : Owned -> Int -> Int -> Array Int -> { styles : Array Int, next : Int }
 unpackRuns runs r left acc =
     if left <= 0 then
         { styles = acc, next = r }
@@ -499,7 +603,7 @@ byte is an empty cell, a 0xFF byte, which UTF-8 never has, a spacer head
 (§VC14), a 0xFE byte, which it never has either, a cell in a background
 colour alone (`bgBit`, §VC17), and a 0xFD byte after a cell's text, that the
 cell is protected (§VC19). -}
-unpackText : Bytes -> Int -> Int -> Array { points : Array Int, wide : Int, style : Int } -> { cells : Array { points : Array Int, wide : Int, style : Int }, next : Int }
+unpackText : Owned -> Int -> Int -> Array { points : Array Int, wide : Int, style : Int } -> { cells : Array { points : Array Int, wide : Int, style : Int }, next : Int }
 unpackText text i left acc =
     if left <= 0 && not (startsMark text i) then
         { cells = acc, next = i }
@@ -509,15 +613,15 @@ unpackText text i left acc =
             d =
                 decodeAt text i
         in
-        if byteAt text i == 0xFF then
+        if ownedAt text i == 0xFF then
             unpackText text (i + 1) (left - 1) (Array.pushLast { points = [], wide = spacerHead, style = 0 } acc)
 
-        else if byteAt text i == 0xFE then
+        else if ownedAt text i == 0xFE then
             -- a cell in a background colour alone, its bit carried as its
             -- width, which `pagedCell` puts back into the cell
             unpackText text (i + 1) (left - 1) (Array.pushLast { points = [], wide = Int64.toIntWrap bgBit, style = 0 } acc)
 
-        else if byteAt text i == 0xFD then
+        else if ownedAt text i == 0xFD then
             -- the cell before is protected, and a wide character's spacer
             -- with it; the bit is carried as its width too (§VC19)
             let
@@ -578,12 +682,12 @@ unpackText text i left acc =
             unpackText text d.next (left - 1) (Array.pushLast { points = [ d.cp ], wide = 0, style = 0 } acc)
 
 
-startsMark : Bytes -> Int -> Bool
+startsMark : Owned -> Int -> Bool
 startsMark text i =
-    if i >= Bytes.length text || byteAt text i == 0xFF then
+    if i >= Owned.length text || ownedAt text i == 0xFF then
         False
 
-    else if byteAt text i == 0xFD then
+    else if ownedAt text i == 0xFD then
         True
 
     else
@@ -594,20 +698,20 @@ startsMark text i =
         d.cp >= 0x80 && Width.width d.cp == 0
 
 
-decodeAt : Bytes -> Int -> { cp : Int, next : Int }
+decodeAt : Owned -> Int -> { cp : Int, next : Int }
 decodeAt text i =
     let
         b =
-            byteAt text i
+            ownedAt text i
     in
     if b < 0x80 then
         { cp = b, next = i + 1 }
 
     else if b < 0xE0 then
-        { cp = Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x1F b)) (Bitwise.and 0x3F (byteAt text (i + 1))), next = i + 2 }
+        { cp = Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x1F b)) (Bitwise.and 0x3F (ownedAt text (i + 1))), next = i + 2 }
 
     else if b < 0xF0 then
-        { cp = Bitwise.or (Bitwise.shiftLeftBy 12 (Bitwise.and 0x0F b)) (Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x3F (byteAt text (i + 1)))) (Bitwise.and 0x3F (byteAt text (i + 2)))), next = i + 3 }
+        { cp = Bitwise.or (Bitwise.shiftLeftBy 12 (Bitwise.and 0x0F b)) (Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x3F (ownedAt text (i + 1)))) (Bitwise.and 0x3F (ownedAt text (i + 2)))), next = i + 3 }
 
     else
-        { cp = Bitwise.or (Bitwise.shiftLeftBy 18 (Bitwise.and 0x07 b)) (Bitwise.or (Bitwise.shiftLeftBy 12 (Bitwise.and 0x3F (byteAt text (i + 1)))) (Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x3F (byteAt text (i + 2)))) (Bitwise.and 0x3F (byteAt text (i + 3))))), next = i + 4 }
+        { cp = Bitwise.or (Bitwise.shiftLeftBy 18 (Bitwise.and 0x07 b)) (Bitwise.or (Bitwise.shiftLeftBy 12 (Bitwise.and 0x3F (ownedAt text (i + 1)))) (Bitwise.or (Bitwise.shiftLeftBy 6 (Bitwise.and 0x3F (ownedAt text (i + 2)))) (Bitwise.and 0x3F (ownedAt text (i + 3))))), next = i + 4 }

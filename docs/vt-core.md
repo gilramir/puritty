@@ -3214,3 +3214,112 @@ erases with ED 3 and writes 2,000 more. Ghostty and the core now keep all
 of them. The core before the fix kept 464.
 
 After it: replay 325 of 325, esctest2 392.
+
+## VC39. The pages hold owned bytes (geng-lang D1027, D1031, D1035)
+
+A page is now `{ text, heads, runs : Bytes.Owned, cols, plain }`.
+`Bytes.Owned` is geng-lang's affine, read-only bytes (`m4-owned-pages.md`
+§OP6, D1031), and the compiler frees one where the ownership checker sees
+it dropped (D1032). Before, a page held `Bytes`, which only the collector
+gives back. geng-lang's `m4-owned-pages.md` §OP15 and §OP18 have the
+rewrite's design and the two compiler fixes it waited on (D1036, D1037).
+
+**What changed.**
+
+- `pageOut` makes each field with `Owned.fromBuilder`, one copy, as
+  `Bytes.fromUInt8s` did. `pushPage`, `backOf` and `dropOver` read a page's
+  sizes before they move it.
+- A resize takes the pages out of the scrollback (`takePages`) and keeps
+  the rest of `Back` apart (`withoutPages`). If the width changes,
+  `recutPages` only reads them, and the `let` that binds the cut is the
+  last use of the old pages, where they are dropped. If it does not,
+  `keepPages` keeps all but the ones taken back into the ring. `compact`
+  moves its slots through an array (`Builder.toArray`, `Array.dropFirst`,
+  `Builder.fromArray`), and `pagesOf`'s copy of the builder is gone.
+- `recut` reads the old pages where they are, lent. A range of a page is
+  copied into the new page's builder with `Owned.appendTo`, plain row or
+  not, so `Out.pieces`, `pend`, `Bytes.flatten` and `copyRange`'s loop of
+  one byte at a time are gone. A span and the chunk source hold a page's
+  index, not its bytes.
+- A page's plainness is a question, `plainPage`, not a field `recut`
+  writes back into the old page (`settlePlain`). `recut` asks it once a page
+  into an `Array Bool`; the pages it writes carry their own.
+- `popLast` shortens the last new page by copying its kept rows into a page
+  of their own, since `Array.popLast` may keep an element twice and is
+  refused for affine ones.
+- `Dump`, `Vt.recutHolds` and the pull of rows back into the ring read the
+  scrollback through `readBack`, a loop over its slots. `Vt.recutHolds`
+  cuts copies (`copyPages`). Both are loops, not folds with a function,
+  for §VC12's reason: a part of the term handed to a function value is
+  kept for all the program's in-place updates.
+
+**It answers what 60a4d07 answers.** Replay 325 of 325. esctest2 392, as
+recorded. The dumps are the same hash as 60a4d07's on 153 of 153: the 17
+perf inputs, each resized nine ways. The fuzzers: `fuzz.py --diff`, 24
+jobs for 600 s (876 s with start-up), coverage 6,269; the core's own, 24
+jobs for 600 s (1,759 s), coverage 6,145. Neither found anything.
+
+**Instructions** (`perf.py`, recorded with `--update`). Every resize count
+is lower than the record, which an older compiler made:
+
+| resize, 20 less the feed | record | now |
+|---|---:|---:|
+| one line of 10,000 rows | 190.4 M | 149.4 M |
+| 10,000 short lines | 261.0 M | 227.5 M |
+| one line of 100,000 rows | 217.0 M | 195.0 M |
+| …unlimited | 702.2 M | 656.1 M |
+| 100,000 short lines | 1,356.8 M | 1,279.9 M |
+| …unlimited | 1,960.4 M | 1,783.7 M |
+| `gitlog` | 6,561.2 M | 5,219.2 M |
+| …unlimited | 38,251.8 M | 30,684.7 M |
+
+Against 60a4d07 built with today's compiler (`m4-owned-pages.md` §OP18),
+10,000 short lines is the one that rises, 220 M to 227 M; why was not
+measured. The
+throughput inputs move by at most 0.7%: `vte-scrolling` +0.67%
+(1,428.6 M to 1,438.2 M) and `gitlog` +0.14% go up, `ls` −0.43% and
+`vte-scrolling_fullscreen` −0.50% go down, and the rest are level. The
+record keeps the new counts, and every time is within its budget.
+
+**Time** (D1029, §VC36's two numbers). 60a4d07 and the rewrite built with
+the same compiler (the fork at 9cb38c60), `resizes N 80 50
+2000000000`, no limit: the median of seven of `core-bench`'s own time;
+Ghostty's is `gdrag FILE N 80 50 0 0`, the median of seven. The first 20,
+then each resize after them as (time at 100 − time at 20) / 80:
+
+| input | 60a4d07: 20 / each after | rewrite | Ghostty |
+|---|---:|---:|---:|
+| one line of 10,000 rows | 15 ms / 0.26 | 9 / 0.25 | 9.1 / 0.42 |
+| 10,000 short lines | 11 / 0.44 | 10 / 0.44 | 14.8 / 0.74 |
+| one line of 100,000 rows | 56 / 2.45 | 42 / 1.91 | 174 / 8.6 |
+| 100,000 short lines | 72 / 3.4 | 68 / 3.3 | 369 / 18.6 |
+| `gitlog` | 1,372 / 71 | 1,084 / 54 | 2,276 / 114 |
+
+The 10,000-row line, which §VC36 found trailing Ghostty over the first 20
+resizes, is now level with it (9 ms against 9.1). Where the time goes,
+user and system time and page faults net of the feed, and full collections
+(`perf stat -r 5`, `GC_PRINT_STATS`):
+
+| input, resizes | user | system | faults | full collections |
+|---|---:|---:|---:|---:|
+| 10,000-row line, 20 | 7.9 → 6.3 ms | 5.1 → 2.6 | 7,075 → 3,517 | 10 → 7 |
+| 10,000-row line, 100 | 31.1 → 26.0 | 5.0 → 4.8 | 7,560 → 5,207 | 30 → 19 |
+| 10,000 short lines, 20 | 7.4 → 9.6 | 4.1 → 0.9 | 4,572 → 2,455 | 1 → 1 |
+| 100,000-row line, 100 | 233.9 → 195.1 | 21.2 → 3.2 | 25,556 → 5,823 | 83 → 26 |
+| 100,000 short lines, 100 | 340.5 → 331.9 | 7.8 → 2.6 | 8,321 → 2,979 | 53 → 15 |
+| `gitlog`, 20 | 1,417 → 1,072 | 14.2 → 11.9 | 22,677 → 13,912 | 16 → 4 |
+
+The old pages are dropped where the resize binds its cut, so the heap is
+reused, not grown: faults and full collections fall on every input. The
+10,000 short lines spend more user time, as their instructions say, and
+win it back in system time. `gitlog`'s time is the cut of coloured lines
+(§VC34), whose ranges were copied a byte at a time and are now one
+`appendTo` each; how much of its 21% that is was not measured apart from
+the drops.
+
+**The heap after a feed** at the default limit (4 MB), `GC_PRINT_STATS=1
+core-bench gitlog.txt resizes 0 80 50`: 3 full collections and a last
+growth to 49,968 KB, the same as 60a4d07 (§OP5's numbers), with 34 MB in
+use at the last collection. The feed does not free pages yet: `dropOver`
+writes over the oldest page with `Builder.set`, which drops nothing (§OP18).
+That is what is left of D1027.

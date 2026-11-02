@@ -30,6 +30,7 @@ module Vt.Term exposing
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Owned exposing (Owned)
 import Dict exposing (Dict)
 import Int64
 import Math
@@ -68,14 +69,18 @@ bytes, as Ghostty reflows every row at a resize (V20, §VC31; it replaced
 V10's reflow when read and V16's widths a page went through). `plain`:
 whether every row is in the default style and every cell one ASCII byte
 (or an empty cell's 0), so that a row's text is as long as its extent and
-a cut needs only the headers (§VC33). -}
+a cut needs only the headers (§VC33). Its bytes are `Bytes.Owned`, so a
+page has one holder and is given back where it is dropped: a resize's old
+pages, a page over the limit, the scrollback at ED 3 and RIS (geng-lang
+D1027, D1031, §VC39). -}
 type alias Page =
-    { text : Bytes, heads : Bytes, runs : Bytes, cols : Int, plain : Plainness }
+    { text : Owned, heads : Owned, runs : Owned, cols : Int, plain : Plainness }
 
 
-{-| `Unsure` until a resize first cuts the page (`Vt.Pages.settlePlain`),
-so that paging a row out costs nothing for it; `NotPlain` says only that
-the page may not be plain. -}
+{-| `Unsure` for a page paged out of the ring, so that paging a row out
+costs nothing for it, until a resize decides it as it cuts the page
+(`Vt.Pages.plainPage`); the pages a resize writes are `Plain` or
+`NotPlain`, and `NotPlain` says only that the page may not be plain. -}
 type Plainness
     = Unsure
     | Plain
