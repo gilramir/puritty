@@ -751,7 +751,9 @@ Exit:
 **Phase 2 · A window on X11.** *Survey begun 2026-10-30:
 [`phase2-window.md`](phase2-window.md): the renderer diffs its own copy of
 the screen and finds scrolls by row hashes, a pty fits the one loop, and a
-vim scroll costs 374 bytes a line on the wire.* PTY backend, XCB window, the server-side X11 renderer
+vim scroll costs 374 bytes a line on the wire. The renderer's build begun
+2026-11-02: [`renderer.md`](renderer.md), its survey's questions waiting
+on Gilbert.* PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).

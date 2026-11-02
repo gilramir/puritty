@@ -4,7 +4,6 @@
 # clang and the passes harness/bench/build.sh builds core-bench with.
 set -e
 cd "$(dirname "$0")"
-../../view/vtp/sync.sh
 R=/home/gram/prj/geng-lang
 C=$R/vendor/gren-lang/compiler
 PATH=$R/.devbox/nix/profile/default/bin:$PATH \
