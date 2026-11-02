@@ -3322,4 +3322,7 @@ core-bench gitlog.txt resizes 0 80 50`: 3 full collections and a last
 growth to 49,968 KB, the same as 60a4d07 (§OP5's numbers), with 34 MB in
 use at the last collection. The feed does not free pages yet: `dropOver`
 writes over the oldest page with `Builder.set`, which drops nothing (§OP18).
-That is what is left of D1027.
+Most of that heap is `core-bench`'s input, which it holds through the feed
+(25 MB of `gitlog.txt`); the terminal's share is about 9 MB. geng-lang
+leaves the page to the collector (`m4-owned-pages.md` §OP20, D1040):
+taking it out with `Builder.swap` costs the in-place marks 312 → 29.
