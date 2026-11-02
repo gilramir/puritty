@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame)
+module Vt.View exposing (Shadow, shadow, frame, Look, defaultLook)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -22,7 +22,15 @@ The core's ring slots would say which rows moved without hashing, but the
 core settles a region's turn by moving rows when the region changes, so a
 slot is not a row's identity across a frame (§3).
 
-A frame's display list is `Bytes`: a scroll record (`0x01`, top, bottom,
+A frame's display list is `Bytes`: first, in the first frame and in each
+whose screen is not the size of the last one's, a size record (`0x04`, the
+columns and rows in 2 bytes each), since the core may change its own size
+(DECCOLM); then a style record for each style id
+its runs use (`0x03`, the id in 2 bytes, then the foreground, background
+and underline colours as RGB in 3 bytes each, the style's flags in a byte
+as `Vt.Style.Attrs` has them, and its underline's kind in a byte), so that
+whatever executes the list keeps no table between frames and resolves
+nothing (`docs/renderer.md` V35); then a scroll record (`0x01`, top, bottom,
 `k` as a signed 16 bits, rows `top + k` to `bottom + k` copied to `top`) and a run record per changed run (`0x02`, `y`, `x`, `n`, then each
 cell: a byte of its width state in the top two bits (0 narrow, 1 the head
 of a wide character, 2 its tail, 3 a spacer at a row's end) and its count
@@ -31,6 +39,15 @@ of code points below them, its style id in 2 bytes, and its code points in
 changed cells with gaps of fewer than four unchanged cells merged in, so
 that a glyph overhanging into its neighbour is redrawn with it (S§6.2),
 and never starts on a wide character's tail or ends on its head.
+
+A style's colours are resolved here, from the core's palette and dynamic
+colours (OSC 4, 10, 11) and the profile's `Look`: inverse and the screen's
+reverse video (mode 5) swap the two, faint takes the foreground half way
+to the background, invisible makes it the background, and bold makes a
+colour of the first eight its bright one when the look says so. A cell
+whose style's colours change is not a changed cell, so when the palette,
+the dynamic colours, mode 5 or the look change, the shadow is forgotten
+and the frame draws every cell.
 
 -}
 
@@ -42,7 +59,9 @@ import UInt8
 import Vt.Cell exposing (..)
 import Vt.Term exposing (..)
 import Vt.Screen exposing (..)
-import Vt.Style exposing (Clusters, cellPoints)
+import Vt.Style exposing (Attrs, Clusters, Styles, cellPoints, styleOf)
+import Vt.Palette exposing (dynamicColour, paletteColour)
+import Dict
 
 
 type alias Shadow =
@@ -56,7 +75,26 @@ type alias Shadow =
     , drawn : Int
     , runs : Int
     , bytes : Int
+    , colourKey : Int
+    , stamps : Builder Int
+    , styleIds : Builder Int
     }
+
+
+{-| What a profile says of colours: the default foreground and background,
+which OSC 10 and 11 override, and whether bold brightens one of the first
+eight palette colours. -}
+type alias Look =
+    { foreground : Int
+    , background : Int
+    , boldIsBright : Bool
+    }
+
+
+{-| The core's palette's own: its white on its black. -}
+defaultLook : Look
+defaultLook =
+    { foreground = 0xC5C8C6, background = 0x1D1F21, boldIsBright = False }
 
 
 unknown : Int64
@@ -76,24 +114,30 @@ shadow cols rows =
     , drawn = 0
     , runs = 0
     , bytes = 0
+    , colourKey = -1
+    , stamps = Builder.fromArray (Array.repeat styleMax -1)
+    , styleIds = Builder.empty 64
     }
 
 
 {-| One frame: the shadow brought up to the term's screen, and the display
 list that does the same to the window. -}
-frame : Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
-frame t sh0 =
+frame : Look -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frame look t sh0 =
     let
+        key =
+            colourKey look t
+
         sh1 =
-            if t.cols /= sh0.cols || t.rows /= sh0.rows then
+            if t.cols /= sh0.cols || t.rows /= sh0.rows || key /= sh0.colourKey then
                 let
                     fresh =
                         shadow t.cols t.rows
                 in
-                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes }
+                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colourKey = key }
 
             else
-                sh0
+                { sh0 | styleIds = Builder.empty 64 }
 
         rows =
             sh1.rows
@@ -123,10 +167,23 @@ frame t sh0 =
         sh3 =
             diffed.shadow
 
+        ids =
+            Builder.toArray sh3.styleIds
+
+        styles =
+            Array.foldl (styleRecord look t) (Builder.empty (14 * Array.length ids)) ids
+
+        size =
+            if sh0.frames == 0 || t.cols /= sh0.cols || t.rows /= sh0.rows then
+                [ UInt8.fromInt 4 ] ++ Builder.toArray (push16 t.rows (push16 t.cols (Builder.empty 4)))
+
+            else
+                []
+
         bytes =
-            Bytes.fromUInt8s (Builder.toArray diffed.list)
+            Bytes.fromUInt8s (size ++ Builder.toArray styles ++ Builder.toArray diffed.list)
     in
-    { shadow = { sh3 | hashes = Builder.fromArray current, frames = sh3.frames + 1, bytes = sh3.bytes + Bytes.length bytes }
+    { shadow = { sh3 | hashes = Builder.fromArray current, styleIds = Builder.empty 64, frames = sh3.frames + 1, bytes = sh3.bytes + Bytes.length bytes }
     , list = bytes
     }
 
@@ -299,9 +356,9 @@ diffRow s clusters o ext y x0 cols sh list =
                 end - x
 
             written =
-                writeRun s clusters o ext (y * cols) x end sh.cells (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
+                writeRun s clusters o ext (y * cols) x end sh.frames sh.cells sh.stamps sh.styleIds (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
         in
-        diffRow s clusters o ext y end cols { sh | cells = written.cells, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
+        diffRow s clusters o ext y end cols { sh | cells = written.cells, stamps = written.stamps, styleIds = written.styleIds, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
 
 
 {-| Past the last changed cell of a run that starts before `x`, gaps of
@@ -319,10 +376,12 @@ runEnd s o ext y x last cols cells =
         runEnd s o ext y (x + 1) x cols cells
 
 
-writeRun : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved list : Builder UInt8) -> { cells : Builder Int64, list : Builder UInt8 }
-writeRun s clusters o ext row x end cells list =
+{-| The cells of a run, written to the list and the shadow; each style id
+the first time this frame (`stamp`) is added to `styleIds`. -}
+writeRun : Screen -> Clusters -> Int -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved stamps : Builder Int) -> (moved styleIds : Builder Int) -> (moved list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
+writeRun s clusters o ext row x end stamp cells stamps styleIds list =
     if x >= end then
-        { cells = cells, list = list }
+        { cells = cells, stamps = stamps, styleIds = styleIds, list = list }
 
     else
         let
@@ -331,9 +390,17 @@ writeRun s clusters o ext row x end cells list =
 
             points =
                 Array.takeFirst 63 (cellPoints c clusters)
+
+            id =
+                cellStyle c
+
+            seen =
+                Builder.get id stamps == Just stamp
         in
-        writeRun s clusters o ext row (x + 1) end
+        writeRun s clusters o ext row (x + 1) end stamp
             (Builder.set (row + x) c cells)
+            (if seen then stamps else Builder.set id stamp stamps)
+            (if seen then styleIds else Builder.pushLast id styleIds)
             (Array.foldl push24
                 (list
                     |> Builder.pushLast (UInt8.fromInt (Bitwise.or (Bitwise.shiftRightZfBy 15 (cellWide c)) (Array.length points)))
@@ -351,3 +418,107 @@ push24 v b =
 push16 : Int -> (moved b : Builder UInt8) -> Builder UInt8
 push16 v b =
     Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 v))) b)
+
+
+-- COLOURS
+
+
+{-| What a frame's colours are resolved from, as one number: when it
+changes, every cell is drawn again. -}
+colourKey : Look -> Term -> Int
+colourKey look t =
+    let
+        mix h v =
+            Bitwise.xor (rotl h) v
+    in
+    Dict.foldl (\k v h -> mix (mix h k) v)
+        (mix (mix (mix (if Dict.get 5 t.modes == Just True then 1 else 0) look.foreground) look.background) (if look.boldIsBright then 1 else 0))
+        t.colours
+
+
+{-| A style id's record: its colours resolved (see the module's comment). -}
+styleRecord : Look -> Term -> Int -> (moved b : Builder UInt8) -> Builder UInt8
+styleRecord look t id b =
+    let
+        a =
+            styleOf id t.styles
+
+        bold =
+            Bitwise.and a.flags 1 /= 0
+
+        fg0 =
+            colourOf look t True bold a.fg
+
+        bg0 =
+            colourOf look t False False a.bg
+
+        swapped =
+            (Bitwise.and a.flags 16 /= 0) /= (Dict.get 5 t.modes == Just True)
+
+        fg1 =
+            if swapped then bg0 else fg0
+
+        bg =
+            if swapped then fg0 else bg0
+
+        fg2 =
+            if Bitwise.and a.flags 2 /= 0 then
+                halfway fg1 bg
+
+            else
+                fg1
+
+        fg =
+            if Bitwise.and a.flags 32 /= 0 then
+                bg
+
+            else
+                fg2
+
+        ulc =
+            if a.ulc == 0 then
+                fg
+
+            else
+                colourOf look t True False a.ulc
+    in
+    b
+        |> Builder.pushLast (UInt8.fromInt 3)
+        |> push16 id
+        |> push24 fg
+        |> push24 bg
+        |> push24 ulc
+        |> Builder.pushLast (UInt8.fromInt (Bitwise.and a.flags 0xFF))
+        |> Builder.pushLast (UInt8.fromInt a.ul)
+
+
+{-| A colour of `Attrs` as RGB: 0 the default (OSC 10 or 11, else the
+look's), 1 to 256 a palette index and one more, or `0x1000000` and RGB. -}
+colourOf : Look -> Term -> Bool -> Bool -> Int -> Int
+colourOf look t isFg bold c =
+    if c == 0 then
+        if isFg then
+            Maybe.withDefault look.foreground (dynamicColour 10 t)
+
+        else
+            Maybe.withDefault look.background (dynamicColour 11 t)
+
+    else if c <= 256 then
+        let
+            i =
+                c - 1
+        in
+        paletteColour (if bold && look.boldIsBright && i < 8 then i + 8 else i) t
+
+    else
+        Bitwise.and c 0xFFFFFF
+
+
+{-| Each channel half way from `a` to `b`. -}
+halfway : Int -> Int -> Int
+halfway a b =
+    let
+        channel shift =
+            Bitwise.shiftLeftBy shift ((Bitwise.and 0xFF (Bitwise.shiftRightZfBy shift a) + Bitwise.and 0xFF (Bitwise.shiftRightZfBy shift b)) // 2)
+    in
+    Bitwise.or (channel 16) (Bitwise.or (channel 8) (channel 0))

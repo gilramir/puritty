@@ -1,7 +1,8 @@
 # The renderer: what the probes leave, and how it is built (survey, 2026-11-02)
 
-Status: **survey; five questions wait on Gilbert (§R5). Step 1 of §R6,
-`Vt.View` in the core's package (V19), is done.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
+(§R7, V34–V38). Steps 1 and 2 of §R6 are built (§R8); step 3,
+`packages/x11`, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -169,5 +170,105 @@ What each step needs decided is in brackets.
 Step 1 is decided, and done (2026-11-02): `vt/src/Vt/View.geng`, exposed
 beside `Vt`; the view, pty and x11 probes build against `vt/` itself, and
 `probes/geng/view/vtp` with its copying script is gone. (The recut probes
-keep their own copy, `probes/geng/recut/vtp`, for `Vt.Recut`.) Step 2
-onwards waits on §R5.
+keep their own copy, `probes/geng/recut/vtp`, for `Vt.Recut`.)
+
+## R7. Gilbert's answers (2026-11-02)
+
+Gilbert took §R5's five leanings.
+
+**V34 · Shaping, fallback and the glyph cache are C's.** The display list
+carries clusters and colours; Geng decides what is drawn and the
+profile's fonts, C turns them into glyphs and keeps the cache.
+`geng-plan.md` §3.4 says so now.
+
+**V35 · Styles are resolved in Geng, and a frame carries its colours.**
+Each display list starts with a record for each style its runs use: the
+id, foreground, background and underline colours as RGB, the flags and the
+underline's kind, resolved by `Vt.View` from `Vt.Style`, the core's
+palette and the profile's look. The cells keep their 2-byte ids, and C
+keeps no table between frames.
+
+**V36 · One C package, `packages/x11`, and events as C's records.** It
+holds the connection, the window, events, keys (xkbcommon), fonts and
+drawing; its Geng modules are its API. Events cross as records C writes,
+decoded in Geng; an expose stays in C. `geng-plan.md` §3.2 and §5 say so
+now.
+
+**V37 · The glyph set is bounded by a reset.** Past a cap of uploaded
+glyph bytes, 8 MB and a setting, C frees the glyph set and starts a new
+one, and the next frame redraws the screen.
+
+**V38 · Two gates: display lists pinned, and pixels on Xvfb.**
+`harness/view.py` (§R8) and `harness/pixels`, C§9's corpus and a set of
+screens against pinned images under pinned fonts (step 5). The bytes per
+update become a recorded table.
+
+## R8. Step 2 built: styles in the frame, and the display-list gate (2026-11-02)
+
+**The format.** `Vt.View`'s comment is its definition. A frame's list now
+starts with a size record (`0x04`, columns and rows) in the first frame
+and in each whose size is not the last one's, since the core changes its
+own size on DECCOLM; then a style record (`0x03`, 14 bytes) for each style
+id its runs use, in the order they are first used; then the scroll and
+run records as before.
+
+**Resolving a style** (V35), in `Vt.View.styleRecord`:
+
+- a colour is the look's foreground or background for the default (OSC 10
+  and 11 override them), the core's palette for an index (OSC 4 overrides
+  an entry), or its RGB;
+- bold makes an index of the first eight its bright one when the look's
+  `boldIsBright` says so (`defaultLook`: no, its colours the core
+  palette's white on black);
+- inverse, and the screen's reverse video (mode 5), swap the two; with
+  both they cancel;
+- faint takes the foreground half way to the background, after the swap;
+- invisible makes the foreground the background; the flag goes to C too;
+- the underline colour is the foreground unless SGR 58 gives one.
+
+The palette lookups the replies used (`paletteColour`, `dynamicColour`)
+moved from `Vt` into `Vt.Palette`, which both read.
+
+A cell whose style's colours change is not a changed cell: the shadow
+compares cells, and a style's id stays. So `View` keeps a key of what
+colours are resolved from (the palette and dynamic colours the core holds,
+mode 5, the look) and forgets the shadow when it changes: that frame draws
+every cell.
+
+**The probe follows.** The x11 probe's C reads the style records into a
+table for the frame and draws with their colours. Two of its shortcuts,
+harmless while colours were 16 made up ones, showed at once in a
+screenshot of a colour test (palette, cube, truecolour, inverse, faint,
+invisible): a run was filled with its first cell's background, so it is
+now a fill for each stretch of one background; and its cache of solid
+pictures returned whatever picture was in a colour's slot, so it now
+replaces one that holds another colour.
+
+**The gate.** `harness/view.py`, with its program `harness/view/core-view`.
+Every case of `corpus/replay/` (325) and of `corpus/view/cases/` (9) is
+fed 16 bytes a read, a frame after each, and the frames' lists are decoded
+in Python, a second reader of the format, into `corpus/view/NAME.txt`,
+which they are held to. The decoder also checks, of every frame, what the
+format promises: a size record in the first frame and whenever the size
+changes, and only then; every style a run uses declared earlier in the
+frame, and none twice; scrolls and runs on the screen; no run starting on
+a wide character's tail or ending on its head; every record read to its
+end. On the first run it found DECCOLM (`deccolm`, `size-report-pixels`),
+where the core resizes itself and the frame had no way to say so; the size
+record is the answer.
+
+`corpus/view/cases/`: scrolls up, down (reverse index) and within a
+region; a palette change and its reset, reverse video, OSC 10 and 11, each
+redrawing every cell; every attribute and colour form; wide characters at
+a run's edges; resizes from the host. 334 cases pass, in under 2 s; a pin
+changed by hand fails.
+
+**What it costs.** On the wire, `run.sh race` (phase2 §16's workloads, two
+runs): a vim scroll 106,308 and 103,848 bytes, against 106,164 and
+103,948; `tail` and `cat` within their spread; `htop` 82.8–83.5 KB
+against 77.7–80.6, the fills of more than one background in a run. The
+style records stay in the program. In Geng, the view probe with a frame a
+read takes `gitlog` in 148–168 ms, `ls` 101–102, `vte-scrolling` 146–150
+and `vte-unicode` 33–34, three runs each, against phase2 §13's 144–145,
+98–99, 154–155 and 32–33: within the spread of runs on different days,
+not an A/B of one build against another.

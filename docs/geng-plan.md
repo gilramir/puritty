@@ -470,7 +470,7 @@ pixel buffer). **Geng does everything that decides something.**
 | Renderer: diffing, run building, damage, scroll detection | Geng, pure | Output is a display list (§3.4) |
 | Config | Geng | TOML through `gilramir/gren-toml`, already vendored in geng-lang. CLI through `gilramir/gren-argparse` |
 | PTY: `openpty`, fork and exec, `TIOCSWINSZ`, exit status | C rows | The child side has to be C, because only async-signal-safe calls are allowed between `fork` and `exec` |
-| X11: connection, window, events, XRender, `CopyArea`, selections, XKB | C rows (libxcb) | Thin. Events cross as their raw 32-byte xcb form and Geng decodes them with `Bytes.Decode` |
+| X11: connection, window, events, XRender, `CopyArea`, selections, XKB | C rows (libxcb), `packages/x11` | Events cross as records C writes, as keys do, and Geng decodes them; an expose is answered in C from the pixmap (V36, `renderer.md` §R7). Earlier: raw 32-byte xcb events decoded in Geng |
 | Keyboard state and keysyms | C rows (libxkbcommon, xkbcommon-x11) | |
 | IME | C rows (xcb-imdkit, XIM) | The ordering rules of S§9 and C§7.4 are Geng |
 | Fonts | C rows (fontconfig, FreeType, HarfBuzz) | Glyph bitmaps never cross into Geng (§3.4) |
@@ -541,11 +541,14 @@ into instanced quads. That gives:
 - both renderers share the decisions: runs, overhang and ink extents (C§4.3), what to
   redraw.
 
-Glyphs: HarfBuzz shapes a run in a C row and returns glyph ids, clusters and offsets
-as `Bytes`. FreeType rasterises inside C and uploads straight into the X server's
-GlyphSet or the GPU atlas, so bitmaps never cross into Geng. Geng keeps the cache
-keys, the LRU and the eviction decisions (S§6.2: "Bound server-side glyph sets",
-C§6).
+Glyphs (V34, `renderer.md` §R7): the display list carries clusters and
+resolved colours (V35), and C shapes each run with HarfBuzz as it draws it
+(V24), picks the fallback face (V26), rasterises with FreeType and uploads
+into the X server's GlyphSet or the GPU atlas, so bitmaps and glyph ids
+never cross into Geng. C keeps the glyph cache; the server's glyph set is
+bounded by a reset past a cap (V37, S§6.2). Earlier this said HarfBuzz
+returned glyph ids to Geng, which kept the LRU; shaping every run every
+frame in C made that a round trip for nothing Geng decides.
 
 ### 3.5 Processes and windows
 
@@ -653,10 +656,9 @@ its own repository once its API settles (Q5).
 | `euckr` | pure Geng | Streaming CP949 decoder and EUC-KR/CP949 encoder with the rules of S§3.4 |
 | `tmux-control` | pure Geng | Control-mode protocol, layout parser, pane demultiplexing |
 | ~~`pty`~~ | — | Not a package: a pty is `os`'s (geng-lang D1024, `phase2-window.md` §10) |
-| `xcb` | C rows + Geng | Connection, atoms, windows, events, XRender, XKB, selections, RandR for DPI. The protocol knowledge is in Geng and the C is thin |
-| `xkb` | C rows | libxkbcommon and xkbcommon-x11 |
+| `x11` | C rows + Geng | Connection, atoms, windows, events, XRender, selections, RandR for DPI, keys through libxkbcommon and xkbcommon-x11, and the fonts and drawing the display list needs (V36, `renderer.md` §R7: one package, since drawing shares the faces). Was `xcb` and `xkb` |
 | `xim` | C rows | xcb-imdkit (the XIM client fcitx5 maintains) |
-| `fonts` | C rows | fontconfig queries, FreeType faces and rasterising, HarfBuzz shaping. One package, because they share face objects |
+| ~~`fonts`~~ | — | In `x11` (V36): shaping happens as a run is drawn, so the faces are the drawing's |
 | `gles` | C rows | EGL and GLES 3 for phase 5 |
 | `signal` | C rows | G2, if it doesn't go into `os` |
 
@@ -752,8 +754,8 @@ Exit:
 [`phase2-window.md`](phase2-window.md): the renderer diffs its own copy of
 the screen and finds scrolls by row hashes, a pty fits the one loop, and a
 vim scroll costs 374 bytes a line on the wire. The renderer's build begun
-2026-11-02: [`renderer.md`](renderer.md), its survey's questions waiting
-on Gilbert.* PTY backend, XCB window, the server-side X11 renderer
+2026-11-02: [`renderer.md`](renderer.md); Gilbert took its leanings (V34–V38), and
+its steps 1 and 2 are built.* PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).

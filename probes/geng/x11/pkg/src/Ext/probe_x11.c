@@ -10,9 +10,10 @@
  *     primary lacks them (§13), and a glyph is rasterised by FreeType and
  *     uploaded with RenderAddGlyphs the first time it is drawn.
  *
- * What the probe leaves out, said in §5 and §13.10: synthesised bold and italic, the cursor, every event but an expose, and the colours of the
- * core's styles: a style id picks a colour from a fixed palette, which
- * costs the same requests. */
+ * What the probe leaves out, said in §5 and §13.10: synthesised bold and
+ * italic, the cursor, and every event but an expose and a key. A style's
+ * colours come resolved in the frame's style records (docs/renderer.md
+ * V35); its other attributes are not drawn. */
 #define _GNU_SOURCE
 #include <fontconfig/fontconfig.h>
 #include <poll.h>
@@ -42,23 +43,30 @@ static FT_Library library;
 static int cw, ch, ascent, cols, rows, uploaded;
 static xcb_render_picture_t solid[256];
 
-static const uint32_t palette[16] = {0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5,
-                                     0x666666, 0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff};
+/* The colours of each style id, as this frame's style records give them;
+ * the list names every style its runs use before its runs. */
+static uint32_t style_fg[32768], style_bg[32768];
+static uint32_t solid_rgb[256];
 
 static xcb_render_color_t colour(uint32_t rgb) {
     return (xcb_render_color_t) {.red = (uint16_t) (((rgb >> 16) & 0xff) * 257), .green = (uint16_t) (((rgb >> 8) & 0xff) * 257),
                                  .blue = (uint16_t) ((rgb & 0xff) * 257), .alpha = 0xffff};
 }
 
-static uint32_t fg_of(int style) { return style == 0 ? 0xe5e5e5 : palette[8 + (style * 7) % 8]; }
-static uint32_t bg_of(int style) { return style == 0 ? 0x000000 : palette[(style * 3) % 8]; }
+static uint32_t fg_of(int style) { return style_fg[style & 32767]; }
+static uint32_t bg_of(int style) { return style_bg[style & 32767]; }
 
 static xcb_render_picture_t solid_of(uint32_t rgb) {
     int i = (int) ((rgb ^ (rgb >> 8) ^ (rgb >> 16)) & 0xff);
-    /* A probe's cache: a collision makes a second picture, which costs one
-     * request, and the palette has 17 colours. */
+    /* A probe's cache, a picture a slot: a colour that lands on a slot
+     * another holds replaces it, which costs two requests. */
+    if (solid[i] != 0 && solid_rgb[i] != rgb) {
+        xcb_render_free_picture(conn, solid[i]);
+        solid[i] = 0;
+    }
     if (solid[i] == 0) {
         solid[i] = xcb_generate_id(conn);
+        solid_rgb[i] = rgb;
         xcb_render_create_solid_fill(conn, solid[i], colour(rgb));
     }
     return solid[i];
@@ -551,13 +559,32 @@ geng_cancel probe_x_draw(void *list, geng_wait *wait) {
             if (top < first) first = top;
             if (bottom > last) last = bottom;
             p += 7;
+        } else if (p[0] == 4) {
+            p += 5; /* the screen's size: the probe's window is fixed */
+        } else if (p[0] == 3) {
+            int id = ((p[1] << 8) | p[2]) & 32767;
+            style_fg[id] = ((uint32_t) p[3] << 16) | ((uint32_t) p[4] << 8) | p[5];
+            style_bg[id] = ((uint32_t) p[6] << 16) | ((uint32_t) p[7] << 8) | p[8];
+            p += 14;
         } else {
             int y = (p[1] << 8) | p[2], x = (p[3] << 8) | p[4], n = (p[5] << 8) | p[6];
             const uint8_t *cell = p + 7, *q = cell;
-            for (int i = 0; i < n; i++) q += 3 + 3 * (q[0] & 63);
-            int style0 = (cell[1] << 8) | cell[2];
-            xcb_rectangle_t r = {(int16_t) (x * cw), (int16_t) (y * ch), (uint16_t) (n * cw), (uint16_t) ch};
-            xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, colour(bg_of(style0)), 1, &r);
+            /* The background, a fill for each stretch of cells of one
+             * background colour. */
+            int from = 0;
+            uint32_t bg = 0;
+            for (int i = 0; i <= n; i++) {
+                uint32_t here = i < n ? bg_of((q[1] << 8) | q[2]) : 0;
+                if (i == n || (i > from && here != bg)) {
+                    xcb_rectangle_t r = {(int16_t) ((x + from) * cw), (int16_t) (y * ch), (uint16_t) ((i - from) * cw), (uint16_t) ch};
+                    xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, colour(bg), 1, &r);
+                    from = i;
+                }
+                if (i < n) {
+                    bg = here;
+                    q += 3 + 3 * (q[0] & 63);
+                }
+            }
             draw_run(y, x, n, cell);
             flush_placed();
             if (y < first) first = y;

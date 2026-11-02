@@ -50,6 +50,7 @@ import Vt.Pages exposing (..)
 import Vt.Resize exposing (..)
 import Vt.Recut exposing (recut)
 import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
 
 
 {-| A terminal (`Vt.Term.Term`). -}
@@ -1783,75 +1784,6 @@ digits w =
 
     else
         Nothing
-
-
-dynamicKey : Int -> Int
-dynamicKey c =
-    1000 + c
-
-
-{-| A dynamic colour: the one set, or none, since the core has no default
-foreground or background, as libghostty-vt has none unless its embedder
-gives one; the cursor's is the foreground's when it has none. -}
-dynamicColour : Int -> Term -> Maybe Int
-dynamicColour c t =
-    if c == 12 then
-        when Dict.get (dynamicKey 12) t.colours is
-            Just v ->
-                Just v
-
-            Nothing ->
-                Dict.get (dynamicKey 10) t.colours
-
-    else if c <= 11 then
-        Dict.get (dynamicKey c) t.colours
-
-    else
-        Nothing
-
-
-paletteColour : Int -> Term -> Int
-paletteColour i t =
-    Maybe.withDefault (defaultColour i) (Dict.get i t.colours)
-
-
-{-| The palette as libghostty-vt has it before anything sets it: its 16,
-the 6×6×6 cube and the grey ramp. -}
-defaultColour : Int -> Int
-defaultColour i =
-    if i < 16 then
-        Maybe.withDefault 0 (Array.get i namedColours)
-
-    else if i < 232 then
-        let
-            level v =
-                if v == 0 then
-                    0
-
-                else
-                    v * 40 + 55
-
-            k =
-                i - 16
-        in
-        rgbOf (level (k // 36)) (level (modBy 6 (k // 6))) (level (modBy 6 k))
-
-    else
-        let
-            v =
-                (i - 232) * 10 + 8
-        in
-        rgbOf v v v
-
-
-namedColours : Array Int
-namedColours =
-    [ 0x1D1F21, 0xCC6666, 0xB5BD68, 0xF0C674, 0x81A2BE, 0xB294BB, 0x8ABEB7, 0xC5C8C6, 0x666666, 0xD54E53, 0xB9CA4A, 0xE7C547, 0x7AA6DA, 0xC397D8, 0x70C0B1, 0xEAEAEA ]
-
-
-rgbOf : Int -> Int -> Int -> Int
-rgbOf r g b =
-    Bitwise.or (Bitwise.shiftLeftBy 16 r) (Bitwise.or (Bitwise.shiftLeftBy 8 g) b)
 
 
 {-| A colour as xterm reports one: `rgb:` and each channel in 16 bits. -}
