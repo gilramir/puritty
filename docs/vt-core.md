@@ -3459,3 +3459,24 @@ then each resize after them:
 
 `ls` gains the most because its coloured names are ASCII. Every time is
 within its budget.
+
+## VC42. The page a push drops is freed (geng-lang D1041)
+
+geng-lang's drop pass now follows a call of `Builder.set` over owned
+elements with a drop of the element it writes over (`m4-owned-pages.md`
+§OP22). So the oldest page `dropOver` writes over with an empty one is
+given back where it is dropped, as §VC39 left for later. Nothing in the
+core changed.
+
+Replay 325 of 325, esctest2 392, the dumps the same on 153 of 153, both
+fuzzers clean. The feed at the default limit, before → after:
+
+| input | peak resident | page faults | full collections |
+|---|---:|---:|---:|
+| `gitlog` | 57,672 → 41,792 KB | 7,782 → 3,833 | 3 → 2 |
+| `ls` | 50,644 → 38,372 KB | 6,438 → 3,331 | 4 → 2 |
+
+Less the input `core-bench` holds, the terminal's own part of `gitlog`'s
+peak is about half what it was, 32 MB to 16. Feeding times do not move.
+`perf.py` records `ls`'s feed 1.0% and `gitlog`'s 0.65% lower, and every
+time is within its budget.
