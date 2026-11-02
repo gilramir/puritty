@@ -3425,6 +3425,12 @@ heap ends at 16.8 MB (33 MB before; `GENG_NURSERY_STATS`).
 **Answered** (2026-11-01): all three leanings. A is built (§VC41). B and C
 are registered here with the numbers above, and D1030 is closed.
 
+**Reopened only on a measurement** (2026-11-02, with Gilbert). B when a
+resize benchmark puts the core behind Ghostty, or when another use of a
+header bit makes output pay the row-at-a-time decision anyway. C when a
+resize's collections miss G7's pause budget, since the ring's rows are
+the allocation D1030 named.
+
 ## VC41. A coloured row with a byte a cell is cut by arithmetic (§VC40's A)
 
 `Recut`'s `Src` has a fourth field, `narrow`: the row's text is as many
