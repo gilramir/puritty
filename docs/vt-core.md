@@ -3326,3 +3326,98 @@ Most of that heap is `core-bench`'s input, which it holds through the feed
 (25 MB of `gitlog.txt`); the terminal's share is about 9 MB. geng-lang
 leaves the page to the collector (`m4-owned-pages.md` §OP20, D1040):
 taking it out with `Builder.swap` costs the in-place marks 312 → 29.
+
+## VC40. D1030's two costs, measured after the owned pages (survey)
+
+geng-lang's D1030 registered two costs of a resize here (§VC36), for after
+the pages were owned (§VC39): `gitlog`'s cut of coloured lines, and the
+rows between the old ring and the new. This measures both on visiterm
+9496e75's core, against Ghostty, and says what each would buy.
+
+**Where a resize goes.** A scratch build adds `Vt.probe`, which runs one
+part of a narrowing to 80 columns on the term a feed left, with no limit.
+Instructions are a part run 10 times, less the feed, divided by 10; the
+time is the median of five runs of 100.
+
+| input | one resize | the recut of the pages | the ring's rows (flow and rebuild) |
+|---|---:|---:|---:|
+| one line of 10,000 rows | 18 M | 5 M, 0.38 ms | 8 M, 0.38 ms |
+| 10,000 short lines | | 10 M, 0.39 ms | 4 M, 0.15 ms |
+| one line of 100,000 rows | | 48 M, 3.6 ms | 7 M, 0.31 ms |
+| 100,000 short lines | | 101 M | 1 M |
+| `gitlog` | 1,545 M | 1,558 M (the copy the probe makes, 32 M, in it) | 1 M |
+
+So `gitlog`'s resize is its recut, and the ring's rows are about half of
+the 10,000-row line's and little elsewhere.
+
+**Against Ghostty** (§VC39, D1029's two numbers): `gitlog` is 1,084 ms for
+the first 20 against Ghostty's 2,276, and 54 ms a resize after them
+against 114. The 10,000-row line is 9 ms against 9.1, and 0.25 ms a resize
+after them against 0.42. Neither cost leaves the core behind Ghostty.
+
+### `gitlog`'s cut
+
+Its lines are coloured, so they are not on plain pages (V22, §VC33), and
+each goes through `gather` and `fastLine`. Sampled by instructions
+(`perf record -e instructions:u`, the recut 5 times), per resize: `chunks`
+406 M (with `skipCells` and `styleCells` in it), `recut` 354 M (with
+`lines`, `gather` and `fastLine` in it), `scan` 210 M, `decodeAt` 49 M.
+
+Each byte of a coloured row is walked twice: by `scan` in `gather`, to find
+where the row's text ends and whether every cell is one column, and by
+`skipCells` in `chunks`, to find where each new row's text ends. `chunks`
+already finds the end by arithmetic for a row with a byte a cell, but only
+when the row also has no style: one field, `Src.plain`, says both.
+
+- **A. Split `Src.plain`.** A new field, `narrow`, true when a row's text
+  is as many bytes as its extent, decides where a row's text ends;
+  `plain` still decides the new page's plainness. A row reaches `fastLine`
+  only when `scan` found every cell one column, so a byte a cell means
+  every byte is a cell's: ASCII or an empty cell's 0, with no protection
+  byte, which would be one more byte. Built in the scratch copy: `gitlog`'s
+  recut is 1,328 M (−15%), `ls`'s 830 M, 100,000 short lines unchanged.
+  `gitlog`'s 20 resizes take 982 ms (1,090), and each after them 49.0 ms
+  (54.7). The dumps are the same as 9496e75's on 153 of 153. The change is
+  about ten lines in `Recut`.
+- **B. A row header bit for "a byte a cell"** (`0x1000` and `0x2000` are
+  free), written by `packRows` and by `closeRow`, would let `gather` skip
+  `scan` too: at most its 210 M and `decodeAt`'s 49 M, 17% more. It
+  changes what a page holds, and a row-at-a-time decision in `pageOut` is
+  what §VC33 measured at 1.5% to 9.9% more instructions on
+  `vte-scrolling`. Output pays it on every page, so a resize can save it.
+
+The rest, about 1,070 M after A and B, is a row's own work: a `Source`
+record pushed to an array, `fastLine`'s fold, two `chunks` calls, the
+style runs and the header written a `pushU16` at a time, about 2,000
+instructions a row over 542,000 rows.
+
+### The ring's rows
+
+`flowFrom` makes a row of each of the ring's (`ringRowOf`, a slice of the
+cells), `reflowCols` and `changeRows` make them again at the new width
+(`splitLine`), and `rebuild` writes them into the new ring. On the
+10,000-row line, 20 resizes now promote 19.4 MB from the nursery (22 MB
+before the pages were owned) and allocate 72 MB of large arrays, and the
+heap ends at 16.8 MB (33 MB before; `GENG_NURSERY_STATS`).
+
+- **C. Write the rows straight from the old ring into the new.** It is the
+  allocation D1030 named. It would replace `flowFrom`, `reflowCols`,
+  `changeRows` and `rebuild`'s use of `Array Row`. That is the reflow V10,
+  V16 and V17 are held to, with the cursor, the saved cursor, the prompt's
+  rows and the marks carried through it. The most it saves is the ring's
+  part, 0.38 ms of a narrowing on the 10,000-row line and 0.15 to 0.31 ms
+  on the others, where the core is already level with Ghostty or ahead.
+
+### For Gilbert
+
+1. **A, now?** Leaning yes. It is small, local and measured: 10% off
+   `gitlog`'s resizes, the dumps the same. It would land with replay,
+   esctest2, the dumps, the fuzzers and `perf.py`.
+2. **B?** Leaning no for now. It saves at most 17% of `gitlog`'s recut,
+   and it costs output on every page, where §VC33 already measured such a
+   cost and moved the decision out of `pageOut` for it. Registered with
+   these numbers.
+3. **C?** Leaning no. It would rewrite the reflow the core's resize
+   correctness rests on, to save at most 0.4 ms a resize where the core
+   is not behind. Registered with these numbers, and D1030 closed with
+   them.
