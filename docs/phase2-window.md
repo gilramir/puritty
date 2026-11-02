@@ -743,7 +743,7 @@ anchors, so each one is an element of its own.
 - **Colour emoji.** fontconfig gives Noto Color Emoji when asked (§13.3),
   but its glyphs are CBDT bitmaps (`FT_LOAD_COLOR`, a 109 px strike)
   that need an ARGB32 glyph set and scaling to the cell; the probe draws
-  nothing for them.
+  nothing for them. *Built: §13.10.*
 - **Bold and italic.** Synthesised bold and italic for fallback
   faces are not measured.
 - **Box drawing.** It is the font's, not drawn procedurally. Across rows,
@@ -751,7 +751,7 @@ anchors, so each one is an element of its own.
 - **Narrow cells.** PuTTY's compression of a glyph the font draws wide
   in one cell is not done, and the screenshots show why it is needed: ①
   ② ★, one cell each in the core, come from a fallback face wider than a
-  cell and cover the space after them.
+  cell and cover the space after them. *Built: §13.10.*
 - **Ink outside the run.** A row's ink extents beyond its run are not
   tracked. Noto Sans Thai's tallest stack rises 0.8 px above DejaVu's
   ascent at 11 points, and its lowest mark stays inside the descent, so a
@@ -816,3 +816,70 @@ time, 222–231 ms against 215–231 unshaped, is within the spread.
    off.
 6. **Next, before the renderer is written:** colour emoji (an ARGB glyph
    set), and the narrow compression the screenshots showed is needed.
+
+### 13.9 Gilbert's answers (2026-11-02)
+
+Gilbert took §13.8's six leanings.
+
+**V24 · Shape every run, every frame, with no shape cache.** HarfBuzz
+shapes a run of clusters in one face each frame. Spaces between two
+clusters of one fallback face join their run, so a line of Thai is one
+run (§13.10).
+
+**V25 · The CJK forms come from a language per profile.** It defaults from
+the locale and feeds HarfBuzz's buffer language, which picks the forms,
+and fontconfig's `lang`, which picks the Mono face (§13.2).
+
+**V26 · Fallback is found on the loop thread.** Loaded faces are asked
+first, then fontconfig, the answer cached by code point. A cluster that
+asks for emoji presentation asks for a colour face (§13.3). A C thread
+(G5) is for a font set measured slow.
+
+**V27 · The cost of rasterising new ideographs is registered** (§13.5).
+It is measured in phase 3's daily use, and a C thread that rasterises
+while the frame waits is decided then (`geng-plan.md` §6, phase 3).
+
+**V28 · Ligatures are on, from the font's `calt`.** A changed cell redraws
+the stretch of its row it is shaped with, out to the nearest space on
+each side. The cursor and colours apply per glyph, not by splitting runs
+(§13.7). A setting turns `calt` off.
+
+**V29 · Colour emoji and narrow compression come before the renderer**
+(§13.10).
+
+### 13.10 Colour emoji, narrow compression, joined runs (2026-11-02)
+
+Built in the x11 probe:
+
+- **Colour emoji** (V29). A cluster with U+FE0F, or one whose first code
+  point is in U+1F300–1FAFF or a regional indicator, asks for emoji
+  presentation. This is an approximation of UTS #51's
+  `Emoji_Presentation`; the renderer takes the table. Such a cluster
+  skips every face that is not colour, the primary included, and its
+  fontconfig query adds `color=true`. A text presentation (U+FE0E) skips
+  colour faces.
+
+  Noto Color Emoji is CBDT bitmaps in one 136×128 strike. A glyph is
+  loaded with `FT_LOAD_COLOR`, averaged down into its cells (one or two
+  wide, a cell high, keeping its proportions), and put into an ARGB32
+  picture once. It is then composited over its cells at each use: one
+  `Composite` request, 28 bytes. ❤️ 🇯🇵 👨‍👩‍👧 😀 draw, and ✔ with no
+  selector stays text.
+
+  The four in C§9's text cost 4,056 bytes more on the wire (31,620
+  against 27,564), about 1 KB each, sent once. A family is drawn in the
+  two cells of its head, which the core's legacy width places
+  followed by its other members' cells.
+- **Narrow compression** (C§4.4, PuTTY's). A glyph alone in a one-cell
+  cluster, whose advance is wider than the cell, is rasterised squeezed
+  to the cell by an `FT_Set_Transform` and uploaded as a third form of
+  that glyph. ① ② ★ from the fallback face no longer cover the space
+  after them: 3 glyphs squeezed in C§9's text in DejaVu Sans Mono, 4 in
+  Fira Code.
+- **Joined runs** (V24). `thai.txt` drops from 28,846–29,206 segments to
+  1,128–1,231, and its shaping from 12.6–13.1 ms to 8.5–10.2. Its wall
+  time (154–172 ms) and instructions (3.24–3.33 G, against 3.30–3.37) do
+  not move beyond the spread.
+
+What §13.6 left that is still open: synthesised bold and italic for
+fallback faces, procedural box drawing, and ink extents tracked per row.

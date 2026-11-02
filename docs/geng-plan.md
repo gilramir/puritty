@@ -769,7 +769,9 @@ EUC-KR filter pair.
 
 Exit: **Gilbert uses it as his daily terminal on Mint.** The IME matrix (fcitx5-hangul,
 ibus-hangul, Mozc, a pinyin IME) passes its scripted tests, and the EUC-KR corpus
-(C§10.5) passes.
+(C§10.5) passes. The time to rasterise a screen of ideographs not seen
+before, 25–40 ms in phase 2's survey, is measured in that daily use, and a
+C thread for it is decided then (V27, `phase2-window.md` §13).
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,
