@@ -5,6 +5,9 @@ every read of the master fed to the core, and with `frame` a renderer's frame
 (`Vt.View.frame`) whenever 16 ms have passed since the last. It prints the
 time from the spawn to the end of the output, the reads, and the frames.
 
+The pty is `os`'s (geng-lang D1042, `m3-os.md` §OS25), which replaced the
+probe's own `Pty` package.
+
 usage: pty FILE [frame]
 
 -}
@@ -13,7 +16,9 @@ import Bytes exposing (Bytes)
 import Console
 import Int64
 import Os.Env
-import Pty
+import Os.Error exposing (Error)
+import Os.File as File
+import Os.Process as Process exposing (Connection(..))
 import Task exposing (Task)
 import Time
 import Vt
@@ -35,9 +40,9 @@ now =
     Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
 
 
-loop : Int -> (moved r : Run) -> Task x Run
+loop : File.Handle -> (moved r : Run) -> Task Error Run
 loop fd r =
-    Pty.read fd
+    File.read fd
         |> Task.andThen
             (\chunk ->
                 if Bytes.length chunk == 0 then
@@ -70,46 +75,44 @@ loop fd r =
 
 main : Task Never {}
 main =
-    Os.Env.getEnvironment
-        |> Task.andThen
-            (\e ->
-                now
-                    |> Task.andThen
-                        (\t0 ->
-                            Pty.spawn 160 50 [ "cat", Maybe.withDefault "" (Array.get 0 e.args) ]
-                                |> Task.andThen
-                                    (\fd ->
-                                        if fd < 0 then
-                                            Console.write ("pty: spawn failed, errno " ++ String.fromInt (0 - fd) ++ "\n")
+    Process.initialize
+        |> Task.andThen (\cp -> Os.Env.getEnvironment |> Task.andThen (\e -> now |> Task.andThen (\t0 -> run cp e.args t0)))
+        |> Task.onError (\err -> Console.write ("pty: " ++ Os.Error.toString err ++ "\n"))
 
-                                        else
-                                            loop fd
-                                                { term = Vt.new { cols = 160, rows = 50, scrollback = 100000, checksums = False, cellWidth = 0, cellHeight = 0 }
-                                                , shadow = View.shadow 160 50
-                                                , frames = Array.get 1 e.args == Just "frame"
-                                                , last = t0
-                                                , reads = 0
-                                                , bytes = 0
-                                                }
-                                                |> Task.andThen
-                                                    (\r ->
-                                                        now
-                                                            |> Task.andThen
-                                                                (\t1 ->
-                                                                    Console.write
-                                                                        (String.fromInt r.bytes
-                                                                            ++ " bytes in "
-                                                                            ++ String.fromInt (t1 - t0)
-                                                                            ++ " ms; reads "
-                                                                            ++ String.fromInt r.reads
-                                                                            ++ " frames "
-                                                                            ++ String.fromInt r.shadow.frames
-                                                                            ++ " bound "
-                                                                            ++ String.fromInt (Vt.historyBound r.term)
-                                                                            ++ "\n"
-                                                                        )
-                                                                )
-                                                    )
-                                    )
-                        )
+
+run : Process.Permission -> Array String -> Int -> Task Error {}
+run cp args t0 =
+    Process.spawn cp "cat" [ Maybe.withDefault "" (Array.get 0 args) ] (Process.defaultSpawnOptions (Terminal { columns = 160, rows = 50, utf8 = True }))
+        |> Task.andThen
+            (\child ->
+                when Process.terminal child is
+                    Nothing ->
+                        Console.write "pty: no terminal\n"
+
+                    Just terminal ->
+                        loop (Process.terminalHandle terminal)
+                            { term = Vt.new { cols = 160, rows = 50, scrollbackBytes = Vt.scrollbackBytesFor { cols = 160, rows = 100000 }, checksums = False, cellWidth = 0, cellHeight = 0 }
+                            , shadow = View.shadow 160 50
+                            , frames = Array.get 1 args == Just "frame"
+                            , last = t0
+                            , reads = 0
+                            , bytes = 0
+                            }
+                            |> Task.andThen (\r -> now |> Task.andThen (\t1 -> report r (t1 - t0)))
             )
+
+
+report : Run -> Int -> Task x {}
+report r ms =
+    Console.write
+        (String.fromInt r.bytes
+            ++ " bytes in "
+            ++ String.fromInt ms
+            ++ " ms; reads "
+            ++ String.fromInt r.reads
+            ++ " frames "
+            ++ String.fromInt r.shadow.frames
+            ++ " bound "
+            ++ String.fromInt (Vt.historyBound r.term)
+            ++ "\n"
+        )

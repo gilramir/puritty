@@ -390,3 +390,19 @@ measurement later asks for it, the core recording deltas is the fallback.
 representation (`Vt.Screen`, `Term`'s fields) with no copy and no wider
 API for it; its display list, `Bytes`, is the boundary to the C that draws
 (§3.1, §5.1). `Vt` exposes `Vt.View` beside itself.
+
+---
+
+## 11. The pty is `os`'s (2026-11-02)
+
+D1024 is built in geng-lang (`m3-os.md` §OS25, §OS26, D1042–D1044):
+`Os.Process.spawn` with `Terminal { columns, rows, utf8 }`, the master an
+`Os.File` handle whose read answers the end on `EIO`, and
+`Process.resize`. §4's probe now uses it, and `probes/geng/pty/pkg`, its
+`Pty` package and C, is gone. Against the probe on that package, both on
+the core at b912f76: the same bytes and screen, `ls` 115–153 ms against
+111–150, `cup` 87–91 against 87, `gitlog` a median of 203.5 against 196.0
+over ten runs each in turn, in the same instructions and CPU time; its
+reads fall differently from run to run on either. The probe's
+`Vt.new` call now gives `scrollbackBytes`, as the core's `Config` asks;
+it had not been built since the core changed it.
