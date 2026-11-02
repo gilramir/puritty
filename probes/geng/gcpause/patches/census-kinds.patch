@@ -1,0 +1,76 @@
+diff --git a/packages/c-backend/runtime/geng.c b/packages/c-backend/runtime/geng.c
+index 55728fa8..6d1dee76 100644
+--- a/packages/c-backend/runtime/geng.c
++++ b/packages/c-backend/runtime/geng.c
+@@ -1317,6 +1317,63 @@ static uint64_t pause_clock(void) {
+     return (uint64_t) t.tv_sec * 1000000000u + (uint64_t) t.tv_nsec;
+ }
+ 
++
++/* CENSUS EXPERIMENT (G7, visiterm phase2-window.md §15): at the Nth full
++ * collection, Boehm's reachable objects by kind and size, and for the
++ * scanned ones how many words point into the heap. */
++#include <gc/gc_mark.h>
++#define CENSUS_SIZES 8192
++static unsigned long long cn[2][CENSUS_SIZES + 1], cb[2][CENSUS_SIZES + 1], cptr[CENSUS_SIZES + 1], cother[3];
++static void *csample[CENSUS_SIZES + 1][3];
++static int census_fulls;
++static void census_one(void *obj, size_t bytes, void *data) {
++    (void) data;
++    size_t sz;
++    int kind = GC_get_kind_and_size(obj, &sz);
++    size_t k = bytes / 16 < CENSUS_SIZES ? bytes / 16 : CENSUS_SIZES;
++    if (kind > 1) { cother[0]++; cother[1] += bytes; return; }
++    cn[kind][k]++;
++    cb[kind][k] += bytes;
++    if (kind == 1) {
++        for (size_t w = 0; w + 8 <= bytes; w += 8) {
++            void *v = *(void **) ((char *) obj + w);
++            if (v && GC_base(v)) cptr[k]++;
++        }
++        for (int i = 0; i < 3; i++) if (!csample[k][i]) { csample[k][i] = obj; break; }
++    }
++}
++static void census(void) {
++    memset(cn, 0, sizeof cn); memset(cb, 0, sizeof cb); memset(cptr, 0, sizeof cptr); memset(csample, 0, sizeof csample);
++    GC_enumerate_reachable_objects_inner(census_one, NULL);
++    unsigned long long tn[2] = {0}, tb[2] = {0}, tp = 0;
++    for (size_t k = 0; k <= CENSUS_SIZES; k++)
++        for (int j = 0; j < 2; j++) tn[j] += cn[j][k], tb[j] += cb[j][k];
++    for (size_t k = 0; k <= CENSUS_SIZES; k++) tp += cptr[k];
++    fprintf(stderr, "census at full %d: heap %zu\n  atomic  %10llu objects %12llu bytes\n  scanned %10llu objects %12llu bytes, %llu words of which %llu point into the heap\n  other   %10llu objects %12llu bytes\n",
++            census_fulls, GC_get_heap_size(), tn[0], tb[0], tn[1], tb[1], tb[1] / 8, tp, cother[0], cother[1]);
++    for (int j = 1; j >= 0; j--) {
++        fprintf(stderr, "  %s by bytes:\n", j ? "scanned" : "atomic");
++        unsigned long long b[CENSUS_SIZES + 1];
++        memcpy(b, cb[j], sizeof b);
++        for (int top = 0; top < 14; top++) {
++            size_t best = 0;
++            for (size_t k = 1; k <= CENSUS_SIZES; k++) if (b[k] > b[best]) best = k;
++            if (b[best] == 0) break;
++            fprintf(stderr, "    size %6zu%s: %9llu objects, %10llu bytes", best * 16, best == CENSUS_SIZES ? "+" : "", cn[j][best], cb[j][best]);
++            if (j) {
++                fprintf(stderr, ", %5.1f%% words pointers;", 100.0 * cptr[best] / (cb[j][best] / 8));
++                for (int i = 0; i < 2 && csample[best][i]; i++) {
++                    fprintf(stderr, " [");
++                    for (int w = 0; w < 4 && w * 16 < (int) (best * 16 ? best * 16 : 16); w++) fprintf(stderr, "%s%016lx", w ? " " : "", ((unsigned long *) csample[best][i])[w]);
++                    fprintf(stderr, "]");
++                }
++            }
++            fprintf(stderr, "\n");
++            b[best] = 0;
++        }
++    }
++}
++
+ static void pause_event(GC_EventType event) {
+     uint64_t now = pause_clock();
+     if (event == GC_EVENT_START) {
+@@ -1326,6 +1383,7 @@ static void pause_event(GC_EventType event) {
+         P.mark_start = now;
+     } else if (event == GC_EVENT_MARK_END) {
+         P.mark_ns += now - P.mark_start;
++        if (getenv("GENG_HEAP_CENSUS") && ++census_fulls == atoi(getenv("GENG_HEAP_CENSUS"))) census();
+     } else if (event == GC_EVENT_END) {
+         PUSH(P.log, ((gc_pause) {'f', (char) P.in_minor, P.full_start, now - P.full_start, P.mark_ns, GC_get_heap_size()}));
+     }

@@ -16,6 +16,10 @@ fork: census.patch (GENG_HEAP_CENSUS=n lists Boehm's reachable objects by size
 at the nth full collection, and GENG_CENSUS_BEFORE=line the chain that holds
 the oldest row reachable), and options.patch (GENG_MARKERS=n,
 GENG_ATOMIC_BYTES=1), §VA7.2 and §VA7.4.
+census-kinds.patch (GENG_HEAP_CENSUS=n splits them into atomic and scanned, and
+counts the scanned words that point into the heap) and owned-inline.patch
+(GENG_BO_INLINE=1 makes a `Bytes.Owned` one atomic object) are visiterm's
+phase2-window.md §15.4, run with the x11 probe.
 """
 
 import argparse

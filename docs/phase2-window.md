@@ -1112,3 +1112,81 @@ outright, as D900 did. If it does not, accept the bound with the goal held
 to four panes, and keep B for phase 4, when eight panes are real, and
 phase 6, when the VM's cores are known. D and E are not worth their cost
 for a 1 ms miss.
+
+### 15.4 The census (§15.3's C)
+
+`gcpause/patches/census-kinds.patch`, applied to geng-lang's runtime as
+`gcpause/run.py` says, lists at the Nth full collection Boehm's reachable
+objects by kind, atomic or scanned, and by size, and counts the words of
+the scanned ones that point into the heap. Eight panes, the 211 MB `cat`,
+a full collection late in it:
+
+| | objects | bytes |
+|---|---:|---:|
+| atomic | 64,992 | 155.2 MB |
+| scanned | 118,559 | 4.9 MB, 606,854 words, 253,381 of them pointers into the heap |
+
+**C's premise does not hold.** Almost nothing is scanned that need not be:
+the scanned part is 3% of what is reachable, and the text is atomic, as
+D900 made it. A pause is not the bytes of the heap but **the objects and
+pointers marking reaches**. From four panes to eight each pane adds about
+10,200 scanned objects and 24,700 pointers, and about 0.2 ms of marking,
+some 8 ns a pointer.
+
+**They are the pages.** A pane holds all of `gitlog` (2,287 pages, one
+512-byte `heads` each, the census's commonest atomic size), since its
+bound is bytes (§15.2). A page is three `Bytes.Owned`, and an `Owned` is
+a 32-byte struct, scanned, whose `data` and `block` both point at its own
+atomic block (D1031). A page costs marking six objects and nine pointers:
+three from the builder of pages, which holds the records unboxed (no object
+of a record's size comes one to a page), and two from each struct.
+
+Two experiments, eight panes, the same `cat`, runs of each alternated:
+
+- **1,024-row pages**: `pageRows` from 256 to 1,024 (`Vt.Cell`), a
+  quarter of the pages.
+- **Inline `Owned`**: `gcpause/patches/owned-inline.patch` has
+  `geng_bo_new` make the struct and its bytes one object, laid out as a
+  short `Bytes` is, so it is atomic (D900). The drop then frees nothing;
+  it is an experiment only.
+
+| pages | `Owned` | runs | longest full | objects reached | pointers | the `cat` |
+|---|---|---:|---|---:|---:|---|
+| 256 | struct and block | 5 | 4.36–5.89 ms | 183,551 | 253,381 | 1,673–1,741 ms |
+| 256 | inline | 3 | 3.95–5.09 | 149,204 | 175,992 | 1,678–1,710 |
+| 1,024 | struct and block | 6 | 2.50–3.92 | 43,576 | 59,213 | 1,696–1,731 |
+| 1,024 | inline | 3 | 2.28–3.00 | 30,112 | 35,027 | 1,688–1,721 |
+
+The counts are from one census each. The baseline's five runs here sit
+higher than §15.1's two (4.34–4.99); the spread between runs is wider than
+any difference under 0.5 ms.
+
+- **The page's size is the lever.** A quarter of the pages meets the 4 ms
+  goal at eight panes in all six runs, and the `cat` takes as long.
+- **Inline `Owned` helps less**, and alone does not meet the goal. Kept
+  with D1031's drop it would mean freeing the object the page still names,
+  where today the drop empties a struct and frees only the block, so that a
+  read finds no bytes rather than freed memory. That is the guarantee
+  geng-lang keeps over speed.
+- **What is not measured** for 1,024-row pages: the time of one page-out,
+  which packs four times the rows in one step of a read; the limit's
+  granularity, since a page dropped for the limit is 1,024 rows; and a
+  resize's cut, the same rows in fewer pages.
+
+### 15.5 For Gilbert: after the census
+
+- **F. 1,024-row pages** (a constant in the core). Measured above: 2.5–3.9
+  ms at eight panes. First measure one page-out's time at 1,024 rows (and
+  at 512, if 1,024 costs a frame visibly); the rest of its cost is the
+  coarser limit.
+- **G. One `Owned` a page**: a page's text, heads and runs in one block,
+  the record holding where each starts. Six objects and nine pointers a
+  page become two and three. A change to `Vt.Pages`, `Vt.Resize` and the
+  dump; not measured. It could go with F.
+- **H. Inline `Owned`** in geng-lang's runtime: less than F, and it weakens
+  D1031's empty-on-drop guarantee. Not recommended.
+- **A. Accept** the bound, as §15.3 had it.
+
+**Leaning: F**, after its page-out is measured. It is a constant, it meets
+the goal with margin in every run, and the throughput does not move. G
+only if F's page-out or limit turns out to cost something visible; H not.
