@@ -3486,3 +3486,93 @@ Less the input `core-bench` holds, the terminal's own part of `gitlog`'s
 peak is about half what it was, 32 MB to 16. Feeding times do not move.
 `perf.py` records `ls`'s feed 1.0% and `gitlog`'s 0.65% lower, and every
 time is within its budget.
+
+## VC43. Where `vte-scrolling`'s last milliseconds go (survey)
+
+geng-lang's register still had the core over D902 on eight inputs of
+thirteen, a number from the probe. Measured again on b912f76
+(`harness/perf.py`): all thirteen meet the budget on the least of five, and
+`vte-scrolling` is the one with no room, 40–42 ms against 42, and over 40
+runs 40 least, 42 median, 45 most. It has been there since §VC34. The next
+nearest is `vte-cursor_motion`, 24 against 28. This finds where the core
+spends more than the probe did.
+
+**The probe, built today.** `probes/geng/core` with the same compiler
+(geng-lang `bench/compare`, its §VA48 spec): 1,284 M instructions, 481 a
+line, 36–38 ms. The core is 1,439.5 M, 540 a line: 155 M, 58 a line, more.
+
+**Which work it is.** `vte-scrolling` is 2,666,667 lines of `y` CR LF.
+`probes/throughput/vc43/inputs.py` writes inputs that do one kind of that
+work each, the same number of times:
+
+| input | probe | core | core − probe, a time |
+|---|---:|---:|---:|
+| none | 1.2 M | 1.0 M | |
+| CR | 65.2 M | 75.7 M | 3.9 |
+| LF (a scroll at the bottom) | 681.8 M | 682.8 M | 0.4 |
+| CR LF | 747.1 M | 764.2 M | 6.4 |
+| `y` CR (one cell written over) | 471.9 M | 724.7 M | 94.8 |
+| `y` CR LF (`vte-scrolling`) | 1,284.1 M | 1,439.5 M | 58.3 |
+
+The scroll, the ring and the pages cost what the probe's did. The gap is
+the printing of one ASCII character: about 52 instructions more on a
+cleared row, 91 on a row that already holds a cell there.
+
+**What the print does that the probe's did not.** `ablate.sh` builds the
+core with one edit from `vc43/edits/` and counts it; every edit leaves
+`vte-scrolling`'s dump the same, but each takes a rule away, so none of them
+is a candidate except `wrap`:
+
+| edit | what it takes away | a line of `vte-scrolling` | `y` CR, a time |
+|---|---|---:|---:|
+| `noplain` | `ground`'s test of `plain` | −14.9 | −7.0 |
+| `constcols` | the width read from the term and the screen, as the probe's constant 160 | −10.9 | −2.0 |
+| `nostale` | the test for a wide character's head under column 0 or 1 (§VC17) | −9.9 | −6.0 |
+| `nosplit` | the split of a wide character the run cuts (§VC17) | −8.0 | −75.0 |
+| `nolast` | `lastPoint`, the character REP repeats | −4.0 | +1.0 |
+| `noflags` | the row's flags kept beside its extent | −4.0 | −4.0 |
+| `noautowrap` | `wrapped`'s test of `autowrap` | −2.0 | −2.0 |
+
+They add to 54 of the 58. Most are larger than their work: one field test,
+`plain`'s, is 15 instructions, and `heads`' test, false on this input,
+10. What they cost is what they do to clang's code for `ground`'s loop, into
+which `printAscii` and `asciiRow` are inlined, not the tests themselves.
+The probe paid the same kind of cost for each layer it grew (geng-lang
+`m4-visiterm.md` §VA15).
+
+**Two edits that keep every rule.**
+
+- `fast`: `ground` sends a run to a copy of `printAscii` without the
+  `stale` test until a spacer head has been written (`heads`). It is
+  1,453.0 M, 13.5 M *more*, and `y` CR 20 a time more: the second copy in
+  the loop costs more than the test it skips.
+- `wrap`: `printAscii` tests `wrapNext` alone, since `plain` is only true
+  with autowrap on (`withPlain`). 1,434.2 M, 2.0 a line less, the dump
+  the same. About 0.15 ms.
+
+**Layout and flags.** The same C compiled again (`compile.sh`, geng-lang
+D1002), 31 runs each: as built 40–42 ms (median 41); `-falign-loops=64`
+39–42 (40); `-falign-loops=32` 40–43 (41); `-O3` 1,467 M instructions,
+44–45. A millisecond at most, and not one to rely on (geng-lang
+`m4-visiterm.md` §VA50).
+
+**Where the rest of a line goes.** Of the 540: the scroll and its page,
+about 256 (`lf` less the empty input, a line), of which writing the row into
+a page (`packRows`, `pushUtf8`) is about 137; the print, about 253; CR,
+about 28. The page's share is the probe's too (`packRows` and `pushRun`,
+377 M against the core's 366).
+
+### For Gilbert
+
+1. **`wrap`?** Leaning yes: two instructions a line, no rule lost, the
+   dumps the same. It would land with replay, esctest2, the dumps, the
+   fuzzers and `perf.py --update`.
+2. **The print's other costs** are the rules that make the core correct
+   where the probe was not (wide characters, REP, row flags, any size).
+   Leaning: keep them all, and no more rearranging for clang, which the
+   `fast` edit shows can go either way.
+3. **The margin.** Leaning: leave it. `perf.py` fails a change that takes
+   `vte-scrolling` over 42 on the least of five, and that change is
+   looked at then. If room is wanted before then, the page's 137
+   instructions a line is the largest block the probe and the core share,
+   and would be a survey of its own; registered here.
