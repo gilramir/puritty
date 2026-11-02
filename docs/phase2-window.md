@@ -331,7 +331,7 @@ In the order the build will meet them:
 6. **A reference**: xterm under the same proxy on the same workloads, so
    that the bytes per update have a bar beside them.
 7. **GC**: pauses with the renderer's allocation (a display list a frame)
-   on top of the core's, against G7's 16 ms and 4 ms.
+   on top of the core's, against G7's 16 ms and 4 ms. *Measured 2026-11-02: §15.*
 
 ---
 
@@ -1003,3 +1003,112 @@ The probe on gmktec7, its display this machine's Xvfb, `typo` here:
 3. **Over `ssh -X`, a key is a round trip.** The cost is the network's,
    3.9–4.7 ms median to gmktec7. Leaning: nothing to build; record it
    with ETX's number in phase 6.
+
+### 14.7 Gilbert's answers (2026-11-02)
+
+Gilbert took §14.6's three leanings.
+
+**V30 · Keys go through xkbcommon-x11 in C, and the encoding is Geng's.**
+C turns a key press into a keysym, modifiers and text. Geng decides what
+the program is sent: the legacy and kitty encodings, DECCKM and the
+profile's settings.
+
+**V31 · A read after a key is drawn at once.** The 16 ms cap holds only
+for output that no key caused (§14.2). The paint cooldown and the
+synchronized-output timeout, when they are written, apply to output.
+
+**V32 · Over `ssh -X`, a key is a network round trip.** There is nothing
+to build for it. ETX's number is recorded beside gmktec7's in phase 6.
+
+---
+
+## 15. GC pauses with the renderer on the loop (2026-11-02)
+
+§7's seventh item. G7's budget is 16 ms a pause and its goal 4 ms
+(geng-lang `m4-visiterm.md` §VA7). Phase 0 measured it on a probe's heap
+of joined pages, 3.0–3.7 ms at four and eight panes (§VA7.7). This is the
+real core, with the renderer's allocation on top: a display list a frame,
+the shadow, and the loop's race each turn.
+
+**How it was measured.** The x11 probe runs with `GENG_GC_PAUSES` (D899),
+which logs every collection. `PROBE_PANES=n` adds `n` panes that sit
+idle beside the one drawn. Each is fed `gitlog` (26 MB, 542,103 lines)
+until its 100,000-row scrollback is full, and is then kept alive and not
+touched, as §VA7's idle panes were. `pauses.py` keeps the collections that
+start after the window opens. Xvfb, DejaVu Sans Mono, shaping on (§13).
+
+### 15.1 The pauses
+
+Short inputs, one run each:
+
+| input | panes | the run | minor: median | p99 | full | longest | its marking | heap |
+|---|---|---|---|---|---|---|---|---|
+| `gitlog` | 1 | 240 ms | 0.077 ms | 0.248 | 5 | 1.47 ms | 1.24 | 68 MB |
+| | 4 | 219 | 0.072 | 0.135 | 3 | 2.39 | 2.09 | 110 |
+| | 8 | 210 | 0.072 | 0.165 | 1 | 3.68 | 2.96 | 219 |
+| `cjk.txt` | 1, 4, 8 | 56–60 | 0.066–0.069 | ≤ 0.149 | 0–1 | ≤ 1.24 | | |
+| `thai.txt` | 1, 4, 8 | 141–142 | 0.038–0.042 | ≤ 0.059 | 0–2 | ≤ 1.20 | | |
+| vim, 300 scrolls | 1, 4, 8 | 6.06–6.07 s | 0.220–0.284 | ≤ 0.338 | 0–1 | 0.14 | | |
+
+`gitlog` eight times over (211 MB), two runs each, the long load §VA7 used:
+
+| panes | the `cat` | frames | latest frame | minor p99 | full | longest | its marking | heap |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1,710–1,747 ms | 107–109 | 17 ms | 0.224–1.285 ms | 44–50 | 2.15 ms | 1.92–1.95 | 51 MB |
+| 4 | 1,672–1,706 | 105–107 | 17–19 | 0.109–0.139 | 19–20 | 3.02–3.51 | 2.42–2.89 | 143 |
+| 8 | 1,694–1,695 | 106 | 19–20 | 0.116–0.119 | 11 | 4.34–4.99 | 3.17–3.89 | 252 |
+
+- **The 16 ms budget holds**, with a margin of three or more, at every
+  count of panes.
+- **The 4 ms goal holds at four panes and is missed at eight**, by 0.3 to
+  1.0 ms.
+- **Minor collections are not the question.** Their median is 0.04–0.08
+  ms whatever the renderer does; a p99 over 1 ms is a run with full
+  collections nested inside minor ones (§VA7.1).
+- **The renderer adds nothing visible.** Its display list and the race
+  are inside the minor numbers, and the vim scroll, 303 frames in 6 s,
+  saw at most one full collection.
+- **Where it shows.** A frame's lateness: the latest frame of the long
+  `cat` came 17–20 ms after the read it shows, against the 16 ms its cap
+  allows. The difference is a pause and the frame's own drawing.
+
+### 15.2 Why eight panes take more than §VA7.7 said
+
+§VA7.7's probe held 84 MB at eight panes. The core holds 252 MB, about 31
+MB a pane. The core bounds a pane's scrollback by its bytes
+(`scrollbackBytesFor`, 162 bytes a row at 160 columns: 16.2 MB of text
+for 100,000 rows), and `gitlog`'s rows are long and fill it. The probe's
+rows were short `ls` lines, which did not. A full collection's length
+follows the heap: 2.15 ms at 51 MB, 3.0–3.5 at 143, 4.3–5.0 at 252.
+Marking is 75–80% of it. What in the heap Boehm marks word by word was
+not counted: §VA7.2's census would say.
+
+### 15.3 For Gilbert: the 4 ms goal at eight panes
+
+The goal is missed by up to 1 ms at eight full panes. G7's rule is to
+bring the options and decide together (§VA7.6). From what was measured
+here and in §VA7.4:
+
+- **A. Accept it, and record the bound.** The goal holds to four full
+  panes; eight need tabs and splits, phase 4. The budget's margin is
+  three times.
+- **B. More markers.** Boehm marks on one thread today (D558).
+  §VA7.4 measured 4 markers halving the pause. The cost is threads, and
+  cores the RHEL8 VM may not have (phase 6).
+- **C. Count the heap first** (§VA7.2's census). If part of the 252 MB is
+  scanned word by word that need not be, making it atomic shortens every
+  pause, as D900 halved them, at no cost to the program.
+- **D. A smaller default scrollback.** The pause is roughly linear in the
+  scrollback held: 50,000 rows a pane would put eight panes near four
+  panes' 3.0–3.5 ms. The cost is history users may want.
+- **E. Incremental marking** (Boehm's incremental mode). It splits a
+  full collection into steps. The cost is a write barrier on every
+  pointer store, through dirty bits or page protection, and its
+  interaction with the nursery (D561), which is unmeasured. It is the
+  largest change here.
+
+**Leaning: C now, then A.** The census is cheap and may remove the miss
+outright, as D900 did. If it does not, accept the bound with the goal held
+to four panes, and keep B for phase 4, when eight panes are real, and
+phase 6, when the VM's cores are known. D and E are not worth their cost
+for a 1 ms miss.

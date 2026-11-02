@@ -38,10 +38,12 @@ usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...
 import Bitwise
 import Bytes exposing (Bytes)
 import Console
+import Dict exposing (Dict)
 import Int64
 import Os.Env
 import Os.Error exposing (Error)
 import Os.File as File
+import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
 import Process as Sleep
 import Task exposing (Task)
@@ -69,6 +71,7 @@ type alias Run =
     , double : Bool
     , branches : Int
     , keyed : Bool
+    , ballast : Array Vt.Term
     }
 
 
@@ -339,12 +342,51 @@ encodeKey sym mods text =
 main : Task Never {}
 main =
     Process.initialize
-        |> Task.andThen (\cp -> Os.Env.getEnvironment |> Task.andThen (\e -> start cp e.args))
+        |> Task.andThen
+            (\cp ->
+                Os.Env.getEnvironment
+                    |> Task.andThen
+                        (\e ->
+                            Os.Env.getEnvironmentVariables
+                                |> Task.andThen (\vars -> ballastFrom vars |> Task.andThen (\b -> start cp b e.args))
+                        )
+            )
         |> Task.onError (\err -> Console.write ("x11: " ++ Os.Error.toString err ++ "\n"))
 
 
-start : Process.Permission -> Array String -> Task Error {}
-start cp args =
+{-| Panes that sit idle beside the one drawn, for the GC survey (§15):
+`PROBE_PANES` of them, each fed `PROBE_FILL`'s bytes in 64 KB reads, so
+that its scrollback is as full as the file makes it, and kept alive and
+untouched while the program runs, as G7's survey kept them (geng-lang
+`m4-visiterm.md` §VA7). -}
+ballastFrom : Dict String String -> Task Error (Array Vt.Term)
+ballastFrom vars =
+    when { n = Dict.get "PROBE_PANES" vars |> Maybe.andThen String.toInt, fill = Dict.get "PROBE_FILL" vars } is
+        { n = Just n, fill = Just fill } ->
+            File.initialize
+                |> Task.andThen (\fs -> File.readFile fs (Path.fromString fill))
+                |> Task.map (\bytes -> Array.initialize n 0 (\_ -> feedAll bytes 0 (Vt.new (config 160 50))))
+
+        _ ->
+            Task.succeed []
+
+
+config : Int -> Int -> Vt.Config
+config cols rows =
+    { cols = cols, rows = rows, scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = 100000 }, checksums = False, cellWidth = 0, cellHeight = 0 }
+
+
+feedAll : Bytes -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll bytes at t =
+    if at >= Bytes.length bytes then
+        t
+
+    else
+        feedAll bytes (at + 65536) (Vt.feed (Bytes.slice at (at + 65536) bytes) t)
+
+
+start : Process.Permission -> (moved ballast : Array Vt.Term) -> Array String -> Task Error {}
+start cp ballast args =
     when { mode = Array.get 0 args, program = Array.get 1 args } is
         { mode = Just mode, program = Just program } ->
             if mode /= "read" && mode /= "race" && mode /= "stress" && mode /= "double" && mode /= "race1" && mode /= "race2" then
@@ -358,15 +400,15 @@ start cp args =
                                 Console.write ("x11: cannot open the window, " ++ String.fromInt code ++ "\n")
 
                             else
-                                now |> Task.andThen (\t0 -> run cp mode program (Array.dropFirst 2 args) t0)
+                                now |> Task.andThen (\t0 -> run cp ballast mode program (Array.dropFirst 2 args) t0)
                         )
 
         _ ->
             Console.write "usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...\n"
 
 
-run : Process.Permission -> String -> String -> Array String -> Int -> Task Error {}
-run cp mode program args t0 =
+run : Process.Permission -> (moved ballast : Array Vt.Term) -> String -> String -> Array String -> Int -> Task Error {}
+run cp ballast mode program args t0 =
     let
         race =
             mode /= "read"
@@ -387,7 +429,7 @@ run cp mode program args t0 =
                                 Process.terminalHandle terminal
 
                             r0 =
-                                { term = Vt.new { cols = 160, rows = 50, scrollbackBytes = Vt.scrollbackBytesFor { cols = 160, rows = 100000 }, checksums = False, cellWidth = 0, cellHeight = 0 }
+                                { term = Vt.new (config 160 50)
                                 , shadow = View.shadow 160 50
                                 , last = t0
                                 , pending = -1
@@ -402,6 +444,7 @@ run cp mode program args t0 =
                                 , stress = stress
                                 , double = mode == "double"
                                 , keyed = False
+                                , ballast = ballast
                                 , branches =
                                     if mode == "race1" then
                                         1
@@ -419,12 +462,12 @@ run cp mode program args t0 =
                          else
                             readLoop fd r0
                         )
-                            |> Task.andThen (\r -> now |> Task.andThen (\t1 -> report r (t1 - t0)))
+                            |> Task.andThen (\r -> now |> Task.andThen (\t1 -> report r (t1 - t0) t0))
             )
 
 
-report : Run -> Int -> Task x {}
-report r ms =
+report : Run -> Int -> Int -> Task x {}
+report r ms t0 =
     Console.write
         (String.fromInt r.bytes
             ++ " bytes in "
@@ -453,5 +496,9 @@ report r ms =
             ++ String.fromInt r.shadow.bytes
             ++ " glyphs "
             ++ String.fromInt r.glyphs
+            ++ " start "
+            ++ String.fromInt t0
+            ++ " panes "
+            ++ String.fromInt (1 + Array.length r.ballast)
             ++ "\n"
         )
