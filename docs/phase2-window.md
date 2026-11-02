@@ -558,3 +558,18 @@ than §12.2's, and `race` costs more against `read` here (15% to 22% on
 whether the forwarding adds to it is not separated, since gmktec7 has no
 Xvfb to run the probe against locally. Not measured either: a key's
 latency to its pixel over `ssh -X`, which needs input.
+
+gmktec7 has Xvfb after all, in its nix store (`xvfb-21.1.24`, not on its
+`PATH`), and the same runs against it there, three each, say the
+forwarding costs nothing measurable in throughput: `gitlog` 329–355 ms
+under `read` and 342–375 under `race`, `vte-scrolling` 742–745 and
+858–873, as over `ssh -X`. The larger cost of `race` there is the CPU's.
+
+### 12.7 D1045 built (2026-11-02)
+
+geng-lang `m3-os.md` §OS28: a read that loses a race gives its piece back
+to the handle, and the next read answers it. Rebuilt on it, `x11 double`
+reads all of `gitlog` (26,344,379 bytes) and `vte-scrolling` (10,666,668),
+three runs each, where §12.3 lost a fifth; `read` on `gitlog` takes 204–208
+ms and `race` 215–228, as in §12.2. V23's loop no longer rests on which
+branch steps first.
