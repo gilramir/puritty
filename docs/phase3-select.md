@@ -1,6 +1,7 @@
 # Phase 3 · Mouse, selection, clipboard, OSC 52, paste: a survey
 
-Status: **survey begun 2026-11-03**, for Gilbert's answers (§10). It is the
+Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); paste and
+OSC 52 answered the same day (§11). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -211,10 +212,18 @@ either work: the loop writes what the pty takes and reads in between.
 What a paste writes is Ghostty's (`src/input/paste.zig`, and
 `ghostty_paste_encode` in libghostty-vt): control bytes that could act
 replaced by spaces; with mode 2004 the text wrapped in `ESC[200~` and
-`ESC[201~`, and any `ESC[201~` in it taken out; without 2004, each LF sent
-as CR. Ghostty also refuses an unbracketed paste with a newline, or a
-bracketed one containing the terminator, until the user confirms it
-(`clipboard-paste-protection`). visiterm has nowhere to ask yet (§10).
+`ESC[201~`; without 2004, each LF sent as CR. An `ESC[201~` inside the
+text cannot end the bracket early: its ESC is among the bytes replaced, so
+the program reads ` [201~`. Ghostty also refuses a paste until the user confirms it
+(`clipboard-paste-protection`, `isSafeWith`): an unbracketed one with a
+`\n` or `\r`, which would arrive as Enter, or one of either kind containing
+`ESC[201~`, which Ghostty takes as a sign that whoever made the text is
+acting strangely. With 2004 set, newlines are not asked about
+(`clipboard-paste-bracketed-safe`). The bytes replaced are xterm's list:
+NUL, BS, ENQ, EOT, ESC, DEL, and the tty's own control characters, so that
+a paste cannot send a signal or edit the line (Ctrl+C, Ctrl+\\, Ctrl+U,
+Ctrl+Z, Ctrl+Q, Ctrl+S, Ctrl+W, Ctrl+V, Ctrl+R, Ctrl+O). visiterm has
+nowhere to ask yet (§10).
 
 Where a paste comes from: X's PRIMARY with the middle button or
 Shift+Insert, CLIPBOARD with a key. Ctrl+Shift+V is the convention in VTE
@@ -246,6 +255,16 @@ core takes is dropped whole past 2,048 bytes (`oscMax`, Ghostty's
 `MAX_BUF`). Ghostty keeps OSC 52 to 8 MB of base64 (`MAX_ALLOCATING_BUF`),
 which is 6 MB of text, and allows writes and asks before reads
 (`clipboard-write = allow`, `clipboard-read = ask`).
+
+A read is `ESC]52;c;?`, and the terminal's answer, the clipboard in
+base64, goes to whatever reads the pty, as if typed. A remote host in an
+ssh session can ask for it and read the answer; a file printed with `cat`
+can ask for it too, and the shell is then typed the clipboard. The other
+terminals vendored here allow writes and never answer a read: Alacritty's
+default is `OnlyCopy`, WezTerm parses `QuerySelection` and does nothing,
+and Windows Terminal parses the `?` and sets no clipboard. nvim 0.10 and
+later read through OSC 52 for `"+p`, and tmux through `get-clipboard`;
+without an answer they give up after a timeout.
 
 The core's time on the 5.3 MB OSC, against the same bytes as text
 (`core-bench`, three runs):
@@ -374,3 +393,19 @@ without a mouse, and Ctrl+0 has no wheel form. The leaning is to keep both.
 The order to build: the encoder and the gate (2), since every other piece
 reads the mouse; scrolling back (1); selection and copy (3); paste (4);
 OSC 52 (5); the zoom (6) with the wheel.
+
+---
+
+## 11. Gilbert's answers (2026-11-03)
+
+**4, paste: as xterm does.** Gilbert does not want visiterm to ask before a
+paste, as Ghostty does. A paste is written with xterm's bytes replaced by
+spaces (§6), bracketed when the program set 2004 and with LF as CR when it
+did not, and never refused. No confirmation is registered for later.
+
+**5, OSC 52: taken.** Writes allowed, to 8 MB of base64; reads refused by
+default and never answered, as Alacritty, WezTerm and Windows Terminal do;
+`osc52-read = allow` in the config for anyone who wants nvim's or tmux's
+paste over ssh, with no question asked either way.
+
+1, 2, 3 and 6 wait on his answers.
