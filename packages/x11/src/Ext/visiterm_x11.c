@@ -84,7 +84,7 @@ static uint8_t style_flags[65536], style_ul[65536];
 static xcb_atom_t wm_protocols, wm_delete, net_wm_name, utf8_string;
 
 static struct {
-    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, uploaded, colour, squeezed, frames;
+    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, uploaded, colour, squeezed, clipped, frames;
     double shape_ns, raster_ns, draw_ns, fc_ns;
 } st;
 
@@ -149,6 +149,7 @@ typedef struct {
     int own;           /* what the face is of itself: bold 1, italic 2 */
     uint8_t *uploaded; /* a bit a glyph index and form */
     int16_t *advance;  /* the x_off each glyph was uploaded with */
+    int16_t *ink;      /* each glyph's bitmap: left of its origin, top above it, width, height */
     ColourGlyph *pictures;
 } Face;
 
@@ -235,6 +236,7 @@ static int load_face(const char *file, int index, int is_primary) {
     F->hb = hb_ft_font_create_referenced(F->ft);
     F->uploaded = calloc(KEYS / 8, 1);
     F->advance = calloc(KEYS, sizeof *F->advance);
+    F->ink = calloc((size_t) KEYS * 4, sizeof *F->ink);
     if (getenv("X11_STATS")) fprintf(stderr, "face %d: %s#%d scale %.3f\n", nfaces, F->file, index, F->scale);
     return nfaces++;
 }
@@ -360,6 +362,11 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
                                    .x = (int16_t) (-F->ft->glyph->bitmap_left - shift), .y = (int16_t) F->ft->glyph->bitmap_top,
                                    .x_off = (int16_t) advance, .y_off = 0};
     xcb_render_add_glyphs(conn, glyphs, 1, &id, &info, (uint32_t) size, data);
+    int16_t *ink = F->ink + (size_t) k * 4;
+    ink[0] = (int16_t) -info.x;
+    ink[1] = info.y;
+    ink[2] = (int16_t) info.width;
+    ink[3] = (int16_t) info.height;
     glyph_bytes += (long) size + 28;
     free(data);
     st.raster_ns += ns() - t0;
@@ -367,7 +374,7 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
 }
 
 /* The glyphs a run draws, in order, before they go out as requests. */
-typedef struct { uint32_t id; int x, y, style, advance; } Placed;
+typedef struct { uint32_t id; int x, y, style, advance, clip; } Placed;
 static Placed placed[8192];
 static int nplaced;
 
@@ -378,10 +385,73 @@ static int synth_for(int f, int style) {
     return (((flags & 1) ? 1 : 0) | ((flags & 4) ? 2 : 0)) & ~faces[f].own;
 }
 
+/* INK (V40, renderer.md §R15)
+ *
+ * The pixels a cluster's glyphs cover, gathered as they are placed, and
+ * for each of its cells the edges they cross: 1 left, 2 right, 4 up, 8
+ * down. A frame answers them for the cells it drew, as records of the
+ * row and column in 2 bytes each and the edges in 1, and the view redraws
+ * a cell whose ink reaches into one it redraws. */
+static struct { int any, x0, y0, x1, y1; } gbox;
+static uint8_t *inkbuf;
+static int inklen, inkcap;
+
+/* A cluster's ink may reach anywhere in its word, which the view redraws
+whole, and a cell past it on each side and a row above and below: what
+reaches further (a glyph far wider than its cells) is clipped there, so
+that the view's one cell of reach holds. */
+static xcb_rectangle_t clips[8192];
+static int nclips;
+
+static void ink_cells(int y, int cell, int n, int w0, int w1, int first) {
+    if (!gbox.any) return;
+    int ax0 = (w0 - 1) * cw, ax1 = (w1 + 1) * cw, ay0 = (y - 1) * ch, ay1 = (y + 2) * ch;
+    if ((gbox.x0 < ax0 || gbox.x1 > ax1 || gbox.y0 < ay0 || gbox.y1 > ay1) && nclips < 8192) {
+        clips[nclips] = (xcb_rectangle_t) {(int16_t) ax0, (int16_t) ay0, (uint16_t) (ax1 - ax0), (uint16_t) (ay1 - ay0)};
+        for (int k = first; k < nplaced; k++) placed[k].clip = nclips;
+        nclips++;
+        st.clipped++;
+        if (gbox.x0 < ax0) gbox.x0 = ax0;
+        if (gbox.x1 > ax1) gbox.x1 = ax1;
+        if (gbox.y0 < ay0) gbox.y0 = ay0;
+        if (gbox.y1 > ay1) gbox.y1 = ay1;
+    }
+    for (int i = 0; i < n; i++) {
+        int cx0 = (cell + i) * cw, cx1 = cx0 + cw, cy0 = y * ch, cy1 = cy0 + ch;
+        int bits = (gbox.x0 < cx0 ? 1 : 0) | (gbox.x1 > cx1 ? 2 : 0) | (gbox.y0 < cy0 ? 4 : 0) | (gbox.y1 > cy1 ? 8 : 0);
+        if (!bits) continue;
+        if (inklen + 5 > inkcap) {
+            inkcap = inkcap ? inkcap * 2 : 4096;
+            inkbuf = realloc(inkbuf, (size_t) inkcap);
+        }
+        uint8_t *r = inkbuf + inklen;
+        r[0] = (uint8_t) (y >> 8);
+        r[1] = (uint8_t) y;
+        r[2] = (uint8_t) ((cell + i) >> 8);
+        r[3] = (uint8_t) (cell + i);
+        r[4] = (uint8_t) bits;
+        inklen += 5;
+    }
+    gbox.any = 0;
+}
+
 static void place(int f, uint32_t g, int x, int y, int style, int advance, int shift, FT_Fixed squeeze) {
     if (nplaced == 8192) return;
     uint32_t id = upload(f, g, advance, shift, squeeze, synth_for(f, style));
-    placed[nplaced++] = (Placed) {id, x, y, style, faces[f].advance[id & (KEYS - 1)]};
+    const int16_t *ink = faces[f].ink + (size_t) (id & (KEYS - 1)) * 4;
+    if (ink[2] > 0 && ink[3] > 0) {
+        int x0 = x + ink[0], y0 = y - ink[1], x1 = x0 + ink[2], y1 = y0 + ink[3];
+        if (!gbox.any) {
+            gbox.any = 1;
+            gbox.x0 = x0, gbox.y0 = y0, gbox.x1 = x1, gbox.y1 = y1;
+        } else {
+            if (x0 < gbox.x0) gbox.x0 = x0;
+            if (y0 < gbox.y0) gbox.y0 = y0;
+            if (x1 > gbox.x1) gbox.x1 = x1;
+            if (y1 > gbox.y1) gbox.y1 = y1;
+        }
+    }
+    placed[nplaced++] = (Placed) {id, x, y, style, faces[f].advance[id & (KEYS - 1)], -1};
 }
 
 /* The colour glyph `g` of face `f` for a box of `box` pixels by a cell's
@@ -443,8 +513,9 @@ static void flush_placed(void) {
     int i = 0;
     while (i < nplaced) {
         uint32_t fg = style_fg[placed[i].style];
+        int clip = placed[i].clip;
         int len = 0, penx = 0, peny = 0, count_at = -1, count = 0;
-        for (; i < nplaced && style_fg[placed[i].style] == fg && len < 60000; i++) {
+        for (; i < nplaced && style_fg[placed[i].style] == fg && placed[i].clip == clip && len < 60000; i++) {
             Placed *P = &placed[i];
             if (count_at < 0 || P->x != penx || P->y != peny || count == 254) {
                 count_at = len;
@@ -463,13 +534,21 @@ static void flush_placed(void) {
             peny = P->y;
             st.glyphs++;
         }
+        if (clip >= 0) xcb_render_set_picture_clip_rectangles(conn, target, 0, 0, 1, &clips[clip]);
         xcb_render_composite_glyphs_32(conn, XCB_RENDER_PICT_OP_OVER, solid_of(fg), target, 0, glyphs, 0, 0, (uint32_t) len,
                                        buffer);
+        if (clip >= 0) {
+            uint32_t none = XCB_NONE;
+            xcb_render_change_picture(conn, target, XCB_RENDER_CP_CLIP_MASK, &none);
+        }
     }
     nplaced = 0;
+    nclips = 0;
 }
 
-typedef struct { int cell, width, style, n; const uint32_t *cps; int face; } Cluster;
+/* A cluster: its cell, its width in cells, its style, its code points, its
+ * face, and the word it is in, the cells from w0 to w1 with no blank. */
+typedef struct { int cell, width, style, n; const uint32_t *cps; int face, w0, w1; } Cluster;
 
 /* A segment of clusters in one face, shaped as one run, each code point's
  * cluster its cell, so glyphs go back to cells by the core's widths. */
@@ -492,6 +571,7 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
     unsigned g = 0;
     while (g < gn) {
         unsigned c = gi[g].cluster, e = g;
+        int first = nplaced;
         int adv = 0;
         while (e < gn && gi[e].cluster == c) adv += gp[e++].x_advance;
         const Cluster *C = &cl[c];
@@ -535,11 +615,10 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
                 place(f, gi[k].codepoint, x, yy, C->style, a, 0, 0);
             pen += gp[k].x_advance;
         }
+        ink_cells(y, x0 + C->cell, box / cw, x0 + C->w0, x0 + C->w1, first);
         g = e;
     }
 }
-
-static int is_primary(int f) { return f == primary[0] || f == primary[1] || f == primary[2] || f == primary[3]; }
 
 /* The primary face a style asks for: bold 1 and italic 4 of its flags. */
 static int primary_for(int style) {
@@ -550,17 +629,32 @@ static int primary_for(int style) {
 static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
     static Cluster cl[1024];
     static uint32_t cps[1024 * 64];
+    static uint8_t blank[1024];
+    static int wstart[1024];
     int ncl = 0, ncps = 0;
-    for (int i = 0; i < n && i < 1024; i++) {
+    if (n > 1024) n = 1024;
+    for (int i = 0; i < n; i++) {
         int wide = p[0] >> 6, count = p[0] & 63, style = (p[1] << 8) | p[2];
         p += 3;
         uint32_t *mine = cps + ncps;
         for (int k = 0; k < count; k++, p += 3) mine[k] = ((uint32_t) p[0] << 16) | ((uint32_t) p[1] << 8) | p[2];
+        blank[i] = wide != 2 && (count == 0 || (count == 1 && mine[0] == ' '));
+        wstart[i] = blank[i] ? i + 1 : i > 0 ? wstart[i - 1] : 0;
         if (wide == 2 || wide == 3) continue; /* a tail or a spacer: its head draws it */
         if (count == 0) continue;            /* blank: the fill draws it */
         if (style_flags[style] & 0x20) continue; /* invisible */
         ncps += count;
-        cl[ncl++] = (Cluster) {i, wide == 1 ? 2 : 1, style, count, mine, 0};
+        cl[ncl++] = (Cluster) {i, wide == 1 ? 2 : 1, style, count, mine, 0, 0, 0};
+    }
+    /* Each cluster's word: from the cell after the last blank before it to
+     * the next blank. */
+    for (int i = 0, end = n; i < ncl; i++) {
+        if (i == 0 || cl[i].cell >= end) {
+            end = cl[i].cell;
+            while (end < n && !blank[end]) end++;
+        }
+        cl[i].w0 = wstart[cl[i].cell];
+        cl[i].w1 = end > cl[i].cell + cl[i].width ? end : cl[i].cell + cl[i].width;
     }
     st.clusters += ncl;
     for (int i = 0; i < ncl; i++) {
@@ -571,26 +665,19 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
         else {
             st.fallback_clusters++;
             cl[i].face = fallback(cl[i].cps, cl[i].n);
+            /* No face has all of it: its first code point alone, so that
+             * a cluster of marks is one .notdef box, not a row of them. */
+            if (cl[i].face < 0) cl[i].n = 1;
         }
     }
-    /* Spaces between two clusters of one fallback face join their run when
-     * that face has a space, so a line of Thai is one run, not a word each
-     * (V24). */
-    for (int i = 0; i < ncl;) {
-        if (cl[i].face != primary_for(cl[i].style) || cl[i].n != 1 || cl[i].cps[0] != ' ') { i++; continue; }
-        int j = i;
-        while (j < ncl && cl[j].face == primary_for(cl[j].style) && cl[j].n == 1 && cl[j].cps[0] == ' ') j++;
-        if (i > 0 && j < ncl && cl[i - 1].face >= 0 && !is_primary(cl[i - 1].face) && cl[i - 1].face == cl[j].face &&
-            !faces[cl[j].face].colour) {
-            static const uint32_t space = ' ';
-            if (covers(cl[j].face, &space, 1))
-                for (int k = i; k < j; k++) cl[k].face = cl[j].face;
-        }
-        i = j;
-    }
+    /* Spaces once joined two runs of one fallback face (V24); a run is now
+     * shaped from no more than its own cells, since a word drawn alone
+     * must shape as it does beside its neighbours (V43, renderer.md §R16). */
     int from = 0;
     for (int i = 1; i <= ncl; i++)
-        if (i == ncl || cl[i].face != cl[from].face) {
+        /* A segment is one face's, and stops at an empty cell: shaping
+         * across one would join what a screen shows apart (§R16). */
+        if (i == ncl || cl[i].face != cl[from].face || cl[i].cell != cl[i - 1].cell + cl[i - 1].width) {
             shape_segment(cl + from, i - from, x, y);
             from = i;
         }
@@ -648,8 +735,11 @@ static void draw_lines(int y, int x, int n, int style) {
     }
 }
 
-/* A run record: backgrounds, glyphs, lines. Answers past its last cell. */
-static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end) {
+/* A run record, in one of a frame's three passes: 0 its backgrounds, 1 its
+ * glyphs, 2 its lines. Every run's backgrounds are filled before any
+ * glyph is drawn, so that a glyph's ink reaching into a neighbouring row
+ * is not filled over by that row's run (V40). Answers past its last cell. */
+static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end, int pass) {
     int y = (p[1] << 8) | p[2], x = (p[3] << 8) | p[4], n = (p[5] << 8) | p[6];
     const uint8_t *cell = p + 7, *q = cell;
     static int styles[65536];
@@ -658,18 +748,22 @@ static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end) {
         q += 3 + 3 * (q[0] & 63);
     }
     if (q > end) return end;
-    for (int from = 0, i = 1; i <= n; i++)
-        if (i == n || style_bg[styles[i]] != style_bg[styles[from]]) {
-            fill(style_bg[styles[from]], (x + from) * cw, y * ch, (i - from) * cw, ch);
-            from = i;
-        }
-    draw_glyphs(y, x, n, cell);
-    flush_placed();
-    for (int from = 0, i = 1; i <= n; i++)
-        if (i == n || styles[i] != styles[from]) {
-            if (style_ul[styles[from]] || (style_flags[styles[from]] & 0xC0)) draw_lines(y, x + from, i - from, styles[from]);
-            from = i;
-        }
+    if (pass == 0)
+        for (int from = 0, i = 1; i <= n; i++)
+            if (i == n || style_bg[styles[i]] != style_bg[styles[from]]) {
+                fill(style_bg[styles[from]], (x + from) * cw, y * ch, (i - from) * cw, ch);
+                from = i;
+            }
+    if (pass == 1) {
+        draw_glyphs(y, x, n, cell);
+        flush_placed();
+    }
+    if (pass == 2)
+        for (int from = 0, i = 1; i <= n; i++)
+            if (i == n || styles[i] != styles[from]) {
+                if (style_ul[styles[from]] || (style_flags[styles[from]] & 0xC0)) draw_lines(y, x + from, i - from, styles[from]);
+                from = i;
+            }
     return q;
 }
 
@@ -708,10 +802,10 @@ static void stats(void) {
     if (!getenv("X11_STATS")) return;
     fprintf(stderr,
             "x11: frames %ld; clusters %ld (fallback %ld), fontconfig queries %ld (%.2f ms, %ld found none), segments %ld, "
-            "glyphs %ld; uploaded %ld (%ld bytes held), resets %ld; colour %ld, squeezed %ld; shape %.2f ms, raster %.2f ms, "
+            "glyphs %ld; uploaded %ld (%ld bytes held), resets %ld; colour %ld, squeezed %ld, clipped %ld; shape %.2f ms, raster %.2f ms, "
             "draw %.2f ms\n",
             st.frames, st.clusters, st.fallback_clusters, st.fc_queries, st.fc_ns / 1e6, st.fc_failed, st.segments, st.glyphs,
-            st.uploaded, glyph_bytes, resets, st.colour, st.squeezed, st.shape_ns / 1e6, st.raster_ns / 1e6, st.draw_ns / 1e6);
+            st.uploaded, glyph_bytes, resets, st.colour, st.squeezed, st.clipped, st.shape_ns / 1e6, st.raster_ns / 1e6, st.draw_ns / 1e6);
 }
 
 /* The window as a PPM: what is on the screen, the cursor and the margins
@@ -992,8 +1086,9 @@ geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
     double t0 = ns();
     if (glyph_bytes > glyph_cap) reset_glyphs();
     geng_bytes *b = list;
-    const uint8_t *p = b->data, *end = b->data + b->length;
+    const uint8_t *p = b->data, *end = b->data + b->length, *runs = NULL;
     int first = rows, last = -1, sized = 0;
+    inklen = 0;
     while (p < end) {
         if (p[0] == 4 && p + 5 <= end) {
             int c = (p[1] << 8) | p[2], r = (p[3] << 8) | p[4];
@@ -1019,11 +1114,21 @@ geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
             p += 7;
         } else if (p[0] == 2 && p + 7 <= end) {
             int y = (p[1] << 8) | p[2];
-            p = draw_run(p, end);
+            if (!runs) runs = p;
+            p = draw_run(p, end, 0);
             if (y < first) first = y;
             if (y > last) last = y;
         } else
             break; /* a record this does not know: the rest of the list is not read */
+    }
+    /* The runs come last in a list (Vt.View), so the glyphs and the lines
+     * are drawn from the first run to where the backgrounds stopped. */
+    for (int pass = 1; pass <= 2 && runs; pass++)
+        for (const uint8_t *r = runs; r < p && r[0] == 2;) r = draw_run(r, p, pass);
+    /* A glyph's ink may reach a row next to the rows drawn. */
+    if (last >= first) {
+        if (first > 0) first--;
+        if (last < rows - 1) last++;
     }
     if (last >= first)
         xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * ch), 0, (int16_t) (first * ch), (uint16_t) (cols * cw),
@@ -1033,7 +1138,17 @@ geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
     drain();
     st.frames++;
     st.draw_ns += ns() - t0;
-    geng_succeed(wait, geng_slot_I4(xcb_connection_has_error(conn) ? -1 : 0));
+    /* The answer: a byte, 0 or 1 once the connection has failed, then the
+     * ink of the cells drawn. */
+    geng_bytes *a = geng_alloc_atomic(sizeof *a + (size_t) inklen + 1, GENG_HEADER_BYTES(sizeof *a + (size_t) inklen + 1));
+    a->length = inklen + 1;
+    a->pad = 0;
+    a->data = (uint8_t *) (a + 1);
+    a->buffer = NULL;
+    a->block = NULL;
+    a->data[0] = xcb_connection_has_error(conn) ? 1 : 0;
+    if (inklen) memcpy(a->data + 1, inkbuf, (size_t) inklen);
+    geng_succeed(wait, geng_slot_P(a));
     return (geng_cancel) {0};
 }
 

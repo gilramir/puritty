@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame, Look, defaultLook, Focus, focused)
+module Vt.View exposing (Shadow, shadow, frame, inked, wantsFrame, Look, defaultLook, Focus, focused)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -36,9 +36,33 @@ cell: a byte of its width state in the top two bits (0 narrow, 1 the head
 of a wide character, 2 its tail, 3 a spacer at a row's end) and its count
 of code points below them, its style id in 2 bytes, and its code points in
 3 bytes each: its cluster's, up to 63, §13). A run is a stretch of
-changed cells with gaps of fewer than four unchanged cells merged in, so
-that a glyph overhanging into its neighbour is redrawn with it (S§6.2),
-and never starts on a wide character's tail or ends on its head.
+changed cells, and never starts on a wide character's tail or ends on its
+head. (Runs once took in gaps of fewer than four unchanged cells, so that
+a glyph overhanging into its neighbour was redrawn with it, S§6.2; the
+ink below does that, and a gap's cells, drawn again unasked, would fill
+over ink it did not know to redraw.)
+
+**Ink** (`docs/renderer.md` V40): a glyph is not clipped to its cells, and
+an italic's hook, a Thai tone mark or a CJK glyph's top reaches into a
+neighbouring cell. Whatever executes the list answers, for the cells it
+drew, which edges each one's ink crossed, and [`inked`](#inked) keeps them
+in the shadow. When a frame redraws a cell, it fills its background over
+whatever ink lay there, so it redraws too every cell whose ink reaches
+into it, and every cell whose ink reaches into one of those; and a cell
+it redraws whose old ink reached its neighbours redraws them, since they
+still show that ink. A scroll's
+`CopyArea` copies the band's pixels and no more, so the cells at its edges
+whose ink crossed them, and the cells next to it whose ink did, are drawn
+again. While no cell has ink past its edges, none of this costs anything.
+
+Ink overlaps: where two glyphs' ink meets, the one drawn later lies over the
+other, and a screen drawn at once draws in reading order, row by row and
+left to right. A glyph drawn new does not know its ink until it is drawn,
+so when its ink reaches a later cell that holds a glyph and was not drawn
+with it (to its right, or in the row below), that cell is forgotten and
+[`wantsFrame`](#wantsFrame) asks for another frame at once, which draws
+both in order. It costs a frame only where new ink lands on a glyph after
+it.
 
 **The cursor** is drawn as its cell's run, in a cursor style: the cell's
 style id with its top bit set, `0x8000 + id`, whose record this frame
@@ -95,6 +119,10 @@ type alias Shadow =
     , colourKey : Int
     , stamps : Builder Int
     , styleIds : Builder Int
+    , ink : Builder Int
+    , inked : Bool
+    , drawnIn : Builder Int
+    , pending : Bool
     }
 
 
@@ -147,6 +175,10 @@ shadow cols rows =
     , colourKey = -1
     , stamps = Builder.fromArray (Array.repeat (2 * styleMax) -1)
     , styleIds = Builder.empty 64
+    , ink = Builder.fromArray (Array.repeat (cols * rows) 0)
+    , inked = False
+    , drawnIn = Builder.fromArray (Array.repeat (cols * rows) -1)
+    , pending = False
     }
 
 
@@ -170,7 +202,7 @@ frame look focus t sh0 =
                 { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colourKey = key }
 
             else
-                { sh0 | styleIds = Builder.empty 64 }
+                { sh0 | styleIds = Builder.empty 64, pending = False }
 
         rows =
             sh1.rows
@@ -192,7 +224,7 @@ frame look focus t sh0 =
                 { shadow = sh1, list = Builder.empty 4096 }
 
         sh2 =
-            scrolled.shadow
+            spread t.screen cursor rows cols scrolled.shadow
 
         diffed =
             diffRows t.screen t.clusters cursor 0 rows cols sh2 scrolled.list
@@ -308,10 +340,19 @@ scanY k y end start score current hashes best =
             scanY k (y + 1) end -1 0 current hashes closed
 
 
-{-| The band moved in the shadow as one `CopyArea` moves it in the window. -}
+{-| The band moved in the shadow as one `CopyArea` moves it in the window;
+with its ink, and with the cells at its edges whose ink the copy cut or
+brought forgotten, so that they are drawn again. -}
 scrollBand : Band -> Int -> (moved sh : Shadow) -> { shadow : Shadow, list : Builder UInt8 }
 scrollBand band cols sh =
     let
+        edges =
+            if sh.inked then
+                bandEdges band cols sh.rows 0 sh.ink []
+
+            else
+                []
+
         list =
             Builder.empty 4096
                 |> Builder.pushLast (UInt8.fromInt 1)
@@ -321,12 +362,427 @@ scrollBand band cols sh =
     in
     { shadow =
         { sh
-            | cells = Builder.copyWithin (band.top * cols) ((band.top + band.k) * cols) ((band.bottom + 1 + band.k) * cols) sh.cells
+            | cells = Array.foldl forget (Builder.copyWithin (band.top * cols) ((band.top + band.k) * cols) ((band.bottom + 1 + band.k) * cols) sh.cells) edges
+            , ink =
+                if sh.inked then
+                    Builder.copyWithin (band.top * cols) ((band.top + band.k) * cols) ((band.bottom + 1 + band.k) * cols) sh.ink
+
+                else
+                    sh.ink
             , scrolls = sh.scrolls + 1
             , moved = sh.moved + (band.bottom + 1 - band.top)
         }
     , list = list
     }
+
+
+-- WORDS
+
+
+{-| Whether a cell is in a word: it has a glyph in what the core holds, or
+in what was drawn there. A shaper chooses a glyph by its neighbours (a
+ligature, a Devanagari conjunct, Fira Code's arrows) and shapes only the
+cells a run gives it, so a cell is drawn with its whole word (see
+[`spread`](#spread)). -}
+inWord : Screen -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Bool
+inWord s o ext y cols x cells =
+    hasGlyph (cellOf s o ext x) || hasGlyph (Maybe.withDefault unknown (Builder.get (y * cols + x) cells))
+
+
+wordLeft : Screen -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+wordLeft s o ext y cols x cells =
+    if x > 0 && inWord s o ext y cols (x - 1) cells then
+        wordLeft s o ext y cols (x - 1) cells
+
+    else
+        x
+
+
+{-| Past the last cell of the word at `x`. -}
+wordRight : Screen -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+wordRight s o ext y cols x cells =
+    if x + 1 < cols && inWord s o ext y cols (x + 1) cells then
+        wordRight s o ext y cols (x + 1) cells
+
+    else
+        x + 1
+
+
+-- INK
+
+
+{-| The ink of the cells a frame drew, as whatever drew it answers: for
+each, its row and column in 2 bytes each, and in a byte the edges its ink
+crossed (1 left, 2 right, 4 up, 8 down). A record off the screen is left
+out. A cell after it in reading order that its ink reaches, that holds a
+glyph and that this frame did not draw, is forgotten, and the shadow
+wants another frame. -}
+inked : Bytes -> (moved sh : Shadow) -> Shadow
+inked answer sh =
+    if Bytes.length answer < 5 then
+        sh
+
+    else
+        let
+            r =
+                inkRecords answer 0 sh.cols sh.rows (sh.frames - 1) sh.drawnIn { ink = sh.ink, cells = sh.cells, pending = sh.pending }
+        in
+        { sh | ink = r.ink, cells = r.cells, pending = r.pending, inked = True }
+
+
+type alias Inking =
+    { ink : Builder Int, cells : Builder Int64, pending : Bool }
+
+
+inkRecords : Bytes -> Int -> Int -> Int -> Int -> Builder Int -> (moved r : Inking) -> Inking
+inkRecords b at cols rows stamp drawnIn r =
+    if at + 5 > Bytes.length b then
+        r
+
+    else
+        let
+            byte i =
+                Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) b))
+
+            y =
+                Bitwise.or (Bitwise.shiftLeftBy 8 (byte 0)) (byte 1)
+
+            x =
+                Bitwise.or (Bitwise.shiftLeftBy 8 (byte 2)) (byte 3)
+
+            bits =
+                byte 4
+        in
+        if y < rows && x < cols then
+            inkRecords b
+                (at + 5)
+                cols
+                rows
+                stamp
+                drawnIn
+                (Array.foldl (overlap rows cols (y * cols + x) bits stamp drawnIn)
+                    { ink = Builder.set (y * cols + x) bits r.ink, cells = r.cells, pending = r.pending }
+                    later
+                )
+
+        else
+            inkRecords b (at + 5) cols rows stamp drawnIn r
+
+
+{-| The neighbours after a cell in reading order: to its right, and in the
+row below. -}
+later : Array Dir
+later =
+    [ { dx = 1, dy = 0, out = 2, back = 1 }
+    , { dx = -1, dy = 1, out = 9, back = 6 }
+    , { dx = 0, dy = 1, out = 8, back = 4 }
+    , { dx = 1, dy = 1, out = 10, back = 5 }
+    ]
+
+
+{-| The neighbour of `i` in `d` forgotten if `i`'s ink reaches it, it holds
+a glyph, and this frame did not draw it. -}
+overlap : Int -> Int -> Int -> Int -> Int -> Builder Int -> Dir -> (moved r : Inking) -> Inking
+overlap rows cols i bits stamp drawnIn d r =
+    let
+        n =
+            neighbour rows cols i d
+    in
+    if n >= 0 && hasAll d.out bits && Builder.get n drawnIn /= Just stamp && hasGlyph (Maybe.withDefault unknown (Builder.get n r.cells)) then
+        { r | cells = Builder.set n unknown r.cells, pending = True }
+
+    else
+        r
+
+
+{-| Whether a drawn cell shows a glyph: a character past a space, a
+cluster, or a wide character's tail, whose head draws one over it. -}
+hasGlyph : Int64 -> Bool
+hasGlyph c =
+    c /= unknown && (cellPoint c > 0x20 || cellIsCluster c || cellWide c == wideTail)
+
+
+{-| Whether a frame has been asked for at once: the last frame's ink
+reached a glyph it did not draw (see the module's comment). -}
+wantsFrame : Shadow -> Bool
+wantsFrame sh =
+    sh.pending
+
+
+forget : Int -> (moved cells : Builder Int64) -> Builder Int64
+forget i cells =
+    Builder.set i unknown cells
+
+
+inkAt : Int -> Builder Int -> Int
+inkAt i ink =
+    if i < 0 then
+        0
+
+    else
+        Maybe.withDefault 0 (Builder.get i ink)
+
+
+has : Int -> Int -> Bool
+has bit bits =
+    Bitwise.and bit bits /= 0
+
+
+{-| The cells at a scroll's band's edges to draw again, read from the ink
+before the copy: above the band, a cell whose ink went down into the band
+or that the band's old top row's ink went up into; the band's new top
+row, a cell whose own ink went up past it or below which the row above
+its source had ink going down; and the same at the bottom. -}
+bandEdges : Band -> Int -> Int -> Int -> Builder Int -> Array Int -> Array Int
+bandEdges band cols rows x ink acc =
+    if x >= cols then
+        acc
+
+    else
+        let
+            top =
+                band.top
+
+            bottom =
+                band.bottom
+
+            k =
+                band.k
+
+            above =
+                (top - 1) * cols + x
+
+            newTop =
+                top * cols + x
+
+            below =
+                (bottom + 1) * cols + x
+
+            newBottom =
+                bottom * cols + x
+
+            acc1 =
+                if top > 0 && (has 8 (inkAt above ink) || vInto 4 ink cols (top * cols) x) then
+                    Array.pushLast above acc
+
+                else
+                    acc
+
+            acc2 =
+                if has 4 (inkAt ((top + k) * cols + x) ink) || (top + k > 0 && vInto 8 ink cols ((top + k - 1) * cols) x) then
+                    Array.pushLast newTop acc1
+
+                else
+                    acc1
+
+            acc3 =
+                if bottom + 1 < rows && (has 4 (inkAt below ink) || vInto 8 ink cols (bottom * cols) x) then
+                    Array.pushLast below acc2
+
+                else
+                    acc2
+
+            acc4 =
+                if has 8 (inkAt ((bottom + k) * cols + x) ink) || (bottom + k + 1 < rows && vInto 4 ink cols ((bottom + k + 1) * cols) x) then
+                    Array.pushLast newBottom acc3
+
+                else
+                    acc3
+        in
+        bandEdges band cols rows (x + 1) ink acc4
+
+
+{-| Whether ink from the row starting at `row` crosses its edge `vbit` (4
+up, 8 down) into column `x` of the next row: from the cell above or below
+it, or from one beside that whose ink also crosses toward `x`. -}
+vInto : Int -> Builder Int -> Int -> Int -> Int -> Bool
+vInto vbit ink cols row x =
+    has vbit (inkAt (row + x) ink)
+        || (x > 0 && hasAll (vbit + 2) (inkAt (row + x - 1) ink))
+        || (x < cols - 1 && hasAll (vbit + 1) (inkAt (row + x + 1) ink))
+
+
+{-| What this frame draws, beyond the cells that changed: each changed
+cell's word; every cell whose ink reaches into a cell drawn; every cell
+the old ink of a cell drawn reached, which still shows it; and so on, the
+cells forgotten in the shadow so that the diff draws them. -}
+spread : Screen -> Cursor -> Int -> Int -> (moved sh : Shadow) -> Shadow
+spread s cursor rows cols sh =
+    { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [] }) }
+
+
+type alias Work =
+    { cells : Builder Int64, work : Array Int }
+
+
+{-| Every changed cell, queued. -}
+collect : Screen -> Cursor -> Int -> Int -> Int -> (moved w : Work) -> Work
+collect s cursor y rows cols w =
+    if y >= rows then
+        w
+
+    else
+        let
+            o =
+                rowOffset s y
+        in
+        collect s cursor (y + 1) rows cols (collectRow s cursor o (extentAt o s) y 0 cols w)
+
+
+collectRow : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> (moved w : Work) -> Work
+collectRow s cursor o ext y x cols w =
+    if x >= cols then
+        w
+
+    else if differs s cursor o ext y cols x w.cells then
+        collectRow s cursor o ext y (x + 1) cols { cells = w.cells, work = Array.pushLast (y * cols + x) w.work }
+
+    else
+        collectRow s cursor o ext y (x + 1) cols w
+
+
+differs : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Bool
+differs s cursor o ext y cols x cells =
+    drawnAs s cursor o ext (y * cols) x /= Maybe.withDefault unknown (Builder.get (y * cols + x) cells)
+
+
+{-| A neighbour of a cell: where it is, the edges a cell's ink crosses to
+reach it (two of them for a corner, which the ink's box covers when it
+crosses both), and the edges the neighbour's ink crosses to reach the
+cell. -}
+type alias Dir =
+    { dx : Int, dy : Int, out : Int, back : Int }
+
+
+dirs : Array Dir
+dirs =
+    [ { dx = -1, dy = 0, out = 1, back = 2 }
+    , { dx = 1, dy = 0, out = 2, back = 1 }
+    , { dx = 0, dy = -1, out = 4, back = 8 }
+    , { dx = 0, dy = 1, out = 8, back = 4 }
+    , { dx = -1, dy = -1, out = 5, back = 10 }
+    , { dx = 1, dy = -1, out = 6, back = 9 }
+    , { dx = -1, dy = 1, out = 9, back = 6 }
+    , { dx = 1, dy = 1, out = 10, back = 5 }
+    ]
+
+
+{-| The neighbour of cell `i` in `d`, or -1 off the screen. -}
+neighbour : Int -> Int -> Int -> Dir -> Int
+neighbour rows cols i d =
+    let
+        x =
+            modBy cols i + d.dx
+
+        y =
+            i // cols + d.dy
+    in
+    if x < 0 || x >= cols || y < 0 || y >= rows then
+        -1
+
+    else
+        y * cols + x
+
+
+hasAll : Int -> Int -> Bool
+hasAll mask bits =
+    Bitwise.and mask bits == mask
+
+
+{-| The queue, a cell at a time: the cell forgotten, and with it its word
+and the cells its ink and its neighbours' ink tie it to, each queued. -}
+spreadWork : Screen -> Int -> Int -> Bool -> Builder Int -> (moved w : Work) -> Builder Int64
+spreadWork s rows cols inked0 ink w =
+    when Array.last w.work is
+        Nothing ->
+            w.cells
+
+        Just j ->
+            let
+                y =
+                    j // cols
+
+                x =
+                    modBy cols j
+
+                o =
+                    rowOffset s y
+
+                ext =
+                    extentAt o s
+
+                l =
+                    if inWord s o ext y cols x w.cells then
+                        wordLeft s o ext y cols x w.cells
+
+                    else
+                        x
+
+                r =
+                    if inWord s o ext y cols x w.cells then
+                        wordRight s o ext y cols x w.cells
+
+                    else
+                        x + 1
+
+                worded =
+                    forgetWord (y * cols + l) (y * cols + r) j { cells = Builder.set j unknown w.cells, work = Array.dropLast 1 w.work }
+            in
+            spreadWork s
+                rows
+                cols
+                inked0
+                ink
+                (if inked0 then
+                    Array.foldl (pullDir rows cols ink j)
+                        (Array.foldl (evictDir rows cols j (inkAt j ink)) worded dirs)
+                        dirs
+
+                 else
+                    worded
+                )
+
+
+{-| The cells from `i` to `end`, but `j`, forgotten and queued if not
+forgotten already. -}
+forgetWord : Int -> Int -> Int -> (moved w : Work) -> Work
+forgetWord i end j w =
+    if i >= end then
+        w
+
+    else
+        forgetWord (i + 1) end j (evict i (i /= j) w)
+
+
+{-| The neighbour of `j` in `d` forgotten if its ink reaches `j`. -}
+pullDir : Int -> Int -> Builder Int -> Int -> Dir -> (moved w : Work) -> Work
+pullDir rows cols ink j d w =
+    let
+        n =
+            neighbour rows cols j d
+    in
+    evict n (n >= 0 && hasAll d.back (inkAt n ink)) w
+
+
+{-| The neighbour of `i` in `d` forgotten if `i`'s ink, `bits`, reaches it. -}
+evictDir : Int -> Int -> Int -> Int -> Dir -> (moved w : Work) -> Work
+evictDir rows cols i bits d w =
+    let
+        n =
+            neighbour rows cols i d
+    in
+    evict n (n >= 0 && hasAll d.out bits) w
+
+
+{-| The cell at `n` forgotten and queued if `there` and not forgotten
+already. -}
+evict : Int -> Bool -> (moved w : Work) -> Work
+evict n there w =
+    if there && Builder.get n w.cells /= Just unknown then
+        { cells = Builder.set n unknown w.cells, work = Array.pushLast n w.work }
+
+    else
+        w
 
 
 diffRows : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
@@ -390,16 +846,43 @@ diffRow s clusters cursor o ext y x0 cols sh list =
 
             written =
                 writeRun s clusters cursor o ext (y * cols) x end sh.frames sh.cells sh.stamps sh.styleIds (list |> Builder.pushLast (UInt8.fromInt 2) |> push16 y |> push16 x |> push16 n)
+
+            ink =
+                if sh.inked then
+                    clearInk (y * cols + x) (y * cols + end) sh.ink
+
+                else
+                    sh.ink
         in
-        diffRow s clusters cursor o ext y end cols { sh | cells = written.cells, stamps = written.stamps, styleIds = written.styleIds, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
+        diffRow s clusters cursor o ext y end cols { sh | cells = written.cells, stamps = written.stamps, styleIds = written.styleIds, ink = ink, drawnIn = markDrawn (y * cols + x) (y * cols + end) sh.frames sh.drawnIn, drawn = sh.drawn + n, runs = sh.runs + 1 } written.list
 
 
-{-| Past the last changed cell of a run that starts before `x`, gaps of
-fewer than four unchanged cells taken in; `last` is the last changed cell
-seen. -}
+{-| The cells a run draws, stamped with the frame. -}
+markDrawn : Int -> Int -> Int -> (moved d : Builder Int) -> Builder Int
+markDrawn i end stamp d =
+    if i >= end then
+        d
+
+    else
+        markDrawn (i + 1) end stamp (Builder.set i stamp d)
+
+
+{-| The ink of cells about to be drawn forgotten: what draws them answers
+it again. -}
+clearInk : Int -> Int -> (moved ink : Builder Int) -> Builder Int
+clearInk i end ink =
+    if i >= end then
+        ink
+
+    else
+        clearInk (i + 1) end (Builder.set i 0 ink)
+
+
+{-| Past the last changed cell of a run that starts before `x`; `last` is
+the last changed cell seen. -}
 runEnd : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
 runEnd s cursor o ext y x last cols cells =
-    if x >= cols || x - last > 3 then
+    if x >= cols || x - last > 1 then
         last + 1
 
     else if drawnAs s cursor o ext (y * cols) x == Maybe.withDefault unknown (Builder.get (y * cols + x) cells) then

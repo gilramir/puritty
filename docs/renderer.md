@@ -2,8 +2,9 @@
 
 Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
 (§R7, V34–V38). Steps 1 to 5 of §R6 are built (§R8–§R10, §R12, §R13);
-what the pixel gate found asks Gilbert three questions (§R14), and step 6,
-the exit, follows them.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+Gilbert took the leanings of what the pixel gate found (§R14, §R15:
+V40–V42); V40 is built (§R16, with V43, a change to V24 he has not yet
+seen), V41's box drawing is next, and then step 6, the exit.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -615,3 +616,122 @@ What it found:
    distributions not checked); a system without them draws Japanese forms for every language, which a
    per-range font setting (C§9 rule 7, phase 3) can override. visiterm
    naming Noto's regions itself would tie it to one font family.
+
+## R15. Gilbert's answers (2026-11-02)
+
+Gilbert took §R14's three leanings.
+
+**V40 · Ink is drawn whole: the view redraws a neighbour whose ink
+reaches into a redrawn cell.** "We need to render the glyphs properly.
+Especially Thai." `X11.draw` answers which edges each drawn cell's ink
+crossed; `Vt.View` keeps them in its shadow and adds those neighbours to
+the frame when it redraws a cell they reach into.
+
+**V41 · Box drawing and blocks are drawn by the C**, U+2500–U+259F, on
+whole pixels, before the exit.
+
+**V42 · The CJK region is the system's fontconfig rules'.** Gilbert
+expects visiterm to want its own override later, Chinese fonts above all;
+it is registered with C§9 rule 7's per-range font settings in phase 3
+(`geng-plan.md` §6).
+
+## R16. V40 built: ink drawn whole, and words shaped whole (2026-11-02)
+
+**What the C does.** A frame is drawn in three passes, every run's
+backgrounds, then every run's glyphs, then every run's lines, so that a
+glyph's ink reaching into a neighbouring row is not filled over by that
+row's run; the window takes a row more above and below what was drawn.
+Each glyph's bitmap box is kept beside its advance when it is uploaded,
+and `X11.draw` answers, for each cell it drew whose cluster's ink crossed
+its edges, the row, the column and the edges (1 left, 2 right, 4 up, 8
+down; two together cover the corner between them). `X11.draw` now answers
+`Maybe Bytes`, `Nothing` once the connection has failed.
+
+**What the view does.** `View.inked` keeps the answer in the shadow, a
+number a cell, and the next frame, before it diffs, works a queue: every
+changed cell is queued, and a cell taken from it is forgotten in the
+shadow, so the diff draws it, with
+
+- its **word**, the cells around it with a glyph in what the core holds or
+  in what was drawn, since a shaper chooses a glyph by its neighbours and
+  shapes only the cells a run gives it (Fira Code's arrows, a Devanagari
+  conjunct); typing `>` after `-` draws the arrow;
+- every neighbour whose ink reaches into it, whose ink its background
+  would fill over;
+- every neighbour its old ink reached, which still shows that ink, and
+  would otherwise take a new glyph's ink over it twice;
+
+each queued in turn. A scroll's band copies its pixels and no more, so the
+cells at its edges whose ink crossed them, and the cells beside it whose
+ink crossed into it, are forgotten too. Runs no longer take in gaps of
+fewer than four unchanged cells: that was for overhangs, which this does,
+and a gap's cells, drawn unasked, filled over ink nothing knew to redraw.
+
+**Overlapping ink is drawn in reading order.** Where two glyphs' ink
+meets, the later one lies over the other, and a screen drawn at once
+draws row by row, left to right. A glyph drawn new does not know its ink
+until it is drawn, so when its ink reaches a later cell that holds a glyph
+and was not drawn with it, the view forgets that cell and
+`View.wantsFrame` asks for another frame at once, which draws both in
+order; the app draws it as it draws one after a key. It costs a frame
+only where new ink lands on a glyph after it.
+
+**Ink reaches its word and a cell past it, and no further.** A cluster's
+ink is clipped to its word, a cell either side, and a row above and below,
+which the view's reach covers; nothing in the corpus or the fuzzer's
+screens is clipped. A cluster no face covers draws one `.notdef` box for
+its first code point, not one a code point (a Devanagari vowel sign with
+two Thai marks drew three boxes across three cells).
+
+**Shaping stops at an empty cell**, and **V43**: spaces no longer join
+two runs of one fallback face (V24's join). Both made a word shape one
+way drawn beside its neighbours and another drawn alone: two lone ि with
+empty cells between shaped as one run and drew nothing, and a space
+joining ि to the cluster before it dropped its dotted circle. The join
+saved 3–4 ms of shaping over the whole of `thai.txt` and moved neither
+its wall time nor its instructions (phase2 §13.10), so it is gone, and
+recorded here as a change to V24 Gilbert has not yet seen.
+
+**How it is checked.** The pixel gate draws each case that has frames a
+second time in one frame and demands the same pixels; its cases are 32,
+six of them scrolls with italics, Thai and CJK at the band's edges, two in
+a scroll region with unchanged rows above and below. `harness/pixels-fuzz.py`
+makes random screens (italic, Thai, CJK, Devanagari, Fira Code's
+ligatures typed a character a frame, cursor moves, erases, insertions,
+scroll regions, reverse index; half in Fira Code) and holds each the same
+way, minimizing what differs. It found, in turn: the gap merge; a
+redrawn cell's old ink left in a neighbour; the corner; ink composited
+twice and out of order (the reading-order frame); a row of `.notdef`
+boxes; and the shaping across empty cells and spaces. On the final code,
+13,000 screens draw the same in frames as at once; the measurement of
+§R13.4 loses 0 pixels in each case at 11 and at 22 points (3–7 before).
+Disabling the band's edges fails both scroll-region cases, 13 and 16
+pixels.
+
+**What it costs.** The view gate's lists, every case read 16 bytes a
+frame, grow from 2,058,079 bytes to 2,731,704: a word is drawn whole each
+time a frame catches it growing. On the wire (`run.sh race`, two runs
+each, against §R13's renderer):
+
+| workload | before | after |
+|---|---|---|
+| `tail`, bytes to the server | 172,408–172,592 | 212,108–212,120 |
+| vim scroll down | 129,768 | 154,944–155,188 |
+| vim scroll up | 125,760 | 150,728–152,428 |
+| `htop`, 10 s | 80,996–95,612 | 95,308–104,096 |
+| `cat` gitlog | 182,020–199,000 | 198,208–239,548 |
+
+`tail` is 23% more, some 417 bytes a line against 339 (core-font xterm's
+is 500, phase2 §16): its lines differ from the one before in a few
+digits, which were drawn alone and are now drawn with their words. A vim
+scroll is 19% more for the same reason. `cat` and `htop` move within their
+spread.
+
+**Left for later.** Most of a word's redraw buys nothing in a font that
+shapes ASCII without context (DejaVu Sans Mono). HarfBuzz's
+unsafe-to-break flags say where breaking a run changes its shaping; the C
+could answer them beside the ink, as links the view follows instead of
+whole words, which would give `tail` back its 339 bytes a line where no
+ligature is near. Not built: a new link is not known until the glyph that
+makes it is drawn, so it needs the reading-order frame's kind of answer,
+and the cost it saves is bytes, not correctness.

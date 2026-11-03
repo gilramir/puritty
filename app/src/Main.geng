@@ -537,13 +537,22 @@ draw ms m =
                 )
                     |> Task.map
                         (\_ ->
+                            let
+                                shadow =
+                                    View.inked (Maybe.withDefault Bytes.empty up) f.shadow
+
+                                -- The view asks for a frame at once when new
+                                -- ink lands on a glyph it did not draw (V40).
+                                again =
+                                    View.wantsFrame shadow
+                            in
                             { m
-                                | shadow = f.shadow
+                                | shadow = shadow
                                 , last = ms
                                 , pending = -1
-                                , urgent = False
+                                , urgent = again
                                 , title = title
-                                , lost = m.lost || not up
+                                , lost = m.lost || up == Nothing
                                 -- A hold that timed out begins again at the next read.
                                 , syncSince = -1
                             }

@@ -73,15 +73,25 @@ open s =
 openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Task x Int
 
 
-{-| Executes one frame's display list. Answers `False` once the connection
-to the X server has failed. -}
-draw : Bytes -> Task x Bool
+{-| Executes one frame's display list, and answers the ink of the cells it
+drew, for `Vt.View.inked` (V40): which edges of its cell each glyph's
+pixels crossed. Answers `Nothing` once the connection to the X server has
+failed. -}
+draw : Bytes -> Task x (Maybe Bytes)
 draw list =
-    drawExtern list |> Task.map (\code -> code == 0)
+    drawExtern list
+        |> Task.map
+            (\answer ->
+                if Bytes.get 0 answer == Just (UInt8.fromInt 0) then
+                    Just (Bytes.slice 1 (Bytes.length answer) answer)
+
+                else
+                    Nothing
+            )
 
 
 @extern(c, "visiterm_x11_draw")
-drawExtern : Bytes -> Task x Int
+drawExtern : Bytes -> Task x Bytes
 
 
 {-| Writes the window as it is on the screen, as a PPM, to a file: the

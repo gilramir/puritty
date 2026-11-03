@@ -7,7 +7,8 @@ Feeds FILE to a `Vt.Term` of COLS by ROWS and draws it in a window of
 fallback fonts; then writes the window to OUT as a PPM. BREAKS is byte
 offsets joined by commas (or empty): the bytes before each are fed and a
 frame drawn, so that a later frame draws only what changed, as the app's
-do; a last frame follows the last byte. FOCUS `unfocused` draws as a
+do; a last frame follows the last byte, and the frames the view then asks
+for at once (`View.wantsFrame`). FOCUS `unfocused` draws as a
 window without the focus does. `harness/pixels.py` holds the pictures to
 their pins.
 
@@ -56,17 +57,33 @@ feedAll focus bytes breaks at r =
     in
     X11.draw f.list
         |> Task.andThen
-            (\_ ->
+            (\answer ->
                 let
                     next =
-                        { term = term, shadow = f.shadow }
+                        { term = term, shadow = View.inked (Maybe.withDefault Bytes.empty answer) f.shadow }
                 in
                 if Array.isEmpty breaks then
-                    Task.succeed next
+                    settle focus 4 next
 
                 else
                     feedAll focus bytes (Array.dropFirst 1 breaks) stop next
             )
+
+
+{-| Frames drawn with nothing new fed while the view wants one (V40), as
+the app draws them at once; at most `n`. -}
+settle : View.Focus -> Int -> (moved r : Run) -> Task x Run
+settle focus n r =
+    if n <= 0 || not (View.wantsFrame r.shadow) then
+        Task.succeed r
+
+    else
+        let
+            f =
+                View.frame View.defaultLook focus r.term r.shadow
+        in
+        X11.draw f.list
+            |> Task.andThen (\answer -> settle focus (n - 1) { term = r.term, shadow = View.inked (Maybe.withDefault Bytes.empty answer) f.shadow })
 
 
 number : Int -> Array String -> Int

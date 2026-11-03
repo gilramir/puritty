@@ -23,7 +23,10 @@ the primary font as fontconfig names it (DejaVu Sans Mono), its points
 (11), the language fallback fonts are asked for (none), and whether the
 window has the focus. And `\\F` in the body draws a frame there, so that
 the next frame draws only what changed, as the app's frames do; a last
-frame follows the last byte. A resize (`\\R`) is not taken.
+frame follows the last byte. A resize (`\\R`) is not taken. A case drawn
+in frames is also drawn in one, and the two pictures must be the same:
+what a later frame draws over, the cells whose ink reached into it among
+them, it must draw again (V40).
 
 usage (from visiterm's devbox, after harness/pixels/build.sh):
     harness/pixels.py              every case
@@ -33,7 +36,8 @@ usage (from visiterm's devbox, after harness/pixels/build.sh):
     harness/pixels.py --faces      say which font files each case drew with
 
 A case that differs leaves NAME.got.png and NAME.diff.png (the differing
-pixels red, the rest dimmed) in .harness-work/pixels/.
+pixels red, the rest dimmed) in .harness-work/pixels/, and NAME.once.png
+when it is its frames that differ from it drawn in one.
 """
 
 import argparse
@@ -234,8 +238,10 @@ def start_xvfb():
     return proc, ":" + number
 
 
-def draw(case, display, conf, out, faces):
+def draw(case, display, conf, out, faces, whole=False):
     s, data, breaks = parse_case(case.read_text())
+    if whole:
+        breaks = []
     with tempfile.NamedTemporaryFile(suffix=".bin") as f:
         f.write(data)
         f.flush()
@@ -279,6 +285,20 @@ def main():
                 print(f"{name}: {'; '.join(Path(u).name for u in used)}")
             w, h, got = read_ppm(got_ppm.read_bytes())
             got_ppm.unlink()
+            if parse_case(case.read_text())[2]:
+                draw(case, display, conf, got_ppm, False, whole=True)
+                _, _, once = read_ppm(got_ppm.read_bytes())
+                got_ppm.unlink()
+                if once != got:
+                    n, cells, pic = differences(w, h, got, once, s["cols"], s["rows"])
+                    write_png(WORK / f"{name}.got.png", w, h, got)
+                    write_png(WORK / f"{name}.once.png", w, h, once)
+                    write_png(WORK / f"{name}.diff.png", w, h, pic)
+                    failed.append(name)
+                    shown = ", ".join(f"{x},{y}" for x, y in cells[:8]) + (" ..." if len(cells) > 8 else "")
+                    print(f"FAIL {name}: drawn in frames, {n} pixels differ from it drawn in one, in {len(cells)} cells"
+                          f" (col,row: {shown})")
+                    continue
             pin = PINS / f"{name}.png"
             if a.update:
                 write_png(pin, w, h, got)

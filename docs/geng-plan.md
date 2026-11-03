@@ -755,8 +755,8 @@ Exit:
 the screen and finds scrolls by row hashes, a pty fits the one loop, and a
 vim scroll costs 374 bytes a line on the wire. The renderer's build begun
 2026-11-02: [`renderer.md`](renderer.md); Gilbert took its leanings (V34–V38), and
-its steps 1 to 5 are built, the pixel gate last (§R13); its questions on ink
-extents and box drawing wait on Gilbert (§R14).* PTY backend, XCB window, the server-side X11 renderer
+its steps 1 to 5 are built, the pixel gate last (§R13); Gilbert took its
+questions on ink extents, box drawing and the CJK region (V40–V42, §R15).* PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).
@@ -777,6 +777,9 @@ ibus-hangul, Mozc, a pinyin IME) passes its scripted tests, and the EUC-KR corpu
 (C§10.5) passes. The time to rasterise a screen of ideographs not seen
 before, 25–40 ms in phase 2's survey, is measured in that daily use, and a
 C thread for it is decided then (V27, `phase2-window.md` §13).
+visiterm's own font settings for a script or range (C§9 rule 7), above
+all for Chinese, so the region of Han forms does not depend on the
+system's fontconfig rules (V42, `renderer.md` §R15).
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,
