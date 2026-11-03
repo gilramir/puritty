@@ -1,7 +1,8 @@
 # Phase 3 · Mouse, selection, clipboard, OSC 52, paste: a survey
 
-Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); scrolling
-back, mouse reports, paste and OSC 52 answered the same day (§11). It is the
+Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); every
+leaning taken the same day (§11); a user's guide in
+[`user/copy-and-paste.md`](user/copy-and-paste.md). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -405,7 +406,7 @@ did not, and never refused. No confirmation is registered for later.
 
 **5, OSC 52: taken.** Writes allowed, to 8 MB of base64; reads refused by
 default and never answered, as Alacritty, WezTerm and Windows Terminal do;
-`osc52-read = allow` in the config for anyone who wants nvim's or tmux's
+`[clipboard] osc52_read = "allow"` in the config for anyone who wants nvim's or tmux's
 paste over ssh, with no question asked either way.
 
 **1, scrolling back: taken, as most terminals do it.** What the vendored
@@ -432,4 +433,20 @@ to libghostty-vt in the key gate; motion asked of X only while it is
 wanted; Shift takes the mouse back for a selection; the wheel goes to a
 program that has taken the mouse.
 
-3 and 6 wait on his answers.
+**3, selection: taken** as §10 has it, with one consequence written out:
+when another program takes PRIMARY (X's `SelectionClear`), visiterm stops
+highlighting its selection, as xterm does.
+
+**6, Ctrl and the wheel: taken.** Always visiterm's, a point a notch, the
+wheel events of one read summed into one zoom, Ctrl+=, Ctrl+− and Ctrl+0
+kept.
+
+Every leaning of §10 is taken. Gilbert asked as well for a user's guide to
+the kinds of copy and paste, since the selection, the clipboard and OSC 52
+confuse: [`user/copy-and-paste.md`](user/copy-and-paste.md), written from
+these answers before the build and kept to it as the build lands. It names
+the OSC 52 setting as the config file names its keys:
+`[clipboard] osc52_read = "allow"`.
+
+The order to build stands: the mouse encoder and its gate, scrolling back,
+selection and copy, paste, OSC 52, the zoom.
