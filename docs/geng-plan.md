@@ -789,7 +789,10 @@ has to be read in the loop; tmux sends a copy as one unlimited OSC 52; and
 Ctrl with the wheel as a zoom, which Gilbert asked for. Gilbert took all six
 leanings the same day (§11). Built: mouse reports, Ghostty's encoder in
 Geng with a gate against libghostty-vt and a pointer gate on Xvfb (§12);
-scrolling back with the wheel and keys, and a jump between prompts (§13).* XKB modifiers, legacy and kitty
+scrolling back with the wheel and keys, and a jump between prompts (§13);
+selection and copy, the word boundaries the user's (§14); paste, the paste
+button the user's (§15); OSC 52 (§16); the Ctrl and wheel zoom (§17). Every
+piece of the list below is built; what is left is the exit, daily use.* XKB modifiers, legacy and kitty
 keyboard encodings, scrolling back through the history with the wheel and
 keys, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
 bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules, the

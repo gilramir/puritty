@@ -4,7 +4,7 @@ Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); every
 leaning taken the same day (§11); a user's guide in
 [`user/copy-and-paste.md`](user/copy-and-paste.md). Built: mouse reports
 (§12), scrolling back (§13), selection and copy (§14), paste (§15),
-OSC 52 (§16). It is the
+OSC 52 (§16), the Ctrl and wheel zoom (§17). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -834,3 +834,37 @@ paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
 36, pointer 49 of 49, IME 14 of 14, perf within its record (as recorded
 above) and budgets, the differential fuzzer clean (coverage 6,229, no
 findings).
+
+---
+
+## 17. Ctrl and the wheel zoom (2026-11-03)
+
+As §11 has it: Ctrl and the wheel are visiterm's always, a point a step,
+and never reach a program, even one that asked for the mouse. A step up
+or down of the wheel with Ctrl alone is a zoom's step; the steps that come
+in the same take of events (a touchpad's stroke sends several) are summed,
+a motion between them passed over, and the font is sized once, from 4 to
+96 points, as Ctrl+= does (V50). Ctrl+=, Ctrl+− and Ctrl+0 are as they
+were.
+
+**What a zoom costs**, §8's question, on Xvfb with a screen of
+`gitlog.txt`, the X side's statistics (`X11_STATS`) for ten zooms a step
+at a time against none: 4.15 ms of drawing in all against 0.39 ms, so
+about 0.4 ms a zoom for its frames, the glyph set begun again each time
+(`resets 10`) and every glyph rasterised at its new size. Summing a
+stroke's steps saves a few of these, not a stall.
+
+**The pointer gate** gains two cases, with SGR mouse reports on: two
+steps up with Ctrl, nothing reported, and then a plain step reported in
+the larger cells (column 11 where 11 points has it in 12); and a step down
+and one up with Ctrl, which sum to no zoom, the plain step then reported
+in column 12. A screenshot on Xvfb shows the text drawn larger in the same
+window after three steps.
+
+With this, every piece of phase 3's list is built. Its exit is Gilbert's
+daily use (`geng-plan.md` §6).
+
+**Gates for §17**: replay 325 of 325, view 345 of 345, select 4 of 4,
+paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
+36, pointer 51 of 51, IME 14 of 14, perf within its record and budgets,
+the differential fuzzer clean (coverage 6,228, no findings).

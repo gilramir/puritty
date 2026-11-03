@@ -105,6 +105,10 @@ CASES = [
     ("paste-shift-middle-reported", SGR, "own-primary:korean move:50,30 key-down:shift click:2 key-up:shift"),
     ("paste-right-button", "", "own-primary:korean move:50,30 click:2 click:3", "", '[mouse]\npaste_button = "right"\n'),
     ("paste-nothing", "", "key:ctrl+shift+v sleep:0.5"),
+    # Ctrl and the wheel zoom, and are never reported (docs/phase3-select.md
+    # §17); a step after the zoom is reported in the larger cells
+    ("zoom-not-reported", SGR, "move:100,60 key-down:ctrl click:4 click:4 key-up:ctrl sleep:0.5 click:4"),
+    ("zoom-out-then-in", SGR, "move:100,60 key-down:ctrl click:5 click:4 key-up:ctrl sleep:0.5 click:4"),
     # OSC 52 (docs/phase3-select.md §16)
     ("osc52-write", "\\e]52;c;aGVsbG8=\\a", "sleep:0.5 clipboard"),
     ("osc52-write-primary", "\\e]52;p;d29ybGQ=\\a", "sleep:0.5 primary"),

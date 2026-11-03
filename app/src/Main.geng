@@ -768,7 +768,29 @@ handle terminal fd ms evs m =
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 X11.Pointer p ->
-                    owned terminal fd ms rest (pointer ms p m)
+                    if isZoomStep p then
+                        -- Ctrl and the wheel: visiterm's always, a point a
+                        -- step, the steps that came together one zoom
+                        -- (docs/phase3-select.md §11, §17)
+                        let
+                            steps =
+                                zoomSteps rest (stepOf p)
+
+                            points =
+                                clamp 4 96 (m.points + steps.net)
+                        in
+                        if points == m.points then
+                            handle terminal fd ms steps.rest m
+
+                        else
+                            X11.zoom points
+                                |> Task.andThen
+                                    (\_ ->
+                                        handle terminal fd ms steps.rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
+                                    )
+
+                    else
+                        owned terminal fd ms rest (pointer ms p m)
 
                 X11.Pasted more ->
                     X11.pasted
@@ -1310,6 +1332,42 @@ highlightOf m =
 
             else
                 { from = from, to = min last to }
+
+
+{-| A press of the wheel up or down with Ctrl alone: a zoom's step. -}
+isZoomStep : X11.PointerEvent -> Bool
+isZoomStep p =
+    p.action == 0 && (p.button == 4 || p.button == 5) && Bitwise.and p.mods 15 == 2
+
+
+stepOf : X11.PointerEvent -> Int
+stepOf p =
+    if p.button == 4 then
+        1
+
+    else
+        -1
+
+
+{-| The zoom's steps that follow one in the same take, summed, and the
+events after them: a touchpad's stroke sends several, and the window is
+sized once. A motion between them, which X sends as the pointer drifts, is
+passed over. -}
+zoomSteps : Array X11.Event -> Int -> { net : Int, rest : Array X11.Event }
+zoomSteps evs net =
+    when Array.first evs is
+        Just (X11.Pointer p) ->
+            if isZoomStep p then
+                zoomSteps (Array.dropFirst 1 evs) (net + stepOf p)
+
+            else if p.action == 2 then
+                zoomSteps (Array.dropFirst 1 evs) net
+
+            else
+                { net = net, rest = evs }
+
+        _ ->
+            { net = net, rest = evs }
 
 
 lowestHeld : Int -> Int -> Int
