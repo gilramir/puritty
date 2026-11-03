@@ -1,7 +1,7 @@
 # Phase 3 · Mouse, selection, clipboard, OSC 52, paste: a survey
 
-Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); paste and
-OSC 52 answered the same day (§11). It is the
+Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); scrolling
+back, mouse reports, paste and OSC 52 answered the same day (§11). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -408,4 +408,28 @@ default and never answered, as Alacritty, WezTerm and Windows Terminal do;
 `osc52-read = allow` in the config for anyone who wants nvim's or tmux's
 paste over ssh, with no question asked either way.
 
-1, 2, 3 and 6 wait on his answers.
+**1, scrolling back: taken, as most terminals do it.** What the vendored
+terminals do by default (their sources):
+
+| | Ghostty | Alacritty | WezTerm | Windows Terminal | PuTTY |
+|---|---|---|---|---|---|
+| a wheel notch | 3 rows (1 precise) | 3 rows | 5 rows on X11 | the system's (3) | 5 rows |
+| page keys | Shift+PgUp/PgDn | Shift+PgUp/PgDn | Shift+PgUp/PgDn | Ctrl+Shift+PgUp/PgDn | Shift+PgUp/PgDn, half a page |
+| top, bottom | Shift+Home/End | Shift+Home/End | none bound | Ctrl+Shift+Home/End | none |
+| a key typed | to the bottom | to the bottom | to the bottom | to the bottom | stays (`ScrollOnKey` off) |
+| new output | stays | stays | stays | stays | to the bottom (`ScrollOnDisp` on) |
+
+visiterm takes the majority: a notch is 3 rows; Shift+PgUp/PgDn a page and
+Shift+Home/End the top and bottom, all given to the program on the
+alternate screen, as Alacritty and WezTerm do; a key typed brings the view
+to the bottom and new output leaves it where it is; in the alternate screen
+with 1007 set the wheel sends arrow keys. And Ghostty's Ctrl+Shift+Up/Down,
+which jumps between the prompts the shell marks with OSC 133, since the
+core already keeps them.
+
+**2, mouse reports: taken** as §10 has it: Ghostty's encoder in Geng, held
+to libghostty-vt in the key gate; motion asked of X only while it is
+wanted; Shift takes the mouse back for a selection; the wheel goes to a
+program that has taken the mouse.
+
+3 and 6 wait on his answers.
