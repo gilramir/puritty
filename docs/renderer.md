@@ -4,8 +4,9 @@ Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
 (§R7, V34–V38). Steps 1 to 5 of §R6 are built (§R8–§R10, §R12, §R13);
 Gilbert took the leanings of what the pixel gate found (§R14, §R15:
 V40–V42); V40 and V41 are built (§R16, §R17; with V43, a change to V24
-he accepted). Step 6, the exit, is done over `ssh -X` from gmktec7
-(§R18); its other half, a shell on Gilbert's desktop, waits on him.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+he accepted). Step 6, the exit, is done: over `ssh -X` from gmktec7
+to this machine's Xvfb, and by Gilbert at gmktec7's desktop with visiterm
+running here (§R18). Phase 2's renderer is finished.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -853,3 +854,15 @@ only a desktop shows: a window manager's resize, focus and close; a
 compositor's frame timing; his keyboard, including any layout switch;
 Fira Code (`[font] family = "Fira Code"` in
 `~/.config/visiterm/config.toml`); tmux and vim at full size.
+
+**Gilbert's half (2026-11-02).** Gilbert ran `ssh -X nene
+~/prj/visiterm/app/visiterm` at gmktec7's desktop, the other direction
+from the runs above: visiterm here, its window on a real desktop with a
+window manager and compositor. "It works over ssh -X from gmktec7; it
+scrolls very fast." His screen is large, and the font was very small: the
+C sizes every face at 96 dpi, whatever the screen's, and the default is
+11 points. Until that changes, `[font] size` in the settings enlarges it.
+Registered for phase 3 (`geng-plan.md` §6): the size taken from the
+screen's own resolution (`Xft.dpi`, else the screen's physical size), and
+a zoom at run time. The session at nene's own desktop is left to phase
+3's daily use.
