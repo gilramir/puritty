@@ -868,3 +868,14 @@ daily use (`geng-plan.md` §6).
 paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
 36, pointer 51 of 51, IME 14 of 14, perf within its record and budgets,
 the differential fuzzer clean (coverage 6,228, no findings).
+
+## 18. Registered from geng-lang: decoding a page into the view (2026-11-03)
+
+geng-lang's census of what dies old (`m4-memory-proofs.md` §MP2, §MP5)
+found the view's decoded pages to be the frame loop's largest old garbage:
+about 165 MB over `core-view`'s 399 views of `gitlog.txt`, each 1,024-row
+page decoded whole into rows of its own, which the view keeps two of and
+then drops. Its D1054 (Gilbert's answer, §MP9) is that geng-lang adds no
+owned array for them. visiterm decodes only the rows a frame shows,
+straight into the view's screen, which is what such an array would have
+freed. Not built; measured against the census when it is.
