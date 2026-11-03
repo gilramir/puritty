@@ -2,7 +2,8 @@
 
 Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); every
 leaning taken the same day (§11); a user's guide in
-[`user/copy-and-paste.md`](user/copy-and-paste.md). It is the
+[`user/copy-and-paste.md`](user/copy-and-paste.md). Built: mouse reports
+(§12), scrolling back (§13). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -450,3 +451,139 @@ the OSC 52 setting as the config file names its keys:
 
 The order to build stands: the mouse encoder and its gate, scrolling back,
 selection and copy, paste, OSC 52, the zoom.
+
+---
+
+## 12. Mouse reports built (2026-11-03)
+
+**The encoder** is `Vt.Mouse`, Ghostty's `mouse_encode.zig` in Geng: which
+events a tracking reports, a press or motion outside the window reported
+only while motion is tracked and a button held, a motion within the last
+cell reported not again unless the format is pixels, the button code with
+Shift, Alt and Ctrl, and the five formats. A position is whole pixels, as
+X gives them, where Ghostty's is a float. The legacy forms are raw bytes,
+so a report goes out by `sendRaw`, which no pane's character set touches.
+
+**The core** keeps the tracking and format as Ghostty's flags do, not by
+reading its mode table: the last of 9, 1000, 1002 and 1003 set is the
+tracking, the last of 1005, 1006, 1015 and 1016 the format, and a reset of
+any one of a group is none, whichever was set (`Vt.mouseModes`). XTRESTORE
+goes through the same setter, as Ghostty's does; RIS makes them none.
+
+**The mouse gate** (`harness/mouse.py`) holds both to libghostty-vt. Each
+case is a run of mode changes fed to a terminal on each side (the modes set
+and reset alone or several to a sequence, XTSAVE, XTRESTORE, DECSTR, RIS),
+whose tracking and format then go to each side's encoder
+(`ghostty_mouse_encoder_setopt_from_terminal` for the oracle,
+`harness/oracle/ghostty-mouse.c`); a window, cell and padding; and one to
+eight events, with the last cell carried between them. **300,000 cases
+agree: 1,350,913 events, 603,676 of them encoded.** With the Ctrl bit made
+17 instead of 16 for the test, 1,048 of 3,000 cases fail.
+
+**The window**: the C records a press, release or motion (kind 9) with its
+button in Ghostty's numbering (X's but for middle and right, which swap),
+its modifiers read from its own event as a key's are, its position, and
+the window's and cell's sizes, so a zoom or resize needs no state in
+`Main`. A wheel step is its press: X's release of buttons 4-7 is dropped,
+as Ghostty reports a step as a press. Motions in a row are recorded as the
+last of them. X sends motion only while a button is held, and every motion
+while the program asks for mode 1003 (`X11.motion`, set from the loop when
+the tracking changes). `Main` keeps the buttons held, and reports a motion
+with the lowest of them, as Ghostty does.
+
+**Shift**: a press or release of a button with Shift, or a motion with
+Shift while a button is held, is visiterm's own and is not reported (it
+will select, §5). The wheel is not taken by Shift: Ghostty's
+`scrollCallback` reports it whatever the modifiers, and nvim pages with
+Shift and the wheel, so the program gets Shift+wheel (code 68 for a step
+up).
+
+**The pointer gate** (`harness/pointer.py`, `corpus/pointer/`) drives
+visiterm on Xvfb with xdotool, on a program that sets the case's modes and
+records every byte it reads: 16 cases, every one as the encoder says, among
+them presses and releases of each button, the wheel without releases, Ctrl
+and Alt, Shift, X10's raw bytes, mode 9's presses alone, no motion under
+1000, a drag under 1002 with a repeated cell left out, a drag off the
+window's edge clamped to the last column, motion without a button under
+1003 and none after it is reset, pixels, urxvt and UTF-8. Its first run
+found the C's window size unset until the first resize: every press was
+outside a 0 by 0 window and dropped, and every release, which is always
+reported, came at cell (1, 1).
+
+---
+
+## 13. Scrolling back built (2026-11-03)
+
+**The core** answers three questions about the scrollback and draws none of
+it itself:
+
+- `Vt.scrollbackRows`: how far a view can go back, the main screen's rows
+  in the ring and the pages; 0 while the alternate screen is up.
+- `Vt.rowsPushed`: the rows that have ever entered the scrollback, the ones
+  it holds and the ones dropped from its oldest end. The pages count the
+  rows they drop (`Back.gone`) when they drop a page, so the line feed's
+  path is untouched. A view stays on its rows by moving up as many rows as
+  this grew by over a read.
+- `Vt.viewAt`: the rows a view `back` rows up shows, as a screen of their
+  own. A row in the ring is copied; a row in the pages is read from its
+  page, whose clusters are interned in a copy of the term's table that the
+  view carries, so drawing a view never changes the term.
+
+**`Vt.View.frameBack`** draws that screen through the same body as every
+frame (`frameOn`), with the cursor `back` rows lower, hidden when it falls
+off the bottom, and no preedit. A scroll of the view is found by the rows'
+hashes and sent as one `CopyArea`, as output's is.
+
+**`Main`**: a wheel step no program asked for scrolls the view 3 rows on
+the main screen; on the alternate screen with 1007 set it sends three arrow
+keys in DECCKM's form, as Ghostty does, and nothing with 1007 reset. A step
+reported to a program that asked for the mouse is one report, as xterm
+sends it; Ghostty sends three (its scroll multiplier, `Surface.scrollCallback`),
+and nvim already scrolls 3 lines a report. Shift+PgUp and Shift+PgDn move a
+page, Shift+Home and Shift+End to the top and the bottom, and Ctrl+Shift+Up
+and Ctrl+Shift+Down to the shell's previous and next prompt
+(`Vt.promptJump`, after Ghostty's `PageList.scrollPrompt`: a row marked as
+a prompt's start by OSC 133 put at the view's top; in the pages, the mark
+is read from the row's header, so no text is decoded). All of them are the
+program's on the alternate screen. A key that sends the program anything,
+or an IME's commit, brings the view to the bottom; a resize does too.
+
+**Tested**: the view gate draws a case's frames scrolled back after its
+input (`back.txt`): `view-back-pages`, 600 rows on a 4 by 3 screen with
+256-row pages, at offsets in the ring, in a page, across the two, past the
+top (clamped) and back to 0, the move from 10,000 (the top) to 6 found as a
+scroll; `view-back-clusters`, rows with a combining mark and a wide
+character read back from a page. 344 cases pass. The pointer gate adds four
+cases of the wheel on the alternate screen (arrows, DECCKM's arrows, 1007
+reset, a report). On Xvfb, by screenshots: five steps of the wheel move the
+view 15 rows and Shift+PgUp a page more; Return brings it to the bottom;
+Shift+Home goes to the top; 500 lines and then 20,000 more arriving leave
+the view on its rows; when 10,000 full-width lines push the view's own rows
+past the 3,000-line limit, it shows the oldest row kept; two
+Ctrl+Shift+Up go to the prompt two above, and 99 more reach a prompt 2,100
+rows back, in the pages.
+
+**Measured, and no cache**: §3 leaned on keeping the last two decoded
+pages between frames. `core-bench FILE view BACK N` times N views of
+`gitlog.txt`'s full scrollback (94,095 rows at 160 by 50, 1,024-row
+pages):
+
+| rows up | 100 views | a view |
+|---|---|---|
+| 30 (the ring) | 0 ms | under 0.01 ms |
+| 2,000 | 182 ms | 1.8 ms |
+| 20,000 | 211 ms | 2.1 ms |
+| 90,000 | 423 ms | 4.2 ms |
+
+A frame deep in the history reads its page or two again each time, at 2
+to 4 ms, against a frame every 16 ms at most, and a view moves only when
+the wheel or a key moves it, or output comes. No cache is kept; daily use
+can say otherwise.
+
+**Gates for §12 and §13**: replay 325 of 325, view 344 of 344, keys
+300,000, mouse 200,000 (901,013 events), charset 17 lines, pixels 36 of
+36, pointer 20 of 20, IME 14 of 14, perf within its record and budgets
+(the resize cases −0.9% to +2.7%), and the differential fuzzer clean on
+each tree (coverage 6,174 and 6,175, no findings). The fuzzer is asked for
+600 s and takes about 1,720 s, most of it replaying its saved corpus of
+59,905 inputs before it begins; the corpus wants trimming.

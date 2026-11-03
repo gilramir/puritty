@@ -51,6 +51,7 @@ import Task exposing (Task)
 import Time
 import Vt
 import Vt.Charset as Charset exposing (Charset)
+import Vt.Mouse as Mouse
 import Vt.View as View
 import X11
 
@@ -76,6 +77,15 @@ type alias Model =
     , charset : Charset
     , decoder : Charset.Decoder
     , replaced : Int
+      -- the mouse (docs/phase3-select.md §4): the buttons held, as bits of
+      -- Ghostty's numbers; the cell last reported, so a motion within it is
+      -- not reported again; whether X sends every motion
+    , held : Int
+    , mouseLast : Maybe Mouse.Cell
+    , allMotion : Bool
+      -- how many rows the view is scrolled back, 0 at the bottom
+      -- (docs/phase3-select.md §11)
+    , back : Int
     }
 
 
@@ -288,6 +298,10 @@ run imeLog charset config cell child =
                             , charset = charset
                             , decoder = Charset.decoder
                             , replaced = 0
+                            , held = 0
+                            , mouseLast = Nothing
+                            , allMotion = False
+                            , back = 0
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -391,6 +405,20 @@ send text m =
         { m | out = Bytes.flatten [ m.out, bytes ], replaced = m.replaced + encoded.replaced }
 
 
+{-| Bytes queued as they are, in no character set: a mouse report, whose
+legacy forms are raw bytes. -}
+sendRaw : Bytes -> (moved m : Model) -> Model
+sendRaw bytes m =
+    if Bytes.isEmpty bytes then
+        m
+
+    else if Bytes.isEmpty m.out then
+        { m | out = bytes }
+
+    else
+        { m | out = Bytes.flatten [ m.out, bytes ] }
+
+
 {-| The queue written as far as the pty takes it. -}
 flush : File.Handle -> (moved m : Model) -> Task Error Model
 flush fd m =
@@ -404,7 +432,19 @@ flush fd m =
 
 loop : Process.Terminal -> File.Handle -> (moved m00 : Model) -> Task Error Model
 loop terminal fd m00 =
-    flush fd m00
+    let
+        -- every motion from X only while the program asks for any motion
+        -- (mode 1003, docs/phase3-select.md §4)
+        all =
+            (Vt.mouseModes m00.term).tracking == Mouse.any
+    in
+    (if all == m00.allMotion then
+        Task.succeed m00
+
+     else
+        X11.motion all |> Task.map (\_ -> { m00 | allMotion = all })
+    )
+        |> Task.andThen (flush fd)
         |> Task.andThen (\m0 -> race terminal fd m0)
 
 
@@ -519,16 +559,28 @@ feed fd chunk0 ms m =
             else
                 Charset.decode m.decoder chunk0
 
+        pushedBefore =
+            Vt.rowsPushed m.term
+
         taken =
             Vt.takeReplies (Vt.feed decoded.bytes m.term)
 
         held =
             syncHeld taken.term
+
+        -- a view scrolled back stays on its rows as more come in below it
+        back =
+            if m.back > 0 then
+                min (Vt.scrollbackRows taken.term) (m.back + Vt.rowsPushed taken.term - pushedBefore)
+
+            else
+                0
     in
     Task.succeed
         (Array.foldl (\r acc -> if Bytes.length acc.out >= replyCap then acc else send r acc)
             { m
                 | term = taken.term
+                , back = back
                 , decoder = decoded.decoder
                 , pending =
                     if m.pending < 0 then
@@ -576,11 +628,16 @@ handle terminal fd ms evs m =
                                     )
 
                         Nothing ->
-                            key terminal fd ms rest k m
+                            when scrollKeyOf m k is
+                                Just back ->
+                                    handle terminal fd ms rest { m | back = back, urgent = True }
+
+                                Nothing ->
+                                    key terminal fd ms rest k m
 
                 X11.Resized size ->
                     Process.resize terminal { columns = size.cols, rows = size.rows }
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True })
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0 })
 
                 X11.Focus on ->
                     let
@@ -603,7 +660,7 @@ handle terminal fd ms evs m =
                 X11.Commit text ->
                     -- the key path: the text as typed, never as a paste (V46)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
-                        |> Task.andThen (\_ -> handle terminal fd ms rest (send text { m | urgent = True }))
+                        |> Task.andThen (\_ -> handle terminal fd ms rest (send text { m | urgent = True, back = 0 }))
 
                 X11.Preedit p ->
                     let
@@ -632,6 +689,145 @@ handle terminal fd ms evs m =
                     imeLine m.imeLog "done"
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
+                X11.Pointer p ->
+                    handle terminal fd ms rest (pointer p m)
+
+
+{-| A press, release or motion of the pointer (docs/phase3-select.md §4):
+reported to a program that asked for mouse reports, in its format, by
+Ghostty's encoder (`Vt.Mouse`). Shift takes the mouse back from it, as in
+Ghostty, xterm and kitty: a press or release of a button with Shift, or a
+motion with Shift while a button is held, is visiterm's own. The wheel is
+not: Ghostty reports it with Shift too, and nvim pages with Shift and the
+wheel. A motion is reported with the lowest-numbered button held, as
+Ghostty reports it. -}
+pointer : X11.PointerEvent -> (moved m : Model) -> Model
+pointer p m =
+    let
+        modes =
+            Vt.mouseModes m.term
+
+        bit =
+            Bitwise.shiftLeftBy p.button 1
+
+        held =
+            if p.button == 0 || (p.button >= 4 && p.button <= 7) then
+                -- a wheel step is pressed and never held (`wheel` below)
+                m.held
+
+            else if p.action == 0 then
+                Bitwise.or m.held bit
+
+            else if p.action == 1 then
+                Bitwise.and m.held (Bitwise.complement bit)
+
+            else
+                m.held
+
+        wheel =
+            p.button >= 4 && p.button <= 7
+
+        taken =
+            Bitwise.and p.mods 1 /= 0 && not wheel && (p.action /= 2 || held /= 0)
+    in
+    if modes.tracking == Mouse.none && wheel && p.action == 0 then
+        wheelStep p.button { m | held = held }
+
+    else if modes.tracking == Mouse.none || taken then
+        { m | held = held }
+
+    else
+        let
+            r =
+                Mouse.encode
+                    { tracking = modes.tracking
+                    , format = modes.format
+                    , size =
+                        { screenWidth = p.width
+                        , screenHeight = p.height
+                        , cellWidth = p.cellWidth
+                        , cellHeight = p.cellHeight
+                        , padTop = 0
+                        , padBottom = 0
+                        , padRight = 0
+                        , padLeft = 0
+                        }
+                    , anyButtonPressed = held /= 0
+                    , track = True
+                    , last = m.mouseLast
+                    }
+                    { action = p.action
+                    , button =
+                        if p.action == 2 then
+                            lowestHeld held 1
+
+                        else
+                            p.button
+                    , mods = p.mods
+                    , x = p.x
+                    , y = p.y
+                    }
+        in
+        sendRaw r.bytes { m | held = held, mouseLast = r.last }
+
+
+{-| A step of the wheel no program asked for (docs/phase3-select.md §11):
+on the alternate screen with mode 1007 set, three arrow keys, as Ghostty
+sends them, in DECCKM's form; else the view scrolled three rows. A step
+sideways does nothing. One step reported to a program that asked for the
+mouse is one report, as xterm sends it; Ghostty sends three. -}
+wheelStep : Int -> (moved m : Model) -> Model
+wheelStep button m =
+    let
+        up =
+            button == 4
+
+        down =
+            button == 5
+    in
+    if not (up || down) then
+        m
+
+    else if m.term.alt then
+        if Dict.get 1007 m.term.modes == Just False then
+            m
+
+        else
+            let
+                arrow =
+                    (if Dict.get 1 m.term.modes == Just True then
+                        "\u{001B}O"
+
+                     else
+                        "\u{001B}["
+                    )
+                        ++ (if up then
+                                "A"
+
+                            else
+                                "B"
+                           )
+            in
+            send (Bytes.fromString (arrow ++ arrow ++ arrow)) m
+
+    else if up then
+        { m | back = min (Vt.scrollbackRows m.term) (m.back + 3), urgent = True }
+
+    else
+        { m | back = max 0 (m.back - 3), urgent = True }
+
+
+lowestHeld : Int -> Int -> Int
+lowestHeld held i =
+    if i > 11 then
+        0
+
+    else if Bitwise.and held (Bitwise.shiftLeftBy i 1) /= 0 then
+        i
+
+    else
+        lowestHeld held (i + 1)
+
 
 {-| A key sent to the program, the cursor's blink begun again. -}
 key : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (moved m : Model) -> Task Error Model
@@ -650,7 +846,67 @@ key terminal fd ms rest k m =
         focus =
             { focused = m.focus.focused, blinkOn = True }
     in
-    handle terminal fd ms rest (send bytes { m | urgent = True, focus = focus, blinkAt = blinkAt })
+    handle terminal fd ms rest
+        (send bytes
+            { m
+                | urgent = True
+                , focus = focus
+                , blinkAt = blinkAt
+                , -- a key that reaches the program brings the view to the bottom
+                  back =
+                    if Bytes.isEmpty bytes then
+                        m.back
+
+                    else
+                        0
+            }
+        )
+
+
+{-| The keys that move a view of the scrollback (docs/phase3-select.md
+§11), on the main screen, pressed or repeated: with Shift alone, PgUp and
+PgDn a page, Home the top, End the bottom; with Ctrl and Shift, Up and Down
+the shell's previous and next prompt, as Ghostty's `jump_to_prompt`. On the
+alternate screen they are the program's, as in Alacritty and WezTerm. -}
+scrollKeyOf : Model -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe Int
+scrollKeyOf m k =
+    let
+        most =
+            Vt.scrollbackRows m.term
+    in
+    if k.action == 0 || most == 0 then
+        Nothing
+
+    else if Bitwise.and k.mods 15 == 3 && (k.sym == 0xFF52 || k.sym == 0xFF54) then
+        Just
+            (Vt.promptJump
+                (if k.sym == 0xFF52 then
+                    -1
+
+                 else
+                    1
+                )
+                m.back
+                m.term
+            )
+
+    else if Bitwise.and k.mods 15 /= 1 then
+        Nothing
+
+    else if k.sym == 0xFF55 then
+        Just (min most (m.back + m.term.rows))
+
+    else if k.sym == 0xFF56 then
+        Just (max 0 (m.back - m.term.rows))
+
+    else if k.sym == 0xFF50 then
+        Just most
+
+    else if k.sym == 0xFF57 then
+        Just 0
+
+    else
+        Nothing
 
 
 {-| The zoom's keys (V50): Ctrl with `=` or `+` a point larger, with `-` a
@@ -693,8 +949,17 @@ draw ms m =
             , caret = m.preedit.caret
             }
 
+        -- the alternate screen keeps no scrollback, so a view scrolled
+        -- back shows the screen while it is up
+        back =
+            min m.back (Vt.scrollbackRows m.term)
+
         f =
-            View.frameWith m.look m.focus preedit m.term m.shadow
+            if back > 0 then
+                View.frameBack m.look m.focus back (Vt.viewAt back m.term) m.term m.shadow
+
+            else
+                View.frameWith m.look m.focus preedit m.term m.shadow
 
         spot =
             View.preeditSpot preedit m.term

@@ -8,10 +8,12 @@ display list as a line, `frame` and the list in hex (nothing after `frame`
 when the frame changes nothing). RESIZES is `AT:COLSxROWS` items joined by
 commas, as `core-dump` reads them: before byte AT the terminal is resized,
 and a read never crosses one. FOCUS `unfocused` draws as a window without
-the focus does. `harness/view.py` decodes the lists and holds them to their
-pins.
+the focus does. PREEDIT is drawn over every frame. BACKS, offsets joined by
+commas, draws a frame more for each after the file is fed, the view
+scrolled back that many rows (`Vt.viewAt`, `View.frameBack`; 0 the screen
+again). `harness/view.py` decodes the lists and holds them to their pins.
 
-usage: core-view COLS ROWS FILE CHUNK [RESIZES [FOCUS]]
+usage: core-view COLS ROWS FILE CHUNK [RESIZES [FOCUS [PREEDIT [BACKS]]]]
 
 -}
 
@@ -62,6 +64,25 @@ feedAll bytes chunk resizes at r =
 
             else
                 feedAll bytes chunk resizes stop (framed { r | term = Vt.feed (Bytes.slice at stop bytes) r.term })
+
+
+{-| A frame for each offset of the scrollback, in turn. -}
+scrolled : Array Int -> (moved r : Run) -> Run
+scrolled backs r =
+    when Array.first backs is
+        Nothing ->
+            r
+
+        Just b ->
+            let
+                f =
+                    if b > 0 then
+                        View.frameBack View.defaultLook r.focus b (Vt.viewAt b r.term) r.term r.shadow
+
+                    else
+                        View.frameWith View.defaultLook r.focus r.preedit r.term r.shadow
+            in
+            scrolled (Array.dropFirst 1 backs) { r | shadow = f.shadow, out = Builder.pushLast ("frame " ++ Bytes.toHexString { padding = True } f.list ++ "\n") r.out }
 
 
 {-| A frame of the term as it stands, its list added to the output. -}
@@ -168,8 +189,14 @@ main =
                                             , preedit = preeditOf (Maybe.withDefault "" (Array.get 6 s.args))
                                             , out = Builder.empty 16
                                             }
+
+                                    backs =
+                                        Array.mapAndKeepJust String.toInt (String.split "," (Maybe.withDefault "" (Array.get 7 s.args)))
+
+                                    done =
+                                        scrolled backs r
                                 in
-                                Console.write (String.join "" (Builder.toArray r.out))
+                                Console.write (String.join "" (Builder.toArray done.out))
                             )
                         |> Task.onError (\_ -> Console.write "core-view: cannot read the file\n")
             )

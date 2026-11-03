@@ -46,7 +46,15 @@
  *     how many, 2 bytes each, the length of the new text in 2 and its
  *     UTF-8, then the count of its feedbacks in 2 and each in 1 byte;
  *   7 the IME's preedit is done;
- *   8 an input context is made with an IME, which keys go through now.
+ *   8 an input context is made with an IME, which keys go through now;
+ *   9 the pointer (docs/phase3-select.md §4): its action in 1 byte (press
+ *     0, release 1, motion 2), its button in 1 as Ghostty numbers them
+ *     (none 0, left 1, right 2, middle 3, the wheel's four steps 4-7, then
+ *     8-11), its modifiers in 2 as a key's, its position in the window in
+ *     pixels, x and y in 2 bytes each, signed, then the window's width and
+ *     height and the cell's in pixels, 2 bytes each. A wheel step is a
+ *     press alone: X's release of buttons 4-7 is not recorded. Motions one
+ *     after another are recorded as the last of them.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
@@ -99,7 +107,7 @@ static FT_Library library;
 static int cw, ch, ascent, ul_below, line_thick, strike_above;
 /* The screen in cells, as the display list last said; the window in
  * cells, as its size was last reported. */
-static int cols, rows, win_cols, win_rows, focused = -1;
+static int cols, rows, win_cols, win_rows, focused = -1, win_w, win_h;
 static uint32_t margin_bg = 0xFFFFFFFF;
 static long glyph_bytes, glyph_cap, resets;
 
@@ -1129,13 +1137,36 @@ static void at_exit(void) {
 
 /* EVENTS */
 
+/* What the window always asks of X: motion only while a button is held,
+ * unless visiterm_x11_motion asks for all of it. */
+#define BASE_EVENTS                                                                                                  \
+    (XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_FOCUS_CHANGE | \
+     XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |                \
+     XCB_EVENT_MASK_BUTTON_MOTION)
+static int all_motion;
+
 static uint8_t evbuf[65536];
 static int evlen;
 
-static void record(const uint8_t *r, int n) {
+static void put(const uint8_t *r, int n) {
     if (evlen + n > (int) sizeof evbuf) return;
     memcpy(evbuf + evlen, r, (size_t) n);
     evlen += n;
+}
+
+/* A motion waits here until something else is recorded, so that a run of
+ * motions is recorded as its last. */
+static uint8_t motion_rec[17];
+static int motion_pending;
+
+static void flush_motion(void) {
+    if (motion_pending) put(motion_rec, sizeof motion_rec);
+    motion_pending = 0;
+}
+
+static void record(const uint8_t *r, int n) {
+    flush_motion();
+    put(r, n);
 }
 
 static struct xkb_context *xctx;
@@ -1247,6 +1278,8 @@ static void xkb_event_in(xcb_generic_event_t *e) {
 }
 
 static void size_in(int w, int h) {
+    win_w = w;
+    win_h = h;
     int c = w / cw, r = h / ch;
     if (c < 1) c = 1;
     if (r < 1) r = 1;
@@ -1266,6 +1299,34 @@ static void focus_in(int in) {
     record(rec, 2);
 }
 
+/* The pointer (docs/phase3-select.md §4): a press, release or motion, its
+ * modifiers read from its own event's state as a key's are. X's buttons
+ * are Ghostty's but for the middle (2) and right (3), which swap. */
+static void pointer_event(int action, int xbutton, int x, int y, uint16_t state) {
+    int button = xbutton == 2 ? 3 : xbutton == 3 ? 2 : xbutton;
+    if (button > 11) return;
+    int mods = 0;
+    if (keymap) {
+        struct xkb_state *st = xkb_state_new(keymap);
+        if (st) {
+            xkb_state_update_mask(st, state & 0xff, 0, 0, 0, 0, (state >> 13) & 3);
+            mods = ghostty_mods(st, 0);
+            xkb_state_unref(st);
+        }
+    }
+    uint8_t r[17] = {9, (uint8_t) action, (uint8_t) button, (uint8_t) (mods >> 8), (uint8_t) mods,
+                     (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
+                     (uint8_t) (win_w >> 8), (uint8_t) win_w, (uint8_t) (win_h >> 8), (uint8_t) win_h,
+                     (uint8_t) (cw >> 8), (uint8_t) cw, (uint8_t) (ch >> 8), (uint8_t) ch};
+    if (action == 2) {
+        flush_motion();
+        memcpy(motion_rec, r, sizeof r);
+        motion_pending = 1;
+        return;
+    }
+    record(r, sizeof r);
+}
+
 /* The input method, when one is there. */
 static xcb_xim_t *xim;
 static xcb_xic_t xic;
@@ -1273,6 +1334,7 @@ static int have_xic;
 static int spot_x = -1, spot_y = -1;
 
 static void key_event(int press, uint8_t keycode, uint16_t state);
+static void pointer_event(int action, int xbutton, int x, int y, uint16_t state);
 
 static void record_text(uint8_t kind, const char *s, size_t n) {
     if (n > 4000) n = 4000;
@@ -1390,6 +1452,15 @@ static void drain(void) {
             if (have_xic) xcb_xim_forward_event(xim, xic, k);
             else key_event(type == XCB_KEY_PRESS, k->detail, k->state);
         }
+        else if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
+            xcb_button_press_event_t *b = (xcb_button_press_event_t *) e;
+            /* a wheel step is its press; X's release of it is not a release */
+            if (!(type == XCB_BUTTON_RELEASE && b->detail >= 4 && b->detail <= 7))
+                pointer_event(type == XCB_BUTTON_PRESS ? 0 : 1, b->detail, b->event_x, b->event_y, b->state);
+        } else if (type == XCB_MOTION_NOTIFY) {
+            xcb_motion_notify_event_t *mo = (xcb_motion_notify_event_t *) e;
+            pointer_event(2, 0, mo->event_x, mo->event_y, mo->state);
+        }
         else if (type == XCB_EXPOSE) {
             xcb_expose_event_t *x = (xcb_expose_event_t *) e;
             if (pixmap)
@@ -1420,6 +1491,7 @@ static void drain(void) {
         }
         free(e);
     }
+    flush_motion();
     /* what the IME was sent (a key forwarded, its sync replies) goes now,
      * not with the next frame, which a composing key does not cause */
     xcb_flush(conn);
@@ -1577,9 +1649,10 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
     visual_format = visual->format;
     win_cols = c;
     win_rows = r;
+    win_w = c * cw;
+    win_h = r * ch;
     window = xcb_generate_id(conn);
-    uint32_t values[2] = {screen->black_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_FOCUS_CHANGE |
-                                                   XCB_EVENT_MASK_STRUCTURE_NOTIFY};
+    uint32_t values[2] = {screen->black_pixel, BASE_EVENTS};
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) (c * cw), (uint16_t) (r * ch), 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
     wm_protocols = atom("WM_PROTOCOLS");
@@ -1777,6 +1850,20 @@ geng_cancel visiterm_x11_zoom(int32_t points, geng_wait *wait) {
         xcb_flush(conn);
     }
     geng_succeed(wait, geng_slot_I4(cw * 65536 + ch));
+    return (geng_cancel) {0};
+}
+
+/* Every motion of the pointer over the window, or only those while a
+ * button is held (docs/phase3-select.md §4): all while a program asks for
+ * any motion (mode 1003), since over ssh -X each is 32 bytes on the wire. */
+geng_cancel visiterm_x11_motion(int32_t all, geng_wait *wait) {
+    if ((all != 0) != all_motion) {
+        all_motion = all != 0;
+        uint32_t mask = BASE_EVENTS | (all_motion ? XCB_EVENT_MASK_POINTER_MOTION : 0);
+        xcb_change_window_attributes(conn, window, XCB_CW_EVENT_MASK, &mask);
+        xcb_flush(conn);
+    }
+    geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
 

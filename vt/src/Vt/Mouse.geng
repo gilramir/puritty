@@ -1,0 +1,293 @@
+module Vt.Mouse exposing (Tracking, Size, Options, Event, Cell, encode, x10, normal, button, any, none)
+
+{-| Ghostty's mouse encoder (`src/input/mouse_encode.zig`, v1.4.0) in Geng
+(`docs/phase3-select.md` §4, §11): a press, release or motion of the
+pointer as the bytes a program that asked for mouse reports reads.
+
+The window's X events give whole pixels, so a position here is an `Int`
+where Ghostty's is a float; with whole pixels the two agree, and the gate
+(`harness/mouse.py`) holds this module to libghostty-vt's encoder on them.
+
+**Tracking** is which events a program asked for, the last of modes 9,
+1000, 1002 and 1003 set (`Vt.mouseTracking`): none, X10 (presses of the
+first three buttons), normal (presses and releases), button (and motion
+while a button is held) or any (and every motion). **The format** is the
+last of 1005, 1006, 1015 and 1016 set, X10's bytes when none is.
+
+A motion is reported only when its cell differs from the last one reported
+(`Options.last`), unless the format is pixels; the caller keeps that cell
+between events, as Ghostty's encoder does when told to track it. A press
+or motion outside the window is reported only when the tracking reports
+motion and a button is held; a release always is.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Builder as Builder exposing (Builder)
+
+
+type alias Tracking =
+    Int
+
+
+none : Tracking
+none =
+    0
+
+
+x10 : Tracking
+x10 =
+    1
+
+
+normal : Tracking
+normal =
+    2
+
+
+button : Tracking
+button =
+    3
+
+
+any : Tracking
+any =
+    4
+
+
+{-| The window in pixels, the cell, and the padding round the cells, as
+Ghostty's `renderer.Size` has them. A cell of 0 is taken as 1. -}
+type alias Size =
+    { screenWidth : Int
+    , screenHeight : Int
+    , cellWidth : Int
+    , cellHeight : Int
+    , padTop : Int
+    , padBottom : Int
+    , padRight : Int
+    , padLeft : Int
+    }
+
+
+type alias Cell =
+    { x : Int, y : Int }
+
+
+{-| `format`: 0 X10, 1 UTF-8 (1005), 2 SGR (1006), 3 urxvt (1015), 4 SGR
+pixels (1016). `track` says whether motion is de-duplicated against
+`last`, the cell last reported. -}
+type alias Options =
+    { tracking : Tracking
+    , format : Int
+    , size : Size
+    , anyButtonPressed : Bool
+    , track : Bool
+    , last : Maybe Cell
+    }
+
+
+{-| `action`: 0 press, 1 release, 2 motion. `button`: 0 none (a motion
+with no button held), else Ghostty's numbering, 1 left, 2 right, 3 middle,
+4–11 the rest. `mods` as the key encoder's: 1 shift, 2 ctrl, 4 alt. `x`
+and `y` in pixels from the window's top left. -}
+type alias Event =
+    { action : Int
+    , button : Int
+    , mods : Int
+    , x : Int
+    , y : Int
+    }
+
+
+{-| The bytes for an event, none when it is not reported, and the cell to
+keep as `last` for the next. -}
+encode : Options -> Event -> { bytes : Bytes, last : Maybe Cell }
+encode opts event =
+    if not (shouldReport event opts) then
+        { bytes = Bytes.empty, last = opts.last }
+
+    else if event.action /= 1 && outside event opts.size && not (sendsMotion opts.tracking && opts.anyButtonPressed) then
+        { bytes = Bytes.empty, last = opts.last }
+
+    else
+        let
+            cell =
+                cellOf event opts.size
+
+            repeated =
+                event.action == 2 && opts.format /= 4 && opts.track && opts.last == Just cell
+
+            last =
+                if opts.track then
+                    Just cell
+
+                else
+                    opts.last
+        in
+        if repeated then
+            { bytes = Bytes.empty, last = opts.last }
+
+        else
+            when buttonCode event opts is
+                Nothing ->
+                    { bytes = Bytes.empty, last = last }
+
+                Just code ->
+                    { bytes = sequence code cell event opts, last = last }
+
+
+shouldReport : Event -> Options -> Bool
+shouldReport event opts =
+    if opts.tracking == x10 then
+        event.action == 0 && (event.button == 1 || event.button == 2 || event.button == 3)
+
+    else if opts.tracking == normal then
+        event.action /= 2
+
+    else if opts.tracking == button then
+        event.button /= 0
+
+    else
+        opts.tracking == any
+
+
+sendsMotion : Tracking -> Bool
+sendsMotion t =
+    t == button || t == any
+
+
+outside : Event -> Size -> Bool
+outside event size =
+    event.x < 0 || event.y < 0 || event.x > size.screenWidth || event.y > size.screenHeight
+
+
+cellOf : Event -> Size -> Cell
+cellOf event size =
+    let
+        cw =
+            max 1 size.cellWidth
+
+        ch =
+            max 1 size.cellHeight
+
+        width =
+            max 0 (size.screenWidth - (size.padLeft + size.padRight))
+
+        height =
+            max 0 (size.screenHeight - (size.padTop + size.padBottom))
+
+        cols =
+            max 1 (width // cw)
+
+        rows =
+            max 1 (height // ch)
+
+        tx =
+            max 0 (event.x - size.padLeft)
+
+        ty =
+            max 0 (event.y - size.padTop)
+    in
+    { x = min (tx // cw) (cols - 1), y = min (ty // ch) (rows - 1) }
+
+
+buttonCode : Event -> Options -> Maybe Int
+buttonCode event opts =
+    let
+        base =
+            if event.button == 0 then
+                Just 3
+
+            else if event.action == 1 && opts.format /= 2 && opts.format /= 4 then
+                -- a legacy release is always button 3
+                Just 3
+
+            else
+                when event.button is
+                    1 ->
+                        Just 0
+
+                    3 ->
+                        Just 1
+
+                    2 ->
+                        Just 2
+
+                    4 ->
+                        Just 64
+
+                    5 ->
+                        Just 65
+
+                    6 ->
+                        Just 66
+
+                    7 ->
+                        Just 67
+
+                    8 ->
+                        Just 128
+
+                    9 ->
+                        Just 129
+
+                    _ ->
+                        Nothing
+
+        mods =
+            if opts.tracking == x10 then
+                0
+
+            else
+                (if Bitwise.and event.mods 1 /= 0 then 4 else 0)
+                    + (if Bitwise.and event.mods 4 /= 0 then 8 else 0)
+                    + (if Bitwise.and event.mods 2 /= 0 then 16 else 0)
+
+        motion =
+            if event.action == 2 then
+                32
+
+            else
+                0
+    in
+    Maybe.map (\b -> b + mods + motion) base
+
+
+sequence : Int -> Cell -> Event -> Options -> Bytes
+sequence code cell event opts =
+    let
+        final =
+            if event.action == 1 then
+                "m"
+
+            else
+                "M"
+    in
+    if opts.format == 0 then
+        if cell.x > 222 || cell.y > 222 then
+            Bytes.empty
+
+        else
+            Builder.empty 6
+                |> Builder.append (Bytes.fromString "\u{001B}[M")
+                |> Builder.pushLast (32 + code)
+                |> Builder.pushLast (32 + cell.x + 1)
+                |> Builder.pushLast (32 + cell.y + 1)
+                |> Builder.toBytes
+
+    else if opts.format == 1 then
+        Builder.empty 12
+            |> Builder.append (Bytes.fromString "\u{001B}[M")
+            |> Builder.pushCodePoint (32 + code)
+            |> Builder.pushCodePoint (cell.x + 33)
+            |> Builder.pushCodePoint (cell.y + 33)
+            |> Builder.toBytes
+
+    else if opts.format == 2 then
+        Bytes.fromString ("\u{001B}[<" ++ String.fromInt code ++ ";" ++ String.fromInt (cell.x + 1) ++ ";" ++ String.fromInt (cell.y + 1) ++ final)
+
+    else if opts.format == 3 then
+        Bytes.fromString ("\u{001B}[" ++ String.fromInt (32 + code) ++ ";" ++ String.fromInt (cell.x + 1) ++ ";" ++ String.fromInt (cell.y + 1) ++ "M")
+
+    else
+        Bytes.fromString ("\u{001B}[<" ++ String.fromInt code ++ ";" ++ String.fromInt (event.x - opts.size.padLeft) ++ ";" ++ String.fromInt (event.y - opts.size.padTop) ++ final)

@@ -4,7 +4,9 @@
 A case whose name says `unfocused` is drawn as a window without the focus
 has, and one whose directory has a `preedit.txt` (its text, each code
 point's XIM feedback, the caret, a line each) has that preedit drawn over
-every frame (docs/phase3-input.md V46)
+every frame (docs/phase3-input.md V46), and one with a `back.txt` (offsets)
+has a frame more for each after its input, the view scrolled back that many
+rows (docs/phase3-select.md §11)
 draws it. Every case of corpus/replay/ and of corpus/view/cases/ (the same
 `case.txt` format, harness/replay.py's) is fed to the core and Vt.View by
 harness/view/core-view, CHUNK bytes a read with a frame after each, and
@@ -172,6 +174,13 @@ def view_of(name, text, tmp):
         extra = (extra or [""])
         extra = extra + ([] if len(extra) > 1 else ["focused"])
         extra = extra + [text.encode().hex() + "|" + ",".join(feedback.split()) + "|" + (caret.strip() or "0")]
+    back = CASES / name / "back.txt"
+    backs = []
+    if back.exists():
+        # the view scrolled back by each offset in turn, after the input
+        backs = back.read_text().split()
+        # RESIZES, FOCUS and PREEDIT come before BACKS: their defaults
+        extra = extra + ["", "focused", ""][len(extra):] + [",".join(backs)]
     p = subprocess.run(
         ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G", "-p", "MemorySwapMax=0", "--",
          "timeout", "60", str(VIEW), str(cols), str(rows), str(path), str(CHUNK)] + extra,
@@ -179,7 +188,7 @@ def view_of(name, text, tmp):
     if p.returncode != 0:
         return None, [p.stderr.decode(errors="replace").strip() or f"core-view exited {p.returncode}"]
     frames = [l for l in p.stdout.decode().splitlines() if l.startswith("frame")]
-    want = frames_of(len(data), resizes)
+    want = frames_of(len(data), resizes) + len(backs)
     if len(frames) != want:
         return None, [f"{len(frames)} frames, where the reads make {want}"]
     out, errors, size = [], [], None

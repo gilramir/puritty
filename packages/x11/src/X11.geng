@@ -1,7 +1,7 @@
 module X11 exposing
     ( Settings, Cell, open
-    , draw, shot, setTitle, spot, zoom
-    , events, take, Event(..)
+    , draw, shot, setTitle, spot, zoom, motion
+    , events, take, Event(..), PointerEvent
     )
 
 {-| visiterm's window on X11 (`docs/renderer.md`, V34–V37).
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, events, take, Event
+@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, motion, events, take, Event, PointerEvent
 
 -}
 
@@ -117,6 +117,25 @@ spot at =
 spotExtern : Int -> Int -> Task x Int
 
 
+{-| Whether X sends every motion of the pointer over the window, or only
+those while a button is held (`docs/phase3-select.md` §4): every one while
+the program asks for any motion (mode 1003). -}
+motion : Bool -> Task x {}
+motion all =
+    motionExtern
+        (if all then
+            1
+
+         else
+            0
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "visiterm_x11_motion")
+motionExtern : Int -> Task x Int
+
+
 {-| The font at a new size in points (V50): every face sized again, the
 window kept at its size in pixels, so a `Resized` follows with the cells
 that now fit it; answers the new cell. The size is the screen's
@@ -175,6 +194,27 @@ type Event
     | Preedit { caret : Int, first : Int, length : Int, text : Bytes, feedback : Array Int }
     | PreeditDone
     | ImeReady
+    | Pointer PointerEvent
+
+
+{-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
+`action` 0 press, 1 release, 2 motion; `button` as Ghostty numbers them
+(0 none, 1 left, 2 right, 3 middle, 4-7 the wheel's steps, 8-11 the
+rest), and a wheel step is a press with no release; `mods` as a key's; the
+position in pixels from the window's top left, negative or past its edge
+while a held button drags outside it; and the window's size and the cell's
+in pixels, as they were when it came. -}
+type alias PointerEvent =
+    { action : Int
+    , button : Int
+    , mods : Int
+    , x : Int
+    , y : Int
+    , width : Int
+    , height : Int
+    , cellWidth : Int
+    , cellHeight : Int
+    }
 
 
 {-| The events since the last take. -}
@@ -271,6 +311,37 @@ decode b at acc =
 
             8 ->
                 decode b (at + 1) (Array.pushLast ImeReady acc)
+
+            9 ->
+                let
+                    signed i =
+                        let
+                            v =
+                                u16 i
+                        in
+                        if v >= 0x8000 then
+                            v - 0x10000
+
+                        else
+                            v
+                in
+                decode b
+                    (at + 17)
+                    (Array.pushLast
+                        (Pointer
+                            { action = byte 1
+                            , button = byte 2
+                            , mods = u16 3
+                            , x = signed 5
+                            , y = signed 7
+                            , width = u16 9
+                            , height = u16 11
+                            , cellWidth = u16 13
+                            , cellHeight = u16 15
+                            }
+                        )
+                        acc
+                    )
 
             _ ->
                 acc

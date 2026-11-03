@@ -1,7 +1,8 @@
 module Vt exposing
     ( Term, Config, new, feed, takeReplies, resize
     , dump, historyBound, historyReached, recutHolds, scrollbackBytesFor
-    , defaultPageRows, keyOptions
+    , defaultPageRows, keyOptions, mouseModes
+    , View, scrollbackRows, rowsPushed, viewAt, promptJump
     )
 
 {-| visiterm's headless terminal core (`docs/vt-core.md`).
@@ -59,6 +60,12 @@ type alias Term =
     State.Term
 
 
+{-| The rows a view scrolled back shows (`viewAt`), for `Vt.View.frameBack`:
+a screen of them, and the clusters to read them with. -}
+type alias View =
+    { screen : State.Screen, clusters : Clusters }
+
+
 {-| What a terminal is made with (`Vt.Term.Config`). -}
 type alias Config =
     State.Config
@@ -98,6 +105,215 @@ historyBound t =
                 t.screen.hist
     in
     ring + t.back.rows
+
+
+{-| The rows above the screen a view can scroll back to
+(`docs/phase3-select.md` §1, §11): the main screen's scrollback, in the
+ring and in the pages; none while the alternate screen is up, which keeps
+none. -}
+scrollbackRows : Term -> Int
+scrollbackRows t =
+    if t.alt then
+        0
+
+    else
+        t.screen.hist + t.back.rows
+
+
+{-| The rows that have entered the main screen's scrollback since the term
+was made: those it holds and those dropped from its oldest end. A view
+scrolled back stays on its rows by moving up as many as this grew by. -}
+rowsPushed : Term -> Int
+rowsPushed t =
+    historyBound t + t.back.gone
+
+
+{-| The screen a view scrolled `back` rows up shows, as a screen of its
+own, `rows` rows of the scrollback and the screen from `back` rows above
+the screen's top (`back` kept between 0 and `scrollbackRows`). A row in the
+ring is copied; one in the pages is read from its page, which interns its
+clusters in a copy of the term's table that the view carries, so the term
+is only read. -}
+viewAt : Int -> Term -> View
+viewAt back0 t =
+    let
+        back =
+            clamp 0 (scrollbackRows t) back0
+
+        hist =
+            t.screen.hist
+
+        first =
+            0 - back
+
+        -- the rows above the ring's scrollback are the pages'; paged row
+        -- `t.back.rows - 1` is logical row `-hist - 1`
+        fromPages =
+            min t.rows (max 0 (0 - hist - first))
+
+        paged =
+            viewPages t.back t.back.head 0 (t.back.rows + first + hist) fromPages t.clusters []
+
+        ring =
+            ringRows (first + fromPages) (first + t.rows) t []
+
+    in
+    { screen = writeRows (paged.rows ++ ring) 0 0 t.rows (newScreen t.cols t.rows t.rows), clusters = paged.clusters }
+
+
+{-| The ring's rows `y` to `stop - 1`, a loop, since a function that
+captures the screen to read it would take its builder. -}
+ringRows : Int -> Int -> Term -> Array Row -> Array Row
+ringRows y stop t acc =
+    if y >= stop then
+        acc
+
+    else
+        ringRows (y + 1) stop t (Array.pushLast (ringRowOf (rowOffset t.screen y) t.screen) acc)
+
+
+{-| A view scrolled to the shell's previous prompt (`delta` below 0) or its
+next, as Ghostty's `jump_to_prompt` scrolls (`PageList.scrollPrompt`): the
+prompt is a row marked as a prompt's start (OSC 133 `A`, §VC22), and it is
+put at the view's top. Down, the search starts below the view's top row and
+past the continuations of a prompt there; a prompt on the screen itself is
+the bottom, 0. With no prompt that way, the view stays where it is. -}
+promptJump : Int -> Int -> Term -> Int
+promptJump delta back0 t =
+    let
+        most =
+            scrollbackRows t
+
+        back =
+            clamp 0 most back0
+
+        top =
+            0 - back
+    in
+    if most == 0 || delta == 0 then
+        back
+
+    else if delta < 0 then
+        when promptUp (top - 1) (0 - most) t is
+            Just y ->
+                0 - y
+
+            Nothing ->
+                back
+
+    else
+        let
+            start =
+                if promptMark top t /= 0 then
+                    pastContinuations (top + 1) t
+
+                else
+                    top + 1
+        in
+        when promptDown start (t.rows - 1) t is
+            Just y ->
+                max 0 (0 - y)
+
+            Nothing ->
+                back
+
+
+promptUp : Int -> Int -> Term -> Maybe Int
+promptUp y stop t =
+    if y < stop then
+        Nothing
+
+    else if promptMark y t == 1 then
+        Just y
+
+    else
+        promptUp (y - 1) stop t
+
+
+promptDown : Int -> Int -> Term -> Maybe Int
+promptDown y stop t =
+    if y > stop then
+        Nothing
+
+    else if promptMark y t == 1 then
+        Just y
+
+    else
+        promptDown (y + 1) stop t
+
+
+pastContinuations : Int -> Term -> Int
+pastContinuations y t =
+    if y < t.rows && promptMark y t == 2 then
+        pastContinuations (y + 1) t
+
+    else
+        y
+
+
+{-| The prompt mark of logical row `y` of the main screen and its
+scrollback: 0 none, 1 a prompt's start, 2 its continuation, as the ring's
+meta slot and a page's row header keep it. -}
+promptMark : Int -> Term -> Int
+promptMark y t =
+    if y >= 0 - t.screen.hist then
+        metaPrompt (metaAt (rowOffset t.screen y) t.screen)
+
+    else
+        pagedPrompt t.back t.back.head 0 (t.back.rows + y + t.screen.hist)
+
+
+pagedPrompt : Back -> Int -> Int -> Int -> Int
+pagedPrompt b i start at =
+    when Builder.get i b.pages is
+        Nothing ->
+            0
+
+        Just page ->
+            let
+                count =
+                    pageRowCount page
+            in
+            if start + count <= at then
+                pagedPrompt b (i + 1) (start + count) at
+
+            else
+                pagePromptAt page (at - start)
+
+
+{-| `want` rows of the pages from paged row `at` on, read from each page
+they lie in; `start` is the paged row slot `i`'s page begins at. A loop
+over the slots, as `readBack` is, so the pages are only lent. -}
+viewPages : Back -> Int -> Int -> Int -> Int -> Clusters -> Array Row -> { rows : Array Row, clusters : Clusters }
+viewPages b i start at want clusters acc =
+    if want <= 0 then
+        { rows = acc, clusters = clusters }
+
+    else
+        when Builder.get i b.pages is
+            Nothing ->
+                { rows = acc, clusters = clusters }
+
+            Just page ->
+                let
+                    count =
+                        pageRowCount page
+                in
+                if start + count <= at then
+                    viewPages b (i + 1) (start + count) at want clusters acc
+
+                else
+                    let
+                        read =
+                            pageRowsOf page clusters
+
+                        taken =
+                            Array.slice (at - start) (at - start + want) read.rows
+
+                        n =
+                            Array.length taken
+                    in
+                    viewPages b (i + 1) (start + count) (at + n) (want - n) read.clusters (acc ++ taken)
 
 
 {-| Whether the scrollback may have been pruned, by the core or by a
@@ -239,6 +455,8 @@ fresh config =
     , redraw = 1
     , modes = Dict.empty
     , savedModes = Dict.empty
+    , mouseTracking = 0
+    , mouseFormat = 0
     , sets = 0
     , gl = 0
     , single = -1
@@ -3368,6 +3586,46 @@ setPrivate p on t =
         else
             withScroll (withPlain { t | modes = Dict.set 69 False t.modes, left = 0, right = t.cols - 1 })
 
+    else if p == 9 || p == 1000 || p == 1002 || p == 1003 then
+        { t
+            | modes = Dict.set p on t.modes
+            , mouseTracking =
+                if not on then
+                    0
+
+                else if p == 9 then
+                    1
+
+                else if p == 1000 then
+                    2
+
+                else if p == 1002 then
+                    3
+
+                else
+                    4
+        }
+
+    else if p == 1005 || p == 1006 || p == 1015 || p == 1016 then
+        { t
+            | modes = Dict.set p on t.modes
+            , mouseFormat =
+                if not on then
+                    0
+
+                else if p == 1005 then
+                    1
+
+                else if p == 1006 then
+                    2
+
+                else if p == 1015 then
+                    3
+
+                else
+                    4
+        }
+
     else
         { t | modes = Dict.set p on t.modes }
 
@@ -3824,6 +4082,15 @@ modifyKeys params t =
 
     else
         { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
+
+{-| Which mouse events the program asked for and in which format, as
+`Vt.Mouse` takes them: the last of modes 9, 1000, 1002 and 1003 set, and of
+1005, 1006, 1015 and 1016, with a reset of any one of a group taking it back
+to none, as Ghostty's flags do. -}
+mouseModes : Term -> { tracking : Int, format : Int }
+mouseModes t =
+    { tracking = t.mouseTracking, format = t.mouseFormat }
 
 
 {-| What a key's bytes depend on, for `Vt.Keys.encode`: the modes, the

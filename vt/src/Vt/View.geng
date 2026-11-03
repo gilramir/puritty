@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame, frameWith, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
+module Vt.View exposing (Shadow, shadow, frame, frameWith, frameBack, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -374,15 +374,30 @@ frame look focus t sh0 =
 {-| `frame`, with a preedit drawn over the screen from the cursor. -}
 frameWith : Look -> Focus -> Preedit -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frameWith look focus preedit t sh0 =
+    frameOn look focus preedit t.screen t.clusters 0 t sh0
+
+
+{-| The frame of a view scrolled `back` rows up (`docs/phase3-select.md`
+§11): `view` is `Vt.viewAt`'s screen of the rows it shows, drawn as the
+screen is, so a scroll of the view is found and copied as output's is.
+The cursor is drawn where its row has moved to, if it is still in view;
+no preedit is drawn, since a key typed brings the view back down. -}
+frameBack : Look -> Focus -> Int -> { screen : Screen, clusters : Clusters } -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameBack look focus back view t sh0 =
+    frameOn look focus noPreedit view.screen view.clusters back t sh0
+
+
+frameOn : Look -> Focus -> Preedit -> Screen -> Clusters -> Int -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameOn look focus preedit s clusters back t sh0 =
     let
         key =
             colourKey look t
 
         plainCursor =
-            cursorOf focus t
+            cursorOf focus s back t
 
         cursor =
-            if preedit.text == "" then
+            if preedit.text == "" || back /= 0 then
                 plainCursor
 
             else
@@ -416,7 +431,7 @@ frameWith look focus preedit t sh0 =
             sh1.cols
 
         current =
-            Builder.toArray (hashRows t.screen 0 rows cols (Builder.empty rows))
+            Builder.toArray (hashRows s 0 rows cols (Builder.empty rows))
 
         band =
             searchK (1 - rows) rows current sh1.hashes { score = 1, top = 0, bottom = -1, k = 0 }
@@ -429,10 +444,10 @@ frameWith look focus preedit t sh0 =
                 { shadow = sh1, list = Builder.empty 4096 }
 
         sh2 =
-            spread t.screen cursor rows cols scrolled.shadow
+            spread s cursor rows cols scrolled.shadow
 
         diffed =
-            diffRows t.screen t.clusters cursor 0 rows cols sh2 scrolled.list
+            diffRows s clusters cursor 0 rows cols sh2 scrolled.list
 
         sh3 =
             diffed.shadow
@@ -1198,32 +1213,37 @@ type alias Cursor =
     { at : Int, cells : Int, shape : Int, preAt : Int, pre : Array PreCell }
 
 
-cursorOf : Focus -> Term -> Cursor
-cursorOf focus t =
+cursorOf : Focus -> Screen -> Int -> Term -> Cursor
+cursorOf focus s back t =
     let
         blinking =
             Dict.get 12 t.modes == Just True
 
+        -- the cursor's row in the screen drawn: `back` rows lower in a
+        -- view scrolled back
+        y =
+            t.y + back
+
         o =
-            rowOffset t.screen t.y
+            rowOffset s y
 
         head =
-            if t.x > 0 && cellWide (cellOf t.screen o (extentAt o t.screen) t.x) == wideTail then
+            if t.x > 0 && cellWide (cellOf s o (extentAt o s) t.x) == wideTail then
                 t.x - 1
 
             else
                 t.x
 
         wide =
-            cellWide (cellOf t.screen o (extentAt o t.screen) head) == wideHead && head + 1 < t.cols
+            cellWide (cellOf s o (extentAt o s) head) == wideHead && head + 1 < t.cols
     in
-    if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || t.y >= t.rows || t.x < 0 || t.y < 0 then
+    if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || y >= t.rows || t.x < 0 || y < 0 then
         { at = -1, cells = 0, shape = 0, preAt = -1, pre = [] }
 
     else
         { preAt = -1
         , pre = []
-        , at = t.y * t.cols + head
+        , at = y * t.cols + head
         , cells = if wide then 2 else 1
         , shape =
             if not focus.focused then

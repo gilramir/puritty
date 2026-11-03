@@ -20,8 +20,11 @@ a comparison with Ghostty can give both terminals none (§VC32).
 instructions: N 0 counts the feeding alone, which the drag's count less it
 leaves the resizes' (`harness/perf.py`).
 
+With `view BACK N` it times N views of the scrollback BACK rows up
+(`Vt.viewAt`), what a frame scrolled back reads (phase3-select.md §13).
+
 usage: core-bench FILE [dump | resize COLS ROWS | drag N COLS ROWS [BYTES]
-                        | resizes N COLS ROWS [BYTES]]
+                        | resizes N COLS ROWS [BYTES] | view BACK N]
 
 -}
 
@@ -144,6 +147,38 @@ timeResizes n cols rows t =
             )
 
 
+{-| `view BACK N`: N views of the scrollback BACK rows up (`Vt.viewAt`),
+the rows a frame scrolled back reads (docs/phase3-select.md §13). -}
+timeView : Int -> Int -> (moved t : Vt.Term) -> Task x {}
+timeView back n t =
+    Time.monotonic
+        |> Task.andThen
+            (\t0 ->
+                let
+                    rows =
+                        views back n t 0
+                in
+                Time.monotonic
+                    |> Task.andThen
+                        (\t1 ->
+                            Console.write (String.fromInt n ++ " views " ++ String.fromInt back ++ " rows up in " ++ ms t0 t1 ++ " ms (" ++ String.fromInt rows ++ " rows; " ++ String.fromInt (Vt.scrollbackRows t) ++ " in the scrollback)\n")
+                        )
+            )
+
+
+views : Int -> Int -> Vt.Term -> Int -> Int
+views back n t acc =
+    if n <= 0 then
+        acc
+
+    else
+        let
+            v =
+                Vt.viewAt back t
+        in
+        views back (n - 1) t (acc + v.screen.rows)
+
+
 ms : Time.Duration -> Time.Duration -> String
 ms a b =
     String.fromInt (Int64.toInt (Time.inMilliseconds b) - Int64.toInt (Time.inMilliseconds a))
@@ -175,6 +210,9 @@ main =
 
                                         else if Array.get 1 s.args == Just "resizes" then
                                             timeResizes (number 2 s.args) (number 3 s.args) (number 4 s.args) t
+
+                                        else if Array.get 1 s.args == Just "view" then
+                                            timeView (number 2 s.args) (number 3 s.args) t
 
                                         else if Array.get 1 s.args == Just "resize" then
                                             timeResize (number 2 s.args) (number 3 s.args) t

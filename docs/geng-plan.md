@@ -786,7 +786,10 @@ geng-lang's `Bytes.Builder` (V49, D1050, §15). The rest surveyed
 2026-11-03: [`phase3-select.md`](phase3-select.md): the window cannot scroll
 back, which nothing here named; a 10 MB paste over `ssh -X` takes 1.1 s and
 has to be read in the loop; tmux sends a copy as one unlimited OSC 52; and
-Ctrl with the wheel as a zoom, which Gilbert asked for.* XKB modifiers, legacy and kitty
+Ctrl with the wheel as a zoom, which Gilbert asked for. Gilbert took all six
+leanings the same day (§11). Built: mouse reports, Ghostty's encoder in
+Geng with a gate against libghostty-vt and a pointer gate on Xvfb (§12);
+scrolling back with the wheel and keys, and a jump between prompts (§13).* XKB modifiers, legacy and kitty
 keyboard encodings, scrolling back through the history with the wheel and
 keys, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
 bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules, the

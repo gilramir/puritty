@@ -27,6 +27,8 @@ module Vt.Pages exposing
     , ownedAt
     , pagedCell
     , pageRowsOf
+    , pageRowCount
+    , pagePromptAt
     , lastWrapped
     )
 
@@ -274,7 +276,7 @@ pushPage page back =
 {-| No scrollback, with `limit` bytes for one in pages of `pageRows` rows. -}
 emptyBack : Int -> Int -> Back
 emptyBack pageRows limit =
-    { pages = Builder.empty 0, head = 0, pageRows = pageRows, limit = limit, bytes = 0, rows = 0, peak = 0, dropped = False }
+    { pages = Builder.empty 0, head = 0, pageRows = pageRows, limit = limit, bytes = 0, rows = 0, peak = 0, dropped = False, gone = 0 }
 
 
 {-| `back` holding `pages`, oldest first, instead of its own: a resize's,
@@ -318,7 +320,7 @@ takePages back =
 `back`'s. -}
 withoutPages : Back -> Back
 withoutPages back =
-    { pages = Builder.empty 0, head = 0, pageRows = back.pageRows, limit = back.limit, bytes = 0, rows = 0, peak = back.peak, dropped = back.dropped }
+    { pages = Builder.empty 0, head = 0, pageRows = back.pageRows, limit = back.limit, bytes = 0, rows = 0, peak = back.peak, dropped = back.dropped, gone = back.gone }
 
 
 {-| Copies of the scrollback's pages, oldest first, held apart from them:
@@ -368,6 +370,13 @@ pageRowCount page =
     Owned.length page.heads // 2
 
 
+{-| The prompt mark of a page's row `r` (§VC22), from its header alone:
+bits 10 and 11. -}
+pagePromptAt : Page -> Int -> Int
+pagePromptAt page r =
+    Bitwise.and 3 (Bitwise.shiftRightZfBy 10 (u16At page.heads (2 * r)))
+
+
 {-| A byte of a page, as `byteAt` reads one of `Bytes`: -1 outside it. -}
 ownedAt : Owned -> Int -> Int
 ownedAt bytes i =
@@ -393,7 +402,7 @@ dropOver back =
                 back.head
 
             -- read before the slot is emptied
-            gone =
+            out =
                 when Builder.get head back.pages is
                     Just oldest ->
                         { bytes = pageBytes oldest, rows = pageRowCount oldest }
@@ -405,9 +414,10 @@ dropOver back =
             { back
                 | pages = Builder.set head (emptyPage {}) back.pages
                 , head = head + 1
-                , bytes = back.bytes - gone.bytes
-                , rows = back.rows - gone.rows
+                , bytes = back.bytes - out.bytes
+                , rows = back.rows - out.rows
                 , dropped = True
+                , gone = back.gone + out.rows
             }
 
 

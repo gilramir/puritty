@@ -40,7 +40,14 @@ historyBound : Term -> Int                 -- for the differential fuzzer, §VC1
 historyReached : Int -> Term -> Bool       -- the same, sticky and inside a read, §VC25, §VC32
 scrollbackBytesFor : { cols : Int, rows : Int } -> Int   -- the bytes for rows of a width, §VC32
 recutHolds : Int -> Term -> Bool           -- for the fuzzer: the pages' recut is the reflow, §VC31
+keyOptions : Term -> Keys.Options          -- what Vt.Keys.encode reads (phase3-input.md V47)
+mouseModes : Term -> { tracking : Int, format : Int }   -- what Vt.Mouse.encode reads (phase3-select.md §12)
 ```
+
+Beside it, exposed for the window: `Vt.View` (the renderer's Geng side),
+`Vt.Keys` and `Vt.KeyTables` (Ghostty's key encoder, V47), `Vt.Mouse`
+(Ghostty's mouse encoder, `phase3-select.md` §12) and `Vt.Charset` with
+`Vt.EucKrIndex` (V49).
 
 `feed` is the whole of what happens to a terminal: no clock, no file, no
 callback. What the program asked to be answered (DSR, DA, DECRQM, DECRQSS,

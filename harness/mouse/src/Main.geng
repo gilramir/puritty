@@ -1,0 +1,145 @@
+module Main exposing (main)
+
+{-| The mouse gate's program (`docs/phase3-select.md` §4): for each case of
+a file, a terminal fed the case's bytes gives the tracking and format
+(`Vt.mouseModes`), and `Vt.Mouse.encode` the bytes of each of its events in
+hex, space-separated ("-" for none), the last cell carried from one event
+to the next, in the form `oracle/ghostty-mouse` reads and writes.
+
+usage: core-mouse CASES
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import UInt8
+import Vt
+import Vt.Mouse as Mouse
+
+
+hexDigit : Char -> Int
+hexDigit c =
+    let
+        n =
+            Char.toCode c
+    in
+    if n <= 0x39 then
+        n - 0x30
+
+    else
+        Bitwise.or n 32 - 0x61 + 10
+
+
+fromHex : String -> Bytes
+fromHex s =
+    if s == "-" then
+        Bytes.empty
+
+    else
+        let
+            ds =
+                Array.map hexDigit (String.toArray s)
+        in
+        Array.initialize (Array.length ds // 2) 0 (\i -> UInt8.fromInt (Maybe.withDefault 0 (Array.get (2 * i) ds) * 16 + Maybe.withDefault 0 (Array.get (2 * i + 1) ds)))
+            |> Bytes.fromUInt8s
+
+
+toHex : Bytes -> String
+toHex b =
+    if Bytes.isEmpty b then
+        "-"
+
+    else
+        Bytes.toHexString { padding = False } b
+
+
+ints : String -> Array Int
+ints s =
+    Array.map (\w -> Maybe.withDefault 0 (String.toInt w)) (String.words s)
+
+
+at : Int -> Array Int -> Int
+at i a =
+    Maybe.withDefault 0 (Array.get i a)
+
+
+one : String -> String
+one line =
+    let
+        parts =
+            String.split ";" line
+
+        head =
+            String.words (Maybe.withDefault "" (Array.first parts))
+
+        n =
+            ints (String.join " " (Array.dropFirst 1 head))
+
+        term =
+            Vt.feed (fromHex (Maybe.withDefault "-" (Array.first head)))
+                (Vt.new { cols = 80, rows = 24, scrollbackBytes = 0, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 0, cellHeight = 0 })
+
+        modes =
+            Vt.mouseModes term
+
+        size =
+            { screenWidth = at 0 n
+            , screenHeight = at 1 n
+            , cellWidth = at 2 n
+            , cellHeight = at 3 n
+            , padTop = at 4 n
+            , padBottom = at 5 n
+            , padRight = at 6 n
+            , padLeft = at 7 n
+            }
+
+        track =
+            at 8 n /= 0
+
+        step e acc =
+            let
+                f =
+                    ints e
+
+                r =
+                    Mouse.encode
+                        { tracking = modes.tracking
+                        , format = modes.format
+                        , size = size
+                        , anyButtonPressed = at 5 f /= 0
+                        , track = track
+                        , last = acc.last
+                        }
+                        { action = at 0 f, button = at 1 f, mods = at 2 f, x = at 3 f, y = at 4 f }
+            in
+            { last = r.last, out = Array.pushLast (toHex r.bytes) acc.out }
+    in
+    if Array.length head /= 10 then
+        "?"
+
+    else
+        (Array.foldl step { last = Nothing, out = [] } (Array.dropFirst 1 parts)).out
+            |> String.join " "
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            Bytes.toStringLossy bytes
+                                |> String.lines
+                                |> Array.keepIf (\l -> l /= "")
+                                |> Array.map one
+                                |> String.join "\n"
+                                |> (\out -> Console.write (out ++ "\n"))
+                        )
+                    |> Task.onError (\_ -> Console.write "core-mouse: cannot read the file\n")
+            )
