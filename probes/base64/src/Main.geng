@@ -1,0 +1,134 @@
+module Main exposing (main)
+
+{-| What an OSC 52 costs in Geng (docs/phase3-select.md): FILE's base64
+decoded into a `Bytes.Builder` (geng-lang D1050), four characters to three
+bytes, between two readings of the monotonic clock, ten times over.
+
+usage: base64 FILE
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Builder as Builder exposing (Builder)
+import Console
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import UInt8
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i b =
+    when Bytes.get i b is
+        Just u ->
+            UInt8.toInt u
+
+        Nothing ->
+            -1
+
+
+{-| A base64 character's six bits, or -1. -}
+sextet : Int -> Int
+sextet c =
+    if c >= 65 && c <= 90 then
+        c - 65
+
+    else if c >= 97 && c <= 122 then
+        c - 71
+
+    else if c >= 48 && c <= 57 then
+        c + 4
+
+    else if c == 43 then
+        62
+
+    else if c == 47 then
+        63
+
+    else
+        -1
+
+
+decode : Bytes -> Int -> (moved out : Builder) -> Builder
+decode b i out =
+    if i + 4 > Bytes.length b then
+        out
+
+    else
+        let
+            a =
+                sextet (byteAt i b)
+
+            c =
+                sextet (byteAt (i + 1) b)
+
+            d =
+                sextet (byteAt (i + 2) b)
+
+            e =
+                sextet (byteAt (i + 3) b)
+        in
+        if a < 0 || c < 0 then
+            out
+
+        else if d < 0 then
+            Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 2 a) (Bitwise.shiftRightZfBy 4 c)) out
+
+        else if e < 0 then
+            out
+                |> Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 2 a) (Bitwise.shiftRightZfBy 4 c))
+                |> Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 4 c) (Bitwise.shiftRightZfBy 2 d))
+
+        else
+            decode b
+                (i + 4)
+                (out
+                    |> Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 2 a) (Bitwise.shiftRightZfBy 4 c))
+                    |> Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 4 c) (Bitwise.shiftRightZfBy 2 d))
+                    |> Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 6 d) e)
+                )
+
+
+times : Int -> Bytes -> Int -> Int
+times n b acc =
+    if n == 0 then
+        acc
+
+    else
+        times (n - 1) b (acc + Bytes.length (Builder.toBytes (decode b 0 (Builder.empty (Bytes.length b // 4 * 3)))))
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            n =
+                                                times 10 bytes 0
+                                        in
+                                        Time.monotonic
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    Console.write
+                                                        (String.fromInt (Bytes.length bytes)
+                                                            ++ " bytes of base64 to "
+                                                            ++ String.fromInt (n // 10)
+                                                            ++ ", ten times in "
+                                                            ++ String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                            ++ " ms\n"
+                                                        )
+                                                )
+                                    )
+                        )
+                    |> Task.onError (\_ -> Console.write "cannot read FILE\n")
+            )

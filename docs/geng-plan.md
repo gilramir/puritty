@@ -782,8 +782,13 @@ Geng if it takes one (geng-lang D1050). Built: every write queued and raced
 against libghostty-vt (V47, §12); XIM through a patched xcb-imdkit, the
 preedit drawn, and an IME gate over six IME pairs (V44–V46, §13); the
 font's size from `Xft.dpi` and a zoom (V50, §14); the EUC-KR filters on
-geng-lang's `Bytes.Builder` (V49, D1050, §15).* XKB modifiers, legacy and kitty
-keyboard encodings, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
+geng-lang's `Bytes.Builder` (V49, D1050, §15). The rest surveyed
+2026-11-03: [`phase3-select.md`](phase3-select.md): the window cannot scroll
+back, which nothing here named; a 10 MB paste over `ssh -X` takes 1.1 s and
+has to be read in the loop; tmux sends a copy as one unlimited OSC 52; and
+Ctrl with the wheel as a zoom, which Gilbert asked for.* XKB modifiers, legacy and kitty
+keyboard encodings, scrolling back through the history with the wheel and
+keys, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
 bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules, the
 EUC-KR filter pair.
 

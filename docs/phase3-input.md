@@ -2,7 +2,7 @@
 
 Status: **survey begun 2026-11-02; Gilbert took its seven leanings the same
 day (§10), and all seven are built (§11–§15). Mouse reports, selection, the
-clipboard, OSC 52 and paste come next, each surveyed as it comes.** Phase 3 of [`geng-plan.md`](geng-plan.md)
+clipboard, OSC 52 and paste are surveyed in [`phase3-select.md`](phase3-select.md).** Phase 3 of [`geng-plan.md`](geng-plan.md)
 §6 starts here, as every phase does, by measuring before building. It asks
 first the things that decide the shape of the rest: whether the IME matrix
 can be tested at all, what XIM costs a key here and over `ssh -X` (§3); what
