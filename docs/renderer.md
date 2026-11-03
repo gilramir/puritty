@@ -1,9 +1,8 @@
 # The renderer: what the probes leave, and how it is built (survey, 2026-11-02)
 
 Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
-(§R7, V34–V38). Steps 1 to 3 of §R6 are built (§R8, §R9), and step 4,
-the app, all but its command line, which waits on Gilbert (§R10,
-§R11).** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+(§R7, V34–V38). Steps 1 to 4 of §R6 are built (§R8–§R10, §R12); step 5,
+the pixel gate, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -458,4 +457,42 @@ PROGRAM ARGS...`, `--config FILE`, `--title` and `--class` to begin with.
 
 The alternative, one package for each runtime with the parser copied, keeps
 two parsers to keep alike.
+
+## R12. The command line (V39, 2026-11-02)
+
+Gilbert took §R11's leaning, and noted that Geng has no users but him, so
+any of it can change.
+
+**V39 · `gren-argparse` is a parser for any platform and a runner for
+each.** `gilramir/gren-argparse` 3.0.0 is `runtime = "any"`, its
+`Argparse.Parser` and `Argparse.PrettyPrinter`, with `pathParser` taking
+the platform's function from a string to a path. Its repository holds two
+more packages beside it: `gren-argparse/node` (`node/`), node's
+`Argparse.Program` as it was, and `gren-argparse/os` (`os/`), the same
+runners and `Failure`s over `Os.Env`. The `os` runner colours and wraps
+help as node's does, and for that geng-lang's `os` gained
+`Os.Env.standardOutputTerminal` (geng-lang D1048, `m3-os.md` §OS29). Both
+runners now wrap at their 80-column fallback for a terminal that says 0
+columns, as a pty nobody has sized does, where they wrapped at their
+20-column minimum. geng-lang's `suites` gate builds every example now,
+seven of them and `os-no-subcommand` natively, and runs the suite, 136
+pass.
+
+**visiterm's command line**, `app/src/Main.geng`:
+
+    visiterm [--config FILE] [--title TITLE] [PROGRAM ARGS...]
+
+`--config` names the settings file, which must then be there; `--title`
+and a program override the settings'. `--` before a program keeps its own
+flags from being taken for visiterm's (`visiterm -- vim -O a b`), since
+the parser cannot take one argument and then the rest. `--help` and
+`--version` are the runner's; a bad flag is reported on standard error
+with exit 1, and a bad settings file or a window that will not open with
+exit 2.
+
+Checked: `--version` prints 0.1.0 and `--help` the usage, both exit 0;
+`--frob` is "I don't recognize this flag" with the two flags there are,
+exit 1; `--config /nonexistent/x.toml` is the `readFile` error, exit 2;
+`--title cli-title -- sh -c '…; exit 4' --flag-for-sh` runs the program
+with its own flag and exits 4, and `poke` finds the window by the title.
 

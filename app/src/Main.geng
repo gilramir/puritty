@@ -1,7 +1,13 @@
 module Main exposing (main)
 
-{-| visiterm (`docs/renderer.md` §R10): a program on a terminal, drawn in
-an X window.
+{-| visiterm (`docs/renderer.md` §R10, §R12): a program on a terminal,
+drawn in an X window.
+
+    visiterm [--config FILE] [--title TITLE] [PROGRAM ARGS...]
+
+`--` before PROGRAM keeps its own flags from being taken for visiterm's.
+The command line is `gren-argparse` with its `os` runner; what it gives
+wins over the settings file.
 
 It reads its settings (`Config`), opens the window (`packages/x11`), and
 starts the program the settings name, or `$SHELL`, on a terminal of the
@@ -25,6 +31,9 @@ or when the window is closed, asking the program to end.
 
 -}
 
+import Argparse.Parser
+import Argparse.PrettyPrinter as PP
+import Argparse.Program
 import Bitwise
 import Bytes exposing (Bytes)
 import Config exposing (Config)
@@ -73,16 +82,61 @@ now =
     Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
 
 
+type Command
+    = Run { config : Maybe Path.Path, title : Maybe String, program : Array String }
+
+
+cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String } Command
+cli =
+    { word = ""
+    , arguments =
+        Argparse.Parser.zeroOrMoreArgs
+            { value = { label = "program", fn = Just, examples = [ "htop", "vim notes.txt" ] }
+            , help = "The program to run, and its arguments; $SHELL when none is given"
+            }
+    , flags =
+        Argparse.Parser.initFlags (\config title -> { config = config, title = title })
+            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/visiterm/config.toml"
+            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "title") Argparse.Parser.stringParser "The window's title while the program has set none"
+    , commonDescription = Nothing
+    , summary = "Runs a program on a terminal in an X window:"
+    , example = PP.words "visiterm --title notes -- vim -O a.txt b.txt"
+    , builder = \program flags -> Run { config = flags.config, title = flags.title, program = program }
+    }
+
+
 main : Task Never {}
 main =
-    Task.map3 (\cp fs vars -> { cp = cp, fs = fs, vars = vars }) Process.initialize File.initialize Os.Env.getEnvironmentVariables
-        |> Task.andThen (\s -> settings s.fs s.vars |> Task.andThen (\config -> start s.cp s.vars config))
-        |> Task.onError (\why -> Console.writeErr ("visiterm: " ++ why ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 2))
+    Os.Env.getEnvironment
+        |> Task.andThen
+            (\env ->
+                Argparse.Program.runRootWithContext env
+                    { name = "visiterm"
+                    , version = "0.1.0"
+                    , command = cli
+                    , init =
+                        \_ ->
+                            Task.map3 (\cp fs vars -> { cp = cp, fs = fs, vars = vars }) Process.initialize File.initialize Os.Env.getEnvironmentVariables
+                    , onCommand =
+                        \_ ctx (Run given) ->
+                            settings ctx.fs ctx.vars given.config
+                                |> Task.map
+                                    (\config ->
+                                        { config
+                                            | title = Maybe.withDefault config.title given.title
+                                            , command = if Array.isEmpty given.program then config.command else given.program
+                                        }
+                                    )
+                                |> Task.andThen (\config -> start ctx.cp ctx.vars config)
+                                |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "visiterm: " ++ why, value = 2 })
+                    }
+            )
 
 
-{-| The settings file, or the defaults when there is none. -}
-settings : File.Permission -> Dict String String -> Task String Config
-settings fs vars =
+{-| The settings file: the one the command line names, which must be
+there, or the user's, or the defaults when the user has none. -}
+settings : File.Permission -> Dict String String -> Maybe Path.Path -> Task String Config
+settings fs vars given =
     let
         dir =
             when Dict.get "XDG_CONFIG_HOME" vars is
@@ -95,21 +149,29 @@ settings fs vars =
 
                 Nothing ->
                     Maybe.map (\h -> h ++ "/.config") (Dict.get "HOME" vars)
+
+        file =
+            when given is
+                Just p ->
+                    Just { path = p, required = True }
+
+                Nothing ->
+                    Maybe.map (\d -> { path = Path.fromString (d ++ "/visiterm/config.toml"), required = False }) dir
     in
-    when dir is
+    when file is
         Nothing ->
             Task.succeed Config.defaults
 
-        Just d ->
+        Just f ->
             let
                 path =
-                    d ++ "/visiterm/config.toml"
+                    Path.toString f.path
             in
-            File.readFile fs (Path.fromString path)
+            File.readFile fs f.path
                 |> Task.map Just
                 |> Task.onError
                     (\err ->
-                        if err.kind == Os.Error.NotFound then
+                        if err.kind == Os.Error.NotFound && not f.required then
                             Task.succeed Nothing
 
                         else
