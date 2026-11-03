@@ -9,6 +9,9 @@ counted from 0 at its top and negative in the scrollback:
     word Y X [HEX]       the word at the point (Vt.wordAt), its boundaries
                          the default or HEX's UTF-8 characters
     line Y X             the line at the point (Vt.lineAt)
+    osc52 CHUNK          the input fed again to a new terminal in reads of
+                         CHUNK bytes, and the OSC 52 requests it made
+                         (Vt.takeClipboard, docs/phase3-select.md §16)
 
 A text is printed with `\` and newlines escaped; a word or line as its
 start and end, `Y,X-Y,X`, or `none`.
@@ -74,8 +77,36 @@ span pushed found =
             "none"
 
 
-answer : Vt.Term -> String -> String
-answer t line =
+feedChunks : Bytes -> Int -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedChunks input chunk at t =
+    if at >= Bytes.length input then
+        t
+
+    else
+        feedChunks input chunk (at + chunk) (Vt.feed (Bytes.slice at (at + chunk) input) t)
+
+
+clipLine : Vt.Clip -> String
+clipLine c =
+    (if c.selection == 0 then "PRIMARY" else "CLIPBOARD")
+        ++ " "
+        ++ String.fromChar (Maybe.withDefault '?' (Char.fromCode c.letter))
+        ++ (if c.bel then " bel " else " st ")
+        ++ (when c.text is
+                Nothing ->
+                    "read"
+
+                Just text ->
+                    if Bytes.length text > 64 then
+                        String.fromInt (Bytes.length text) ++ " bytes"
+
+                    else
+                        "\"" ++ escaped (Bytes.toStringLossy text) ++ "\""
+           )
+
+
+answer : Bytes -> Int -> Int -> Vt.Term -> String -> String
+answer input cols rows t line =
     let
         w =
             String.words line
@@ -104,6 +135,16 @@ answer t line =
 
         Just "line" ->
             line ++ " => " ++ span pushed (Vt.lineAt (point 1) t)
+
+        Just "osc52" ->
+            let
+                fresh =
+                    Vt.new { cols = cols, rows = rows, scrollbackBytes = 0, pageRows = 256, checksums = False, cellWidth = 10, cellHeight = 20 }
+
+                taken =
+                    Vt.takeClipboard (feedChunks input (max 1 (number 1 w)) 0 fresh)
+            in
+            line ++ " => " ++ String.join " | " (Array.map clipLine taken.requests)
 
         _ ->
             line ++ " => ?"
@@ -136,7 +177,7 @@ main =
                             Bytes.toStringLossy f.queries
                                 |> String.lines
                                 |> Array.keepIf (\l -> String.trim l /= "" && not (String.startsWith "#" l))
-                                |> Array.map (answer term)
+                                |> Array.map (answer f.input cols rows term)
                                 |> String.join "\n"
                                 |> (\out -> Console.write (out ++ "\n"))
                         )

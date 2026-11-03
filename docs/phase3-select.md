@@ -3,7 +3,8 @@
 Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); every
 leaning taken the same day (§11); a user's guide in
 [`user/copy-and-paste.md`](user/copy-and-paste.md). Built: mouse reports
-(§12), scrolling back (§13), selection and copy (§14), paste (§15). It is the
+(§12), scrolling back (§13), selection and copy (§14), paste (§15),
+OSC 52 (§16). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -760,3 +761,76 @@ to read.
 paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
 36, pointer 43 of 43, IME 14 of 14, perf within its record and budgets,
 the differential fuzzer clean (coverage 6,175, no findings).
+
+---
+
+## 16. OSC 52 built (2026-11-03)
+
+As §11 has it: writes allowed to 8 MB of base64, reads refused and never
+answered unless `[clipboard] osc52_read = "allow"`, and nothing asked.
+
+**The core** keeps an OSC 52 whole instead of to `stringMax`: once an OSC
+has read `52;`, it is in a state of its own (`psClip`), which copies each
+run of bytes up to a control into a `Bytes.Builder` (geng-lang D1050) in
+one call and carries on in the next read when one ends inside it. Past
+Ghostty's 8 MB (`MAX_ALLOCATING_BUF`) the OSC is dropped whole; CAN and
+SUB end it with nothing done; other controls inside are skipped, as in any
+OSC. At its end it is read as Ghostty reads it (`clipboard_operation.zig`,
+`Surface.clipboardWrite`): `KIND;DATA` with one letter of kind or none
+(`p` and `s` PRIMARY, any other CLIPBOARD), `?` a read, any other DATA
+base64, strict with its padding optional (`Vt.Base64`), which writes
+nothing when it does not decode and the empty text when DATA is empty.
+Each request waits for the embedder (`Vt.takeClipboard`), which decides
+what may be done.
+
+**The selection gate** has a case of fourteen OSCs fed in reads of 1, 7
+and 100,000 bytes, the same requests each time: writes ended by BEL and by
+ST, to each selection, with and without padding, a read, 5,000 characters
+(past the 2,048 the core keeps of another OSC), controls inside, empty
+DATA; and the ones that write nothing: bad base64, a kind of two letters,
+nothing after `52;`, one cut by CAN, a lone character left over. A title
+OSC after them and the text after that are as they were.
+
+**`Main`** does the requests between turns of the loop: a write makes the
+window own the selection with the text, as a copy does (a write to PRIMARY
+takes a selection's highlight away, since the selection is no longer
+visiterm's); a read, when allowed, asks the selection's owner for its text
+as a paste does and answers `OSC 52 ; LETTER ; BASE64`, ended as the
+question was. One read or paste at a time: a read asked for during a paste
+is not answered.
+
+**The pointer gate** gains six cases: a write to CLIPBOARD and to PRIMARY,
+read back with xclip; a read refused (nothing comes back) and one allowed
+(`ESC]52;c;cGFzdGVkIHRleHQKbGluZSB0d28=BEL` for `pasted text\nline two`);
+3,000,000 bytes written, as tmux sends a large copy whole (§7), read back
+whole; and a write to PRIMARY after visiterm's own selection, which xclip
+then reads.
+
+**The perf gate moved, and the record with it.** With the OSC 52 state as
+four fields of the term, `resize/*/long-10000` counted 5.9% over its
+record (3% allowed); the same state as one field (`Term.osc52`, a record
+of its own) counted 3.09% over. The instructions are not the resize's
+code: `perf record` puts about a third of that case in the collector
+(`minor_scan`, `GC_mark_from`, `GC_allochblk_nth` and the rest), and the
+runtime's nursery statistics (`GENG_NURSERY_STATS`) for twenty resizes are
+
+| build | minor collections | full collections | instructions |
+|---|---|---|---|
+| `d97d306` (before OSC 52) | 43 | 13 | 444,246,530 |
+| this one | 43 | 18 | 454,272,267 |
+
+with the feeding alone the same on both (154,357,157 and 154,359,233). A
+term one word larger on each of its copies moves where Boehm's full
+collections fall, five more of them here; the same kind of shift made the
+two words of the mouse's state count 0.35% *under* the record (§12). The
+four `long` resize cases are recorded again with this commit: `long-10000`
+290.9 M to 299.9 M (both limits), `long-100000` 309.8 M to 310.3 M and
+688.4 M to 707.0 M, the last two within the tolerance but moved the same
+way. That the term's size moves full collections at all is the
+collector's, and belongs with geng-lang's G7 work on collection, not here.
+
+**Gates for §16**: replay 325 of 325, view 345 of 345, select 4 of 4,
+paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
+36, pointer 49 of 49, IME 14 of 14, perf within its record (as recorded
+above) and budgets, the differential fuzzer clean (coverage 6,229, no
+findings).

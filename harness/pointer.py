@@ -105,6 +105,15 @@ CASES = [
     ("paste-shift-middle-reported", SGR, "own-primary:korean move:50,30 key-down:shift click:2 key-up:shift"),
     ("paste-right-button", "", "own-primary:korean move:50,30 click:2 click:3", "", '[mouse]\npaste_button = "right"\n'),
     ("paste-nothing", "", "key:ctrl+shift+v sleep:0.5"),
+    # OSC 52 (docs/phase3-select.md §16)
+    ("osc52-write", "\\e]52;c;aGVsbG8=\\a", "sleep:0.5 clipboard"),
+    ("osc52-write-primary", "\\e]52;p;d29ybGQ=\\a", "sleep:0.5 primary"),
+    ("osc52-read-refused", "", "own-clipboard:lines sleep:0.3 key:Return sleep:0.5", "read r; printf '\\033]52;c;?\\007'"),
+    ("osc52-read-allowed", "", "own-clipboard:lines sleep:0.3 key:Return sleep:0.5", "read r; printf '\\033]52;c;?\\007'",
+     '[clipboard]\nosc52_read = "allow"\n'),
+    ("osc52-large", "", "sleep:2 clipboard", "printf '\\033]52;;'; head -c 3000000 /dev/zero | base64 -w0; printf '\\007'"),
+    ("osc52-primary-clears", "", "move:4,8 down:1 move:40,8 up:1 primary key:Return sleep:0.5 primary",
+     TEXT + "; read r; printf '\\033]52;p;b3RoZXI=\\007'"),
 ]
 
 

@@ -53,6 +53,7 @@ import Vt
 import Vt.Charset as Charset exposing (Charset)
 import Vt.Mouse as Mouse
 import Vt.Paste as Paste
+import Vt.Base64 as Base64
 import Vt.View as View
 import X11
 
@@ -99,6 +100,10 @@ type alias Model =
       -- text comes (docs/phase3-select.md §15)
     , toPaste : Maybe X11.Selection
     , pasting : Maybe Bool
+      -- OSC 52 (docs/phase3-select.md §16): requests the core made, to be
+      -- done by the loop, and a read under way, its text so far
+    , clips : Array Vt.Clip
+    , clipRead : Maybe { letter : Int, bel : Bool, text : Bytes }
     }
 
 
@@ -340,6 +345,8 @@ run imeLog charset config cell child =
                             , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
                             , toPaste = Nothing
                             , pasting = Nothing
+                            , clips = []
+                            , clipRead = Nothing
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -482,6 +489,7 @@ loop terminal fd m00 =
      else
         X11.motion all |> Task.map (\_ -> { m00 | allMotion = all })
     )
+        |> Task.andThen clipboardRequests
         |> Task.andThen (flush fd)
         |> Task.andThen (\m0 -> race terminal fd m0)
 
@@ -600,8 +608,15 @@ feed fd chunk0 ms m =
         pushedBefore =
             Vt.rowsPushed m.term
 
-        taken =
+        replied =
             Vt.takeReplies (Vt.feed decoded.bytes m.term)
+
+        taken =
+            let
+                c =
+                    Vt.takeClipboard replied.term
+            in
+            { term = c.term, replies = replied.replies, clips = c.requests }
 
         held =
             syncHeld taken.term
@@ -622,6 +637,7 @@ feed fd chunk0 ms m =
         (Array.foldl (\r acc -> if Bytes.length acc.out >= replyCap then acc else send r acc)
             { m
                 | term = taken.term
+                , clips = m.clips ++ taken.clips
                 , back = back
                 , selection = selection
                 , decoder = decoded.decoder
@@ -756,7 +772,17 @@ handle terminal fd ms evs m =
 
                 X11.Pasted more ->
                     X11.pasted
-                        |> Task.andThen (\text -> handle terminal fd ms rest (pasteIn more text m))
+                        |> Task.andThen
+                            (\text ->
+                                handle terminal fd ms rest
+                                    (when m.clipRead is
+                                        Just r ->
+                                            clipReadIn more text r m
+
+                                        Nothing ->
+                                            pasteIn more text m
+                                    )
+                            )
 
                 X11.SelectionLost which ->
                     -- another program's selection now: the highlight goes,
@@ -776,7 +802,7 @@ owned : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (moved m : 
 owned terminal fd ms rest m =
     when m.toOwn is
         Just own ->
-            X11.select own.which own.text
+            X11.select own.which (Bytes.fromString own.text)
                 |> Task.andThen (\_ -> owned terminal fd ms rest { m | toOwn = Nothing })
 
         Nothing ->
@@ -787,6 +813,90 @@ owned terminal fd ms rest m =
 
                 Nothing ->
                     handle terminal fd ms rest m
+
+
+{-| The OSC 52 requests the core made (docs/phase3-select.md §16): a write
+makes the window own the selection with its text, as a copy does, and a
+write to PRIMARY takes a selection's highlight away; a read is answered only
+under `[clipboard] osc52_read = "allow"`, with the selection's text asked of
+its owner as a paste is and sent back as base64, and is otherwise dropped
+with no answer. -}
+clipboardRequests : (moved m : Model) -> Task x Model
+clipboardRequests m =
+    when Array.first m.clips is
+        Nothing ->
+            Task.succeed m
+
+        Just c ->
+            let
+                rest =
+                    { m | clips = Array.dropFirst 1 m.clips }
+
+                which =
+                    if c.selection == 0 then
+                        X11.Primary
+
+                    else
+                        X11.Clipboard
+            in
+            when c.text is
+                Just text ->
+                    X11.select which text
+                        |> Task.andThen
+                            (\_ ->
+                                clipboardRequests
+                                    (if c.selection == 0 then
+                                        { rest | selection = Nothing, urgent = True }
+
+                                     else
+                                        rest
+                                    )
+                            )
+
+                Nothing ->
+                    if rest.config.osc52Read && rest.clipRead == Nothing then
+                        X11.paste which
+                            |> Task.andThen
+                                (\asked ->
+                                    clipboardRequests
+                                        (if asked then
+                                            { rest | clipRead = Just { letter = c.letter, bel = c.bel, text = Bytes.empty } }
+
+                                         else
+                                            rest
+                                        )
+                                )
+
+                    else
+                        clipboardRequests rest
+
+
+{-| An OSC 52 read's text, as it comes; when it is all there, the answer
+the program asked for, `OSC 52 ; LETTER ; BASE64` ended as its question was. -}
+clipReadIn : Bool -> Bytes -> { letter : Int, bel : Bool, text : Bytes } -> (moved m : Model) -> Model
+clipReadIn more text r m =
+    let
+        all =
+            Bytes.flatten [ r.text, text ]
+    in
+    if more then
+        { m | clipRead = Just { r | text = all } }
+
+    else
+        sendRaw
+            (Bytes.flatten
+                [ Bytes.fromString ("\u{001B}]52;" ++ String.fromChar (Maybe.withDefault 'c' (Char.fromCode r.letter)) ++ ";")
+                , Base64.encode all
+                , Bytes.fromString
+                    (if r.bel then
+                        "\u{0007}"
+
+                     else
+                        "\u{001B}\\"
+                    )
+                ]
+            )
+            { m | clipRead = Nothing }
 
 
 {-| A paste's text, as it comes (docs/phase3-select.md §15): encoded as

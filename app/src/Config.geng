@@ -45,6 +45,10 @@ that a misspelt one is not a setting silently left at its default:
     paste_button = "middle"       # or "right": the button that pastes the
                                   # selection (docs/user/copy-and-paste.md)
 
+    [clipboard]
+    osc52_read = "deny"           # or "allow": whether a program may read the
+                                  # clipboard with OSC 52 (the same guide)
+
 -}
 
 import Bitwise
@@ -72,6 +76,7 @@ type alias Config =
     , charset : Maybe String
     , wordBoundaries : String
     , pasteButton : Int
+    , osc52Read : Bool
     }
 
 
@@ -95,6 +100,7 @@ defaults =
     , charset = Nothing
     , wordBoundaries = "\t '\"│`|:;,()[]{}<>$"
     , pasteButton = 3
+    , osc52Read = False
     }
 
 
@@ -108,7 +114,7 @@ decode text =
 decoder : Decoder Config
 decoder =
     Decode.succeed
-        (\{} window font colours cursor frames scrollback program terminal selection mouse ->
+        (\{} window font colours cursor frames scrollback program terminal selection mouse clipboard ->
             { columns = window.columns
             , rows = window.rows
             , title = window.title
@@ -127,9 +133,10 @@ decoder =
             , charset = terminal
             , wordBoundaries = selection
             , pasteButton = mouse
+            , osc52Read = clipboard
             }
         )
-        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program", "terminal", "selection", "mouse" ])
+        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program", "terminal", "selection", "mouse", "clipboard" ])
         |> Decode.andMap
             (section "window"
                 { columns = defaults.columns, rows = defaults.rows, title = defaults.title }
@@ -227,6 +234,32 @@ decoder =
                     -- in Ghostty's numbering, middle 3 and right 2
                     |> Decode.andMap (setting "paste_button" pasteButton defaults.pasteButton)
                 )
+            )
+        |> Decode.andMap
+            (section "clipboard"
+                defaults.osc52Read
+                (Decode.succeed (\{} r -> r)
+                    |> Decode.andMap (onlyKeys [ "osc52_read" ])
+                    -- docs/phase3-select.md §11: refused unless allowed, and
+                    -- never asked about
+                    |> Decode.andMap (setting "osc52_read" allowDeny defaults.osc52Read)
+                )
+            )
+
+
+allowDeny : Decoder Bool
+allowDeny =
+    Decode.string
+        |> Decode.andThen
+            (\name ->
+                if name == "allow" then
+                    Decode.succeed True
+
+                else if name == "deny" then
+                    Decode.succeed False
+
+                else
+                    Decode.fail ("\"" ++ name ++ "\" is not allow or deny")
             )
 
 

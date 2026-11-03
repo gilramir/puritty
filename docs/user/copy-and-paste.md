@@ -1,9 +1,8 @@
 # Copy and paste in visiterm
 
 *Status: this guide describes phase 3's design as decided on 2026-11-03
-([`../phase3-select.md`](../phase3-select.md) §10–§11). Selecting, copying
-and pasting (§1–§3) work as described here; OSC 52 (§4) is being built,
-and until it is, visiterm ignores it.*
+([`../phase3-select.md`](../phase3-select.md) §10–§11), and all of it is
+built (§12–§16 there).*
 
 Copy and paste in a terminal on Linux is confusing because there are **two
 clipboards**, not one, and because the programs running inside the terminal

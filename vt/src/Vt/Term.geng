@@ -20,6 +20,10 @@ module Vt.Term exposing
     , psOsc
     , psDcs
     , psString
+    , psClip
+    , Clip
+    , Osc52
+    , noOsc52
     , newScreen
     , reply
     , isAlt
@@ -304,6 +308,9 @@ type alias Term =
       -- (`Vt.Mouse`)
     , mouseTracking : Int
     , mouseFormat : Int
+      -- an OSC 52 (docs/phase3-select.md §16): one field, since every
+      -- field of the term costs each of its updates (§16's perf)
+    , osc52 : Osc52
     , sets : Int
     , gl : Int
     , single : Int
@@ -375,6 +382,33 @@ psDcs =
 psString : Int
 psString =
     8
+
+
+{-| An OSC 52's text, kept whole (docs/phase3-select.md §16). -}
+psClip : Int
+psClip =
+    9
+
+
+{-| An OSC 52 being read: what follows its `52;`, each read's run of it
+kept as a slice and joined at its end, up to `Vt.clipMax` bytes (`len`;
+`over` past it); and the clipboard writes and reads OSC 52s made, for the
+embedder to take. -}
+type alias Osc52 =
+    { clip : Array Bytes, len : Int, over : Bool, requests : Array Clip }
+
+
+noOsc52 : Osc52
+noOsc52 =
+    { clip = [], len = 0, over = False, requests = [] }
+
+
+{-| A clipboard request of an OSC 52 (docs/phase3-select.md §16):
+`selection` 0 PRIMARY (`p` or `s`), 1 CLIPBOARD (`c` or none); `text` the
+text to write, or Nothing for a read; `letter` the selection's letter as it
+came, and `bel` whether a BEL ended it, for a read's answer. -}
+type alias Clip =
+    { selection : Int, text : Maybe Bytes, letter : Int, bel : Bool }
 
 
 newScreen : Int -> Int -> Int -> Screen

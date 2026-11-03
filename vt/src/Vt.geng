@@ -4,6 +4,7 @@ module Vt exposing
     , defaultPageRows, keyOptions, mouseModes
     , View, scrollbackRows, rowsPushed, viewAt, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
+    , Clip, takeClipboard
     )
 
 {-| visiterm's headless terminal core (`docs/vt-core.md`).
@@ -38,6 +39,7 @@ ground state a run of printable ASCII is written to its row at once.
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
 import Dict exposing (Dict)
 import Int64
 import Math
@@ -59,6 +61,11 @@ import Vt.Palette exposing (..)
 {-| A terminal (`Vt.Term.Term`). -}
 type alias Term =
     State.Term
+
+
+{-| A clipboard request of an OSC 52 (`Vt.Term.Clip`, `takeClipboard`). -}
+type alias Clip =
+    State.Clip
 
 
 {-| The rows a view scrolled back shows (`viewAt`), for `Vt.View.frameBack`:
@@ -851,6 +858,7 @@ fresh config =
     , savedModes = Dict.empty
     , mouseTracking = 0
     , mouseFormat = 0
+    , osc52 = noOsc52
     , sets = 0
     , gl = 0
     , single = -1
@@ -876,6 +884,21 @@ fresh config =
     , xtChecksum = 23
     , replies = []
     }
+
+
+{-| The clipboard requests OSC 52 made since the last take
+(`docs/phase3-select.md` §16), for the embedder, which decides what may
+be done with them. -}
+takeClipboard : (moved t : Term) -> { term : Term, requests : Array Clip }
+takeClipboard t =
+    let
+        requests =
+            t.osc52.requests
+
+        o =
+            t.osc52
+    in
+    { term = { t | osc52 = { o | requests = [] } }, requests = requests }
 
 
 {-| The replies the terminal has to write back to the program, oldest
@@ -927,6 +950,9 @@ feed bytes t =
 
     else if t.ps == psDcs then
         dcsString bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psClip then
+        oscClip bytes n 0 { t | ps = psGround }
 
     else
         ignoreString bytes n 0 { t | ps = psGround }
@@ -2042,8 +2068,151 @@ oscString bytes n i t =
         else if b < 0x20 then
             oscString bytes n (i + 1) t
 
+        else if b == 0x3B && isFiftyTwo t then
+            -- OSC 52: the rest kept whole, not to `stringMax`
+            oscClip bytes n (i + 1) { t | str = Builder.empty 0, osc52 = { noOsc52 | requests = t.osc52.requests } }
+
         else
             oscString bytes n (i + 1) (keepByte b t)
+
+
+{-| Whether the OSC kept so far is `52`, its `;` next. -}
+isFiftyTwo : Term -> Bool
+isFiftyTwo t =
+    Builder.length t.str == 2 && Builder.get 0 t.str == Just (UInt8.fromInt 0x35) && Builder.get 1 t.str == Just (UInt8.fromInt 0x32)
+
+
+{-| The most of an OSC 52 kept after its `52;`: Ghostty's
+`MAX_ALLOCATING_BUF`, 8 MB of base64. One longer is dropped whole. -}
+clipMax : Int
+clipMax =
+    8388608
+
+
+{-| An OSC 52 after its `52;` (`docs/phase3-select.md` §16), to BEL or ST:
+each run of bytes up to a control is kept as a slice of its read, joined
+with the others at the end, and a read that ends inside it carries on in
+the next (`psClip`). Controls other than the
+ends are skipped, as `oscString` skips them; CAN and SUB end it with
+nothing done. -}
+oscClip : Bytes -> Int -> Int -> (moved t : Term) -> Term
+oscClip bytes n i t =
+    let
+        j =
+            controlFrom bytes i n
+
+        o =
+            t.osc52
+
+        kept =
+            if o.over then
+                t
+
+            else if o.len + (j - i) > clipMax then
+                { t | osc52 = { o | over = True, clip = [], len = 0 } }
+
+            else if j > i then
+                { t | osc52 = { o | clip = Array.pushLast (Bytes.slice i j bytes) o.clip, len = o.len + (j - i) } }
+
+            else
+                t
+    in
+    if j >= n then
+        { kept | ps = psClip }
+
+    else
+        let
+            b =
+                byteAt bytes j
+        in
+        if b == 7 then
+            resume bytes n (j + 1) (clipDispatch True kept)
+
+        else if b == 0x1B then
+            escape bytes n (j + 1) (clipDispatch False kept)
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (j + 1) { kept | osc52 = { noOsc52 | requests = kept.osc52.requests } }
+
+        else
+            oscClip bytes n (j + 1) kept
+
+
+{-| The first byte from `i` below 0x20, or `n`. -}
+controlFrom : Bytes -> Int -> Int -> Int
+controlFrom bytes i n =
+    if i >= n || byteAt bytes i < 0x20 then
+        i
+
+    else
+        controlFrom bytes (i + 1) n
+
+
+{-| An OSC 52 ended, as Ghostty's `clipboard_operation.parse` and
+`Surface.clipboardWrite` read it: `KIND;DATA`, or `;DATA` as `c`, with one
+letter of kind (`p` and `s` PRIMARY, any other CLIPBOARD); nothing after
+the `52;` is no request. DATA `?` asks to read; any other is base64 to
+write, and base64 that does not decode writes nothing. -}
+clipDispatch : Bool -> (moved t : Term) -> Term
+clipDispatch bel t =
+    let
+        data =
+            Bytes.flatten t.osc52.clip
+
+        over =
+            t.osc52.over
+
+        requests =
+            t.osc52.requests
+
+        cleared =
+            { t | osc52 = { noOsc52 | requests = requests } }
+
+        len =
+            Bytes.length data
+
+        first =
+            byteAt data 0
+
+        parsed =
+            if over || len == 0 then
+                Nothing
+
+            else if first == 0x3B then
+                Just { letter = 0x63, payload = Bytes.slice 1 len data }
+
+            else if len >= 2 && byteAt data 1 == 0x3B then
+                Just { letter = first, payload = Bytes.slice 2 len data }
+
+            else
+                Nothing
+    in
+    when parsed is
+        Nothing ->
+            cleared
+
+        Just p ->
+            let
+                selection =
+                    if p.letter == 0x70 || p.letter == 0x73 then
+                        0
+
+                    else
+                        1
+
+                request =
+                    if p.payload == Bytes.fromString "?" then
+                        Just { selection = selection, text = Nothing, letter = p.letter, bel = bel }
+
+                    else
+                        Maybe.map (\text -> { selection = selection, text = Just text, letter = p.letter, bel = bel }) (Base64.decode p.payload)
+            in
+            when request is
+                Just r ->
+                    { cleared | osc52 = { noOsc52 | requests = Array.pushLast r requests } }
+
+                Nothing ->
+                    cleared
 
 
 {-| An OSC's command number as Ghostty reads one: digits only, and no

@@ -1,0 +1,189 @@
+module Vt.Base64 exposing (decode, encode)
+
+{-| Base64 for OSC 52 (`docs/phase3-select.md` §7, §16), into a
+`Bytes.Builder` (geng-lang D1050): §7 measured this decoder at 10.4 ms for
+5.3 MB.
+
+`decode` is strict as Ghostty's `decodeStrict(.optional)` is meant to be:
+the standard alphabet and nothing else (no whitespace, no line breaks),
+padding optional but, when there, only at the end and making the length a
+multiple of four, and never a lone character left over. What it refuses is
+Nothing, and OSC 52 then writes nothing.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Builder as Builder exposing (Builder)
+import UInt8
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i b =
+    when Bytes.get i b is
+        Just u ->
+            UInt8.toInt u
+
+        Nothing ->
+            -1
+
+
+{-| A character's six bits, or -1. -}
+sextet : Int -> Int
+sextet c =
+    if c >= 65 && c <= 90 then
+        c - 65
+
+    else if c >= 97 && c <= 122 then
+        c - 71
+
+    else if c >= 48 && c <= 57 then
+        c + 4
+
+    else if c == 43 then
+        62
+
+    else if c == 47 then
+        63
+
+    else
+        -1
+
+
+decode : Bytes -> Maybe Bytes
+decode b =
+    let
+        n =
+            Bytes.length b
+
+        -- the padding at the end: none, one or two '='
+        pad =
+            if n >= 2 && byteAt (n - 1) b == 61 && byteAt (n - 2) b == 61 then
+                2
+
+            else if n >= 1 && byteAt (n - 1) b == 61 then
+                1
+
+            else
+                0
+
+        body =
+            n - pad
+    in
+    if (pad > 0 && modBy 4 n /= 0) || modBy 4 body == 1 then
+        Nothing
+
+    else
+        decodeFrom b 0 body (Builder.empty (body // 4 * 3 + 3))
+
+
+decodeFrom : Bytes -> Int -> Int -> (moved out : Builder) -> Maybe Bytes
+decodeFrom b i n out =
+    if i >= n then
+        Just (Builder.toBytes out)
+
+    else
+        let
+            left =
+                n - i
+
+            a =
+                sextet (byteAt i b)
+
+            c =
+                sextet (byteAt (i + 1) b)
+
+            d =
+                if left > 2 then
+                    sextet (byteAt (i + 2) b)
+
+                else
+                    0
+
+            e =
+                if left > 3 then
+                    sextet (byteAt (i + 3) b)
+
+                else
+                    0
+        in
+        if a < 0 || c < 0 || d < 0 || e < 0 then
+            Nothing
+
+        else
+            let
+                one =
+                    Builder.pushLast (Bitwise.or (Bitwise.shiftLeftBy 2 a) (Bitwise.shiftRightZfBy 4 c)) out
+            in
+            if left == 2 then
+                Just (Builder.toBytes one)
+
+            else
+                let
+                    two =
+                        Builder.pushLast (Bitwise.and 255 (Bitwise.or (Bitwise.shiftLeftBy 4 c) (Bitwise.shiftRightZfBy 2 d))) one
+                in
+                if left == 3 then
+                    Just (Builder.toBytes two)
+
+                else
+                    decodeFrom b (i + 4) n (Builder.pushLast (Bitwise.and 255 (Bitwise.or (Bitwise.shiftLeftBy 6 d) e)) two)
+
+
+alphabet : Bytes
+alphabet =
+    Bytes.fromString "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+{-| Bytes as base64 with its padding, for OSC 52's answer to a read. -}
+encode : Bytes -> Bytes
+encode b =
+    encodeFrom b 0 (Bytes.length b) (Builder.empty ((Bytes.length b + 2) // 3 * 4))
+
+
+encodeFrom : Bytes -> Int -> Int -> (moved out : Builder) -> Bytes
+encodeFrom b i n out =
+    if i >= n then
+        Builder.toBytes out
+
+    else
+        let
+            x =
+                byteAt i b
+
+            y =
+                if i + 1 < n then
+                    byteAt (i + 1) b
+
+                else
+                    0
+
+            z =
+                if i + 2 < n then
+                    byteAt (i + 2) b
+
+                else
+                    0
+
+            ch k =
+                byteAt k alphabet
+
+            w =
+                out
+                    |> Builder.pushLast (ch (Bitwise.shiftRightZfBy 2 x))
+                    |> Builder.pushLast (ch (Bitwise.or (Bitwise.shiftLeftBy 4 (Bitwise.and 3 x)) (Bitwise.shiftRightZfBy 4 y)))
+                    |> Builder.pushLast
+                        (if i + 1 < n then
+                            ch (Bitwise.or (Bitwise.shiftLeftBy 2 (Bitwise.and 15 y)) (Bitwise.shiftRightZfBy 6 z))
+
+                         else
+                            61
+                        )
+                    |> Builder.pushLast
+                        (if i + 2 < n then
+                            ch (Bitwise.and 63 z)
+
+                         else
+                            61
+                        )
+        in
+        encodeFrom b (i + 3) n w
