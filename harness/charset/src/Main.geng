@@ -1,0 +1,106 @@
+module Main exposing (main)
+
+{-| The EUC-KR filter gate's program (`docs/phase3-input.md` V49,
+`docs/cjk-and-thai.md` §10.5): `Vt.Charset` on each of §10.5's cases, a
+line each, and every code point of the index sent as CP949 and read back.
+`harness/charset.py` holds the lines to `corpus/charset/expected.txt`.
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Task exposing (Task)
+import UInt8
+import Vt.Charset as Charset exposing (Charset(..))
+import Vt.EucKrIndex exposing (index)
+
+
+bytesOf : Array Int -> Bytes
+bytesOf ns =
+    Bytes.fromUInt8s (Array.map UInt8.fromInt ns)
+
+
+hex : Bytes -> String
+hex b =
+    if Bytes.isEmpty b then
+        "-"
+
+    else
+        Bytes.toHexString { padding = True } b
+
+
+{-| The reads decoded one after another, the state carried. -}
+reads : Array (Array Int) -> String
+reads rs =
+    let
+        step r acc =
+            let
+                d =
+                    Charset.decode acc.decoder (bytesOf r)
+            in
+            { decoder = d.decoder, out = Array.pushLast d.bytes acc.out }
+
+        done =
+            Array.foldl step { decoder = Charset.decoder, out = [] } rs
+    in
+    hex (Bytes.flatten done.out) ++ (if done.decoder.lead /= 0 then " (a lead kept)" else "")
+
+
+encoded : Charset -> String -> String
+encoded charset text =
+    let
+        e =
+            Charset.encode charset (Bytes.fromString text)
+    in
+    hex e.bytes ++ ", " ++ String.fromInt e.replaced ++ " replaced"
+
+
+{-| Every code point of the index sent as CP949 and decoded again. -}
+roundTrip : String
+roundTrip =
+    let
+        cps =
+            Array.keepIf (\cp -> cp /= 0) index
+
+        text =
+            String.fromArray (Array.mapAndKeepJust Char.fromCode cps)
+
+        sent =
+            Charset.encode Cp949 (Bytes.fromString text)
+
+        back =
+            Charset.decode Charset.decoder sent.bytes
+    in
+    String.fromInt (Array.length cps)
+        ++ " code points, "
+        ++ String.fromInt sent.replaced
+        ++ " replaced, "
+        ++ (if back.bytes == Bytes.fromString text then
+                "read back the same"
+
+            else
+                "read back DIFFERENT"
+           )
+
+
+main : Task Never {}
+main =
+    [ "가 in one read: " ++ reads [ [ 0xB0, 0xA1 ] ]
+    , "가 split across two reads: " ++ reads [ [ 0xB0 ], [ 0xA1 ] ]
+    , "a lead ending the last read: " ++ reads [ [ 0x41, 0xB0 ] ]
+    , "a lead then ESC [ A: " ++ reads [ [ 0xB0, 0x1B, 0x5B, 0x41 ] ]
+    , "a lead then a letter, CP949's trail: " ++ reads [ [ 0xB0, 0x41 ] ]
+    , "a lead then a byte with no code point: " ++ reads [ [ 0xC9, 0x41 ] ]
+    , "0x80 and 0xFF: " ++ reads [ [ 0x80, 0x61, 0xFF ] ]
+    , "a lead then a lead: " ++ reads [ [ 0xB0, 0xB0, 0xA1 ] ]
+    , "box drawing and ①: " ++ reads [ [ 0xA6, 0xA1, 0xA6, 0xA2, 0xA8, 0xE7 ] ]
+    , "a long ASCII run between: " ++ reads [ [ 0xB0, 0xA1 ] ++ Array.repeat 20 0x61 ++ [ 0xB0, 0xA1 ] ]
+    , "가 sent as EUC-KR: " ++ encoded EucKr "가"
+    , "똠 (CP949 only) sent as EUC-KR: " ++ encoded EucKr "똠"
+    , "똠 sent as CP949: " ++ encoded Cp949 "똠"
+    , "an emoji sent as CP949: " ++ encoded Cp949 "a😀b"
+    , "ESC [ A sent as EUC-KR: " ++ encoded EucKr "\u{001B}[A"
+    , "UTF-8 sent as UTF-8: " ++ encoded Utf8 "가"
+    , "the index as CP949: " ++ roundTrip
+    ]
+        |> String.join "\n"
+        |> (\out -> Console.write (out ++ "\n"))

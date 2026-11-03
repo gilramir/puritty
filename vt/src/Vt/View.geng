@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame, inked, wantsFrame, Look, defaultLook, Focus, focused)
+module Vt.View exposing (Shadow, shadow, frame, frameWith, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -102,6 +102,7 @@ import Vt.Term exposing (..)
 import Vt.Screen exposing (..)
 import Vt.Style exposing (Attrs, Clusters, Styles, cellPoints, styleOf)
 import Vt.Palette exposing (dynamicColour, paletteColour)
+import Vt.Width as Width
 import Dict
 
 
@@ -149,6 +150,187 @@ focused =
     { focused = True, blinkOn = True }
 
 
+{-| What an IME is composing (`docs/phase3-input.md` V46): its text, each
+code point's XIM feedback (reverse 1, underline 2, highlight 4), and the
+caret, a count of code points. It is drawn over the screen from the
+cursor, never written into it: each grapheme in the width the core gives
+it, wrapping at the row's end, and past the screen's last row cut off. A
+code point with no width joins the one before it, so Thai marks and
+jamo stay with their base. The caret is the cursor while there is text.
+Each feedback's style is one of the eight ids `Vt.Cell.styleMax` leaves
+over: reverse video for reverse, bold for highlight, and an underline for
+the rest, so plain composing text shows as composing. -}
+type alias Preedit =
+    { text : String
+    , feedback : Array Int
+    , caret : Int
+    }
+
+
+noPreedit : Preedit
+noPreedit =
+    { text = "", feedback = [], caret = 0 }
+
+
+preeditStyle : Int
+preeditStyle =
+    32760
+
+
+{-| A cell of the preedit's overlay: as the core's cell would be (its code
+point, its width state, its style id in the high bits), and its code points. -}
+type alias PreCell =
+    { value : Int64, points : Array Int }
+
+
+type alias Grapheme =
+    { points : Array Int, feedback : Int, width : Int, caret : Bool }
+
+
+{-| The preedit's graphemes: a code point with no width joins the one
+before it; each takes its first code point's feedback and width, and
+`caret` marks the one the caret is before. -}
+graphemes : Preedit -> Array Grapheme
+graphemes p =
+    let
+        cps =
+            Array.map Char.toCode (String.toArray p.text)
+
+        step i cp acc =
+            let
+                w =
+                    if cp < 0x80 then
+                        1
+
+                    else
+                        Width.width cp
+
+                fb =
+                    Maybe.withDefault 0 (Array.get i p.feedback)
+            in
+            when Array.last acc is
+                Just g ->
+                    if w == 0 then
+                        Array.pushLast { g | points = Array.pushLast cp g.points } (Array.dropLast 1 acc)
+
+                    else
+                        Array.pushLast { points = [ cp ], feedback = fb, width = w, caret = i == p.caret } acc
+
+                Nothing ->
+                    Array.pushLast { points = [ cp ], feedback = fb, width = max 1 w, caret = i == p.caret } acc
+    in
+    Array.indexedMap (\i cp -> { i = i, cp = cp }) cps
+        |> Array.foldl (\e acc -> step e.i e.cp acc) []
+
+
+{-| The overlay's cells from the cursor, row by row; where the caret's
+cell is (its index, and 2 for a wide grapheme); and where the reverse run
+starts, else the caret. -}
+type alias Overlay =
+    { at : Int, cells : Array PreCell, caretAt : Int, caretCells : Int, spotAt : Int }
+
+
+overlayOf : Preedit -> Term -> Overlay
+overlayOf p t =
+    let
+        cols =
+            t.cols
+
+        start =
+            t.y * cols + min t.x (cols - 1)
+
+        limit =
+            t.rows * cols
+
+        place g acc =
+            let
+                i =
+                    start + Array.length acc.cells
+
+                col =
+                    modBy cols i
+
+                padded =
+                    -- a wide grapheme that does not fit the row's last column
+                    -- starts the next row, as the core's spacer does
+                    if g.width == 2 && col == cols - 1 then
+                        Array.pushLast { value = Int64.fromInt spacerHead, points = [] } acc.cells
+
+                    else
+                        acc.cells
+
+                at =
+                    start + Array.length padded
+
+                id =
+                    styleBits (preeditStyle + Bitwise.and 7 g.feedback)
+
+                head =
+                    { value = Bitwise.or id (Bitwise.or (Int64.fromInt (Bitwise.and 0x1FFFFF (pointsKey g.points))) (Int64.fromInt (if g.width == 2 then wideHead else 0))), points = g.points }
+
+                cells =
+                    if g.width == 2 then
+                        padded |> Array.pushLast head |> Array.pushLast { value = Bitwise.or id (Int64.fromInt wideTail), points = [] }
+
+                    else
+                        Array.pushLast head padded
+            in
+            if at + g.width > limit then
+                acc
+
+            else
+                { cells = cells
+                , caretAt = if g.caret then at else acc.caretAt
+                , caretCells = if g.caret then g.width else acc.caretCells
+                , spotAt = if acc.spotAt < 0 && Bitwise.and 1 g.feedback /= 0 then at else acc.spotAt
+                }
+
+        placed =
+            Array.foldl place { cells = [], caretAt = -1, caretCells = 1, spotAt = -1 } (graphemes p)
+
+        caretAt =
+            if placed.caretAt >= 0 then
+                placed.caretAt
+
+            else
+                min (limit - 1) (start + Array.length placed.cells)
+    in
+    { at = start
+    , cells = placed.cells
+    , caretAt = caretAt
+    , caretCells = placed.caretCells
+    , spotAt = if placed.spotAt >= 0 then placed.spotAt else caretAt
+    }
+
+
+{-| A grapheme as a cell's low 21 bits: its code point, or for several a
+hash with the cluster bit's place left clear, so the shadow sees a change. -}
+pointsKey : Array Int -> Int
+pointsKey points =
+    when points is
+        [ cp ] ->
+            cp
+
+        _ ->
+            Bitwise.and 0x1FFFFF (Array.foldl (\cp h -> Bitwise.xor (h * 31) cp) 7 points)
+
+
+{-| Where the IME's candidate window belongs, as a cell: the start of the
+reverse run (the target clause), else the caret; the cursor's cell when
+nothing is composed. -}
+preeditSpot : Preedit -> Term -> { x : Int, y : Int }
+preeditSpot p t =
+    if p.text == "" then
+        { x = t.x, y = t.y }
+
+    else
+        let
+            o =
+                overlayOf p t
+        in
+        { x = modBy t.cols o.spotAt, y = o.spotAt // t.cols }
+
+
 {-| The core's palette's own: its white on its black. -}
 defaultLook : Look
 defaultLook =
@@ -173,7 +355,7 @@ shadow cols rows =
     , runs = 0
     , bytes = 0
     , colourKey = -1
-    , stamps = Builder.fromArray (Array.repeat (2 * styleMax) -1)
+    , stamps = Builder.fromArray (Array.repeat 0x10000 -1)
     , styleIds = Builder.empty 64
     , ink = Builder.fromArray (Array.repeat (cols * rows) 0)
     , inked = False
@@ -186,12 +368,35 @@ shadow cols rows =
 list that does the same to the window. -}
 frame : Look -> Focus -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frame look focus t sh0 =
+    frameWith look focus noPreedit t sh0
+
+
+{-| `frame`, with a preedit drawn over the screen from the cursor. -}
+frameWith : Look -> Focus -> Preedit -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameWith look focus preedit t sh0 =
     let
         key =
             colourKey look t
 
-        cursor =
+        plainCursor =
             cursorOf focus t
+
+        cursor =
+            if preedit.text == "" then
+                plainCursor
+
+            else
+                let
+                    o =
+                        overlayOf preedit t
+                in
+                { plainCursor
+                    | preAt = o.at
+                    , pre = o.cells
+                    , at = if plainCursor.at >= 0 || t.showCursor then o.caretAt else -1
+                    , cells = o.caretCells
+                    , shape = if plainCursor.shape == 0 then 1 else plainCursor.shape
+                }
 
         sh1 =
             if t.cols /= sh0.cols || t.rows /= sh0.rows || key /= sh0.colourKey then
@@ -812,6 +1017,30 @@ cellOf s o ext x =
         0
 
 
+{-| The cell drawn at column `x` of row `row` (the row's first index): the
+preedit's where its overlay lies, else the core's. -}
+cellAt : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int64
+cellAt s cursor o ext row x =
+    let
+        i =
+            row + x - cursor.preAt
+    in
+    if cursor.preAt >= 0 && i >= 0 && i < Array.length cursor.pre then
+        Maybe.withDefault 0 (Maybe.map .value (Array.get i cursor.pre))
+
+    else
+        cellOf s o ext x
+
+
+preCellPoints : Cursor -> Int -> Maybe (Array Int)
+preCellPoints cursor i =
+    if cursor.preAt >= 0 && i >= cursor.preAt && i < cursor.preAt + Array.length cursor.pre then
+        Maybe.map .points (Array.get (i - cursor.preAt) cursor.pre)
+
+    else
+        Nothing
+
+
 {-| Row `y` from column `x`: each changed run written to the list and the
 shadow. -}
 diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
@@ -825,7 +1054,7 @@ diffRow s clusters cursor o ext y x0 cols sh list =
     else
         let
             x =
-                if x0 > 0 && cellWide (cellOf s o ext x0) == wideTail then
+                if x0 > 0 && cellWide (cellAt s cursor o ext (y * cols) x0) == wideTail then
                     x0 - 1
 
                 else
@@ -835,7 +1064,7 @@ diffRow s clusters cursor o ext y x0 cols sh list =
                 runEnd s cursor o ext y (x0 + 1) x0 cols sh.cells
 
             end =
-                if end0 < cols && cellWide (cellOf s o ext (end0 - 1)) == wideHead then
+                if end0 < cols && cellWide (cellAt s cursor o ext (y * cols) (end0 - 1)) == wideHead then
                     end0 + 1
 
                 else
@@ -902,10 +1131,10 @@ writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
     else
         let
             c =
-                cellOf s o ext x
+                cellAt s cursor o ext row x
 
             points =
-                Array.takeFirst 63 (cellPoints c clusters)
+                Array.takeFirst 63 (Maybe.withDefault (cellPoints c clusters) (preCellPoints cursor (row + x)))
 
             under =
                 isCursor cursor (row + x)
@@ -966,7 +1195,7 @@ colourKey look t =
 for none), how many cells it covers, and its shape (1 a block, 2 an
 underline, 3 a bar, 4 a hollow block). -}
 type alias Cursor =
-    { at : Int, cells : Int, shape : Int }
+    { at : Int, cells : Int, shape : Int, preAt : Int, pre : Array PreCell }
 
 
 cursorOf : Focus -> Term -> Cursor
@@ -989,10 +1218,12 @@ cursorOf focus t =
             cellWide (cellOf t.screen o (extentAt o t.screen) head) == wideHead && head + 1 < t.cols
     in
     if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || t.y >= t.rows || t.x < 0 || t.y < 0 then
-        { at = -1, cells = 0, shape = 0 }
+        { at = -1, cells = 0, shape = 0, preAt = -1, pre = [] }
 
     else
-        { at = t.y * t.cols + head
+        { preAt = -1
+        , pre = []
+        , at = t.y * t.cols + head
         , cells = if wide then 2 else 1
         , shape =
             if not focus.focused then
@@ -1020,7 +1251,7 @@ drawnAs : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int64
 drawnAs s cursor o ext row x =
     let
         c =
-            cellOf s o ext x
+            cellAt s cursor o ext row x
     in
     if isCursor cursor (row + x) then
         Bitwise.or c (Bitwise.shiftLeftBy 56 (Int64.fromInt cursor.shape))
@@ -1034,8 +1265,15 @@ for an id of `0x8000` and more, its cell's under the cursor. -}
 styleRecord : Look -> Term -> Int -> Int -> (moved b : Builder UInt8) -> Builder UInt8
 styleRecord look t shape id b =
     let
+        base =
+            Bitwise.and 0x7FFF id
+
         a =
-            styleOf (Bitwise.and 0x7FFF id) t.styles
+            if base >= preeditStyle then
+                preeditAttrs (base - preeditStyle)
+
+            else
+                styleOf base t.styles
 
         cursorShape =
             if id >= 0x8000 then
@@ -1104,6 +1342,18 @@ styleRecord look t shape id b =
         |> push24 out.ulc
         |> Builder.pushLast (UInt8.fromInt (Bitwise.and a.flags 0xFF))
         |> Builder.pushLast (UInt8.fromInt (Bitwise.or (Bitwise.shiftLeftBy 4 cursorShape) a.ul))
+
+
+{-| A preedit feedback's style: reverse video for reverse (1), bold for
+highlight (4), and an underline otherwise. -}
+preeditAttrs : Int -> Attrs
+preeditAttrs fb =
+    { fg = 0
+    , bg = 0
+    , ulc = 0
+    , flags = (if Bitwise.and 1 fb /= 0 then 16 else 0) + (if Bitwise.and 4 fb /= 0 then 1 else 0)
+    , ul = if Bitwise.and 1 fb /= 0 then 0 else 1
+    }
 
 
 {-| A colour of `Attrs` as RGB: 0 the default (OSC 10 or 11, else the

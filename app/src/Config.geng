@@ -1,4 +1,4 @@
-module Config exposing (Config, defaults, decode, languageOf)
+module Config exposing (Config, defaults, decode, languageOf, charsetOf)
 
 {-| visiterm's settings (`docs/renderer.md` §R10), read from
 `$XDG_CONFIG_HOME/visiterm/config.toml`, or `~/.config/visiterm/config.toml`.
@@ -59,6 +59,7 @@ type alias Config =
     , syncTimeoutMs : Int
     , scrollbackLines : Int
     , command : Array String
+    , charset : Maybe String
     }
 
 
@@ -79,6 +80,7 @@ defaults =
     , syncTimeoutMs = 150
     , scrollbackLines = 25000
     , command = []
+    , charset = Nothing
     }
 
 
@@ -92,7 +94,7 @@ decode text =
 decoder : Decoder Config
 decoder =
     Decode.succeed
-        (\{} window font colours cursor frames scrollback program ->
+        (\{} window font colours cursor frames scrollback program terminal ->
             { columns = window.columns
             , rows = window.rows
             , title = window.title
@@ -108,9 +110,10 @@ decoder =
             , syncTimeoutMs = frames.syncTimeoutMs
             , scrollbackLines = scrollback
             , command = program
+            , charset = terminal
             }
         )
-        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program" ])
+        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program", "terminal" ])
         |> Decode.andMap
             (section "window"
                 { columns = defaults.columns, rows = defaults.rows, title = defaults.title }
@@ -178,6 +181,63 @@ decoder =
                     |> Decode.andMap (setting "command" (Decode.array Decode.string) defaults.command)
                 )
             )
+        |> Decode.andMap
+            (section "terminal"
+                defaults.charset
+                (Decode.succeed (\{} c -> c)
+                    |> Decode.andMap (onlyKeys [ "charset" ])
+                    -- the remote character set (cjk-and-thai.md §10.3): what
+                    -- the program reads and writes; the locale's when left out
+                    |> Decode.andMap (Decode.optionalField "charset" charsetName)
+                )
+            )
+
+
+charsetName : Decoder String
+charsetName =
+    Decode.string
+        |> Decode.andThen
+            (\name ->
+                if Array.member name [ "utf-8", "euc-kr", "cp949" ] then
+                    Decode.succeed name
+
+                else
+                    Decode.fail ("\"" ++ name ++ "\" is not utf-8, euc-kr or cp949")
+            )
+
+
+{-| The remote character set a local program uses, from the locale's
+codeset (`ko_KR.euckr`, `ko_KR.EUC-KR`, `ko_KR.CP949`, `ko_KR.UHC`):
+`euc-kr`, `cp949`, else `utf-8` (`cjk-and-thai.md` §10.3 rule 1). -}
+charsetOf : Dict String String -> String
+charsetOf vars =
+    let
+        locale =
+            [ "LC_ALL", "LC_CTYPE", "LANG" ]
+                |> Array.mapAndKeepJust (\name -> Dict.get name vars)
+                |> Array.findFirst (\v -> v /= "")
+                |> Maybe.map .value
+                |> Maybe.withDefault ""
+
+        codeset =
+            String.split "." locale
+                |> Array.get 1
+                |> Maybe.withDefault ""
+                |> String.split "@"
+                |> Array.first
+                |> Maybe.withDefault ""
+                |> String.toLower
+                |> String.replace "-" ""
+                |> String.replace "_" ""
+    in
+    if codeset == "euckr" then
+        "euc-kr"
+
+    else if codeset == "cp949" || codeset == "uhc" then
+        "cp949"
+
+    else
+        "utf-8"
 
 
 {-| A table of the file, or the defaults when it is left out. -}

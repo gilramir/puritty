@@ -2,6 +2,9 @@
 """The display-list gate (docs/renderer.md §R8).
 
 A case whose name says `unfocused` is drawn as a window without the focus
+has, and one whose directory has a `preedit.txt` (its text, each code
+point's XIM feedback, the caret, a line each) has that preedit drawn over
+every frame (docs/phase3-input.md V46)
 draws it. Every case of corpus/replay/ and of corpus/view/cases/ (the same
 `case.txt` format, harness/replay.py's) is fed to the core and Vt.View by
 harness/view/core-view, CHUNK bytes a read with a frame after each, and
@@ -162,6 +165,13 @@ def view_of(name, text, tmp):
     extra = [",".join(f"{a}:{c}x{r}" for a, c, r in resizes)] if resizes else []
     if "unfocused" in name:
         extra = (extra or [""]) + ["unfocused"]
+    pre = CASES / name / "preedit.txt"
+    if pre.exists():
+        # three lines: the text, each code point's feedback, the caret
+        text, feedback, caret = (pre.read_text().split("\n") + ["", "", ""])[:3]
+        extra = (extra or [""])
+        extra = extra + ([] if len(extra) > 1 else ["focused"])
+        extra = extra + [text.encode().hex() + "|" + ",".join(feedback.split()) + "|" + (caret.strip() or "0")]
     p = subprocess.run(
         ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G", "-p", "MemorySwapMax=0", "--",
          "timeout", "60", str(VIEW), str(cols), str(rows), str(path), str(CHUNK)] + extra,

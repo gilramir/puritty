@@ -16,12 +16,14 @@ usage: core-view COLS ROWS FILE CHUNK [RESIZES [FOCUS]]
 -}
 
 import Array.Builder as Builder exposing (Builder)
+import Bitwise
 import Bytes exposing (Bytes)
 import Console
 import Os.Env
 import Os.File
 import Os.Path
 import Task exposing (Task)
+import UInt8
 import Vt
 import Vt.View as View
 
@@ -30,6 +32,7 @@ type alias Run =
     { term : Vt.Term
     , shadow : View.Shadow
     , focus : View.Focus
+    , preedit : View.Preedit
     , out : Builder String
     }
 
@@ -66,7 +69,7 @@ framed : (moved r : Run) -> Run
 framed r =
     let
         f =
-            View.frame View.defaultLook r.focus r.term r.shadow
+            View.frameWith View.defaultLook r.focus r.preedit r.term r.shadow
     in
     { r | shadow = f.shadow, out = Builder.pushLast ("frame " ++ Bytes.toHexString { padding = True } f.list ++ "\n") r.out }
 
@@ -89,6 +92,42 @@ resizesOf text =
                     Nothing
         )
         (String.split "," text)
+
+
+{-| `HEX|FB,FB,...|CARET`: the preedit's UTF-8 in hex, each code point's
+feedback, the caret. -}
+preeditOf : String -> View.Preedit
+preeditOf arg =
+    when String.split "|" arg is
+        [ hex, fbs, caret ] ->
+            { text = Bytes.toStringLossy (fromHex hex)
+            , feedback = Array.mapAndKeepJust String.toInt (String.split "," fbs)
+            , caret = Maybe.withDefault 0 (String.toInt caret)
+            }
+
+        _ ->
+            View.noPreedit
+
+
+fromHex : String -> Bytes
+fromHex s =
+    let
+        d c =
+            let
+                n =
+                    Char.toCode c
+            in
+            if n <= 0x39 then
+                n - 0x30
+
+            else
+                Bitwise.or n 32 - 0x61 + 10
+
+        ds =
+            Array.map d (String.toArray s)
+    in
+    Array.initialize (Array.length ds // 2) 0 (\i -> UInt8.fromInt (Maybe.withDefault 0 (Array.get (2 * i) ds) * 16 + Maybe.withDefault 0 (Array.get (2 * i + 1) ds)))
+        |> Bytes.fromUInt8s
 
 
 number : Int -> Array String -> Int
@@ -126,6 +165,7 @@ main =
                                             { term = term
                                             , shadow = View.shadow cols rows
                                             , focus = { focused = Array.get 5 s.args /= Just "unfocused", blinkOn = True }
+                                            , preedit = preeditOf (Maybe.withDefault "" (Array.get 6 s.args))
                                             , out = Builder.empty 16
                                             }
                                 in

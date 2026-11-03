@@ -19,7 +19,7 @@ work = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else here / "../../.harnes
 work.mkdir(parents=True, exist_ok=True)
 
 table = [0] * (126 * 190)
-for line in open(here / "index-euc-kr.txt"):
+for line in open(here / "../../vt/data/index-euc-kr.txt"):
     if line.startswith("#") or not line.strip():
         continue
     p, cp = line.split()[:2]

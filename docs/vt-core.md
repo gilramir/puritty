@@ -3595,3 +3595,29 @@ the survey's two inputs were too few to judge an edit to the print by.
 Gilbert's remark: in the far future Geng might emit LLVM IR itself, which
 could take such choices back from clang (geng-lang `open-items.md`, the
 entry on clang's inlining).
+
+
+## VC44. A fuzzer timeout: 470 resizes of a scrollback (2026-11-02)
+
+The differential fuzzer for ten minutes on four jobs during phase 3
+(`phase3-input.md`), `diff-runs.tsv`'s row for `bccdbcc+`, stopped one job
+on libFuzzer's 10-second timeout. Its binaries were the ones built at 14:02
+that day: `fuzz.py` does not build them, so that run fuzzed the core before
+phase 3's changes to it (XTMODKEYS, `styleMax`). Rebuilt with them, the
+input takes the same time.
+
+**It is the reflow, linear and slow.** The input, 2,755 bytes, resizes the
+terminal 470 times (the 0xFE triples), and `perf` puts 97% of its time in
+`Vt.Resize.resizeScreen`: the pages pulled and recut at each width
+(`pullPages`, `readPages`, `Recut.recut`, `Pages.unpackText`). It takes
+7.7 s in `vt-diff`, which keeps the history it compares, and 1.6 s in
+`vt-fuzz`, each under coverage instrumentation. §VC24's inputs, about 90
+resizes, took 1.3–1.4 s in `vt-fuzz`; this one is 470 at about the same
+cost each. Nothing in it differs between the core and Ghostty. The row
+stays as recorded. Rebuilt, the fuzzer ran ten minutes more on four jobs
+with phase 3's core and found nothing (the next row, coverage 6,305).
+
+Not decided: whether the fuzzer should cap the resizes an input may make,
+or the reflow should be cheaper per resize; a real window resizes once a
+frame at most, and `phase2-window.md` §15.6's drag of `long-10000` costs
+20–22 ms a resize.

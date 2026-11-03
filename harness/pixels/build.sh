@@ -7,9 +7,13 @@
 set -e
 cd "$(dirname "$0")"
 R=/home/gram/prj/geng-lang
+# xcb-imdkit with visiterm's patches (V44), linked by its own name
+../../packages/x11/build-imdkit.sh
+I=$(realpath ../../vendor/xcb-imdkit/visiterm/lib/pkgconfig)
 C=$R/vendor/gren-lang/compiler
 PATH=$R/.devbox/nix/profile/default/bin:$PATH \
 GENG_BIN=$C/geng GENG_CORE=$R/vendor/gren-lang/core GENG_CC=$R/.devbox/nix/profile/default/bin/clang NIX_HARDENING_ENABLE= \
 GENG_PKG_CONFIG=$(command -v pkg-config) \
+PKG_CONFIG_PATH=$I:$PKG_CONFIG_PATH PKG_CONFIG_PATH_FOR_TARGET=$I:$PKG_CONFIG_PATH_FOR_TARGET \
 GENG_CORE_PASSES=specialize,foldspec,transient,arraypop,mono,inline,float,floatin,mutual,case,tailcall,inplace,drop \
   exec node $C/app make Main --output=core-pixels "$@"

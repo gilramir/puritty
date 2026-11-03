@@ -1,0 +1,233 @@
+module Vt.Charset exposing (Charset(..), fromName, Decoder, decoder, decode, encode)
+
+{-| The remote character set's filters (`docs/cjk-and-thai.md` §10.3,
+`docs/phase3-input.md` V49): EUC-KR or CP949 to UTF-8 before the core, and
+UTF-8 back on the way out. A UTF-8 pane has none.
+
+**The decoder** is WHATWG's `euc-kr` decoder, which takes the CP949
+superset whichever of the two the pane is set to: a lead byte 0x81–0xFE and
+a trail 0x41–0xFE make one code point from WHATWG's index; a lead whose
+pair has none gives U+FFFD, and its trail, when it is ASCII, is read again
+on its own, so a stray lead never swallows an ESC; 0x80 and 0xFF give
+U+FFFD. It never makes a C1 control: the index has none. A lead that ends
+a read is kept for the next.
+
+It writes into a `Bytes.Builder` (geng-lang D1050): a run of 16 or more
+ASCII bytes is copied whole, and anything else a byte at a time.
+
+**The encoder** writes a code point below 0x80 as itself, and any other by
+its first pointer in the index. Strict EUC-KR can only send KS X 1001
+(both bytes 0xA1 and up), so a code point outside it, or outside the index
+altogether, is sent as `?` and counted: the caller says so rather than
+dropping it unseen (§10.3 rule 2). CP949 sends every pointer.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Bytes.Builder as Builder exposing (Builder)
+import Dict exposing (Dict)
+import UInt8
+import Vt.EucKrIndex exposing (index)
+
+
+type Charset
+    = Utf8
+    | EucKr
+    | Cp949
+
+
+{-| `utf-8`, `euc-kr` or `cp949`; UTF-8 for any other name. -}
+fromName : String -> Charset
+fromName name =
+    if name == "euc-kr" then
+        EucKr
+
+    else if name == "cp949" then
+        Cp949
+
+    else
+        Utf8
+
+
+{-| A decoder's state between reads: the lead byte a read ended on, or 0. -}
+type alias Decoder =
+    { lead : Int }
+
+
+decoder : Decoder
+decoder =
+    { lead = 0 }
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i b =
+    when Bytes.get i b is
+        Just u ->
+            UInt8.toInt u
+
+        Nothing ->
+            -1
+
+
+{-| A read decoded to UTF-8, and the state for the next. -}
+decode : Decoder -> Bytes -> { decoder : Decoder, bytes : Bytes }
+decode d bytes =
+    let
+        n =
+            Bytes.length bytes
+
+        done =
+            go bytes n 0 d.lead (Builder.empty (n + n // 2 + 3))
+    in
+    { decoder = { lead = done.lead }, bytes = Builder.toBytes done.out }
+
+
+go : Bytes -> Int -> Int -> Int -> (moved out : Builder) -> { lead : Int, out : Builder }
+go bytes n i lead out =
+    if i >= n then
+        { lead = lead, out = out }
+
+    else
+        let
+            byte =
+                byteAt i bytes
+        in
+        if lead /= 0 then
+            let
+                cp =
+                    if byte >= 0x41 && byte <= 0xFE then
+                        Maybe.withDefault 0 (Array.get ((lead - 0x81) * 190 + byte - 0x41) index)
+
+                    else
+                        0
+            in
+            if cp /= 0 then
+                go bytes n (i + 1) 0 (utf8 cp out)
+
+            else if byte < 0x80 then
+                -- the trail is read again on its own
+                go bytes n i 0 (utf8 0xFFFD out)
+
+            else
+                go bytes n (i + 1) 0 (utf8 0xFFFD out)
+
+        else if byte < 0x80 then
+            let
+                end =
+                    asciiEnd bytes n (i + 1)
+            in
+            if end - i >= 16 then
+                go bytes n end 0 (Builder.append (Bytes.slice i end bytes) out)
+
+            else
+                go bytes n end 0 (pushRun bytes i end out)
+
+        else if byte >= 0x81 && byte <= 0xFE then
+            -- a pair in this read: both bytes in one step; a lead that ends
+            -- the read is kept for the next
+            if i + 1 < n then
+                let
+                    trail =
+                        byteAt (i + 1) bytes
+
+                    cp =
+                        if trail >= 0x41 && trail <= 0xFE then
+                            Maybe.withDefault 0 (Array.get ((byte - 0x81) * 190 + trail - 0x41) index)
+
+                        else
+                            0
+                in
+                if cp /= 0 then
+                    go bytes n (i + 2) 0 (utf8 cp out)
+
+                else if trail < 0x80 then
+                    go bytes n (i + 1) 0 (utf8 0xFFFD out)
+
+                else
+                    go bytes n (i + 2) 0 (utf8 0xFFFD out)
+
+            else
+                go bytes n (i + 1) byte out
+
+        else
+            go bytes n (i + 1) 0 (utf8 0xFFFD out)
+
+
+{-| Past the run of ASCII from `i`. -}
+asciiEnd : Bytes -> Int -> Int -> Int
+asciiEnd bytes n i =
+    if i < n && byteAt i bytes < 0x80 && byteAt i bytes >= 0 then
+        asciiEnd bytes n (i + 1)
+
+    else
+        i
+
+
+{-| Bytes `i` to `end` pushed one at a time: a run too short to be worth
+the slice that `append` takes. -}
+pushRun : Bytes -> Int -> Int -> (moved out : Builder) -> Builder
+pushRun bytes i end out =
+    if i >= end then
+        out
+
+    else
+        pushRun bytes (i + 1) end (Builder.pushLast (byteAt i bytes) out)
+
+
+utf8 : Int -> (moved out : Builder) -> Builder
+utf8 cp out =
+    Builder.pushCodePoint cp out
+
+
+
+-- ENCODER
+
+
+{-| Each code point the index has, at its first pointer, as WHATWG's
+encoder takes it. Built the first time it is used. -}
+pointers : Dict Int Int
+pointers =
+    Array.foldr (\i acc -> Dict.set (Maybe.withDefault 0 (Array.get i index)) i acc) Dict.empty (Array.initialize (Array.length index) 0 identity)
+        |> Dict.remove 0
+
+
+{-| UTF-8 text in the pane's character set, and how many code points it
+could not send and sent as `?`. -}
+encode : Charset -> Bytes -> { bytes : Bytes, replaced : Int }
+encode charset text =
+    when charset is
+        Utf8 ->
+            { bytes = text, replaced = 0 }
+
+        _ ->
+            let
+                cps =
+                    Array.map Char.toCode (String.toArray (Bytes.toStringLossy text))
+
+                step cp acc =
+                    if cp < 0x80 then
+                        { out = Builder.pushLast cp acc.out, replaced = acc.replaced }
+
+                    else
+                        when Dict.get cp pointers is
+                            Just p ->
+                                let
+                                    lead =
+                                        p // 190 + 0x81
+
+                                    trail =
+                                        modBy 190 p + 0x41
+                                in
+                                if charset == EucKr && (lead < 0xA1 || trail < 0xA1) then
+                                    { out = Builder.pushLast 0x3F acc.out, replaced = acc.replaced + 1 }
+
+                                else
+                                    { out = Builder.pushLast trail (Builder.pushLast lead acc.out), replaced = acc.replaced }
+
+                            Nothing ->
+                                { out = Builder.pushLast 0x3F acc.out, replaced = acc.replaced + 1 }
+
+                done =
+                    Array.foldl step { out = Builder.empty (Array.length cps * 2), replaced = 0 } cps
+            in
+            { bytes = Builder.toBytes done.out, replaced = done.replaced }

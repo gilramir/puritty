@@ -1,7 +1,7 @@
 module Vt exposing
     ( Term, Config, new, feed, takeReplies, resize
     , dump, historyBound, historyReached, recutHolds, scrollbackBytesFor
-    , defaultPageRows
+    , defaultPageRows, keyOptions
     )
 
 {-| visiterm's headless terminal core (`docs/vt-core.md`).
@@ -40,6 +40,7 @@ import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
+import Vt.Keys as Keys
 import Vt.Width as Width
 import Vt.Cell exposing (..)
 import Vt.Style exposing (..)
@@ -2341,6 +2342,13 @@ dispatchRest final priv inter params t =
     else if priv == 0x3E && final == 0x63 && inter == 0 then
         reply "\u{001B}[>1;0;0c" t
 
+    else if priv == 0x3E && final == 0x6D && inter == 0 then
+        modifyKeys params t
+
+    else if priv == 0x3E && final == 0x6E && inter == 0 then
+        -- XTMODKEYS' reset: modifyOtherKeys off, as Ghostty takes it
+        { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
     else if priv == 0x3E && final == 0x71 && inter == 0 then
         reply "\u{001B}P>|visiterm\u{001B}\\" t
 
@@ -3791,13 +3799,55 @@ softReset t =
         |> withPlain
 
 
+{-| Where `modes` keeps xterm's `modifyOtherKeys` 2 (`CSI > 4 ; 2 m`), the
+one key format the key encoder reads (`Vt.Keys`, V47): a key no mode has,
+so that RIS's fresh modes and DECSTR clear it as Ghostty's resets do, with
+no field of its own in `Term`. -}
+modifyOtherKeysKey : Int
+modifyOtherKeysKey =
+    -4
+
+
+{-| XTMODKEYS, `CSI > Pp ; Pv m`, as Ghostty takes it: no parameters, or a
+first one of 0, 1, 2 or 4, turn `modifyOtherKeys` 2 off, except `4 ; 2`,
+which turns it on; any other first parameter, or more than two, is ignored. -}
+modifyKeys : Array Int -> (moved t : Term) -> Term
+modifyKeys params t =
+    if Array.isEmpty params then
+        { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
+    else if Array.length params > 2 || not (Array.member (param 0 0 params) [ 0, 1, 2, 4 ]) then
+        t
+
+    else if params == [ 4, 2 ] then
+        { t | modes = Dict.set modifyOtherKeysKey True t.modes }
+
+    else
+        { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
+
+{-| What a key's bytes depend on, for `Vt.Keys.encode`: the modes, the
+`modifyOtherKeys` state, and the kitty flags on top of the active screen's
+stack. -}
+keyOptions : Term -> Keys.Options
+keyOptions t =
+    { cursorApplication = privateState 1 t == 1
+    , keypadApplication = privateState 66 t == 1
+    , backarrow = privateState 67 t == 1
+    , ignoreKeypadWithNumlock = privateState 1035 t == 1
+    , altEscPrefix = privateState 1036 t == 1
+    , modifyOtherKeys2 = Dict.get modifyOtherKeysKey t.modes == Just True
+    , kittyFlags = Maybe.withDefault 0 (Array.get t.keys.at t.keys.stack)
+    }
+
+
 {-| The recorded modes DECSTR resets besides the ones `softReset` names, as
 Ghostty's soft reset does: cursor keys, reverse wraparound and its extended
 form, the numeric keypad (?66, which ESC = and ESC > set as well, as in
 Ghostty), left and right margins, and KAM. -}
 softResetModes : Array Int
 softResetModes =
-    [ 1, 45, 66, 69, 1045, ansiKey 2 ]
+    [ 1, 45, 66, 69, 1045, ansiKey 2, modifyOtherKeysKey ]
 
 
 resetSaved : (moved t : Term) -> Term

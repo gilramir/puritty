@@ -775,7 +775,14 @@ visiterm ships none).
 Xvfb and orders every commit right, but XIM costs 16–24 ms a key over
 `ssh -X` in xcb-imdkit's round trips; a paste does not fit the loop until
 `os` has a write it can race; EUC-KR's decoder in Geng adds 12–15% on
-ASCII and 72% on Korean text; its seven leanings wait on Gilbert.* XKB modifiers, legacy and kitty
+ASCII and 72% on Korean text. Gilbert took its seven leanings the same day
+(V44–V50, §10), and asked for a fast EUC-KR decoder, with a byte builder in
+Geng if it takes one (geng-lang D1050). Built: every write queued and raced
+(V48, geng-lang D1049, §11); Ghostty's key encoder in Geng with a key gate
+against libghostty-vt (V47, §12); XIM through a patched xcb-imdkit, the
+preedit drawn, and an IME gate over six IME pairs (V44–V46, §13); the
+font's size from `Xft.dpi` and a zoom (V50, §14); the EUC-KR filters on
+geng-lang's `Bytes.Builder` (V49, D1050, §15).* XKB modifiers, legacy and kitty
 keyboard encodings, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
 bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules, the
 EUC-KR filter pair.
@@ -794,6 +801,10 @@ since it reloads the keymap by asking the server (`renderer.md` §R18).
 The font's size from the screen's resolution (`Xft.dpi`, else its
 physical size) rather than a fixed 96 dpi, and a zoom at run time: on
 Gilbert's large screen 11 points was very small (`renderer.md` §R18).
+The core's cell size in pixels, which `CSI 14 t` and `CSI 16 t` report,
+kept at what it was made with after a zoom (`phase3-input.md` §14).
+EUC-KR and CP949 panes drawing East Asian Ambiguous characters two cells
+wide (C§10.3 rule 5): the core's width table has no such setting yet.
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,

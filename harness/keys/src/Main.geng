@@ -1,0 +1,113 @@
+module Main exposing (main)
+
+{-| The key gate's program (`docs/phase3-input.md` V47): `Vt.Keys.encode`
+for each case of a file, its bytes in hex a line ("-" for none), in the
+form `oracle/ghostty-keys` reads and writes.
+
+usage: core-keys CASES
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import UInt8
+import Vt.Keys as Keys
+
+
+hexDigit : Char -> Int
+hexDigit c =
+    let
+        n =
+            Char.toCode c
+    in
+    if n <= 0x39 then
+        n - 0x30
+
+    else
+        Bitwise.or n 32 - 0x61 + 10
+
+
+fromHex : String -> Bytes
+fromHex s =
+    if s == "-" then
+        Bytes.empty
+
+    else
+        let
+            ds =
+                Array.map hexDigit (String.toArray s)
+        in
+        Array.initialize (Array.length ds // 2) 0 (\i -> UInt8.fromInt (Maybe.withDefault 0 (Array.get (2 * i) ds) * 16 + Maybe.withDefault 0 (Array.get (2 * i + 1) ds)))
+            |> Bytes.fromUInt8s
+
+
+toHex : Bytes -> String
+toHex b =
+    if Bytes.isEmpty b then
+        "-"
+
+    else
+        Bytes.toHexString { padding = False } b
+
+
+one : String -> String
+one line =
+    let
+        f =
+            String.words line
+
+        n i =
+            Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i f))
+
+        on i =
+            n i /= 0
+    in
+    if Array.length f /= 14 then
+        "?"
+
+    else
+        let
+            opts =
+                { cursorApplication = on 6
+                , keypadApplication = on 7
+                , backarrow = on 8
+                , ignoreKeypadWithNumlock = on 9
+                , altEscPrefix = on 10
+                , modifyOtherKeys2 = on 11
+                , kittyFlags = n 12
+                }
+
+            event =
+                { action = n 0
+                , key = n 1
+                , mods = n 2
+                , consumed = n 3
+                , composing = on 4
+                , unshifted = n 5
+                , text = Bytes.toStringLossy (fromHex (Maybe.withDefault "-" (Array.get 13 f)))
+                }
+        in
+        toHex (Bytes.fromString (Keys.encode opts event))
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            Bytes.toStringLossy bytes
+                                |> String.lines
+                                |> Array.keepIf (\l -> l /= "")
+                                |> Array.map one
+                                |> String.join "\n"
+                                |> (\out -> Console.write (out ++ "\n"))
+                        )
+                    |> Task.onError (\_ -> Console.write "core-keys: cannot read the file\n")
+            )

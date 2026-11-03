@@ -1,0 +1,119 @@
+diff --git a/src/imclient.c b/src/imclient.c
+index 56b8424..18e4ae2 100644
+--- a/src/imclient.c
++++ b/src/imclient.c
+@@ -36,12 +36,40 @@
+ 
+ void _xcb_xim_close(xcb_xim_t *im);
+ 
+-bool _xcb_xim_send_message(xcb_xim_t *im, uint8_t *data, size_t length) {
++/* visiterm: every name the rotation uses is interned at the first message,
++ * the requests sent together and their replies read after, one round trip
++ * in all; a message after it makes none (docs/phase3-input.md §3.3). */
++static bool _xcb_xim_intern_client_atoms(xcb_xim_t *im) {
++    xcb_intern_atom_cookie_t cookies[XCB_XIM_ATOM_ROTATION_SIZE];
+     char atomName[64];
+-    int len = sprintf(atomName, "_client%u", im->sequence++);
++    for (uint32_t i = 0; i < XCB_XIM_ATOM_ROTATION_SIZE; i++) {
++        int len = sprintf(atomName, "_client%u", i);
++        cookies[i] = xcb_intern_atom(im->conn, false, len, atomName);
++    }
++    bool ok = true;
++    for (uint32_t i = 0; i < XCB_XIM_ATOM_ROTATION_SIZE; i++) {
++        xcb_intern_atom_reply_t *reply =
++            xcb_intern_atom_reply(im->conn, cookies[i], NULL);
++        if (!reply) {
++            ok = false;
++            continue;
++        }
++        im->client_atoms[i] = reply->atom;
++        free(reply);
++    }
++    im->client_atoms_ready = ok;
++    return ok;
++}
++
++bool _xcb_xim_send_message(xcb_xim_t *im, uint8_t *data, size_t length) {
++    uint32_t seq = im->sequence++;
+     im->sequence = (im->sequence + 1) % XCB_XIM_ATOM_ROTATION_SIZE;
+-    return _xcb_send_xim_message(im->conn, im->atoms[XIM_ATOM_XIM_PROTOCOL],
+-                                 im->accept_win, data, length, atomName, len);
++    if (!im->client_atoms_ready && !_xcb_xim_intern_client_atoms(im)) {
++        return false;
++    }
++    return _xcb_send_xim_message_atom(
++        im->conn, im->atoms[XIM_ATOM_XIM_PROTOCOL], im->accept_win, data,
++        length, im->client_atoms[seq % XCB_XIM_ATOM_ROTATION_SIZE]);
+ }
+ 
+ bool _xcb_xim_check_server_name(xcb_xim_t *im, char *name, int namelen) {
+diff --git a/src/imclient_p.h b/src/imclient_p.h
+index 9091d98..6013949 100644
+--- a/src/imclient_p.h
++++ b/src/imclient_p.h
+@@ -119,6 +119,9 @@ struct _xcb_xim_t {
+ 
+     // some global data
+     uint32_t sequence;
++    // visiterm: the rotating property atoms, interned once, together
++    bool client_atoms_ready;
++    xcb_atom_t client_atoms[XCB_XIM_ATOM_ROTATION_SIZE];
+     uint8_t byte_order;
+ 
+     // set by _xcb_xim_init
+diff --git a/src/message.c b/src/message.c
+index 04383a6..4a5d327 100644
+--- a/src/message.c
++++ b/src/message.c
+@@ -141,6 +141,33 @@ bool _xcb_send_xim_message(xcb_connection_t *conn, xcb_atom_t protocol_atom,
+     return true;
+ }
+ 
++bool _xcb_send_xim_message_atom(xcb_connection_t *conn, xcb_atom_t protocol_atom,
++                                xcb_window_t window, uint8_t *data, size_t length,
++                                xcb_atom_t atom) {
++    if (!data) {
++        return false;
++    }
++    length += XCB_IM_HEADER_SIZE;
++    xcb_client_message_event_t event;
++    memset(&event, 0, sizeof(event));
++    event.response_type = XCB_CLIENT_MESSAGE;
++    event.window = window;
++    event.type = protocol_atom;
++    if (length > XCB_XIM_CM_DATA_SIZE) {
++        xcb_change_property(conn, XCB_PROP_MODE_APPEND, window, atom,
++                            XCB_ATOM_STRING, 8, length, data);
++        event.format = 32;
++        event.data.data32[0] = length;
++        event.data.data32[1] = atom;
++    } else {
++        event.format = 8;
++        memcpy(event.data.data8, data, length);
++    }
++    xcb_send_event(conn, false, window, XCB_EVENT_MASK_NO_EVENT,
++                   (const char *)&event);
++    return true;
++}
++
+ void _xcb_send_xim_error_message(xcb_connection_t *conn,
+                                  xcb_atom_t protocol_atom, xcb_window_t window,
+                                  bool swap) {
+diff --git a/src/message.h b/src/message.h
+index 7cf99fa..091edb4 100644
+--- a/src/message.h
++++ b/src/message.h
+@@ -32,6 +32,13 @@ uint8_t *_xcb_write_xim_message_header(uint8_t *message, uint8_t major_opcode,
+                                        bool swap);
+ 
+ // length is the body without header size in byte
++/* visiterm: as _xcb_send_xim_message, for a client whose property atom is
++ * interned already: no InternAtom, no GetProperty before the append, and
++ * neither request checked, so a message costs no round trip. */
++bool _xcb_send_xim_message_atom(xcb_connection_t *conn, xcb_atom_t protocol_atom,
++                                xcb_window_t window, uint8_t *data, size_t length,
++                                xcb_atom_t atom);
++
+ bool _xcb_send_xim_message(xcb_connection_t *conn, xcb_atom_t protocol_atom,
+                            xcb_window_t window, uint8_t *data, size_t length,
+                            const char *name, size_t len);

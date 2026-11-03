@@ -6,6 +6,8 @@ with the lead carried to the next.
 
 usage: euckr MODE FILE [UTF8]
   MODE runs | bytewise   decode only; with UTF8, check the output is it
+       charset           Vt.Charset's decoder, on Bytes.Builder (D1050)
+       charset+core      Vt.Charset's decoder, then the core
        core              the core fed FILE, which is UTF-8, at 160 by 50
        runs+core         decoded with runs, then fed to the core
 -}
@@ -20,6 +22,7 @@ import Os.Path
 import Task exposing (Task)
 import Time
 import Vt
+import Vt.Charset as Charset
 
 
 type alias Out =
@@ -45,10 +48,17 @@ run mode bytes at acc =
                     if mode == "bytewise" then
                         EucKr.decodeBytewise acc.lead chunk
 
+                    else if String.startsWith "charset" mode then
+                        let
+                            c =
+                                Charset.decode { lead = acc.lead } chunk
+                        in
+                        { lead = c.decoder.lead, bytes = c.bytes }
+
                     else
                         EucKr.decodeRuns acc.lead chunk
             in
-            if mode == "runs+core" then
+            if mode == "runs+core" || mode == "charset+core" then
                 run mode bytes (at + 65536) { acc | lead = d.lead, term = Maybe.map (Vt.feed d.bytes) acc.term }
 
             else

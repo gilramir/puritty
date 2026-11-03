@@ -25,5 +25,7 @@ if [ ! -f "$G/zig-out/lib/libghostty-vt.a" ] || [ "$want" != "$have" ]; then
 fi
 clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-dump.c gdump.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-dump
+clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-keys.c \
+  "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-keys
 clang -O2 -Wall -Wextra -I"$G/zig-out/include" widths.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o widths

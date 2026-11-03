@@ -1,10 +1,14 @@
 #!/bin/sh
-# Builds xim, the XIM probe (docs/phase3-input.md). Run from visiterm's
-# devbox, which has xcb-imdkit and xkbcommon; xcb-imdkit's .pc names
-# xcb-util, which the devbox lacks, so it is built from the same pin.
+# Builds xim, the XIM probe (docs/phase3-input.md), against xcb-imdkit:
+# the pinned one, or with PATCHED=1 visiterm's patched build
+# (packages/x11/build-imdkit.sh), as xim-patched. Run from visiterm's devbox.
 set -e
 cd "$(dirname "$0")"
-U=$(nix build --no-link --print-out-paths github:NixOS/nixpkgs/c80073788adf88abfdc443465311f00e7a231600#libxcb-util.dev)
-export PKG_CONFIG_PATH=$U/lib/pkgconfig:$PKG_CONFIG_PATH PKG_CONFIG_PATH_FOR_TARGET=$U/lib/pkgconfig:$PKG_CONFIG_PATH_FOR_TARGET
-/home/gram/prj/geng-lang/.devbox/nix/profile/default/bin/clang -O2 -Wall -Wextra -o xim xim.c \
-  $(pkg-config --cflags --libs xcb xcb-xkb xkbcommon xkbcommon-x11 xcb-imdkit)
+CC=/home/gram/prj/geng-lang/.devbox/nix/profile/default/bin/clang
+if [ -n "$PATCHED" ]; then
+  P=$(realpath ../../vendor/xcb-imdkit/visiterm/lib/pkgconfig)
+  PKG_CONFIG_PATH=$P:$PKG_CONFIG_PATH PKG_CONFIG_PATH_FOR_TARGET=$P:$PKG_CONFIG_PATH_FOR_TARGET \
+    $CC -O2 -Wall -Wextra -o xim-patched xim.c $(PKG_CONFIG_PATH=$P:$PKG_CONFIG_PATH PKG_CONFIG_PATH_FOR_TARGET=$P:$PKG_CONFIG_PATH_FOR_TARGET pkg-config --cflags --libs xcb xcb-xkb xkbcommon xkbcommon-x11 visiterm-xcb-imdkit)
+else
+  $CC -O2 -Wall -Wextra -o xim xim.c $(pkg-config --cflags --libs xcb xcb-xkb xkbcommon xkbcommon-x11 xcb-imdkit)
+fi

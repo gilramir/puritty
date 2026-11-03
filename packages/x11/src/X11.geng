@@ -1,6 +1,6 @@
 module X11 exposing
     ( Settings, Cell, open
-    , draw, shot, setTitle
+    , draw, shot, setTitle, spot, zoom
     , events, take, Event(..)
     )
 
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, draw, shot, setTitle, events, take, Event
+@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, events, take, Event
 
 -}
 
@@ -105,6 +105,32 @@ shot path =
 shotExtern : Bytes -> Task x Int
 
 
+{-| Tells the IME where its candidate window belongs: a cell, whose
+baseline XIM's spot location is (V46). Nothing is sent while it does not
+move, or when there is no IME. -}
+spot : { x : Int, y : Int } -> Task x {}
+spot at =
+    spotExtern at.x at.y |> Task.map (\_ -> {})
+
+
+@extern(c, "visiterm_x11_spot")
+spotExtern : Int -> Int -> Task x Int
+
+
+{-| The font at a new size in points (V50): every face sized again, the
+window kept at its size in pixels, so a `Resized` follows with the cells
+that now fit it; answers the new cell. The size is the screen's
+resolution's, as `open`'s: `Xft.dpi`, else the primary monitor's from
+RandR, else 96 (`VISITERM_DPI` sets it outright). -}
+zoom : Int -> Task x Cell
+zoom points =
+    zoomExtern points |> Task.map (\code -> { width = code // 65536, height = modBy 65536 code })
+
+
+@extern(c, "visiterm_x11_zoom")
+zoomExtern : Int -> Task x Int
+
+
 {-| Sets the window's title. -}
 setTitle : String -> Task x {}
 setTitle title =
@@ -127,14 +153,28 @@ events =
 eventsExtern : Task x Int
 
 
-{-| What happened to the window. A key is its keysym, its modifiers (shift
-1, ctrl 2, alt 4, super 8) and its text, which xkbcommon has made (V30);
-what it sends the program is Geng's to decide. -}
+{-| What happened to the window. An IME's commit, preedit and its end come
+in the order the IME sent them (V46): a commit is text for the program, a
+preedit replaces `length` characters from `first` of what is being
+composed with `text`, its feedback a value each, and the caret is a
+character count. `ImeReady` says keys go through an IME from now on.
+
+A key is what Ghostty's key encoder takes
+(V47): its action (release 0, press 1, repeat 2), its X keycode, its
+modifiers as Ghostty's bits (shift 1, ctrl 2, alt 4, super 8, caps lock 16,
+num lock 32, and 64 to 512 for a right-hand shift, ctrl, alt or super),
+the modifiers its text consumed, its unshifted code point, its keysym and
+its text, which xkbcommon has made from the modifiers of the key's own
+event (V30, V46); what it sends the program is Geng's to decide. -}
 type Event
-    = Key { sym : Int, mods : Int, text : Bytes }
+    = Key { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }
     | Resized { cols : Int, rows : Int }
     | Focus Bool
     | Close
+    | Commit Bytes
+    | Preedit { caret : Int, first : Int, length : Int, text : Bytes, feedback : Array Int }
+    | PreeditDone
+    | ImeReady
 
 
 {-| The events since the last take. -}
@@ -164,15 +204,22 @@ decode b at acc =
             1 ->
                 let
                     n =
-                        byte 6
+                        byte 15
+
+                    u32 i =
+                        Bitwise.or (Bitwise.shiftLeftBy 16 (u16 i)) (u16 (i + 2))
                 in
                 decode b
-                    (at + 7 + n)
+                    (at + 16 + n)
                     (Array.pushLast
                         (Key
-                            { sym = Bitwise.or (Bitwise.shiftLeftBy 16 (u16 1)) (u16 3)
-                            , mods = byte 5
-                            , text = Bytes.slice (at + 7) (at + 7 + n) b
+                            { action = byte 1
+                            , keycode = byte 2
+                            , mods = u16 3
+                            , consumed = u16 5
+                            , unshifted = u32 7
+                            , sym = u32 11
+                            , text = Bytes.slice (at + 16) (at + 16 + n) b
                             }
                         )
                         acc
@@ -186,6 +233,44 @@ decode b at acc =
 
             4 ->
                 decode b (at + 1) (Array.pushLast Close acc)
+
+            5 ->
+                let
+                    n =
+                        u16 1
+                in
+                decode b (at + 3 + n) (Array.pushLast (Commit (Bytes.slice (at + 3) (at + 3 + n) b)) acc)
+
+            6 ->
+                let
+                    n =
+                        u16 7
+
+                    f =
+                        at + 9 + n
+
+                    nf =
+                        Bitwise.or (Bitwise.shiftLeftBy 8 (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get f b)))) (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (f + 1) b)))
+                in
+                decode b
+                    (f + 2 + nf)
+                    (Array.pushLast
+                        (Preedit
+                            { caret = u16 1
+                            , first = u16 3
+                            , length = u16 5
+                            , text = Bytes.slice (at + 9) (at + 9 + n) b
+                            , feedback = Array.initialize nf (f + 2) (\i -> Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get i b)))
+                            }
+                        )
+                        acc
+                    )
+
+            7 ->
+                decode b (at + 1) (Array.pushLast PreeditDone acc)
+
+            8 ->
+                decode b (at + 1) (Array.pushLast ImeReady acc)
 
             _ ->
                 acc

@@ -50,6 +50,7 @@ import Process as Sleep
 import Task exposing (Task)
 import Time
 import Vt
+import Vt.Charset as Charset exposing (Charset)
 import Vt.View as View
 import X11
 
@@ -68,6 +69,13 @@ type alias Model =
     , title : String
     , closed : Bool
     , lost : Bool
+    , out : Bytes
+    , preedit : { points : Array Int, feedback : Array Int, caret : Int }
+    , imeLog : Bool
+    , points : Int
+    , charset : Charset
+    , decoder : Charset.Decoder
+    , replaced : Int
     }
 
 
@@ -75,6 +83,7 @@ type Turn
     = Read Bytes
     | Events Bool
     | Due
+    | Writable
 
 
 now : Task x Int
@@ -220,19 +229,26 @@ start cp vars config =
                                     config.command
 
                             options =
-                                Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = True })
+                                -- the pty's IUTF8 says whether the program's bytes are UTF-8
+                                Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
+
+                            charset =
+                                Charset.fromName (Maybe.withDefault (Config.charsetOf vars) config.charset)
                         in
                         Process.spawn cp
                             (Maybe.withDefault "/bin/sh" (Array.first command))
                             (Array.dropFirst 1 command)
                             { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                             |> Task.mapError Os.Error.toString
-                            |> Task.andThen (\child -> run config cell child)
+                            |> Task.andThen (\child -> run (Dict.member "VISITERM_IME_LOG" vars) charset config cell child)
             )
 
 
-run : Config -> X11.Cell -> Process.Child -> Task String {}
-run config cell child =
+{-| `imeLog`: with `VISITERM_IME_LOG` set, each commit and each change to
+the preedit is written to standard output, for the IME gate
+(`harness/ime.py`, V45). -}
+run : Bool -> Charset -> Config -> X11.Cell -> Process.Child -> Task String {}
+run imeLog charset config cell child =
     when Process.terminal child is
         Nothing ->
             Task.fail "the program has no terminal"
@@ -265,6 +281,13 @@ run config cell child =
                             , title = ""
                             , closed = False
                             , lost = False
+                            , out = Bytes.empty
+                            , preedit = { points = [], feedback = [], caret = 0 }
+                            , imeLog = imeLog
+                            , points = config.points
+                            , charset = charset
+                            , decoder = Charset.decoder
+                            , replaced = 0
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -345,8 +368,48 @@ nextAt m =
         min f b
 
 
-loop : Process.Terminal -> File.Handle -> (moved m : Model) -> Task Error Model
-loop terminal fd m0 =
+{-| What the program is sent, queued: keys, replies, focus reports, a
+paste. The pty takes what it takes; the rest waits for `File.writable`, which
+the loop races beside its read, so a program that stops reading until its
+output is read never holds the window (V48, geng-lang D1049). -}
+send : Bytes -> (moved m : Model) -> Model
+send text m =
+    let
+        -- in the pane's character set (cjk-and-thai.md §10.3, V49); what
+        -- it cannot send goes as `?`, counted and shown in the title. A
+        -- legacy mouse report's bytes are raw and will skip this.
+        encoded =
+            Charset.encode m.charset text
+
+        bytes =
+            encoded.bytes
+    in
+    if Bytes.isEmpty m.out then
+        { m | out = bytes, replaced = m.replaced + encoded.replaced }
+
+    else
+        { m | out = Bytes.flatten [ m.out, bytes ], replaced = m.replaced + encoded.replaced }
+
+
+{-| The queue written as far as the pty takes it. -}
+flush : File.Handle -> (moved m : Model) -> Task Error Model
+flush fd m =
+    if Bytes.isEmpty m.out then
+        Task.succeed m
+
+    else
+        File.writeSome m.out fd
+            |> Task.map (\n -> { m | out = Bytes.slice n (Bytes.length m.out) m.out })
+
+
+loop : Process.Terminal -> File.Handle -> (moved m00 : Model) -> Task Error Model
+loop terminal fd m00 =
+    flush fd m00
+        |> Task.andThen (\m0 -> race terminal fd m0)
+
+
+race : Process.Terminal -> File.Handle -> (moved m0 : Model) -> Task Error Model
+race terminal fd m0 =
     now
         |> Task.andThen
             (\ms0 ->
@@ -367,8 +430,15 @@ loop terminal fd m0 =
 
                         else
                             [ Sleep.sleep (toFloat (max 0 (at - ms0))) |> Task.map (\_ -> Due) ]
+
+                    writing =
+                        if Bytes.isEmpty m.out then
+                            []
+
+                        else
+                            [ File.writable fd |> Task.map (\_ -> Writable) ]
                 in
-                Task.race (File.read fd |> Task.map Read) ([ X11.events |> Task.map Events ] ++ timer)
+                Task.race (File.read fd |> Task.map Read) ([ X11.events |> Task.map Events ] ++ timer ++ writing)
                     |> Task.andThen
                         (\turn ->
                             now
@@ -393,6 +463,9 @@ loop terminal fd m0 =
 
                                             Due ->
                                                 step terminal fd ms (blink ms m)
+
+                                            Writable ->
+                                                step terminal fd ms m
                                     )
                         )
             )
@@ -425,38 +498,56 @@ blink ms m =
         m
 
 
-{-| A read fed to the core and its replies written back. -}
+{-| What may wait to be written before the core's replies are dropped: a
+program that asks and never reads its answers holds no more than this
+(S§5.1). Keys and pastes are never dropped. -}
+replyCap : Int
+replyCap =
+    1048576
+
+
+{-| A read fed to the core and its replies queued, while fewer than
+`replyCap` bytes wait. -}
 feed : File.Handle -> Bytes -> Int -> (moved m : Model) -> Task Error Model
-feed fd chunk ms m =
+feed fd chunk0 ms m =
     let
+        -- an EUC-KR or CP949 pane's bytes in UTF-8 before the core (V49)
+        decoded =
+            if m.charset == Charset.Utf8 then
+                { decoder = m.decoder, bytes = chunk0 }
+
+            else
+                Charset.decode m.decoder chunk0
+
         taken =
-            Vt.takeReplies (Vt.feed chunk m.term)
+            Vt.takeReplies (Vt.feed decoded.bytes m.term)
 
         held =
             syncHeld taken.term
     in
-    Array.foldl (\r task -> task |> Task.andThen (\_ -> File.write r fd)) (Task.succeed {}) taken.replies
-        |> Task.map
-            (\_ ->
-                { m
-                    | term = taken.term
-                    , pending =
-                        if m.pending < 0 then
-                            ms
+    Task.succeed
+        (Array.foldl (\r acc -> if Bytes.length acc.out >= replyCap then acc else send r acc)
+            { m
+                | term = taken.term
+                , decoder = decoded.decoder
+                , pending =
+                    if m.pending < 0 then
+                        ms
 
-                        else
-                            m.pending
-                    , syncSince =
-                        if not held then
-                            -1
+                    else
+                        m.pending
+                , syncSince =
+                    if not held then
+                        -1
 
-                        else if m.syncSince < 0 then
-                            ms
+                    else if m.syncSince < 0 then
+                        ms
 
-                        else
-                            m.syncSince
-                }
-            )
+                    else
+                        m.syncSince
+            }
+            taken.replies
+        )
 
 
 {-| The window's events: a key sent to the program, a new size given to the
@@ -475,58 +566,155 @@ handle terminal fd ms evs m =
             in
             when ev is
                 X11.Key k ->
-                    File.write (Keys.encode (Dict.get 1 m.term.modes == Just True) k.sym k.mods k.text) fd
-                        |> Task.andThen
-                            (\_ ->
-                                handle terminal fd ms rest
-                                    { m
-                                        | urgent = True
-                                        , focus = { focused = m.focus.focused, blinkOn = True }
-                                        , blinkAt = if blinking m then ms + m.config.blinkMs else -1
-                                    }
-                            )
+                    when zoomOf m k is
+                        Just points ->
+                            X11.zoom points
+                                |> Task.andThen
+                                    (\_ ->
+                                        -- every cell is drawn again at the new size
+                                        handle terminal fd ms rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
+                                    )
+
+                        Nothing ->
+                            key terminal fd ms rest k m
 
                 X11.Resized size ->
                     Process.resize terminal { columns = size.cols, rows = size.rows }
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True })
 
                 X11.Focus on ->
-                    (if Dict.get 1004 m.term.modes == Just True then
-                        File.write
-                            (Bytes.fromString
-                                (if on then
-                                    "\u{001B}[I"
+                    let
+                        report =
+                            if Dict.get 1004 m.term.modes == Just True then
+                                if on then
+                                    Bytes.fromString "\u{001B}[I"
 
-                                 else
-                                    "\u{001B}[O"
-                                )
-                            )
-                            fd
+                                else
+                                    Bytes.fromString "\u{001B}[O"
 
-                     else
-                        Task.succeed {}
-                    )
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
+                            else
+                                Bytes.empty
+                    in
+                    handle terminal fd ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
 
                 X11.Close ->
                     Task.succeed { m | closed = True }
+
+                X11.Commit text ->
+                    -- the key path: the text as typed, never as a paste (V46)
+                    imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
+                        |> Task.andThen (\_ -> handle terminal fd ms rest (send text { m | urgent = True }))
+
+                X11.Preedit p ->
+                    let
+                        cps =
+                            Array.map Char.toCode (String.toArray (Bytes.toStringLossy p.text))
+
+                        old =
+                            m.preedit
+
+                        points =
+                            Array.takeFirst p.first old.points ++ cps ++ Array.dropFirst (p.first + p.length) old.points
+
+                        feedback =
+                            Array.takeFirst p.first old.feedback
+                                ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault 0 (Array.get i p.feedback))
+                                ++ Array.dropFirst (p.first + p.length) old.feedback
+                    in
+                    imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
+
+                X11.ImeReady ->
+                    imeLine m.imeLog "ime ready"
+                        |> Task.andThen (\_ -> handle terminal fd ms rest m)
+
+                X11.PreeditDone ->
+                    imeLine m.imeLog "done"
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
+
+
+{-| A key sent to the program, the cursor's blink begun again. -}
+key : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (moved m : Model) -> Task Error Model
+key terminal fd ms rest k m =
+    let
+        bytes =
+            Keys.encode m.term k
+
+        blinkAt =
+            if blinking m then
+                ms + m.config.blinkMs
+
+            else
+                -1
+
+        focus =
+            { focused = m.focus.focused, blinkOn = True }
+    in
+    handle terminal fd ms rest (send bytes { m | urgent = True, focus = focus, blinkAt = blinkAt })
+
+
+{-| The zoom's keys (V50): Ctrl with `=` or `+` a point larger, with `-` a
+point smaller, with `0` the configured size; pressed or repeated, without
+alt or super. Any other key is the program's. -}
+zoomOf : Model -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe Int
+zoomOf m k =
+    if k.action == 0 || Bitwise.and k.mods 2 == 0 || Bitwise.and k.mods 12 /= 0 then
+        Nothing
+
+    else if k.sym == 0x3D || k.sym == 0x2B || k.sym == 0xFFAB then
+        Just (min 96 (m.points + 1))
+
+    else if k.sym == 0x2D || k.sym == 0xFFAD then
+        Just (max 4 (m.points - 1))
+
+    else if k.sym == 0x30 then
+        Just m.config.points
+
+    else
+        Nothing
+
+
+imeLine : Bool -> String -> Task x {}
+imeLine on line =
+    if on then
+        Console.write (line ++ "\n")
+
+    else
+        Task.succeed {}
 
 
 {-| A frame drawn, and the window's title made the program's. -}
 draw : Int -> (moved m : Model) -> Task x Model
 draw ms m =
     let
+        preedit =
+            { text = String.fromArray (Array.mapAndKeepJust Char.fromCode m.preedit.points)
+            , feedback = m.preedit.feedback
+            , caret = m.preedit.caret
+            }
+
         f =
-            View.frame m.look m.focus m.term m.shadow
+            View.frameWith m.look m.focus preedit m.term m.shadow
+
+        spot =
+            View.preeditSpot preedit m.term
 
         title =
-            if m.term.title == "" then
+            (if m.term.title == "" then
                 m.config.title
 
-            else
+             else
                 m.term.title
+            )
+                ++ (if m.replaced > 0 then
+                        " [" ++ String.fromInt m.replaced ++ " characters sent as ?]"
+
+                    else
+                        ""
+                   )
     in
     X11.draw f.list
+        |> Task.andThen (\up -> X11.spot spot |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 (if title /= m.title then

@@ -1,7 +1,7 @@
 # Upstream reports
 
-Defects found in the terminals visiterm is held to, written up so that what
-was found and why the core differs is kept. **Ghostty's are not filed**
+Defects found in the terminals visiterm is held to, and in the libraries it
+uses, written up so that what was found and why visiterm differs is kept. **Ghostty's are not filed**
 (Gilbert, 2026-10-30): its reports go through an "Issue Triage" discussion
 under an AI policy that makes filing more trouble than it is worth, so a
 report here is for our own knowledge. Each still says where the code is,
@@ -27,3 +27,4 @@ fuzzer leaves out an input with one.
 | [DCH after DL leaves a spacer head that DCH without it clears](ghostty-split-boundary-reads-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC20 | not to be filed |
 | [A reflow keeps a styled blank on the first row, under the viewport pin](ghostty-reflow-pin-copies-a-blank.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC21 | not to be filed |
 | [A full reset undoes libghostty-vt's choice not to clear prompts on resize](ghostty-full-reset-forgets-prompt-redraw.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC22 | not to be filed |
+| [An XIM client makes four blocking round trips for each message it sends](xcb-imdkit-client-round-trips.md) | `fcitx/xcb-imdkit` | 2026-11-02, `phase3-input.md` §3.3 | not filed: for Gilbert to decide; visiterm carries the patch (V44) |

@@ -12,12 +12,12 @@
 #             "sleep:0.5" waits.
 #
 # Run from visiterm's devbox (Xvfb); the IMEs and xdotool are built from the
-# nixpkgs commit the devbox pins, by imes.nix. Everything an IME writes goes
+# nixpkgs commit the devbox pins, by harness/ime/imes.nix. Everything an IME writes goes
 # to a fresh home under .harness-work/ime.
 set -e
 cd "$(dirname "$0")"
 IME=$1 ENGINE=$2 SCRIPT=$3
-B=$(nix build --impure --no-link --print-out-paths -f imes.nix fcitx5 ibus xdotool dbus | grep -v -- -man)
+B=$(nix build --impure --no-link --print-out-paths -f ../../harness/ime/imes.nix fcitx5 ibus xdotool dbus | grep -v -- -man)
 FCITX=$(echo "$B" | grep fcitx5) IBUS=$(echo "$B" | grep ibus-with) XDO=$(echo "$B" | grep xdotool)/bin/xdotool
 DBUS=$(echo "$B" | grep 'dbus-[0-9.]*$')
 W=$(realpath ../..)/.harness-work/ime/$IME-$ENGINE
@@ -27,7 +27,7 @@ export DISPLAY=:79 LANG=C.UTF-8
 
 Xvfb :79 -screen 0 800x600x24 -nolisten tcp >"$W/xvfb.log" 2>&1 &
 XVFB=$!
-trap 'kill $IMEPID $XVFB $BUSPID 2>/dev/null; true' EXIT
+trap 'kill $IMEPID $XVFB $BUSPID $XTRACE 2>/dev/null; true' EXIT
 sleep 0.5
 
 eval "$("$DBUS"/bin/dbus-launch --sh-syntax)"
@@ -58,16 +58,17 @@ sleep 1.5
 
 # REMOTE=HOST runs the probe there over ssh -X, its display this Xvfb
 if [ -n "$REMOTE" ]; then
-  scp -q xim "$REMOTE":/tmp/xim-probe
+  scp -q ${XIM:-xim} "$REMOTE":/tmp/xim-probe
   ssh -X "$REMOTE" /tmp/xim-probe 3 >"$W/xim.log" 2>&1 &
   sleep 2
 elif [ -n "$TRACE" ]; then
   # TRACE=1 puts xtrace between the probe and the server
   xtrace -n -D :80 -d :79 -o "$W/trace.log" -k >/dev/null 2>&1 &
+  XTRACE=$!
   sleep 0.5
-  DISPLAY=:80 ./xim 2 >"$W/xim.log" 2>&1 &
+  DISPLAY=:80 ./${XIM:-xim} 2 >"$W/xim.log" 2>&1 &
 else
-  ./xim 2 >"$W/xim.log" 2>&1 &
+  ./${XIM:-xim} 2 >"$W/xim.log" 2>&1 &
 fi
 XIM=$!
 sleep 1

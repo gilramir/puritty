@@ -30,12 +30,32 @@
  * One window a process (geng-plan.md Q6), so the state is this file's.
  *
  * Events (V36), the records `visiterm_x11_take` answers, each a kind byte:
- *   1 a key: its keysym in 4 bytes, its modifiers in 1 (shift 1, ctrl 2,
- *     alt 4, super 8), a byte of length and its text in UTF-8
- *     (xkbcommon's, V30);
+ *   1 a key (V47, docs/phase3-input.md §4): its action in 1 byte (release
+ *     0, press 1, repeat 2), its X keycode in 1, its modifiers in 2 as
+ *     Ghostty's bits (shift 1, ctrl 2, alt 4, super 8, caps lock 16, num
+ *     lock 32, and 64, 128, 256, 512 when the first four's key held is
+ *     the right one), the modifiers its text consumed in 2, its unshifted
+ *     code point in 4, its keysym in 4, a byte of length and its text in
+ *     UTF-8, none on a release. Each is read with the modifiers and group
+ *     its own event carries (V46), not the state XKB has moved on to;
  *   2 the window's size in cells changed: columns and rows, 2 bytes each;
  *   3 the focus: 1 in, 0 out;
- *   4 the window manager asks the window to close (WM_DELETE_WINDOW).
+ *   4 the window manager asks the window to close (WM_DELETE_WINDOW);
+ *   5 an IME's commit: its length in 2 bytes and its text in UTF-8;
+ *   6 an IME's preedit drawn: the caret, the first character changed and
+ *     how many, 2 bytes each, the length of the new text in 2 and its
+ *     UTF-8, then the count of its feedbacks in 2 and each in 1 byte;
+ *   7 the IME's preedit is done;
+ *   8 an input context is made with an IME, which keys go through now.
+ *
+ * Keys go through XIM when an input method is there (V44-V46,
+ * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
+ * context whose preedit visiterm draws (on-the-spot). Every press and
+ * release is sent to the IME, and a key it gives back is recorded then,
+ * read with its own event's modifiers; its commits and preedits are
+ * recorded as they come, in their order. The context is never destroyed
+ * while the window lives: a focus change only sets or unsets its focus
+ * (§3.4). Without an IME, keys are recorded as they come.
  * An expose is answered here, from the pixmap.
  *
  * X11_STATS=1 prints counts when the program ends; X11_SHOT=FILE writes
@@ -59,6 +79,9 @@
 #include <xcb/xcb_renderutil.h>
 #include <xcb/xkb.h>
 #include <xkbcommon/xkbcommon-x11.h>
+#include <xcb/randr.h>
+#include <xcb-imdkit/imclient.h>
+#include <xcb-imdkit/encoding.h>
 
 #include "geng.h"
 
@@ -152,6 +175,7 @@ typedef struct {
     double scale;
     int colour;        /* a face of colour bitmaps (CBDT), drawn as pictures */
     int own;           /* what the face is of itself: bold 1, italic 2 */
+    int primary;       /* one of the primary font's faces */
     uint8_t *uploaded; /* a bit a glyph index and form */
     int16_t *advance;  /* the x_off each glyph was uploaded with */
     int16_t *ink;      /* each glyph's bitmap: left of its origin, top above it, width, height */
@@ -159,7 +183,7 @@ typedef struct {
 } Face;
 
 static Face faces[FACES];
-static int nfaces, points0;
+static int nfaces, points0, dpi0 = 96;
 /* The primary font's faces: regular, bold, italic, bold italic. A font with
  * no face of its own for one gives its regular. */
 static int primary[4];
@@ -209,6 +233,28 @@ static int covers(int f, const uint32_t *cps, int n) {
     return 1;
 }
 
+/* A face sized for `points0` at `dpi0` (V50): one of the primary font's at
+ * that size, a fallback one so 水 fills two cells and its ink stays within
+ * the primary cell, which the primary faces' metrics give. */
+static void size_face(Face *F) {
+    if (F->colour) return;
+    F->scale = 1.0;
+    FT_Set_Char_Size(F->ft, 0, points0 * 64, (FT_UInt) dpi0, (FT_UInt) dpi0);
+    if (!F->primary) {
+        FT_UInt gi = FT_Get_Char_Index(F->ft, 0x6C34);
+        if (gi && FT_Load_Glyph(F->ft, gi, FT_LOAD_NO_HINTING) == 0) {
+            double adv = F->ft->glyph->advance.x / 64.0;
+            double top = F->ft->glyph->metrics.horiBearingY / 64.0;
+            double bottom = F->ft->glyph->metrics.height / 64.0 - top;
+            double sc = 2.0 * cw / adv;
+            if (top > 0 && ascent / top < sc) sc = ascent / top;
+            if (bottom > 0 && (ch - ascent) / bottom < sc) sc = (ch - ascent) / bottom;
+            F->scale = sc;
+            FT_Set_Char_Size(F->ft, 0, (FT_F26Dot6) (points0 * 64 * sc + 0.5), (FT_UInt) dpi0, (FT_UInt) dpi0);
+        }
+    }
+}
+
 /* A face, loaded once. One of the primary font's keeps its size; a
  * fallback face with 水 is sized so 水 fills two cells and its ink stays
  * within the primary cell (§13.1). */
@@ -224,20 +270,8 @@ static int load_face(const char *file, int index, int is_primary) {
     F->colour = FT_HAS_COLOR(F->ft) && !FT_IS_SCALABLE(F->ft) && F->ft->num_fixed_sizes > 0;
     F->pictures = NULL;
     if (F->colour) FT_Select_Size(F->ft, 0);
-    else FT_Set_Char_Size(F->ft, 0, points0 * 64, 96, 96);
-    if (!is_primary && !F->colour) {
-        FT_UInt gi = FT_Get_Char_Index(F->ft, 0x6C34);
-        if (gi && FT_Load_Glyph(F->ft, gi, FT_LOAD_NO_HINTING) == 0) {
-            double adv = F->ft->glyph->advance.x / 64.0;
-            double top = F->ft->glyph->metrics.horiBearingY / 64.0;
-            double bottom = F->ft->glyph->metrics.height / 64.0 - top;
-            double sc = 2.0 * cw / adv;
-            if (top > 0 && ascent / top < sc) sc = ascent / top;
-            if (bottom > 0 && (ch - ascent) / bottom < sc) sc = (ch - ascent) / bottom;
-            F->scale = sc;
-            FT_Set_Char_Size(F->ft, 0, (FT_F26Dot6) (points0 * 64 * sc + 0.5), 96, 96);
-        }
-    }
+    F->primary = is_primary;
+    size_face(F);
     F->hb = hb_ft_font_create_referenced(F->ft);
     F->uploaded = calloc(KEYS / 8, 1);
     F->advance = calloc(KEYS, sizeof *F->advance);
@@ -1125,23 +1159,79 @@ static void key_setup(void) {
                      XCB_XKB_MAP_PART_EXPLICIT_COMPONENTS | XCB_XKB_MAP_PART_KEY_ACTIONS | XCB_XKB_MAP_PART_VIRTUAL_MODS |
                      XCB_XKB_MAP_PART_VIRTUAL_MOD_MAP;
     xcb_xkb_select_events(conn, (xcb_xkb_device_spec_t) kbd, events, 0, events, parts, parts, NULL);
+    /* a key held down repeats as presses without releases between, so a
+     * repeat is told from a press (V47) */
+    xcb_xkb_per_client_flags(conn, (xcb_xkb_device_spec_t) kbd, XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT,
+                             XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT, 0, 0, 0);
 }
 
-static void key_press(uint8_t keycode) {
-    if (!kstate) return;
-    xkb_keysym_t sym = xkb_state_key_get_one_sym(kstate, keycode);
+/* Keys held, for telling a repeat from a press under XKB's detectable
+ * autorepeat, and which right-hand modifier keys are held, for the sides. */
+static uint8_t held[32];
+static int right_held;
+
+/* Ghostty's bit for each of the modifiers xkbcommon names. */
+static const struct { const char *name; int bit; } mod_bits[] = {
+    {XKB_MOD_NAME_SHIFT, 1}, {XKB_MOD_NAME_CTRL, 2}, {XKB_MOD_NAME_ALT, 4},
+    {XKB_MOD_NAME_LOGO, 8},  {XKB_MOD_NAME_CAPS, 16}, {XKB_MOD_NAME_NUM, 32},
+};
+
+static int ghostty_mods(struct xkb_state *st, xkb_mod_mask_t only) {
+    int m = 0;
+    for (size_t i = 0; i < sizeof mod_bits / sizeof *mod_bits; i++) {
+        xkb_mod_index_t ix = xkb_keymap_mod_get_index(keymap, mod_bits[i].name);
+        if (ix == XKB_MOD_INVALID) continue;
+        if (st ? xkb_state_mod_index_is_active(st, ix, XKB_STATE_MODS_EFFECTIVE) > 0 : (only >> ix) & 1) m |= mod_bits[i].bit;
+    }
+    return m;
+}
+
+static int right_bit(xkb_keysym_t sym) {
+    switch (sym) {
+    case XKB_KEY_Shift_R: return 64;
+    case XKB_KEY_Control_R: return 128;
+    case XKB_KEY_Alt_R: case XKB_KEY_Meta_R: case XKB_KEY_ISO_Level3_Shift: return 256;
+    case XKB_KEY_Super_R: case XKB_KEY_Hyper_R: return 512;
+    default: return 0;
+    }
+}
+
+/* A key press or release, read with the modifiers and group of its own
+ * event: the core state field, its group in bits 13 and 14. */
+static void key_event(int press, uint8_t keycode, uint16_t state) {
+    if (!keymap) return;
+    struct xkb_state *st = xkb_state_new(keymap);
+    if (!st) return;
+    xkb_state_update_mask(st, state & 0xff, 0, 0, 0, 0, (state >> 13) & 3);
+    xkb_keysym_t sym = xkb_state_key_get_one_sym(st, keycode);
+    int bit = 1 << (keycode & 7), down = held[keycode >> 3] & bit;
+    int action = press ? (down ? 2 : 1) : 0;
+    if (press) held[keycode >> 3] |= (uint8_t) bit;
+    else held[keycode >> 3] &= (uint8_t) ~bit;
+    int mods = ghostty_mods(st, 0);
+    mods |= right_held & ((mods & 15) << 6);
+    int r = right_bit(sym);
+    if (r) right_held = press ? (right_held | r) : (right_held & ~r);
     char text[64];
-    int n = xkb_state_key_get_utf8(kstate, keycode, text, sizeof text);
+    /* the keysym's own text, not xkb_state_key_get_utf8's, which makes
+     * ctrl+c 0x03: the encoder makes control characters itself, as it
+     * does from GTK's text in Ghostty */
+    int n = press ? xkb_keysym_to_utf8(sym, text, sizeof text) - 1 : 0;
     if (n < 0) n = 0;
     if (n > 63) n = 63;
-    int mods = (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0 ? 1 : 0) |
-               (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0 ? 2 : 0) |
-               (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0 ? 4 : 0) |
-               (xkb_state_mod_name_is_active(kstate, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0 ? 8 : 0);
-    uint8_t r[7 + 63] = {1, (uint8_t) (sym >> 24), (uint8_t) (sym >> 16), (uint8_t) (sym >> 8), (uint8_t) sym, (uint8_t) mods,
-                         (uint8_t) n};
-    memcpy(r + 7, text, (size_t) n);
-    record(r, 7 + n);
+    int consumed = ghostty_mods(NULL, xkb_state_key_get_consumed_mods2(st, keycode, XKB_CONSUMED_MODE_XKB));
+    const xkb_keysym_t *syms;
+    xkb_layout_index_t layout = xkb_state_key_get_layout(st, keycode);
+    uint32_t unshifted = 0;
+    if (xkb_keymap_key_get_syms_by_level(keymap, keycode, layout == XKB_LAYOUT_INVALID ? 0 : layout, 0, &syms) > 0)
+        unshifted = xkb_keysym_to_utf32(syms[0]);
+    xkb_state_unref(st);
+    uint8_t rec[18 + 63] = {1, (uint8_t) action, keycode, (uint8_t) (mods >> 8), (uint8_t) mods,
+                            (uint8_t) (consumed >> 8), (uint8_t) consumed,
+                            (uint8_t) (unshifted >> 24), (uint8_t) (unshifted >> 16), (uint8_t) (unshifted >> 8), (uint8_t) unshifted,
+                            (uint8_t) (sym >> 24), (uint8_t) (sym >> 16), (uint8_t) (sym >> 8), (uint8_t) sym, (uint8_t) n};
+    memcpy(rec + 16, text, (size_t) n);
+    record(rec, 16 + n);
 }
 
 static void xkb_event_in(xcb_generic_event_t *e) {
@@ -1176,12 +1266,130 @@ static void focus_in(int in) {
     record(rec, 2);
 }
 
+/* The input method, when one is there. */
+static xcb_xim_t *xim;
+static xcb_xic_t xic;
+static int have_xic;
+static int spot_x = -1, spot_y = -1;
+
+static void key_event(int press, uint8_t keycode, uint16_t state);
+
+static void record_text(uint8_t kind, const char *s, size_t n) {
+    if (n > 4000) n = 4000;
+    uint8_t head[3] = {kind, (uint8_t) (n >> 8), (uint8_t) n};
+    if (evlen + 3 + (int) n > (int) sizeof evbuf) return;
+    record(head, 3);
+    record((const uint8_t *) s, (int) n);
+}
+
+/* The IME's text as UTF-8, whichever encoding it was given in; free it. */
+static char *xim_utf8(const char *s, size_t n, size_t *out) {
+    if (xcb_xim_get_encoding(xim) == XCB_XIM_UTF8_STRING) {
+        char *u = malloc(n + 1);
+        if (!u) return NULL;
+        memcpy(u, s, n);
+        u[n] = 0;
+        *out = n;
+        return u;
+    }
+    return xcb_compound_text_to_utf8(s, n, out);
+}
+
+static void xim_forward(xcb_xim_t *m, xcb_xic_t c, xcb_key_press_event_t *e, void *u) {
+    (void) m; (void) c; (void) u;
+    key_event((e->response_type & 0x7f) == XCB_KEY_PRESS, e->detail, e->state);
+}
+
+static void xim_commit(xcb_xim_t *m, xcb_xic_t c, uint32_t flag, char *str, uint32_t len, uint32_t *syms, size_t nsyms,
+                       void *u) {
+    (void) m; (void) c; (void) flag; (void) syms; (void) nsyms; (void) u;
+    size_t n = 0;
+    char *t = xim_utf8(str, len, &n);
+    if (t) record_text(5, t, n);
+    free(t);
+}
+
+static void xim_draw(xcb_xim_t *m, xcb_xic_t c, xcb_im_preedit_draw_fr_t *f, void *u) {
+    (void) m; (void) c; (void) u;
+    size_t n = 0;
+    char *t = xim_utf8((const char *) f->preedit_string, f->length_of_preedit_string, &n);
+    if (n > 2000) n = 2000;
+    uint32_t nf = f->feedback_array.size > 1000 ? 1000 : f->feedback_array.size;
+    uint8_t head[12] = {6, (uint8_t) (f->caret >> 8), (uint8_t) f->caret, (uint8_t) (f->chg_first >> 8), (uint8_t) f->chg_first,
+                        (uint8_t) (f->chg_length >> 8), (uint8_t) f->chg_length, (uint8_t) (n >> 8), (uint8_t) n};
+    if (evlen + 9 + (int) n + 2 + (int) nf > (int) sizeof evbuf) { free(t); return; }
+    record(head, 9);
+    record((const uint8_t *) (t ? t : ""), (int) n);
+    uint8_t cnt[2] = {(uint8_t) (nf >> 8), (uint8_t) nf};
+    record(cnt, 2);
+    for (uint32_t i = 0; i < nf; i++) {
+        uint8_t fb = (uint8_t) f->feedback_array.items[i];
+        record(&fb, 1);
+    }
+    free(t);
+}
+
+static void xim_done(xcb_xim_t *m, xcb_xic_t c, void *u) {
+    (void) m; (void) c; (void) u;
+    uint8_t r[1] = {7};
+    record(r, 1);
+}
+
+static void xim_gone(xcb_xim_t *m, void *u) {
+    (void) m; (void) u;
+    have_xic = 0;
+}
+
+static void xim_made(xcb_xim_t *m, xcb_xic_t c, void *u) {
+    (void) m; (void) u;
+    xic = c;
+    have_xic = 1;
+    if (focused == 1) xcb_xim_set_ic_focus(xim, xic);
+    uint8_t r[1] = {8};
+    record(r, 1);
+}
+
+static void xim_opened(xcb_xim_t *m, void *u) {
+    (void) u;
+    uint32_t style = XCB_IM_PreeditCallbacks | XCB_IM_StatusNothing;
+    xcb_point_t spot = {0, (int16_t) ascent};
+    xcb_xim_nested_list pre = xcb_xim_create_nested_list(m, XCB_XIM_XNSpotLocation, &spot, NULL);
+    xcb_xim_create_ic(m, xim_made, NULL, XCB_XIM_XNInputStyle, &style, XCB_XIM_XNClientWindow, &window,
+                      XCB_XIM_XNFocusWindow, &window, XCB_XIM_XNPreeditAttributes, &pre, NULL);
+    free(pre.data);
+}
+
+static void xim_quiet(const char *fmt, ...) { (void) fmt; }
+
+static void xim_setup(int screen_number) {
+    if (getenv("VISITERM_NO_XIM")) return;
+    xcb_compound_text_init();
+    xim = xcb_xim_create(conn, screen_number, NULL);
+    if (!xim) return;
+    xcb_xim_set_log_handler(xim, xim_quiet);
+    xcb_xim_set_use_utf8_string(xim, true);
+    static const xcb_xim_im_callback cb = {
+        .forward_event = xim_forward, .commit_string = xim_commit, .preedit_draw = xim_draw,
+        .preedit_done = xim_done, .disconnected = xim_gone,
+    };
+    xcb_xim_set_im_callback(xim, &cb, NULL);
+    xcb_xim_open(xim, xim_opened, true, NULL);
+}
+
 static void drain(void) {
     xcb_generic_event_t *e;
     while ((e = xcb_poll_for_event(conn)) != NULL) {
         int type = e->response_type & 0x7f;
+        if (xim && xcb_xim_filter_event(xim, e)) {
+            free(e);
+            continue;
+        }
         if (xkb_event && type == xkb_event) xkb_event_in(e);
-        else if (type == XCB_KEY_PRESS) key_press(((xcb_key_press_event_t *) e)->detail);
+        else if (type == XCB_KEY_PRESS || type == XCB_KEY_RELEASE) {
+            xcb_key_press_event_t *k = (xcb_key_press_event_t *) e;
+            if (have_xic) xcb_xim_forward_event(xim, xic, k);
+            else key_event(type == XCB_KEY_PRESS, k->detail, k->state);
+        }
         else if (type == XCB_EXPOSE) {
             xcb_expose_event_t *x = (xcb_expose_event_t *) e;
             if (pixmap)
@@ -1193,7 +1401,16 @@ static void drain(void) {
             if (c->window == window) size_in(c->width, c->height);
         } else if (type == XCB_FOCUS_IN || type == XCB_FOCUS_OUT) {
             xcb_focus_in_event_t *f = (xcb_focus_in_event_t *) e;
-            if (f->detail != XCB_NOTIFY_DETAIL_POINTER) focus_in(type == XCB_FOCUS_IN);
+            if (f->detail != XCB_NOTIFY_DETAIL_POINTER) {
+                focus_in(type == XCB_FOCUS_IN);
+                if (have_xic) {
+                    if (type == XCB_FOCUS_IN) xcb_xim_set_ic_focus(xim, xic);
+                    else xcb_xim_unset_ic_focus(xim, xic);
+                }
+                /* keys held while the focus left are released elsewhere */
+                memset(held, 0, sizeof held);
+                right_held = 0;
+            }
         } else if (type == XCB_CLIENT_MESSAGE) {
             xcb_client_message_event_t *m = (xcb_client_message_event_t *) e;
             if (m->type == wm_protocols && m->data.data32[0] == wm_delete) {
@@ -1203,6 +1420,9 @@ static void drain(void) {
         }
         free(e);
     }
+    /* what the IME was sent (a key forwarded, its sync replies) goes now,
+     * not with the next frame, which a composing key does not cause */
+    xcb_flush(conn);
 }
 
 /* THE ROWS */
@@ -1227,6 +1447,64 @@ static void set_title(const uint8_t *text, int n) {
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, (uint32_t) n, text);
 }
 
+/* The primary font's cell and lines, from its regular face. */
+static void primary_metrics(void) {
+    FT_Face face = faces[0].ft;
+    cw = (int) (face->size->metrics.max_advance >> 6);
+    ch = (int) (face->size->metrics.height >> 6);
+    ascent = (int) (face->size->metrics.ascender >> 6);
+    long below = -FT_MulFix(face->underline_position, face->size->metrics.y_scale) >> 6;
+    long thick = FT_MulFix(face->underline_thickness, face->size->metrics.y_scale) >> 6;
+    line_thick = thick < 1 ? 1 : (int) thick;
+    ul_below = below < 1 ? 1 : (int) below;
+    strike_above = ascent * 3 / 10;
+}
+
+/* The screen's resolution (V50, docs/phase3-input.md §7): `Xft.dpi` from
+ * the resources the desktop set on the root window, which its scale
+ * setting writes and GTK, Qt and Xft size their fonts by; else the primary
+ * monitor's size from RandR; else 96. The X screen's own size in
+ * millimetres is the server's arithmetic for 96, and says nothing. */
+static int screen_dpi(void) {
+    const char *forced = getenv("VISITERM_DPI");
+    if (forced && atoi(forced) > 0) return atoi(forced);
+    xcb_get_property_reply_t *rm = xcb_get_property_reply(
+        conn, xcb_get_property(conn, 0, screen->root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING, 0, 1 << 20), NULL);
+    if (rm) {
+        int n = xcb_get_property_value_length(rm);
+        const char *v = xcb_get_property_value(rm);
+        for (int i = 0; i + 8 <= n; i++) {
+            if ((i == 0 || v[i - 1] == '\n') && strncmp(v + i, "Xft.dpi:", 8) == 0) {
+                char num[32];
+                int k = 0;
+                for (int j = i + 8; j < n && v[j] != '\n' && k < 31; j++) num[k++] = v[j];
+                num[k] = 0;
+                double d = strtod(num, NULL);
+                free(rm);
+                if (d >= 24 && d <= 1000) return (int) (d + 0.5);
+                rm = NULL;
+                break;
+            }
+        }
+        free(rm);
+    }
+    xcb_randr_get_monitors_reply_t *mons =
+        xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, screen->root, 1), NULL);
+    int dpi = 0;
+    if (mons) {
+        xcb_randr_monitor_info_iterator_t it = xcb_randr_get_monitors_monitors_iterator(mons);
+        for (int first = 1; it.rem; xcb_randr_monitor_info_next(&it), first = 0) {
+            xcb_randr_monitor_info_t *m = it.data;
+            if ((m->primary || first) && m->width_in_millimeters > 0) {
+                dpi = (int) (m->width * 25.4 / m->width_in_millimeters + 0.5);
+                if (m->primary) break;
+            }
+        }
+        free(mons);
+    }
+    return dpi >= 24 && dpi <= 1000 ? dpi : 96;
+}
+
 /* Opens the window: `c` by `r` cells of the font `font` at `points`,
  * fallback asked in the language `lang` (empty for none, V25), the glyph
  * set reset past `cap` bytes (V37). Answers the cell's width and height as
@@ -1234,6 +1512,16 @@ static void set_title(const uint8_t *text, int n) {
  * -3 no RENDER formats it needs. */
 geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
                               void *title_bytes, geng_wait *wait) {
+    /* the display first: the font's size in pixels is its dpi's (V50) */
+    int screen_number = 0;
+    conn = xcb_connect(NULL, &screen_number);
+    if (xcb_connection_has_error(conn)) {
+        geng_succeed(wait, geng_slot_I4(-2));
+        return (geng_cancel) {0};
+    }
+    screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
+    dpi0 = screen_dpi();
+    if (getenv("X11_STATS")) fprintf(stderr, "dpi %d\n", dpi0);
     points0 = points;
     glyph_cap = cap;
     char *font = string_of(font_bytes);
@@ -1273,23 +1561,9 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
         if ((v & 2) && primary[v] != primary[v & ~2]) faces[primary[v]].own |= 2;
     }
     free(font);
-    FT_Face face = faces[0].ft;
-    cw = (int) (face->size->metrics.max_advance >> 6);
-    ch = (int) (face->size->metrics.height >> 6);
-    ascent = (int) (face->size->metrics.ascender >> 6);
-    long below = -FT_MulFix(face->underline_position, face->size->metrics.y_scale) >> 6;
-    long thick = FT_MulFix(face->underline_thickness, face->size->metrics.y_scale) >> 6;
-    line_thick = thick < 1 ? 1 : (int) thick;
-    ul_below = below < 1 ? 1 : (int) below;
-    strike_above = ascent * 3 / 10;
+    primary_metrics();
     atexit(at_exit);
 
-    conn = xcb_connect(NULL, NULL);
-    if (xcb_connection_has_error(conn)) {
-        geng_succeed(wait, geng_slot_I4(-2));
-        return (geng_cancel) {0};
-    }
-    screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
     const xcb_render_query_pict_formats_reply_t *formats = xcb_render_util_query_formats(conn);
     xcb_render_pictforminfo_t *fa8 = xcb_render_util_find_standard_format(formats, XCB_PICT_STANDARD_A_8);
     xcb_render_pictvisual_t *visual = xcb_render_util_find_visual_format(formats, screen->root_visual);
@@ -1304,7 +1578,7 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
     win_cols = c;
     win_rows = r;
     window = xcb_generate_id(conn);
-    uint32_t values[2] = {screen->black_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_FOCUS_CHANGE |
+    uint32_t values[2] = {screen->black_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_FOCUS_CHANGE |
                                                    XCB_EVENT_MASK_STRUCTURE_NOTIFY};
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) (c * cw), (uint16_t) (r * ch), 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
@@ -1328,6 +1602,7 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
     xcb_render_create_glyph_set(conn, glyphs, a8);
     make_pixmap(c, r);
     xcb_map_window(conn, window);
+    xim_setup(screen_number);
     xcb_flush(conn);
     geng_succeed(wait, geng_slot_I4(cw * 65536 + ch));
     return (geng_cancel) {0};
@@ -1470,6 +1745,54 @@ geng_cancel visiterm_x11_take(geng_wait *wait) {
     memcpy(b->data, evbuf, (size_t) evlen);
     evlen = 0;
     geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* The font at `points` (V50's zoom): every face sized again, the glyph
+ * set begun again, the window kept at its size in pixels and so the cells
+ * that fit it reported as a new size. Answers the new cell as `open` does. */
+geng_cancel visiterm_x11_zoom(int32_t points, geng_wait *wait) {
+    if (points >= 4 && points <= 200 && points != points0) {
+        points0 = points;
+        for (int f = 0; f < nfaces; f++)
+            if (faces[f].primary) size_face(&faces[f]);
+        primary_metrics();
+        for (int f = 0; f < nfaces; f++) {
+            if (!faces[f].primary) size_face(&faces[f]);
+            hb_ft_font_changed(faces[f].hb);
+            memset(faces[f].advance, 0, (size_t) KEYS * sizeof *faces[f].advance);
+            memset(faces[f].ink, 0, (size_t) KEYS * 4 * sizeof *faces[f].ink);
+        }
+        reset_glyphs();
+        uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) cw, (uint32_t) ch, 0, 0, (uint32_t) cw, (uint32_t) ch, 0, 0, 0, 0, 0, 0, 0};
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+        xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(conn, xcb_get_geometry(conn, window), NULL);
+        if (g) {
+            win_cols = -1;
+            size_in(g->width, g->height);
+            free(g);
+        }
+        make_pixmap(win_cols, win_rows);
+        spot_x = spot_y = -1;
+        xcb_flush(conn);
+    }
+    geng_succeed(wait, geng_slot_I4(cw * 65536 + ch));
+    return (geng_cancel) {0};
+}
+
+/* Where the IME's candidate window belongs (V46): the cell's baseline, as
+ * XIM's spot location is. Sent only when it moves. */
+geng_cancel visiterm_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
+    if (have_xic && (x != spot_x || y != spot_y)) {
+        spot_x = x;
+        spot_y = y;
+        xcb_point_t spot = {(int16_t) (x * cw), (int16_t) (y * ch + ascent)};
+        xcb_xim_nested_list pre = xcb_xim_create_nested_list(xim, XCB_XIM_XNSpotLocation, &spot, NULL);
+        xcb_xim_set_ic_values(xim, xic, NULL, NULL, XCB_XIM_XNPreeditAttributes, &pre, NULL);
+        free(pre.data);
+        xcb_flush(conn);
+    }
+    geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
 
