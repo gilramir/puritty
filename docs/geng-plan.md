@@ -756,7 +756,8 @@ the screen and finds scrolls by row hashes, a pty fits the one loop, and a
 vim scroll costs 374 bytes a line on the wire. The renderer's build begun
 2026-11-02: [`renderer.md`](renderer.md); Gilbert took its leanings (V34–V38), and
 its steps 1 to 5 are built, the pixel gate last (§R13); Gilbert took its
-questions on ink extents, box drawing and the CJK region (V40–V42, §R15).* PTY backend, XCB window, the server-side X11 renderer
+questions on ink extents, box drawing and the CJK region (V40–V42, §R15),
+and ink and box drawing are built (§R16, §R17). Step 6, the exit, is next.* PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).

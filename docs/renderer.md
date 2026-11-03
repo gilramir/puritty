@@ -3,8 +3,8 @@
 Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
 (§R7, V34–V38). Steps 1 to 5 of §R6 are built (§R8–§R10, §R12, §R13);
 Gilbert took the leanings of what the pixel gate found (§R14, §R15:
-V40–V42); V40 is built (§R16, with V43, a change to V24 he has not yet
-seen), V41's box drawing is next, and then step 6, the exit.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+V40–V42); V40 and V41 are built (§R16, §R17; with V43, a change to V24
+he has not yet seen), and step 6, the exit, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -735,3 +735,43 @@ whole words, which would give `tail` back its 339 bytes a line where no
 ligature is near. Not built: a new link is not known until the glyph that
 makes it is drawn, so it needs the reading-order frame's kind of answer,
 and the cost it saves is bytes, not correctness.
+
+## R17. V41 built: box drawing and blocks drawn by the C (2026-11-02)
+
+U+2500 to U+259F are no font's: a cluster of one of them is drawn by the C,
+which rasterises it once into a bitmap of its cells, the first time it is
+drawn at that width, and uploads it to the glyph set as any glyph is
+(under a face number of its own), so it is drawn in its style's colour by
+the same requests, and is reset with the glyph set (V37).
+
+- **Lines** (U+2500–U+254B, U+2550–U+256C, U+2574–U+257F) come from a
+  table of each one's four arms, light, heavy or double, which the
+  characters' Unicode names were checked against (all 128 agree). A light
+  line is a ninth of the cell's width, rounded, at least a pixel (1 at 11
+  points), a heavy one twice that, on whole pixels at the cell's centre and
+  running to its edges, so a line joins its neighbours in any font; the
+  widest arm across decides where the others stop, so a corner is filled.
+  A double arm is two lines a line apart, each stopping at the corner it
+  meets (╔, ╬, ╣), and a single arm meeting a double one runs to its far
+  line (╒, ╞).
+- **Dashed lines** (┄ ┆ ┈ ┊ ╌ ╎ and their heavy forms) are 2, 3 or 4
+  dashes a cell, a third of each dash's share left as its gap.
+- **Arcs** (╭ ╮ ╯ ╰) are a quarter circle of the line's width,
+  anti-aliased, from the middle of one edge to the next, and meet the
+  straight lines beside them. **Diagonals** (╱ ╲ ╳) run corner to
+  corner, anti-aliased, so a run of them joins.
+- **Blocks** (U+2580–U+259F): the halves, eighths, quadrants and edges
+  filled on whole pixels; the shades ░ ▒ ▓ as flat alpha, a quarter, half
+  and three quarters of the colour, which join with no seam.
+
+Nothing a box glyph draws leaves its cells, so it answers no ink (V40).
+Braille, Powerline and the geometric shapes stay the font's.
+
+Checked by the pixel gate: `box` and `box-fira` change, every line crisp
+and joined, where the fonts' own glyphs were a 1-pixel line spread over
+two pixel columns (§R13.5); three cases are added, every character of the
+range in DejaVu Sans Mono and in Fira Code, and a screen of tmux-style
+panes with double, heavy and rounded boxes, read at the pixel to find a
+gap of one pixel at the double corners, then closed. `pixels-fuzz.py`
+takes box drawing among its words: 2,000 screens draw the same in frames
+as at once.

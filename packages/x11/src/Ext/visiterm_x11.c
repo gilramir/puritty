@@ -48,6 +48,7 @@
 #include FT_OUTLINE_H
 #include <hb-ft.h>
 #include <hb.h>
+#include <math.h>
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -84,7 +85,7 @@ static uint8_t style_flags[65536], style_ul[65536];
 static xcb_atom_t wm_protocols, wm_delete, net_wm_name, utf8_string;
 
 static struct {
-    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, uploaded, colour, squeezed, clipped, frames;
+    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, uploaded, colour, squeezed, clipped, boxes, frames;
     double shape_ns, raster_ns, draw_ns, fc_ns;
 } st;
 
@@ -131,6 +132,9 @@ static void fill(uint32_t rgb, int x, int y, int w, int h) {
  * uploaded in (shifted 1, squeezed 2, synthetic bold 4, synthetic italic
  * 8, from bit 16); a glyph set id is the face above it. */
 #define KEYS (1 << 20)
+/* The last face's number is the box drawing's (V41), whose glyphs the C
+ * draws itself; it is no font. */
+#define BOX (FACES - 1)
 typedef struct ColourGlyph {
     uint32_t g;
     int box;
@@ -210,7 +214,7 @@ static int covers(int f, const uint32_t *cps, int n) {
 static int load_face(const char *file, int index, int is_primary) {
     for (int f = 0; f < nfaces; f++)
         if (faces[f].index == index && strcmp(faces[f].file, file) == 0) return f;
-    if (nfaces == FACES) return -1;
+    if (nfaces == BOX) return -1;
     Face *F = &faces[nfaces];
     if (FT_New_Face(library, file, index, &F->ft) != 0) return -1;
     F->file = strdup(file);
@@ -302,6 +306,8 @@ static int fallback(const uint32_t *cps, int n) {
 
 /* The glyph set freed and a new one begun (V37), every face's record of
  * what it uploaded forgotten, and its colour pictures freed. */
+static uint8_t box_uploaded[512];
+
 static void reset_glyphs(void) {
     xcb_render_free_glyph_set(conn, glyphs);
     glyphs = xcb_generate_id(conn);
@@ -315,6 +321,7 @@ static void reset_glyphs(void) {
         }
         faces[f].pictures = NULL;
     }
+    memset(box_uploaded, 0, sizeof box_uploaded);
     glyph_bytes = 0;
     resets++;
 }
@@ -626,6 +633,227 @@ static int primary_for(int style) {
     return primary[((flags & 1) ? 1 : 0) | ((flags & 4) ? 2 : 0)];
 }
 
+/* BOX DRAWING (V41, renderer.md §R17)
+ *
+ * U+2500 to U+259F are drawn here, not by a font: each is rasterised once
+ * into a bitmap of its cells and uploaded to the glyph set as any glyph is,
+ * so it is drawn in its style's colour by the same requests. Lines lie on
+ * whole pixels at the cell's centre and run to its edges, so they join
+ * whatever the font; arcs and diagonals are anti-aliased; shades are flat
+ * alpha. Nothing reaches past its cells, so a box glyph has no ink to
+ * answer. */
+
+/* Arms of U+2500 to U+257F, up, right, down and left: 0 none, 1 light, 2
+ * heavy, 3 double; a letter for those drawn otherwise: 'h' and 'v' dashed
+ * (light, then 'H' and 'V' heavy), 'a' an arc, 'd' a diagonal. */
+static const char *const box_arms[128] = {
+    "0101", "0202", "1010", "2020", "h3", "H3", "v3", "V3", "h4", "H4", "v4", "V4",
+    "0110", "0210", "0120", "0220", "0011", "0012", "0021", "0022",
+    "1100", "1200", "2100", "2200", "1001", "1002", "2001", "2002",
+    "1110", "1210", "2110", "1120", "2120", "2210", "1220", "2220",
+    "1011", "1012", "2011", "1021", "2021", "2012", "1022", "2022",
+    "0111", "0112", "0211", "0212", "0121", "0122", "0221", "0222",
+    "1101", "1102", "1201", "1202", "2101", "2102", "2201", "2202",
+    "1111", "1112", "1211", "1212", "2111", "1121", "2121", "2112", "2211", "1122", "1221",
+    "2212", "1222", "2122", "2221", "2222",
+    "h2", "H2", "v2", "V2",
+    "0303", "3030", "0310", "0130", "0330", "0013", "0031", "0033",
+    "1300", "3100", "3300", "1003", "3001", "3003",
+    "1310", "3130", "3330", "1013", "3031", "3033",
+    "0313", "0131", "0333", "1303", "3101", "3303", "1313", "3131", "3333",
+    "a", "a", "a", "a", "d", "d", "d",
+    "0001", "1000", "0100", "0010", "0002", "2000", "0200", "0020",
+    "0201", "1020", "0102", "2010",
+};
+
+static uint8_t *canvas;
+static int canvas_w, canvas_h;
+
+static void canvas_rect(int x, int y, int w, int h, int alpha) {
+    for (int j = y < 0 ? 0 : y; j < y + h && j < canvas_h; j++)
+        for (int i = x < 0 ? 0 : x; i < x + w && i < canvas_w; i++)
+            if (canvas[j * canvas_w + i] < alpha) canvas[j * canvas_w + i] = (uint8_t) alpha;
+}
+
+/* A pixel's coverage by a band of width `t` around a distance of 0. */
+static int cover(double d, double t) {
+    double c = t / 2 + 0.5 - (d < 0 ? -d : d);
+    return c <= 0 ? 0 : c >= 1 ? 255 : (int) (c * 255 + 0.5);
+}
+
+static void canvas_pixel(int i, int j, int alpha) {
+    if (i >= 0 && i < canvas_w && j >= 0 && j < canvas_h && canvas[j * canvas_w + i] < alpha)
+        canvas[j * canvas_w + i] = (uint8_t) alpha;
+}
+
+static void draw_lines_box(const char *a, int w, int h, int t, int heavy) {
+    int arm[4];
+    for (int k = 0; k < 4; k++) arm[k] = a[k] - '0';
+    int up = arm[0], right = arm[1], down = arm[2], left = arm[3];
+    int th[4] = {0, t, heavy, t};
+    int cx = (w - t) / 2, cy = (h - t) / 2;
+    /* The widest arm across each way decides where the others stop, so a
+     * corner is filled. */
+    int hmax = th[left] > th[right] ? th[left] : th[right], vmax = th[up] > th[down] ? th[up] : th[down];
+    int xL = cx - t, xR = cx + t, yT = cy - t, yB = cy + t;
+    int dv = up == 3 || down == 3, dh = left == 3 || right == 3;
+    /* Light and heavy arms. */
+    for (int k = 0; k < 4; k++) {
+        if (arm[k] != 1 && arm[k] != 2) continue;
+        int wt = th[arm[k]];
+        if (k == 0 || k == 2) {
+            int x0 = (w - wt) / 2;
+            int across = hmax > wt ? hmax : wt, c0 = (h - across) / 2, c1 = c0 + across;
+            if (dh) c0 = yT, c1 = yB + t;
+            if (k == 0) canvas_rect(x0, 0, wt, c1, 255);
+            else canvas_rect(x0, c0, wt, h - c0, 255);
+        } else {
+            int y0 = (h - wt) / 2;
+            int across = vmax > wt ? vmax : wt, c0 = (w - across) / 2, c1 = c0 + across;
+            if (dv) c0 = xL, c1 = xR + t;
+            if (k == 3) canvas_rect(0, y0, c1, wt, 255);
+            else canvas_rect(c0, y0, w - c0, wt, 255);
+        }
+    }
+    /* Double arms: two lines, each stopping where it meets its corner. */
+    int sv = up == 1 || down == 1, sh = left == 1 || right == 1;
+    if (up == 3) {
+        int e1 = left == 3 ? yT + t : right == 3 ? yB + t : sh ? cy : yB + t;
+        int e2 = right == 3 ? yT + t : left == 3 ? yB + t : sh ? cy : yB + t;
+        canvas_rect(xL, 0, t, e1, 255);
+        canvas_rect(xR, 0, t, e2, 255);
+    }
+    if (down == 3) {
+        int s1 = left == 3 ? yB : right == 3 ? yT : sh ? cy : yT;
+        int s2 = right == 3 ? yB : left == 3 ? yT : sh ? cy : yT;
+        canvas_rect(xL, s1, t, h - s1, 255);
+        canvas_rect(xR, s2, t, h - s2, 255);
+    }
+    if (left == 3) {
+        int e1 = up == 3 ? xL + t : down == 3 ? xR + t : sv ? cx : xR + t;
+        int e2 = down == 3 ? xL + t : up == 3 ? xR + t : sv ? cx : xR + t;
+        canvas_rect(0, yT, e1, t, 255);
+        canvas_rect(0, yB, e2, t, 255);
+    }
+    if (right == 3) {
+        int s1 = up == 3 ? xR : down == 3 ? xL : sv ? cx : xL;
+        int s2 = down == 3 ? xR : up == 3 ? xL : sv ? cx : xL;
+        canvas_rect(s1, yT, w - s1, t, 255);
+        canvas_rect(s2, yB, w - s2, t, 255);
+    }
+}
+
+static void draw_box(uint32_t cp, int w, int h) {
+    int t = (w + 4) / 9 < 1 ? 1 : (w + 4) / 9;
+    int heavy = 2 * t;
+    if (cp >= 0x2580) {
+        int k = (int) (cp - 0x2580);
+        int hw = w / 2, hh = h / 2;
+        switch (k) {
+        case 0x00: canvas_rect(0, 0, w, hh, 255); break;
+        case 0x10: canvas_rect(hw, 0, w - hw, h, 255); break;
+        case 0x11: canvas_rect(0, 0, w, h, 64); break;
+        case 0x12: canvas_rect(0, 0, w, h, 128); break;
+        case 0x13: canvas_rect(0, 0, w, h, 192); break;
+        case 0x14: canvas_rect(0, 0, w, (h + 4) / 8, 255); break;
+        case 0x15: canvas_rect(w - (w + 4) / 8, 0, (w + 4) / 8, h, 255); break;
+        default:
+            if (k >= 0x01 && k <= 0x08) {
+                int eh = (h * k + 4) / 8;
+                canvas_rect(0, h - eh, w, eh, 255);
+            } else if (k >= 0x09 && k <= 0x0F) {
+                int ew = (w * (0x10 - k) + 4) / 8;
+                canvas_rect(0, 0, ew, h, 255);
+            } else {
+                /* Quadrants: upper left 1, upper right 2, lower left 4,
+                 * lower right 8. */
+                static const uint8_t quads[10] = {4, 8, 1, 1 | 4 | 8, 1 | 8, 1 | 2 | 4, 1 | 2 | 8, 2, 2 | 4, 2 | 4 | 8};
+                int q = quads[k - 0x16];
+                if (q & 1) canvas_rect(0, 0, hw, hh, 255);
+                if (q & 2) canvas_rect(hw, 0, w - hw, hh, 255);
+                if (q & 4) canvas_rect(0, hh, hw, h - hh, 255);
+                if (q & 8) canvas_rect(hw, hh, w - hw, h - hh, 255);
+            }
+        }
+        return;
+    }
+    const char *a = box_arms[cp - 0x2500];
+    if (a[0] == 'h' || a[0] == 'H' || a[0] == 'v' || a[0] == 'V') {
+        int n = a[1] - '0', wt = (a[0] == 'H' || a[0] == 'V') ? heavy : t;
+        int vertical = a[0] == 'v' || a[0] == 'V';
+        int len = vertical ? h : w;
+        for (int k = 0; k < n; k++) {
+            int s0 = len * k / n, s1 = len * (k + 1) / n, gap = (s1 - s0) / 3 > 0 ? (s1 - s0) / 3 : 1;
+            int a0 = s0 + gap / 2, a1 = s1 - (gap - gap / 2);
+            if (vertical) canvas_rect((w - wt) / 2, a0, wt, a1 - a0, 255);
+            else canvas_rect(a0, (h - wt) / 2, a1 - a0, wt, 255);
+        }
+        return;
+    }
+    if (a[0] == 'a') {
+        /* A quarter circle from the middle of one edge to the middle of
+         * the next, joining the straight lines of its neighbours. */
+        double lx = (w - t) / 2 + t / 2.0, ly = (h - t) / 2 + t / 2.0;
+        double r = lx < ly ? lx : ly;
+        int sx = cp == 0x256D || cp == 0x2570 ? 1 : -1, sy = cp == 0x256D || cp == 0x256E ? 1 : -1;
+        double ox = lx + sx * r, oy = ly + sy * r;
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < w; i++) {
+                double px = i + 0.5, py = j + 0.5;
+                int in_x = sx > 0 ? px <= ox : px >= ox, in_y = sy > 0 ? py <= oy : py >= oy;
+                if (in_x && in_y) canvas_pixel(i, j, cover(sqrt((px - ox) * (px - ox) + (py - oy) * (py - oy)) - r, t));
+            }
+        int x0 = (w - t) / 2, y0 = (h - t) / 2;
+        int ry = (int) (oy + 0.5), rx = (int) (ox + 0.5);
+        if (sy > 0) canvas_rect(x0, ry, t, h - ry, 255);
+        else canvas_rect(x0, 0, t, ry, 255);
+        if (sx > 0) canvas_rect(rx, y0, w - rx, t, 255);
+        else canvas_rect(0, y0, rx, t, 255);
+        return;
+    }
+    if (a[0] == 'd') {
+        /* Corner to corner, so that a run of them joins across cells. */
+        double len = sqrt((double) w * w + (double) h * h);
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < w; i++) {
+                double px = i + 0.5, py = j + 0.5;
+                if (cp != 0x2572) canvas_pixel(i, j, cover((px * h + py * w - (double) w * h) / len, t));
+                if (cp != 0x2571) canvas_pixel(i, j, cover((px * h - py * w) / len, t));
+            }
+        return;
+    }
+    draw_lines_box(a, w, h, t, heavy);
+}
+
+/* Places a box-drawing character's glyph, rasterised and uploaded the
+ * first time it is drawn at that width. */
+static void place_box(uint32_t cp, int cell, int y, int cells, int style) {
+    if (nplaced == 8192) return;
+    uint32_t k = (cp - 0x2500) | (cells == 2 ? 0x100 : 0);
+    uint32_t id = ((uint32_t) BOX << 20) | k;
+    int w = cells * cw;
+    if (!box_uploaded[k]) {
+        box_uploaded[k] = 1;
+        int stride = (w + 3) & ~3;
+        canvas_w = stride;
+        canvas_h = ch;
+        canvas = calloc((size_t) stride * ch, 1);
+        canvas_w = w;
+        draw_box(cp, w, ch);
+        /* draw_box wrote rows `w` wide; spread them to the stride. */
+        uint8_t *data = calloc((size_t) stride * ch, 1);
+        for (int j = 0; j < ch; j++) memcpy(data + j * stride, canvas + j * w, (size_t) w);
+        free(canvas);
+        xcb_render_glyphinfo_t info = {.width = (uint16_t) w, .height = (uint16_t) ch, .x = 0, .y = (int16_t) ascent,
+                                       .x_off = (int16_t) w, .y_off = 0};
+        xcb_render_add_glyphs(conn, glyphs, 1, &id, &info, (uint32_t) stride * ch, data);
+        glyph_bytes += (long) stride * ch + 28;
+        free(data);
+        st.boxes++;
+    }
+    placed[nplaced++] = (Placed) {id, cell * cw, y * ch + ascent, style, w, -1};
+}
+
 static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
     static Cluster cl[1024];
     static uint32_t cps[1024 * 64];
@@ -658,6 +886,10 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
     }
     st.clusters += ncl;
     for (int i = 0; i < ncl; i++) {
+        if (cl[i].n == 1 && cl[i].cps[0] >= 0x2500 && cl[i].cps[0] <= 0x259F) {
+            cl[i].face = BOX;
+            continue;
+        }
         int want = primary_for(cl[i].style);
         int colour = emoji(cl[i].cps, cl[i].n);
         if (faces[want].colour == colour && covers(want, cl[i].cps, cl[i].n)) cl[i].face = want;
@@ -678,7 +910,10 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
         /* A segment is one face's, and stops at an empty cell: shaping
          * across one would join what a screen shows apart (§R16). */
         if (i == ncl || cl[i].face != cl[from].face || cl[i].cell != cl[i - 1].cell + cl[i - 1].width) {
-            shape_segment(cl + from, i - from, x, y);
+            if (cl[from].face == BOX)
+                for (int k = from; k < i; k++) place_box(cl[k].cps[0], x + cl[k].cell, y, cl[k].width, cl[k].style);
+            else
+                shape_segment(cl + from, i - from, x, y);
             from = i;
         }
 }

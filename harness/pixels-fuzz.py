@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The pixel gate's fuzzer (docs/renderer.md §R16, V40).
 
-Makes random screens of italic, Thai, CJK, Devanagari, Fira Code's
+Makes random screens of italic, Thai, CJK, Devanagari, box drawing, Fira Code's
 ligatures typed a character a frame, and Latin, moved about by cursor
 moves, erases, insertions and deletions, scroll regions and reverse
 index, with frames drawn at random points; draws each in its frames and in
@@ -36,6 +36,7 @@ TYPED = ["-", ">", "=", "!", "<", "w", "-->", "=>", "!=", "===", "www", "<!--", 
 WORDS = TYPED + [
     "\\e[3m-\\e[0m", "\\e[3mffff\\e[0m", "\\e[3mjjj\\e[0m", "\\e[1;3mWW\\e[0m", "กี้", "ญุ", "ฐุ", "ปั๊ม", "น้ำ",
     "漢字", "\\e[3m漢\\e[0m", "\\e[1m字\\e[0m", "ab", "xyz", " ", "  ", "\\e[7mrv\\e[0m", "क्षि",
+    "┌─┐", "│", "╬═", "▀▄", "╭╯", "\\e[3m─┼\\e[0m",
 ]
 
 
