@@ -1,0 +1,123 @@
+module Main exposing (main)
+
+{-| The EUC-KR decoder's cost beside the core's (docs/phase3-input.md):
+FILE is cut into 64 KB reads, as the pty gives them, and each is decoded
+with the lead carried to the next.
+
+usage: euckr MODE FILE [UTF8]
+  MODE runs | bytewise   decode only; with UTF8, check the output is it
+       core              the core fed FILE, which is UTF-8, at 160 by 50
+       runs+core         decoded with runs, then fed to the core
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import EucKr
+import Int64
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Time
+import Vt
+
+
+type alias Out =
+    { lead : Int, parts : Array Bytes, term : Maybe Vt.Term }
+
+
+run : String -> Bytes -> Int -> (moved acc : Out) -> Out
+run mode bytes at acc =
+    if at >= Bytes.length bytes then
+        acc
+
+    else
+        let
+            chunk =
+                Bytes.slice at (at + 65536) bytes
+        in
+        if mode == "core" then
+            run mode bytes (at + 65536) { acc | term = Maybe.map (Vt.feed chunk) acc.term }
+
+        else
+            let
+                d =
+                    if mode == "bytewise" then
+                        EucKr.decodeBytewise acc.lead chunk
+
+                    else
+                        EucKr.decodeRuns acc.lead chunk
+            in
+            if mode == "runs+core" then
+                run mode bytes (at + 65536) { acc | lead = d.lead, term = Maybe.map (Vt.feed d.bytes) acc.term }
+
+            else
+                run mode bytes (at + 65536) { acc | lead = d.lead, parts = Array.pushLast d.bytes acc.parts }
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                let
+                    mode =
+                        Maybe.withDefault "runs" (Array.get 0 s.args)
+
+                    path i =
+                        Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get i s.raw))
+                in
+                Os.File.readFile s.perm (path 1)
+                    |> Task.andThen
+                        (\bytes ->
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t0 ->
+                                        let
+                                            term =
+                                                if String.contains "core" mode then
+                                                    Just (Vt.new { cols = 160, rows = 50, scrollbackBytes = Vt.scrollbackBytesFor { cols = 160, rows = 100000 }, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 0, cellHeight = 0 })
+
+                                                else
+                                                    Nothing
+
+                                            done =
+                                                run mode bytes 0 { lead = 0, parts = [], term = term }
+                                        in
+                                        Time.monotonic
+                                            |> Task.andThen
+                                                (\t1 ->
+                                                    let
+                                                        ms =
+                                                            Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0)
+
+                                                        out =
+                                                            Bytes.flatten done.parts
+                                                    in
+                                                    (if Array.length s.raw > 2 then
+                                                        Os.File.readFile s.perm (path 2) |> Task.map (\want -> if want == out then " same" else " DIFFERS")
+
+                                                     else
+                                                        Task.succeed ""
+                                                    )
+                                                        |> Task.andThen
+                                                            (\check ->
+                                                                Console.write
+                                                                    (mode
+                                                                        ++ " "
+                                                                        ++ String.fromInt (Bytes.length bytes)
+                                                                        ++ " B in "
+                                                                        ++ String.fromInt ms
+                                                                        ++ " ms, "
+                                                                        ++ String.fromInt (if ms > 0 then Bytes.length bytes // (ms * 1000) else 0)
+                                                                        ++ " MB/s; out "
+                                                                        ++ String.fromInt (Bytes.length out)
+                                                                        ++ check
+                                                                        ++ "\n"
+                                                                    )
+                                                            )
+                                                )
+                                    )
+                        )
+                    |> Task.onError (\_ -> Console.write "euckr: cannot read the file\n")
+            )

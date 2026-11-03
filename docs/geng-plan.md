@@ -770,7 +770,12 @@ measured with an X protocol tracer and recorded for `tail -f`, `htop` and a vim
 scroll. The C§9 script corpus renders correctly under the fonts the tests pin (Q13:
 visiterm ships none).
 
-**Phase 3 · Input, clipboard, IME, EUC-KR.** XKB modifiers, legacy and kitty
+**Phase 3 · Input, clipboard, IME, EUC-KR.** *Survey begun 2026-11-02:
+[`phase3-input.md`](phase3-input.md): the IME matrix runs scripted on
+Xvfb and orders every commit right, but XIM costs 16–24 ms a key over
+`ssh -X` in xcb-imdkit's round trips; a paste does not fit the loop until
+`os` has a write it can race; EUC-KR's decoder in Geng adds 12–15% on
+ASCII and 72% on Korean text; its seven leanings wait on Gilbert.* XKB modifiers, legacy and kitty
 keyboard encodings, mouse 1006/1016, selection and clipboard, OSC 52 with its caps,
 bracketed paste with slicing, XIM through xcb-imdkit with S§9's ordering rules, the
 EUC-KR filter pair.

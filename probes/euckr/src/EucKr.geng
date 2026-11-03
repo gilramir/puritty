@@ -1,0 +1,169 @@
+module EucKr exposing (decodeRuns, decodeBytewise)
+
+{-| The EUC-KR filter's decoder (docs/phase3-input.md; cjk-and-thai.md
+§10.3), WHATWG's `euc-kr` decoder, which takes the CP949 superset: a lead
+byte 0x81–0xFE and a trail 0x41–0xFE make one code point from the index; a
+lead with no code point gives U+FFFD, and a trail below 0x80 is read again
+on its own, so a stray lead never swallows an ESC. 0x80 and 0xFF are
+U+FFFD. The decoder keeps a lead that ends a read for the next.
+
+Two forms, to measure: `decodeRuns` passes a run of 16 or more ASCII bytes
+on as a slice of the read and builds the rest; `decodeBytewise` builds every byte. Each
+answers the lead left over (0 for none) and the UTF-8.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import EucKrIndex exposing (index)
+import UInt8
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i b =
+    when Bytes.get i b is
+        Just u ->
+            UInt8.toInt u
+
+        Nothing ->
+            -1
+
+
+pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushUtf8 cp b =
+    if cp < 0x80 then
+        Builder.pushLast (UInt8.fromInt cp) b
+
+    else if cp < 0x800 then
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xC0 (Bitwise.shiftRightZfBy 6 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+    else
+        b
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0xE0 (Bitwise.shiftRightZfBy 12 cp)))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F (Bitwise.shiftRightZfBy 6 cp))))
+            |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
+
+
+lookup : Int -> Int -> Int
+lookup lead byte =
+    if byte >= 0x41 && byte <= 0xFE then
+        Maybe.withDefault 0 (Array.get ((lead - 0x81) * 190 + byte - 0x41) index)
+
+    else
+        0
+
+
+{-| One step of the decoder at `i` with `lead` pending: the builder, the
+lead after it and how far it moved (0 when a trail is read again). -}
+type alias Step =
+    { lead : Int, out : Builder UInt8, next : Int }
+
+
+step : Bytes -> Int -> Int -> (moved out : Builder UInt8) -> Step
+step bytes i lead out =
+    let
+        byte =
+            byteAt i bytes
+    in
+    if lead /= 0 then
+        let
+            cp =
+                lookup lead byte
+        in
+        if cp /= 0 then
+            { lead = 0, out = pushUtf8 cp out, next = i + 1 }
+
+        else if byte < 0x80 then
+            { lead = 0, out = pushUtf8 0xFFFD out, next = i }
+
+        else
+            { lead = 0, out = pushUtf8 0xFFFD out, next = i + 1 }
+
+    else if byte < 0x80 then
+        { lead = 0, out = Builder.pushLast (UInt8.fromInt byte) out, next = i + 1 }
+
+    else if byte >= 0x81 && byte <= 0xFE then
+        { lead = byte, out = out, next = i + 1 }
+
+    else
+        { lead = 0, out = pushUtf8 0xFFFD out, next = i + 1 }
+
+
+decodeBytewise : Int -> Bytes -> { lead : Int, bytes : Bytes }
+decodeBytewise lead bytes =
+    let
+        done =
+            bytewise bytes (Bytes.length bytes) 0 lead (Builder.empty (Bytes.length bytes * 3 // 2 + 3))
+    in
+    { lead = done.lead, bytes = Bytes.fromUInt8s (Builder.toArray done.out) }
+
+
+bytewise : Bytes -> Int -> Int -> Int -> (moved out : Builder UInt8) -> { lead : Int, out : Builder UInt8 }
+bytewise bytes n i lead out =
+    if i >= n then
+        { lead = lead, out = out }
+
+    else
+        let
+            s =
+                step bytes i lead out
+        in
+        bytewise bytes n s.next s.lead s.out
+
+
+decodeRuns : Int -> Bytes -> { lead : Int, bytes : Bytes }
+decodeRuns lead bytes =
+    let
+        n =
+            Bytes.length bytes
+
+        done =
+            if lead /= 0 then
+                wide bytes n 0 lead (Builder.empty 64) (Builder.empty 16)
+
+            else
+                ascii bytes n 0 0 (Builder.empty 16)
+    in
+    { lead = done.lead, bytes = Bytes.flatten (Builder.toArray done.pieces) }
+
+
+ascii : Bytes -> Int -> Int -> Int -> (moved pieces : Builder Bytes) -> { lead : Int, pieces : Builder Bytes }
+ascii bytes n start i pieces =
+    if i >= n then
+        { lead = 0, pieces = Builder.pushLast (Bytes.slice start n bytes) pieces }
+
+    else if byteAt i bytes < 0x80 then
+        ascii bytes n start (i + 1) pieces
+
+    else
+        wide bytes n i 0 (Builder.empty 64) (Builder.pushLast (Bytes.slice start i bytes) pieces)
+
+
+wide : Bytes -> Int -> Int -> Int -> (moved out : Builder UInt8) -> (moved pieces : Builder Bytes) -> { lead : Int, pieces : Builder Bytes }
+wide bytes n i lead out pieces =
+    if i >= n then
+        { lead = lead, pieces = Builder.pushLast (Bytes.fromUInt8s (Builder.toArray out)) pieces }
+
+    else if lead == 0 && asciiAhead bytes i (min n (i + 16)) then
+        ascii bytes n i i (Builder.pushLast (Bytes.fromUInt8s (Builder.toArray out)) pieces)
+
+    else
+        let
+            s =
+                step bytes i lead out
+        in
+        wide bytes n s.next s.lead s.out pieces
+
+
+asciiAhead : Bytes -> Int -> Int -> Bool
+asciiAhead bytes i end =
+    if i >= end then
+        True
+
+    else if byteAt i bytes < 0x80 then
+        asciiAhead bytes (i + 1) end
+
+    else
+        False
