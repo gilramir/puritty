@@ -1,8 +1,9 @@
 # The renderer: what the probes leave, and how it is built (survey, 2026-11-02)
 
 Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
-(§R7, V34–V38). Steps 1 to 4 of §R6 are built (§R8–§R10, §R12); step 5,
-the pixel gate, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+(§R7, V34–V38). Steps 1 to 5 of §R6 are built (§R8–§R10, §R12, §R13);
+what the pixel gate found asks Gilbert three questions (§R14), and step 6,
+the exit, follows them.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -496,3 +497,121 @@ exit 1; `--config /nonexistent/x.toml` is the `readFile` error, exit 2;
 `--title cli-title -- sh -c '…; exit 4' --flag-for-sh` runs the program
 with its own flag and exits 4, and `poke` finds the window by the title.
 
+
+## R13. Step 5 built: the pixel gate, and what it found (2026-11-02)
+
+**The gate** (V38), `harness/pixels.py`, with its program
+`harness/pixels/core-pixels`: a case is fed to the core and drawn by
+`packages/x11` on an Xvfb of the gate's own, and the window's picture is
+held to its pin, `corpus/pixels/NAME.png`, pixel for pixel. No pty and no
+timing: the program feeds the bytes, draws a frame at each `\F` the case
+has and one after the last byte, and writes the window. A case is the
+replay corpus's format, its first line also naming the font, its points,
+the fallback language and the focus (`size 30x2 lang=ko`). A failure
+leaves the picture and one of its differing pixels in
+`.harness-work/pixels/`, and names the cells they fall in.
+
+**Its fonts** are its own (Q13): DejaVu 2.37, Fira Code 6.2, Noto Sans CJK
+2.004, Noto Color Emoji 2.051, and Noto Sans Thai and Devanagari from
+noto-fonts 2026.09.01, built from the nixpkgs commit the devbox pins
+(noto-fonts with only those two of its families, since the whole is some
+1.5 GB), and a fontconfig file that names only their directories. FreeType,
+HarfBuzz, fontconfig and Xvfb come from the same commit, so a picture
+moves only when the renderer does. Three runs drew the same pixels.
+
+**The cases**, 26: C§9's corpus (Thai's stacking, SARA AM and
+descenders; Hangul precomposed, conjoining and LV+T; 直 骨 返 刃 and four
+more under each of `ja`, `ko`, `zh-cn`, `zh-tw` and `zh-hk`; mixed CJK and
+Latin, fullwidth punctuation and ambiguous characters; ❤️ 🇯🇵 👨‍👩‍👧; क्षि),
+and screens of attributes (in DejaVu and in Fira Code), Fira Code's
+ligatures, box drawing (both fonts), the 256 colours, the four cursor
+shapes and a wide cursor, reverse video, wide characters at edges, and
+three of ink drawn over by a later frame. The gate takes half a second;
+the pins are 232 KB. It fails when it should: each change below moved the
+cases it should and no others (the merged clusters' fix Devanagari, emoji
+and Thai; synthesis the cases with bold or italic), and a first try at the
+merge fix that also widened a cluster over the blank cell after it was
+caught by `wide-edges`.
+
+What it found:
+
+1. **Every Han case drew Japanese forms**, under any language, at first.
+   The cause was the gate's fontconfig file, not the renderer: every
+   region of Noto Sans Mono CJK covers every CJK language, so fontconfig's
+   own language matching cannot choose among them, and on Mint it is
+   fonts-noto-cjk's rules (`70-fonts-noto-cjk.conf`) that put a
+   language's region first. The gate's file now has the same rules for
+   `monospace`, and each language draws its own forms (直's and 骨's
+   differ between `ja`, `ko` and `zh-cn`). V25's language reaches the
+   right font only where the system has such rules (§R14.3).
+2. **A shaper's merged cluster was drawn in its first cell's box.** The
+   core gives a Devanagari vowel sign (ि, ी) and each half of a conjunct
+   cells of their own, as Ghostty does, and a flag's two regional
+   indicators and an emoji ZWJ sequence's people likewise; HarfBuzz merges
+   them into one cluster, and the C took only the first's cells, so क्षि
+   sat in one cell and left two empty after it, and 🇯🇵 in two of its four.
+   Fixed: a merged cluster takes the cells of every cluster merged into it
+   (C§9 rule 4). The same rule moves Thai's น้ำ, whose SARA AM has a cell
+   of its own (rule 3), 2 pixels right, centred on its two cells. Gaps
+   narrower than a cell stay where a glyph is narrower than its cells (the
+   half form न् in its own cell): legacy widths on a grid.
+3. **Bold and italic were not synthesised** for a face without them: CJK,
+   Thai and Devanagari from fallback faces, and Fira Code's italic (it has
+   none, so fontconfig gives its regular), drew upright and regular. Built
+   (C§9 rule 6): a face's own bold and italic are known from which faces
+   fontconfig gave the four variants, and what a style asks of a face that
+   is not of itself is synthesised when its glyph is uploaded, an italic
+   slanted by 0.2 as fontconfig's oblique matrix, a bold widened by a 24th
+   of the em, as `FT_GlyphSlot_Embolden`, but not made taller, since a CJK
+   glyph fills its cell's height and a taller one bled a pixel into the
+   row above. Each form is its own glyph in the glyph set (two bits more
+   in a glyph's key).
+4. **Ink is lost to a later frame** (C§9 rule 5). An italic f's hook
+   reaches a pixel into the next cell, กี้'s tone mark a pixel above its
+   row, a fallback CJK glyph's top a pixel above its row; drawn once, all
+   of it shows, since nothing is clipped and rows are drawn top to bottom.
+   A later frame that redraws a neighbouring cell fills its background over
+   that ink and does not draw the neighbour again. Measured, a case drawn
+   in two frames against the same in one: `ink-italic` loses 5 pixels at
+   11 points and 7 at 22, `ink-thai` 3 and 5, `ink-fallback` 5 and 4. The
+   gate's three `ink-` cases pin the loss as it is now (§R14.1).
+5. **Box drawing joins** in both fonts at 11 points: the cell is the
+   font's height, and DejaVu's and Fira Code's box glyphs fill it, so
+   lines meet across rows and cells with no gap. They are not crisp: a
+   1-pixel line is drawn anti-aliased across two pixel columns, and Fira
+   Code's horizontal lines are a full row and a faint one, with a pixel's
+   wobble at one row (§R14.2).
+6. Nothing else was wrong. The colour emoji family's silhouettes are Noto
+   Color Emoji 2.051's own design (PIL with raqm draws the same); the
+   gaps after emoji and flags are the core's legacy widths.
+
+## R14. For Gilbert: ink, box drawing, the CJK region
+
+1. **Ink extents** (§R13.4). Leaning: **the view redraws a neighbour whose
+   ink reaches into a redrawn cell.** `X11.draw` answers, for the cells it
+   drew, which edges each one's ink crossed (left, right, up, down, a
+   nibble a cell, only for cells that did); `Vt.View` keeps them in its
+   shadow, and when it redraws a cell, it adds to the frame the
+   neighbours whose ink reaches into it, so they are drawn again over the
+   new background. C still keeps no table between frames (V35): the table
+   is the view's, beside what it already keeps of each cell. The cost is a
+   few bytes back from a draw and a few cells more in a frame beside
+   italics, Thai and CJK. The alternatives: clip each glyph to its cells,
+   as xterm and st do, which loses the overhangs every time (rule 5 says
+   no clipping); C remembering the overhangs itself, which it cannot act
+   on without the neighbours' contents; or accept the loss, a few pixels
+   a case until the row is drawn again.
+2. **Procedural box drawing** (§R13.5; plan S§6.3, phase 2's list).
+   Leaning: **build it before the exit**, for the box-drawing and block
+   elements (U+2500–U+259F): lines drawn by the C on whole pixels at the
+   cell's centre, in 1 and 2 pixels by weight, so they are crisp and join
+   whatever the font, and blocks and shades filled. tmux's and vim's
+   borders are what a daily terminal draws most of, and the exit is
+   Gilbert looking at them. Braille and Powerline stay the font's until
+   they are seen to need it. The cost is some 200 lines of C, and the
+   gate's box pins change.
+3. **The CJK region** (§R13.1). Leaning: **rely on the system's rules**,
+   as now. Mint has them from Debian's fonts-noto-cjk (other
+   distributions not checked); a system without them draws Japanese forms for every language, which a
+   per-range font setting (C§9 rule 7, phase 3) can override. visiterm
+   naming Noto's regions itself would tie it to one font family.

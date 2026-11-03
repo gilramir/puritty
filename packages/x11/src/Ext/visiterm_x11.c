@@ -45,6 +45,7 @@
 #include <poll.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_OUTLINE_H
 #include <hb-ft.h>
 #include <hb.h>
 #include <stdio.h>
@@ -126,6 +127,10 @@ static void fill(uint32_t rgb, int x, int y, int w, int h) {
 /* FONTS */
 
 #define FACES 32
+/* A glyph's key in its face: its index, and the bits of the form it was
+ * uploaded in (shifted 1, squeezed 2, synthetic bold 4, synthetic italic
+ * 8, from bit 16); a glyph set id is the face above it. */
+#define KEYS (1 << 20)
 typedef struct ColourGlyph {
     uint32_t g;
     int box;
@@ -141,6 +146,7 @@ typedef struct {
     int index;
     double scale;
     int colour;        /* a face of colour bitmaps (CBDT), drawn as pictures */
+    int own;           /* what the face is of itself: bold 1, italic 2 */
     uint8_t *uploaded; /* a bit a glyph index and form */
     int16_t *advance;  /* the x_off each glyph was uploaded with */
     ColourGlyph *pictures;
@@ -227,8 +233,8 @@ static int load_face(const char *file, int index, int is_primary) {
         }
     }
     F->hb = hb_ft_font_create_referenced(F->ft);
-    F->uploaded = calloc(262144 / 8, 1);
-    F->advance = calloc(262144, sizeof *F->advance);
+    F->uploaded = calloc(KEYS / 8, 1);
+    F->advance = calloc(KEYS, sizeof *F->advance);
     if (getenv("X11_STATS")) fprintf(stderr, "face %d: %s#%d scale %.3f\n", nfaces, F->file, index, F->scale);
     return nfaces++;
 }
@@ -299,7 +305,7 @@ static void reset_glyphs(void) {
     glyphs = xcb_generate_id(conn);
     xcb_render_create_glyph_set(conn, glyphs, a8);
     for (int f = 0; f < nfaces; f++) {
-        memset(faces[f].uploaded, 0, 262144 / 8);
+        memset(faces[f].uploaded, 0, KEYS / 8);
         for (ColourGlyph *c = faces[f].pictures, *next; c; c = next) {
             next = c->next;
             if (c->picture) xcb_render_free_picture(conn, c->picture);
@@ -318,21 +324,33 @@ static void reset_glyphs(void) {
  * centring in its bearing (`shift`), so a line of them stays in one
  * element; one wider than the one cell the core gives it a third way,
  * squeezed to the cell (`squeeze`, 16.16; PuTTY's narrow trick, C§4.4). */
-static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squeeze) {
-    uint32_t k = (g & 0xFFFF) | (shift ? 0x10000 : 0) | (squeeze ? 0x20000 : 0);
-    uint32_t id = ((uint32_t) f << 18) | k;
+static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squeeze, int synth) {
+    uint32_t k = (g & 0xFFFF) | (shift ? 0x10000 : 0) | (squeeze ? 0x20000 : 0) | ((uint32_t) synth << 18);
+    uint32_t id = ((uint32_t) f << 20) | k;
     Face *F = &faces[f];
     if (F->uploaded[k >> 3] & (1 << (k & 7))) return id;
     F->uploaded[k >> 3] |= (uint8_t) (1 << (k & 7));
     F->advance[k] = (int16_t) advance;
     st.uploaded++;
     double t0 = ns();
-    if (squeeze) {
-        FT_Matrix m = {squeeze, 0, 0, 0x10000};
+    /* A synthetic italic is the glyph slanted by 0.2, as fontconfig's
+     * oblique matrix; a synthetic bold its outline widened by a 24th of
+     * the em, as FreeType's FT_GlyphSlot_Embolden, but not made taller:
+     * a CJK glyph fills its cell's height, and a taller one draws into
+     * the row above (C§9 rule 6, §R13). */
+    int transformed = squeeze || (synth & 2);
+    if (transformed) {
+        FT_Matrix m = {squeeze ? squeeze : 0x10000, (synth & 2) ? 0x3333 : 0, 0, 0x10000};
         FT_Set_Transform(F->ft, &m, NULL);
     }
-    FT_Load_Glyph(F->ft, g, FT_LOAD_RENDER | (squeeze ? FT_LOAD_NO_HINTING : 0));
-    if (squeeze) FT_Set_Transform(F->ft, NULL, NULL);
+    FT_Load_Glyph(F->ft, g, (transformed ? FT_LOAD_NO_HINTING : 0) | ((synth & 1) ? 0 : FT_LOAD_RENDER));
+    if (synth & 1) {
+        FT_GlyphSlot slot = F->ft->glyph;
+        if (slot->format == FT_GLYPH_FORMAT_OUTLINE)
+            FT_Outline_EmboldenXY(&slot->outline, FT_MulFix(F->ft->units_per_EM, F->ft->size->metrics.y_scale) / 24, 0);
+        FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL);
+    }
+    if (transformed) FT_Set_Transform(F->ft, NULL, NULL);
     FT_Bitmap *b = &F->ft->glyph->bitmap;
     int stride = ((int) b->width + 3) & ~3;
     size_t size = (size_t) stride * b->rows;
@@ -353,10 +371,17 @@ typedef struct { uint32_t id; int x, y, style, advance; } Placed;
 static Placed placed[8192];
 static int nplaced;
 
+/* What a face draws of a style that it is not of itself: bold 1, italic 2
+ * (C§9 rule 6). */
+static int synth_for(int f, int style) {
+    int flags = style_flags[style];
+    return (((flags & 1) ? 1 : 0) | ((flags & 4) ? 2 : 0)) & ~faces[f].own;
+}
+
 static void place(int f, uint32_t g, int x, int y, int style, int advance, int shift, FT_Fixed squeeze) {
     if (nplaced == 8192) return;
-    uint32_t id = upload(f, g, advance, shift, squeeze);
-    placed[nplaced++] = (Placed) {id, x, y, style, faces[f].advance[id & 0x3FFFF]};
+    uint32_t id = upload(f, g, advance, shift, squeeze, synth_for(f, style));
+    placed[nplaced++] = (Placed) {id, x, y, style, faces[f].advance[id & (KEYS - 1)]};
 }
 
 /* The colour glyph `g` of face `f` for a box of `box` pixels by a cell's
@@ -470,7 +495,14 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
         int adv = 0;
         while (e < gn && gi[e].cluster == c) adv += gp[e++].x_advance;
         const Cluster *C = &cl[c];
-        int box = C->width * cw;
+        /* The shaper may merge clusters the core gave cells of their own,
+         * as it does a Devanagari conjunct and its vowel sign, or a flag's
+         * two regional indicators (§R13): the glyphs then take the cells of
+         * every cluster merged, up to the next one's. */
+        unsigned next = e < gn ? gi[e].cluster : (unsigned) n;
+        const Cluster *L = next > c + 1 ? &cl[next - 1] : C;
+        int box = (L->cell + L->width - C->cell) * cw;
+        if (box < C->width * cw) box = C->width * cw;
         if (faces[f].colour) {
             /* Placed by its cells, centred: the strike's advances are its
              * own size's, not the cell's. */
@@ -496,7 +528,7 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
             if (k + 1 < e) a = (gp[k].x_advance + gp[k + 1].x_offset - gp[k].x_offset) >> 6;
             if (e - g == 1 && pad > 0 && gp[k].x_offset == 0)
                 place(f, gi[k].codepoint, x - pad, yy, C->style, box, pad, 0);
-            else if (e - g == 1 && C->width == 1 && (adv >> 6) > cw && gp[k].x_offset == 0) {
+            else if (e - g == 1 && box == cw && (adv >> 6) > cw && gp[k].x_offset == 0) {
                 place(f, gi[k].codepoint, x, yy, C->style, cw, 0, (FT_Fixed) ((double) cw * 64 / adv * 65536));
                 st.squeezed++;
             } else
@@ -884,6 +916,14 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
         primary[v + 1] = f < 0 ? 0 : f;
         free(vf);
         free(spec);
+    }
+    /* A variant is bold when fontconfig gave it a face other than the one
+     * it gave the same variant without bold, and italic likewise; a font
+     * with no bold or italic face of its own gives the regular, whose
+     * glyphs are then drawn bold or italic (C§9 rule 6). */
+    for (int v = 1; v < 4; v++) {
+        if ((v & 1) && primary[v] != primary[v & ~1]) faces[primary[v]].own |= 1;
+        if ((v & 2) && primary[v] != primary[v & ~2]) faces[primary[v]].own |= 2;
     }
     free(font);
     FT_Face face = faces[0].ft;
