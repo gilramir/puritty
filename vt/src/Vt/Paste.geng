@@ -1,0 +1,85 @@
+module Vt.Paste exposing (encode, piece, bracketStart, bracketEnd)
+
+{-| Ghostty's paste encoder (`src/input/paste.zig`, v1.4.0) in Geng
+(`docs/phase3-select.md` §6, §15): what a paste writes to the program, as
+xterm writes it, with no question asked (Gilbert, §11).
+
+Bytes that could act are replaced by spaces, whether or not the program
+asked for bracketed paste: NUL, BS, ENQ, EOT, ESC, DEL, and the tty's own
+control characters (Ctrl+C, Ctrl+\\, Ctrl+U, Ctrl+Z, Ctrl+Q, Ctrl+S,
+Ctrl+W, Ctrl+V, Ctrl+R, Ctrl+O), so a paste cannot send a signal, edit the
+line or end the bracket early. With bracketed paste (mode 2004) the text
+goes between `ESC[200~` and `ESC[201~`; without, each LF goes as CR, as
+Enter does. A byte of UTF-8 past the first is 0x80 or more and is never
+one of these, so the text can be encoded a piece at a time.
+
+The paste gate (`harness/paste.py`) holds `encode` to libghostty-vt's
+`ghostty_paste_encode`.
+-}
+
+import Bytes exposing (Bytes)
+import Bytes.Builder as Builder exposing (Builder)
+import UInt8
+
+
+bracketStart : Bytes
+bracketStart =
+    Bytes.fromString "\u{001B}[200~"
+
+
+bracketEnd : Bytes
+bracketEnd =
+    Bytes.fromString "\u{001B}[201~"
+
+
+{-| A whole paste, bracketed or not. -}
+encode : Bool -> Bytes -> Bytes
+encode bracketed text =
+    if bracketed then
+        Bytes.flatten [ bracketStart, piece True text, bracketEnd ]
+
+    else
+        piece False text
+
+
+{-| A piece of a paste, without the brackets. -}
+piece : Bool -> Bytes -> Bytes
+piece bracketed text =
+    Builder.toBytes (pieceFrom bracketed text 0 (Bytes.length text) (Builder.empty (Bytes.length text)))
+
+
+pieceFrom : Bool -> Bytes -> Int -> Int -> (moved out : Builder) -> Builder
+pieceFrom bracketed text i n out =
+    if i >= n then
+        out
+
+    else
+        let
+            b =
+                when Bytes.get i text is
+                    Just u ->
+                        UInt8.toInt u
+
+                    Nothing ->
+                        0
+        in
+        pieceFrom bracketed text (i + 1) n (Builder.pushLast (byteOut bracketed b) out)
+
+
+byteOut : Bool -> Int -> Int
+byteOut bracketed b =
+    if b >= 0x20 && b /= 0x7F then
+        b
+
+    else if b == 0x0A then
+        if bracketed then
+            0x0A
+
+        else
+            0x0D
+
+    else if b == 0x00 || b == 0x08 || b == 0x05 || b == 0x04 || b == 0x1B || b == 0x7F || b == 0x03 || b == 0x1C || b == 0x15 || b == 0x1A || b == 0x11 || b == 0x13 || b == 0x17 || b == 0x16 || b == 0x12 || b == 0x0F then
+        0x20
+
+    else
+        b

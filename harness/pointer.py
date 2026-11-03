@@ -18,8 +18,11 @@ the wheel); double:B and triple:B click it two and three times 100 ms
 apart; key-down:K and key-up:K hold a key (shift, ctrl); key:K presses one
 (xdotool's names); sleep:S; primary and clipboard read that selection with
 xclip and add it to the case's pin, its length when it is long
-(docs/phase3-select.md §14). A case may give a shell command run before
-the program reads, to print what it selects.
+(docs/phase3-select.md §14); own-primary:NAME and own-clipboard:NAME make
+xclip the owner of that selection with OWNED[NAME] (§15). A case may give
+a shell command run before the program reads, to print what it selects,
+and the text of a config file. What the program receives is pinned whole,
+or its length, lines and end when it is long.
 
 usage:
     harness/pointer.py            every case
@@ -42,6 +45,15 @@ SGR = "\\e[?1000h\\e[?1006h"
 TEXT = "printf 'hello world, again\\r\\nsecond line\\r\\n'"
 # 5,000 lines of 64 characters: 325,000 bytes, more than an INCR piece
 LARGE = "seq -f '%063g' 1 5000"
+# what xclip owns for a paste (docs/phase3-select.md §15): its target and
+# its bytes
+OWNED = {
+    "lines": ("UTF8_STRING", b"pasted text\nline two"),
+    "unsafe": ("UTF8_STRING", b"a\x1b[201~b\x03c\x7fd\x00e\r\nf\x15g"),
+    "korean": ("UTF8_STRING", "한글 é".encode()),
+    "latin1": ("STRING", b"caf\xe9 na\xefve"),
+    "large": ("UTF8_STRING", b"".join(b"%063d\n" % n for n in range(1, 5001))),
+}
 # name, the modes the program sets, its actions. The default font at 96 dpi
 # has a cell of 9 by 17 pixels, so pixel (50, 30) is in column 6, row 2.
 CASES = [
@@ -79,6 +91,20 @@ CASES = [
     ("select-copy", "", "move:4,8 down:1 move:40,8 up:1 key:ctrl+shift+c clipboard primary", TEXT),
     ("select-shift", SGR, "move:4,8 key-down:shift down:1 move:40,8 up:1 key-up:shift primary", TEXT),
     ("select-large", "", "key:shift+Home sleep:0.5 move:0,0 down:1 key:shift+End sleep:0.5 move:715,400 up:1 sleep:0.5 primary", LARGE),
+    # paste (docs/phase3-select.md §15)
+    ("paste-clipboard", "", "own-clipboard:lines key:ctrl+shift+v"),
+    ("paste-bracketed", "\\e[?2004h", "own-clipboard:lines key:ctrl+shift+v"),
+    ("paste-unsafe", "", "own-clipboard:unsafe key:ctrl+shift+v"),
+    ("paste-unsafe-bracketed", "\\e[?2004h", "own-clipboard:unsafe key:ctrl+shift+v"),
+    ("paste-middle", "", "own-primary:korean move:50,30 click:2"),
+    ("paste-shift-insert", "", "own-primary:korean key:shift+Insert"),
+    ("paste-latin1", "", "own-clipboard:latin1 key:ctrl+shift+v"),
+    ("paste-large", "\\e[?2004h", "own-clipboard:large key:ctrl+shift+v sleep:2"),
+    ("paste-own-selection", "", "move:4,8 down:1 move:40,8 up:1 click:2", TEXT),
+    ("paste-middle-reported", SGR, "own-primary:korean move:50,30 click:2"),
+    ("paste-shift-middle-reported", SGR, "own-primary:korean move:50,30 key-down:shift click:2 key-up:shift"),
+    ("paste-right-button", "", "own-primary:korean move:50,30 click:2 click:3", "", '[mouse]\npaste_button = "right"\n'),
+    ("paste-nothing", "", "key:ctrl+shift+v sleep:0.5"),
 ]
 
 
@@ -108,10 +134,26 @@ def selection(env, which):
     return f"{which} {escaped(b)}"
 
 
-def run(xdo, env, modes, actions, before=""):
+def own(env, which, name):
+    """xclip owns the selection, in the foreground (-quiet) so that the case
+    can end it and the next case does not paste what this one owned."""
+    target, data = OWNED[name]
+    p = subprocess.Popen(["xclip", "-quiet", "-selection", which, "-t", target, "-i"], env=env, stdin=subprocess.PIPE,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p.stdin.write(data)
+    p.stdin.close()
+    time.sleep(0.3)
+    return p
+
+
+def run(xdo, env, modes, actions, before="", config=""):
+    conf = Path(env["XDG_CONFIG_HOME"]) / "visiterm" / "config.toml"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(config)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "received"
         read = []
+        owners = []
         v = subprocess.Popen([str(VISITERM), "--", "sh", "-c", f"{before}{';' if before else ''} printf '{modes}'; stty raw -echo; exec cat > {out}"],
                              env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         win = subprocess.run([xdo, "search", "--sync", "--name", "visiterm"], env=env, capture_output=True,
@@ -139,6 +181,9 @@ def run(xdo, env, modes, actions, before=""):
                 cmd = ["click", "--repeat", "2", "--delay", "100", arg]
             elif kind == "triple":
                 cmd = ["click", "--repeat", "3", "--delay", "100", arg]
+            elif kind in ("own-primary", "own-clipboard"):
+                owners.append(own(env, kind[4:], arg))
+                continue
             elif kind in ("primary", "clipboard"):
                 time.sleep(0.3)
                 read.append(selection(env, kind))
@@ -151,6 +196,9 @@ def run(xdo, env, modes, actions, before=""):
                            stderr=subprocess.DEVNULL)
             time.sleep(0.15)
         time.sleep(0.7)
+        for o in owners:
+            o.kill()
+            o.wait()
         v.send_signal(signal.SIGTERM)
         try:
             v.wait(timeout=5)
@@ -158,7 +206,11 @@ def run(xdo, env, modes, actions, before=""):
             v.kill()
             v.wait()
         received = out.read_bytes() if out.exists() else b""
-    return "bytes " + escaped(received) + "\n" + "".join(r + "\n" for r in read)
+    if len(received) > 400:
+        shown = f"{len(received)} bytes, {received.count(b'\n')} newlines, ending {escaped(received[-30:])}"
+    else:
+        shown = escaped(received)
+    return "bytes " + shown + "\n" + "".join(r + "\n" for r in read)
 
 
 def main():

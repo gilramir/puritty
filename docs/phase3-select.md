@@ -3,7 +3,7 @@
 Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); every
 leaning taken the same day (§11); a user's guide in
 [`user/copy-and-paste.md`](user/copy-and-paste.md). Built: mouse reports
-(§12), scrolling back (§13), selection and copy (§14). It is the
+(§12), scrolling back (§13), selection and copy (§14), paste (§15). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -687,3 +687,76 @@ pass.
 keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of 36, pointer 30
 of 30, IME 14 of 14, perf within its record and budgets, the differential
 fuzzer clean (coverage 6,175, no findings).
+
+---
+
+## 15. Paste built (2026-11-03)
+
+**Gilbert, on the paste button** (2026-11-03): users will want to choose
+between the middle button and the right one. `[mouse] paste_button` is
+`"middle"` (the default, as xterm) or `"right"` (as PuTTY); the other does
+nothing yet.
+
+**The encoder** is `Vt.Paste`, Ghostty's `paste.zig`: xterm's list of
+bytes that could act replaced by spaces, the text between `ESC[200~` and
+`ESC[201~` with mode 2004, each LF as CR without it, and nothing asked
+(§11). A piece of a paste encodes as the whole would, since no byte of
+UTF-8 past the first is one the encoder changes, so a paste is encoded as
+its INCR pieces come. **The paste gate** (`harness/paste.py`) holds it to
+libghostty-vt's `ghostty_paste_encode` (`harness/oracle/ghostty-paste.c`):
+**100,000 cases agree**, of printable ASCII, every control byte, DEL, LF,
+CR, CR LF, the bracket's start and end, and UTF-8 of one to four bytes,
+each also encoded in pieces of 1 to 7 bytes and held to the whole. With
+LF sent as itself unbracketed for the test, 997 of 3,000 fail.
+
+**The window** never waits for a paste (§5's finding): `X11.paste` sends
+`ConvertSelection` for UTF8_STRING into a property of the window's, and
+for STRING, read as Latin-1, when the owner has not UTF-8; the property is
+read with a `GetProperty` whose reply is taken when it comes
+(`xcb_poll_for_reply`, at the end of each drain), and INCR pieces are read
+as the owner puts them. Each piece's text is kept in the C and a record
+(kind 11) says it came, and whether more is to come; `X11.pasted` takes
+it. One paste at a time: another asked for while one is under way is not
+made, unless the first has waited 10 s for an owner that never answered.
+Its first run lost all but the first megabyte of a 10 MB paste: the owner
+writes its next piece as soon as a read deletes the last, so the event
+saying so came before the read's reply was taken, and was dropped. A new
+piece seen while a read is out is now read when its reply is taken.
+
+**`Main`**: the paste button (with no program reporting the mouse, or with
+Shift) and Shift+Insert paste PRIMARY; Ctrl+Shift+V pastes CLIPBOARD. All
+three are visiterm's before the encoder. Whether the paste is bracketed is
+mode 2004 when its first text comes; each piece goes through `Vt.Paste`
+into V48's queue as typed text does, in the pane's character set, and the
+view comes to the bottom. A paste of nothing sends nothing.
+
+**The pointer gate** gains 13 cases, with xclip owning the selection
+(in the foreground, ended with each case, so that none pastes another's):
+CLIPBOARD with Ctrl+Shift+V, unbracketed (LF as CR) and bracketed; text
+with ESC, Ctrl+C, DEL, NUL, CR LF and Ctrl+U, unbracketed and bracketed
+(the bracket's end, its ESC a space, stays inside); Korean and a combining
+accent from PRIMARY by the middle button and by Shift+Insert; an owner of
+STRING alone, read as Latin-1 (`café naïve`); 320,000 bytes through INCR,
+bracketed, whole; visiterm's own selection pasted back; the middle button
+reported to a program that asked, and pasting with Shift; the right button
+pasting under `paste_button = "right"`, the middle doing nothing; and
+Ctrl+V with nothing owned, nothing sent. 43 cases pass.
+
+**10 MB pasted end to end** on Xvfb (`gitlog.txt`'s first 10 MB, ESCs
+taken out, owned by xclip):
+
+| program | arrived | time |
+|---|---|---|
+| raw `cat` to a file | 9,968,714 bytes, all of it | about 250 ms |
+| cooked `cat`, echoing | 9,932,251 bytes | about 2.7 s |
+
+The cooked shortfall is the line discipline's, to the byte: two lines of
+the input are longer than the 4,096 bytes a canonical line holds, which
+drops 36,433 bytes, and the last 30 bytes, a line with no end, wait for an
+Enter. The time is §6's: cooked `cat` echoes every byte back for the core
+to read.
+
+**Gates for §15**: replay 325 of 325, view 345 of 345, select 3 of 3,
+paste 100,000, keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of
+36, pointer 43 of 43, IME 14 of 14, perf within its record and budgets,
+the differential fuzzer clean (coverage 6,175, no findings).

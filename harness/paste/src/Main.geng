@@ -1,0 +1,116 @@
+module Main exposing (main)
+
+{-| The paste gate's program (`docs/phase3-select.md` §15): `Vt.Paste.encode`
+for each case of a file, "B HEX" (B 1 for bracketed paste), its bytes in hex
+a line ("-" for none), in the form `oracle/ghostty-paste` reads and writes.
+A case is encoded whole, and again in pieces of 1 to 7 bytes with the
+brackets around them, which must give the same bytes; a case where they
+do not prints `pieces differ`.
+
+usage: core-paste CASES
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import UInt8
+import Vt.Paste as Paste
+
+
+hexDigit : Char -> Int
+hexDigit c =
+    let
+        n =
+            Char.toCode c
+    in
+    if n <= 0x39 then
+        n - 0x30
+
+    else
+        Bitwise.or n 32 - 0x61 + 10
+
+
+fromHex : String -> Bytes
+fromHex s =
+    if s == "-" then
+        Bytes.empty
+
+    else
+        let
+            ds =
+                Array.map hexDigit (String.toArray s)
+        in
+        Array.initialize (Array.length ds // 2) 0 (\i -> UInt8.fromInt (Maybe.withDefault 0 (Array.get (2 * i) ds) * 16 + Maybe.withDefault 0 (Array.get (2 * i + 1) ds)))
+            |> Bytes.fromUInt8s
+
+
+toHex : Bytes -> String
+toHex b =
+    if Bytes.isEmpty b then
+        "-"
+
+    else
+        Bytes.toHexString { padding = False } b
+
+
+pieces : Bool -> Bytes -> Int -> Int -> Array Bytes -> Array Bytes
+pieces bracketed text at step acc =
+    if at >= Bytes.length text then
+        acc
+
+    else
+        pieces bracketed text (at + step) (modBy 7 (step + 3) + 1) (Array.pushLast (Paste.piece bracketed (Bytes.slice at (at + step) text)) acc)
+
+
+one : String -> String
+one line =
+    when String.words line is
+        [ b, hex ] ->
+            let
+                bracketed =
+                    b == "1"
+
+                text =
+                    fromHex hex
+
+                whole =
+                    Paste.encode bracketed text
+
+                cut =
+                    Bytes.flatten
+                        ((if bracketed then [ Paste.bracketStart ] else [])
+                            ++ pieces bracketed text 0 1 []
+                            ++ (if bracketed then [ Paste.bracketEnd ] else [])
+                        )
+            in
+            if cut /= whole then
+                "pieces differ"
+
+            else
+                toHex whole
+
+        _ ->
+            "?"
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 0 s.raw)))
+                    |> Task.andThen
+                        (\bytes ->
+                            Bytes.toStringLossy bytes
+                                |> String.lines
+                                |> Array.keepIf (\l -> l /= "")
+                                |> Array.map one
+                                |> String.join "\n"
+                                |> (\out -> Console.write (out ++ "\n"))
+                        )
+                    |> Task.onError (\_ -> Console.write "core-paste: cannot read the file\n")
+            )

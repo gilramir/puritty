@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds ghostty-dump (and the key, mouse and width oracles) against the vendored libghostty-vt, building that first
+# Builds ghostty-dump (and the key, mouse, paste and width oracles) against the vendored libghostty-vt, building that first
 # if it is not built (Zig 0.16 from visiterm's devbox; its packages are in
 # vendor/ghostty/zig-pkg). The library is linked statically.
 #
@@ -31,3 +31,5 @@ clang -O2 -Wall -Wextra -I"$G/zig-out/include" widths.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o widths
 clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-mouse.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-mouse
+clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-paste.c \
+  "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-paste

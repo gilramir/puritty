@@ -52,6 +52,7 @@ import Time
 import Vt
 import Vt.Charset as Charset exposing (Charset)
 import Vt.Mouse as Mouse
+import Vt.Paste as Paste
 import Vt.View as View
 import X11
 
@@ -93,6 +94,11 @@ type alias Model =
     , clicks : { at : Int, count : Int, cell : Vt.Point }
     , toOwn : Maybe { which : X11.Selection, text : String }
     , wordBoundaries : Array Int
+      -- a paste to ask for when the event's model is done, and one under
+      -- way: whether it is bracketed, decided by mode 2004 when its first
+      -- text comes (docs/phase3-select.md §15)
+    , toPaste : Maybe X11.Selection
+    , pasting : Maybe Bool
     }
 
 
@@ -332,6 +338,8 @@ run imeLog charset config cell child =
                             , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
                             , toOwn = Nothing
                             , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
+                            , toPaste = Nothing
+                            , pasting = Nothing
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -663,7 +671,12 @@ handle terminal fd ms evs m =
                                     )
 
                         Nothing ->
-                            if isCopyKey k then
+                            if isPasteKey k /= Nothing then
+                                -- Shift+Insert and Ctrl+Shift+V, the
+                                -- terminal's before the program's
+                                owned terminal fd ms rest { m | toPaste = isPasteKey k }
+
+                            else if isCopyKey k then
                                 -- Ctrl+Shift+C: the selection to CLIPBOARD
                                 -- (docs/user/copy-and-paste.md), the key
                                 -- visiterm's with or without one
@@ -741,6 +754,10 @@ handle terminal fd ms evs m =
                 X11.Pointer p ->
                     owned terminal fd ms rest (pointer ms p m)
 
+                X11.Pasted more ->
+                    X11.pasted
+                        |> Task.andThen (\text -> handle terminal fd ms rest (pasteIn more text m))
+
                 X11.SelectionLost which ->
                     -- another program's selection now: the highlight goes,
                     -- as xterm takes it away
@@ -753,17 +770,68 @@ handle terminal fd ms evs m =
                         )
 
 
-{-| The events after one that made a selection the window's: its text
-handed to the window first. -}
+{-| The events after one that made a selection the window's, or asked
+for a paste: the window told first. -}
 owned : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (moved m : Model) -> Task Error Model
 owned terminal fd ms rest m =
     when m.toOwn is
         Just own ->
             X11.select own.which own.text
-                |> Task.andThen (\_ -> handle terminal fd ms rest { m | toOwn = Nothing })
+                |> Task.andThen (\_ -> owned terminal fd ms rest { m | toOwn = Nothing })
 
         Nothing ->
-            handle terminal fd ms rest m
+            when m.toPaste is
+                Just which ->
+                    X11.paste which
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | toPaste = Nothing })
+
+                Nothing ->
+                    handle terminal fd ms rest m
+
+
+{-| A paste's text, as it comes (docs/phase3-select.md §15): encoded as
+Ghostty and xterm encode a paste (`Vt.Paste`), bracketed when the program
+had mode 2004 set when its first text came, and queued as typed text is, in
+the pane's character set. The view comes to the bottom, as for a key. -}
+pasteIn : Bool -> Bytes -> (moved m : Model) -> Model
+pasteIn more text m =
+    let
+        first =
+            m.pasting == Nothing
+
+        bracketed =
+            Maybe.withDefault (Dict.get 2004 m.term.modes == Just True) m.pasting
+
+        empty =
+            first && not more && Bytes.isEmpty text
+
+        bytes =
+            if empty then
+                Bytes.empty
+
+            else
+                Bytes.flatten
+                    [ if first && bracketed then Paste.bracketStart else Bytes.empty
+                    , Paste.piece bracketed text
+                    , if not more && bracketed then Paste.bracketEnd else Bytes.empty
+                    ]
+    in
+    send bytes
+        { m
+            | pasting =
+                if more then
+                    Just bracketed
+
+                else
+                    Nothing
+            , back =
+                if empty then
+                    m.back
+
+                else
+                    0
+            , urgent = True
+        }
 
 
 {-| A press, release or motion of the pointer (docs/phase3-select.md §4):
@@ -900,7 +968,11 @@ selecting ms p held m =
         at =
             pointAt p m
     in
-    if p.button == 1 && p.action == 0 then
+    if p.button == m.config.pasteButton && p.action == 0 then
+        -- the paste button (docs/user/copy-and-paste.md), PRIMARY
+        { m | held = held, toPaste = Just X11.Primary }
+
+    else if p.button == 1 && p.action == 0 then
         let
             count =
                 if ms - m.clicks.at <= 500 && m.clicks.cell == at then
@@ -1174,6 +1246,23 @@ key terminal fd ms rest k m =
                         0
             }
         )
+
+
+{-| The paste keys, pressed (docs/user/copy-and-paste.md): Shift+Insert
+pastes PRIMARY, Ctrl+Shift+V CLIPBOARD. -}
+isPasteKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe X11.Selection
+isPasteKey k =
+    if k.action /= 1 then
+        Nothing
+
+    else if Bitwise.and k.mods 15 == 1 && (k.sym == 0xFF63 || k.sym == 0xFF9E) then
+        Just X11.Primary
+
+    else if Bitwise.and k.mods 15 == 3 && (k.sym == 0x56 || k.sym == 0x76) then
+        Just X11.Clipboard
+
+    else
+        Nothing
 
 
 {-| Ctrl+Shift+C, pressed: the copy key (docs/user/copy-and-paste.md). -}

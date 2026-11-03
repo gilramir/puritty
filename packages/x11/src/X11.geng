@@ -1,6 +1,6 @@
 module X11 exposing
     ( Settings, Cell, open
-    , draw, shot, setTitle, spot, zoom, motion, select, Selection(..)
+    , draw, shot, setTitle, spot, zoom, motion, select, Selection(..), paste, pasted
     , events, take, Event(..), PointerEvent
     )
 
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, motion, select, Selection, events, take, Event, PointerEvent
+@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
 
 -}
 
@@ -163,6 +163,37 @@ select which text =
 selectExtern : Int -> Bytes -> Task x Int
 
 
+{-| A paste of a selection asked of its owner (`docs/phase3-select.md` §15):
+`Pasted` events follow as its text comes, which `pasted` takes; the C never
+waits for it. False when another paste is under way and this one is not
+made. -}
+paste : Selection -> Task x Bool
+paste which =
+    pasteExtern
+        (when which is
+            Primary ->
+                0
+
+            Clipboard ->
+                1
+        )
+        |> Task.map (\r -> r == 1)
+
+
+@extern(c, "visiterm_x11_paste")
+pasteExtern : Int -> Task x Int
+
+
+{-| The paste's text since it was last taken, UTF-8. -}
+pasted : Task x Bytes
+pasted =
+    pastedExtern
+
+
+@extern(c, "visiterm_x11_pasted")
+pastedExtern : Task x Bytes
+
+
 {-| The font at a new size in points (V50): every face sized again, the
 window kept at its size in pixels, so a `Resized` follows with the cells
 that now fit it; answers the new cell. The size is the screen's
@@ -223,6 +254,7 @@ type Event
     | ImeReady
     | Pointer PointerEvent
     | SelectionLost Selection
+    | Pasted Bool
 
 
 {-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
@@ -339,6 +371,9 @@ decode b at acc =
 
             8 ->
                 decode b (at + 1) (Array.pushLast ImeReady acc)
+
+            11 ->
+                decode b (at + 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
 
             10 ->
                 decode b

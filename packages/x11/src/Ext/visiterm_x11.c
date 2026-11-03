@@ -56,7 +56,9 @@
  *     press alone: X's release of buttons 4-7 is not recorded. Motions one
  *     after another are recorded as the last of them;
  *  10 a selection this window owned is another's now (docs/phase3-select.md
- *     §14): 0 PRIMARY, 1 CLIPBOARD.
+ *     §14): 0 PRIMARY, 1 CLIPBOARD;
+ *  11 a paste's text has come (docs/phase3-select.md §15): 1 when more is
+ *     to come, 0 when it is the last; `visiterm_x11_pasted` takes it.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
@@ -86,6 +88,7 @@
 #include <string.h>
 #include <xcb/render.h>
 #include <xcb/xcb.h>
+#include <xcb/xcbext.h> /* xcb_poll_for_reply, for a paste read without waiting */
 #include <xcb/xcb_renderutil.h>
 #include <xcb/xkb.h>
 #include <xkbcommon/xkbcommon-x11.h>
@@ -1165,7 +1168,7 @@ static void at_exit(void) {
 #define BASE_EVENTS                                                                                                  \
     (XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_FOCUS_CHANGE | \
      XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |                \
-     XCB_EVENT_MASK_BUTTON_MOTION)
+     XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_PROPERTY_CHANGE)
 static int all_motion;
 
 static uint8_t evbuf[65536];
@@ -1362,6 +1365,8 @@ static void selection_atoms(void);
 static void selection_request(xcb_selection_request_event_t *q);
 static void selection_clear(xcb_selection_clear_event_t *c);
 static void transfer_step(xcb_property_notify_event_t *p);
+static void paste_notify(xcb_selection_notify_event_t *n);
+static void paste_poll(void);
 static xcb_timestamp_t last_time;
 
 static void record_text(uint8_t kind, const char *s, size_t n) {
@@ -1478,6 +1483,7 @@ static void drain(void) {
         else if (type == XCB_SELECTION_REQUEST) selection_request((xcb_selection_request_event_t *) e);
         else if (type == XCB_SELECTION_CLEAR) selection_clear((xcb_selection_clear_event_t *) e);
         else if (type == XCB_PROPERTY_NOTIFY) transfer_step((xcb_property_notify_event_t *) e);
+        else if (type == XCB_SELECTION_NOTIFY) paste_notify((xcb_selection_notify_event_t *) e);
         else if (type == XCB_KEY_PRESS || type == XCB_KEY_RELEASE) {
             xcb_key_press_event_t *k = (xcb_key_press_event_t *) e;
             last_time = k->time;
@@ -1525,6 +1531,7 @@ static void drain(void) {
         }
         free(e);
     }
+    paste_poll();
     flush_motion();
     /* what the IME was sent (a key forwarded, its sync replies) goes now,
      * not with the next frame, which a composing key does not cause */
@@ -1904,7 +1911,7 @@ geng_cancel visiterm_x11_zoom(int32_t points, geng_wait *wait) {
  * last, from the event loop, so no request waits on another. */
 
 #define PIECE 262144
-static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr;
+static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste;
 static struct {
     uint8_t *data;
     size_t len;
@@ -1920,11 +1927,11 @@ static struct {
 } xfer[8];
 
 static void selection_atoms(void) {
-    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR"};
-    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr};
-    xcb_intern_atom_cookie_t ck[6];
-    for (int i = 0; i < 6; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
-    for (int i = 0; i < 6; i++) {
+    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "VISITERM_PASTE"};
+    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste};
+    xcb_intern_atom_cookie_t ck[7];
+    for (int i = 0; i < 7; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < 7; i++) {
         xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
         *out[i] = r ? r->atom : XCB_ATOM_NONE;
         free(r);
@@ -2018,8 +2025,28 @@ static void selection_request(xcb_selection_request_event_t *q) {
 
 /* A requestor deleted the property an INCR piece was in: the next piece,
  * and after the last an empty one, which ends it. */
+static void paste_read(void);
+static struct {
+    int active, incr, waiting, which, pending;
+    xcb_atom_t target;
+    xcb_get_property_cookie_t cookie;
+    double started;
+} pst;
+static uint8_t *pbuf;
+static size_t plen, pcap;
+
 static void transfer_step(xcb_property_notify_event_t *p) {
-    if (p->window == window) last_time = p->time;
+    if (p->window == window) {
+        last_time = p->time;
+        /* the owner put an INCR piece in the paste's property. The owner
+         * writes it as soon as a read deletes the last, so it can come
+         * before that read's reply is taken: then it is read after it. */
+        if (p->atom == a_paste && p->state == XCB_PROPERTY_NEW_VALUE && pst.active) {
+            if (pst.incr && !pst.waiting) paste_read();
+            else pst.pending = 1;
+        }
+        return;
+    }
     if (p->state != XCB_PROPERTY_DELETE) return;
     for (int i = 0; i < 8; i++) {
         if (!xfer[i].live || xfer[i].win != p->window || xfer[i].prop != p->atom) continue;
@@ -2043,6 +2070,125 @@ static void selection_clear(xcb_selection_clear_event_t *c) {
     sel[which].owned = 0;
     uint8_t r[2] = {10, (uint8_t) which};
     record(r, 2);
+}
+
+/* PASTE (docs/phase3-select.md §15)
+ *
+ * A paste asks the owner for UTF8_STRING, and for STRING if it has not
+ * that; the property is read with a request whose reply is taken when it
+ * comes (paste_poll, at the end of each drain), never waited for, so a
+ * paste of megabytes over ssh -X does not stop the window. INCR pieces
+ * are read as the owner puts them. What comes is kept here, UTF-8, and
+ * a record says so; Geng takes it with visiterm_x11_pasted. One paste at
+ * a time: another asked for while one is under way is not made, unless
+ * the first has waited 10 s for an owner that never answered. */
+
+static void paste_add(const uint8_t *d, size_t n) {
+    if (plen + n > pcap) {
+        pcap = (plen + n) * 2;
+        pbuf = realloc(pbuf, pcap);
+    }
+    memcpy(pbuf + plen, d, n);
+    plen += n;
+}
+
+static void paste_done(int more) {
+    uint8_t r[2] = {11, (uint8_t) more};
+    record(r, 2);
+    if (!more) pst.active = 0;
+}
+
+static void paste_read(void) {
+    /* any new value seen until now is what this reads */
+    pst.pending = 0;
+    pst.cookie = xcb_get_property(conn, 1, window, a_paste, XCB_GET_PROPERTY_TYPE_ANY, 0, UINT32_MAX / 4);
+    pst.waiting = 1;
+    xcb_flush(conn);
+}
+
+static void paste_ask(xcb_atom_t target) {
+    pst.target = target;
+    xcb_delete_property(conn, window, a_paste);
+    xcb_convert_selection(conn, window, pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, a_paste, last_time);
+    xcb_flush(conn);
+}
+
+static void paste_notify(xcb_selection_notify_event_t *n) {
+    if (!pst.active || n->requestor != window) return;
+    if (n->property == XCB_ATOM_NONE) {
+        if (pst.target == utf8_string) paste_ask(XCB_ATOM_STRING); /* an owner of Latin-1 alone */
+        else paste_done(0);                                       /* nothing to paste */
+        return;
+    }
+    paste_read();
+}
+
+static void paste_poll(void) {
+    if (!pst.waiting) return;
+    xcb_get_property_reply_t *r = NULL;
+    xcb_generic_error_t *err = NULL;
+    if (!xcb_poll_for_reply(conn, pst.cookie.sequence, (void **) &r, &err)) return;
+    pst.waiting = 0;
+    free(err);
+    if (!r) {
+        paste_done(0);
+        return;
+    }
+    int len = xcb_get_property_value_length(r);
+    if (r->type == a_incr) {
+        /* the owner sends pieces as the property is deleted, which the read did */
+        pst.incr = 1;
+        if (pst.pending) paste_read();
+    } else {
+        const uint8_t *d = xcb_get_property_value(r);
+        if (r->type == XCB_ATOM_STRING) {
+            for (int i = 0; i < len; i++) {
+                uint8_t u[2] = {(uint8_t) (0xC0 | d[i] >> 6), (uint8_t) (0x80 | (d[i] & 63))};
+                if (d[i] < 0x80) paste_add(d + i, 1);
+                else paste_add(u, 2);
+            }
+        } else {
+            paste_add(d, (size_t) len);
+        }
+        if (!pst.incr) paste_done(0);
+        else paste_done(len > 0);
+        if (pst.incr && len > 0 && pst.pending) paste_read();
+    }
+    free(r);
+}
+
+/* A paste of PRIMARY (0) or CLIPBOARD (1). Answers 1 when it is asked
+ * for, 0 when another is under way. */
+geng_cancel visiterm_x11_paste(int32_t which, geng_wait *wait) {
+    int asked = 0;
+    if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+    if (!pst.active && (which == 0 || which == 1)) {
+        pst.active = 1;
+        pst.incr = 0;
+        pst.waiting = 0;
+        pst.pending = 0;
+        pst.which = which;
+        pst.started = ns();
+        plen = 0;
+        paste_ask(utf8_string);
+        asked = 1;
+    }
+    geng_succeed(wait, geng_slot_I4(asked));
+    return (geng_cancel) {0};
+}
+
+/* What a paste has brought since it was last taken, UTF-8. */
+geng_cancel visiterm_x11_pasted(geng_wait *wait) {
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + plen, GENG_HEADER_BYTES(sizeof *b + plen));
+    b->length = (int64_t) plen;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (plen) memcpy(b->data, pbuf, plen);
+    plen = 0;
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
 }
 
 /* The window owns PRIMARY (0) or CLIPBOARD (1) with this text, from the

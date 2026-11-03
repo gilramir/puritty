@@ -1,10 +1,9 @@
 # Copy and paste in visiterm
 
 *Status: this guide describes phase 3's design as decided on 2026-11-03
-([`../phase3-select.md`](../phase3-select.md) §10–§11). Selecting and
-copying (§1, §2, Ctrl+Shift+C) work as described here; pasting (§3) and
-OSC 52 (§4) are being built, and until they are, visiterm does not paste
-and ignores OSC 52.*
+([`../phase3-select.md`](../phase3-select.md) §10–§11). Selecting, copying
+and pasting (§1–§3) work as described here; OSC 52 (§4) is being built,
+and until it is, visiterm ignores it.*
 
 Copy and paste in a terminal on Linux is confusing because there are **two
 clipboards**, not one, and because the programs running inside the terminal
@@ -21,7 +20,7 @@ to. Every X program shares them.
 | | **the selection** (X calls it PRIMARY) | **the clipboard** (X calls it CLIPBOARD) |
 |---|---|---|
 | how text gets there | **just by selecting it**. No key needed | an explicit copy: Ctrl+Shift+C in visiterm, Ctrl+C in most other programs |
-| how you paste it | the **middle mouse button**, or Shift+Insert | Ctrl+Shift+V in visiterm, Ctrl+V in most other programs |
+| how you paste it | the **middle mouse button** (or the right one, if you choose, §3), or Shift+Insert | Ctrl+Shift+V in visiterm, Ctrl+V in most other programs |
 | what replaces it | selecting anything else, in any program | the next copy, in any program |
 | what it is for | quick copying of something you can see | the copy-and-paste you know from other systems |
 
@@ -105,6 +104,19 @@ Shift+drag, Shift+double-click and Shift+triple-click work as above.
 | Shift+Insert | the selection (PRIMARY) |
 | Ctrl+Shift+V | the clipboard (CLIPBOARD) |
 
+**Middle or right button.** xterm and most Linux programs paste with the
+middle button; PuTTY pastes with the right one. Choose in
+`~/.config/visiterm/config.toml`:
+
+```toml
+[mouse]
+paste_button = "right"    # the default is "middle"
+```
+
+The other button does nothing. When a program has the mouse (nvim, tmux
+with `mouse on`), the paste button goes to the program; hold Shift to
+paste with it anyway.
+
 visiterm sends the pasted text to the program as if typed, with three
 changes, the same ones xterm makes:
 
@@ -180,7 +192,7 @@ visiterm never asks you about it either way.
 | select on screen for a middle-click paste elsewhere | Shift+drag | Shift+drag |
 | copy to the clipboard | Shift+drag, then Ctrl+Shift+C; or tmux's copy mode with `set-clipboard on` | Shift+drag, then Ctrl+Shift+C; or `"+y` (nvim 0.10+ over ssh through OSC 52, or locally through xclip or xsel) |
 | paste the clipboard | Ctrl+Shift+V | Ctrl+Shift+V (in insert mode it arrives as a bracketed paste) |
-| paste the selection | middle button, or Shift+Insert | Shift+middle button (nvim takes the middle button itself), or Shift+Insert |
+| paste the selection | Shift+middle button (tmux takes the middle button itself), or Shift+Insert | Shift+middle button (nvim takes the middle button itself), or Shift+Insert |
 
 A Shift+drag in tmux selects what is on visiterm's screen. That includes
 tmux's status line and the borders of other panes, because visiterm does
@@ -197,5 +209,5 @@ mode.
 | select when a program has the mouse | hold Shift |
 | copy the selection to the clipboard | Ctrl+Shift+C |
 | paste the clipboard | Ctrl+Shift+V |
-| paste the selection | middle button, or Shift+Insert |
+| paste the selection | middle button (or right, `[mouse] paste_button`), or Shift+Insert |
 | let programs read the clipboard | `[clipboard] osc52_read = "allow"` (off by default) |
