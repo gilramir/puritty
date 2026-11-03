@@ -68,6 +68,9 @@ FONTS = [
     f"{NIXPKGS}#fira-code",
     f"{NIXPKGS}#noto-fonts-cjk-sans",
     f"{NIXPKGS}#noto-fonts-color-emoji",
+    # Han that Debian and Mint fall back to, with 1-bit bitmaps at 11 to 16
+    # pixels an em (§R18).
+    f"{NIXPKGS}#arphic-uming",
 ]
 NOTO = (
     f'(builtins.getFlake "{NIXPKGS}").legacyPackages.x86_64-linux.noto-fonts.override'

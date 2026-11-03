@@ -757,7 +757,8 @@ vim scroll costs 374 bytes a line on the wire. The renderer's build begun
 2026-11-02: [`renderer.md`](renderer.md); Gilbert took its leanings (V34–V38), and
 its steps 1 to 5 are built, the pixel gate last (§R13); Gilbert took its
 questions on ink extents, box drawing and the CJK region (V40–V42, §R15),
-and ink and box drawing are built (§R16, §R17). Step 6, the exit, is next.* PTY backend, XCB window, the server-side X11 renderer
+and ink and box drawing are built (§R16, §R17). The exit is met over `ssh -X`
+from gmktec7 (§R18); a shell on this desktop waits on Gilbert.* PTY backend, XCB window, the server-side X11 renderer
 (S§6.2): glyph sets, `CopyArea` scrolling, damage-limited repaint with overhang,
 retained pixmap, latest-frame-wins pacing. Fonts with fallback, CJK fitting, Han
 language per profile, Thai shaping, procedural box drawing (S§6.3, S§6.5, C§4–§6).
@@ -781,6 +782,9 @@ C thread for it is decided then (V27, `phase2-window.md` §13).
 visiterm's own font settings for a script or range (C§9 rule 7), above
 all for Chinese, so the region of Han forms does not depend on the
 system's fontconfig rules (V42, `renderer.md` §R15).
+A keymap changed and changed back around one key (xdotool's typing of
+characters the keymap lacks) reaches visiterm after the change is undone,
+since it reloads the keymap by asking the server (`renderer.md` §R18).
 
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,

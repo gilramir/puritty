@@ -46,6 +46,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
+#include FT_BITMAP_H
 #include <hb-ft.h>
 #include <hb.h>
 #include <math.h>
@@ -352,7 +353,9 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
         FT_Matrix m = {squeeze ? squeeze : 0x10000, (synth & 2) ? 0x3333 : 0, 0, 0x10000};
         FT_Set_Transform(F->ft, &m, NULL);
     }
-    FT_Load_Glyph(F->ft, g, (transformed ? FT_LOAD_NO_HINTING : 0) | ((synth & 1) ? 0 : FT_LOAD_RENDER));
+    /* A synthetic form is made from the outline, never an embedded bitmap,
+     * which can be neither slanted nor widened. */
+    FT_Load_Glyph(F->ft, g, (transformed ? FT_LOAD_NO_HINTING : 0) | ((synth & 1) ? 0 : FT_LOAD_RENDER) | (synth ? FT_LOAD_NO_BITMAP : 0));
     if (synth & 1) {
         FT_GlyphSlot slot = F->ft->glyph;
         if (slot->format == FT_GLYPH_FORMAT_OUTLINE)
@@ -361,6 +364,20 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
     }
     if (transformed) FT_Set_Transform(F->ft, NULL, NULL);
     FT_Bitmap *b = &F->ft->glyph->bitmap;
+    /* An embedded bitmap may be 1 bit a pixel (AR PL UMing's strikes, the
+     * Han that Debian and Mint fall back to, §R18): converted to a byte a
+     * pixel, its levels spread to 0..255, as the glyph set takes them. */
+    FT_Bitmap grey;
+    FT_Bitmap_Init(&grey);
+    if (b->pixel_mode != FT_PIXEL_MODE_GRAY && FT_Bitmap_Convert(library, b, &grey, 1) == 0) {
+        int levels = grey.num_grays > 1 ? grey.num_grays - 1 : 1;
+        for (unsigned y = 0; y < grey.rows; y++)
+            for (unsigned x = 0; x < grey.width; x++) {
+                unsigned char *v = grey.buffer + y * (unsigned) grey.pitch + x;
+                *v = (unsigned char) (*v * 255 / levels);
+            }
+        b = &grey;
+    }
     int stride = ((int) b->width + 3) & ~3;
     size_t size = (size_t) stride * b->rows;
     uint8_t *data = calloc(size > 0 ? size : 4, 1);
@@ -369,6 +386,7 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
                                    .x = (int16_t) (-F->ft->glyph->bitmap_left - shift), .y = (int16_t) F->ft->glyph->bitmap_top,
                                    .x_off = (int16_t) advance, .y_off = 0};
     xcb_render_add_glyphs(conn, glyphs, 1, &id, &info, (uint32_t) size, data);
+    FT_Bitmap_Done(library, &grey);
     int16_t *ink = F->ink + (size_t) k * 4;
     ink[0] = (int16_t) -info.x;
     ink[1] = info.y;

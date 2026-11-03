@@ -4,7 +4,8 @@ Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
 (§R7, V34–V38). Steps 1 to 5 of §R6 are built (§R8–§R10, §R12, §R13);
 Gilbert took the leanings of what the pixel gate found (§R14, §R15:
 V40–V42); V40 and V41 are built (§R16, §R17; with V43, a change to V24
-he has not yet seen), and step 6, the exit, is next.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
+he accepted). Step 6, the exit, is done over `ssh -X` from gmktec7
+(§R18); its other half, a shell on Gilbert's desktop, waits on him.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
 taken (V18–V33, geng-lang D1024 and D1045). What it measured, it measured
@@ -690,7 +691,7 @@ empty cells between shaped as one run and drew nothing, and a space
 joining ि to the cluster before it dropped its dotted circle. The join
 saved 3–4 ms of shaping over the whole of `thai.txt` and moved neither
 its wall time nor its instructions (phase2 §13.10), so it is gone, and
-recorded here as a change to V24 Gilbert has not yet seen.
+recorded here as a change to V24, which Gilbert accepted (2026-11-02).
 
 **How it is checked.** The pixel gate draws each case that has frames a
 second time in one frame and demands the same pixels; its cases are 32,
@@ -775,3 +776,80 @@ panes with double, heavy and rounded boxes, read at the pixel to find a
 gap of one pixel at the double corners, then closed. `pixels-fuzz.py`
 takes box drawing among its words: 2,000 screens draw the same in frames
 as at once.
+
+## R18. Step 6, the exit: over `ssh -X` from gmktec7 (2026-11-02)
+
+The exit (`geng-plan.md` §6, phase 2) is a shell on this desktop and over
+`ssh -X` from another host, with the bytes per update recorded for
+`tail -f`, `htop` and a vim scroll.
+
+**The desktop** cannot be reached from here: nobody is logged in at it,
+and `:0` accepts a connection and never answers its setup, as in phase2
+§6. That half waits on Gilbert (below).
+
+**Over `ssh -X`.** visiterm, built here, runs on gmktec7 as it is: its 23
+libraries are in gmktec7's nix store, and it finds gmktec7's own fonts
+through fontconfig (DejaVu Sans Mono for `monospace`). This shell has no
+desktop, so the display is this machine's Xvfb, through `ssh -X`: the X
+server is here and the program there, as the exit's shape is; a byte
+counter (`probes/geng/x11/xcount.py`) sits between the ssh client and the
+server.
+
+- **A shell.** visiterm with no program runs gmktec7's `$SHELL` (bash),
+  which titles the window `gram@gmktec7: ~/visiterm-exit`; typed into
+  with xdotool, `echo` and `printf` print `80x24`, `TERM=xterm-256color`,
+  an italic, a wrapped line and the prompt's colours, and `exit 7` ends
+  visiterm, and ssh, with status 7.
+- **A resize and a close**, made by `poke`: `stty size` in the program
+  reads 24 80, then 29 100 after the window is made 900×500; a close ends
+  visiterm with status 0 and leaves no program behind on gmktec7.
+- **gmktec7's fonts**: Thai, Hangul, emoji, a flag, Devanagari, box
+  drawing and the attributes draw from its own faces. Han did not (below).
+
+**Found, and fixed: 1-bit glyph bitmaps.** gmktec7's fontconfig gives Han
+to AR PL UMing, the Han that Debian and Mint install, whose file carries
+1-bit bitmaps at 11 to 16 pixels an em; FreeType hands one over as a
+bitmap of a bit a pixel, and the C uploaded it as a byte a pixel, so Han
+drew as hatching. A bitmap that is not a byte a pixel is now converted
+(`FT_Bitmap_Convert`) and its levels spread to 0..255. A synthetic bold or
+italic is made from the outline, never the bitmap, which can be neither
+widened nor slanted. The pixel gate pins UMing from the nixpkgs commit
+(adding it moved none of the other cases) and gains `han-bitmap`, UMing at
+9 points (12 pixels an em): the renderer before the fix draws it as
+hatching. 36 cases pass; 1,000 fuzzed screens draw the same in frames.
+
+**Found, not fixed: a keymap changed under a key.** Characters xdotool
+types that the keymap lacks (Thai, Han, box drawing) arrive as others.
+xdotool maps a spare keycode, presses it and maps it back at once;
+visiterm reloads its keymap on XKB's map notify, by asking the server,
+which by then has the old map again. A person's keyboard does not remap a
+key per keystroke; an input method or a layout switch changes the map and
+keeps it. Input is phase 3's, and it is registered there.
+
+**Bytes per update, over `ssh -X`** (two runs each; bytes from the client
+to the server, every run's replies the same 16,900):
+
+| workload | bytes | per update |
+|---|---|---|
+| `tail`, 500 lines in 5 s | 213,688–213,852 | 422 a line |
+| `htop`, 10 s | 86,968–107,732 | 8.4–10.5 KB a second |
+| vim scroll down, 300 lines | 152,996 | 500 a line |
+| vim scroll up, 300 lines | 149,120–149,420 | 488 a line |
+
+(a line's figure is after the opening's 2,816 bytes). They are §R16's
+local figures within a few percent: the forwarding adds nothing to the X
+stream. Against phase2 §16's references: core-font xterm's vim scroll is
+500 a line and its `htop` 7.5–7.8 KB a second; Xft xterm's vim scroll
+935. visiterm is level with core-font xterm on a vim scroll, where §R9's
+renderer was some 20% below it (404–417 a line) before V40 drew words
+whole, and above it on `htop`, as §R9's was (8.2–8.5 KB a second); §R16's
+unsafe-to-break links are what would win the scroll back.
+The counter is a byte counter, not a decoding tracer; xtrace's per-request
+breakdown was not needed to answer the exit's question.
+
+**What Gilbert's half is.** On his desktop, logged in, in a terminal:
+`~/prj/visiterm/app/visiterm` runs his `$SHELL` in a window. The things
+only a desktop shows: a window manager's resize, focus and close; a
+compositor's frame timing; his keyboard, including any layout switch;
+Fira Code (`[font] family = "Fira Code"` in
+`~/.config/visiterm/config.toml`); tmux and vim at full size.
