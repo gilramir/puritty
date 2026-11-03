@@ -6,7 +6,8 @@ has, and one whose directory has a `preedit.txt` (its text, each code
 point's XIM feedback, the caret, a line each) has that preedit drawn over
 every frame (docs/phase3-input.md V46), and one with a `back.txt` (offsets)
 has a frame more for each after its input, the view scrolled back that many
-rows (docs/phase3-select.md §11)
+rows (docs/phase3-select.md §11), and one with a `highlight.txt` (FROM TO a
+line) a frame more for each after those, a selection highlighted (§14)
 draws it. Every case of corpus/replay/ and of corpus/view/cases/ (the same
 `case.txt` format, harness/replay.py's) is fed to the core and Vt.View by
 harness/view/core-view, CHUNK bytes a read with a frame after each, and
@@ -107,6 +108,19 @@ def decode(data, size):
             lines.append(f"  {name} fg #{u24(i + 3):06x} bg #{u24(i + 6):06x} "
                          f"ul #{u24(i + 9):06x} flags {data[i + 12]:#04x} ul {ul}")
             i += 14
+        elif kind == 5:
+            # the highlight (docs/phase3-select.md §14): before the runs, on
+            # the screen, its first cell not after its last
+            if i + 9 > len(data):
+                errors.append("a highlight record cut short")
+                break
+            y0, x0, y1, x1 = u16(i + 1), u16(i + 3), u16(i + 5), u16(i + 7)
+            if y1 >= rows or x0 >= cols or x1 >= cols or (y0, x0) > (y1, x1):
+                errors.append(f"highlight {y0},{x0}-{y1},{x1} off a screen of {cols}x{rows}")
+            if any(l.startswith("  run ") for l in lines):
+                errors.append("a highlight record after a run")
+            lines.append(f"  highlight {y0},{x0}-{y1},{x1}")
+            i += 9
         elif kind == 1:
             if i + 7 > len(data):
                 errors.append("a scroll record cut short")
@@ -181,6 +195,13 @@ def view_of(name, text, tmp):
         backs = back.read_text().split()
         # RESIZES, FOCUS and PREEDIT come before BACKS: their defaults
         extra = extra + ["", "focused", ""][len(extra):] + [",".join(backs)]
+    hl = CASES / name / "highlight.txt"
+    highlights = []
+    if hl.exists():
+        # a frame more for each, after the backs: FROM TO, cells of the
+        # screen in reading order, -1 none (docs/phase3-select.md §14)
+        highlights = [l.split() for l in hl.read_text().splitlines() if l.strip()]
+        extra = extra + ["", "focused", "", ""][len(extra):] + [",".join(f"{a}:{b}" for a, b in highlights)]
     p = subprocess.run(
         ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G", "-p", "MemorySwapMax=0", "--",
          "timeout", "60", str(VIEW), str(cols), str(rows), str(path), str(CHUNK)] + extra,
@@ -188,7 +209,7 @@ def view_of(name, text, tmp):
     if p.returncode != 0:
         return None, [p.stderr.decode(errors="replace").strip() or f"core-view exited {p.returncode}"]
     frames = [l for l in p.stdout.decode().splitlines() if l.startswith("frame")]
-    want = frames_of(len(data), resizes) + len(backs)
+    want = frames_of(len(data), resizes) + len(backs) + len(highlights)
     if len(frames) != want:
         return None, [f"{len(frames)} frames, where the reads make {want}"]
     out, errors, size = [], [], None

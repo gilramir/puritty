@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame, frameWith, frameBack, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
+module Vt.View exposing (Shadow, shadow, frame, frameWith, frameBack, Highlight, noHighlight, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -368,13 +368,31 @@ shadow cols rows =
 list that does the same to the window. -}
 frame : Look -> Focus -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frame look focus t sh0 =
-    frameWith look focus noPreedit t sh0
+    frameWith look focus noPreedit noHighlight t sh0
 
 
-{-| `frame`, with a preedit drawn over the screen from the cursor. -}
-frameWith : Look -> Focus -> Preedit -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
-frameWith look focus preedit t sh0 =
-    frameOn look focus preedit t.screen t.clusters 0 t sh0
+{-| The cells a selection covers on the screen drawn (`docs/phase3-select.md`
+§14), `from` to `to` in reading order, both included, each `y * cols + x`;
+`from` below 0 for none. A frame with one says so in a highlight record
+(`0x05`, the first cell's row and column and the last's, 2 bytes each),
+before its runs, and whatever executes the list draws each run's cells in
+that range with their foreground and background swapped. The shadow keeps
+a selected cell marked (bit 55), so a cell the selection takes or leaves is
+drawn again. -}
+type alias Highlight =
+    { from : Int, to : Int }
+
+
+noHighlight : Highlight
+noHighlight =
+    { from = -1, to = -1 }
+
+
+{-| `frame`, with a preedit drawn over the screen from the cursor and a
+selection highlighted. -}
+frameWith : Look -> Focus -> Preedit -> Highlight -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameWith look focus preedit hl t sh0 =
+    frameOn look focus preedit hl t.screen t.clusters 0 t sh0
 
 
 {-| The frame of a view scrolled `back` rows up (`docs/phase3-select.md`
@@ -382,19 +400,35 @@ frameWith look focus preedit t sh0 =
 screen is, so a scroll of the view is found and copied as output's is.
 The cursor is drawn where its row has moved to, if it is still in view;
 no preedit is drawn, since a key typed brings the view back down. -}
-frameBack : Look -> Focus -> Int -> { screen : Screen, clusters : Clusters } -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
-frameBack look focus back view t sh0 =
-    frameOn look focus noPreedit view.screen view.clusters back t sh0
+frameBack : Look -> Focus -> Int -> { screen : Screen, clusters : Clusters } -> Highlight -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameBack look focus back view hl t sh0 =
+    frameOn look focus noPreedit hl view.screen view.clusters back t sh0
 
 
-frameOn : Look -> Focus -> Preedit -> Screen -> Clusters -> Int -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
-frameOn look focus preedit s clusters back t sh0 =
+frameOn : Look -> Focus -> Preedit -> Highlight -> Screen -> Clusters -> Int -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameOn look focus preedit hl s clusters back t sh0 =
     let
         key =
             colourKey look t
 
-        plainCursor =
+        last =
+            t.cols * t.rows - 1
+
+        selFrom =
+            max 0 hl.from
+
+        selTo =
+            min last hl.to
+
+        cursor0 =
             cursorOf focus s back t
+
+        plainCursor =
+            if hl.from < 0 || selFrom > selTo then
+                cursor0
+
+            else
+                { cursor0 | selFrom = selFrom, selTo = selTo }
 
         cursor =
             if preedit.text == "" || back /= 0 then
@@ -465,8 +499,22 @@ frameOn look focus preedit s clusters back t sh0 =
             else
                 []
 
+        highlight =
+            if cursor.selFrom < 0 then
+                []
+
+            else
+                [ UInt8.fromInt 5 ]
+                    ++ Builder.toArray
+                        (Builder.empty 8
+                            |> push16 (cursor.selFrom // t.cols)
+                            |> push16 (modBy t.cols cursor.selFrom)
+                            |> push16 (cursor.selTo // t.cols)
+                            |> push16 (modBy t.cols cursor.selTo)
+                        )
+
         bytes =
-            Bytes.fromUInt8s (size ++ Builder.toArray styles ++ Builder.toArray diffed.list)
+            Bytes.fromUInt8s (size ++ Builder.toArray styles ++ highlight ++ Builder.toArray diffed.list)
     in
     { shadow = { sh3 | hashes = Builder.fromArray current, styleIds = Builder.empty 64, frames = sh3.frames + 1, bytes = sh3.bytes + Bytes.length bytes }
     , list = bytes
@@ -1210,7 +1258,7 @@ colourKey look t =
 for none), how many cells it covers, and its shape (1 a block, 2 an
 underline, 3 a bar, 4 a hollow block). -}
 type alias Cursor =
-    { at : Int, cells : Int, shape : Int, preAt : Int, pre : Array PreCell }
+    { at : Int, cells : Int, shape : Int, preAt : Int, pre : Array PreCell, selFrom : Int, selTo : Int }
 
 
 cursorOf : Focus -> Screen -> Int -> Term -> Cursor
@@ -1238,11 +1286,13 @@ cursorOf focus s back t =
             cellWide (cellOf s o (extentAt o s) head) == wideHead && head + 1 < t.cols
     in
     if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || y >= t.rows || t.x < 0 || y < 0 then
-        { at = -1, cells = 0, shape = 0, preAt = -1, pre = [] }
+        { at = -1, cells = 0, shape = 0, preAt = -1, pre = [], selFrom = -1, selTo = -1 }
 
     else
         { preAt = -1
         , pre = []
+        , selFrom = -1
+        , selTo = -1
         , at = y * t.cols + head
         , cells = if wide then 2 else 1
         , shape =
@@ -1273,11 +1323,24 @@ drawnAs s cursor o ext row x =
         c =
             cellAt s cursor o ext row x
     in
+    let
+        marked =
+            if isSelected cursor (row + x) then
+                Bitwise.or c (Bitwise.shiftLeftBy 55 1)
+
+            else
+                c
+    in
     if isCursor cursor (row + x) then
-        Bitwise.or c (Bitwise.shiftLeftBy 56 (Int64.fromInt cursor.shape))
+        Bitwise.or marked (Bitwise.shiftLeftBy 56 (Int64.fromInt cursor.shape))
 
     else
-        c
+        marked
+
+
+isSelected : Cursor -> Int -> Bool
+isSelected cursor i =
+    cursor.selFrom >= 0 && i >= cursor.selFrom && i <= cursor.selTo
 
 
 {-| A style id's record: its colours resolved (see the module's comment);

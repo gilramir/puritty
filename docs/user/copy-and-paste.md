@@ -1,8 +1,10 @@
 # Copy and paste in visiterm
 
 *Status: this guide describes phase 3's design as decided on 2026-11-03
-([`../phase3-select.md`](../phase3-select.md) §10–§11). It is being built;
-until it is, the window does not select, copy or paste with the mouse.*
+([`../phase3-select.md`](../phase3-select.md) §10–§11). Selecting and
+copying (§1, §2, Ctrl+Shift+C) work as described here; pasting (§3) and
+OSC 52 (§4) are being built, and until they are, visiterm does not paste
+and ignores OSC 52.*
 
 Copy and paste in a terminal on Linux is confusing because there are **two
 clipboards**, not one, and because the programs running inside the terminal
@@ -44,10 +46,31 @@ its program exits; nothing keeps the *selection*.
 
 - **Drag** with the left button to select from one point to another.
 - **Double-click** to select a word, **triple-click** to select a line.
-  (Thai text has no spaces between words; until visiterm learns Thai word
-  breaks, a run of Thai is selected as one word.)
-- You can **drag above the top of the window** to select into the history
-  that has scrolled away.
+  Keep the button down after a double or triple click and drag to select
+  more words or lines. (Thai text has no spaces between words; until
+  visiterm learns Thai word breaks, a run of Thai is selected as one word.)
+- To select into the history that has scrolled away, scroll back first
+  (the wheel, Shift+PgUp, Shift+Home). A selection can also span more than
+  a screen: press the button, move the view with Shift+PgUp, Shift+PgDn,
+  Shift+Home or Shift+End while holding it, and let go where it ends.
+  Dragging past the window's edge does not scroll the view yet.
+
+### What counts as a word
+
+A word is a run of characters that are all *word boundaries* or all not.
+The boundaries are tab, space and ``'"│`|:;,()[]{}<>$`` (Ghostty's list),
+so a double click on `path/to/file.txt` takes all of it, on `a=b` all three
+characters, and on `===` the three `=`. Everyone draws this line
+differently, so it is yours to set in `~/.config/visiterm/config.toml`:
+
+```toml
+[selection]
+# the default, with "=" added: a double click on a=b now takes "a" or "b"
+word_boundaries = " \t'\"│`|:;,()[]{}<>$="
+```
+
+Write the whole list: the setting replaces the default rather than adding
+to it.
 
 What you selected goes into the selection (PRIMARY) **when you let go of the
 button**. visiterm reads the text out then:

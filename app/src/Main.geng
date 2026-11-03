@@ -86,6 +86,32 @@ type alias Model =
       -- how many rows the view is scrolled back, 0 at the bottom
       -- (docs/phase3-select.md §11)
     , back : Int
+      -- the selection (docs/phase3-select.md §14), the last press of the
+      -- left button for double and triple clicks, and a selection to hand
+      -- to the window when the event's model is done
+    , selection : Maybe Selection
+    , clicks : { at : Int, count : Int, cell : Vt.Point }
+    , toOwn : Maybe { which : X11.Selection, text : String }
+    , wordBoundaries : Array Int
+    }
+
+
+{-| A selection: from `anchor` to `head`, in either order, both included.
+`mode` 0 by cells, 1 by words, 2 by lines; a drag by words or lines keeps
+the first word or line, `first` to `last`, whichever way it goes. `made`
+once the button is let go and its text is the window's PRIMARY; `hashes`
+then holds each of its rows on the screen, so that a write over one takes
+the highlight away. `alt` is the screen it was made on. -}
+type alias Selection =
+    { anchor : Vt.Point
+    , head : Vt.Point
+    , first : Vt.Point
+    , last : Vt.Point
+    , mode : Int
+    , moved : Bool
+    , made : Bool
+    , alt : Bool
+    , hashes : Dict Int Int
     }
 
 
@@ -302,6 +328,10 @@ run imeLog charset config cell child =
                             , mouseLast = Nothing
                             , allMotion = False
                             , back = 0
+                            , selection = Nothing
+                            , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
+                            , toOwn = Nothing
+                            , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -568,6 +598,10 @@ feed fd chunk0 ms m =
         held =
             syncHeld taken.term
 
+        -- a selection's highlight goes when its rows are written over
+        selection =
+            kept m.selection taken.term
+
         -- a view scrolled back stays on its rows as more come in below it
         back =
             if m.back > 0 then
@@ -581,6 +615,7 @@ feed fd chunk0 ms m =
             { m
                 | term = taken.term
                 , back = back
+                , selection = selection
                 , decoder = decoded.decoder
                 , pending =
                     if m.pending < 0 then
@@ -628,16 +663,30 @@ handle terminal fd ms evs m =
                                     )
 
                         Nothing ->
-                            when scrollKeyOf m k is
-                                Just back ->
-                                    handle terminal fd ms rest { m | back = back, urgent = True }
+                            if isCopyKey k then
+                                -- Ctrl+Shift+C: the selection to CLIPBOARD
+                                -- (docs/user/copy-and-paste.md), the key
+                                -- visiterm's with or without one
+                                owned terminal fd ms rest
+                                    (when m.selection is
+                                        Just s ->
+                                            { m | toOwn = Just { which = X11.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
 
-                                Nothing ->
-                                    key terminal fd ms rest k m
+                                        Nothing ->
+                                            m
+                                    )
+
+                            else
+                                when scrollKeyOf m k is
+                                    Just back ->
+                                        handle terminal fd ms rest { m | back = back, urgent = True }
+
+                                    Nothing ->
+                                        key terminal fd ms rest k m
 
                 X11.Resized size ->
                     Process.resize terminal { columns = size.cols, rows = size.rows }
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0 })
+                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0, selection = Nothing })
 
                 X11.Focus on ->
                     let
@@ -690,7 +739,31 @@ handle terminal fd ms evs m =
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 X11.Pointer p ->
-                    handle terminal fd ms rest (pointer p m)
+                    owned terminal fd ms rest (pointer ms p m)
+
+                X11.SelectionLost which ->
+                    -- another program's selection now: the highlight goes,
+                    -- as xterm takes it away
+                    handle terminal fd ms rest
+                        (if which == X11.Primary then
+                            { m | selection = Nothing, urgent = True }
+
+                         else
+                            m
+                        )
+
+
+{-| The events after one that made a selection the window's: its text
+handed to the window first. -}
+owned : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (moved m : Model) -> Task Error Model
+owned terminal fd ms rest m =
+    when m.toOwn is
+        Just own ->
+            X11.select own.which own.text
+                |> Task.andThen (\_ -> handle terminal fd ms rest { m | toOwn = Nothing })
+
+        Nothing ->
+            handle terminal fd ms rest m
 
 
 {-| A press, release or motion of the pointer (docs/phase3-select.md §4):
@@ -701,8 +774,8 @@ motion with Shift while a button is held, is visiterm's own. The wheel is
 not: Ghostty reports it with Shift too, and nvim pages with Shift and the
 wheel. A motion is reported with the lowest-numbered button held, as
 Ghostty reports it. -}
-pointer : X11.PointerEvent -> (moved m : Model) -> Model
-pointer p m =
+pointer : Int -> X11.PointerEvent -> (moved m : Model) -> Model
+pointer ms p m =
     let
         modes =
             Vt.mouseModes m.term
@@ -734,7 +807,7 @@ pointer p m =
         wheelStep p.button { m | held = held }
 
     else if modes.tracking == Mouse.none || taken then
-        { m | held = held }
+        selecting ms p held m
 
     else
         let
@@ -817,6 +890,246 @@ wheelStep button m =
         { m | back = max 0 (m.back - 3), urgent = True }
 
 
+{-| The left button selecting (docs/phase3-select.md §14): a press starts
+a selection, a second and third within 500 ms on the same cell one by
+words and by lines; a motion while it is held moves its head; letting go
+makes it the window's PRIMARY, or takes it away when nothing was dragged. -}
+selecting : Int -> X11.PointerEvent -> Int -> (moved m : Model) -> Model
+selecting ms p held m =
+    let
+        at =
+            pointAt p m
+    in
+    if p.button == 1 && p.action == 0 then
+        let
+            count =
+                if ms - m.clicks.at <= 500 && m.clicks.cell == at then
+                    modBy 3 m.clicks.count + 1
+
+                else
+                    1
+
+            span =
+                if count == 2 then
+                    Vt.wordAt m.wordBoundaries at m.term
+
+                else if count == 3 then
+                    Vt.lineAt at m.term
+
+                else
+                    Just { start = at, end = at }
+
+            sel =
+                Maybe.map
+                    (\w ->
+                        { anchor = w.start
+                        , head = w.end
+                        , first = w.start
+                        , last = w.end
+                        , mode = count - 1
+                        , moved = count > 1
+                        , made = False
+                        , alt = m.term.alt
+                        , hashes = Dict.empty
+                        }
+                    )
+                    span
+        in
+        { m | held = held, selection = sel, clicks = { at = ms, count = count, cell = at }, urgent = True }
+
+    else if p.action == 2 && Bitwise.and held 2 /= 0 then
+        when m.selection is
+            Just s ->
+                if s.made then
+                    { m | held = held }
+
+                else
+                    { m | held = held, selection = Just (extended at s m), urgent = True }
+
+            Nothing ->
+                { m | held = held }
+
+    else if p.button == 1 && p.action == 1 then
+        when m.selection is
+            Just s ->
+                if s.made then
+                    { m | held = held }
+
+                else if s.mode == 0 && not s.moved then
+                    -- a click: no selection
+                    { m | held = held, selection = Nothing, urgent = True }
+
+                else
+                    let
+                        text =
+                            Vt.selectionText s.anchor s.head m.term
+                    in
+                    { m
+                        | held = held
+                        , selection = Just { s | made = True, hashes = rowHashes s m.term }
+                        , toOwn = Just { which = X11.Primary, text = text }
+                    }
+
+            Nothing ->
+                { m | held = held }
+
+    else
+        { m | held = held }
+
+
+{-| A selection being dragged, its head at `at`: by cells, at it; by words
+or lines, the word or line there, the first one kept on the far side. -}
+extended : Vt.Point -> Selection -> Model -> Selection
+extended at s m =
+    if s.mode == 0 then
+        { s | head = at, moved = True }
+
+    else
+        let
+            span =
+                if s.mode == 1 then
+                    Vt.wordAt m.wordBoundaries at m.term
+
+                else
+                    Vt.lineAt at m.term
+
+            w =
+                Maybe.withDefault { start = at, end = at } span
+        in
+        if before w.start s.first then
+            { s | anchor = s.last, head = w.start }
+
+        else
+            { s | anchor = s.first, head = w.end }
+
+
+before : Vt.Point -> Vt.Point -> Bool
+before a b =
+    a.row < b.row || (a.row == b.row && a.col < b.col)
+
+
+{-| The point under the pointer, kept on the screen (a drag past its edge
+does not scroll the view yet). -}
+pointAt : X11.PointerEvent -> Model -> Vt.Point
+pointAt p m =
+    let
+        cw =
+            max 1 p.cellWidth
+
+        ch =
+            max 1 p.cellHeight
+
+        col =
+            clamp 0 (m.term.cols - 1) (if p.x < 0 then 0 else p.x // cw)
+
+        y =
+            clamp 0 (m.term.rows - 1) (if p.y < 0 then 0 else p.y // ch)
+    in
+    { row = Vt.rowsPushed m.term + y - viewBack m, col = col }
+
+
+{-| How far back the view is drawn: none while the alternate screen is up. -}
+viewBack : Model -> Int
+viewBack m =
+    min m.back (Vt.scrollbackRows m.term)
+
+
+{-| A hash of each of a selection's rows on the screen, by its row. -}
+rowHashes : Selection -> Vt.Term -> Dict Int Int
+rowHashes s t =
+    let
+        pushed =
+            Vt.rowsPushed t
+
+        lo =
+            max pushed (min s.anchor.row s.head.row)
+
+        hi =
+            min (pushed + t.rows - 1) (max s.anchor.row s.head.row)
+    in
+    Array.foldl (\r d -> Dict.set r (Vt.rowsHash r r t) d) Dict.empty (Array.range lo hi)
+
+
+{-| The selection after output: kept while the screen is the one it was
+made on and none of its rows still on the screen changed (rows that have
+scrolled off do not change). -}
+kept : Maybe Selection -> Vt.Term -> Maybe Selection
+kept sel t =
+    when sel is
+        Nothing ->
+            Nothing
+
+        Just s ->
+            if s.alt /= t.alt then
+                Nothing
+
+            else if not s.made then
+                sel
+
+            else
+                let
+                    pushed =
+                        Vt.rowsPushed t
+
+                    same =
+                        Dict.foldl (\r h ok -> ok && (r < pushed || Vt.rowsHash r r t == h)) True s.hashes
+                in
+                if same then
+                    sel
+
+                else
+                    Nothing
+
+
+{-| The cells a selection covers on the screen drawn, for the view. -}
+highlightOf : Model -> View.Highlight
+highlightOf m =
+    when m.selection is
+        Nothing ->
+            View.noHighlight
+
+        Just s ->
+            let
+                a =
+                    if before s.head s.anchor then
+                        s.head
+
+                    else
+                        s.anchor
+
+                b =
+                    if before s.head s.anchor then
+                        s.anchor
+
+                    else
+                        s.head
+
+                top =
+                    Vt.rowsPushed m.term - viewBack m
+
+                cols =
+                    m.term.cols
+
+                last =
+                    cols * m.term.rows - 1
+
+                from =
+                    if a.row < top then
+                        0
+
+                    else
+                        (a.row - top) * cols + a.col
+
+                to =
+                    (b.row - top) * cols + b.col
+            in
+            if to < 0 || from > last then
+                View.noHighlight
+
+            else
+                { from = from, to = min last to }
+
+
 lowestHeld : Int -> Int -> Int
 lowestHeld held i =
     if i > 11 then
@@ -861,6 +1174,12 @@ key terminal fd ms rest k m =
                         0
             }
         )
+
+
+{-| Ctrl+Shift+C, pressed: the copy key (docs/user/copy-and-paste.md). -}
+isCopyKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+isCopyKey k =
+    k.action == 1 && Bitwise.and k.mods 15 == 3 && (k.sym == 0x43 || k.sym == 0x63)
 
 
 {-| The keys that move a view of the scrollback (docs/phase3-select.md
@@ -952,14 +1271,17 @@ draw ms m =
         -- the alternate screen keeps no scrollback, so a view scrolled
         -- back shows the screen while it is up
         back =
-            min m.back (Vt.scrollbackRows m.term)
+            viewBack m
+
+        highlight =
+            highlightOf m
 
         f =
             if back > 0 then
-                View.frameBack m.look m.focus back (Vt.viewAt back m.term) m.term m.shadow
+                View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
 
             else
-                View.frameWith m.look m.focus preedit m.term m.shadow
+                View.frameWith m.look m.focus preedit highlight m.term m.shadow
 
         spot =
             View.preeditSpot preedit m.term

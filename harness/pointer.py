@@ -14,7 +14,12 @@ the bytes to corpus/pointer/CASE.txt.
 
 Actions: move:X,Y moves the pointer to a pixel of the window; click:B,
 down:B, up:B for button B (X's numbers: 1 left, 2 middle, 3 right, 4 and 5
-the wheel); key-down:K and key-up:K hold a key (shift, ctrl); sleep:S.
+the wheel); double:B and triple:B click it two and three times 100 ms
+apart; key-down:K and key-up:K hold a key (shift, ctrl); key:K presses one
+(xdotool's names); sleep:S; primary and clipboard read that selection with
+xclip and add it to the case's pin, its length when it is long
+(docs/phase3-select.md §14). A case may give a shell command run before
+the program reads, to print what it selects.
 
 usage:
     harness/pointer.py            every case
@@ -34,6 +39,9 @@ VISITERM = ROOT / "app" / "visiterm"
 DISPLAY = ":82"
 
 SGR = "\\e[?1000h\\e[?1006h"
+TEXT = "printf 'hello world, again\\r\\nsecond line\\r\\n'"
+# 5,000 lines of 64 characters: 325,000 bytes, more than an INCR piece
+LARGE = "seq -f '%063g' 1 5000"
 # name, the modes the program sets, its actions. The default font at 96 dpi
 # has a cell of 9 by 17 pixels, so pixel (50, 30) is in column 6, row 2.
 CASES = [
@@ -59,6 +67,18 @@ CASES = [
     ("alt-wheel-decckm", "\\e[?1049h\\e[?1h", "move:50,30 click:4"),
     ("alt-wheel-1007-reset", "\\e[?1049h\\e[?1007l", "move:50,30 click:4"),
     ("alt-wheel-reported", "\\e[?1049h" + SGR, "move:50,30 click:4"),
+    # selection (docs/phase3-select.md §14): rows 0 and 1 are
+    # "hello world, again" and "second line"; a cell is 9 by 17
+    ("select-drag", "", "move:4,8 down:1 move:40,8 up:1 primary", TEXT),
+    ("select-drag-rows", "", "move:58,8 down:1 move:40,25 up:1 primary", TEXT),
+    ("select-drag-back", "", "move:40,25 down:1 move:58,8 up:1 primary", TEXT),
+    ("select-click-none", "", "move:4,8 down:1 move:40,8 up:1 sleep:0.6 click:1 sleep:0.6 primary", TEXT),
+    ("select-double", "", "move:58,8 double:1 primary", TEXT),
+    ("select-double-drag", "", "move:58,8 click:1 down:1 move:130,8 up:1 primary", TEXT),
+    ("select-triple", "", "move:40,25 triple:1 primary", TEXT),
+    ("select-copy", "", "move:4,8 down:1 move:40,8 up:1 key:ctrl+shift+c clipboard primary", TEXT),
+    ("select-shift", SGR, "move:4,8 key-down:shift down:1 move:40,8 up:1 key-up:shift primary", TEXT),
+    ("select-large", "", "key:shift+Home sleep:0.5 move:0,0 down:1 key:shift+End sleep:0.5 move:715,400 up:1 sleep:0.5 primary", LARGE),
 ]
 
 
@@ -78,10 +98,21 @@ def xdotool():
     return [l for l in out.stdout.split() if not l.endswith("-man")][0] + "/bin/xdotool"
 
 
-def run(xdo, env, modes, actions):
+def selection(env, which):
+    try:
+        b = subprocess.run(["xclip", "-o", "-selection", which], env=env, capture_output=True, timeout=10).stdout
+    except subprocess.TimeoutExpired:
+        return f"{which} (timed out)"
+    if len(b) > 200:
+        return f"{which} {len(b)} bytes, {b.count(b'\n') + 1} lines, ending {escaped(b[-20:])}"
+    return f"{which} {escaped(b)}"
+
+
+def run(xdo, env, modes, actions, before=""):
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "received"
-        v = subprocess.Popen([str(VISITERM), "--", "sh", "-c", f"printf '{modes}'; stty raw -echo; exec cat > {out}"],
+        read = []
+        v = subprocess.Popen([str(VISITERM), "--", "sh", "-c", f"{before}{';' if before else ''} printf '{modes}'; stty raw -echo; exec cat > {out}"],
                              env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         win = subprocess.run([xdo, "search", "--sync", "--name", "visiterm"], env=env, capture_output=True,
                              text=True).stdout.split()[0]
@@ -102,6 +133,16 @@ def run(xdo, env, modes, actions):
                 cmd = ["keydown", arg]
             elif kind == "key-up":
                 cmd = ["keyup", arg]
+            elif kind == "key":
+                cmd = ["key", arg]
+            elif kind == "double":
+                cmd = ["click", "--repeat", "2", "--delay", "100", arg]
+            elif kind == "triple":
+                cmd = ["click", "--repeat", "3", "--delay", "100", arg]
+            elif kind in ("primary", "clipboard"):
+                time.sleep(0.3)
+                read.append(selection(env, kind))
+                continue
             elif kind == "sleep":
                 time.sleep(float(arg))
                 continue
@@ -117,7 +158,7 @@ def run(xdo, env, modes, actions):
             v.kill()
             v.wait()
         received = out.read_bytes() if out.exists() else b""
-    return "bytes " + escaped(received) + "\n"
+    return "bytes " + escaped(received) + "\n" + "".join(r + "\n" for r in read)
 
 
 def main():
@@ -135,11 +176,11 @@ def main():
     time.sleep(0.5)
     fails = runs = 0
     try:
-        for name, modes, actions in CASES:
+        for name, modes, actions, *before in CASES:
             if a.filter not in name:
                 continue
             runs += 1
-            got = run(xdo, env, modes, actions)
+            got = run(xdo, env, modes, actions, *before)
             pin = PINS / f"{name}.txt"
             if a.update:
                 PINS.mkdir(parents=True, exist_ok=True)

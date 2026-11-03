@@ -54,7 +54,9 @@
  *     pixels, x and y in 2 bytes each, signed, then the window's width and
  *     height and the cell's in pixels, 2 bytes each. A wheel step is a
  *     press alone: X's release of buttons 4-7 is not recorded. Motions one
- *     after another are recorded as the last of them.
+ *     after another are recorded as the last of them;
+ *  10 a selection this window owned is another's now (docs/phase3-select.md
+ *     §14): 0 PRIMARY, 1 CLIPBOARD.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
@@ -111,8 +113,29 @@ static int cols, rows, win_cols, win_rows, focused = -1, win_w, win_h;
 static uint32_t margin_bg = 0xFFFFFFFF;
 static long glyph_bytes, glyph_cap, resets;
 
-static uint32_t style_fg[65536], style_bg[65536], style_ulc[65536];
-static uint8_t style_flags[65536], style_ul[65536];
+/* A style's record by its id; from 65536 on, the same style selected
+ * (docs/phase3-select.md §14): its colours swapped, made when a selected
+ * cell is drawn in it. */
+static uint32_t style_fg[131072], style_bg[131072], style_ulc[131072];
+static uint8_t style_flags[131072], style_ul[131072];
+/* The cells the frame's highlight record covers, y * cols + x, both
+ * included; -1 when it has none. */
+static int sel_from = -1, sel_to = -1;
+
+/* The style a cell is drawn in: its own, or its selected copy when the
+ * frame's highlight covers it. A cursor's style (0x8000 and up) is the
+ * cursor's whatever the highlight. */
+static int cell_style(int style, int y, int x) {
+    int i = y * cols + x;
+    if (sel_from < 0 || i < sel_from || i > sel_to || style >= 0x8000) return style;
+    int s = 65536 + style;
+    style_fg[s] = style_bg[style];
+    style_bg[s] = style_fg[style];
+    style_ulc[s] = style_ulc[style] == style_fg[style] ? style_bg[style] : style_ulc[style];
+    style_flags[s] = style_flags[style];
+    style_ul[s] = style_ul[style];
+    return s;
+}
 
 static xcb_atom_t wm_protocols, wm_delete, net_wm_name, utf8_string;
 
@@ -922,7 +945,7 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
     int ncl = 0, ncps = 0;
     if (n > 1024) n = 1024;
     for (int i = 0; i < n; i++) {
-        int wide = p[0] >> 6, count = p[0] & 63, style = (p[1] << 8) | p[2];
+        int wide = p[0] >> 6, count = p[0] & 63, style = cell_style((p[1] << 8) | p[2], y, x + i);
         p += 3;
         uint32_t *mine = cps + ncps;
         for (int k = 0; k < count; k++, p += 3) mine[k] = ((uint32_t) p[0] << 16) | ((uint32_t) p[1] << 8) | p[2];
@@ -1039,7 +1062,7 @@ static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end, int pass) {
     const uint8_t *cell = p + 7, *q = cell;
     static int styles[65536];
     for (int i = 0; i < n && q + 3 <= end; i++) {
-        styles[i] = (q[1] << 8) | q[2];
+        styles[i] = cell_style((q[1] << 8) | q[2], y, x + i);
         q += 3 + 3 * (q[0] & 63);
     }
     if (q > end) return end;
@@ -1335,6 +1358,11 @@ static int spot_x = -1, spot_y = -1;
 
 static void key_event(int press, uint8_t keycode, uint16_t state);
 static void pointer_event(int action, int xbutton, int x, int y, uint16_t state);
+static void selection_atoms(void);
+static void selection_request(xcb_selection_request_event_t *q);
+static void selection_clear(xcb_selection_clear_event_t *c);
+static void transfer_step(xcb_property_notify_event_t *p);
+static xcb_timestamp_t last_time;
 
 static void record_text(uint8_t kind, const char *s, size_t n) {
     if (n > 4000) n = 4000;
@@ -1447,18 +1475,24 @@ static void drain(void) {
             continue;
         }
         if (xkb_event && type == xkb_event) xkb_event_in(e);
+        else if (type == XCB_SELECTION_REQUEST) selection_request((xcb_selection_request_event_t *) e);
+        else if (type == XCB_SELECTION_CLEAR) selection_clear((xcb_selection_clear_event_t *) e);
+        else if (type == XCB_PROPERTY_NOTIFY) transfer_step((xcb_property_notify_event_t *) e);
         else if (type == XCB_KEY_PRESS || type == XCB_KEY_RELEASE) {
             xcb_key_press_event_t *k = (xcb_key_press_event_t *) e;
+            last_time = k->time;
             if (have_xic) xcb_xim_forward_event(xim, xic, k);
             else key_event(type == XCB_KEY_PRESS, k->detail, k->state);
         }
         else if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
             xcb_button_press_event_t *b = (xcb_button_press_event_t *) e;
+            last_time = b->time;
             /* a wheel step is its press; X's release of it is not a release */
             if (!(type == XCB_BUTTON_RELEASE && b->detail >= 4 && b->detail <= 7))
                 pointer_event(type == XCB_BUTTON_PRESS ? 0 : 1, b->detail, b->event_x, b->event_y, b->state);
         } else if (type == XCB_MOTION_NOTIFY) {
             xcb_motion_notify_event_t *mo = (xcb_motion_notify_event_t *) e;
+            last_time = mo->time;
             pointer_event(2, 0, mo->event_x, mo->event_y, mo->state);
         }
         else if (type == XCB_EXPOSE) {
@@ -1659,6 +1693,7 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
     wm_delete = atom("WM_DELETE_WINDOW");
     net_wm_name = atom("_NET_WM_NAME");
     utf8_string = atom("UTF8_STRING");
+    selection_atoms();
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, wm_protocols, XCB_ATOM_ATOM, 32, 1, &wm_delete);
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "visiterm\0Visiterm\0");
     /* WM_NORMAL_HINTS (ICCCM 4.1.2.3): a minimum of one cell, the base 0,
@@ -1690,6 +1725,7 @@ geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
     const uint8_t *p = b->data, *end = b->data + b->length, *runs = NULL;
     int first = rows, last = -1, sized = 0;
     inklen = 0;
+    sel_from = sel_to = -1;
     while (p < end) {
         if (p[0] == 4 && p + 5 <= end) {
             int c = (p[1] << 8) | p[2], r = (p[3] << 8) | p[4];
@@ -1706,6 +1742,11 @@ geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
             style_flags[id] = p[12];
             style_ul[id] = p[13];
             p += 14;
+        } else if (p[0] == 5 && p + 9 <= end) {
+            /* the highlight (docs/phase3-select.md §14) */
+            sel_from = ((p[1] << 8) | p[2]) * cols + ((p[3] << 8) | p[4]);
+            sel_to = ((p[5] << 8) | p[6]) * cols + ((p[7] << 8) | p[8]);
+            p += 9;
         } else if (p[0] == 1 && p + 7 <= end) {
             int top = (p[1] << 8) | p[2], bottom = (p[3] << 8) | p[4], k = (int16_t) ((p[5] << 8) | p[6]);
             xcb_copy_area(conn, pixmap, pixmap, gc, 0, (int16_t) ((top + k) * ch), 0, (int16_t) (top * ch), (uint16_t) (cols * cw),
@@ -1850,6 +1891,175 @@ geng_cancel visiterm_x11_zoom(int32_t points, geng_wait *wait) {
         xcb_flush(conn);
     }
     geng_succeed(wait, geng_slot_I4(cw * 65536 + ch));
+    return (geng_cancel) {0};
+}
+
+/* THE SELECTIONS (docs/phase3-select.md §5, §14)
+ *
+ * The window owns PRIMARY when a selection is made and CLIPBOARD on a copy,
+ * with a copy of the text here, and answers every request from it without
+ * Geng: TARGETS, TIMESTAMP, UTF8_STRING, text/plain;charset=utf-8, TEXT
+ * (as UTF-8) and STRING (Latin-1, '?' for what it has not). Text larger
+ * than a piece goes as INCR, a piece each time the requestor deletes the
+ * last, from the event loop, so no request waits on another. */
+
+#define PIECE 262144
+static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr;
+static struct {
+    uint8_t *data;
+    size_t len;
+    xcb_timestamp_t time;
+    int owned;
+} sel[2];
+static struct {
+    xcb_window_t win;
+    xcb_atom_t prop, type;
+    uint8_t *data;
+    size_t len, at;
+    int live;
+} xfer[8];
+
+static void selection_atoms(void) {
+    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR"};
+    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr};
+    xcb_intern_atom_cookie_t ck[6];
+    for (int i = 0; i < 6; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < 6; i++) {
+        xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
+        *out[i] = r ? r->atom : XCB_ATOM_NONE;
+        free(r);
+    }
+}
+
+static void notify_requestor(xcb_selection_request_event_t *q, xcb_atom_t prop) {
+    xcb_selection_notify_event_t n = {0};
+    n.response_type = XCB_SELECTION_NOTIFY;
+    n.time = q->time;
+    n.requestor = q->requestor;
+    n.selection = q->selection;
+    n.target = q->target;
+    n.property = prop;
+    xcb_send_event(conn, 0, q->requestor, 0, (const char *) &n);
+}
+
+/* UTF-8 as Latin-1: a code point past 255, or a byte that does not decode,
+ * is '?'. */
+static uint8_t *latin1(const uint8_t *s, size_t n, size_t *out) {
+    uint8_t *o = malloc(n + 1);
+    size_t k = 0;
+    for (size_t i = 0; i < n;) {
+        uint32_t c = s[i];
+        int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+        if (len > 1 && i + (size_t) len <= n) {
+            c &= (1u << (7 - len)) - 1;
+            for (int j = 1; j < len; j++) c = (c << 6) | (s[i + (size_t) j] & 63);
+        }
+        o[k++] = c < 256 ? (uint8_t) c : '?';
+        i += (size_t) len;
+    }
+    *out = k;
+    return o;
+}
+
+static void selection_request(xcb_selection_request_event_t *q) {
+    int which = q->selection == XCB_ATOM_PRIMARY ? 0 : q->selection == a_clipboard ? 1 : -1;
+    xcb_atom_t prop = q->property ? q->property : q->target;
+    if (which < 0 || !sel[which].owned) {
+        notify_requestor(q, XCB_ATOM_NONE);
+    } else if (q->target == a_targets) {
+        xcb_atom_t t[] = {a_targets, a_timestamp, utf8_string, a_plain, a_text, XCB_ATOM_STRING};
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, XCB_ATOM_ATOM, 32, 6, t);
+        notify_requestor(q, prop);
+    } else if (q->target == a_timestamp) {
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, XCB_ATOM_INTEGER, 32, 1, &sel[which].time);
+        notify_requestor(q, prop);
+    } else if (q->target == utf8_string || q->target == a_plain || q->target == a_text || q->target == XCB_ATOM_STRING) {
+        xcb_atom_t type = q->target == a_text ? utf8_string : q->target;
+        size_t len = sel[which].len;
+        uint8_t *data = malloc(len + 1);
+        memcpy(data, sel[which].data, len);
+        if (q->target == XCB_ATOM_STRING) {
+            uint8_t *l = latin1(data, len, &len);
+            free(data);
+            data = l;
+        }
+        int slot = -1;
+        for (int i = 0; i < 8 && len > PIECE; i++)
+            if (!xfer[i].live) {
+                slot = i;
+                break;
+            }
+        if (len <= PIECE) {
+            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, type, 8, (uint32_t) len, data);
+            notify_requestor(q, prop);
+            free(data);
+        } else if (slot < 0) {
+            notify_requestor(q, XCB_ATOM_NONE); /* eight transfers at once already */
+            free(data);
+        } else {
+            uint32_t mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
+            xcb_change_window_attributes(conn, q->requestor, XCB_CW_EVENT_MASK, &mask);
+            uint32_t hint = (uint32_t) len;
+            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, q->requestor, prop, a_incr, 32, 1, &hint);
+            notify_requestor(q, prop);
+            xfer[slot].win = q->requestor;
+            xfer[slot].prop = prop;
+            xfer[slot].type = type;
+            xfer[slot].data = data;
+            xfer[slot].len = len;
+            xfer[slot].at = 0;
+            xfer[slot].live = 1;
+        }
+    } else {
+        notify_requestor(q, XCB_ATOM_NONE);
+    }
+    xcb_flush(conn);
+}
+
+/* A requestor deleted the property an INCR piece was in: the next piece,
+ * and after the last an empty one, which ends it. */
+static void transfer_step(xcb_property_notify_event_t *p) {
+    if (p->window == window) last_time = p->time;
+    if (p->state != XCB_PROPERTY_DELETE) return;
+    for (int i = 0; i < 8; i++) {
+        if (!xfer[i].live || xfer[i].win != p->window || xfer[i].prop != p->atom) continue;
+        size_t n = xfer[i].len - xfer[i].at < PIECE ? xfer[i].len - xfer[i].at : PIECE;
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, p->window, p->atom, xfer[i].type, 8, (uint32_t) n, xfer[i].data + xfer[i].at);
+        if (n == 0) {
+            uint32_t none = 0;
+            xcb_change_window_attributes(conn, p->window, XCB_CW_EVENT_MASK, &none);
+            free(xfer[i].data);
+            xfer[i].live = 0;
+        }
+        xfer[i].at += n;
+        xcb_flush(conn);
+        return;
+    }
+}
+
+static void selection_clear(xcb_selection_clear_event_t *c) {
+    int which = c->selection == XCB_ATOM_PRIMARY ? 0 : c->selection == a_clipboard ? 1 : -1;
+    if (which < 0 || !sel[which].owned) return;
+    sel[which].owned = 0;
+    uint8_t r[2] = {10, (uint8_t) which};
+    record(r, 2);
+}
+
+/* The window owns PRIMARY (0) or CLIPBOARD (1) with this text, from the
+ * time of the last event the window had (ICCCM 2.1). */
+geng_cancel visiterm_x11_select(int32_t which, void *text, geng_wait *wait) {
+    geng_bytes *t = text;
+    if (which == 0 || which == 1) {
+        free(sel[which].data);
+        sel[which].data = malloc((size_t) t->length + 1);
+        memcpy(sel[which].data, t->data, (size_t) t->length);
+        sel[which].len = (size_t) t->length;
+        sel[which].time = last_time;
+        sel[which].owned = 1;
+        xcb_set_selection_owner(conn, window, which ? a_clipboard : XCB_ATOM_PRIMARY, last_time);
+        xcb_flush(conn);
+    }
+    geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
 

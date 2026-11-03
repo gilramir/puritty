@@ -3,7 +3,7 @@
 Status: **survey begun 2026-11-03**, for Gilbert's answers (§10); every
 leaning taken the same day (§11); a user's guide in
 [`user/copy-and-paste.md`](user/copy-and-paste.md). Built: mouse reports
-(§12), scrolling back (§13). It is the
+(§12), scrolling back (§13), selection and copy (§14). It is the
 rest of phase 3 of [`geng-plan.md`](geng-plan.md) §6 after
 [`phase3-input.md`](phase3-input.md)'s keys, IME, writes, font size and
 EUC-KR (V44–V50), and it measures before building, as every phase does. It
@@ -580,6 +580,10 @@ to 4 ms, against a frame every 16 ms at most, and a view moves only when
 the wheel or a key moves it, or output comes. No cache is kept; daily use
 can say otherwise.
 
+**Open, for daily use**: Gilbert (2026-11-03) keeps one report a wheel
+step for now; once he uses visiterm, ask him to compare it with Ghostty's
+three in nvim and tmux and say which he wants.
+
 **Gates for §12 and §13**: replay 325 of 325, view 344 of 344, keys
 300,000, mouse 200,000 (901,013 events), charset 17 lines, pixels 36 of
 36, pointer 20 of 20, IME 14 of 14, perf within its record and budgets
@@ -587,3 +591,99 @@ can say otherwise.
 each tree (coverage 6,174 and 6,175, no findings). The fuzzer is asked for
 600 s and takes about 1,720 s, most of it replaying its saved corpus of
 59,905 inputs before it begins; the corpus wants trimming.
+
+---
+
+## 14. Selection and copy built (2026-11-03)
+
+**Gilbert, on word selection** (2026-11-03): the characters that end a
+word for a double click must be the user's to set, at least in part: users
+differ on whether `=` and other punctuation belong to a word on a command
+line, and he has had to change it in PuTTY before. `[selection]
+word_boundaries` in the config is that set, Ghostty's model
+(`selection-word-chars`): a run of cells that are all boundaries or all
+not is a word, so `===` is a word of its own. The default is Ghostty's,
+tab, space and ``'"│`|:;,()[]{}<>$``; `=` is not in it, so `a=b` is one word
+until it is added.
+
+**The core** gives a selection's text and its words and lines, by
+absolute rows (`Vt.Point`: `rowsPushed` plus the row on the screen), so a
+selection stays on its text as output scrolls it:
+
+- `Vt.selectionText`: the cells between two points, a row that wraps
+  joined to the next, a newline after any other, the blanks at a line's
+  end dropped, a wide character's tail and a spacer at a row's end
+  skipped, a cluster read whole; rows in the pages read from them.
+- `Vt.wordAt`: Ghostty's `Screen.selectWord`, across a row that wraps; a
+  wide character's tail is its head and a spacer at a row's end is the
+  character it moved to the next row.
+- `Vt.lineAt`: the rows from one that does not wrap to the next that does
+  not, without the blanks at either end. Ghostty's `selectLine` also
+  stops at a change of OSC 133 content (prompt, input, output) within a
+  line; the core keeps prompt marks by row, not by cell, so it does not.
+- `Vt.rowsHash`: a hash of rows still on the screen, for the highlight.
+
+`rowsBetween`, which `Vt.viewAt` reads its rows through now, reads rows
+for all of them. Writing them turned up one trap: `Array.get` with a
+negative index counts from the end of the array (core's documentation says
+so), and `wordAt`'s first version walked left from column 0 into the row's
+last cells. Every `Array.get` on an index the core computes by subtracting
+was read again: the rest are guarded, or reach -1 only on an empty line
+with one start (`Resize.promptIn`), where -1 and 0 are the same element.
+
+**The selection gate** (`harness/select.py`, `corpus/select/`) answers
+queries of a case's terminal and pins them: wrapped lines joined, blanks
+dropped, either order, words on one row and across a wrap, `=` added as
+a boundary, runs of boundaries, a blank cell; wide characters, a spacer at
+a row's end, a combining mark; rows in a page, across a page and the ring,
+and above the oldest row. 3 cases, 30 queries.
+
+**The highlight**: a frame with a selection on the screen carries a
+highlight record (`0x05`, its first and last cell) before its runs, and
+the C draws a run's cells in that range in a copy of their style with the
+foreground and background swapped (the style table's second half, from
+65,536); a cursor's cell keeps the cursor's colours. The shadow marks a
+selected cell (bit 55), so a cell the selection takes or leaves is drawn
+again. Style ids are as they were: giving a selected cell an id bit of its
+own would have halved the styles the core can hold (`styleMax`), which
+never frees one (vt-core). The view gate draws a case highlighted
+(`highlight.txt`): `view-highlight`, a highlight over a bold red word, a
+wide character and the cursor, moved, kept and taken away; 345 cases
+pass. A screenshot on Xvfb shows a red word's colours swapped and the rest
+of two rows in the default colours swapped.
+
+**The window**: `X11.select` gives the C the text and the window owns
+PRIMARY or CLIPBOARD from the time of the last event it had (ICCCM 2.1).
+The C answers TARGETS, TIMESTAMP, UTF8_STRING, `text/plain;charset=utf-8`,
+TEXT, and STRING as Latin-1 with `?` for the rest, from its own copy and
+never by asking Geng; text over 256 KB goes as INCR (§5's piece), up to
+eight transfers at once, each piece sent when its requestor deletes the
+last. A `SelectionClear` is recorded (kind 10).
+
+**`Main`**: with no program reporting the mouse, or with Shift, the left
+button selects: a press starts at its cell; a second and third press
+within 500 ms on the same cell select the word and the line; a drag moves
+the head, by words or lines when it began so, keeping the first word or
+line on the far side; letting go makes the text the window's PRIMARY, and
+a press and release with no drag takes the highlight away and leaves
+PRIMARY as it was, as xterm does. Ctrl+Shift+C gives the selection to
+CLIPBOARD, and is visiterm's with or without one. The highlight goes on a
+resize, when the screen it was made on is no longer up, when another
+program takes PRIMARY, and when a row of it still on the screen changes
+(each row's hash taken when it was made; rows that scrolled off do not
+change). A drag past the window's edge stops at the edge: the view does
+not scroll with it yet.
+
+**The pointer gate** gains ten cases that read the selections back with
+xclip: a drag, one over two rows either way, a click after it, a double
+click, a double click and drag, a triple click, Ctrl+Shift+C, Shift with
+mouse reports on (nothing reported, the text selected), and a selection of
+the whole scrollback, 320,000 bytes of 5,000 lines, which xclip reads
+whole through INCR (the view taken to the top with Shift+Home, the button
+pressed, the view taken down with Shift+End, the button let go). 30 cases
+pass.
+
+**Gates for §14**: replay 325 of 325, view 345 of 345, select 3 of 3,
+keys 300,000, mouse 200,000, charset 17 lines, pixels 36 of 36, pointer 30
+of 30, IME 14 of 14, perf within its record and budgets, the differential
+fuzzer clean (coverage 6,175, no findings).

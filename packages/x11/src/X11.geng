@@ -1,6 +1,6 @@
 module X11 exposing
     ( Settings, Cell, open
-    , draw, shot, setTitle, spot, zoom, motion
+    , draw, shot, setTitle, spot, zoom, motion, select, Selection(..)
     , events, take, Event(..), PointerEvent
     )
 
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, motion, events, take, Event, PointerEvent
+@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, motion, select, Selection, events, take, Event, PointerEvent
 
 -}
 
@@ -136,6 +136,33 @@ motion all =
 motionExtern : Int -> Task x Int
 
 
+{-| X's two selections (`docs/phase3-select.md` §5, `docs/user/copy-and-paste.md`). -}
+type Selection
+    = Primary
+    | Clipboard
+
+
+{-| The window owns a selection with this text, and the C answers every
+program that asks for it from its own copy, without the loop: as UTF-8,
+as Latin-1 for `STRING`, in INCR pieces when it is large. -}
+select : Selection -> String -> Task x {}
+select which text =
+    selectExtern
+        (when which is
+            Primary ->
+                0
+
+            Clipboard ->
+                1
+        )
+        (Bytes.fromString text)
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "visiterm_x11_select")
+selectExtern : Int -> Bytes -> Task x Int
+
+
 {-| The font at a new size in points (V50): every face sized again, the
 window kept at its size in pixels, so a `Resized` follows with the cells
 that now fit it; answers the new cell. The size is the screen's
@@ -195,6 +222,7 @@ type Event
     | PreeditDone
     | ImeReady
     | Pointer PointerEvent
+    | SelectionLost Selection
 
 
 {-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
@@ -311,6 +339,21 @@ decode b at acc =
 
             8 ->
                 decode b (at + 1) (Array.pushLast ImeReady acc)
+
+            10 ->
+                decode b
+                    (at + 2)
+                    (Array.pushLast
+                        (SelectionLost
+                            (if byte 1 == 1 then
+                                Clipboard
+
+                             else
+                                Primary
+                            )
+                        )
+                        acc
+                    )
 
             9 ->
                 let

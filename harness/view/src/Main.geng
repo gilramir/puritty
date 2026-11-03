@@ -13,7 +13,10 @@ commas, draws a frame more for each after the file is fed, the view
 scrolled back that many rows (`Vt.viewAt`, `View.frameBack`; 0 the screen
 again). `harness/view.py` decodes the lists and holds them to their pins.
 
-usage: core-view COLS ROWS FILE CHUNK [RESIZES [FOCUS [PREEDIT [BACKS]]]]
+HIGHLIGHTS, `FROM:TO` items joined by commas, draws a frame more for each
+after those, a selection highlighted (phase3-select.md §14).
+
+usage: core-view COLS ROWS FILE CHUNK [RESIZES [FOCUS [PREEDIT [BACKS [HIGHLIGHTS]]]]]
 
 -}
 
@@ -66,6 +69,21 @@ feedAll bytes chunk resizes at r =
                 feedAll bytes chunk resizes stop (framed { r | term = Vt.feed (Bytes.slice at stop bytes) r.term })
 
 
+{-| A frame for each highlight, `FROM:TO`, in turn. -}
+highlighted : Array View.Highlight -> (moved r : Run) -> Run
+highlighted hls r =
+    when Array.first hls is
+        Nothing ->
+            r
+
+        Just hl ->
+            let
+                f =
+                    View.frameWith View.defaultLook r.focus r.preedit hl r.term r.shadow
+            in
+            highlighted (Array.dropFirst 1 hls) { r | shadow = f.shadow, out = Builder.pushLast ("frame " ++ Bytes.toHexString { padding = True } f.list ++ "\n") r.out }
+
+
 {-| A frame for each offset of the scrollback, in turn. -}
 scrolled : Array Int -> (moved r : Run) -> Run
 scrolled backs r =
@@ -77,10 +95,10 @@ scrolled backs r =
             let
                 f =
                     if b > 0 then
-                        View.frameBack View.defaultLook r.focus b (Vt.viewAt b r.term) r.term r.shadow
+                        View.frameBack View.defaultLook r.focus b (Vt.viewAt b r.term) View.noHighlight r.term r.shadow
 
                     else
-                        View.frameWith View.defaultLook r.focus r.preedit r.term r.shadow
+                        View.frameWith View.defaultLook r.focus r.preedit View.noHighlight r.term r.shadow
             in
             scrolled (Array.dropFirst 1 backs) { r | shadow = f.shadow, out = Builder.pushLast ("frame " ++ Bytes.toHexString { padding = True } f.list ++ "\n") r.out }
 
@@ -90,7 +108,7 @@ framed : (moved r : Run) -> Run
 framed r =
     let
         f =
-            View.frameWith View.defaultLook r.focus r.preedit r.term r.shadow
+            View.frameWith View.defaultLook r.focus r.preedit View.noHighlight r.term r.shadow
     in
     { r | shadow = f.shadow, out = Builder.pushLast ("frame " ++ Bytes.toHexString { padding = True } f.list ++ "\n") r.out }
 
@@ -193,8 +211,20 @@ main =
                                     backs =
                                         Array.mapAndKeepJust String.toInt (String.split "," (Maybe.withDefault "" (Array.get 7 s.args)))
 
+                                    hls =
+                                        Array.mapAndKeepJust
+                                            (\item ->
+                                                when Array.mapAndKeepJust String.toInt (String.split ":" item) is
+                                                    [ a, b ] ->
+                                                        Just { from = a, to = b }
+
+                                                    _ ->
+                                                        Nothing
+                                            )
+                                            (String.split "," (Maybe.withDefault "" (Array.get 8 s.args)))
+
                                     done =
-                                        scrolled backs r
+                                        highlighted hls (scrolled backs r)
                                 in
                                 Console.write (String.join "" (Builder.toArray done.out))
                             )

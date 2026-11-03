@@ -35,6 +35,12 @@ that a misspelt one is not a setting silently left at its default:
     [program]
     command = ["htop"]            # what runs; $SHELL when left out
 
+    [selection]
+    word_boundaries = " \t'\"│`|:;,()[]{}<>$"
+                                  # the characters that end a word for a
+                                  # double click (docs/user/copy-and-paste.md);
+                                  # these are the default, Ghostty's
+
 -}
 
 import Bitwise
@@ -60,6 +66,7 @@ type alias Config =
     , scrollbackLines : Int
     , command : Array String
     , charset : Maybe String
+    , wordBoundaries : String
     }
 
 
@@ -81,6 +88,7 @@ defaults =
     , scrollbackLines = 25000
     , command = []
     , charset = Nothing
+    , wordBoundaries = "\t '\"│`|:;,()[]{}<>$"
     }
 
 
@@ -94,7 +102,7 @@ decode text =
 decoder : Decoder Config
 decoder =
     Decode.succeed
-        (\{} window font colours cursor frames scrollback program terminal ->
+        (\{} window font colours cursor frames scrollback program terminal selection ->
             { columns = window.columns
             , rows = window.rows
             , title = window.title
@@ -111,9 +119,10 @@ decoder =
             , scrollbackLines = scrollback
             , command = program
             , charset = terminal
+            , wordBoundaries = selection
             }
         )
-        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program", "terminal" ])
+        |> Decode.andMap (onlyKeys [ "window", "font", "colours", "cursor", "frames", "scrollback", "program", "terminal", "selection" ])
         |> Decode.andMap
             (section "window"
                 { columns = defaults.columns, rows = defaults.rows, title = defaults.title }
@@ -189,6 +198,16 @@ decoder =
                     -- the remote character set (cjk-and-thai.md §10.3): what
                     -- the program reads and writes; the locale's when left out
                     |> Decode.andMap (Decode.optionalField "charset" charsetName)
+                )
+            )
+        |> Decode.andMap
+            (section "selection"
+                defaults.wordBoundaries
+                (Decode.succeed (\{} w -> w)
+                    |> Decode.andMap (onlyKeys [ "word_boundaries" ])
+                    -- docs/phase3-select.md §14: Gilbert asked for it to be
+                    -- the user's; null (U+0000) is always one
+                    |> Decode.andMap (setting "word_boundaries" Decode.string defaults.wordBoundaries)
                 )
             )
 

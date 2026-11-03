@@ -1,0 +1,144 @@
+module Main exposing (main)
+
+{-| core-select: the selection gate's program (`docs/phase3-select.md`
+§14). Feeds FILE to a `Vt.Term` of COLS by ROWS (256-row pages, so a short
+case reaches them), then answers each line of QUERIES, a row of the screen
+counted from 0 at its top and negative in the scrollback:
+
+    text Y1 X1 Y2 X2     the text between the two points (Vt.selectionText)
+    word Y X [HEX]       the word at the point (Vt.wordAt), its boundaries
+                         the default or HEX's UTF-8 characters
+    line Y X             the line at the point (Vt.lineAt)
+
+A text is printed with `\` and newlines escaped; a word or line as its
+start and end, `Y,X-Y,X`, or `none`.
+
+usage: core-select COLS ROWS FILE QUERIES
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import UInt8
+import Vt
+
+
+number : Int -> Array String -> Int
+number i args =
+    Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i args))
+
+
+fromHex : String -> Bytes
+fromHex s =
+    let
+        d c =
+            let
+                n =
+                    Char.toCode c
+            in
+            if n <= 0x39 then
+                n - 0x30
+
+            else
+                Bitwise.or n 32 - 0x61 + 10
+
+        ds =
+            Array.map d (String.toArray s)
+    in
+    Array.initialize (Array.length ds // 2) 0 (\i -> UInt8.fromInt (Maybe.withDefault 0 (Array.get (2 * i) ds) * 16 + Maybe.withDefault 0 (Array.get (2 * i + 1) ds)))
+        |> Bytes.fromUInt8s
+
+
+escaped : String -> String
+escaped s =
+    s |> String.replace "\\" "\\\\" |> String.replace "\n" "\\n"
+
+
+span : Int -> Maybe { start : Vt.Point, end : Vt.Point } -> String
+span pushed found =
+    when found is
+        Just f ->
+            String.fromInt (f.start.row - pushed)
+                ++ ","
+                ++ String.fromInt f.start.col
+                ++ "-"
+                ++ String.fromInt (f.end.row - pushed)
+                ++ ","
+                ++ String.fromInt f.end.col
+
+        Nothing ->
+            "none"
+
+
+answer : Vt.Term -> String -> String
+answer t line =
+    let
+        w =
+            String.words line
+
+        pushed =
+            Vt.rowsPushed t
+
+        point i =
+            { row = pushed + number i w, col = number (i + 1) w }
+    in
+    when Array.first w is
+        Just "text" ->
+            line ++ " => \"" ++ escaped (Vt.selectionText (point 1) (point 3) t) ++ "\""
+
+        Just "word" ->
+            let
+                boundaries =
+                    when Array.get 3 w is
+                        Just hex ->
+                            Array.map Char.toCode (String.toArray (Bytes.toStringLossy (fromHex hex)))
+
+                        Nothing ->
+                            Vt.defaultWordBoundaries
+            in
+            line ++ " => " ++ span pushed (Vt.wordAt boundaries (point 1) t)
+
+        Just "line" ->
+            line ++ " => " ++ span pushed (Vt.lineAt (point 1) t)
+
+        _ ->
+            line ++ " => ?"
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                let
+                    path i =
+                        Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get i s.raw))
+                in
+                Task.map2 (\input queries -> { input = input, queries = queries })
+                    (Os.File.readFile s.perm (path 2))
+                    (Os.File.readFile s.perm (path 3))
+                    |> Task.andThen
+                        (\f ->
+                            let
+                                cols =
+                                    number 0 s.args
+
+                                rows =
+                                    number 1 s.args
+
+                                term =
+                                    Vt.feed f.input (Vt.new { cols = cols, rows = rows, scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = 25000 }, pageRows = 256, checksums = False, cellWidth = 10, cellHeight = 20 })
+                            in
+                            Bytes.toStringLossy f.queries
+                                |> String.lines
+                                |> Array.keepIf (\l -> String.trim l /= "" && not (String.startsWith "#" l))
+                                |> Array.map (answer term)
+                                |> String.join "\n"
+                                |> (\out -> Console.write (out ++ "\n"))
+                        )
+                    |> Task.onError (\_ -> Console.write "core-select: cannot read a file\n")
+            )
