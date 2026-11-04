@@ -982,3 +982,37 @@ which is what `coalesce` got wrong. Against today, it takes the 16 MB paste
 from 3.1 s to under a millisecond, filling the reply cap from 1.5 s to
 8 ms, and a growing queue under small writes from 1.5 s to 14 ms. Not
 built: Gilbert to decide.
+
+## 20. V51 built: the output queue is a two-list queue (2026-11-04)
+
+**V51 · What visiterm sends the program waits in a two-list queue of
+pieces**, Gilbert's choice from §19. `app/src/Outbox.geng`: a piece is
+consed onto `back`, written from `front`, and `back` is reversed onto
+`front` when `front` is empty or is one small piece, so every piece is moved
+once. Before a write a first piece under 4 KB is joined with those after
+it, up to 64 KB, and kept joined; the rest of a piece the pty took part of
+goes back on `front`. The queue keeps its size in bytes, which `feed`'s
+`replyCap` test and the loop's tests read. `Main`'s `send`, `sendRaw` and
+`flush` call it, and nothing else in `Main` changed.
+
+**Measured in visiterm** on Xvfb, V48's case (§11 of `phase3-input.md`): a
+program on a raw terminal writes N cursor-position requests, reads none of
+the replies, and exits with status 3. Wall time to visiterm's exit, which is
+3 every time:
+
+| requests | before | after |
+|---:|---:|---:|
+| 0 | 22 ms | 21 ms |
+| 100,000 | 2,447 ms | 40 ms |
+| 400,000 | 6,832 ms | 65 ms |
+| 1,000,000 | 6,896 ms | 116 ms |
+
+Past about 87,000 requests the reply cap's 1 MiB is full and replies are
+dropped, which is why the old queue's time levels off: it is the cap's fill,
+each reply copying all that was queued. §19's probe gives the rest: a 16 MB
+paste and the reports after it from 3.1 s to under a millisecond.
+
+**Gates for §20**: pointer 51 of 51, pixels 36 of 36, IME 14 of 14, the
+gates that run the window; the core's are untouched by `Main`.
+`Outbox.geng` and the probe are as `geng fmt` leaves them; `Main.geng` was
+not formatted before and is left so.

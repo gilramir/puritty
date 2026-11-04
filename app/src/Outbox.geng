@@ -1,0 +1,171 @@
+module Outbox exposing
+    ( Outbox
+    , empty
+    , isEmpty
+    , offer
+    , push
+    , size
+    , written
+    )
+
+{-| What visiterm sends the program, queued until the pty takes it
+(docs/phase3-select.md §19, V48): keys, the core's replies, focus and mouse
+reports, pastes.
+
+A two-list queue of pieces (Okasaki's): a piece is added to `back`, written
+from `front`, and `back` is reversed onto `front` when `front` runs out or
+is down to one small piece. Every operation is O(1) amortized: a piece is
+moved from `back` to `front` once. The queue it replaces was one `Bytes`
+that `Bytes.flatten` copied whole at every addition, so a 16 MB paste and the
+reports after it took 3.1 s; this takes under a millisecond.
+
+Before a write, a small first piece is joined with the pieces after it, up
+to 64 KB, and the joined piece kept, so that a queue of 12-byte reports is
+written in one call and each byte is joined once. The rest of a piece the pty
+took part of goes back on `front`, which a cons list does in O(1).
+-}
+
+import Bytes exposing (Bytes)
+
+
+type Outbox
+    = Outbox { front : Pieces, back : Pieces, size : Int }
+
+
+type Pieces
+    = Nil
+    | Cons { head : Bytes, tail : Pieces }
+
+
+empty : Outbox
+empty =
+    Outbox { front = Nil, back = Nil, size = 0 }
+
+
+isEmpty : Outbox -> Bool
+isEmpty (Outbox o) =
+    o.size == 0
+
+
+{-| How many bytes wait. -}
+size : Outbox -> Int
+size (Outbox o) =
+    o.size
+
+
+{-| `bytes` queued after the rest. -}
+push : Bytes -> Outbox -> Outbox
+push bytes (Outbox o) =
+    if Bytes.isEmpty bytes then
+        Outbox o
+
+    else
+        Outbox { o | back = Cons { head = bytes, tail = o.back }, size = o.size + Bytes.length bytes }
+
+
+{-| The bytes to offer the pty next, and the queue to hand `written` after:
+the first piece, joined first with those after it when it is under 4 KB. -}
+offer : Outbox -> { bytes : Bytes, outbox : Outbox }
+offer (Outbox o) =
+    let
+        -- back moved over, each piece once, when front is empty or is one
+        -- small piece that wants what comes after it
+        settled =
+            when o.front is
+                Nil ->
+                    { front = reverseOnto o.back Nil, back = Nil }
+
+                Cons c ->
+                    when c.tail is
+                        Nil ->
+                            if Bytes.length c.head < smallPiece then
+                                { front = Cons { head = c.head, tail = reverseOnto o.back Nil }, back = Nil }
+
+                            else
+                                { front = o.front, back = o.back }
+
+                        _ ->
+                            { front = o.front, back = o.back }
+
+        front =
+            settled.front
+
+        joined =
+            when front is
+                Cons c ->
+                    if Bytes.length c.head >= smallPiece then
+                        front
+
+                    else
+                        let
+                            t =
+                                leading front 0 []
+                        in
+                        Cons { head = Bytes.flatten t.taken, tail = t.rest }
+
+                Nil ->
+                    front
+    in
+    { bytes =
+        when joined is
+            Cons c ->
+                c.head
+
+            Nil ->
+                Bytes.empty
+    , outbox = Outbox { front = joined, back = settled.back, size = o.size }
+    }
+
+
+{-| The queue once the pty has taken `n` bytes of what `offer` gave. -}
+written : Int -> Outbox -> Outbox
+written n (Outbox o) =
+    Outbox { o | front = drop n o.front, size = o.size - n }
+
+
+smallPiece : Int
+smallPiece =
+    4096
+
+
+{-| The leading pieces, up to 64 KB (the first always), and what is left. -}
+leading : Pieces -> Int -> Array Bytes -> { taken : Array Bytes, rest : Pieces }
+leading pieces count acc =
+    when pieces is
+        Cons c ->
+            if count > 0 && count + Bytes.length c.head > 65536 then
+                { taken = acc, rest = pieces }
+
+            else
+                leading c.tail (count + Bytes.length c.head) (Array.pushLast c.head acc)
+
+        Nil ->
+            { taken = acc, rest = pieces }
+
+
+drop : Int -> Pieces -> Pieces
+drop n pieces =
+    if n <= 0 then
+        pieces
+
+    else
+        when pieces is
+            Cons c ->
+                if Bytes.length c.head <= n then
+                    drop (n - Bytes.length c.head) c.tail
+
+                else
+                    Cons { head = Bytes.slice n (Bytes.length c.head) c.head, tail = c.tail }
+
+            Nil ->
+                pieces
+
+
+reverseOnto : Pieces -> Pieces -> Pieces
+reverseOnto from onto =
+    when from is
+        Nil ->
+            onto
+
+        Cons c ->
+            reverseOnto c.tail (Cons { head = c.head, tail = onto })

@@ -37,6 +37,7 @@ import Argparse.Program
 import Bitwise
 import Bytes exposing (Bytes)
 import Config exposing (Config)
+import Outbox exposing (Outbox)
 import Console
 import Dict exposing (Dict)
 import Int64
@@ -72,7 +73,7 @@ type alias Model =
     , title : String
     , closed : Bool
     , lost : Bool
-    , out : Bytes
+    , out : Outbox
     , preedit : { points : Array Int, feedback : Array Int, caret : Int }
     , imeLog : Bool
     , points : Int
@@ -328,7 +329,7 @@ run imeLog charset config cell child =
                             , title = ""
                             , closed = False
                             , lost = False
-                            , out = Bytes.empty
+                            , out = Outbox.empty
                             , preedit = { points = [], feedback = [], caret = 0 }
                             , imeLog = imeLog
                             , points = config.points
@@ -443,36 +444,29 @@ send text m =
         bytes =
             encoded.bytes
     in
-    if Bytes.isEmpty m.out then
-        { m | out = bytes, replaced = m.replaced + encoded.replaced }
-
-    else
-        { m | out = Bytes.flatten [ m.out, bytes ], replaced = m.replaced + encoded.replaced }
+    { m | out = Outbox.push bytes m.out, replaced = m.replaced + encoded.replaced }
 
 
 {-| Bytes queued as they are, in no character set: a mouse report, whose
 legacy forms are raw bytes. -}
 sendRaw : Bytes -> (moved m : Model) -> Model
 sendRaw bytes m =
-    if Bytes.isEmpty bytes then
-        m
-
-    else if Bytes.isEmpty m.out then
-        { m | out = bytes }
-
-    else
-        { m | out = Bytes.flatten [ m.out, bytes ] }
+    { m | out = Outbox.push bytes m.out }
 
 
 {-| The queue written as far as the pty takes it. -}
 flush : File.Handle -> (moved m : Model) -> Task Error Model
 flush fd m =
-    if Bytes.isEmpty m.out then
+    if Outbox.isEmpty m.out then
         Task.succeed m
 
     else
-        File.writeSome m.out fd
-            |> Task.map (\n -> { m | out = Bytes.slice n (Bytes.length m.out) m.out })
+        let
+            next =
+                Outbox.offer m.out
+        in
+        File.writeSome next.bytes fd
+            |> Task.map (\n -> { m | out = Outbox.written n next.outbox })
 
 
 loop : Process.Terminal -> File.Handle -> (moved m00 : Model) -> Task Error Model
@@ -518,7 +512,7 @@ race terminal fd m0 =
                             [ Sleep.sleep (toFloat (max 0 (at - ms0))) |> Task.map (\_ -> Due) ]
 
                     writing =
-                        if Bytes.isEmpty m.out then
+                        if Outbox.isEmpty m.out then
                             []
 
                         else
@@ -634,7 +628,7 @@ feed fd chunk0 ms m =
                 0
     in
     Task.succeed
-        (Array.foldl (\r acc -> if Bytes.length acc.out >= replyCap then acc else send r acc)
+        (Array.foldl (\r acc -> if Outbox.size acc.out >= replyCap then acc else send r acc)
             { m
                 | term = taken.term
                 , clips = m.clips ++ taken.clips
