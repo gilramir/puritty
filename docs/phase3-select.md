@@ -932,11 +932,53 @@ joining even a single large piece copied it at every write (3,620 ms at
 took little of cost 10.5 s for a million turns. Keeping the joined piece
 at the front fixed both.
 
-**What the fix would be**, in `app/src/Main.geng`: `out : Array Bytes`
+**The two-list queue, and an array with an offset** (asked the same day:
+a FIFO grows at its end and shrinks at its front, so is a linked list
+better?). Two more shapes, with `coalesce`'s joining:
+
+- `twolist`: Okasaki's queue on cons lists of pieces, added to `back`,
+  taken from `front`, `back` reversed onto `front` when `front` is empty or
+  is one small piece; the rest of a piece a write took part of is consed
+  back on `front`;
+- `offset`: the array, with an offset into its first piece in place of
+  putting the rest back, the piece popped once it is all written.
+
+Each writes the same bytes as `flatten` on every load, at writes of 7,
+4,096 and 5,000 bytes (`check`). Best of three, natively:
+
+| load | `flatten` (today) | `coalesce` | `offset` | `twolist` |
+|---|---:|---:|---:|---:|
+| 1 MB paste, then 2,000 reports stalled and 2,000 at 4 KB | 74 ms, 42 MB | 2 ms, 18 MB | 0 ms, 11 MB | 0 ms, 11 MB |
+| the same, 16 MB | 3,072 ms, 132 MB | 15 ms, 108 MB | 0 ms, 52 MB | 0 ms, 51 MB |
+| the reply cap filled, nothing read | 1,508 ms, 80 MB | 8 ms, 15 MB | 9 ms, 15 MB | 8 ms, 16 MB |
+| 1,000 pieces queued, 16 million turns at 12 bytes | 3,833 ms, 14 MB | 2,240 ms, 18 MB | 1,179 ms, 18 MB | 1,198 ms, 18 MB |
+| a queue growing to 512 KB, writes of 7 bytes | 832 ms, 50 MB | 3,559 ms, 79 MB | 11 ms, 21 MB | 13 ms, 19 MB |
+| the same, to 692 KB | 1,541 ms, 52 MB | 6,002 ms, 84 MB | 13 ms, 23 MB | 14 ms, 22 MB |
+
+**What this says about an array as a queue.** Growing at the end and
+shrinking at the front is cheap on a slice: the front is given up by
+moving the view, and when the buffer is full an append copies only the
+live part into one twice its size (`geng_arr_append_mode`), so the bytes
+given up are collected. `offset` is as fast as the two-list queue on every
+load. What is not cheap is putting something back on the front of an
+array whose front was just taken: `Array.pushFirst` onto a view
+`popFirst` left copies the whole array, the pop-then-push shape of
+geng-lang's D708 at the front. `coalesce` does that at every partial
+write, and a partial write is a pty's usual answer, so it is quadratic in
+the pieces queued: 6.0 s, slower than today's `flatten`. The two-list
+queue cannot fall into it: consing the rest of a piece back on `front` is
+what a cons list is cheap at, and it costs the same on every target,
+slices or not.
+
+**What the fix would be**, in `app/src/Main.geng`, either shape: the queue
 and a count of its bytes beside it, which `feed`'s `replyCap` test reads
-in place of `Bytes.length`; `send` and `sendRaw` push the piece and add
-its length; `flush` joins a small first piece as `coalesce` does, offers
-the first piece to `writeSome`, and drops what was taken from the front,
-putting back the rest of a piece it took part of. The loop's
-`Bytes.isEmpty m.out` tests become the count's. Not built: Gilbert to
-decide.
+in place of `Bytes.length`; `send` and `sendRaw` add the piece and its
+length; `flush` joins a small first piece with what follows, up to 64 KB,
+offers the first piece to `writeSome`, and takes what was written off the
+front. The loop's `Bytes.isEmpty m.out` tests become the count's.
+**Leaning: the two-list queue.** It is as fast as `offset` everywhere
+measured, and its cost does not rest on how a slice's front behaves,
+which is what `coalesce` got wrong. Against today, it takes the 16 MB paste
+from 3.1 s to under a millisecond, filling the reply cap from 1.5 s to
+8 ms, and a growing queue under small writes from 1.5 s to 14 ms. Not
+built: Gilbert to decide.

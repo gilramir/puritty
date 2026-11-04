@@ -12,6 +12,12 @@ usage: queue MODE PASTE EVENTS STALL TAKE [check]
                   it leaves goes back on the front
        coalesce   the same, and before a write a first piece under 4 KB is
                   joined with the pieces after it, up to 64 KB, and kept so
+       offset     coalesce with an offset into the first piece in place of
+                  putting its rest back on the front: a piece is popped
+                  only when it is all written
+       twolist    coalesce's joining on Okasaki's two-list queue: cons lists,
+                  `front` taken from and `back` added to, reversed into
+                  `front` when it runs out
 
 It prints the milliseconds the loop took, the bytes written and left, and
 with `check` a sum over every byte written in order, which every mode must
@@ -28,7 +34,39 @@ import UInt8
 
 
 type alias Queue =
-    { flat : Bytes, pieces : Array Bytes }
+    { flat : Bytes, pieces : Array Bytes, at : Int, front : Stack, back : Stack }
+
+
+{-| A cons list of pieces. -}
+type Stack
+    = Nil
+    | Cons { head : Bytes, tail : Stack }
+
+
+reverseOnto : Stack -> Stack -> Stack
+reverseOnto from onto =
+    when from is
+        Nil ->
+            onto
+
+        Cons c ->
+            reverseOnto c.tail (Cons { head = c.head, tail = onto })
+
+
+{-| The leading pieces of the stack, up to 64 KB (the first always), and what
+is left. -}
+takeLeading : Stack -> Int -> Array Bytes -> { taken : Array Bytes, rest : Stack }
+takeLeading st size acc =
+    when st is
+        Cons c ->
+            if size > 0 && size + Bytes.length c.head > 65536 then
+                { taken = acc, rest = st }
+
+            else
+                takeLeading c.tail (size + Bytes.length c.head) (Array.pushLast c.head acc)
+
+        Nil ->
+            { taken = acc, rest = st }
 
 
 {-| The bytes a report is, numbered so a lost or reordered one shows. -}
@@ -39,7 +77,10 @@ report i =
 
 send : String -> Bytes -> Queue -> Queue
 send mode bytes q =
-    if mode == "flatten" then
+    if mode == "twolist" then
+        { q | back = Cons { head = bytes, tail = q.back } }
+
+    else if mode == "flatten" then
         if Bytes.isEmpty q.flat then
             { q | flat = bytes }
 
@@ -55,7 +96,59 @@ the first is under 4 KB, and kept joined: a byte is joined once, not again
 at every write the pty takes less of. -}
 joined : String -> Queue -> Queue
 joined mode q =
-    if mode /= "coalesce" then
+    if mode == "twolist" then
+        let
+            -- back moved over, each piece once, when front is empty or is
+            -- one small piece that wants what comes after it
+            q1 =
+                when q.front is
+                    Nil ->
+                        { q | front = reverseOnto q.back Nil, back = Nil }
+
+                    Cons c ->
+                        when c.tail is
+                            Nil ->
+                                if Bytes.length c.head < 4096 then
+                                    { q | front = Cons { head = c.head, tail = reverseOnto q.back Nil }, back = Nil }
+
+                                else
+                                    q
+
+                            _ ->
+                                q
+        in
+        when q1.front is
+            Cons c ->
+                if Bytes.length c.head >= 4096 then
+                    q1
+
+                else
+                    let
+                        t =
+                            takeLeading q1.front 0 []
+                    in
+                    { q1 | front = Cons { head = Bytes.flatten t.taken, tail = t.rest } }
+
+            Nil ->
+                q1
+
+    else if mode == "offset" then
+        when Array.first q.pieces is
+            Just p ->
+                if Bytes.length p - q.at >= 4096 || Array.length q.pieces < 2 then
+                    q
+
+                else
+                    let
+                        front =
+                            leading (Array.set 0 (Bytes.slice q.at (Bytes.length p) p) q.pieces) 0 0 []
+                    in
+                    { q | pieces = Array.pushFirst (Bytes.flatten front) (Array.dropFirst (Array.length front) q.pieces), at = 0 }
+
+            Nothing ->
+                q
+
+    else if mode /= "coalesce" then
         q
 
     else
@@ -81,6 +174,22 @@ offer mode q =
     if mode == "flatten" then
         q.flat
 
+    else if mode == "twolist" then
+        when q.front is
+            Cons c ->
+                c.head
+
+            Nil ->
+                Bytes.empty
+
+    else if mode == "offset" then
+        when Array.first q.pieces is
+            Just p ->
+                Bytes.slice q.at (Bytes.length p) p
+
+            Nothing ->
+                Bytes.empty
+
     else
         Maybe.withDefault Bytes.empty (Array.first q.pieces)
 
@@ -104,8 +213,41 @@ taken mode n q =
     if mode == "flatten" then
         { q | flat = Bytes.slice n (Bytes.length q.flat) q.flat }
 
+    else if mode == "twolist" then
+        { q | front = dropStack n q.front }
+
+    else if mode == "offset" then
+        when Array.first q.pieces is
+            Just p ->
+                if q.at + n >= Bytes.length p then
+                    { q | pieces = Array.dropFirst 1 q.pieces, at = 0 }
+
+                else
+                    { q | at = q.at + n }
+
+            Nothing ->
+                q
+
     else
         { q | pieces = drop n q.pieces }
+
+
+dropStack : Int -> Stack -> Stack
+dropStack n st =
+    if n <= 0 then
+        st
+
+    else
+        when st is
+            Cons c ->
+                if Bytes.length c.head <= n then
+                    dropStack (n - Bytes.length c.head) c.tail
+
+                else
+                    Cons { head = Bytes.slice n (Bytes.length c.head) c.head, tail = c.tail }
+
+            Nil ->
+                st
 
 
 {-| `n` bytes off the front of the pieces. -}
@@ -188,7 +330,17 @@ turn mode check events stall take i st =
 
 left : Queue -> Int
 left q =
-    Bytes.length q.flat + Array.foldl (\p n -> n + Bytes.length p) 0 q.pieces
+    Bytes.length q.flat + Array.foldl (\p n -> n + Bytes.length p) 0 q.pieces - q.at + stackBytes q.front 0 + stackBytes q.back 0
+
+
+stackBytes : Stack -> Int -> Int
+stackBytes st n =
+    when st is
+        Cons c ->
+            stackBytes c.tail (n + Bytes.length c.head)
+
+        Nil ->
+            n
 
 
 main : Task Never {}
@@ -208,13 +360,16 @@ main =
 
                     start =
                         if mode == "flatten" then
-                            { flat = paste, pieces = [] }
+                            { flat = paste, pieces = [], at = 0, front = Nil, back = Nil }
+
+                        else if mode == "twolist" then
+                            { flat = Bytes.empty, pieces = [], at = 0, front = if Bytes.isEmpty paste then Nil else Cons { head = paste, tail = Nil }, back = Nil }
 
                         else if Bytes.isEmpty paste then
-                            { flat = Bytes.empty, pieces = [] }
+                            { flat = Bytes.empty, pieces = [], at = 0, front = Nil, back = Nil }
 
                         else
-                            { flat = Bytes.empty, pieces = [ paste ] }
+                            { flat = Bytes.empty, pieces = [ paste ], at = 0, front = Nil, back = Nil }
 
                     check =
                         Array.get 5 e.args == Just "check"
