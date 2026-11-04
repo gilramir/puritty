@@ -14,5 +14,5 @@ PATH=$R/.devbox/nix/profile/default/bin:$PATH \
 GENG_BIN=$C/geng GENG_CORE=$R/vendor/gren-lang/core GENG_CC=$R/.devbox/nix/profile/default/bin/clang NIX_HARDENING_ENABLE= \
 GENG_PKG_CONFIG=$(command -v pkg-config) \
 PKG_CONFIG_PATH=$I:$PKG_CONFIG_PATH PKG_CONFIG_PATH_FOR_TARGET=$I:$PKG_CONFIG_PATH_FOR_TARGET \
-GENG_CORE_PASSES=specialize,foldspec,transient,arraypop,mono,inline,float,floatin,mutual,case,tailcall,inplace,drop \
+GENG_CORE_PASSES=specialize,foldspec,transient,arraypop,mono,inline,float,floatin,mutual,case,tailcall,inplace,drop,appends \
   exec node $C/app make Main --output=visiterm "$@"
