@@ -879,3 +879,64 @@ then drops. Its D1054 (Gilbert's answer, §MP9) is that geng-lang adds no
 owned array for them. visiterm decodes only the rows a frame shows,
 straight into the view's screen, which is what such an array would have
 freed. Not built; measured against the census when it is.
+
+## 19. The output queue's shape (2026-11-04, measured, not built)
+
+geng-lang's quadratic shapes survey (`m4-quadratic.md` §QD10) found V48's
+queue (§11 of `phase3-input.md`) copying itself: `send` and `sendRaw` add
+to `out` with `Bytes.flatten [ m.out, bytes ]`, which copies the whole
+queue for every key, report, reply or paste added while anything is still
+queued. Normally the queue is empty and this costs nothing. It grows while
+the program is not reading: busy, stopped, or blocked on output visiterm
+has not read yet.
+
+**The probe**, `probes/queue/`: `Main.send`'s queue, a paste in it, then
+12-byte reports, one write tried after each, as the loop tries one every
+turn. The pty takes nothing while the program is "stalled", and then a
+fixed count a write. Natively, at `-O2` with core-bench's passes, three
+shapes:
+
+- `flatten`: one `Bytes`, as today;
+- `pieces`: an `Array Bytes`, each write offering its first piece;
+- `coalesce`: the same array, and before a write a first piece under 4 KB
+  is joined with the ones after it, up to 64 KB, and kept joined, so a
+  byte is joined once.
+
+`flatten` and `coalesce` write the same bytes in the same order (a sum
+over every byte written, `check`, agrees).
+
+| load | `flatten` | `coalesce` |
+|---|---:|---:|
+| a 1 MB paste, 2,000 reports while stalled, 2,000 draining at 4 KB | 77 ms, 42.8 MB | 2 ms, 17.4 MB |
+| the same, 4 MB | 393 ms, 58.1 MB | 8 ms, 34.2 MB |
+| the same, 16 MB | 3,106 ms, 111.7 MB | 15 ms, 106.9 MB |
+| the reply cap filled: 87,381 replies, nothing read (§11's test) | 1,620 ms, 68.0 MB | 8 ms, 15.6 MB |
+
+`flatten`'s cost is the queue's length for every addition, so a paste of n
+bytes and k reports after it costs n·k: 16 MB and 2,000 reports is 32 GB
+copied. The reply cap's 1 MiB filled 12 bytes at a time is about 46 GB.
+
+**Is an array a queue here?** Pushed at the back and taken from the front
+with `popFirst`, natively a slice: the probe kept about 1,000 pieces
+queued over 1, 4 and 16 million turns, 192 MB through it, with the pty
+taking 12 bytes a write. RSS stayed at 13–18 MB in every shape and the
+time was linear in the turns (`coalesce` 140, 559, 2,246 ms; `pieces` 65,
+253, 1,005 ms; `flatten` 241, 952, 3,785 ms, copying its 12 KB queue
+every turn). A consumed front is not kept alive, and nothing grows. What
+does not work is offering one piece a write (`pieces`): a pty that would
+take 4 KB is offered 12 bytes, so a queue of small pieces never catches
+up (120,300 bytes still queued at the end of a run `coalesce` drains).
+The first versions of `coalesce` were slow for the same kind of reason:
+joining even a single large piece copied it at every write (3,620 ms at
+16 MB), and joining the same small pieces again at every write the pty
+took little of cost 10.5 s for a million turns. Keeping the joined piece
+at the front fixed both.
+
+**What the fix would be**, in `app/src/Main.geng`: `out : Array Bytes`
+and a count of its bytes beside it, which `feed`'s `replyCap` test reads
+in place of `Bytes.length`; `send` and `sendRaw` push the piece and add
+its length; `flush` joins a small first piece as `coalesce` does, offers
+the first piece to `writeSome`, and drops what was taken from the front,
+putting back the rest of a piece it took part of. The loop's
+`Bytes.isEmpty m.out` tests become the count's. Not built: Gilbert to
+decide.

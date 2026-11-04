@@ -1,0 +1,244 @@
+module Main exposing (main)
+
+{-| What visiterm's output queue costs, by its shape (docs/phase3-select.md
+§19): `Main.send`'s queue, a paste in it, and EVENTS reports of 12 bytes
+after it, a write tried after each one, as the loop tries one every turn.
+The pty takes nothing for the first STALL writes, as a program that is not
+reading, and TAKE bytes at each one after.
+
+usage: queue MODE PASTE EVENTS STALL TAKE [check]
+  MODE flatten    one Bytes, Bytes.flatten [ out, bytes ] at each send (today's)
+       pieces     an Array Bytes; a write takes from the first piece, and what
+                  it leaves goes back on the front
+       coalesce   the same, and before a write a first piece under 4 KB is
+                  joined with the pieces after it, up to 64 KB, and kept so
+
+It prints the milliseconds the loop took, the bytes written and left, and
+with `check` a sum over every byte written in order, which every mode must
+agree on.
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Env
+import Task exposing (Task)
+import Time
+import UInt8
+
+
+type alias Queue =
+    { flat : Bytes, pieces : Array Bytes }
+
+
+{-| The bytes a report is, numbered so a lost or reordered one shows. -}
+report : Int -> Bytes
+report i =
+    Bytes.fromString ("\u{001B}[<0;" ++ String.padLeft 6 '0' (String.fromInt (modBy 1000000 i)) ++ "M")
+
+
+send : String -> Bytes -> Queue -> Queue
+send mode bytes q =
+    if mode == "flatten" then
+        if Bytes.isEmpty q.flat then
+            { q | flat = bytes }
+
+        else
+            { q | flat = Bytes.flatten [ q.flat, bytes ] }
+
+    else
+        { q | pieces = Array.pushLast bytes q.pieces }
+
+
+{-| For `coalesce`, the leading pieces joined into one, up to 64 KB, when
+the first is under 4 KB, and kept joined: a byte is joined once, not again
+at every write the pty takes less of. -}
+joined : String -> Queue -> Queue
+joined mode q =
+    if mode /= "coalesce" then
+        q
+
+    else
+        when Array.first q.pieces is
+            Just p ->
+                if Bytes.length p >= 4096 || Array.length q.pieces < 2 then
+                    q
+
+                else
+                    let
+                        front =
+                            leading q.pieces 0 0 []
+                    in
+                    { q | pieces = Array.pushFirst (Bytes.flatten front) (Array.dropFirst (Array.length front) q.pieces) }
+
+            Nothing ->
+                q
+
+
+{-| What a write offers the pty, and the queue once `n` of it are taken. -}
+offer : String -> Queue -> Bytes
+offer mode q =
+    if mode == "flatten" then
+        q.flat
+
+    else
+        Maybe.withDefault Bytes.empty (Array.first q.pieces)
+
+
+leading : Array Bytes -> Int -> Int -> Array Bytes -> Array Bytes
+leading pieces i size acc =
+    when Array.get i pieces is
+        Just p ->
+            if size > 0 && size + Bytes.length p > 65536 then
+                acc
+
+            else
+                leading pieces (i + 1) (size + Bytes.length p) (Array.pushLast p acc)
+
+        Nothing ->
+            acc
+
+
+taken : String -> Int -> Queue -> Queue
+taken mode n q =
+    if mode == "flatten" then
+        { q | flat = Bytes.slice n (Bytes.length q.flat) q.flat }
+
+    else
+        { q | pieces = drop n q.pieces }
+
+
+{-| `n` bytes off the front of the pieces. -}
+drop : Int -> Array Bytes -> Array Bytes
+drop n pieces =
+    if n <= 0 then
+        pieces
+
+    else
+        when Array.popFirst pieces is
+            Just { first, rest } ->
+                if Bytes.length first <= n then
+                    drop (n - Bytes.length first) rest
+
+                else
+                    Array.pushFirst (Bytes.slice n (Bytes.length first) first) rest
+
+            Nothing ->
+                pieces
+
+
+type alias State =
+    { q : Queue, written : Int, sum : Int }
+
+
+sumOf : Bytes -> Int -> Int
+sumOf b s =
+    sumFrom b 0 s
+
+
+sumFrom : Bytes -> Int -> Int -> Int
+sumFrom b i s =
+    when Bytes.get i b is
+        Just x ->
+            sumFrom b (i + 1) (modBy 1000000007 (s * 31 + UInt8.toInt x))
+
+        Nothing ->
+            s
+
+
+turn : String -> Bool -> Int -> Int -> Int -> Int -> State -> State
+turn mode check events stall take i st =
+    if i >= events then
+        st
+
+    else
+        let
+            q =
+                joined mode (send mode (report i) st.q)
+
+            offered =
+                offer mode q
+
+            n =
+                if i < stall then
+                    0
+
+                else
+                    min take (Bytes.length offered)
+
+            out =
+                Bytes.slice 0 n offered
+        in
+        turn mode
+            check
+            events
+            stall
+            take
+            (i + 1)
+            { q = taken mode n q
+            , written = st.written + n
+            , sum =
+                if check then
+                    sumOf out st.sum
+
+                else
+                    st.sum
+            }
+
+
+left : Queue -> Int
+left q =
+    Bytes.length q.flat + Array.foldl (\p n -> n + Bytes.length p) 0 q.pieces
+
+
+main : Task Never {}
+main =
+    Os.Env.getEnvironment
+        |> Task.andThen
+            (\e ->
+                let
+                    arg i =
+                        Maybe.withDefault 0 (Array.get i e.args |> Maybe.andThen String.toInt)
+
+                    mode =
+                        Maybe.withDefault "flatten" (Array.get 0 e.args)
+
+                    paste =
+                        Bytes.fromString (String.repeat (arg 1) "x")
+
+                    start =
+                        if mode == "flatten" then
+                            { flat = paste, pieces = [] }
+
+                        else if Bytes.isEmpty paste then
+                            { flat = Bytes.empty, pieces = [] }
+
+                        else
+                            { flat = Bytes.empty, pieces = [ paste ] }
+
+                    check =
+                        Array.get 5 e.args == Just "check"
+                in
+                Time.monotonic
+                    |> Task.andThen
+                        (\t0 ->
+                            let
+                                st =
+                                    turn mode check (arg 2) (arg 3) (arg 4) 0 { q = start, written = 0, sum = 0 }
+                            in
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\t1 ->
+                                        Console.write
+                                            (String.fromInt (Int64.toInt (Time.inMilliseconds t1) - Int64.toInt (Time.inMilliseconds t0))
+                                                ++ " ms, written "
+                                                ++ String.fromInt st.written
+                                                ++ ", left "
+                                                ++ String.fromInt (left st.q)
+                                                ++ ", sum "
+                                                ++ String.fromInt st.sum
+                                                ++ "\n"
+                                            )
+                                    )
+                        )
+            )
