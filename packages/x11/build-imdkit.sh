@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds xcb-imdkit with visiterm's patches (docs/phase3-input.md V44) into
 # vendor/xcb-imdkit/visiterm: a shared library with an rpath, its headers,
-# and visiterm-xcb-imdkit.pc, which packages/x11 links by. The clone, made
+# and visiterm-xcb-imdkit.pc, which packages/x11 links by. The checkout, made
 # here when it is not there, is upstream's 621048bd50e8f3cbf52335f824f7b4d708a21b14.
 # Each patch in patches/xcb-imdkit-*.patch is applied once; the library is
 # built again when the set changes. Run from visiterm's devbox (libxcb,
@@ -12,9 +12,14 @@ V=$(realpath ../..)
 X=$V/vendor/xcb-imdkit
 O=$X/visiterm
 CC=/home/gram/prj/geng-lang/.devbox/nix/profile/default/bin/clang
+# The pinned commit fetched into the directory rather than cloned, so that a
+# directory already there without a clone (an earlier build's output, say)
+# does not stop it: `git clone` refuses a directory that is not empty.
 if [ ! -d "$X/.git" ]; then
-  git clone -q https://github.com/fcitx/xcb-imdkit "$X"
-  git -C "$X" checkout -q 621048bd50e8f3cbf52335f824f7b4d708a21b14
+  mkdir -p "$X"
+  git -C "$X" init -q
+  git -C "$X" fetch -q https://github.com/fcitx/xcb-imdkit 621048bd50e8f3cbf52335f824f7b4d708a21b14
+  git -C "$X" checkout -q -f FETCH_HEAD
 fi
 for p in patches/xcb-imdkit-*.patch; do
   git -C "$X" apply --reverse --check "$(realpath "$p")" 2>/dev/null || git -C "$X" apply "$(realpath "$p")"
