@@ -656,6 +656,16 @@ round trips. Port both projects' test cases.
    - The tmux layout tree becomes your split tree (n-ary, or nested binary as in
      WezTerm). Window ids (`@N`) and pane ids (`%N`) are stable.
    - **Apply every `%layout-change`**, not just the first one.
+   - **Floating and modal panes** (tmux 3.7 and 3.8, noted 2026-11-04 for
+     phase 4, `geng-plan.md`): 3.8's layout strings are a JSON subset that
+     includes floating panes, sent to a control-mode client only when it sets
+     the `new-layouts` flag; the old format, which it gets otherwise, is the
+     tiled tree alone. Parse both: the tiled tree as today, and floating panes
+     as surfaces stacked above it, by their order, each a pane like any other.
+     A window's one modal pane takes all input while it is there
+     (`pane_modal_flag`, `window_modal_pane`). The exact flag syntax, and what
+     tmux does with a floating pane for an old-layout client, are to be read
+     from tmux's source when this is built.
 3. **Sizing:**
    - `refresh-client -C WxH`, or per-window `refresh-client -C @win:WxH` on tmux 3.2+.
    - Native resizes become tmux size requests; apply pane sizes **from tmux**. Expect

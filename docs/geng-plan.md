@@ -821,6 +821,14 @@ wide (C§10.3 rule 5): the core's width table has no such setting yet.
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,
 the attach race, recorded-session tests. tmux 3.2 or later is required (Q11): an
 older tmux is refused with a message saying so, not served in a degraded mode.
+*Gilbert, 2026-11-04:* when phase 4 starts, the latest tmux is built and
+installed, and visiterm is made to work with it. tmux 3.7 added floating
+panes and 3.8 made them usable (moved and resized by command, swapped,
+joined, kept above a zoomed pane), with modal panes beside them; 3.8's
+layout strings are a JSON subset that includes floating panes, which a
+control-mode client receives only when it sets the `new-layouts` flag
+(`synthesis.md` §7.3 item 2). Floating panes need 3.7 at least, so on hosts
+with an older tmux they are not there; the 3.2 floor stays.
 
 **Phase 5 · The GPU renderer.** Local use on Mint only: on RHEL8 visiterm runs in
 ETX on a VM with no GPU (Q10), where the X11 renderer is the path. It is an
