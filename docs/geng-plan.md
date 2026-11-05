@@ -849,6 +849,17 @@ recorded there as in phase 2.
 **Phase 7 · Hardening and release.** Soak tests (§7), config reload, a crash report
 that doesn't need a debugger, and packaging for Mint and RHEL8.
 
+**Later, with the Windows product: settings in a window.** *Gilbert,
+2026-11-04:* a user should not have to edit `config.toml`, and should never
+have to restart visiterm for a change. Settings are changed in a window of
+visiterm's own and seen at once, in the running window. The file stays
+what is stored: `gren-toml` edits a document and writes it back with its
+comments and layout kept, so the window and hand edits can share one file.
+Not built until the Windows work, since the Windows visiterm is also an ssh
+client and needs ssh choices too (which host to connect to), and that is
+where the window's design is decided. Phase 7's config reload is the half
+it rests on: every setting applied to a running window.
+
 ---
 
 ## 7. Reliability and testing
