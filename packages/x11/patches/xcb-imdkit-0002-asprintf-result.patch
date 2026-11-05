@@ -1,0 +1,18 @@
+diff --git a/src/imdkit.c b/src/imdkit.c
+index 0caab5a..5369d21 100644
+--- a/src/imdkit.c
++++ b/src/imdkit.c
+@@ -247,7 +247,12 @@ bool _xcb_im_init(xcb_im_t *im) {
+     im->screen = screen;
+     im->default_screen = defaultScreen;
+     char *buf;
+-    asprintf(&buf, "@server=%s", im->serverName);
++    /* visiterm: asprintf's result read, so that a failed allocation never
++     * leaves buf to be read and freed undefined, and the build has no
++     * -Wunused-result warning; visiterm is a client and never reaches this */
++    if (asprintf(&buf, "@server=%s", im->serverName) < 0) {
++        return false;
++    }
+     const char *atom_names[] = {buf,           XIM_SERVERS,   XIM_LOCALES,
+                                 XIM_TRANSPORT, _XIM_PROTOCOL, _XIM_XCONNECT};
+     im->init = _xcb_im_init_atoms(im->conn, ARRAY_SIZE(atom_names), atom_names,
