@@ -1049,3 +1049,35 @@ arrow after `CSI ? 1000 h`, and the I-beam again after `CSI ? 1000 l`; with
 from Bibata-Modern-Classic, `/usr/share/icons/default`'s), where without it
 they were the cursor font's glyphs 152 and 68. The gates that run the window
 pass: pointer 51 of 51, pixels 36 of 36, IME 14 of 14.
+
+## 22. The palette's 16 colours in the settings (2026-11-04)
+
+Gilbert, beside Alacritty: visiterm's text was less bright. Measured from
+his screenshot, Alacritty draws `#d8d8d8` on `#181818` and visiterm
+`#c5c8c6` on `#1d1f21`, libghostty-vt's defaults, which the core takes
+because Ghostty is its oracle. Foreground and background could already be
+set (`[colours]`); the 16 named colours, which tmux's status line and `ls`
+draw with, could not.
+
+**`[colours] palette`**: up to 16 `#rrggbb` colours, the named ones from 0;
+each one left out stays libghostty-vt's, and more than 16 are refused
+("17 colours, where the palette has 16").
+
+**They are the core's**, not the renderer's alone: `Term` has `named`, the
+16 colours before a program sets one, libghostty-vt's in `new` and the
+embedder's after `Vt.withPalette`, which visiterm calls once at start.
+`paletteColour` reads it where no OSC 4 has set the colour, so the colours
+drawn, what OSC 4 answers and what OSC 104 and RIS go back to are the
+configured ones, as Ghostty does with its configured palette. A core made
+without `withPalette`, as every gate and the oracle make it, has
+libghostty-vt's.
+
+**Checked** in visiterm on Xvfb, with `palette = ["#000000", "#ff0000"]`:
+OSC 4 asks colour 1 and is answered `rgb:ffff/0000/0000`, colour 2
+libghostty-vt's `rgb:b5b5/bdbd/6868`; set to `#00ff00` it is answered so;
+after OSC 104 1, and after an OSC 4 to `#0000ff` and RIS, it is
+`rgb:ffff/0000/0000` again. Gates: replay 325 of 325, view 345 of 345,
+select 4 of 4, charset 17 lines, keys 300,000, mouse 200,000, paste
+100,000, perf within its record and budgets, the differential fuzzer clean
+for 10 minutes (coverage 6,452, no findings), pixels 36 of 36, pointer 51
+of 51, IME 14 of 14.

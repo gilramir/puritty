@@ -4,7 +4,7 @@ module Vt exposing
     , defaultPageRows, keyOptions, mouseModes
     , View, scrollbackRows, rowsPushed, viewAt, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
-    , Clip, takeClipboard
+    , Clip, takeClipboard, withPalette
     )
 
 {-| visiterm's headless terminal core (`docs/vt-core.md`).
@@ -810,6 +810,15 @@ new config0 =
     withScroll (fresh config)
 
 
+{-| The terminal with its 16 named colours as its embedder's (visiterm's
+`[colours] palette`, docs/phase3-select.md §22): the first `Array.length`
+of them, up to 16, in place of libghostty-vt's; the rest are kept. They are
+what OSC 4 answers and what OSC 104 and RIS go back to. -}
+withPalette : Array Int -> (moved t : Term) -> Term
+withPalette colours t =
+    { t | named = Array.indexedMap (\i d -> Maybe.withDefault d (Array.get i colours)) t.named }
+
+
 fresh : Config -> Term
 fresh config =
     { screen = newScreen config.cols config.rows (config.rows + 2 * config.pageRows + 1)
@@ -867,6 +876,7 @@ fresh config =
     , lastPoint = 0
     , title = ""
     , colours = Dict.empty
+    , named = namedColours
     , cursorShape = 1
     , otherShape = 1
     , ps = psGround
@@ -4585,7 +4595,7 @@ reset t =
         back =
             blank.back
     in
-    withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours, back = { back | peak = peak, dropped = dropped } }
+    withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours, named = t.named, back = { back | peak = peak, dropped = dropped } }
 
 
 {-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14)

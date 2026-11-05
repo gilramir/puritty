@@ -21,6 +21,9 @@ that a misspelt one is not a setting silently left at its default:
     foreground = "#c5c8c6"
     background = "#1d1f21"
     bold_is_bright = false
+    palette = ["#1d1f21", "#cc6666"]
+                                  # the 16 named colours from 0, as many as
+                                  # given; libghostty-vt's for the rest
 
     [cursor]
     blink_ms = 500                # the half of a blink; 0 does not blink
@@ -68,6 +71,7 @@ type alias Config =
     , foreground : Int
     , background : Int
     , boldIsBright : Bool
+    , palette : Array Int
     , blinkMs : Int
     , frameMs : Int
     , syncTimeoutMs : Int
@@ -92,6 +96,7 @@ defaults =
     , foreground = 0xC5C8C6
     , background = 0x1D1F21
     , boldIsBright = False
+    , palette = []
     , blinkMs = 500
     , frameMs = 16
     , syncTimeoutMs = 150
@@ -125,6 +130,7 @@ decoder =
             , foreground = colours.foreground
             , background = colours.background
             , boldIsBright = colours.boldIsBright
+            , palette = colours.palette
             , blinkMs = cursor
             , frameMs = frames.everyMs
             , syncTimeoutMs = frames.syncTimeoutMs
@@ -163,12 +169,14 @@ decoder =
             )
         |> Decode.andMap
             (section "colours"
-                { foreground = defaults.foreground, background = defaults.background, boldIsBright = defaults.boldIsBright }
-                (Decode.succeed (\{} f b bb -> { foreground = f, background = b, boldIsBright = bb })
-                    |> Decode.andMap (onlyKeys [ "foreground", "background", "bold_is_bright" ])
+                { foreground = defaults.foreground, background = defaults.background, boldIsBright = defaults.boldIsBright, palette = defaults.palette }
+                (Decode.succeed (\{} f b bb p -> { foreground = f, background = b, boldIsBright = bb, palette = p })
+                    |> Decode.andMap (onlyKeys [ "foreground", "background", "bold_is_bright", "palette" ])
                     |> Decode.andMap (setting "foreground" colour defaults.foreground)
                     |> Decode.andMap (setting "background" colour defaults.background)
                     |> Decode.andMap (setting "bold_is_bright" Decode.bool defaults.boldIsBright)
+                    -- docs/phase3-select.md §22: the 16 named colours, from 0
+                    |> Decode.andMap (setting "palette" palette defaults.palette)
                 )
             )
         |> Decode.andMap
@@ -347,6 +355,20 @@ bounded low high inner =
 
                 else
                     Decode.succeed n
+            )
+
+
+{-| Up to 16 colours, the named ones from 0. -}
+palette : Decoder (Array Int)
+palette =
+    Decode.array colour
+        |> Decode.andThen
+            (\colours ->
+                if Array.length colours > 16 then
+                    Decode.fail (String.fromInt (Array.length colours) ++ " colours, where the palette has 16")
+
+                else
+                    Decode.succeed colours
             )
 
 
