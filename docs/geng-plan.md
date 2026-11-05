@@ -849,10 +849,12 @@ recorded there as in phase 2.
 **Phase 7 · Hardening and release.** Soak tests (§7), config reload, a crash report
 that doesn't need a debugger, and packaging for Mint and RHEL8.
 
-**Later, with the Windows product: settings in a window.** *Gilbert,
+**Later, with the Windows product: settings in a GUI.** *Gilbert,
 2026-11-04:* a user should not have to edit `config.toml`, and should never
-have to restart visiterm for a change. Settings are changed in a window of
-visiterm's own and seen at once, in the running window. The file stays
+have to restart visiterm for a change. Settings are changed in a GUI of
+visiterm's, and seen at once in the running terminal. Its form is open: a
+view inside visiterm's window, or a dialog that floats outside it, which
+Gilbert named as a possibility too. The file stays
 what is stored: `gren-toml` edits a document and writes it back with its
 comments and layout kept, so the window and hand edits can share one file.
 Not built until the Windows work, since the Windows visiterm is also an ssh
