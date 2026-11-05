@@ -1016,3 +1016,36 @@ paste and the reports after it from 3.1 s to under a millisecond.
 gates that run the window; the core's are untouched by `Main`.
 `Outbox.geng` and the probe are as `geng fmt` leaves them; `Main.geng` was
 not formatted before and is left so.
+
+## 21. The pointer: the theme's I-beam, and its arrow while the program takes the mouse (2026-11-04)
+
+Gilbert, using visiterm beside Alacritty: visiterm's pointer was an arrow,
+where Alacritty's is the I-beam, the better shape for selecting text.
+visiterm set no cursor on its window, so it showed the root window's.
+
+- **The two pointers** come from the user's cursor theme, as other programs
+  load them: `xcb-util-cursor` (`libxcb-cursor` 0.1.6, new in devbox and in
+  `packages/x11`'s `pkg-config` list) reads `Xcursor.theme` and
+  `Xcursor.size` from the X resources, and loads `text` (or `xterm`) and
+  `default` (or `left_ptr`) by the freedesktop cursor names. Where no theme
+  answers, the core cursor font's `XC_xterm` and `XC_left_ptr`.
+- **Nix's `xcb-util-cursor` does not search `/usr/share/icons`**: its
+  compiled path is the home directory's two and its own store path, so on a
+  distribution's desktop it found no theme and fell back to the cursor
+  font. visiterm sets `XCURSOR_PATH` to libXcursor's own path
+  (`~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps`)
+  when the user has not set one.
+- **The shape**, as Alacritty and Ghostty show it: the I-beam, and the arrow
+  while the program asks for mouse reports (any mode but none) and Shift is
+  not held, Shift being what takes the mouse back for a selection (§4). The
+  loop sets it when that changes, beside the motion mask (§4), from
+  `Vt.mouseModes` and a `shiftHeld` the events keep: a Shift key's press or
+  release, a pointer event's Shift bit, and not after the focus goes.
+
+**Checked** under `xtrace` on Xvfb, with a program that turns mode 1000 on
+and then off: the window's cursor is set to the I-beam when it opens, the
+arrow after `CSI ? 1000 h`, and the I-beam again after `CSI ? 1000 l`; with
+`XCURSOR_PATH` set as above, both are the theme's (RENDER `CreateCursor`
+from Bibata-Modern-Classic, `/usr/share/icons/default`'s), where without it
+they were the cursor font's glyphs 152 and 68. The gates that run the window
+pass: pointer 51 of 51, pixels 36 of 36, IME 14 of 14.

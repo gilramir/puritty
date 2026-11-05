@@ -1,6 +1,6 @@
 module X11 exposing
     ( Settings, Cell, open
-    , draw, shot, setTitle, spot, zoom, motion, select, Selection(..), paste, pasted
+    , draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
     , events, take, Event(..), PointerEvent
     )
 
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, draw, shot, setTitle, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
+@docs Settings, Cell, open, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
 
 -}
 
@@ -142,6 +142,12 @@ type Selection
     | Clipboard
 
 
+{-| The pointer's two shapes over the window. -}
+type Pointer
+    = TextPointer
+    | ArrowPointer
+
+
 {-| The window owns a selection with this text, and the C answers every
 program that asks for it from its own copy, without the loop: as UTF-8,
 as Latin-1 for `STRING`, in INCR pieces when it is large. -}
@@ -206,6 +212,25 @@ zoom points =
 
 @extern(c, "visiterm_x11_zoom")
 zoomExtern : Int -> Task x Int
+
+
+{-| The pointer over the window: the cursor theme's I-beam, over text, or
+its arrow, while the program takes the mouse (docs/phase3-select.md §21). -}
+setPointer : Pointer -> Task x {}
+setPointer p =
+    pointerExtern
+        (when p is
+            TextPointer ->
+                0
+
+            ArrowPointer ->
+                1
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "visiterm_x11_pointer")
+pointerExtern : Int -> Task x Int
 
 
 {-| Sets the window's title. -}

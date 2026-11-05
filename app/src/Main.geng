@@ -86,6 +86,10 @@ type alias Model =
     , held : Int
     , mouseLast : Maybe Mouse.Cell
     , allMotion : Bool
+      -- the pointer shown, the arrow while the program takes the mouse, and
+      -- whether Shift is held, which takes it back (docs/phase3-select.md §21)
+    , arrowPointer : Bool
+    , shiftHeld : Bool
       -- how many rows the view is scrolled back, 0 at the bottom
       -- (docs/phase3-select.md §11)
     , back : Int
@@ -339,6 +343,8 @@ run imeLog charset config cell child =
                             , held = 0
                             , mouseLast = Nothing
                             , allMotion = False
+                            , arrowPointer = False
+                            , shiftHeld = False
                             , back = 0
                             , selection = Nothing
                             , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
@@ -483,9 +489,34 @@ loop terminal fd m00 =
      else
         X11.motion all |> Task.map (\_ -> { m00 | allMotion = all })
     )
+        |> Task.andThen pointerShape
         |> Task.andThen clipboardRequests
         |> Task.andThen (flush fd)
         |> Task.andThen (\m0 -> race terminal fd m0)
+
+
+{-| The pointer's shape (docs/phase3-select.md §21): the arrow while the
+program takes the mouse and Shift is not held to take it back, the I-beam
+otherwise, as Alacritty and Ghostty show them. X is told only when it
+changes. -}
+pointerShape : (moved m : Model) -> Task Error Model
+pointerShape m =
+    let
+        arrow =
+            (Vt.mouseModes m.term).tracking /= Mouse.none && not m.shiftHeld
+    in
+    if arrow == m.arrowPointer then
+        Task.succeed m
+
+    else
+        X11.setPointer
+            (if arrow then
+                X11.ArrowPointer
+
+             else
+                X11.TextPointer
+            )
+            |> Task.map (\_ -> { m | arrowPointer = arrow })
 
 
 race : Process.Terminal -> File.Handle -> (moved m0 : Model) -> Task Error Model
@@ -665,10 +696,34 @@ handle terminal fd ms evs m =
             Task.succeed m
 
         Just ev ->
-            let
-                rest =
-                    Array.dropFirst 1 evs
-            in
+            handleOne terminal fd ms (Array.dropFirst 1 evs) ev { m | shiftHeld = shiftAfter ev m.shiftHeld }
+
+
+{-| Whether Shift is held after an event, for the pointer's shape (§21):
+a Shift key pressed or released, the Shift bit of a pointer event, and not
+once the focus has gone, since its release goes to another window. -}
+shiftAfter : X11.Event -> Bool -> Bool
+shiftAfter ev held =
+    when ev is
+        X11.Key k ->
+            if k.sym == 0xFFE1 || k.sym == 0xFFE2 then
+                k.action /= 0
+
+            else
+                held
+
+        X11.Pointer p ->
+            Bitwise.and p.mods 1 /= 0
+
+        X11.Focus False ->
+            False
+
+        _ ->
+            held
+
+
+handleOne : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> X11.Event -> (moved m : Model) -> Task Error Model
+handleOne terminal fd ms rest ev m =
             when ev is
                 X11.Key k ->
                     when zoomOf m k is

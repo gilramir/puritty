@@ -88,6 +88,7 @@
 #include <string.h>
 #include <xcb/render.h>
 #include <xcb/xcb.h>
+#include <xcb/xcb_cursor.h>
 #include <xcb/xcbext.h> /* xcb_poll_for_reply, for a paste read without waiting */
 #include <xcb/xcb_renderutil.h>
 #include <xcb/xkb.h>
@@ -101,6 +102,9 @@
 static xcb_connection_t *conn;
 static xcb_screen_t *screen;
 static xcb_window_t window;
+/* The pointer over the window: the theme's I-beam over text, and its arrow
+ * while the program takes the mouse (docs/phase3-select.md §21). */
+static xcb_cursor_t pointer_text, pointer_arrow;
 static xcb_pixmap_t pixmap;
 static xcb_gcontext_t gc;
 static xcb_render_picture_t target;
@@ -1623,6 +1627,42 @@ static int screen_dpi(void) {
  * set reset past `cap` bytes (V37). Answers the cell's width and height as
  * `width * 65536 + height`, or a negative code: -1 no font, -2 no X server,
  * -3 no RENDER formats it needs. */
+/* One of the cursor font's glyphs, the core protocol's own cursors, for a
+ * server with no cursor theme to load from: its I-beam is XC_xterm (152)
+ * and its arrow XC_left_ptr (68), each with its mask the glyph after it. */
+static xcb_cursor_t font_cursor(uint16_t glyph) {
+    xcb_font_t font = xcb_generate_id(conn);
+    xcb_open_font(conn, font, 6, "cursor");
+    xcb_cursor_t c = xcb_generate_id(conn);
+    xcb_create_glyph_cursor(conn, c, font, font, glyph, glyph + 1, 0, 0, 0, 0xffff, 0xffff, 0xffff);
+    xcb_close_font(conn, font);
+    return c;
+}
+
+/* The two pointers, from the user's cursor theme as other programs load
+ * them (Xcursor's theme and size, through xcb-util-cursor), by the names
+ * the freedesktop cursor spec gives and the older ones a theme may have
+ * instead; the cursor font's when no theme answers. The window starts
+ * with the I-beam. */
+static void pointers_setup(void) {
+    /* Nix's xcb-util-cursor searches its own store path and the home
+     * directory's, not /usr/share/icons where a distribution's themes are;
+     * libXcursor's own path, as other programs search it, unless the user
+     * named one */
+    setenv("XCURSOR_PATH", "~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps", 0);
+    xcb_cursor_context_t *ctx = NULL;
+    if (xcb_cursor_context_new(conn, screen, &ctx) >= 0) {
+        pointer_text = xcb_cursor_load_cursor(ctx, "text");
+        if (pointer_text == XCB_CURSOR_NONE) pointer_text = xcb_cursor_load_cursor(ctx, "xterm");
+        pointer_arrow = xcb_cursor_load_cursor(ctx, "default");
+        if (pointer_arrow == XCB_CURSOR_NONE) pointer_arrow = xcb_cursor_load_cursor(ctx, "left_ptr");
+        xcb_cursor_context_free(ctx);
+    }
+    if (pointer_text == XCB_CURSOR_NONE) pointer_text = font_cursor(152);
+    if (pointer_arrow == XCB_CURSOR_NONE) pointer_arrow = font_cursor(68);
+    xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &pointer_text);
+}
+
 geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
                               void *title_bytes, geng_wait *wait) {
     /* the display first: the font's size in pixels is its dpi's (V50) */
@@ -1716,6 +1756,7 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
     glyphs = xcb_generate_id(conn);
     xcb_render_create_glyph_set(conn, glyphs, a8);
     make_pixmap(c, r);
+    pointers_setup();
     xcb_map_window(conn, window);
     xim_setup(screen_number);
     xcb_flush(conn);
@@ -2235,6 +2276,15 @@ geng_cancel visiterm_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
         free(pre.data);
         xcb_flush(conn);
     }
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
+/* The pointer over the window: 0 the I-beam, 1 the arrow. */
+geng_cancel visiterm_x11_pointer(int32_t arrow, geng_wait *wait) {
+    xcb_cursor_t c = arrow ? pointer_arrow : pointer_text;
+    xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &c);
+    xcb_flush(conn);
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
