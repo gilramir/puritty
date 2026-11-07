@@ -18,9 +18,10 @@ Terminal (a UI over a hand-editable file, inheritance from Defaults).
 
 ## 1. Its form: a separate window, drawn by visiterm
 
-**Proposal:** settings open in their own top-level window, beside the
-terminal, drawn with visiterm's own renderer as a grid of text cells, like
-a well-made full-screen text program, with the mouse working too.
+*Gilbert, 2026-11-06: a separate window.* Settings open in their own
+top-level window, beside the terminal, drawn with visiterm's own renderer as
+a grid of text cells, like a well-made full-screen text program, with the
+mouse working too.
 
 Why:
 
@@ -39,11 +40,31 @@ and the 16-colour palette beside it; a font is a filtered list from
 fontconfig; a choice is a row of options. Those are enough for every setting
 visiterm has.
 
-The alternative is a view inside the terminal window, opened over it, which
-is simpler (no second window) but hides the preview. **Gilbert decides.**
+The alternative, a view inside the terminal window, was turned down because
+it hides the preview.
 
-Opened by: a key (suggested Ctrl+Shift+Comma, as in several terminals), the
-window menu if visiterm gets one, and `visiterm --settings`.
+### How it's opened
+
+PuTTY's "Change Settings…" is in the window's system menu (the title-bar
+icon, or Alt+Space). Windows lets a program add items to that menu, so the
+Windows visiterm can do the same. X11 does not: the window manager draws the
+title bar and its menu, and a program can't add to them unless it draws its
+own title bar (client-side decorations, as Ghostty does with GTK4), which
+Linux users dislike and which suits ETX badly.
+
+Proposed for Linux, **for Gilbert to confirm**:
+
+1. **Ctrl+Comma**, as in Windows Terminal, VS Code and Ghostty (which uses
+   Ctrl+Shift+Comma to reload its config). Safe to take: in the usual key
+   encoding a program can't tell Ctrl+Comma from a comma.
+2. **Ctrl+right-click** opens a small menu with "Settings…", as xterm's
+   Ctrl+click menus do. Plain right-click is not free: `paste_button =
+   "right"` gives it to paste.
+3. **A gear button in visiterm's tab bar**, once phase 4 brings tabs, as in
+   Windows Terminal.
+4. **`visiterm --settings`** from a shell.
+
+On Windows, the system menu as well, as PuTTY does.
 
 ## 2. One schema drives everything
 
@@ -121,9 +142,9 @@ Later: **Keyboard** (key bindings) and, with the Windows product, **Hosts**.
 
 ## 4. Changes apply at once, with Undo
 
-The survey says to pick one model: apply at once, or Save/Discard. **Apply
-at once** fits the decision already made ("seen at once") and the live
-preview. Each change:
+*Gilbert, 2026-11-06: apply at once.* The survey says to pick one model,
+apply at once or Save/Discard; apply at once fits "seen at once" and the
+live preview. Each change:
 
 1. applies to every running terminal window right away (config reload);
 2. is written to `config.toml` once you leave the field, or half a second
@@ -151,20 +172,25 @@ blank lines. The rules on top:
   the bytes are identical; and another sets then resets a key and checks the
   file returns to what it was.
 
-### Unknown keys: one change to today's rule
+### Unknown keys: reported, not fatal
 
 Today a key visiterm doesn't know makes the whole file an error, so that a
 misspelling is never silently ignored, and visiterm exits with a message. The
-survey says a settings UI must keep keys it doesn't recognise. Proposal:
-keep the strictness, but not the exit:
+survey says a settings UI must keep keys it doesn't recognise. *Gilbert,
+2026-11-06: report them, and start anyway.* The strictness stays, the exit
+goes:
 
 - Unknown keys are reported, by name and line, with a suggestion when one is
   close (`font.sise` → did you mean `font.size`?).
 - visiterm starts with the settings it does know.
 - The settings window shows the unknown keys in an **"Not recognised in your
   file"** section, each with a remove button, and never drops them on save.
+- A known key with a bad value (`font.size = 2`, below its bound) is reported
+  the same way and its default is used, so a typo in one setting never costs
+  the rest.
 
-**Gilbert decides** whether visiterm should still refuse to start.
+Where the report goes when no settings window is open: to stderr, as now,
+and as a one-line notice in the terminal window the first time it opens.
 
 ## 6. Inheritance, later
 
@@ -177,9 +203,12 @@ that line, so nothing needs to change when it arrives.
 
 ## 7. Questions for Gilbert
 
-1. A separate settings window drawn by visiterm, or a view inside the
-   terminal window? (§1)
-2. Apply at once with Undo, as proposed, or Save/Discard? (§4)
-3. Should unknown keys still stop visiterm starting, or only be reported?
-   (§5)
-4. Is Ctrl+Shift+Comma free to open settings? (§1)
+Answered 2026-11-06: a separate window (§1), apply at once (§4), unknown keys
+reported and not fatal (§5).
+
+Open:
+
+1. How the window is opened on Linux: Ctrl+Comma, a Ctrl+right-click menu,
+   a gear in the tab bar later, and `--settings`? (§1)
+2. The one-line notice in the terminal for config errors (§5): wanted, or
+   stderr only?
