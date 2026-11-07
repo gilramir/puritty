@@ -37,7 +37,7 @@ The survey's "biggest opening" is the work visiterm already has planned.
 | **Key sounds** (Gilbert's request, §3) | Small to medium: audio is new | Soon, and the first new setting added through the settings UI. |
 | **Jump between and fold command outputs** | Medium; needs shell integration (OSC 133) | Later. |
 | **Pipe a pane's text to a command** (pull out URLs) | Small | Later. |
-| **Inline images** (Kitty, Sixel) | Large | Not planned. Only add if someone asks. |
+| **Inline images**: Sixel, Kitty graphics, iTerm2 | Large | Right after phase 4 (§4 below). |
 | **Smooth scrolling, animated cursor** | Medium; better with the GPU renderer | After phase 5, if at all. |
 
 ### The Windows product: replacing PuTTY and MobaXterm
@@ -114,5 +114,59 @@ where `geng-plan.md` had it:
 3. **The settings window** on Linux, for today's settings.
 4. **Key sounds**, the first new setting added through the window.
 5. Phase 4 (tmux control mode), as planned.
-6. Search and scrollbar, key bindings, then the Windows product with hosts in
+6. **Images**, all three protocols (§5).
+7. Search and scrollbar, key bindings, then the Windows product with hosts in
    the settings window.
+
+## 5. Images
+
+*Gilbert, 2026-11-06:* after phase 4, visiterm shows images, and supports all
+three ways programs send them, not just the one that suits tmux. Gilbert
+uses tmux all the time; other users may not.
+
+| Protocol | What a program sends | Who uses it |
+|---|---|---|
+| **Sixel** (DEC, 1980s) | A palette image (usually 256 colours), six pixel rows at a time, as text | gnuplot, img2sixel, chafa, lsix. tmux 3.4+ stores and redraws Sixel itself, so it's the protocol that survives tmux. |
+| **Kitty graphics** | PNG or raw pixels in chunks, or a file or shared memory; placed, layered above or below text, deleted, animated | yazi, `kitty +kitten icat`, image.nvim, timg, chafa. Ghostty and WezTerm support it. |
+| **iTerm2 inline images** (OSC 1337) | A whole PNG, JPEG or GIF file in base64 | imgcat, many scripts. WezTerm, mintty and Konsole support it. |
+
+**One image layer, three front ends.** The core gets an image store and
+*placements*: an image tied to a cell position, which scrolls, clears and
+reflows with the text and survives a switch to the alternate screen and back.
+The renderer draws placements: XRender uploads each image once and redraws
+from the server's copy (important over ETX), and the GPU renderer gets the
+same. Each protocol is then a decoder that adds images and placements.
+Suggested order: the image layer with Sixel first (smallest, and what tmux
+carries), then iTerm2's (a file decoder on the same layer), then Kitty
+graphics (the largest: placements by id, z-order, deletion, chunked and
+compressed transfer, Unicode placeholders, animation last).
+
+**Things to settle in the survey that starts the work:**
+
+- **tmux control mode.** How a control-mode client receives a pane's Sixel
+  images, or whether it does: check tmux's source before designing, as
+  phase 4 did for floating panes. Kitty and iTerm2 images reach visiterm
+  through tmux only with `allow-passthrough`, and break when panes move;
+  that is tmux's limit, and visiterm should handle it cleanly, not mend it.
+- **Image decoders.** iTerm2's and Kitty's PNG, plus JPEG and GIF for iTerm2,
+  and zlib for Kitty's compressed data. On RHEL8 every library is pinned
+  (Q12), so a small bundled decoder (stb_image) may be simpler than libpng,
+  libjpeg and giflib. Decide in the survey.
+- **Safety.** Kitty's protocol can ask the terminal to read a file or shared
+  memory by name. A remote program must not make visiterm read local files:
+  file and shared-memory transfer are limited to temporary files, or off,
+  as Kitty itself does. Every image has a size limit, and all images
+  together a memory limit (a setting, as Kitty's is), with the oldest
+  dropped first.
+- **Telling programs it's supported.** Sixel through the device attributes
+  reply (attribute 4) and XTSMGRAPHICS; Kitty through its query action;
+  iTerm2's through its own report. Programs like chafa pick a protocol from
+  these answers.
+- **The oracle.** Ghostty supports Kitty graphics but not Sixel. Where
+  libghostty-vt has no answer, visiterm's image handling needs its own tests
+  (recorded sequences with expected placements, and rendered pixels).
+- **ETX.** Measure bytes per image update there, as phase 2 measured text.
+
+**Settings:** `[images] enabled = true`, and the memory limit. They appear on
+the settings window's Advanced page.
+

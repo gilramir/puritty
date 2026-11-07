@@ -854,6 +854,15 @@ control-mode client receives only when it sets the `new-layouts` flag
 (`synthesis.md` §7.3 item 2). Floating panes need 3.7 at least, so on hosts
 with an older tmux they are not there; the 3.2 floor stays.
 
+**After phase 4 · Images.** *Gilbert, 2026-11-06:* all three image
+protocols, Sixel, Kitty graphics and iTerm2 inline images, not only Sixel,
+which is the one tmux carries; other users may not run tmux. One image layer
+in the core (images and placements that scroll, clear and reflow with the
+text) and in the X11 renderer, with a decoder per protocol: Sixel, then
+iTerm2's, then Kitty's. Begins with a survey; the questions for it are in
+`feature-plan.md` §5 (tmux control mode and images, image decoders on RHEL8,
+file transfer safety, memory limits, the oracle's gaps, bytes over ETX).
+
 **Phase 5 · The GPU renderer.** Local use on Mint only: on RHEL8 visiterm runs in
 ETX on a VM with no GPU (Q10), where the X11 renderer is the path. It is an
 option, not a requirement: the X11 renderer serves Mint's local desktop too. EGL and GLES 3, the same display list, partial
