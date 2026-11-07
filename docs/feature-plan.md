@@ -117,6 +117,8 @@ where `geng-plan.md` had it:
 6. **Images**, all three protocols (§5).
 7. Search and scrollbar, key bindings, then the Windows product with hosts in
    the settings window.
+8. **VDI mode** (§6), well after visiterm works on Windows, and only what
+   measurements justify.
 
 ## 5. Images
 
@@ -169,4 +171,60 @@ compressed transfer, Unicode placeholders, animation last).
 
 **Settings:** `[images] enabled = true`, and the memory limit. They appear on
 the settings window's Advanced page.
+
+## 6. VDI mode: visiterm inside a remote Windows desktop
+
+*Gilbert, 2026-11-06:* one of Gilbert's workflows is a Windows desktop reached
+through Omnissa Horizon Client (VDI), with PuTTY or MobaXterm on it connecting
+to a Linux host by ssh. Could visiterm, running on that remote desktop, do
+anything to make it better? This comes well after visiterm works on Windows,
+and only what measurements justify gets built.
+
+**The limit.** Horizon's Blast protocol (and PCoIP) sends pixels: it captures
+the remote desktop's screen, finds what changed and compresses it as images
+or video. It never sees text, so visiterm can't send text instead. It can
+only make its pixels cheaper to send.
+
+**What might help:**
+
+1. **Change fewer pixels.** Redraw only changed cells (as on X11), no smooth
+   scrolling or animation, and no cursor blink: a blinking cursor keeps that
+   region from ever being still, and Horizon re-sends still regions sharper.
+2. **Fewer frames in bursts.** Merge a flood of output into fewer updates
+   (xterm's "jump scroll"): `frames.every_ms` around 33–50 instead of 16.
+3. **No ClearType.** Its coloured edges compress badly and are smeared by
+   video encoding, which keeps colour at lower resolution than brightness.
+   Grayscale smoothing survives better; unsmoothed text compresses best and
+   stays sharp under Horizon's lossless text mode.
+4. **Flat colours.** No transparency, background images or gradients.
+5. **Scrolling as a move.** Windows lets a program say "this region moved"
+   when it presents a frame (DXGI's scroll rectangle, GDI's ScrollWindowEx),
+   and passes that to screen-capture tools as a move. RDP turns moves into a
+   copy instead of new pixels. Whether Blast does is unknown; if it does,
+   scrolling costs almost nothing. The one possibly large win.
+
+**Detecting Horizon.** A Blast session is usually not a Windows "remote
+session" (`GetSystemMetrics(SM_REMOTESESSION)` is false). The Horizon agent
+is believed to write `ViewClient_*` values, the protocol among them, under
+`HKCU\Volatile Environment`; check that on Gilbert's VDI. With detection,
+visiterm switches to a VDI profile (items 1–3); a setting forces it on or
+off, in case detection misses.
+
+**What can't change.** Typing goes to the VDI, then to the Linux host, and
+the echo comes back as pixels; visiterm can't hide that delay, since
+mosh-style local echo needs the terminal on Gilbert's own machine.
+
+**Measurements first.** Horizon Performance Tracker, run inside the
+session, shows Blast's bandwidth and frame rate. With the same workloads
+(a `cat` of a large file; an idle prompt with a blinking cursor; scrolling
+in `less`), compare:
+
+1. PuTTY with Font quality "ClearType", "Antialiased" and "Non-Antialiased"
+   (Window → Appearance). This can be done now, before visiterm runs on
+   Windows, and shows whether item 3 matters.
+2. Cursor blink on and off.
+3. Once visiterm runs on Windows: frame interval 16 vs 50 ms, and scrolling
+   presented as a move vs as a full redraw (item 5).
+
+Whatever doesn't show up in the numbers isn't built.
 
