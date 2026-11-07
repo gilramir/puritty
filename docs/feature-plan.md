@@ -220,8 +220,8 @@ session, shows Blast's bandwidth and frame rate. With the same workloads
 in `less`), compare:
 
 1. PuTTY with Font quality "ClearType", "Antialiased" and "Non-Antialiased"
-   (Window → Appearance). This can be done now, before visiterm runs on
-   Windows, and shows whether item 3 matters.
+   (Window → Appearance). It doesn't need visiterm, so it can be done
+   whenever this work comes up, and shows whether item 3 matters.
 2. Cursor blink on and off.
 3. Once visiterm runs on Windows: frame interval 16 vs 50 ms, and scrolling
    presented as a move vs as a full redraw (item 5).
