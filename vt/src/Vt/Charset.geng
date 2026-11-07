@@ -1,4 +1,4 @@
-module Vt.Charset exposing (Charset(..), fromName, Decoder, decoder, decode, encode)
+module Vt.Charset exposing (Charset(..), fromName, Decoder, decoder, pending, decode, encode)
 
 {-| The remote character set's filters (`docs/cjk-and-thai.md` §10.3,
 `docs/phase3-input.md` V49): EUC-KR or CP949 to UTF-8 before the core, and
@@ -49,14 +49,23 @@ fromName name =
         Utf8
 
 
-{-| A decoder's state between reads: the lead byte a read ended on, or 0. -}
-type alias Decoder =
-    { lead : Int }
+{-| A decoder's state between reads: the lead byte a read ended on, or 0.
+Opaque, so that only `decode` makes one and its lead is always 0 or 0x81–0xFE
+(geng-lang `m4-refine-next.md` RX6): a forged lead read the index from its
+end. -}
+type Decoder
+    = Decoder Int
 
 
 decoder : Decoder
 decoder =
-    { lead = 0 }
+    Decoder 0
+
+
+{-| Whether a read ended on a lead byte, kept for the next. -}
+pending : Decoder -> Bool
+pending (Decoder lead) =
+    lead /= 0
 
 
 byteAt : Int -> Bytes -> Int
@@ -71,15 +80,15 @@ byteAt i b =
 
 {-| A read decoded to UTF-8, and the state for the next. -}
 decode : Decoder -> Bytes -> { decoder : Decoder, bytes : Bytes }
-decode d bytes =
+decode (Decoder lead) bytes =
     let
         n =
             Bytes.length bytes
 
         done =
-            go bytes n 0 d.lead (Builder.empty (n + n // 2 + 3))
+            go bytes n 0 lead (Builder.empty (n + n // 2 + 3))
     in
-    { decoder = { lead = done.lead }, bytes = Builder.toBytes done.out }
+    { decoder = Decoder done.lead, bytes = Builder.toBytes done.out }
 
 
 go : Bytes -> Int -> Int -> Int -> (moved out : Builder) -> { lead : Int, out : Builder }

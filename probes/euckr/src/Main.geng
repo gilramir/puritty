@@ -26,7 +26,14 @@ import Vt.Charset as Charset
 
 
 type alias Out =
-    { lead : Int, parts : Array Bytes, term : Maybe Vt.Term }
+    { lead : Int, decoder : Charset.Decoder, parts : Array Bytes, term : Maybe Vt.Term }
+
+
+{-| One of the probe's own decoders' answers, with Vt.Charset's state as it
+was, which only the charset modes move. -}
+withDecoder : Charset.Decoder -> { lead : Int, bytes : Bytes } -> { lead : Int, decoder : Charset.Decoder, bytes : Bytes }
+withDecoder decoder d =
+    { lead = d.lead, decoder = decoder, bytes = d.bytes }
 
 
 run : String -> Bytes -> Int -> (moved acc : Out) -> Out
@@ -46,23 +53,23 @@ run mode bytes at acc =
             let
                 d =
                     if mode == "bytewise" then
-                        EucKr.decodeBytewise acc.lead chunk
+                        withDecoder acc.decoder (EucKr.decodeBytewise acc.lead chunk)
 
                     else if String.startsWith "charset" mode then
                         let
                             c =
-                                Charset.decode { lead = acc.lead } chunk
+                                Charset.decode acc.decoder chunk
                         in
-                        { lead = c.decoder.lead, bytes = c.bytes }
+                        { lead = 0, decoder = c.decoder, bytes = c.bytes }
 
                     else
-                        EucKr.decodeRuns acc.lead chunk
+                        withDecoder acc.decoder (EucKr.decodeRuns acc.lead chunk)
             in
             if mode == "runs+core" || mode == "charset+core" then
-                run mode bytes (at + 65536) { acc | lead = d.lead, term = Maybe.map (Vt.feed d.bytes) acc.term }
+                run mode bytes (at + 65536) { acc | lead = d.lead, decoder = d.decoder, term = Maybe.map (Vt.feed d.bytes) acc.term }
 
             else
-                run mode bytes (at + 65536) { acc | lead = d.lead, parts = Array.pushLast d.bytes acc.parts }
+                run mode bytes (at + 65536) { acc | lead = d.lead, decoder = d.decoder, parts = Array.pushLast d.bytes acc.parts }
 
 
 main : Task Never {}
@@ -92,7 +99,7 @@ main =
                                                     Nothing
 
                                             done =
-                                                run mode bytes 0 { lead = 0, parts = [], term = term }
+                                                run mode bytes 0 { lead = 0, decoder = Charset.decoder, parts = [], term = term }
                                         in
                                         Time.monotonic
                                             |> Task.andThen
