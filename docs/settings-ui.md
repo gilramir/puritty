@@ -189,8 +189,9 @@ goes:
   the same way and its default is used, so a typo in one setting never costs
   the rest.
 
-Where the report goes when no settings window is open: to stderr, as now,
-and as a one-line notice in the terminal window the first time it opens.
+*Gilbert, 2026-11-06:* the report goes to stderr, as now, and also as a
+one-line notice in the terminal window the first time it opens, since a
+visiterm started from a desktop launcher has no stderr anyone sees.
 
 ## 6. Inheritance, later
 
@@ -205,9 +206,6 @@ that line, so nothing needs to change when it arrives.
 
 Answered 2026-11-06: a separate window (§1), opened with Ctrl+Comma or a
 Ctrl+right-click menu (§1), apply at once (§4), unknown keys reported and not
-fatal (§5).
+fatal, on stderr and as a notice in the terminal (§5).
 
-Open:
-
-1. The one-line notice in the terminal for config errors (§5): wanted, or
-   stderr only?
+None open.
