@@ -52,7 +52,7 @@ title bar and its menu, and a program can't add to them unless it draws its
 own title bar (client-side decorations, as Ghostty does with GTK4), which
 Linux users dislike and which suits ETX badly.
 
-Proposed for Linux, **for Gilbert to confirm**:
+*Gilbert, 2026-11-06: Ctrl+Comma and Ctrl+right-click.* On Linux:
 
 1. **Ctrl+Comma**, as in Windows Terminal, VS Code and Ghostty (which uses
    Ctrl+Shift+Comma to reload its config). Safe to take: in the usual key
@@ -61,8 +61,8 @@ Proposed for Linux, **for Gilbert to confirm**:
    Ctrl+click menus do. Plain right-click is not free: `paste_button =
    "right"` gives it to paste.
 3. **A gear button in visiterm's tab bar**, once phase 4 brings tabs, as in
-   Windows Terminal.
-4. **`visiterm --settings`** from a shell.
+   Windows Terminal (proposed).
+4. **`visiterm --settings`** from a shell (proposed).
 
 On Windows, the system menu as well, as PuTTY does.
 
@@ -203,12 +203,11 @@ that line, so nothing needs to change when it arrives.
 
 ## 7. Questions for Gilbert
 
-Answered 2026-11-06: a separate window (§1), apply at once (§4), unknown keys
-reported and not fatal (§5).
+Answered 2026-11-06: a separate window (§1), opened with Ctrl+Comma or a
+Ctrl+right-click menu (§1), apply at once (§4), unknown keys reported and not
+fatal (§5).
 
 Open:
 
-1. How the window is opened on Linux: Ctrl+Comma, a Ctrl+right-click menu,
-   a gear in the tab bar later, and `--settings`? (§1)
-2. The one-line notice in the terminal for config errors (§5): wanted, or
+1. The one-line notice in the terminal for config errors (§5): wanted, or
    stderr only?

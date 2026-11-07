@@ -817,6 +817,30 @@ kept at what it was made with after a zoom (`phase3-input.md` §14).
 EUC-KR and CP949 panes drawing East Asian Ambiguous characters two cells
 wide (C§10.3 rule 5): the core's width table has no such setting yet.
 
+**Between phases 3 and 4 · Settings.** *Gilbert, 2026-11-04 and
+2026-11-06:* a user should not have to edit `config.toml`, and should never
+have to restart visiterm for a change. This was planned for the Windows
+work; Gilbert moved it ahead of phase 4. Designed in `settings-ui.md`, and
+placed by `feature-plan.md` §4, in this order:
+
+1. **Config reload**, moved from phase 7: every setting applied to a running
+   window, and the file watched for hand edits.
+2. **A settings schema**: one table of every setting (key, type, bounds,
+   default, label, description, search words, page), from which
+   `Config.decode`, the window and the documented example all come.
+   Unknown keys and bad values are reported and visiterm starts with the
+   rest, where today it exits.
+3. **The settings window**: its own top-level window beside the terminal,
+   drawn by visiterm as text cells, so the terminal is the live preview.
+   Search over every page, a marker and a reset on each changed setting, a
+   "Modified only" filter. Changes apply at once, with Undo. Opened with
+   Ctrl+Comma or from a Ctrl+right-click menu. `gren-toml`'s `Toml.Edit`
+   writes only the keys changed, keeping the file's comments and layout.
+4. **Key sounds** (`feature-plan.md` §3), off by default: the first new
+   setting added through the window.
+
+Hosts and ssh choices join the window with the Windows product.
+
 **Phase 4 · tmux control mode, tabs and splits.** S§7.3's list: PTY-less pane
 surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow control,
 the attach race, recorded-session tests. tmux 3.2 or later is required (Q11): an
@@ -846,21 +870,8 @@ the IME matrix; the ETX X server's extensions checked, RENDER above all.
 Exit: Gilbert uses it in the ETX desktop on his RHEL8 VM, and bytes per update are
 recorded there as in phase 2.
 
-**Phase 7 · Hardening and release.** Soak tests (§7), config reload, a crash report
+**Phase 7 · Hardening and release.** Soak tests (§7), a crash report
 that doesn't need a debugger, and packaging for Mint and RHEL8.
-
-**Later, with the Windows product: settings in a GUI.** *Gilbert,
-2026-11-04:* a user should not have to edit `config.toml`, and should never
-have to restart visiterm for a change. Settings are changed in a GUI of
-visiterm's, and seen at once in the running terminal. Its form is open: a
-view inside visiterm's window, or a dialog that floats outside it, which
-Gilbert named as a possibility too. The file stays
-what is stored: `gren-toml` edits a document and writes it back with its
-comments and layout kept, so the window and hand edits can share one file.
-Not built until the Windows work, since the Windows visiterm is also an ssh
-client and needs ssh choices too (which host to connect to), and that is
-where the window's design is decided. Phase 7's config reload is the half
-it rests on: every setting applied to a running window.
 
 ---
 
