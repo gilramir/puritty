@@ -228,3 +228,68 @@ in `less`), compare:
 
 Whatever doesn't show up in the numbers isn't built.
 
+
+## 7. Seeing who has the mouse, and tmux's settings (Gilbert's ideas, 2026-11-08)
+
+Two ideas from Gilbert's own use. Both are at their best with tmux control
+mode (phase 4), where puritty knows each pane on its own.
+
+### Who has the mouse, the selection and the clipboard
+
+With tmux, ssh and an editor in between, it is hard to tell what a drag or
+a paste will do: whether the program in the pane gets the mouse or puritty
+selects text, whether tmux has `mouse on`, and whether a program's copy will
+reach the local clipboard through OSC 52. Gilbert would use a helper he
+checks now and then: an **overlay**, on a key, that labels each pane with
+what it is doing, or a small **indicator** that shows it all the time.
+
+What puritty already knows, from the core (`Term`):
+
+- whether the program has asked for the mouse, and how (`mouseTracking`
+  and its format: click, drag, all motion, SGR coordinates), so whether a
+  drag selects in puritty or goes to the program, and that Shift+drag
+  selects anyway;
+- whether the alternate screen is shown (full-screen programs like vim
+  and less);
+- bracketed paste, so whether a paste arrives as one piece;
+- OSC 52 clipboard requests (`Osc52.requests`): the last write and read,
+  from which program, and whether puritty's settings let it through.
+
+What each place shows:
+
+- **Without tmux control mode**: one indicator for the whole window, since
+  puritty sees a single screen. It cannot tell tmux's panes apart.
+- **With control mode**, puritty keeps a core per pane, so the overlay can
+  label each pane: "vim has the mouse", "tmux selects", "a copy here reaches
+  your clipboard", or "a copy here stays in tmux", from the pane's own
+  modes and tmux's `mouse` and `set-clipboard` options (read with
+  `show-options`).
+
+Size: small for the window-wide indicator, which needs only state the core
+already has; medium for the per-pane overlay, after phase 4.
+
+### A tmux configuration helper
+
+In control mode puritty talks to the tmux server, so it can ask it its
+actual settings (`show-options -g`, `-s`, `-w`; `list-keys`), not what a
+`.tmux.conf` says they might be. That makes possible a **settings window
+for tmux**, built like puritty's own (`settings-ui.md`): each option with
+its current value, what it does, and a control to change it.
+
+- A change applies to the running server at once (`set-option`), so it can
+  be tried before it is kept.
+- Keeping it is the user's: puritty shows the lines to add to
+  `.tmux.conf`, or writes them to a local file, but never edits a remote
+  host's files on its own.
+- It can start with the options that cause the confusion above (`mouse`,
+  `set-clipboard`, `allow-passthrough`, `terminal-features`), where it also
+  says what puritty will do with each value.
+
+Open questions: tmux's options differ between versions, so the window has
+to read what the server reports rather than a fixed list; and how much of
+tmux's key table is worth editing in a GUI. Size: medium, after phase 4
+and the settings window.
+
+**Where they go in §4's order**: the window-wide indicator any time after
+the settings window; the per-pane overlay and the tmux settings helper
+right after phase 4, before images.
