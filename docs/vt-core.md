@@ -3688,6 +3688,14 @@ After the last step, esctest2 392 passing, as at §VC23, and every other
 program that builds the core builds (the app, `charset`, `esctest`,
 `fuzz`, `keys`, `mouse`, `paste`, `pixels`, `select`, `view`).
 
+**The self-fuzzer** (`fuzz.py`, eight jobs) on the split's tree, built with
+the renamed compiler, found nothing in 237,030 inputs, coverage 6,490. Two
+runs of the self-fuzzer and the differential fuzzer for two and ten minutes
+first ran about 100 inputs each: libFuzzer merges the 59,905 saved inputs
+before it fuzzes, one process, 25 to 35 minutes, and that counts against
+the run's time. The run counted here was fifty minutes. The differential
+fuzzer's ten-minute run ran 100 inputs, no finding, and is not counted.
+
 **Found on the way.**
 
 - `harness/fuzz/build.sh` did not build at `6c5f4f9`: it repeats
@@ -3747,3 +3755,82 @@ for it, which is the 68th.
 They run on node and not natively, where puritty runs: `gren-unit-node`
 is node's. geng-lang's `run.py` holds the backends to the same output,
 and the replay and bench programs run the core natively.
+
+
+## VC47. Why `perf.py` failed: the appends pass on short lines (survey, 2026-11-08)
+
+§VC45 found `harness/perf.py` failing at `6c5f4f9`, before the split: three
+resize cases over their record, `short-10000` 349 M to 470 M (+35%) and
+`default/short-100000` +5%, and `long-10000` 13% under. Gilbert asked for
+it to be looked into before T1's piece 5. Nothing is changed here; the fix
+is a choice in geng-lang's runtime, below.
+
+**Where it came in.** puritty at `18749a4`, where the record was last
+written, built with today's compiler, counts `short-10000` at 346.8 M, the
+record. So the compiler did not move it: puritty did. Of the four commits
+since that touch the core, each built and counted, it is `2727daf`, which
+added geng-lang's `appends` pass (D1056, `m4-memory-proofs.md` §MP13) to
+every build script's pass list. Today's core built with and without the pass:
+
+| case | without `appends` | with |
+|---|---:|---:|
+| `short-10000` | 346.9 M | 470.5 M |
+| `long-10000` | 302.4 M | 261.7 M |
+
+The pass helps a long line and costs short ones. §MP13 timed `long-10000`
+and `gitlog` with and without it, and no input of short lines.
+
+**Which append.** The generated C of the two builds differs only at 175
+append calls made `_u` or `_uu`. Each group on the resize path put back to
+the plain append in the C, compiled and counted: `Pages.unpackRuns`,
+`Pages`' and `Recut`'s folds and `Recut.plainsOf` move nothing. **One call
+is all of it: `Resize.joinLines`' `line ++ own`**, an `arr_append_u`. Plain
+there, `short-10000` is 346.5 M and `long-10000` 285.2 M.
+
+**Why.** `joinLines` starts each line from `[]` and appends each of its
+rows. The runtime's append (`geng_arr_append_mode`) answers the right
+operand when the left is empty, except in `_u` mode: there it allocates a
+buffer twice the length and copies, so that the accumulator owns its buffer
+and an outgrown one may be given back (D1056). A short line is one append,
+so every line pays an allocation and a copy at twice its size and gains
+nothing; a long line pays it once and then appends in place, and gives back
+what it outgrows. Giving back is not the cost: with `geng_u_outgrown` a
+no-op, `short-10000` is still 470.5 M (and `long-10000` 274.4 M, 13 M worse).
+The profile's growth is the allocation and the collection of the buffers
+(`geng_array_alloc` +21 M, Boehm's `GC_header_cache_miss` +43 M and its lock
++28 M, `memmove` +13 M), and more in `splitLine` and `pushUtf8` (+24 M,
++21 M), which read the lines; the profile does not say why those two grew.
+
+**What a change would buy**, each measured by editing the kept C
+(`--debug-info`) and compiling it again; `short-100000` and `long-100000`
+beside:
+
+| variant | `short-10000` | `long-10000` | `short-100000` | `long-100000` |
+|---|---:|---:|---:|---:|
+| as built | 470.5 | 261.7 | 1,476.4 | 301.1 |
+| no `appends` | 346.9 | 302.4 | 1,403.2 | 304.1 |
+| an empty left answers the right in `_u` too, give-back of arrays off | 345.7 | 281.7 | 1,401.9 | 303.9 |
+| an empty left makes an exact buffer, not a double one | 416.9 | 260.8 | 1,417.1 | 301.1 |
+
+**The options.**
+
+- **A. Leave it**, and record the counts: long lines 15% cheaper, short
+  ones 35% dearer.
+- **B. An empty left answers the right in `_u` mode, and only a buffer an
+  accumulator made is given back.** That needs a mark on the buffer, since
+  the right operand is someone else's and may be a buffer too. Expected:
+  short lines at the record and long lines at today's count, the two rows
+  above together; not built, so not measured. It touches D1056's safety
+  rule (what may be freed), where a mistake is a use after free.
+- **C. `joinLines` starts a line with its first row's cells**, not `[] ++`:
+  the accumulator is then not its own, the pass makes no form, and it is the
+  "plain" row: short lines at the record, long lines 23 M dearer. puritty's
+  change alone.
+- **D. An empty left makes an exact buffer**: one line in the runtime, no
+  change to what is freed; recovers half (`short-10000` 417 M) and keeps
+  long lines.
+
+**Leaning: D now, B after.** D is safe by construction and costs nothing
+measured; B is the whole answer but changes what the runtime frees, which
+is worth its own survey under D1056's rules. The record stays as it is
+until one is chosen: `perf.py` fails on these three cases until then.
