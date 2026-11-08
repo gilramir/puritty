@@ -1,0 +1,883 @@
+module Vt.Parse exposing
+    ( feed
+    , ground
+    , resume
+    , groundMargined
+    , execute
+    , printAscii
+    , printUnicode
+    , startUtf8
+    , continueUtf8
+    , escape
+    , escDispatch
+    , escInter
+    , charset
+    , designate
+    , oscString
+    , oscClip
+    , dcsString
+    , c1
+    , ignoreString
+    , csi
+    , csiIgnore
+    )
+
+{-| The parser, Paul Williams' DEC state machine, resumable at any byte
+(`docs/vt-core.md` §VC45). Its states call each other, so they are one
+module. -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
+import Vt.Edit exposing (..)
+import Vt.Modes exposing (..)
+import Vt.Print exposing (..)
+import Vt.Dcs exposing (..)
+import Vt.Osc exposing (..)
+import Vt.Dispatch exposing (..)
+
+
+{-| The terminal fed one read's bytes. -}
+feed : Bytes -> (moved t : Term) -> Term
+feed bytes t =
+    let
+        n =
+            Bytes.length bytes
+    in
+    if t.ps == psGround then
+        resume bytes n 0 t
+
+    else if t.ps == psEscape then
+        escape bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psEscInter then
+        escInter bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psCsi then
+        let
+            params =
+                t.params
+        in
+        csi bytes n 0 { t | ps = psGround, params = [] } (Builder.fromArray params) t.cur t.colons t.priv t.inter t.phase
+
+    else if t.ps == psCsiIgnore then
+        csiIgnore bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psUtf8 then
+        continueUtf8 bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psOsc then
+        oscString bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psDcs then
+        dcsString bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psClip then
+        oscClip bytes n 0 { t | ps = psGround }
+
+    else
+        ignoreString bytes n 0 { t | ps = psGround }
+
+
+ground : Bytes -> Int -> Int -> (moved t : Term) -> Term
+ground bytes n i t =
+    if i >= n then
+        t
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            if t.plain then
+                printAscii bytes n i b t
+
+            else
+                ground bytes n (i + 1) (printGraphic b t)
+
+        else if b >= 0x80 then
+            if t.plain && not t.wrapNext then
+                printUnicode bytes n i b t
+
+            else
+                startUtf8 bytes n i b t
+
+        else if b == 13 then
+            -- CR and LF here, not through `execute`, as the probe had them
+            ground bytes n (i + 1) { t | x = 0, wrapNext = False }
+
+        else if b == 10 && not t.lfSlow then
+            ground bytes n (i + 1) (lineFeed { t | wrapNext = False })
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else
+            ground bytes n (i + 1) (execute b t)
+
+
+{-| Back to the ground state after a sequence, a string or a decoded
+character: `ground`, which takes CR to column 0, or with the margins
+narrowed `groundMargined`. The margins change only inside a sequence, so the
+test is made once a sequence, not at every CR, which on `vte-scrolling` cost
+a cycle a line, 4% of its time (§VC13). -}
+resume : Bytes -> Int -> Int -> (moved t : Term) -> Term
+resume bytes n i t =
+    if t.left == 0 && t.right == t.cols - 1 then
+        ground bytes n i t
+
+    else
+        groundMargined bytes n i t
+
+
+{-| The ground state with the margins narrowed: no fast paths, which
+`plain` turns off anyway, and CR to the left margin. -}
+groundMargined : Bytes -> Int -> Int -> (moved t : Term) -> Term
+groundMargined bytes n i t =
+    if i >= n then
+        t
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x7F then
+            groundMargined bytes n (i + 1) (printGraphic b t)
+
+        else if b >= 0x80 then
+            startUtf8 bytes n i b t
+
+        else if b == 13 then
+            groundMargined bytes n (i + 1) { t | x = crX t, wrapNext = False }
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else
+            groundMargined bytes n (i + 1) (execute b t)
+
+
+{-| A C0 control. -}
+execute : Int -> (moved t : Term) -> Term
+execute b t =
+    if b == 10 || b == 11 || b == 12 then
+        if t.newline then
+            promptFeed (carriageReturn (lineFeed { t | wrapNext = False }))
+
+        else
+            promptFeed (lineFeed { t | wrapNext = False })
+
+    else if b == 13 then
+        { t | x = crX t, wrapNext = False }
+
+    else if b == 8 then
+        cursorLeft 1 t
+
+    else if b == 9 then
+        { t | x = nextTab t.x 1 t }
+
+    else if b == 14 then
+        withPlain { t | gl = 1 }
+
+    else if b == 15 then
+        withPlain { t | gl = 0 }
+
+    else
+        t
+
+
+{-| A run of printable ASCII in the ground state, GL ASCII, autowrap on and
+insert off. `b` is the run's first byte, read by `ground`. -}
+printAscii : Bytes -> Int -> Int -> Int -> (moved t0 : Term) -> Term
+printAscii bytes n i b t0 =
+    let
+        t =
+            wrapped t0
+
+        cols =
+            t.cols
+
+        end =
+            asciiEnd bytes (min n (i + cols - t.x)) (i + 1)
+
+        x =
+            t.x + end - i
+
+        s =
+            t.screen
+
+        o =
+            rowOffset s t.y
+
+        -- tested only once a spacer head has been written (`heads`): a
+        -- read of the row at every line's start cost `vte-scrolling` 24
+        -- instructions a line, 5% (§VC17)
+        stale =
+            -- read through the extent: a cleared row keeps its old cells;
+            -- or a wide character's head in column 1 written over, which
+            -- one wrapped there under a left margin has (§VC18)
+            t.heads && t.x <= 1 && t.y > 0 && (cellWide (peekCell o 0 s) == wideHead || (x > 1 && cols > 2 && cellWide (peekCell o 1 s) == wideHead))
+    in
+    ground bytes
+        n
+        end
+        { t
+            | screen = unheadIf stale t.y { s | cells = asciiRow bytes i end t.pen t.erase cols o t.x x b s.cells }
+            , x = min (cols - 1) x
+            , wrapNext = x >= cols
+            , lastPoint =
+                if end == i + 1 then
+                    b
+
+                else
+                    byteAt bytes (end - 1)
+        }
+
+
+{-| A run of UTF-8, and the printable ASCII inside it, written to the
+cursor's row at once (`decodeRun`), in the ground state with GL ASCII,
+autowrap on and insert off. The run stops before anything the general path
+has to see: a control, a sequence that is cut by the read's end or is not
+well formed, a C1 control, a mark, a wide character that does not fit, and
+the row's end. When it stops at once, the lead byte `b` at `i` takes the
+general path. A pending wrap takes the general path too, since a mark after
+it joins the row it would leave. -}
+printUnicode : Bytes -> Int -> Int -> Int -> (moved t : Term) -> Term
+printUnicode bytes n i b t =
+    let
+        s =
+            t.screen
+
+        o =
+            rowOffset s t.y
+
+        ext =
+            extentAt o s
+
+        -- the cell the run starts on, read before the run writes it: a wide
+        -- character's tail there loses its head, but only once the run has
+        -- written something, since a run that stops at once (a mark, which
+        -- joins the cell before) leaves the row to the general path as it
+        -- was (§VC11's mark on a tail)
+        first =
+            Maybe.withDefault 0 (Builder.get (o + t.x) s.cells)
+
+        headAt0 =
+            -- read through the extent: a cleared row keeps its old cells
+            t.heads && t.x <= 1 && t.y > 0 && cellWide (peekCell o 0 s) == wideHead
+
+        headAt1 =
+            t.heads && t.x <= 1 && t.y > 0 && t.cols > 2 && cellWide (peekCell o 1 s) == wideHead
+
+        r =
+            decodeRun bytes n i t.pen o t.cols t.x 0 (reachAt o ext t.x s.cells)
+    in
+    if r.next == i then
+        startUtf8 bytes n i b { t | screen = { s | cells = r.cells } }
+
+    else
+        let
+            headless =
+                if cellWide first == wideTail && t.x > 0 && t.x < ext then
+                    Builder.set (o + t.x - 1) t.erase r.cells
+
+                else
+                    r.cells
+
+            -- a wide character whose head the run overwrote loses its spacer
+            after =
+                Maybe.withDefault 0 (Builder.get (o + r.x) headless)
+
+            tidy =
+                if r.x < ext && cellWide after == wideTail then
+                    Builder.set (o + r.x) t.erase headless
+
+                else
+                    headless
+
+            stale =
+                headAt0 && (t.x == 1 || cellWide (Maybe.withDefault 0 (Builder.get o tidy)) /= wideHead) || headAt1 && r.x > 1 && cellWide (Maybe.withDefault 0 (Builder.get (o + 1) tidy)) == 0
+        in
+        ground bytes
+            n
+            r.next
+            { t
+                | screen = unheadIf stale t.y { s | cells = extendTo o t.cols r.x tidy }
+                , x = min (t.cols - 1) r.x
+                , wrapNext = r.x >= t.cols
+                , lastPoint = r.last
+            }
+
+
+{-| A UTF-8 sequence's lead byte, in the ground state. A byte that cannot
+start one is U+FFFD. -}
+startUtf8 : Bytes -> Int -> Int -> Int -> (moved t : Term) -> Term
+startUtf8 bytes n i b t =
+    if b >= 0xC2 && b <= 0xDF then
+        continueUtf8 bytes n (i + 1) { t | utf = Bitwise.and b 0x1F, need = 1, low = 0x80, high = 0xBF }
+
+    else if b >= 0xE0 && b <= 0xEF then
+        continueUtf8 bytes
+            n
+            (i + 1)
+            { t
+                | utf = Bitwise.and b 0x0F
+                , need = 2
+                , low =
+                    if b == 0xE0 then
+                        0xA0
+
+                    else
+                        0x80
+                , high =
+                    if b == 0xED then
+                        0x9F
+
+                    else
+                        0xBF
+            }
+
+    else if b >= 0xF0 && b <= 0xF4 then
+        continueUtf8 bytes
+            n
+            (i + 1)
+            { t
+                | utf = Bitwise.and b 0x07
+                , need = 3
+                , low =
+                    if b == 0xF0 then
+                        0x90
+
+                    else
+                        0x80
+                , high =
+                    if b == 0xF4 then
+                        0x8F
+
+                    else
+                        0xBF
+            }
+
+    else
+        resume bytes n (i + 1) (printDecoded 0xFFFD t)
+
+
+{-| The continuation bytes of a UTF-8 sequence; a read that ends in one
+leaves the parser in `psUtf8`. A byte that cannot continue it ends the
+sequence as U+FFFD and is read again in the ground state (the maximal
+subpart, Unicode §3.9). -}
+continueUtf8 : Bytes -> Int -> Int -> (moved t : Term) -> Term
+continueUtf8 bytes n i t =
+    if t.need <= 0 then
+        resume bytes n i (printDecoded t.utf t)
+
+    else if i >= n then
+        { t | ps = psUtf8 }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= t.low && b <= t.high then
+            continueUtf8 bytes n (i + 1) { t | utf = Bitwise.or (Bitwise.shiftLeftBy 6 t.utf) (Bitwise.and 0x3F b), need = t.need - 1, low = 0x80, high = 0xBF }
+
+        else
+            resume bytes n i (printDecoded 0xFFFD { t | need = 0 })
+
+
+escape : Bytes -> Int -> Int -> (moved t : Term) -> Term
+escape bytes n i t =
+    if i >= n then
+        { t | ps = psEscape }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 0x5B then
+            csi bytes n (i + 1) t (Builder.empty 16) 0 0 0 0 0
+
+        else if b == 0x5D then
+            oscString bytes n (i + 1) { t | str = Builder.empty 64 }
+
+        else if b == 0x50 then
+            dcsString bytes n (i + 1) { t | str = Builder.empty 64 }
+
+        else if b == 0x58 || b == 0x5E || b == 0x5F then
+            ignoreString bytes n (i + 1) t
+
+        else if b >= 0x20 && b < 0x30 then
+            escInter bytes n (i + 1) { t | inter = b }
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (i + 1) t
+
+        else if b < 0x20 then
+            escape bytes n (i + 1) (execute b t)
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else if b == 0x7F || b >= 0xA0 then
+            escape bytes n (i + 1) t
+
+        else
+            resume bytes n (i + 1) (escDispatch b t)
+
+
+escDispatch : Int -> (moved t : Term) -> Term
+escDispatch b t =
+    if b == 0x37 then
+        saveCursor t
+
+    else if b == 0x56 then
+        protect 1 t
+
+    else if b == 0x57 then
+        protect 0 t
+
+    else if b == 0x38 then
+        restoreCursor t
+
+    else if b == 0x44 then
+        promptFeed (lineFeed { t | wrapNext = False })
+
+    else if b == 0x45 then
+        promptFeed (carriageReturn (lineFeed { t | wrapNext = False }))
+
+    else if b == 0x48 then
+        { t | tabs = Builder.set t.x 1 t.tabs }
+
+    else if b == 0x4D then
+        reverseIndex t
+
+    else if b == 0x63 then
+        reset t
+
+    else if b == 0x6E || b == 0x6F then
+        -- LS2 and LS3; LS1R to LS3R shift into GR, which UTF-8 never reads
+        withPlain { t | gl = b - 0x6C }
+
+    else if b == 0x4E || b == 0x4F then
+        -- SS2 and SS3, for the next character
+        withPlain { t | single = b - 0x4C }
+
+    else if b == 0x5A then
+        reply primaryAttributes t
+
+    else if b == 0x3D then
+        { t | modes = Dict.set 66 True t.modes }
+
+    else if b == 0x3E then
+        { t | modes = Dict.set 66 False t.modes }
+
+    else
+        t
+
+
+escInter : Bytes -> Int -> Int -> (moved t : Term) -> Term
+escInter bytes n i t =
+    if i >= n then
+        { t | ps = psEscInter }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x20 && b < 0x30 then
+            -- a second intermediate: nothing the core takes has one
+            escInter bytes n (i + 1) { t | inter = 0xFF }
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (i + 1) t
+
+        else if b < 0x20 then
+            escInter bytes n (i + 1) (execute b t)
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else if b == 0x7F || b >= 0xA0 then
+            escInter bytes n (i + 1) t
+
+        else if t.inter >= 0x28 && t.inter <= 0x2B then
+            resume bytes n (i + 1) (designate (t.inter - 0x28) (charset b) t)
+
+        else if t.inter == 0x23 && b == 0x38 then
+            resume bytes n (i + 1) (alignment t)
+
+        else
+            resume bytes n (i + 1) t
+
+
+{-| The set a designation's final byte names, or -1 for one Ghostty does
+not know, which leaves the slot as it was (§VC17). -}
+charset : Int -> Int
+charset final =
+    if final == 0x42 then
+        0
+
+    else if final == 0x30 then
+        1
+
+    else if final == 0x41 then
+        2
+
+    else
+        -1
+
+
+designate : Int -> Int -> (moved t : Term) -> Term
+designate g set t =
+    if set < 0 then
+        t
+
+    else
+        withPlain { t | sets = Bitwise.or (Bitwise.shiftLeftBy (2 * g) set) (Bitwise.and (Bitwise.complement (Bitwise.shiftLeftBy (2 * g) 3)) t.sets) }
+
+
+{-| An OSC string, to BEL or ST, its first `stringMax` bytes kept. -}
+oscString : Bytes -> Int -> Int -> (moved t : Term) -> Term
+oscString bytes n i t =
+    if i >= n then
+        { t | ps = psOsc }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 7 then
+            resume bytes n (i + 1) (oscDispatch "\u{0007}" t)
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) (oscDispatch "\u{001B}\\" t)
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (i + 1) { t | str = Builder.empty 0 }
+
+        else if b < 0x20 then
+            oscString bytes n (i + 1) t
+
+        else if b == 0x3B && isFiftyTwo t then
+            -- OSC 52: the rest kept whole, not to `stringMax`
+            oscClip bytes n (i + 1) { t | str = Builder.empty 0, osc52 = { noOsc52 | requests = t.osc52.requests } }
+
+        else
+            oscString bytes n (i + 1) (keepByte b t)
+
+
+{-| An OSC 52 after its `52;` (`docs/phase3-select.md` §16), to BEL or ST:
+each run of bytes up to a control is kept as a slice of its read, joined
+with the others at the end, and a read that ends inside it carries on in
+the next (`psClip`). Controls other than the
+ends are skipped, as `oscString` skips them; CAN and SUB end it with
+nothing done. -}
+oscClip : Bytes -> Int -> Int -> (moved t : Term) -> Term
+oscClip bytes n i t =
+    let
+        j =
+            controlFrom bytes i n
+
+        o =
+            t.osc52
+
+        kept =
+            if o.over then
+                t
+
+            else if o.len + (j - i) > clipMax then
+                { t | osc52 = { o | over = True, clip = [], len = 0 } }
+
+            else if j > i then
+                { t | osc52 = { o | clip = Array.pushLast (Bytes.slice i j bytes) o.clip, len = o.len + (j - i) } }
+
+            else
+                t
+    in
+    if j >= n then
+        { kept | ps = psClip }
+
+    else
+        let
+            b =
+                byteAt bytes j
+        in
+        if b == 7 then
+            resume bytes n (j + 1) (clipDispatch True kept)
+
+        else if b == 0x1B then
+            escape bytes n (j + 1) (clipDispatch False kept)
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (j + 1) { kept | osc52 = { noOsc52 | requests = kept.osc52.requests } }
+
+        else
+            oscClip bytes n (j + 1) kept
+
+
+{-| A DCS string, to ST, its first `stringMax` bytes kept. Bytes above 0x7F
+are payload. -}
+dcsString : Bytes -> Int -> Int -> (moved t : Term) -> Term
+dcsString bytes n i t =
+    if i >= n then
+        { t | ps = psDcs }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 0x1B then
+            escape bytes n (i + 1) (dcsDispatch t)
+
+        else if b == 0x18 || b == 0x1A then
+            -- CAN and SUB end it as ESC does, dispatched: leaving Ghostty's
+            -- DCS state unhooks it (§VC17)
+            resume bytes n (i + 1) (dcsDispatch t)
+
+        else if b >= 0x80 && b < 0xA0 && dcsHeader t.str 0 0 then
+            c1 bytes n (i + 1) b { t | str = Builder.empty 0 }
+
+        else
+            dcsString bytes n (i + 1) (keepByte b t)
+
+
+{-| A C1 control as an 8-bit byte, outside the ground state and the
+strings that take high bytes as text (OSC, a DCS's payload): Ghostty's
+"anywhere" transitions. It starts CSI, OSC, DCS or SOS/PM/APC, ends what
+was being parsed at ST, and otherwise is the ESC sequence it stands for
+(0x85 is ESC E). In the ground state such a byte is UTF-8's. -}
+c1 : Bytes -> Int -> Int -> Int -> (moved t : Term) -> Term
+c1 bytes n i b t =
+    if b == 0x9B then
+        csi bytes n i t (Builder.empty 16) 0 0 0 0 0
+
+    else if b == 0x9D then
+        oscString bytes n i { t | str = Builder.empty 64 }
+
+    else if b == 0x90 then
+        dcsString bytes n i { t | str = Builder.empty 64 }
+
+    else if b == 0x98 || b == 0x9E || b == 0x9F then
+        ignoreString bytes n i t
+
+    else if b == 0x9C then
+        resume bytes n i t
+
+    else
+        resume bytes n i (escDispatch (b - 0x40) t)
+
+
+{-| SOS, PM or APC: skipped to ST. -}
+ignoreString : Bytes -> Int -> Int -> (moved t : Term) -> Term
+ignoreString bytes n i t =
+    if i >= n then
+        { t | ps = psString }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (i + 1) t
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else
+            ignoreString bytes n (i + 1) t
+
+
+{-| A CSI's parameters and intermediates, then its final byte. `colons`
+has bit `k` set when parameter `k` was followed by a colon, and `cur` is the
+parameter being read. `phase` is 0 before any parameter byte, 1 among them
+with no digit since the last separator, 2 with one, and 3 or 4 after an
+intermediate, 4 if a digit came after the last separator. A separator ends
+a parameter, 0 if it had no digit, and the final byte keeps the last only
+if it had one, as Ghostty's parser does, so that `CSI 3 ; m` has one
+parameter and `CSI m` none (§VC16); the digit is kept in `phase`, which
+every byte passes on anyway, so that a digit costs what it did. A colon
+outside SGR makes the sequence ignored, as in Ghostty. -}
+csi : Bytes -> Int -> Int -> (moved t : Term) -> (moved params : Builder Int) -> Int -> Int -> Int -> Int -> Int -> Term
+csi bytes n i t params cur colons priv inter phase =
+    if i >= n then
+        { t | ps = psCsi, params = Builder.toArray params, cur = cur, colons = colons, priv = priv, inter = inter, phase = phase }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x30 && b <= 0x39 then
+            if phase >= 3 then
+                csiIgnore bytes n (i + 1) t
+
+            else
+                csi bytes n (i + 1) t params (min 65535 (cur * 10 + b - 0x30)) colons priv inter 2
+
+        else if b == 0x3B || b == 0x3A then
+            if phase >= 3 || (phase == 0 && b == 0x3A) then
+                -- a colon first, before any parameter or marker, makes
+                -- the sequence ignored, as in Ghostty's table (§VC18)
+                csiIgnore bytes n (i + 1) t
+
+            else
+                let
+                    k =
+                        Builder.length params
+                in
+                if k + 1 < paramMax then
+                    csi bytes
+                        n
+                        (i + 1)
+                        t
+                        (Builder.pushLast cur params)
+                        0
+                        (if b == 0x3A then
+                            Bitwise.or colons (Bitwise.shiftLeftBy k 1)
+
+                         else
+                            colons
+                        )
+                        priv
+                        inter
+                        1
+
+                else
+                    csiIgnore bytes n (i + 1) t
+
+        else if b >= 0x3C && b <= 0x3F then
+            if phase == 0 then
+                csi bytes n (i + 1) t params cur colons b inter 1
+
+            else
+                csiIgnore bytes n (i + 1) t
+
+        else if b >= 0x20 && b < 0x30 then
+            -- a second intermediate makes one no command has, as none of
+            -- Ghostty's takes two (§VC17)
+            csi bytes
+                n
+                (i + 1)
+                t
+                params
+                cur
+                colons
+                priv
+                (if phase >= 3 then
+                    0xFF
+
+                 else
+                    b
+                )
+                (if phase == 2 || phase == 4 then
+                    4
+
+                 else
+                    3
+                )
+
+        else if b >= 0x40 && b <= 0x7E then
+            -- one call of `dispatch`, so that clang still inlines it (§VC10)
+            if colons /= 0 && b /= 0x6D then
+                resume bytes n (i + 1) t
+
+            else
+                resume bytes
+                    n
+                    (i + 1)
+                    (dispatch b
+                        priv
+                        inter
+                        colons
+                        (Builder.toArray
+                            (if phase == 2 || phase == 4 then
+                                Builder.pushLast cur params
+
+                             else
+                                params
+                            )
+                        )
+                        t
+                    )
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (i + 1) t
+
+        else if b < 0x20 then
+            csi bytes n (i + 1) (execute b t) params cur colons priv inter phase
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else
+            csi bytes n (i + 1) t params cur colons priv inter phase
+
+
+csiIgnore : Bytes -> Int -> Int -> (moved t : Term) -> Term
+csiIgnore bytes n i t =
+    if i >= n then
+        { t | ps = psCsiIgnore }
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b >= 0x40 && b <= 0x7E then
+            resume bytes n (i + 1) t
+
+        else if b == 0x1B then
+            escape bytes n (i + 1) t
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (i + 1) t
+
+        else if b < 0x20 then
+            csiIgnore bytes n (i + 1) (execute b t)
+
+        else if b >= 0x80 && b < 0xA0 then
+            c1 bytes n (i + 1) b t
+
+        else
+            csiIgnore bytes n (i + 1) t
