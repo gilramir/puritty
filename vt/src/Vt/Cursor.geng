@@ -1,0 +1,553 @@
+module Vt.Cursor exposing
+    ( slotSet
+    , param
+    , rowWrapped
+    , margined
+    , carriageReturn
+    , withLf
+    , crX
+    , rightEdge
+    , tabFloor
+    , reportX
+    , marginUp
+    , marginDown
+    , copyUp
+    , copyDown
+    , clearSpans
+    , copySpan
+    , clearSpan
+    , insertMargined
+    , deleteMargined
+    , widen
+    , widenTo
+    , trim
+    , lastFilled
+    , shifted
+    , cutKeeping
+    , cutAt
+    , reportY
+    , cursorTo
+    , originX
+    , originY
+    , upperLimit
+    , lowerLimit
+    , of
+    , withPlain
+    , nextTab
+    , stopAfter
+    , previousTab
+    , stopBefore
+    , tabControl
+    , clearTabs
+    )
+
+{-| The cursor, the margins, the origin and the tab stops, and the small
+helpers the sections above share (`docs/vt-core.md` §VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+
+
+{-| The set in slot `g` (G0 to G3): 0 ASCII, 1 DEC's special graphics, 2
+British; `sets` holds two bits a slot. -}
+slotSet : Int -> Term -> Int
+slotSet g t =
+    Bitwise.and 3 (Bitwise.shiftRightZfBy (2 * g) t.sets)
+
+
+param : Int -> Int -> Array Int -> Int
+param k default params =
+    when Array.get k params is
+        Just 0 ->
+            default
+
+        Just v ->
+            v
+
+        Nothing ->
+            default
+
+
+rowWrapped : Int -> Screen -> Bool
+rowWrapped y s =
+    Bitwise.and wrappedBit (metaAt (rowOffset s y) s) /= 0
+
+
+{-| Whether DECSLRM has narrowed the margins. Narrowed, printing takes the
+general path and the scrolls, inserts and deletes work on the columns
+between them (§VC13). -}
+margined : Term -> Bool
+margined t =
+    t.left > 0 || t.right < t.cols - 1
+
+
+{-| NEL's and LNM's CR, after the line feed, so that a cursor right of the
+margins at the region's bottom does not scroll, as in Ghostty. -}
+carriageReturn : (moved t : Term) -> Term
+carriageReturn t =
+    { t | x = crX t, wrapNext = False }
+
+
+{-| LF takes `execute`'s path when LNM is set or a prompt or the input
+lasts, which the ground state's tests in one field. -}
+withLf : (moved t : Term) -> Term
+withLf t =
+    { t | lfSlow = t.newline || t.prompt /= 0 }
+
+
+{-| Where CR takes the cursor: the left margin, or the first column from
+left of it outside origin mode. -}
+crX : Term -> Int
+crX t =
+    if t.left == 0 then
+        0
+
+    else if t.origin || t.x >= t.left then
+        t.left
+
+    else
+        0
+
+
+{-| The column printing wraps after, plus one: the right margin, or the
+screen's last column from right of it. -}
+rightEdge : Term -> Int
+rightEdge t =
+    if t.x <= t.right then
+        t.right + 1
+
+    else
+        t.cols
+
+
+tabFloor : Term -> Int
+tabFloor t =
+    if t.origin then
+        t.left
+
+    else
+        0
+
+
+{-| The cursor's column as a report gives it: from the left margin in origin
+mode. -}
+reportX : Term -> Int
+reportX t =
+    if t.origin then
+        max 0 (t.x - t.left)
+
+    else
+        t.x
+
+
+{-| Rows `top` to `bottom`, between the margins, scrolled up `count`: SU,
+DL, and IND at the region's bottom. -}
+marginUp : Int -> Int -> Int -> (moved t : Term) -> Term
+marginUp count top bottom t =
+    let
+        n =
+            min (max 1 count) (bottom - top + 1)
+    in
+    { t | screen = clearSpans (bottom - n + 1) bottom t.left t.right t.erase (copyUp (top + n) bottom n t.left t.right t.screen) }
+
+
+{-| Rows `top` to `bottom`, between the margins, scrolled down `count`: SD,
+IL, and RI at the region's top. -}
+marginDown : Int -> Int -> Int -> (moved t : Term) -> Term
+marginDown count top bottom t =
+    let
+        n =
+            min (max 1 count) (bottom - top + 1)
+    in
+    { t | screen = clearSpans top (top + n - 1) t.left t.right t.erase (copyDown (bottom - n) top n t.left t.right t.screen) }
+
+
+{-| Rows `y` to `last`, each copied `n` rows up, between the columns. -}
+copyUp : Int -> Int -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyUp y last n left right s =
+    if y > last then
+        s
+
+    else
+        copyUp (y + 1) last n left right (copySpan y (y - n) left right s)
+
+
+{-| Rows `y` down to `first`, each copied `n` rows down. -}
+copyDown : Int -> Int -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyDown y first n left right s =
+    if y < first then
+        s
+
+    else
+        copyDown (y - 1) first n left right (copySpan y (y + n) left right s)
+
+
+clearSpans : Int -> Int -> Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+clearSpans y last left right fill s =
+    if y > last then
+        s
+
+    else
+        clearSpans (y + 1) last left right fill (clearSpan y left right fill s)
+
+
+{-| Columns `left` to `right` of row `src` copied to row `dst`; a wide
+character the margins cut, in either row, goes. -}
+copySpan : Int -> Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+copySpan src dst left right s0 =
+    let
+        so =
+            rowOffset s0 src
+
+        dO =
+            rowOffset s0 dst
+
+        reach =
+            min s0.cols (right + 2)
+
+        s =
+            widenTo dO reach (widenTo so reach s0)
+
+        cut =
+            shifted dO s.cols left right (shifted so s.cols left right s.cells)
+    in
+    trim dO (trim so { s | cells = Builder.copyWithin (dO + left) (so + left) (so + right + 1) cut })
+
+
+clearSpan : Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+clearSpan y left right fill s0 =
+    let
+        o =
+            rowOffset s0 y
+
+        s =
+            widenTo o (min s0.cols (right + 2)) s0
+    in
+    trim o { s | cells = Builder.fill (o + left) (o + right + 1) fill (shifted o s.cols left right s.cells) }
+
+
+{-| ICH between the margins: the cells from `x` to `right` move right, those
+past `right` lost. -}
+insertMargined : Int -> Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+insertMargined o x count right erase s0 =
+    let
+        s =
+            widen o s0
+
+        n =
+            min (max 1 count) (right - x + 1)
+
+        cut =
+            cutAt erase o s.cols (right + 1 - n) (cutAt erase o s.cols (right + 1) (cutAt erase o s.cols x s.cells))
+
+        moved =
+            if right + 1 - n > x then
+                Builder.copyWithin (o + x + n) (o + x) (o + right + 1 - n) cut
+
+            else
+                cut
+    in
+    trim o { s | cells = Builder.fill (o + x) (o + x + n) erase moved }
+
+
+{-| DCH between the margins: the cells past the deleted ones, to `right`,
+move left, and the erase cell comes in at `right`. -}
+deleteMargined : Int -> Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+deleteMargined o x count right erase s0 =
+    let
+        s =
+            widen o s0
+
+        n =
+            min (max 1 count) (right - x + 1)
+
+        cut =
+            cutAt erase o s.cols (right + 1) (cutAt erase o s.cols (x + n) (cutAt erase o s.cols x s.cells))
+
+        moved =
+            if x + n <= right then
+                Builder.copyWithin (o + x) (o + x + n) (o + right + 1) cut
+
+            else
+                cut
+    in
+    trim o { s | cells = Builder.fill (o + right + 1 - n) (o + right + 1) erase moved }
+
+
+{-| The row at `o` with every cell explicit: those past its extent made
+empty and its extent the row's width, its wrapped flag kept. -}
+widen : Int -> (moved s : Screen) -> Screen
+widen o s =
+    let
+        m =
+            metaAt o s
+    in
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt s.cols)) (reachAt o (metaExtent m) s.cols s.cells) }
+
+
+{-| The row at `o` with every cell before column `x` explicit, as `widen`
+makes it but only that far. A span between the margins reads its row only to
+the column past the right margin, so it widens that far and not to the row's
+width: a scroll inside narrow margins costs the margins' width a row, not the
+screen's (§VC11's timeout). -}
+widenTo : Int -> Int -> (moved s : Screen) -> Screen
+widenTo o x s =
+    let
+        m =
+            metaAt o s
+
+        e =
+            metaExtent m
+    in
+    if x > e then
+        { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt x)) (Builder.fill (o + e) (o + x) 0 s.cells) }
+
+    else
+        s
+
+
+{-| The row at `o`'s extent brought back to its last cell that is not
+empty. -}
+trim : Int -> (moved s : Screen) -> Screen
+trim o s =
+    let
+        m =
+            metaAt o s
+    in
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt (lastFilled o (metaExtent m) s.cells))) s.cells }
+
+
+lastFilled : Int -> Int -> Builder Int64 -> Int
+lastFilled o e cells =
+    if e <= 0 then
+        0
+
+    else if Maybe.withDefault 0 (Builder.get (o + e - 1) cells) == 0 then
+        lastFilled o (e - 1) cells
+
+    else
+        e
+
+
+{-| A row about to have columns `left` to `right` shifted, as Ghostty's
+`rowWillBeShifted` readies it (§VC17): a wide character either margin cuts
+loses its content, both halves narrow and in their style, and when the
+margins reach the row's end or the first two columns, a spacer head at its
+end is a narrow cell. -}
+shifted : Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+shifted o cols left right cells =
+    let
+        last =
+            Maybe.withDefault 0 (Builder.get (o + cols - 1) cells)
+
+        ended =
+            if (right == cols - 1 || left < 2) && cellWide last == spacerHead then
+                Builder.set (o + cols - 1) (Bitwise.and (Bitwise.complement 0x600000) last) cells
+
+            else
+                cells
+    in
+    cutKeeping o cols (right + 1) (cutKeeping o cols left ended)
+
+
+{-| `cutAt`, the halves keeping their style and protection. -}
+cutKeeping : Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+cutKeeping o cols c cells =
+    if c <= 0 || c >= cols then
+        cells
+
+    else
+        let
+            tail =
+                Maybe.withDefault 0 (Builder.get (o + c) cells)
+
+            head =
+                Maybe.withDefault 0 (Builder.get (o + c - 1) cells)
+        in
+        if cellWide tail == wideTail then
+            Builder.set (o + c - 1) (Bitwise.and (Bitwise.complement 0xFFFFFF) head) (Builder.set (o + c) (Bitwise.and (Bitwise.complement 0xFFFFFF) tail) cells)
+
+        else
+            cells
+
+
+{-| A wide character that a boundary before column `c` cuts in two, both
+halves made `fill`, the erase cell, as Ghostty clears them (§VC18). -}
+cutAt : Int64 -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+cutAt fill o cols c cells =
+    if c <= 0 || c >= cols then
+        cells
+
+    else if cellWide (Maybe.withDefault 0 (Builder.get (o + c) cells)) == wideTail then
+        Builder.set (o + c - 1) fill (Builder.set (o + c) fill cells)
+
+    else
+        cells
+
+
+{-| The cursor's row as a report gives it: from the region's top in origin
+mode. -}
+reportY : Term -> Int
+reportY t =
+    if t.origin then
+        max 0 (t.y - t.top)
+
+    else
+        t.y
+
+
+{-| CUP: column `x`, row `y`, from the region's top in origin mode. -}
+cursorTo : Int -> Int -> (moved t : Term) -> Term
+cursorTo x y t =
+    if t.origin then
+        { t | x = clamp t.left t.right (x + t.left), y = clamp t.top t.bottom (y + t.top), wrapNext = False }
+
+    else
+        { t | x = clamp 0 (t.cols - 1) x, y = clamp 0 (t.rows - 1) y, wrapNext = False }
+
+
+{-| The cursor's column and row as CUP gives them, from the margins in
+origin mode. -}
+originX : Term -> Int
+originX t =
+    if t.origin then
+        max 0 (t.x - t.left)
+
+    else
+        t.x
+
+
+originY : Term -> Int
+originY t =
+    if t.origin then
+        max 0 (t.y - t.top)
+
+    else
+        t.y
+
+
+{-| How far up CUU goes: the region's top when the cursor is in it. -}
+upperLimit : Term -> Int
+upperLimit t =
+    if t.y >= t.top then
+        t.top
+
+    else
+        0
+
+
+lowerLimit : Term -> Int
+lowerLimit t =
+    if t.y <= t.bottom then
+        t.bottom
+
+    else
+        t.rows - 1
+
+
+{-| DECRQM's answer for a mode the core keeps: 1 set, 2 reset. -}
+of : Bool -> Int
+of on =
+    if on then
+        1
+
+    else
+        2
+
+
+{-| `plain` kept to what it says: GL is ASCII, autowrap is on and insert is
+off, which is when the ground state's fast paths may write a run (§VC5).
+Set wherever any of the four changes. -}
+withPlain : (moved t : Term) -> Term
+withPlain t =
+    { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) && not t.statusLine }
+
+
+nextTab : Int -> Int -> Term -> Int
+nextTab x count t =
+    if count <= 0 || x >= t.right then
+        x
+
+    else
+        nextTab (stopAfter (x + 1) t) (count - 1) t
+
+
+stopAfter : Int -> Term -> Int
+stopAfter x t =
+    if x >= t.right then
+        t.right
+
+    else if Builder.get x t.tabs == Just 1 then
+        x
+
+    else
+        stopAfter (x + 1) t
+
+
+previousTab : Int -> Int -> Term -> Int
+previousTab x count t =
+    if count <= 0 || x <= tabFloor t then
+        x
+
+    else
+        previousTab (stopBefore (x - 1) t) (count - 1) t
+
+
+stopBefore : Int -> Term -> Int
+stopBefore x t =
+    if x <= tabFloor t then
+        tabFloor t
+
+    else if Builder.get x t.tabs == Just 1 then
+        x
+
+    else
+        stopBefore (x - 1) t
+
+
+{-| CTC as Ghostty takes it (§VC17): 0 or nothing sets a stop at the
+cursor, 2 clears it and 5 clears them all; anything else, or more than one
+parameter, does nothing. -}
+tabControl : Array Int -> (moved t : Term) -> Term
+tabControl params t =
+    if params == [] || params == [ 0 ] then
+        { t | tabs = Builder.set t.x 1 t.tabs }
+
+    else if params == [ 2 ] then
+        clearTabs 0 t
+
+    else if params == [ 5 ] then
+        clearTabs 3 t
+
+    else
+        t
+
+
+clearTabs : Int -> (moved t : Term) -> Term
+clearTabs how t =
+    if how == 0 then
+        { t | tabs = Builder.set t.x 0 t.tabs }
+
+    else if how == 3 then
+        { t | tabs = Builder.fill 0 t.cols 0 t.tabs }
+
+    else
+        t
