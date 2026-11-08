@@ -1,0 +1,625 @@
+module Vt.Dispatch exposing
+    ( dispatch
+    , dispatchRest
+    , dispatchRare
+    , count0
+    , zeroIsNothing
+    , takesOne
+    , primaryAttributes
+    , cursorLeft
+    , reverseLeft
+    , rectChecksum
+    )
+
+{-| A CSI sequence's dispatch (`docs/vt-core.md` §VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
+import Vt.Edit exposing (..)
+import Vt.Modes exposing (..)
+import Vt.Print exposing (..)
+import Vt.Dcs exposing (..)
+import Vt.Osc exposing (..)
+
+
+{-| A CSI sequence's action. SGR and CUP, most of what a program sends, are
+taken here, and every other sequence by `dispatchRest`, a call, so that this
+function stays small enough for clang to inline into `csi`. With every
+sequence in one function it sat just under clang's limit for a function
+called once, and three more fields in `Term` pushed it over: an out-of-line
+call for each sequence cost `cup` 15 cycles a sequence, 12% of its time.
+`dispatchRest` is called from two places, since clang inlines a function
+called from only one into its caller whatever its size, and this one would
+be too big again (§VC10). -}
+dispatch : Int -> Int -> Int -> Int -> Array Int -> (moved t : Term) -> Term
+dispatch final priv inter colons params t =
+    if priv == 0 && inter == 0 then
+        if final == 0x6D then
+            withPen (sgr params colons 0 t.attrs) t
+
+        else if final == 0x48 || final == 0x66 then
+            if Array.length params <= 2 then
+                cursorTo (param 1 1 params - 1) (param 0 1 params - 1) t
+
+            else
+                t
+
+        else
+            dispatchRest final priv inter params t
+
+    else
+        dispatchRest final priv inter params t
+
+
+dispatchRest : Int -> Int -> Int -> Array Int -> (moved t : Term) -> Term
+dispatchRest final priv inter params t =
+    if priv == 0 && inter == 0 then
+        dispatchRare final params t
+
+    else if final == 0x75 && inter == 0 then
+        keyFlags priv params t
+
+    else if priv == 0x3F && inter == 0 then
+        if final == 0x68 then
+            Array.foldl (\p acc -> setPrivate p True acc) t params
+
+        else if final == 0x57 && params == [ 5 ] then
+            -- DECST8C: a stop every eight columns, as Ghostty's tab_reset
+            { t | tabs = Builder.fromArray (Array.initialize t.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
+
+        else if final == 0x6C then
+            Array.foldl (\p acc -> setPrivate p False acc) t params
+
+        else if final == 0x73 then
+            Array.foldl saveMode t params
+
+        else if final == 0x72 then
+            Array.foldl restoreMode t params
+
+        else if Array.length params > 1 then
+            t
+
+        else if final == 0x4A then
+            eraseDisplay True (param 0 0 params) t
+
+        else if final == 0x4B then
+            eraseLine True (param 0 0 params) t
+
+        else if final == 0x6E && param 0 0 params == 998 then
+            visibilityReport t
+
+        else if final == 0x6E && param 0 0 params == 6 then
+            reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
+
+        else
+            t
+
+    else if priv == 0 && inter == 0x24 && final == 0x7D && Array.length params == 1 && param 0 0 params <= 1 then
+        -- DECSASD: 1 makes the status line the active display, which the
+        -- core has none of, so printing goes nowhere until 0; as Ghostty,
+        -- which shows no status line either (§VC26)
+        withPlain { t | statusLine = param 0 0 params == 1 }
+
+    else if priv == 0x3F && inter == 0x24 && final == 0x70 && Array.length params == 1 then
+        let
+            p =
+                param 0 0 params
+        in
+        reply ("\u{001B}[?" ++ String.fromInt p ++ ";" ++ String.fromInt (privateState p t) ++ "$y") t
+
+    else if priv == 0 && inter == 0x24 && final == 0x70 && Array.length params == 1 then
+        let
+            p =
+                param 0 0 params
+        in
+        reply ("\u{001B}[" ++ String.fromInt p ++ ";" ++ String.fromInt (ansiState p t) ++ "$y") t
+
+    else if priv == 0x3E && final == 0x63 && inter == 0 then
+        reply "\u{001B}[>1;0;0c" t
+
+    else if priv == 0x3E && final == 0x6D && inter == 0 then
+        modifyKeys params t
+
+    else if priv == 0x3E && final == 0x6E && inter == 0 then
+        -- XTMODKEYS' reset: modifyOtherKeys off, as Ghostty takes it
+        { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
+    else if priv == 0x3E && final == 0x71 && inter == 0 then
+        reply "\u{001B}P>|puritty\u{001B}\\" t
+
+    else if priv == 0x3D && final == 0x63 && inter == 0 then
+        reply "\u{001B}P!|00000000\u{001B}\\" t
+
+    else if priv == 0 && inter == 0x21 && final == 0x70 && Array.length params == 0 then
+        softReset t
+
+    else if priv == 0 && inter == 0x22 && final == 0x71 && Array.length params <= 1 then
+        let
+            p =
+                param 0 0 params
+        in
+        if p == 1 then
+            protect 2 t
+
+        else if p == 0 || p == 2 then
+            protect 0 t
+
+        else
+            t
+
+    else if priv == 0 && inter == 0x2A && final == 0x79 && t.config.checksums && Array.length params <= 6 then
+        reply ("\u{001B}P" ++ String.fromInt (param 0 0 params) ++ "!~" ++ hex4 (rectChecksum params t) ++ "\u{001B}\\") t
+
+    else if priv == 0 && inter == 0x23 && final == 0x79 && t.config.checksums && Array.length params <= 1 then
+        { t | xtChecksum = Bitwise.and 31 (param 0 0 params) }
+
+    else if priv == 0 && inter == 0x20 && final == 0x71 && Array.length params <= 1 then
+        cursorStyle (param 0 0 params) t
+
+    else
+        t
+
+
+{-| The plain sequences `dispatch` does not take itself. Each takes as
+many parameters as Ghostty's takes, and one with more is ignored
+(§VC16): one for the cursor moves, the erases, the inserts and deletes,
+the scrolls, the tabs and REP, two for DECSTBM, and exactly one for DSR
+and XTWINOPS 18. -}
+dispatchRare : Int -> Array Int -> (moved t : Term) -> Term
+dispatchRare final params t =
+    if Array.length params > 1 && takesOne final then
+        t
+
+    else if zeroIsNothing final && count0 params == 0 then
+        t
+
+    else if final == 0x41 || final == 0x6B then
+        { t | y = max (upperLimit t) (t.y - param 0 1 params), wrapNext = False }
+
+    else if final == 0x42 then
+        { t | y = min (lowerLimit t) (t.y + param 0 1 params), wrapNext = False }
+
+    else if final == 0x65 then
+        -- VPR is CUP's row moved, to the screen's bottom or in origin mode
+        -- the region's, not CUD (§VC16); by 0 too, which ends a pending
+        -- wrap and in origin mode brings the cursor into the region (§VC17)
+        cursorTo (originX t) (originY t + count0 params) t
+
+    else if final == 0x61 then
+        cursorTo (originX t + count0 params) (originY t) t
+
+    else if final == 0x43 then
+        { t
+            | x =
+                min
+                    (if t.x <= t.right then
+                        t.right
+
+                     else
+                        t.cols - 1
+                    )
+                    (t.x + param 0 1 params)
+            , wrapNext = False
+        }
+
+    else if final == 0x44 || final == 0x6A then
+        cursorLeft (param 0 1 params) t
+
+    else if final == 0x45 then
+        { t | y = min (lowerLimit t) (t.y + param 0 1 params), x = crX t, wrapNext = False }
+
+    else if final == 0x46 then
+        { t | y = max (upperLimit t) (t.y - param 0 1 params), x = crX t, wrapNext = False }
+
+    else if final == 0x47 || final == 0x60 then
+        -- CHA and HPA are CUP's column set, its row kept as CUP gives it:
+        -- in origin mode a cursor outside the region comes into it, as in
+        -- Ghostty's `setCursorCol` (§VC26)
+        cursorTo (param 0 1 params - 1) (originY t) t
+
+    else if final == 0x64 then
+        cursorTo (originX t) (param 0 1 params - 1) t
+
+    else if final == 0x49 then
+        { t | x = nextTab t.x (param 0 1 params) t }
+
+    else if final == 0x5A then
+        { t | x = previousTab t.x (param 0 1 params) t }
+
+    else if final == 0x4A then
+        eraseDisplay False (param 0 0 params) t
+
+    else if final == 0x4B then
+        eraseLine False (param 0 0 params) t
+
+    else if final == 0x58 then
+        eraseChars (param 0 1 params) t
+
+    else if final == 0x40 then
+        if not (margined t) then
+            let
+                s =
+                    t.screen
+            in
+            { t | screen = insertCells (rowOffset s t.y) t.x (param 0 1 params) t.erase s, wrapNext = False }
+
+        else if t.x >= t.left && t.x <= t.right then
+            let
+                s =
+                    t.screen
+            in
+            { t | screen = insertMargined (rowOffset s t.y) t.x (param 0 1 params) t.right t.erase s, wrapNext = False }
+
+        else
+            { t | wrapNext = False }
+
+    else if final == 0x50 then
+        if not (margined t) then
+            deleteChars (param 0 1 params) (resetWrap (splitAbove (t.x + min (param 0 1 params) (t.cols - t.x)) (splitAbove t.x t)))
+
+        else if t.x >= t.left && t.x <= t.right then
+            let
+                split =
+                    resetWrap (splitAbove (t.x + min (param 0 1 params) (t.right + 1 - t.x)) (splitAbove t.x t))
+
+                s =
+                    split.screen
+            in
+            { split | screen = setWrapped split.y False (deleteMargined (rowOffset s split.y) split.x (param 0 1 params) split.right split.erase s), wrapNext = False }
+
+        else
+            t
+
+    else if final == 0x72 && Array.length params <= 2 then
+        let
+            top =
+                param 0 1 params - 1
+
+            bottom =
+                min (t.rows - 1) (param 1 t.rows params - 1)
+        in
+        if top < bottom then
+            cursorTo 0 0 (withScroll { t | top = top, bottom = bottom })
+
+        else
+            t
+
+    else if final == 0x53 then
+        if margined t then
+            marginUp (param 0 1 params) t.top t.bottom t
+
+        else
+            -- no more rows to the scrollback than the region has; a
+            -- region that is not the screen's top, or on the alternate
+            -- screen not its bottom, is DL's and its rows stop wrapping, as
+            -- in Ghostty (§VC16)
+            let
+                scrolls =
+                    t.top == 0 && (not (isAlt t) || t.bottom == t.rows - 1)
+
+                top =
+                    t.top
+
+                bottom =
+                    t.bottom
+
+                up =
+                    regionUp (min (count0 params) (bottom - top + 1)) top bottom t
+            in
+            if scrolls then
+                up
+
+            else
+                unwrapRegion top bottom up
+
+    else if final == 0x54 then
+        if margined t then
+            marginDown (param 0 1 params) t.top t.bottom t
+
+        else
+            unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
+
+    else if final == 0x4C then
+        if t.y < t.top || t.y > t.bottom then
+            t
+
+        else if margined t then
+            if t.x >= t.left && t.x <= t.right then
+                marginDown (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
+
+            else
+                t
+
+        else
+            unwrapRegion t.y t.bottom (regionDown (param 0 1 params) t.y t.bottom { t | x = 0, wrapNext = False })
+
+    else if final == 0x4D then
+        if t.y < t.top || t.y > t.bottom then
+            t
+
+        else if margined t then
+            if t.x >= t.left && t.x <= t.right then
+                marginUp (param 0 1 params) t.y t.bottom { t | x = t.left, wrapNext = False }
+
+            else
+                t
+
+        else
+            unwrapRegion t.y t.bottom (scrollUpBy False (count0 params) t.y t.bottom { t | x = 0, wrapNext = False })
+
+    else if final == 0x62 then
+        repeatLast (min 65535 (param 0 1 params)) t
+
+    else if final == 0x67 then
+        clearTabs (param 0 0 params) t
+
+    else if final == 0x57 then
+        tabControl params t
+
+    else if final == 0x68 then
+        Array.foldl (\p acc -> setAnsi p True acc) t params
+
+    else if final == 0x6C then
+        Array.foldl (\p acc -> setAnsi p False acc) t params
+
+    else if final == 0x6E && Array.length params == 1 then
+        let
+            p =
+                param 0 0 params
+        in
+        if p == 6 then
+            reply ("\u{001B}[" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ "R") t
+
+        else if p == 5 then
+            reply "\u{001B}[0n" t
+
+        else
+            t
+
+    else if final == 0x63 then
+        reply primaryAttributes t
+
+    else if final == 0x74 && Array.length params == 1 && (param 0 0 params == 18 || param 0 0 params == 19) then
+        -- 19, the screen's size, is the text area's as in Ghostty and VTE
+        reply ("\u{001B}[" ++ String.fromInt (param 0 0 params - 10) ++ ";" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ "t") t
+
+    else if final == 0x74 && Array.length params == 1 && param 0 0 params == 14 && pixelsKnown t then
+        reply ("\u{001B}[4;" ++ String.fromInt (t.rows * t.config.cellHeight) ++ ";" ++ String.fromInt (t.cols * t.config.cellWidth) ++ "t") t
+
+    else if final == 0x74 && Array.length params == 1 && param 0 0 params == 16 && pixelsKnown t then
+        reply ("\u{001B}[6;" ++ String.fromInt t.config.cellHeight ++ ";" ++ String.fromInt t.config.cellWidth ++ "t") t
+
+    else if final == 0x73 then
+        -- CSI s is SCOSC, or with left and right margins on (?69) DECSLRM;
+        -- with parameters it is DECSLRM, which does nothing with them off
+        -- (`CSI 0 s` among them, §VC16); with more than two, nothing
+        if Array.length params > 2 then
+            t
+
+        else if Dict.get 69 t.modes == Just True then
+            setMargins (param 0 1 params) (param 1 t.cols params) t
+
+        else if Array.length params == 0 then
+            saveCursor t
+
+        else
+            t
+
+    else if final == 0x75 then
+        restoreCursor t
+
+    else
+        t
+
+
+{-| A count, 1 when there is no parameter, and 0 when it is 0. -}
+count0 : Array Int -> Int
+count0 params =
+    Maybe.withDefault 1 (Array.first params)
+
+
+{-| The finals whose count of 0 does nothing, as in Ghostty, where for the
+rest 0 is 1 (§VC16): CHT, CBT, IL, DL, DCH, SU and SD. HPR and VPR by 0
+move as CUP does, to where the cursor is (§VC17). -}
+zeroIsNothing : Int -> Bool
+zeroIsNothing final =
+    final == 0x49
+        || final == 0x5A
+        || final == 0x4C
+        || final == 0x4D
+        || final == 0x50
+        || final == 0x53
+        || final == 0x54
+
+
+{-| The finals that take one parameter at most. -}
+takesOne : Int -> Bool
+takesOne final =
+    (final >= 0x40 && final <= 0x47)
+        || final == 0x4A
+        || final == 0x4B
+        || final == 0x4C
+        || final == 0x4D
+        || final == 0x50
+        || final == 0x53
+        || final == 0x54
+        || final == 0x58
+        || final == 0x5A
+        || final == 0x49
+        || final == 0x60
+        || final == 0x61
+        || final == 0x62
+        || final == 0x64
+        || final == 0x65
+        || final == 0x67
+        || final == 0x6A
+        || final == 0x6B
+
+
+{-| DA1's answer, and DECID's: a VT220 with ANSI colour, as libghostty-vt
+answers when its embedder does not say otherwise (§VC10). -}
+primaryAttributes : String
+primaryAttributes =
+    "\u{001B}[?62;22c"
+
+
+{-| BS and CUB: `n` columns left. With autowrap and reverse wraparound
+(?45), a move past the first column goes on from the last column of the row
+above if that row wrapped into this one, and stops at the region's top; with
+the extended form (?1045) it goes on whether the row wrapped or not, and from
+the region's top to its bottom. A pending wrap takes one of the `n`. As xterm
+and Ghostty do (§VC12). -}
+cursorLeft : Int -> (moved t : Term) -> Term
+cursorLeft n t =
+    let
+        mode =
+            if not t.autowrap then
+                0
+
+            else if Dict.get 1045 t.modes == Just True then
+                2
+
+            else if Dict.get 45 t.modes == Just True then
+                1
+
+            else
+                0
+    in
+    if mode == 0 then
+        -- the left margin stops it, unless it starts left of the margin
+        { t | x = max (if t.x < t.left then 0 else t.left) (t.x - n), wrapNext = False }
+
+    else
+        let
+            count =
+                if t.wrapNext then
+                    n - 1
+
+                else
+                    n
+
+            -- the left margin, or the first column from left of it
+            lm =
+                if t.x < t.left then
+                    0
+
+                else
+                    t.left
+        in
+        if count <= 0 then
+            { t | wrapNext = False }
+
+        else if t.x == lm && mode == 1 && t.y <= t.top then
+            { t | x = lm, y = t.top, wrapNext = False }
+
+        else
+            reverseLeft mode lm count { t | wrapNext = False }
+
+
+reverseLeft : Int -> Int -> Int -> (moved t : Term) -> Term
+reverseLeft mode lm count t0 =
+    let
+        amount =
+            min (t0.x - lm) count
+
+        rest =
+            count - amount
+
+        t =
+            { t0 | x = t0.x - amount }
+    in
+    if rest == 0 then
+        t
+
+    else if t.y == t.top then
+        if mode == 2 then
+            reverseLeft mode lm (rest - 1) { t | x = t.right, y = t.bottom }
+
+        else
+            t
+
+    else if t.y == 0 then
+        t
+
+    else if mode == 1 && not (rowWrapped (t.y - 1) t.screen) then
+        t
+
+    else
+        reverseLeft mode lm (rest - 1) { t | x = t.right, y = t.y - 1 }
+
+
+{-| DECRQCRA's checksum of the rectangle `params` names (its id, a page, then
+top, left, bottom and right from 1), as xterm's `xtermCheckRect` makes it
+with the bits XTCHECKSUM chose (`t.xtChecksum`, V14): 1 not negated, 2 no
+attributes added, 4 no blanks left out, 8 a cell never written to counted
+as a space, 16 the code point rather than the DEC 8-bit value. A new
+terminal's are 23, xterm's `checksumExtension: 23`, which is what esctest2
+expects of xterm 334 and later and what Ghostty's runner sets. In origin
+mode the rectangle is from the region's top and the left margin; a 0 is the
+default, and each edge is held to the screen. -}
+rectChecksum : Array Int -> Term -> Int
+rectChecksum params t =
+    let
+        margin =
+            if t.origin then
+                t.top
+
+            else
+                0
+
+        side =
+            if t.origin then
+                t.left
+
+            else
+                0
+
+        edge i default m most =
+            clamp 1 most (param i default params + m)
+
+        top =
+            edge 2 1 margin t.rows
+
+        left =
+            edge 3 1 side t.cols
+
+        bottom =
+            edge 4 t.rows margin t.rows
+
+        right =
+            edge 5 t.cols side t.cols
+
+        sum =
+            if top > bottom || left > right then
+                0
+
+            else
+                Bitwise.and 0xFFFF (checksumRows t (left - 1) (right - 1) (top - 1) (bottom - 1) 0x10000)
+    in
+    if Bitwise.and 1 t.xtChecksum /= 0 then
+        sum
+
+    else
+        Bitwise.and 0xFFFF (0 - sum)
