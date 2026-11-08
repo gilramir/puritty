@@ -1,0 +1,505 @@
+module Vt.Scroll exposing
+    ( historyBound
+    , noteReach
+    , freshLine
+    , setMargins
+    , lineFeed
+    , feedOther
+    , scrollFull
+    , scrollRegion
+    , scrollOther
+    , keepsScrollback
+    , withScroll
+    , feedFull
+    , feedRegion
+    , reverseIndex
+    , regionUp
+    , unwrapRegion
+    , unheadEnd
+    , scrollUpBy
+    , regionDown
+    , resizeQuiet
+    , resizeTo
+    , resized
+    )
+
+{-| Line feeds, the scrolling regions and the resize of the term's state
+(`docs/vt-core.md` §VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Prompt exposing (..)
+
+
+{-| The rows the scrollback holds at the terminal's width: the ring's and
+the pages', which have the screen's width (V20), so the count is exact.
+For the differential fuzzer, which compares the scrollback only while
+neither the core nor Ghostty may have pruned it, as they prune it
+differently (§VC17); `historyReached` says whether either may have (§VC25). -}
+historyBound : Term -> Int
+historyBound t =
+    let
+        ring =
+            if t.alt then
+                when t.other is
+                    Just main ->
+                        main.hist
+
+                    Nothing ->
+                        0
+
+            else
+                t.screen.hist
+    in
+    ring + t.back.rows
+
+
+{-| `t` with the rows its scrollback holds now noted in `peak`. -}
+noteReach : (moved t : Term) -> Term
+noteReach t =
+    let
+        now =
+            historyBound t
+    in
+    if now <= t.back.peak then
+        t
+
+    else
+        let
+            b =
+                t.back
+        in
+        { t | back = { b | peak = now } }
+
+
+{-| A fresh line, as Ghostty's for a semantic prompt: CR and IND unless the
+cursor is at the left margin, or in the first column when it is left of the
+margin. -}
+freshLine : (moved t : Term) -> Term
+freshLine t =
+    if t.x == (if t.x < t.left then 0 else t.left) then
+        t
+
+    else
+        promptFeed (lineFeed { t | x = crX t, wrapNext = False })
+
+
+{-| DECSLRM, columns from 1, as Ghostty sets them: the cursor home after. -}
+setMargins : Int -> Int -> (moved t : Term) -> Term
+setMargins l r t =
+    let
+        left =
+            max 1 l
+
+        right =
+            min t.cols r
+    in
+    if left >= right then
+        t
+
+    else
+        cursorTo 0 0 (withScroll (withPlain { t | left = left - 1, right = right - 1 }))
+
+
+lineFeed : (moved t : Term) -> Term
+lineFeed t =
+    if t.y == t.bottom then
+        if t.scroll == scrollFull then
+            feedFull t
+
+        else if t.scroll == scrollRegion then
+            feedRegion t
+
+        else
+            feedOther t
+
+    else if t.y < t.rows - 1 then
+        { t | y = t.y + 1 }
+
+    else
+        t
+
+
+{-| A line feed at the region's bottom that is neither `feedFull`'s nor
+`feedRegion`'s: between narrowed margins, when the cursor is between them,
+or `regionUp`'s. -}
+feedOther : (moved t : Term) -> Term
+feedOther t =
+    if margined t then
+        if t.x >= t.left && t.x <= t.right then
+            marginUp 1 t.top t.bottom t
+
+        else
+            t
+
+    else
+        regionUp 1 t.top t.bottom t
+
+
+{-| The kinds of line feed at the bottom of the region that `lineFeed` takes
+straight to their work, decided where the region, the screen or the
+scrollback change (`withScroll`): the whole main screen with scrollback
+kept, and a region of the screen with none kept. Any other is
+`regionUp`'s. A screen whose erase cell has a style takes `regionUp` too. -}
+scrollFull : Int
+scrollFull =
+    1
+
+
+scrollRegion : Int
+scrollRegion =
+    2
+
+
+scrollOther : Int
+scrollOther =
+    0
+
+
+keepsScrollback : Int -> Term -> Bool
+keepsScrollback top t =
+    top == 0 && t.back.limit > 0 && not (isAlt t)
+
+
+withScroll : (moved t : Term) -> Term
+withScroll t =
+    let
+        keep =
+            keepsScrollback t.top t
+
+        whole =
+            t.top == 0 && t.bottom == t.rows - 1
+    in
+    if margined t then
+        { t | scroll = scrollOther, screen = withRegion t.top t.bottom t.screen }
+
+    else if keep && whole then
+        { t | scroll = scrollFull, screen = withRegion t.top t.bottom t.screen }
+
+    else if not keep && not whole then
+        { t | scroll = scrollRegion, screen = withRegion t.top t.bottom t.screen }
+
+    else
+        { t | scroll = scrollOther, screen = withRegion t.top t.bottom t.screen }
+
+
+{-| `regionUp 1` of the whole main screen, scrollback kept. -}
+feedFull : (moved t : Term) -> Term
+feedFull t =
+    let
+        s =
+            t.screen
+
+        last =
+            t.rows - 1
+    in
+    if s.hist + s.rows >= s.size then
+        let
+            room =
+                pageOut t.clusters s t.back
+
+            r =
+                room.screen
+        in
+        { t | screen = { r | base = phys r 1, hist = r.hist + 1 } |> clearRow last t.erase, back = room.back }
+
+    else
+        { t | screen = { s | base = phys s 1, hist = s.hist + 1 } |> clearRow last t.erase }
+
+
+{-| `regionUp 1` of a region, no scrollback kept: when the region is one
+stretch of the ring, its turn counted on by one and the row that left, now
+its bottom row, cleared. -}
+feedRegion : (moved t : Term) -> Term
+feedRegion t =
+    if slot t.screen t.top <= slot t.screen t.bottom then
+        let
+            s =
+                t.screen
+        in
+        { t
+            | screen =
+                { s
+                    | turn =
+                        if s.turn + 1 >= s.height then
+                            0
+
+                        else
+                            s.turn + 1
+                }
+                    |> clearRow t.bottom t.erase
+        }
+
+    else
+        regionUp 1 t.top t.bottom t
+
+
+reverseIndex : (moved t : Term) -> Term
+reverseIndex t =
+    -- a scroll keeps a pending wrap and a move up clears it, as in
+    -- Ghostty, whose RI is a scroll down or a CUU (§VC16)
+    if t.y == t.top && margined t then
+        if t.x >= t.left && t.x <= t.right then
+            marginDown 1 t.top t.bottom t
+
+        else
+            { t | wrapNext = False }
+
+    else if t.y == t.top then
+        -- Ghostty's scrollDown, as SD: no row of the region wraps (§VC17)
+        unwrapRegion t.top t.bottom (regionDown 1 t.top t.bottom t)
+
+    else if t.y > 0 then
+        { t | y = t.y - 1, wrapNext = False }
+
+    else
+        { t | wrapNext = False }
+
+
+{-| Rows `top` to `bottom` scrolled up `count` times. On the main screen,
+with the region starting at the top, the rows that leave go to the
+scrollback. -}
+regionUp : Int -> Int -> Int -> (moved t : Term) -> Term
+regionUp count top bottom t =
+    -- a loop of its own and not a call of `scrollUpBy`, which clang would
+    -- inline into `lineFeed`, and `lineFeed` then not into the ground state
+    if count <= 0 then
+        t
+
+    else
+        let
+            keep =
+                keepsScrollback top t
+        in
+        if keep && t.screen.hist + t.rows >= t.screen.size then
+            let
+                room =
+                    pageOut t.clusters t.screen t.back
+            in
+            regionUp (count - 1)
+                top
+                bottom
+                { t
+                    | screen = screenUp keep top bottom t.erase room.screen
+                    , back = room.back
+                }
+
+        else
+            regionUp (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
+
+
+{-| Rows `top` to `bottom` made not to wrap, as Ghostty's IL and DL leave
+the rows they shift when the region is the screen's width (§VC16), and a
+spacer head ending one a plain cell, as its `rowWillBeShifted` makes it
+(§VC21). -}
+unwrapRegion : Int -> Int -> (moved t : Term) -> Term
+unwrapRegion top bottom t =
+    if top > bottom then
+        t
+
+    else
+        unwrapRegion (top + 1) bottom { t | screen = unheadEnd top (setWrapped top False t.screen) }
+
+
+{-| A spacer head ending row `y` made a plain cell in its style. -}
+unheadEnd : Int -> (moved s : Screen) -> Screen
+unheadEnd y s =
+    let
+        o =
+            rowOffset s y
+
+        c =
+            peekCell o (s.cols - 1) s
+    in
+    if cellWide c == spacerHead then
+        { s | cells = Builder.set (o + s.cols - 1) (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
+
+    else
+        s
+
+
+{-| `regionUp` with no scrollback kept, for DL, which keeps none in
+Ghostty (§VC16). -}
+scrollUpBy : Bool -> Int -> Int -> Int -> (moved t : Term) -> Term
+scrollUpBy keep count top bottom t =
+    if count <= 0 then
+        t
+
+    else if keep && t.screen.hist + t.rows >= t.screen.size then
+        let
+            room =
+                pageOut t.clusters t.screen t.back
+        in
+        scrollUpBy keep
+            (count - 1)
+            top
+            bottom
+            { t
+                | screen = screenUp keep top bottom t.erase room.screen
+                , back = room.back
+            }
+
+    else
+        scrollUpBy keep (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
+
+
+regionDown : Int -> Int -> Int -> (moved t0 : Term) -> Term
+regionDown count top bottom t0 =
+    let
+        t =
+            { t0 | screen = settle t0.screen }
+    in
+    if count <= 0 then
+        t
+
+    else if phys t.screen top <= phys t.screen bottom then
+        regionDown (count - 1) top bottom { t | screen = turnRegion top bottom -1 t.screen |> clearRow top t.erase }
+
+    else
+        regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> clearRow top t.erase }
+
+
+{-| `resize` without mode 2048's report, as DECCOLM resizes. -}
+resizeQuiet : Int -> Int -> (moved t : Term) -> Term
+resizeQuiet cols0 rows0 t =
+    let
+        cols =
+            clamp 1 1000 cols0
+
+        rows =
+            clamp 1 1000 rows0
+    in
+    if cols == t.cols && rows == t.rows then
+        t
+
+    else
+        -- before, as a narrowing can cut rows past the limit, and after,
+        -- as a widening can bring a pruned scrollback back under it (§VC25)
+        noteReach (resizeTo cols rows (noteReach t))
+
+
+resizeTo : Int -> Int -> (moved t : Term) -> Term
+resizeTo cols rows t =
+    let
+        activeClear =
+            redrawMode t.redraw t.prompt
+
+        hiddenClear =
+            redrawMode t.redraw t.otherPrompt
+
+        active =
+            settle t.screen
+
+        here =
+            { x = t.x, y = t.y, wrap = t.wrapNext }
+
+        config =
+            t.config
+    in
+    if t.alt then
+        when t.other is
+            Just main0 ->
+                let
+                    main =
+                        settle main0
+
+                    -- the main screen's own cursor, where it was when the
+                    -- alternate screen was shown, as Ghostty keeps one for
+                    -- each screen (§VC17)
+                    m =
+                        resizeScreen hiddenClear t.autowrap True cols rows t.hidden (savedPoint main.saved) t.clusters main t.back
+
+                    a =
+                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active (emptyBack config.pageRows 0)
+                in
+                resized cols rows a.cursor
+                    { t
+                        | screen = withSaved a.saved a.screen
+                        , other = Just (withSaved m.saved m.screen)
+                        , hidden = m.cursor
+                        , back = m.back
+                        , clusters = a.clusters
+                        , config = { config | cols = cols, rows = rows }
+                    }
+
+            Nothing ->
+                { t | screen = active }
+
+    else
+        let
+            m =
+                resizeScreen activeClear t.autowrap True cols rows here (savedPoint active.saved) t.clusters active t.back
+        in
+        when t.other is
+            Just alt0 ->
+                let
+                    alt =
+                        settle alt0
+
+                    a =
+                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt (emptyBack config.pageRows 0)
+                in
+                resized cols rows m.cursor
+                    { t
+                        | screen = withSaved m.saved m.screen
+                        , other = Just (withSaved a.saved a.screen)
+                        , hidden = a.cursor
+                        , back = m.back
+                        , clusters = a.clusters
+                        , config = { config | cols = cols, rows = rows }
+                    }
+
+            Nothing ->
+                resized cols rows m.cursor
+                    { t
+                        | screen = withSaved m.saved m.screen
+                        , back = m.back
+                        , clusters = m.clusters
+                        , config = { config | cols = cols, rows = rows }
+                    }
+
+
+{-| What follows the size: the cursor, the region and margins, the tabs. -}
+resized : Int -> Int -> { x : Int, y : Int, wrap : Bool } -> (moved t0 : Term) -> Term
+resized cols rows cursor t0 =
+    let
+        t =
+            if cols == t0.cols then
+                t0
+
+            else
+                { t0 | tabs = Builder.fromArray (Array.initialize cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
+    in
+    withScroll
+        { t
+            | cols = cols
+            , rows = rows
+            , x = cursor.x
+            , y = cursor.y
+            , wrapNext = cursor.wrap
+            -- a reflow may have written spacer heads
+            , heads = True
+            , top = 0
+            , bottom = rows - 1
+            , left = 0
+            , right = cols - 1
+        }
