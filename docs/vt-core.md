@@ -3834,3 +3834,11 @@ beside:
 measured; B is the whole answer but changes what the runtime frees, which
 is worth its own survey under D1056's rules. The record stays as it is
 until one is chosen: `perf.py` fails on these three cases until then.
+
+**B surveyed** (geng-lang `m4-memory-proofs.md` §MP19, the same day): with a
+mark on the buffers an accumulator's appends make, and only those given
+back, `short-10000` counts 345.7 M, `short-100000` 1,383.5 M, `long-10000`
+265.1 M (+1.3% on today) and `long-100000` 290.4 M, the throughput inputs
+within 0.13%, the same 122 buffers given back on the long resizes, and the
+native corpus passes under `GENG_GC_STRESS`. B frees a subset of what
+today's rule frees. The leaning is now B.
