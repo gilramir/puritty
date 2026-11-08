@@ -6,7 +6,9 @@
 # compiled again with libFuzzer's coverage into one program with fuzz.c.
 # geng make builds no library C with extra flags, so this repeats its
 # second step (geng-lang m3-embed.md D629) with them; Boehm's object is the
-# build's own. Extra arguments are clang's, e.g. -fsanitize=address.
+# build's own, and the platform's runtime is linux/geng_sys.c, with its
+# directory on the include path, as geng make has it (geng-lang D1082).
+# Extra arguments are clang's, e.g. -fsanitize=address.
 set -e
 cd "$(dirname "$0")"
 R=/home/gram/prj/geng-lang
@@ -22,24 +24,24 @@ D=libvtfuzz.so.native-build
 # rewarded inputs for new GC paths (§VC29).
 NIX_HARDENING_ENABLE= "$CC" -std=c11 -O2 -g -ffp-contract=off -fno-fast-math \
   -fsanitize=fuzzer-no-link -DGENG_LIBRARY=vtfuzz \
-  -I "$D/boehm/include/gc" -I "$D/boehm/include" -I "$D" -c "$D/program.c" "$@"
+  -I "$D/boehm/include/gc" -I "$D/boehm/include" -I "$D" -I "$D/linux" -c "$D/program.c" "$@"
 NIX_HARDENING_ENABLE= "$CC" -std=c11 -O2 -g -ffp-contract=off -fno-fast-math \
   -DGENG_LIBRARY=vtfuzz \
-  -I "$D/boehm/include/gc" -I "$D/boehm/include" -I "$D" -c \
-  "$D/geng.c" "$D/geng_rt.c" "$D/geng_embed.c" "$@"
+  -I "$D/boehm/include/gc" -I "$D/boehm/include" -I "$D" -I "$D/linux" -c \
+  "$D/geng.c" "$D/geng_rt.c" "$D/linux/geng_sys.c" "$D/geng_embed.c" "$@"
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer -I . fuzz.c \
-  program.o geng.o geng_rt.o geng_embed.o "$D/boehm/gc.o" -lm -o vt-fuzz "$@"
+  program.o geng.o geng_rt.o geng_sys.o geng_embed.o "$D/boehm/gc.o" -lm -o vt-fuzz "$@"
 # vt-min: the same objects, its own main.
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer-no-link -I . min.c \
-  program.o geng.o geng_rt.o geng_embed.o "$D/boehm/gc.o" -lm -o vt-min "$@"
+  program.o geng.o geng_rt.o geng_sys.o geng_embed.o "$D/boehm/gc.o" -lm -o vt-min "$@"
 # vt-diff and vt-diff-min: the same, with libghostty-vt beside the core.
 G=$(realpath ../../vendor/ghostty)
 ../oracle/build.sh   # applies the oracle's patches, builds the library if they changed
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -I "$G/zig-out/include" -c ../oracle/gdump.c "$@"
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer -DVTFUZZ_DIFF -I . fuzz.c gdump.o \
-  program.o geng.o geng_rt.o geng_embed.o "$D/boehm/gc.o" "$G/zig-out/lib/libghostty-vt.a" \
+  program.o geng.o geng_rt.o geng_sys.o geng_embed.o "$D/boehm/gc.o" "$G/zig-out/lib/libghostty-vt.a" \
   -lm -lpthread -o vt-diff "$@"
 NIX_HARDENING_ENABLE= "$CC" -O2 -g -fsanitize=fuzzer-no-link -DVTFUZZ_DIFF -I . min.c gdump.o \
-  program.o geng.o geng_rt.o geng_embed.o "$D/boehm/gc.o" "$G/zig-out/lib/libghostty-vt.a" \
+  program.o geng.o geng_rt.o geng_sys.o geng_embed.o "$D/boehm/gc.o" "$G/zig-out/lib/libghostty-vt.a" \
   -lm -lpthread -o vt-diff-min "$@"
-rm -f program.o geng.o geng_rt.o geng_embed.o gdump.o
+rm -f program.o geng.o geng_rt.o geng_sys.o geng_embed.o gdump.o
