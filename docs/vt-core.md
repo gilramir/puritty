@@ -3927,3 +3927,28 @@ Held to: the unit tests 68 of 68, replay 325 of 325 on `core-dump` built
 again, the charset gate, the app built, and every `perf.py` count the same
 to the 0.1 M it prints as the record §VC48 wrote, which is now true of the
 code.
+
+## VC50. `Keys` and the palette keep invariants (2026-11-08)
+
+geng-lang made a refined record alias a type invariant (its
+`m4-refine-t1.md` TO18, Dnene22): every record of the alias's shape is
+asked its predicate where it is built or updated, and keeps it everywhere
+else, through a `Task`, a `Maybe` or a fold. Two are written here:
+
+- `Keys`: `at : Int where 0 <= at && at < Array.length stack`. Its two
+  writes wrapped with `modBy 8`, whose result nothing promises (a class
+  method's signature cannot be refined); they test instead, `at + 1` below
+  the stack's length or 0, and `at - 1` from 0 to the last slot, the same
+  values with a stack of eight. `keyFlags`'s `?u` reply and `keyOptions`'s
+  kitty flags read the top with `Array.getProven`.
+- `Term`'s `named : Array Int where Array.length named == 16`:
+  `paletteColour` reads it with `getProven` for an index from 0 to 15.
+
+Nothing else changed: `Term` is held in the app's `Model` through `Task`,
+folded over in `Dispatch`, and passed as a value, as before. geng-lang's
+TO16 had tried the same with a refinement that held only where a signature
+named the type, and stopped at the app.
+
+Held to: the unit tests 68 of 68, replay 325 of 325 on `core-dump` built
+again, the charset gate, the app built, and every `perf.py` count the same
+to the 0.1 M it prints.

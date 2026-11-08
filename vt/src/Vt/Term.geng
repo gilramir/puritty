@@ -139,7 +139,9 @@ type alias Saved =
 Ghostty keeps one for each screen (§VC17). The core reports them and
 encodes no key with them yet: keys are phase 2's. -}
 type alias Keys =
-    { stack : Array Int, at : Int }
+    { stack : Array Int
+    , at : Int where 0 <= at && at < Array.length stack
+    }
 
 
 noKeys : Keys
@@ -157,7 +159,7 @@ keyFlags priv params t =
             t.keys
 
         top =
-            Maybe.withDefault 0 (Array.get k.at k.stack)
+            Array.getProven k.at k.stack
 
         first =
             Maybe.withDefault 0 (Array.get 0 params)
@@ -174,8 +176,14 @@ keyFlags priv params t =
                 else
                     0
 
+            -- the next slot, wrapping: `at` is inside the stack, so
+            -- `at + 1` cannot wrap and is at most its length
             at =
-                modBy 8 (k.at + 1)
+                if k.at + 1 < Array.length k.stack then
+                    k.at + 1
+
+                else
+                    0
         in
         if flags > 31 then
             t
@@ -233,7 +241,15 @@ popKeys n k =
         k
 
     else
-        popKeys (n - 1) { stack = Array.set k.at 0 k.stack, at = modBy 8 (k.at - 1) }
+        popKeys (n - 1)
+            { stack = Array.set k.at 0 k.stack
+            , at =
+                if k.at > 0 then
+                    k.at - 1
+
+                else
+                    Array.length k.stack - 1
+            }
 
 
 {-| No cursor saved: DECRC goes home with the defaults. -}
@@ -322,7 +338,7 @@ type alias Term =
       -- the 16 named colours before a program sets one: libghostty-vt's, or
       -- the embedder's (`Vt.withPalette`); OSC 4 answers them, OSC 104 and
       -- RIS bring them back (docs/phase3-select.md §22)
-    , named : Array Int
+    , named : Array Int where Array.length named == 16
     , cursorShape : Int
     , otherShape : Int -- the hidden screen's: each has its own (§VC28)
     , ps : Int
