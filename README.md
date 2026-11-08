@@ -13,7 +13,7 @@ the IME that has to work the first time.
 
 > **Status:** puritty is pre-release. It is its author's daily terminal on
 > Linux Mint, and it will be published alongside the first alpha of
-> [Geng](https://geng-language.github.io), the language it is written in.
+> [Geng](https://geng-lang.org), the language it is written in.
 > Until then, building it needs the Geng toolchain (see
 > [Building](#building)).
 
