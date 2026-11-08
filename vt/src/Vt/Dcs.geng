@@ -1,0 +1,276 @@
+module Vt.Dcs exposing
+    ( dcsHeader
+    , takeString
+    , stringOf
+    , dcsDispatch
+    , dcsClean
+    , lowByte
+    , dropParams
+    , requestStatus
+    , sgrText
+    )
+
+{-| DCS strings: DECRQSS and the strings the core keeps (`docs/vt-core.md`
+§VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
+import Vt.Edit exposing (..)
+import Vt.Modes exposing (..)
+import Vt.Print exposing (..)
+
+
+{-| Whether a DCS kept so far is still in its parameters and
+intermediates, where a C1 control works as anywhere else; past the final
+byte, or once the header is one Ghostty ignores, a high byte is payload,
+as in Ghostty. `phase` is 0 at the start, 1 among the parameters, 2 among
+the intermediates; controls and DEL are skipped, as Ghostty skips them. -}
+dcsHeader : Builder UInt8 -> Int -> Int -> Bool
+dcsHeader str i phase =
+    if i >= Builder.length str then
+        Builder.length str < stringMax
+
+    else
+        let
+            b =
+                when Builder.get i str is
+                    Just v ->
+                        UInt8.toInt v
+
+                    Nothing ->
+                        0
+        in
+        if b < 0x20 || b == 0x7F || b >= 0x80 then
+            dcsHeader str (i + 1) phase
+
+        else if b < 0x30 then
+            dcsHeader str (i + 1) 2
+
+        else if b < 0x40 then
+            if phase == 2 || b == 0x3A || (phase == 1 && b >= 0x3C) then
+                False
+
+            else
+                dcsHeader str (i + 1) 1
+
+        else
+            False
+
+
+{-| The bytes of the string kept, taken out of the term. -}
+takeString : (moved t : Term) -> { term : Term, text : Array UInt8 }
+takeString t =
+    let
+        text =
+            Builder.toArray t.str
+    in
+    { term = { t | str = Builder.empty 0 }, text = text }
+
+
+stringOf : Array UInt8 -> String
+stringOf text =
+    Bytes.toString (Bytes.fromUInt8s text) |> Maybe.withDefault ""
+
+
+dcsDispatch : (moved t0 : Term) -> Term
+dcsDispatch t0 =
+    let
+        taken =
+            takeString t0
+
+        t =
+            taken.term
+
+        header =
+            Array.foldl dcsClean { phase = 0, kept = [] } taken.text
+
+        -- the parameters before the intermediates, which DECRQSS has none of;
+        -- a high byte is one no setting has, so a request with one is
+        -- answered as not recognized, as Ghostty does, not dropped as text
+        -- that is not UTF-8
+        text =
+            if header.phase < 0 then
+                ""
+
+            else
+                dropParams (stringOf (Array.map lowByte header.kept))
+    in
+    if String.startsWith "$q" text && String.count text <= 4 then
+        -- Ghostty keeps two bytes of a request and drops one longer
+        -- unanswered (§VC16)
+        reply ("\u{001B}P" ++ requestStatus (String.dropFirst 2 text) t ++ "\u{001B}\\") t
+
+    else
+        t
+
+
+{-| A DCS's bytes as Ghostty's parser reads its header: a control, DEL or
+high byte before the final byte skipped, and a header it ignores (a colon,
+a parameter byte among the intermediates, `<` to `?` after a parameter)
+phase -1. Phases as `dcsHeader`'s, and 3 past the final byte, where every
+byte is kept (§VC17). -}
+dcsClean : UInt8 -> { phase : Int, kept : Array UInt8 } -> { phase : Int, kept : Array UInt8 }
+dcsClean v st =
+    let
+        b =
+            UInt8.toInt v
+    in
+    if st.phase == 3 then
+        { phase = 3, kept = Array.pushLast v st.kept }
+
+    else if st.phase < 0 || b < 0x20 || b == 0x7F || b >= 0x80 then
+        st
+
+    else if b < 0x30 then
+        { phase = 2, kept = Array.pushLast v st.kept }
+
+    else if b < 0x40 then
+        if st.phase == 2 || b == 0x3A || (st.phase == 1 && b >= 0x3C) then
+            { phase = -1, kept = st.kept }
+
+        else
+            { phase = 1, kept = Array.pushLast v st.kept }
+
+    else
+        { phase = 3, kept = Array.pushLast v st.kept }
+
+
+{-| A high byte in a string that is not UTF-8, as a byte no command, colour
+or setting has: 0x01, not `?`, which OSC 4 and 10 read as a query (§VC17). -}
+lowByte : UInt8 -> UInt8
+lowByte b =
+    if UInt8.toInt b >= 0x80 then
+        UInt8.fromInt 0x01
+
+    else
+        b
+
+
+dropParams : String -> String
+dropParams text =
+    when String.popFirst text is
+        Just c ->
+            if Char.isDigit c.first || c.first == ';' || c.first == ':' then
+                dropParams c.rest
+
+            else
+                text
+
+        Nothing ->
+            text
+
+
+{-| DECRQSS's answer to `setting`: `1$r` and the setting, or `0$r`. -}
+requestStatus : String -> Term -> String
+requestStatus setting t =
+    if setting == "m" then
+        "1$r" ++ sgrText t.attrs ++ "m"
+
+    else if setting == " q" then
+        "1$r"
+            ++ String.fromInt
+                (t.cursorShape
+                    + (if Dict.get 12 t.modes == Just True then
+                        0
+
+                       else
+                        1
+                      )
+                )
+            ++ " q"
+
+    else if setting == "s" then
+        if Dict.get 69 t.modes == Just True then
+            "1$r" ++ String.fromInt (t.left + 1) ++ ";" ++ String.fromInt (t.right + 1) ++ "s"
+
+        else
+            "0$r"
+
+    else if setting == "r" then
+        "1$r" ++ String.fromInt (t.top + 1) ++ ";" ++ String.fromInt (t.bottom + 1) ++ "r"
+
+    else
+        "0$r"
+
+
+sgrText : Attrs -> String
+sgrText a =
+    let
+        on bit text =
+            if Bitwise.and bit a.flags /= 0 then
+                [ text ]
+
+            else
+                []
+
+        under =
+            if a.ul == 0 then
+                []
+
+            else if a.ul == 1 then
+                [ "4" ]
+
+            else
+                [ "4:" ++ String.fromInt a.ul ]
+
+        colour base low high c =
+            if c == 0 then
+                []
+
+            else if c <= 8 then
+                [ low ++ String.fromInt (c - 1) ]
+
+            else if c <= 16 then
+                [ high ++ String.fromInt (c - 9) ]
+
+            else if c <= 256 then
+                [ base ++ ":5:" ++ String.fromInt (c - 1) ]
+
+            else
+                [ base
+                    ++ ":2::"
+                    ++ String.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 c))
+                    ++ ":"
+                    ++ String.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 c))
+                    ++ ":"
+                    ++ String.fromInt (Bitwise.and 0xFF c)
+                ]
+    in
+    String.join ";"
+        (Array.flatten
+            [ [ "0" ]
+            , on 1 "1"
+            , on 2 "2"
+            , on 4 "3"
+            , under
+            , on 128 "53"
+            , on 8 "5"
+            , on 16 "7"
+            , on 32 "8"
+            , on 64 "9"
+            , colour "38" "3" "9" a.fg
+            , colour "48" "4" "10" a.bg
+            ]
+        )
