@@ -3842,3 +3842,7 @@ back, `short-10000` counts 345.7 M, `short-100000` 1,383.5 M, `long-10000`
 within 0.13%, the same 122 buffers given back on the long resizes, and the
 native corpus passes under `GENG_GC_STRESS`. B frees a subset of what
 today's rule frees. The leaning is now B.
+
+**B built** (geng-lang Dnene19, `m4-memory-proofs.md` §MP20): every case of
+`perf.py` within its record, `short-10000` 345.7 M, and the record written
+again with today's counts.
