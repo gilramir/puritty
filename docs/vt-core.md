@@ -3892,3 +3892,38 @@ invariant of a record held in another (`Screen` in `Term`, `Term` in the
 app's model), which the language does not allow yet; the rest need
 `core` contracts (`Maybe.map`, `Array.Builder.get`) or larger changes
 (`alt` and `other` as one custom type, `Sgr`'s parameter index).
+
+## VC49. `core`'s `Maybe.map` contract, and a correction to §VC48 (2026-11-08)
+
+geng-lang gave `Maybe.map` the promise that it answers a `Just` exactly
+when it is given one, and its solver now prunes before it splits
+(`m4-proof-report.md` PR13). With them, three of the core's defaults are
+shown never to be used (`View.cellAt`, `Resize.recutPages`,
+`Keys.functionKey`), and ten fallbacks left undecided are decided. Three
+changes here:
+
+- `promptStartIn` matches the row it reads, a missing row taken as one with
+  no mark as before, so `continuationsIn` is called with a `y` known to be
+  a row and refined so (`y < Array.length rows`), and reads it with
+  `Array.getProven`.
+- `lineCps` reads the row after `r` only when `r` is one of the rows: none
+  is there otherwise, and the new facts made `r + 1` one whose wrap must be
+  ruled out.
+- `lineStart` reads its page with `when Array.get … is` again, keeping
+  §VC48's other change (the pages' length taken inside, not passed).
+
+**The correction.** §VC48's `perf.py` record was written with `--update`
+after its last changes without `harness/bench/build.sh` run again, so it
+recorded the binary built before them. Built again, `short-10000` counts
+341.4 M, not 329.2: 1.2% under its record before §VC48, not 4.8%. The 12 M
+are `lineStart`'s `Array.getProven` over the pages: with `when Array.get …
+is` it counts 329.2 M again, and with the match and §VC48's `k < 0` test
+together, also 329.2 M. `lineStart`'s own C is the shorter with
+`getProven`, so the cost is elsewhere and was not isolated (geng-lang's
+register has it). `getProven` over rows in `continuationsIn`, in the same
+resize, costs nothing measured.
+
+Held to: the unit tests 68 of 68, replay 325 of 325 on `core-dump` built
+again, the charset gate, the app built, and every `perf.py` count the same
+to the 0.1 M it prints as the record §VC48 wrote, which is now true of the
+code.
