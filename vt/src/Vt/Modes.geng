@@ -1,0 +1,691 @@
+module Vt.Modes exposing
+    ( fresh
+    , setPrivate
+    , visibilityReport
+    , deccolm
+    , screenMode
+    , saveMode
+    , restoreMode
+    , privateState
+    , knownPrivate
+    , setAnsi
+    , ansiKey
+    , ansiState
+    , toAlt
+    , clearAlt
+    , toMain
+    , cursorStyle
+    , protect
+    , saveCursor
+    , restoreCursor
+    , reset
+    , softReset
+    , modifyOtherKeysKey
+    , modifyKeys
+    , softResetModes
+    , resetSaved
+    )
+
+{-| The modes, DECSC and DECRC, and the resets (`docs/vt-core.md` §VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
+import Vt.Edit exposing (..)
+
+
+fresh : Config -> Term
+fresh config =
+    { screen = newScreen config.cols config.rows (config.rows + 2 * config.pageRows + 1)
+    , other = Nothing
+    , hidden = { x = 0, y = 0, wrap = False }
+    , keys = noKeys
+    , otherKeys = noKeys
+    , otherProtect = 0
+    , otherErase = 0
+    , heads = False
+    , alt = False
+    , config = config
+    , cols = config.cols
+    , rows = config.rows
+    , x = 0
+    , y = 0
+    , wrapNext = False
+    , top = 0
+    , bottom = config.rows - 1
+    , left = 0
+    , right = config.cols - 1
+    , scroll = scrollFull
+    , attrs = plainAttrs
+    , pen = 0
+    , erase = 0
+    , styles = noStyles
+    , styleCache = Builder.fromArray (Array.repeat (2 * styleCacheSize) -1)
+    , clusters = noClusters
+    , back = emptyBack config.pageRows config.scrollbackBytes
+    , tabs = Builder.fromArray (Array.initialize config.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0))
+    , autowrap = True
+    , plain = True
+    , statusLine = False
+    , origin = False
+    , insert = False
+    , showCursor = True
+    , newline = False
+    , lfSlow = False
+    , prompt = 0
+    , otherPrompt = 0
+      -- the shell is not taken to write its prompt again after a resize
+      -- until it says it does (`redraw=1`), as libghostty-vt has it, which
+      -- does not assume Ghostty's shell integration (V17)
+    , redraw = 1
+    , modes = Dict.empty
+    , savedModes = Dict.empty
+    , mouseTracking = 0
+    , mouseFormat = 0
+    , osc52 = noOsc52
+    , sets = 0
+    , gl = 0
+    , single = -1
+    , guard = 0
+    , protectMode = 0
+    , lastPoint = 0
+    , title = ""
+    , colours = Dict.empty
+    , named = namedColours
+    , cursorShape = 1
+    , otherShape = 1
+    , ps = psGround
+    , params = []
+    , cur = 0
+    , colons = 0
+    , priv = 0
+    , inter = 0
+    , phase = 0
+    , str = Builder.empty 0
+    , utf = 0
+    , need = 0
+    , low = 0x80
+    , high = 0xBF
+    , xtChecksum = 23
+    , replies = []
+    }
+
+
+setPrivate : Int -> Bool -> (moved t : Term) -> Term
+setPrivate p on t =
+    if p == 47 || p == 1047 || p == 1048 || p == 1049 then
+        -- recorded as well, as Ghostty records every mode before it acts,
+        -- so DECRQM answers what was set last, not which screen shows
+        -- (§VC17)
+        screenMode p on { t | modes = Dict.set p on t.modes }
+
+    else if p == 6 then
+        cursorTo 0 0 { t | origin = on }
+
+    else if p == 7 then
+        withPlain { t | autowrap = on }
+
+    else if p == 25 then
+        { t | showCursor = on }
+
+    else if p == 3 then
+        deccolm on t
+
+    else if p == 2048 then
+        -- in-band size reports: one at once each time it is set, and after
+        -- each resize while it is (V15)
+        let
+            set =
+                { t | modes = Dict.set p on t.modes }
+        in
+        if on then
+            sizeReport set
+
+        else
+            set
+
+    else if p == 2033 then
+        -- visibility reports: one at once each time it is set, as Ghostty
+        -- sends it (§VC28)
+        let
+            set =
+                { t | modes = Dict.set p on t.modes }
+        in
+        if on then
+            visibilityReport set
+
+        else
+            set
+
+    else if p == 69 then
+        if on then
+            { t | modes = Dict.set 69 True t.modes }
+
+        else
+            withScroll (withPlain { t | modes = Dict.set 69 False t.modes, left = 0, right = t.cols - 1 })
+
+    else if p == 9 || p == 1000 || p == 1002 || p == 1003 then
+        { t
+            | modes = Dict.set p on t.modes
+            , mouseTracking =
+                if not on then
+                    0
+
+                else if p == 9 then
+                    1
+
+                else if p == 1000 then
+                    2
+
+                else if p == 1002 then
+                    3
+
+                else
+                    4
+        }
+
+    else if p == 1005 || p == 1006 || p == 1015 || p == 1016 then
+        { t
+            | modes = Dict.set p on t.modes
+            , mouseFormat =
+                if not on then
+                    0
+
+                else if p == 1005 then
+                    1
+
+                else if p == 1006 then
+                    2
+
+                else if p == 1015 then
+                    3
+
+                else
+                    4
+        }
+
+    else
+        { t | modes = Dict.set p on t.modes }
+
+
+{-| The visibility report, `CSI ? 999 ; 1 n`, "potentially visible", sent
+when mode 2033 is set and asked for with `CSI ? 998 n`. The core has no
+window to say whether it is hidden, so it answers as libghostty-vt does
+until its host says otherwise: visible (§VC28). -}
+visibilityReport : (moved t : Term) -> Term
+visibilityReport t =
+    reply "\u{001B}[?999;1n" t
+
+
+{-| DECCOLM (?3), Ghostty's `deccolm`: with ?40 set, the terminal resized
+to 132 columns or 80, as a host resizes it, its lines reflowed, then erased
+as ED 2 erases it and the cursor put home; without, ignored and recorded
+reset (§VC18). -}
+deccolm : Bool -> (moved t : Term) -> Term
+deccolm on t =
+    if Dict.get 40 t.modes /= Just True then
+        { t | modes = Dict.set 3 False t.modes }
+
+    else
+        let
+            cols =
+                if on then
+                    132
+
+                else
+                    80
+
+            rows =
+                t.rows
+        in
+        cursorTo 0 0 (eraseDisplay False 2 (resizeQuiet cols rows { t | modes = Dict.set 3 on t.modes }))
+
+
+screenMode : Int -> Bool -> (moved t : Term) -> Term
+screenMode p on t =
+    if p == 1049 then
+        if on then
+            if isAlt t then
+                -- again on the alternate screen: the cursor saved and the
+                -- screen erased, as Ghostty does (§VC16)
+                eraseDisplay False 2 (saveCursor t)
+
+            else
+                toAlt True (saveCursor t)
+
+        else
+            -- the main screen's own cursor again, its prompt state and its
+            -- cursor's shape with it, where 47 and 1047 copy the alternate
+            -- screen's (§VC22, §VC28)
+            let
+                own =
+                    if t.alt then
+                        { prompt = t.otherPrompt, shape = t.otherShape }
+
+                    else
+                        { prompt = t.prompt, shape = t.cursorShape }
+
+                back =
+                    toMain False t
+            in
+            restoreCursor (withLf { back | prompt = own.prompt, cursorShape = own.shape })
+
+    else if p == 1048 then
+        if on then
+            saveCursor t
+
+        else
+            restoreCursor t
+
+    else if p == 1047 then
+        if on then
+            toAlt False t
+
+        else
+            toMain True t
+
+    else if p == 47 then
+        if on then
+            toAlt False t
+
+        else
+            toMain False t
+
+    else
+        t
+
+
+{-| XTSAVE: a private mode's state kept for XTRESTORE, one each. -}
+saveMode : Int -> (moved t : Term) -> Term
+saveMode p t =
+    let
+        state =
+            privateState p t
+    in
+    if state == 1 || state == 2 then
+        { t | savedModes = Dict.set p (state == 1) t.savedModes }
+
+    else
+        t
+
+
+{-| XTRESTORE: a private mode set as XTSAVE kept it, or to its state in a
+new terminal if it was never kept, as Ghostty restores it. -}
+restoreMode : Int -> (moved t : Term) -> Term
+restoreMode p t =
+    when Dict.get p t.savedModes is
+        Just on ->
+            setPrivate p on t
+
+        Nothing ->
+            let
+                state =
+                    privateState p (fresh t.config)
+            in
+            if state == 1 || state == 2 then
+                setPrivate p (state == 1) t
+
+            else
+                t
+
+
+{-| DECRQM's state of private mode `p`: 1 set, 2 reset, 4 permanently
+reset, 0 not recognised.
+`of` is a function of its own, not a `let`'s: a local function is a value
+to geng-lang's `inplace` pass, and a call of one with a field of `t` kept
+`t`, which made every update of the term along the parser's paths a copy
+(§VC7). -}
+privateState : Int -> Term -> Int
+privateState p t =
+    if p == 6 then
+        of t.origin
+
+    else if p == 7 then
+        of t.autowrap
+
+    else if p == 25 then
+        of t.showCursor
+
+    else if p == 117 then
+        -- DECECM: erases are always in the background colour, as DECECM
+        -- reset, which Ghostty answers as permanently so (§VC26)
+        4
+
+    else if not (Array.member p knownPrivate) then
+        -- a mode Ghostty does not know is not recognised, set or not
+        0
+
+    else
+        when Dict.get p t.modes is
+            Just on ->
+                of on
+
+            Nothing ->
+                if Array.member p [ 1007, 1035, 1036 ] then
+                    -- set until changed, as Ghostty's defaults
+                    1
+
+                else
+                    2
+
+
+{-| The private modes DECRQM answers for although the core only records
+them: Ghostty's table (`modes.zig`), where 1007, 1035 and 1036 are set
+until changed (§VC17). Not 5522, kitty's paste events, which Ghostty
+reports as unrecognised without a clipboard to read, and the core has none
+(§VC18). -}
+knownPrivate : Array Int
+knownPrivate =
+    [ 1, 3, 4, 5, 8, 9, 12, 40, 45, 47, 66, 67, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 1035, 1036, 1039, 1045, 1047, 1048, 1049, 2004, 2026, 2027, 2031, 2033, 2048 ]
+
+
+setAnsi : Int -> Bool -> (moved t : Term) -> Term
+setAnsi p on t =
+    if p == 4 then
+        withPlain { t | insert = on }
+
+    else if p == 20 then
+        withLf { t | newline = on }
+
+    else if p == 2 || p == 12 then
+        { t | modes = Dict.set (ansiKey p) on t.modes }
+
+    else
+        t
+
+
+{-| Where `modes` keeps an ANSI mode the core only records, apart from the
+private modes. -}
+ansiKey : Int -> Int
+ansiKey p =
+    -1000 - p
+
+
+ansiState : Int -> Term -> Int
+ansiState p t =
+    if p == 4 then
+        of t.insert
+
+    else if p == 20 then
+        of t.newline
+
+    else if p == 2 || p == 12 then
+        of (Maybe.withDefault (p == 12) (Dict.get (ansiKey p) t.modes))
+
+    else if Array.member p [ 1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19 ] then
+        -- GATM, SRTM, VEM, HEM, PUM, FEAM, FETM, MATM, TTM, SATM, TSM and EBM
+        -- are permanently reset, as in xterm and Ghostty.
+        4
+
+    else
+        0
+
+
+{-| The alternate screen shown, cleared first when `clear`. Once made it is
+kept, its text and its saved cursor, while the main screen is shown, as xterm
+and Ghostty keep it (§VC10). -}
+toAlt : Bool -> (moved t : Term) -> Term
+toAlt clear t =
+    if isAlt t then
+        if clear then
+            { t | screen = clearAlt t.protectMode t.rows t.erase t.screen }
+
+        else
+            t
+
+    else
+        let
+            main =
+                t.screen
+
+            alt =
+                when t.other is
+                    Just kept ->
+                        if clear then
+                            -- in its own pen, as it was left: Ghostty
+                            -- erases before it copies the cursor (§VC20)
+                            clearAlt t.otherProtect t.rows t.otherErase kept
+
+                        else
+                            kept
+
+                    Nothing ->
+                        newScreen t.cols t.rows (t.rows + 1)
+        in
+        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape }
+
+
+{-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
+kept when its protection was last ISO's, SPA's (§VC18), and in `fill`, the
+erase cell of the screen's own pen (§VC20). -}
+clearAlt : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+clearAlt mode rows fill s =
+    if mode == 1 then
+        blankUnprotected 0 rows fill s
+
+    else
+        blankRows 0 rows fill s
+
+
+{-| The main screen shown again, the alternate cleared first when `clear`
+and kept. -}
+toMain : Bool -> (moved t : Term) -> Term
+toMain clear t =
+    if not t.alt then
+        t
+
+    else
+        when t.other is
+            Just main ->
+                let
+                    alt =
+                        if clear then
+                            clearAlt t.protectMode t.rows t.erase t.screen
+
+                        else
+                            t.screen
+                in
+                -- cleared, the alternate screen is erased as ED 2 does,
+                -- which ends a pending wrap before the cursor is carried
+                -- over, as in Ghostty (§VC17)
+                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape, wrapNext = t.wrapNext && not clear }
+
+            Nothing ->
+                t
+
+
+{-| DECSCUSR: the cursor's shape (1 a block, 3 an underline, 5 a bar) and
+whether it blinks, which is mode 12, as Ghostty keeps it. 0 is the default,
+a steady block. -}
+cursorStyle : Int -> (moved t : Term) -> Term
+cursorStyle p t =
+    if p == 0 then
+        { t | cursorShape = 1, modes = Dict.set 12 False t.modes }
+
+    else if p >= 1 && p <= 6 then
+        { t | cursorShape = p - 1 + modBy 2 p, modes = Dict.set 12 (modBy 2 p == 1) t.modes }
+
+    else
+        t
+
+
+{-| SPA (ESC V, `how` 1), DECSCA 1 (2), and EPA or DECSCA 0 or 2 (0): what
+the cursor writes from now on is protected, or not. The mode, ISO's or
+DEC's, is what ED, EL and ECH go by, and stopping protection does not
+change it, as in Ghostty. -}
+protect : Int -> (moved t : Term) -> Term
+protect how t =
+    if how == 0 then
+        { t | guard = 0, pen = Bitwise.and (Bitwise.complement protectBit) t.pen }
+
+    else
+        { t | guard = protectBit, protectMode = how, pen = Bitwise.or protectBit t.pen }
+
+
+saveCursor : (moved t : Term) -> Term
+saveCursor t =
+    let
+        s =
+            t.screen
+    in
+    { t
+        | screen =
+            { s
+                | saved =
+                    { x = t.x
+                    , y = t.y
+                    , attrs = t.attrs
+                    , wrapNext = t.wrapNext
+                    , origin = t.origin
+                    , sets = t.sets
+                    , gl = t.gl
+                    , single = t.single
+                    , guard = t.guard
+                    , isSet = True
+                    }
+            }
+    }
+
+
+restoreCursor : (moved t : Term) -> Term
+restoreCursor t =
+    let
+        v =
+            t.screen.saved
+    in
+    withPlain <| withPen v.attrs
+        { t
+            | x = min (t.cols - 1) v.x
+            , y = min (t.rows - 1) v.y
+            , wrapNext = v.wrapNext
+            , origin = v.origin
+            , sets = v.sets
+            , gl = v.gl
+            , single = v.single
+            , guard = v.guard
+            , pen = Bitwise.or v.guard (Bitwise.and (Bitwise.complement protectBit) t.pen)
+        }
+
+
+{-| RIS: the terminal as new, its replies kept, and the dynamic colours
+(OSC 10 to 19), which Ghostty's full reset keeps as its DECSTR does; the
+palette is reset (§VC16). The scrollback's `peak` and `dropped` are kept too: a reply
+made before the reset may have read a screen reflowed from rows the core
+and Ghostty pruned differently (§VC26). -}
+reset : Term -> Term
+reset t =
+    let
+        replies =
+            t.replies
+
+        peak =
+            max t.back.peak (historyBound t)
+
+        dropped =
+            t.back.dropped
+
+        blank =
+            fresh t.config
+
+        back =
+            blank.back
+    in
+    withScroll { blank | replies = replies, colours = Dict.keepIf (\k _ -> k > 255) t.colours, named = t.named, back = { back | peak = peak, dropped = dropped } }
+
+
+{-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14)
+and the main display (DECSASD, §VC26). -}
+softReset : (moved t : Term) -> Term
+softReset t =
+    withPen plainAttrs
+        (withScroll
+            { t
+                | top = 0
+                , bottom = t.rows - 1
+                , insert = False
+                , origin = False
+                , autowrap = True
+                , statusLine = False
+                , showCursor = True
+                , sets = 0
+                , gl = 0
+                , single = -1
+                , cursorShape = 1
+                , modes = Array.foldl Dict.remove (Dict.set 12 False t.modes) softResetModes
+                , guard = 0
+                , protectMode = 0
+                , left = 0
+                , right = t.cols - 1
+                , pen = Bitwise.and (Bitwise.complement protectBit) t.pen
+                , colours = Dict.keepIf (\k _ -> k > 255) t.colours
+                , xtChecksum = 23
+            }
+        )
+        |> resetSaved
+        |> withPlain
+
+
+{-| Where `modes` keeps xterm's `modifyOtherKeys` 2 (`CSI > 4 ; 2 m`), the
+one key format the key encoder reads (`Vt.Keys`, V47): a key no mode has,
+so that RIS's fresh modes and DECSTR clear it as Ghostty's resets do, with
+no field of its own in `Term`. -}
+modifyOtherKeysKey : Int
+modifyOtherKeysKey =
+    -4
+
+
+{-| XTMODKEYS, `CSI > Pp ; Pv m`, as Ghostty takes it: no parameters, or a
+first one of 0, 1, 2 or 4, turn `modifyOtherKeys` 2 off, except `4 ; 2`,
+which turns it on; any other first parameter, or more than two, is ignored. -}
+modifyKeys : Array Int -> (moved t : Term) -> Term
+modifyKeys params t =
+    if Array.isEmpty params then
+        { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
+    else if Array.length params > 2 || not (Array.member (param 0 0 params) [ 0, 1, 2, 4 ]) then
+        t
+
+    else if params == [ 4, 2 ] then
+        { t | modes = Dict.set modifyOtherKeysKey True t.modes }
+
+    else
+        { t | modes = Dict.remove modifyOtherKeysKey t.modes }
+
+
+{-| The recorded modes DECSTR resets besides the ones `softReset` names, as
+Ghostty's soft reset does: cursor keys, reverse wraparound and its extended
+form, the numeric keypad (?66, which ESC = and ESC > set as well, as in
+Ghostty), left and right margins, and KAM. -}
+softResetModes : Array Int
+softResetModes =
+    [ 1, 45, 66, 69, 1045, ansiKey 2, modifyOtherKeysKey ]
+
+
+resetSaved : (moved t : Term) -> Term
+resetSaved t =
+    let
+        s =
+            t.screen
+    in
+    { t | screen = { s | saved = noSaved } }
