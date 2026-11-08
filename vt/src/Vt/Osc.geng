@@ -1,0 +1,511 @@
+module Vt.Osc exposing
+    ( isFiftyTwo
+    , clipMax
+    , controlFrom
+    , clipDispatch
+    , oscNumber
+    , keepByte
+    , oscDispatch
+    , paletteColours
+    , dynamicColours
+    , nextDynamic
+    , withAnswers
+    , resetPalette
+    , digits
+    , rgb16
+    , parseColour
+    , scaledHex
+    , intensity
+    , semanticPrompt
+    )
+
+{-| OSC strings' dispatch: the colours, the clipboard and the semantic
+prompts (`docs/vt-core.md` §VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
+import Vt.Edit exposing (..)
+import Vt.Modes exposing (..)
+import Vt.Print exposing (..)
+import Vt.Dcs exposing (..)
+
+
+{-| Whether the OSC kept so far is `52`, its `;` next. -}
+isFiftyTwo : Term -> Bool
+isFiftyTwo t =
+    Builder.length t.str == 2 && Builder.get 0 t.str == Just (UInt8.fromInt 0x35) && Builder.get 1 t.str == Just (UInt8.fromInt 0x32)
+
+
+{-| The most of an OSC 52 kept after its `52;`: Ghostty's
+`MAX_ALLOCATING_BUF`, 8 MB of base64. One longer is dropped whole. -}
+clipMax : Int
+clipMax =
+    8388608
+
+
+{-| The first byte from `i` below 0x20, or `n`. -}
+controlFrom : Bytes -> Int -> Int -> Int
+controlFrom bytes i n =
+    if i >= n || byteAt bytes i < 0x20 then
+        i
+
+    else
+        controlFrom bytes (i + 1) n
+
+
+{-| An OSC 52 ended, as Ghostty's `clipboard_operation.parse` and
+`Surface.clipboardWrite` read it: `KIND;DATA`, or `;DATA` as `c`, with one
+letter of kind (`p` and `s` PRIMARY, any other CLIPBOARD); nothing after
+the `52;` is no request. DATA `?` asks to read; any other is base64 to
+write, and base64 that does not decode writes nothing. -}
+clipDispatch : Bool -> (moved t : Term) -> Term
+clipDispatch bel t =
+    let
+        data =
+            Bytes.flatten t.osc52.clip
+
+        over =
+            t.osc52.over
+
+        requests =
+            t.osc52.requests
+
+        cleared =
+            { t | osc52 = { noOsc52 | requests = requests } }
+
+        len =
+            Bytes.length data
+
+        first =
+            byteAt data 0
+
+        parsed =
+            if over || len == 0 then
+                Nothing
+
+            else if first == 0x3B then
+                Just { letter = 0x63, payload = Bytes.slice 1 len data }
+
+            else if len >= 2 && byteAt data 1 == 0x3B then
+                Just { letter = first, payload = Bytes.slice 2 len data }
+
+            else
+                Nothing
+    in
+    when parsed is
+        Nothing ->
+            cleared
+
+        Just p ->
+            let
+                selection =
+                    if p.letter == 0x70 || p.letter == 0x73 then
+                        0
+
+                    else
+                        1
+
+                request =
+                    if p.payload == Bytes.fromString "?" then
+                        Just { selection = selection, text = Nothing, letter = p.letter, bel = bel }
+
+                    else
+                        Maybe.map (\text -> { selection = selection, text = Just text, letter = p.letter, bel = bel }) (Base64.decode p.payload)
+            in
+            when request is
+                Just r ->
+                    { cleared | osc52 = { noOsc52 | requests = Array.pushLast r requests } }
+
+                Nothing ->
+                    cleared
+
+
+{-| An OSC's command number as Ghostty reads one: digits only, and no
+leading zero but in `0` itself, so `04` and `+4` are no command (§VC16). -}
+oscNumber : String -> Maybe Int
+oscNumber text =
+    if text == "" || not (String.all Char.isDigit text) || (String.startsWith "0" text && text /= "0") then
+        Nothing
+
+    else
+        String.toInt text
+
+
+keepByte : Int -> (moved t : Term) -> Term
+keepByte b t =
+    if Builder.length t.str < stringMax then
+        { t | str = Builder.pushLast (UInt8.fromInt b) t.str }
+
+    else
+        t
+
+
+oscDispatch : String -> (moved t0 : Term) -> Term
+oscDispatch end t0 =
+    let
+        taken =
+            takeString t0
+
+        t =
+            taken.term
+
+        -- text that is not UTF-8 is still read, a high byte as one no
+        -- command or colour has, as Ghostty reads the bytes (§VC16)
+        text =
+            when Bytes.toString (Bytes.fromUInt8s taken.text) is
+                Just decoded ->
+                    decoded
+
+                Nothing ->
+                    stringOf (Array.map lowByte taken.text)
+
+        parts =
+            String.split ";" text
+
+        command =
+            oscNumber (Maybe.withDefault "" (Array.first parts))
+
+        rest =
+            String.join ";" (Array.dropFirst 1 parts)
+
+        -- what follows the number and its `;`: Ghostty keeps 2,048 bytes
+        -- of it for each command the core takes, and drops a longer one
+        long =
+            Array.length taken.text - String.count (Maybe.withDefault "" (Array.first parts)) - 1 > oscMax
+    in
+    when (if long then Nothing else command) is
+        Just 0 ->
+            { t | title = rest }
+
+        Just 2 ->
+            { t | title = rest }
+
+        Just 4 ->
+            paletteColours end (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
+
+        Just 104 ->
+            resetPalette (Array.dropFirst 1 parts) t
+
+        Just 133 ->
+            semanticPrompt (Maybe.withDefault "" (Array.get 1 parts)) (Array.dropFirst 2 parts) (rest == "L") t
+
+        Just 9 ->
+            -- ConEmu's mark of a prompt's start, Ghostty's 133;A
+            if String.startsWith "12" rest then
+                semanticPrompt "A" [] False t
+
+            else
+                t
+
+        Just c ->
+            if c >= 10 && c <= 19 then
+                dynamicColours end c (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
+
+            else if c >= 110 && c <= 112 && Array.all (\w -> w == "") (Array.dropFirst 1 parts) then
+                -- an empty parameter is none: Ghostty's words skip them
+                { t | colours = Dict.remove (dynamicKey (c - 100)) t.colours }
+
+            else
+                t
+
+        Nothing ->
+            t
+
+
+{-| OSC 4: pairs of an index and a colour or `?`, each set or answered in
+order, the answers in one reply ended as the request was; the first pair
+that does not parse ends it, as in Ghostty (§VC12). An index of 256 to 260
+is one of Ghostty's special colours (OSC 5's), which it passes over: a
+query or a colour that parses goes on to the next pair (§VC17). -}
+paletteColours : String -> Array String -> String -> (moved t : Term) -> Term
+paletteColours end words answers t =
+    when { i = Maybe.andThen digits (Array.get 0 words), spec = Array.get 1 words } is
+        { i = Just i, spec = Just spec } ->
+            if i >= 256 && i <= 260 && (spec == "?" || parseColour spec /= Nothing) then
+                paletteColours end (Array.dropFirst 2 words) answers t
+
+            else if i < 0 || i > 255 then
+                withAnswers answers t
+
+            else if spec == "?" then
+                paletteColours end (Array.dropFirst 2 words) (answers ++ "\u{001B}]4;" ++ String.fromInt i ++ ";" ++ rgb16 (paletteColour i t) ++ end) t
+
+            else
+                when parseColour spec is
+                    Just c ->
+                        paletteColours end (Array.dropFirst 2 words) answers { t | colours = Dict.set i c t.colours }
+
+                    Nothing ->
+                        withAnswers answers t
+
+        _ ->
+            withAnswers answers t
+
+
+{-| OSC 10 to 19: colours or `?` for the dynamic colours from `c` on, each
+the next's. The foreground (10), background (11) and cursor (12) are kept;
+the rest are passed over, as Ghostty passes them. -}
+dynamicColours : String -> Int -> Array String -> String -> (moved t : Term) -> Term
+dynamicColours end c words answers t =
+    when Array.first words is
+        Just spec ->
+            if spec == "?" then
+                let
+                    more =
+                        when dynamicColour c t is
+                            Just v ->
+                                answers ++ "\u{001B}]" ++ String.fromInt c ++ ";" ++ rgb16 v ++ end
+
+                            Nothing ->
+                                answers
+                in
+                nextDynamic end c words more t
+
+            else
+                when parseColour spec is
+                    Just v ->
+                        if c <= 12 then
+                            nextDynamic end c words answers { t | colours = Dict.set (dynamicKey c) v t.colours }
+
+                        else
+                            nextDynamic end c words answers t
+
+                    Nothing ->
+                        withAnswers answers t
+
+        Nothing ->
+            withAnswers answers t
+
+
+{-| The next dynamic colour's word, or the end after OSC 19's. A function of
+its own, not a local one handed the term: a term handed to a function value
+is kept by every path of the parser, and each update of it copies (§VC7). -}
+nextDynamic : String -> Int -> Array String -> String -> (moved t : Term) -> Term
+nextDynamic end c words answers t =
+    if c >= 19 then
+        withAnswers answers t
+
+    else
+        dynamicColours end (c + 1) (Array.dropFirst 1 words) answers t
+
+
+withAnswers : String -> (moved t : Term) -> Term
+withAnswers answers t =
+    if answers == "" then
+        t
+
+    else
+        reply answers t
+
+
+{-| OSC 104: the palette entries named set back, or every one when none is
+named. As in Ghostty, a name counts when it is a palette index or one of
+the five special colours after it (256 to 260), which the core does not
+keep; any other is passed over, and if every one is, the whole palette is
+set back (§VC20). -}
+resetPalette : Array String -> (moved t : Term) -> Term
+resetPalette words t =
+    let
+        named =
+            Array.keepIf (\i -> i <= 260) (Array.mapAndKeepJust digits (Array.keepIf (\w -> w /= "") words))
+    in
+    if Array.isEmpty named then
+        { t | colours = Dict.keepIf (\k _ -> k > 255) t.colours }
+
+    else
+        { t | colours = Array.foldl Dict.remove t.colours named }
+
+
+{-| A colour's index: decimal digits only, no sign, as Ghostty's
+`parseInt` for an unsigned type takes it (§VC18). One too big for any
+index is 99999, which none has. -}
+digits : String -> Maybe Int
+digits w =
+    if w /= "" && String.all Char.isDigit w then
+        if String.count w > 5 then
+            when String.toInt (String.takeLast 5 w) is
+                Just v ->
+                    if String.all (\c -> c == '0') (String.dropLast 5 w) then
+                        Just v
+
+                    else
+                        Just 99999
+
+                Nothing ->
+                    Nothing
+
+        else
+            String.toInt w
+
+    else
+        Nothing
+
+
+{-| A colour as xterm reports one: `rgb:` and each channel in 16 bits. -}
+rgb16 : Int -> String
+rgb16 c =
+    let
+        channel v =
+            hex2 v ++ hex2 v
+    in
+    "rgb:" ++ channel (Bitwise.shiftRightZfBy 16 c) ++ "/" ++ channel (Bitwise.shiftRightZfBy 8 c) ++ "/" ++ channel c
+
+
+{-| A colour as XParseColor reads one, as Ghostty reads it: `#` and 1 to 4
+hex digits a channel, 3 or 6 hex digits alone, `rgb:` and 1 to 4 a channel,
+or `rgbi:` and an intensity from 0 to 1 a channel; each scaled to 8 bits.
+X11's colour names are not taken (§VC12). -}
+parseColour : String -> Maybe Int
+parseColour spec0 =
+    let
+        spec =
+            String.trim spec0
+
+        n =
+            String.count spec
+
+        groups text k =
+            Maybe.map3 rgbOf (scaledHex (String.slice 0 k text)) (scaledHex (String.slice k (2 * k) text)) (scaledHex (String.slice (2 * k) (3 * k) text))
+
+        parts text f =
+            when String.split "/" text is
+                [ r, g, b ] ->
+                    Maybe.map3 rgbOf (f r) (f g) (f b)
+
+                _ ->
+                    Nothing
+    in
+    if String.startsWith "#" spec then
+        if n == 4 || n == 7 || n == 10 || n == 13 then
+            groups (String.dropFirst 1 spec) ((n - 1) // 3)
+
+        else
+            Nothing
+
+    else if n == 3 || n == 6 then
+        groups spec (n // 3)
+
+    else if String.startsWith "rgbi:" spec then
+        parts (String.dropFirst 5 spec) intensity
+
+    else if String.startsWith "rgb:" spec then
+        parts (String.dropFirst 4 spec) scaledHex
+
+    else
+        Nothing
+
+
+scaledHex : String -> Maybe Int
+scaledHex text =
+    let
+        n =
+            String.count text
+
+        value =
+            String.foldl
+                (\ch acc ->
+                    Maybe.andThen
+                        (\v ->
+                            let
+                                d =
+                                    Char.toCode ch
+                            in
+                            if d >= 0x30 && d <= 0x39 then
+                                Just (v * 16 + d - 0x30)
+
+                            else if d >= 0x61 && d <= 0x66 then
+                                Just (v * 16 + d - 0x57)
+
+                            else if d >= 0x41 && d <= 0x46 then
+                                Just (v * 16 + d - 0x37)
+
+                            else
+                                Nothing
+                        )
+                        acc
+                )
+                (Just 0)
+                text
+    in
+    if n < 1 || n > 4 then
+        Nothing
+
+    else
+        Maybe.map (\v -> v * 255 // (Bitwise.shiftLeftBy (4 * n) 1 - 1)) value
+
+
+intensity : String -> Maybe Int
+intensity text =
+    when String.toFloat text is
+        Just f ->
+            if f >= 0 && f <= 1 then
+                Just (Math.floor (f * 255))
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| OSC 133, the semantic prompts (§VC22), as Ghostty takes them: `A` and
+`N` a fresh line and a prompt, `P` a prompt, `B` and `I` the input (`I`
+to the line's end), `C` and `D` output, `L` (alone) a fresh line. A
+prompt marks the cursor's row, a continuation with `k=c` or `k=s`, and the
+rows a line feed or a wrap goes to while the prompt or the input lasts are
+continuations; `C` at a row's start takes its mark away. -}
+semanticPrompt : String -> Array String -> Bool -> (moved t : Term) -> Term
+semanticPrompt action options onlyL t =
+    when action is
+        "A" ->
+            promptStart options (freshLine (withRedraw options t))
+
+        "N" ->
+            promptStart options (freshLine (withRedraw options t))
+
+        "P" ->
+            promptStart options t
+
+        "B" ->
+            withLf { t | prompt = 2 }
+
+        "I" ->
+            withLf { t | prompt = 3 }
+
+        "C" ->
+            outputStart t
+
+        "D" ->
+            withLf { t | prompt = 0 }
+
+        "L" ->
+            if onlyL then
+                freshLine t
+
+            else
+                t
+
+        _ ->
+            t
