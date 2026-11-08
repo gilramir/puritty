@@ -1,0 +1,264 @@
+module Encoders exposing (suite)
+
+{-| The bytes puritty writes to the program for a key, a mouse event and a
+paste, and the codecs: Base64 for OSC 52 and EUC-KR for a remote host.
+
+The gates (`harness/keys.py`, `mouse.py`, `paste.py`, `charset.py`) hold
+these to libghostty-vt and WHATWG on many random cases; these are the
+well-known answers, readable on their own.
+-}
+
+import Bytes exposing (Bytes)
+import Expect
+import Support exposing (bytes, text)
+import Test.Runner.UnitNode as U
+import UInt8
+import Vt.Base64 as Base64
+import Vt.Charset as Charset
+import Vt.KeyTables exposing (..)
+import Vt.Keys as Keys
+import Vt.Mouse as Mouse
+import Vt.Paste as Paste
+
+
+suite : U.Suite
+suite =
+    Support.run "Encoders"
+        [ { name = "keys: Enter, Tab, Escape and Backspace"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\r", "\t", "\u{001B}", "\u{007F}", "\u{0008}" ]
+                        [ key Keys.defaultOptions (press keyEnter)
+                        , key Keys.defaultOptions (press keyTab)
+                        , key Keys.defaultOptions (press keyEscape)
+                        , key Keys.defaultOptions (press keyBackspace)
+                        , key { defaultOptions | backarrow = True } (press keyBackspace)
+                        ]
+          }
+        , { name = "keys: an arrow, in normal and application cursor mode, and with ctrl"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}[A", "\u{001B}OA", "\u{001B}[1;5A" ]
+                        [ key Keys.defaultOptions (press keyArrowUp)
+                        , key { defaultOptions | cursorApplication = True } (press keyArrowUp)
+                        , key Keys.defaultOptions (withMods 2 (press keyArrowUp))
+                        ]
+          }
+        , { name = "keys: F1, shift+Tab and ctrl+c"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}OP", "\u{001B}[Z", "\u{0003}" ]
+                        [ key Keys.defaultOptions (press keyF1)
+                        , key Keys.defaultOptions (withMods 1 (press keyTab))
+                        , key Keys.defaultOptions (letter keyKeyC "c" 2)
+                        ]
+          }
+        , { name = "keys: text is sent as it is, and alt prefixes ESC"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "c", "\u{001B}c" ]
+                        [ key Keys.defaultOptions (letter keyKeyC "c" 0)
+                        , key { defaultOptions | altEscPrefix = True } (letter keyKeyC "c" 4)
+                        ]
+          }
+        , { name = "keys: a release sends nothing without kitty's event flag"
+          , test =
+                \_ ->
+                    Expect.equal "" (key Keys.defaultOptions (released (letter keyKeyC "c" 0)))
+          }
+        , { name = "keys: kitty's disambiguate flag sends Escape as CSI u"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}[27u", "c" ]
+                        [ key { defaultOptions | kittyFlags = 1 } (press keyEscape)
+                        , key { defaultOptions | kittyFlags = 1 } (letter keyKeyC "c" 0)
+                        ]
+          }
+        , { name = "mouse: SGR press and release, one-based cells"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}[<0;2;3M", "\u{001B}[<0;2;3m", "\u{001B}[<2;2;3M", "\u{001B}[<1;2;3M", "\u{001B}[<16;2;3M" ]
+                        [ mouse 2 { leftAt | action = 0 }
+                        , mouse 2 { leftAt | action = 1 }
+                        , mouse 2 { leftAt | button = 2 }
+                        , mouse 2 { leftAt | button = 3 }
+                        , mouse 2 { leftAt | mods = 2 }
+                        ]
+          }
+        , { name = "mouse: X10's bytes add 32"
+          , test = \_ -> Expect.equal "\u{001B}[M \"#" (mouse 0 leftAt)
+          }
+        , { name = "mouse: nothing when no tracking is asked for, or for motion under normal tracking"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "", "" ]
+                        [ text (Mouse.encode { mouseOptions | tracking = Mouse.none } leftAt).bytes
+                        , text (Mouse.encode mouseOptions { leftAt | action = 2, button = 0 }).bytes
+                        ]
+          }
+        , { name = "paste: brackets with mode 2004, LF as CR without"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}[200~a\nb\u{001B}[201~", "a\rb" ]
+                        [ text (Paste.encode True (Bytes.fromString "a\nb"))
+                        , text (Paste.encode False (Bytes.fromString "a\nb"))
+                        ]
+          }
+        , { name = "paste: ESC and the tty's controls become spaces, so a paste cannot end its bracket"
+          , test =
+                \_ ->
+                    Expect.equal
+                        "\u{001B}[200~a [201~ b\u{001B}[201~"
+                        (text (Paste.encode True (Bytes.fromString "a\u{001B}[201~\u{0003}b")))
+          }
+        , { name = "Base64: RFC 4648's vectors"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy" ]
+                        (Array.map (\s -> text (Base64.encode (Bytes.fromString s))) [ "", "f", "fo", "foo", "foob", "fooba", "foobar" ])
+          }
+        , { name = "Base64: decode, with padding or without"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just "foobar", Just "fo", Just "fo", Just "" ]
+                        (Array.map (\s -> Maybe.map text (Base64.decode (Bytes.fromString s))) [ "Zm9vYmFy", "Zm8=", "Zm8", "" ])
+          }
+        , { name = "Base64: decode refuses whitespace, a lone character and padding inside"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Nothing, Nothing, Nothing, Nothing ]
+                        (Array.map (\s -> Maybe.map text (Base64.decode (Bytes.fromString s))) [ "Zm9v\n", "Zm9vY", "Zg==Zg==", "Z!==" ])
+          }
+        , { name = "EUC-KR: a pair decodes to its Hangul syllable, ASCII to itself"
+          , test =
+                \_ ->
+                    Expect.equal "a가b" (text (Charset.decode Charset.decoder (bytes [ 0x61, 0xB0, 0xA1, 0x62 ])).bytes)
+          }
+        , { name = "EUC-KR: a lead byte that ends a read waits for the next"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Charset.decode Charset.decoder (bytes [ 0x61, 0xB0 ])
+
+                        second =
+                            Charset.decode first.decoder (bytes [ 0xA1 ])
+                    in
+                    Expect.equal
+                        { first = "a", pending = True, second = "가", after = False }
+                        { first = text first.bytes, pending = Charset.pending first.decoder, second = text second.bytes, after = Charset.pending second.decoder }
+          }
+        , { name = "EUC-KR: a stray lead before ESC gives U+FFFD and keeps the ESC"
+          , test =
+                \_ ->
+                    Expect.equal "\u{FFFD}\u{001B}[m" (text (Charset.decode Charset.decoder (bytes [ 0xB0, 0x1B, 0x5B, 0x6D ])).bytes)
+          }
+        , { name = "EUC-KR: the encoder writes the pair, and counts what it cannot send"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { bytes = [ 0xB0, 0xA1 ], replaced = 0 }, { bytes = [ 0x3F ], replaced = 1 } ]
+                        (Array.map
+                            (\s ->
+                                let
+                                    r =
+                                        Charset.encode Charset.EucKr (Bytes.fromString s)
+                                in
+                                { bytes = byteList r.bytes, replaced = r.replaced }
+                            )
+                            [ "가", "😀" ]
+                        )
+          }
+        , { name = "a charset's name"
+          , test =
+                \_ ->
+                    Expect.equal [ Charset.EucKr, Charset.Cp949, Charset.Utf8, Charset.Utf8 ]
+                        (Array.map Charset.fromName [ "euc-kr", "cp949", "utf-8", "latin1" ])
+          }
+        ]
+
+
+defaultOptions : Keys.Options
+defaultOptions =
+    Keys.defaultOptions
+
+
+press : Int -> Keys.Event
+press k =
+    { action = 1, key = k, mods = 0, consumed = 0, composing = False, text = "", unshifted = 0 }
+
+
+{-| A letter key's press with its text and modifiers. -}
+letter : Int -> String -> Int -> Keys.Event
+letter k s mods =
+    { action = 1
+    , key = k
+    , mods = mods
+    , consumed = 0
+    , composing = False
+    , text = s
+    , unshifted = Maybe.withDefault 0 (Maybe.map Char.toCode (String.toArray s |> Array.first))
+    }
+
+
+withMods : Int -> Keys.Event -> Keys.Event
+withMods mods event =
+    { event | mods = mods }
+
+
+released : Keys.Event -> Keys.Event
+released event =
+    { event | action = 0 }
+
+
+key : Keys.Options -> Keys.Event -> String
+key options event =
+    Keys.encode options event
+
+
+mouseOptions : Mouse.Options
+mouseOptions =
+    { tracking = Mouse.normal
+    , format = 2
+    , size =
+        { screenWidth = 100
+        , screenHeight = 100
+        , cellWidth = 10
+        , cellHeight = 20
+        , padTop = 0
+        , padBottom = 0
+        , padRight = 0
+        , padLeft = 0
+        }
+    , anyButtonPressed = False
+    , track = False
+    , last = Nothing
+    }
+
+
+{-| A press of the left button in the cell at column 1, row 2. -}
+leftAt : Mouse.Event
+leftAt =
+    { action = 0, button = 1, mods = 0, x = 15, y = 45 }
+
+
+mouse : Int -> Mouse.Event -> String
+mouse format event =
+    text (Mouse.encode { mouseOptions | format = format } event).bytes
+
+
+byteList : Bytes -> Array Int
+byteList b =
+    Array.range 0 (Bytes.length b - 1)
+        |> Array.mapAndKeepJust (\i -> Maybe.map UInt8.toInt (Bytes.get i b))

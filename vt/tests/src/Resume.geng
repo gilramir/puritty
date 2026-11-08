@@ -1,0 +1,55 @@
+module Resume exposing (suite)
+
+{-| The parser resumes at any byte (`docs/vt-core.md`, "The parser"): a
+read may end anywhere, inside an escape sequence, a string or a UTF-8
+character, and the next read picks up from there. Each input here is fed
+whole and then in two reads split at every byte, and every split must give
+the whole read's dump, replies included.
+-}
+
+import Bytes exposing (Bytes)
+import Expect exposing (Expectation)
+import Support exposing (lines, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+suite : U.Suite
+suite =
+    Support.run "Resume"
+        (Array.map
+            (\c -> { name = c.name, test = \_ -> everySplit c.input })
+            [ { name = "SGR", input = "a\u{001B}[1;38;5;196;48:2::1:2:3mb\u{001B}[0mc" }
+            , { name = "CUP and ED", input = "xyz\u{001B}[2;3H\u{001B}[1J!" }
+            , { name = "OSC ended by BEL and by ST", input = "\u{001B}]0;title\u{0007}a\u{001B}]2;t\u{001B}\\b" }
+            , { name = "UTF-8 of two, three and four bytes", input = "é中😀x" }
+            , { name = "DEC special graphics", input = "\u{001B}(0qx\u{001B}(Bq" }
+            , { name = "DECRQSS, a DCS with a reply", input = "\u{001B}[1mA\u{001B}P$qm\u{001B}\\B" }
+            , { name = "DSR, a CSI with a reply", input = "ab\u{001B}[6nc" }
+            , { name = "the alternate screen", input = "m\u{001B}[?1049h\u{001B}[2;2Ha\u{001B}[?1049lz" }
+            , { name = "a scrolling region", input = "1\r\n2\r\n3\u{001B}[1;2r\u{001B}[2;1H\n\nq" }
+            , { name = "wrapping past the last column", input = "0123456789abcdefghij" }
+            ]
+        )
+
+
+everySplit : String -> Expectation
+everySplit input =
+    let
+        all =
+            Bytes.fromString input
+
+        whole =
+            lines (Vt.feed all (term 8 3))
+
+        n =
+            Bytes.length all
+
+        differs =
+            Array.range 0 n
+                |> Array.keepIf
+                    (\i ->
+                        lines (Vt.feed (Bytes.slice i n all) (Vt.feed (Bytes.slice 0 i all) (term 8 3))) /= whole
+                    )
+    in
+    Expect.equal [] differs

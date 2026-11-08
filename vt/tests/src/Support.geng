@@ -1,0 +1,67 @@
+module Support exposing (term, feed, feedBytes, lines, run, bytes, text)
+
+{-| What every suite does: make a terminal, feed it, read its dump as
+lines, and run a suite whose tests need no fixture.
+-}
+
+import Bytes exposing (Bytes)
+import Expect exposing (Expectation)
+import Task
+import Test.Runner.UnitNode as U
+import UInt8
+import Vt
+
+
+{-| A terminal of `cols` by `rows` with scrollback for 1,000 rows. -}
+term : Int -> Int -> Vt.Term
+term cols rows =
+    Vt.new
+        { cols = cols
+        , rows = rows
+        , scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = 1000 }
+        , pageRows = Vt.defaultPageRows
+        , checksums = False
+        , cellWidth = 0
+        , cellHeight = 0
+        }
+
+
+feed : String -> (moved t : Vt.Term) -> Vt.Term
+feed input t =
+    Vt.feed (Bytes.fromString input) t
+
+
+feedBytes : Array Int -> (moved t : Vt.Term) -> Vt.Term
+feedBytes input t =
+    Vt.feed (bytes input) t
+
+
+{-| The dump's lines (`docs/vt-core.md` §VC3), the empty ones left out. -}
+lines : Vt.Term -> Array String
+lines t =
+    String.split "\n" (Vt.dump t)
+        |> Array.keepIf (\l -> l /= "")
+
+
+bytes : Array Int -> Bytes
+bytes values =
+    Bytes.fromUInt8s (Array.map UInt8.fromInt values)
+
+
+{-| Bytes as text, or a marker when they are not UTF-8. -}
+text : Bytes -> String
+text b =
+    Maybe.withDefault "<not UTF-8>" (Bytes.toString b)
+
+
+{-| A suite of tests that need no fixture. -}
+run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
+run name tests =
+    U.suite
+        { name = name
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map (\c -> U.test c.name (\fix -> Task.succeed (c.test fix))) tests
+        }

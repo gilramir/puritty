@@ -1,0 +1,182 @@
+module Feed exposing (suite)
+
+{-| `Vt.feed` and `Vt.dump`: printing, the cursor, wrapping, erasing,
+styles, scrolling into the scrollback, and a resize's reflow.
+
+The replay corpus holds the core to Ghostty on 325 cases (`docs/vt-core.md`
+§VC4); these are the small cases a change breaks first, each readable on
+its own. Every expectation is the dump's form (§VC3).
+-}
+
+import Expect
+import Support exposing (feed, lines, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+suite : U.Suite
+suite =
+    Support.run "Feed"
+        [ { name = "text moves the cursor"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x2 main", "cursor 2,0", "history 0", "0 |hi|", "1 ||" ]
+                        (lines (feed "hi" (term 10 2)))
+          }
+        , { name = "CR and LF start the next row"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x2 main", "cursor 2,1", "history 0", "0 |ab|", "1 |cd|" ]
+                        (lines (feed "ab\r\ncd" (term 10 2)))
+          }
+        , { name = "CUP is one-based and its parameters default to 1"
+          , test =
+                \_ ->
+                    -- corpus/replay/cup-basic, whose dump Ghostty's agrees with
+                    Expect.equal
+                        [ "screen 20x5 main"
+                        , "cursor 19,4 wrap"
+                        , "history 0"
+                        , "0 |Y|"
+                        , "1 ||"
+                        , "2 |    X|"
+                        , "3 ||"
+                        , "4 |                   Z|"
+                        ]
+                        (lines (feed "\u{001B}[3;5HX\u{001B}[HY\u{001B}[5;20HZ" (term 20 5)))
+          }
+        , { name = "a full row leaves the wrap pending"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 5x2 main", "cursor 4,0 wrap", "history 0", "0 |abcde|", "1 ||" ]
+                        (lines (feed "abcde" (term 5 2)))
+          }
+        , { name = "the next character wraps and marks the row"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 5x2 main", "cursor 2,1", "history 0", "0+ |abcde|", "1 |fg|" ]
+                        (lines (feed "abcdefg" (term 5 2)))
+          }
+        , { name = "a CR takes the pending wrap away"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 5x2 main", "cursor 1,0", "history 0", "0 |Xbcde|", "1 ||" ]
+                        (lines (feed "abcde\rX" (term 5 2)))
+          }
+        , { name = "a wide character takes two cells"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 3,0", "history 0", "0 |中a|" ]
+                        (lines (feed "中a" (term 10 1)))
+          }
+        , { name = "a wide character that does not fit goes to the next row"
+          , test =
+                \_ ->
+                    -- the last cell is a spacer head, which has no text
+                    Expect.equal
+                        [ "screen 3x2 main", "cursor 2,1", "history 0", "0+ |ab|", "1 |中|" ]
+                        (lines (feed "ab中" (term 3 2)))
+          }
+        , { name = "with left and right margins, CR goes to the left margin"
+          , test =
+                \_ ->
+                    -- DECLRMM on, margins at columns 3 to 6, X at column 5
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 3,0", "history 0", "0 |  Y X|" ]
+                        (lines (feed "\u{001B}[?69h\u{001B}[3;6s\u{001B}[5GX\rY" (term 10 1)))
+          }
+        , { name = "EL 0 erases from the cursor to the end of the row"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 2,0", "history 0", "0 |ab|" ]
+                        (lines (feed "abcdef\u{001B}[3G\u{001B}[K" (term 10 1)))
+          }
+        , { name = "EL 1 erases from the start of the row to the cursor"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 2,0", "history 0", "0 |   def|" ]
+                        (lines (feed "abcdef\u{001B}[3G\u{001B}[1K" (term 10 1)))
+          }
+        , { name = "ED 2 erases the screen and leaves the cursor"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x2 main", "cursor 2,1", "history 0", "0 ||", "1 ||" ]
+                        (lines (feed "abc\r\nde\u{001B}[2J" (term 10 2)))
+          }
+        , { name = "ICH and DCH shift the rest of the row"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 1,0", "history 0", "0 |a  cdef|" ]
+                        (lines (feed "abcdef\u{001B}[2G\u{001B}[P\u{001B}[2@" (term 10 1)))
+          }
+        , { name = "SGR styles cells, one run a style"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 3,0", "history 0", "0 |abc|", "  0-1 fg=1 bold" ]
+                        (lines (feed "\u{001B}[1;31mab\u{001B}[0mc" (term 10 1)))
+          }
+        , { name = "a direct colour"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 10x1 main", "cursor 1,0", "history 0", "0 |x|", "  0-0 bg=#0a0b0c" ]
+                        (lines (feed "\u{001B}[48;2;10;11;12mx" (term 10 1)))
+          }
+        , { name = "a line feed at the bottom pushes the top row into the scrollback"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "a\r\nb\r\nc" (term 5 2)
+                    in
+                    Expect.equal
+                        { dump = [ "screen 5x2 main", "cursor 1,1", "history 1", "h0 |a|", "0 |b|", "1 |c|" ]
+                        , bound = 1
+                        }
+                        { dump = lines t, bound = Vt.historyBound t }
+          }
+        , { name = "a scrolling region scrolls only its rows"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "screen 5x4 main", "cursor 0,2", "history 0", "0 |a|", "1 |c|", "2 ||", "3 |d|" ]
+                        (lines (feed "a\r\nb\r\nc\r\nd\u{001B}[2;3r\u{001B}[3;1H\n" (term 5 4)))
+          }
+        , { name = "the alternate screen keeps the main one"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { alt = [ "screen 5x1 alt", "cursor 2,0", "history 0", "0 | y|" ]
+                        , main = [ "screen 5x1 main", "cursor 1,0", "history 0", "0 |x|" ]
+                        }
+                        { alt = lines (feed "x\u{001B}[?1049hy" (term 5 1))
+                        , main = lines (feed "x\u{001B}[?1049hy\u{001B}[?1049l" (term 5 1))
+                        }
+          }
+        , { name = "a narrower resize wraps a line again, and a wider one joins it"
+          , test =
+                \_ ->
+                    let
+                        narrow =
+                            Vt.resize 3 2 (feed "hello" (term 10 2))
+                    in
+                    Expect.equal
+                        { narrow = [ "screen 3x2 main", "cursor 2,1", "history 0", "0+ |hel|", "1 |lo|" ]
+                        , wide = [ "screen 10x2 main", "cursor 5,0", "history 0", "0 |hello|", "1 ||" ]
+                        }
+                        { narrow = lines narrow
+                        , wide = lines (Vt.resize 10 2 narrow)
+                        }
+          }
+        ]

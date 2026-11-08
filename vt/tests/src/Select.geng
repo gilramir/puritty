@@ -1,0 +1,126 @@
+module Select exposing (suite)
+
+{-| What a selection reads (`docs/phase3-select.md` §5): the text between
+two points, the word and the line under a click, and the rows a view
+scrolled back counts, with the prompt jumps (§VC22).
+
+A point's row counts from the first row the main screen ever had, so on a
+terminal that has not scrolled it is the screen's row.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+suite : U.Suite
+suite =
+    Support.run "Select"
+        [ { name = "a wrapped row joins the next, other rows end in a newline"
+          , test =
+                \_ ->
+                    Expect.equal "abcdefg\nxy"
+                        (Vt.selectionText { row = 0, col = 0 } { row = 2, col = 1 } (wrapped {}))
+          }
+        , { name = "the points may come in either order"
+          , test =
+                \_ ->
+                    Expect.equal
+                        (Vt.selectionText { row = 0, col = 2 } { row = 1, col = 0 } (wrapped {}))
+                        (Vt.selectionText { row = 1, col = 0 } { row = 0, col = 2 } (wrapped {}))
+          }
+        , { name = "part of a row, both ends included"
+          , test =
+                \_ ->
+                    Expect.equal "cdef"
+                        (Vt.selectionText { row = 0, col = 2 } { row = 1, col = 0 } (wrapped {}))
+          }
+        , { name = "the blanks at a line's end are dropped"
+          , test =
+                \_ ->
+                    Expect.equal "ab\ncd"
+                        (Vt.selectionText { row = 0, col = 0 } { row = 1, col = 9 } (feed "ab\r\ncd" (term 10 2)))
+          }
+        , { name = "a wide character is read once"
+          , test =
+                \_ ->
+                    Expect.equal "a中b"
+                        (Vt.selectionText { row = 0, col = 0 } { row = 0, col = 9 } (feed "a中b" (term 10 1)))
+          }
+        , { name = "a word stops at a boundary character"
+          , test =
+                \_ ->
+                    Expect.equal (Just { start = { row = 0, col = 4 }, end = { row = 0, col = 6 } })
+                        (Vt.wordAt Vt.defaultWordBoundaries { row = 0, col = 5 } (feed "foo bar(baz)" (term 20 1)))
+          }
+        , { name = "on a boundary character, the word is the run of them"
+          , test =
+                \_ ->
+                    Expect.equal (Just { start = { row = 0, col = 3 }, end = { row = 0, col = 5 } })
+                        (Vt.wordAt Vt.defaultWordBoundaries { row = 0, col = 4 } (feed "foo   bar" (term 20 1)))
+          }
+        , { name = "a word goes on across a wrapped row"
+          , test =
+                \_ ->
+                    Expect.equal (Just { start = { row = 0, col = 0 }, end = { row = 1, col = 1 } })
+                        (Vt.wordAt Vt.defaultWordBoundaries { row = 1, col = 0 } (wrapped {}))
+          }
+        , { name = "a line is its wrapped rows, without its blanks at either end"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { wrappedLine = Just { start = { row = 0, col = 0 }, end = { row = 1, col = 1 } }
+                        , indented = Just { start = { row = 0, col = 2 }, end = { row = 0, col = 3 } }
+                        , blank = Nothing
+                        }
+                        { wrappedLine = Vt.lineAt { row = 1, col = 0 } (wrapped {})
+                        , indented = Vt.lineAt { row = 0, col = 0 } (feed "  ab" (term 10 2))
+                        , blank = Vt.lineAt { row = 1, col = 0 } (feed "  ab" (term 10 2))
+                        }
+          }
+        , { name = "rows pushed into the scrollback keep their points"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "a\r\nb\r\nc\r\nd" (term 5 2)
+                    in
+                    Expect.equal
+                        { pushed = 2, back = 2, text = "a\nb\nc\nd" }
+                        { pushed = Vt.rowsPushed t
+                        , back = Vt.scrollbackRows t
+                        , text = Vt.selectionText { row = 0, col = 0 } { row = 3, col = 0 } t
+                        }
+          }
+        , { name = "the alternate screen has no scrollback to scroll to"
+          , test =
+                \_ ->
+                    Expect.equal 0 (Vt.scrollbackRows (feed "a\r\nb\r\nc\u{001B}[?1049h" (term 5 2)))
+          }
+        , { name = "a prompt jump puts the prompt at the view's top"
+          , test =
+                \_ ->
+                    let
+                        -- p1 is four rows above the screen, p2 on its last row
+                        prompt =
+                            "\u{001B}]133;A\u{0007}"
+
+                        t =
+                            feed (prompt ++ "p1\r\no1\r\no2\r\no3\r\no4\r\no5\r\n" ++ prompt ++ "p2") (term 5 3)
+                    in
+                    Expect.equal
+                        { up = 4, upAgain = 4, down = 0 }
+                        { up = Vt.promptJump -1 0 t
+                        , upAgain = Vt.promptJump -1 4 t
+                        , down = Vt.promptJump 1 4 t
+                        }
+          }
+        ]
+
+
+{-| 5 columns: "abcdefg" wraps after "abcde", then a line "xy". A
+function, since a terminal is used once and each test reads its own. -}
+wrapped : {} -> Vt.Term
+wrapped _ =
+    feed "abcdefg\r\nxy" (term 5 3)

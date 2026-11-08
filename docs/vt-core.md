@@ -3628,3 +3628,118 @@ Not decided: whether the fuzzer should cap the resizes an input may make,
 or the reflow should be cheaper per resize; a real window resizes once a
 frame at most, and `phase2-window.md` §15.6's drag of `long-10000` costs
 20–22 ms a resize.
+
+
+## VC45. The rest of Vt.geng split into modules (2026-11-07)
+
+§VC23 left 5,235 lines in `Vt.geng`, which had grown to 6,197 since: the
+parser and everything its dispatch does, sections that "call each other
+and would take a choice of seams of their own to split". Gilbert asked for
+the file to be split.
+
+**The seams.** A graph of which top-level definition names which (a
+script over the source, not the compiler) found one cycle among the
+250 definitions: the parser's states, sixteen functions, `feed`,
+`ground`, `escape`, `csi`, `c1`, the string states and the two UTF-8
+ones, which call each other because each returns to the ground state.
+Every other definition is in no cycle, so a layering exists; the sections
+did not give one as they stood, since a few helpers sat in the section
+that used them first. Eleven modules, each importing those below it
+`exposing (..)` as §VC23's do, and nine definitions moved to a section
+lower than their own so that no module imports one above it (`of`,
+`param`, `withPlain`, `slotSet` and `rowWrapped` to `Vt.Cursor`;
+`historyBound`, `noteReach` and `freshLine` to `Vt.Scroll`; `fresh` to
+`Vt.Modes`):
+
+| step | module | what it holds | lines |
+|---|---|---|---:|
+| 1 | `Vt.Cursor` | the margins, the cursor's moves, the origin, the tab stops, and the small helpers above share | 553 |
+| 2 | `Vt.Prompt` | the prompt marks of rows that OSC 133 sets (§VC22) | 135 |
+| 3 | `Vt.Scroll` | line feeds, the scrolling regions, the term's resize | 505 |
+| 4 | `Vt.Sgr` | SGR and the pen | 387 |
+| 5 | `Vt.Edit` | inserting, deleting and erasing cells, and splitting the wide characters an edit cuts | 651 |
+| 6 | `Vt.Modes` | the modes, DECSC and DECRC, the resets, and `fresh` | 691 |
+| 7 | `Vt.Print` | printing through the character sets, the wrap, UTF-8's decoding | 628 |
+| 8 | `Vt.Dcs` | DCS strings, DECRQSS | 276 |
+| 9 | `Vt.Osc` | the OSC dispatch: colours, the clipboard, the semantic prompts | 511 |
+| 10 | `Vt.Dispatch` | a CSI sequence's dispatch | 625 |
+| 11 | `Vt.Parse` | the state machine, the cycle above | 883 |
+
+`Vt.geng` is 893 lines: what it exposes, and `resize`, `keyOptions`,
+`mouseModes` and `dump`, which nothing below needs. Two of its exposed
+functions moved down, `feed` to `Vt.Parse` and `historyBound` to
+`Vt.Scroll`, and `Vt` defines each as a call of the moved one, importing
+the module qualified so the names do not clash; the other modules import
+it `exposing` only the names `Vt` uses. The tab stops are in `Vt.Cursor`
+rather than a module of 72 lines.
+
+**Held as §VC23 held its steps.** Each step is a commit and a move of
+definitions as they were, made by the same script from the same source,
+and each was held to the build before it: the dump of every throughput
+input the same, replay 325 of 325, and every count of `harness/perf.py
+--no-times` within 0.1 M instructions of the build before the split
+(`6c5f4f9`). Every count was the same to the 0.1 M `perf.py` prints, at
+every step: clang sees one C file however the Geng is cut (§VC23).
+After the last step, esctest2 392 passing, as at §VC23, and every other
+program that builds the core builds (the app, `charset`, `esctest`,
+`fuzz`, `keys`, `mouse`, `paste`, `pixels`, `select`, `view`).
+
+**Found on the way.**
+
+- `harness/fuzz/build.sh` did not build at `6c5f4f9`: it repeats
+  `geng make`'s C step by hand, and geng-lang D1082 moved the runtime's
+  system calls into `linux/geng_sys.c`, with `geng_platform.h` beside it.
+  It now compiles and links that file with its directory on the include
+  path, as `geng make` does (`4875096`).
+- `harness/perf.py` fails at `6c5f4f9`, before the split, and the split
+  does not move it: three resize cases are over their record,
+  `short-10000` (default and unlimited) 349 M to 470 M, +35%, and
+  `default/short-100000` 1,401 M to 1,476 M, +5%; `long-10000` is 13%
+  under. Not looked into here; the record was last written at `18749a4`
+  (2026-11-03), so the change came in since, in this repository, the
+  compiler or `core`.
+
+
+## VC46. Unit tests (2026-11-07)
+
+The core was held to what it does only by gates against an oracle:
+replay and esctest2 against Ghostty, the fuzzers, and the key, mouse,
+paste and charset gates against libghostty-vt and WHATWG. Each is wide,
+and none is a small case a person reads to learn what a function does,
+nor runs in a second after an edit. Gilbert asked for checked-in unit
+tests.
+
+**Where they are.** `vt/tests/` is an application that depends on
+`puritty-vt` by path and runs on node with `gren-unit-node`, as the
+ported packages' suites do (geng-lang `harness/suites.py`). It reaches
+only what `vt` exposes (`Vt`, `Vt.Keys`, `Vt.KeyTables`, `Vt.Mouse`, `Vt.Paste`,
+`Vt.Base64`, `Vt.Charset`), which is what the app uses, so the tests
+hold the interface and not the modules of §VC45. `vt/tests/run.sh`
+builds it with the passes the core is built with everywhere else and
+runs it; its arguments are the runner's.
+
+| suite | what it holds | tests |
+|---|---|---:|
+| `Feed` | printing, the cursor, the pending wrap, wide characters, CR at a left margin, EL, ED, ICH and DCH, SGR, a scrolling region, the alternate screen, the scrollback, a resize's reflow, read through `Vt.dump` (§VC3) | 19 |
+| `Resume` | ten inputs, each fed in two reads split at every byte, give the dump of one read: SGR, CUP and ED, OSC ended both ways, UTF-8 of every length, DEC graphics, DECRQSS, DSR, the alternate screen, a region, a wrap | 10 |
+| `Select` | `selectionText` across a wrap, in either order, without a line's trailing blanks, a wide character once; `wordAt` at a boundary, on one, across a wrap; `lineAt`; `rowsPushed` and `scrollbackRows`; `promptJump` up and down | 12 |
+| `Replies` | DSR 5 and 6, replies oldest first and a take emptying them, OSC 52 with BEL and ST and refused when not Base64, `keyOptions`, `mouseModes` | 8 |
+| `Encoders` | keys (Enter, Tab, Escape, Backspace and DECBKM, an arrow in both cursor modes and with ctrl, F1, shift+Tab, ctrl+c, alt's ESC, a release, kitty's CSI u), the mouse in SGR and X10, paste with and without brackets and its controls, Base64's RFC 4648 vectors and refusals, EUC-KR both ways and across reads | 19 |
+
+Each expectation was written from the specification, the module's own
+documentation or a replay case Ghostty agrees with (CUP), before the
+tests were first run, not copied from the core's output, and the 67 of
+the first run all passed. They take 53 ms, and building
+them after a change to the core 8 s.
+
+**They fail when they should.** Two changes to the core, one at a time:
+`(` dropped from `defaultWordBoundaries` failed `Select`'s word test,
+and `crX` returning one column more failed the CR-at-a-margin test. That
+second change first failed nothing: a CR in the ground state sets the
+column to 0 itself (`Vt.Parse.ground`), and `crX` is reached only with
+left and right margins, which no test had set. The margin test was added
+for it, which is the 68th.
+
+They run on node and not natively, where puritty runs: `gren-unit-node`
+is node's. geng-lang's `run.py` holds the backends to the same output,
+and the replay and bench programs run the core natively.

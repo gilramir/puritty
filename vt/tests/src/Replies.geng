@@ -1,0 +1,102 @@
+module Replies exposing (suite)
+
+{-| What the embedder takes from a terminal after a read: the replies to
+write back, the clipboard requests of OSC 52, and the modes the key and
+mouse encoders need.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+suite : U.Suite
+suite =
+    Support.run "Replies"
+        [ { name = "DSR 6 reports the cursor, one-based"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[2;3R" ]
+                        (replies (feed "\u{001B}[2;3H\u{001B}[6n" (term 10 5)))
+          }
+        , { name = "DSR 5 reports a working terminal"
+          , test = \_ -> Expect.equal [ "\u{001B}[0n" ] (replies (feed "\u{001B}[5n" (term 10 5)))
+          }
+        , { name = "replies come oldest first and a take empties them"
+          , test =
+                \_ ->
+                    let
+                        taken =
+                            Vt.takeReplies (feed "\u{001B}[5n\u{001B}[6n" (term 10 5))
+                    in
+                    Expect.equal
+                        { first = [ "\u{001B}[0n", "\u{001B}[1;1R" ], again = [] }
+                        { first = Array.map Support.text taken.replies, again = replies taken.term }
+          }
+        , { name = "OSC 52 asks to set the clipboard with decoded text"
+          , test =
+                \_ ->
+                    let
+                        taken =
+                            Vt.takeClipboard (feed "\u{001B}]52;c;aGVsbG8=\u{0007}" (term 10 5))
+                    in
+                    Expect.equal
+                        [ { selection = 1, text = Just "hello", letter = 99, bel = True } ]
+                        (Array.map
+                            (\c -> { selection = c.selection, text = Maybe.map Support.text c.text, letter = c.letter, bel = c.bel })
+                            taken.requests
+                        )
+          }
+        , { name = "OSC 52 with ST, for the primary selection"
+          , test =
+                \_ ->
+                    let
+                        taken =
+                            Vt.takeClipboard (feed "\u{001B}]52;p;eA==\u{001B}\\" (term 10 5))
+                    in
+                    Expect.equal
+                        [ { selection = 0, text = Just "x", bel = False } ]
+                        (Array.map (\c -> { selection = c.selection, text = Maybe.map Support.text c.text, bel = c.bel }) taken.requests)
+          }
+        , { name = "OSC 52 that is not Base64 asks for nothing to be written"
+          , test =
+                \_ ->
+                    Expect.equal 0
+                        (Array.length (Vt.takeClipboard (feed "\u{001B}]52;c;a b\u{0007}" (term 10 5))).requests)
+          }
+        , { name = "DECCKM and DECBKM reach the key encoder's options"
+          , test =
+                \_ ->
+                    let
+                        before =
+                            Vt.keyOptions (term 10 5)
+
+                        after =
+                            Vt.keyOptions (feed "\u{001B}[?1h\u{001B}[?67h" (term 10 5))
+                    in
+                    Expect.equal
+                        { before = { cursor = False, backarrow = False }, after = { cursor = True, backarrow = True } }
+                        { before = { cursor = before.cursorApplication, backarrow = before.backarrow }
+                        , after = { cursor = after.cursorApplication, backarrow = after.backarrow }
+                        }
+          }
+        , { name = "the last mouse modes set are the ones reported"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { none = { tracking = 0, format = 0 }
+                        , set = { tracking = 3, format = 2 }
+                        , reset = { tracking = 0, format = 2 }
+                        }
+                        { none = Vt.mouseModes (term 10 5)
+                        , set = Vt.mouseModes (feed "\u{001B}[?1000h\u{001B}[?1002h\u{001B}[?1006h" (term 10 5))
+                        , reset = Vt.mouseModes (feed "\u{001B}[?1002h\u{001B}[?1006h\u{001B}[?1002l" (term 10 5))
+                        }
+          }
+        ]
+
+
+replies : (moved t : Vt.Term) -> Array String
+replies t =
+    Array.map Support.text (Vt.takeReplies t).replies
