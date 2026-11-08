@@ -97,7 +97,7 @@ writeAll fd replies =
 
 
 {-| Draws a frame at `ms`, and counts how late it is if it shows a read. -}
-drawFrame : Int -> (moved r : Run) -> Task x Run
+drawFrame : Int -> (taken r : Run) -> Task x Run
 drawFrame ms r =
     let
         f =
@@ -132,7 +132,7 @@ drawFrame ms r =
 
 
 {-| A read fed to the core and its replies written back. -}
-feed : File.Handle -> Bytes -> Int -> (moved r : Run) -> Task Error Run
+feed : File.Handle -> Bytes -> Int -> (taken r : Run) -> Task Error Run
 feed fd chunk ms r =
     let
         taken =
@@ -155,7 +155,7 @@ feed fd chunk ms r =
             )
 
 
-readLoop : File.Handle -> (moved r : Run) -> Task Error Run
+readLoop : File.Handle -> (taken r : Run) -> Task Error Run
 readLoop fd r =
     File.read fd
         |> Task.andThen
@@ -180,7 +180,7 @@ readLoop fd r =
             )
 
 
-raceLoop : Process.Terminal -> File.Handle -> (moved r : Run) -> Task Error Run
+raceLoop : Process.Terminal -> File.Handle -> (taken r : Run) -> Task Error Run
 raceLoop terminal fd r =
     now
         |> Task.andThen
@@ -249,7 +249,7 @@ raceLoop terminal fd r =
 
 
 {-| The loop again, unless the window has closed. -}
-again : Process.Terminal -> File.Handle -> (moved r : Run) -> Task Error Run
+again : Process.Terminal -> File.Handle -> (taken r : Run) -> Task Error Run
 again terminal fd r =
     if r.closed then
         Task.succeed r
@@ -261,7 +261,7 @@ again terminal fd r =
 {-| The window's events: keys sent to the program, a new size given to the
 core and the terminal, the focus kept for the cursor, a close ending the
 loop. A frame follows a key or a resize at once. -}
-handle : Process.Terminal -> File.Handle -> Array X11.Event -> (moved r : Run) -> Task Error Run
+handle : Process.Terminal -> File.Handle -> Array X11.Event -> (taken r : Run) -> Task Error Run
 handle terminal fd evs r =
     when Array.first evs is
         Nothing ->
@@ -393,7 +393,7 @@ config cols rows =
     { cols = cols, rows = rows, scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = 100000 }, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 0, cellHeight = 0 }
 
 
-feedAll : Bytes -> Int -> (moved t : Vt.Term) -> Vt.Term
+feedAll : Bytes -> Int -> (taken t : Vt.Term) -> Vt.Term
 feedAll bytes at t =
     if at >= Bytes.length bytes then
         t
@@ -402,7 +402,7 @@ feedAll bytes at t =
         feedAll bytes (at + 65536) (Vt.feed (Bytes.slice at (at + 65536) bytes) t)
 
 
-start : Process.Permission -> (moved ballast : Array Vt.Term) -> Array String -> Task Error {}
+start : Process.Permission -> (taken ballast : Array Vt.Term) -> Array String -> Task Error {}
 start cp ballast args =
     when { mode = Array.get 0 args, program = Array.get 1 args } is
         { mode = Just mode, program = Just program } ->
@@ -437,7 +437,7 @@ start cp ballast args =
             Console.write "usage: x11 read|race|race1|race2|stress|double PROGRAM ARGS...\n"
 
 
-run : Process.Permission -> (moved ballast : Array Vt.Term) -> String -> String -> Array String -> Int -> Task Error {}
+run : Process.Permission -> (taken ballast : Array Vt.Term) -> String -> String -> Array String -> Int -> Task Error {}
 run cp ballast mode program args t0 =
     let
         race =

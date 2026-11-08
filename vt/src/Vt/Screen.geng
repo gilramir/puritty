@@ -78,7 +78,7 @@ inRegion s y =
 
 
 {-| The region's rows put where its turn says they are, its turn 0. -}
-settle : (moved s : Screen) -> Screen
+settle : (taken s : Screen) -> Screen
 settle s =
     if s.turn == 0 then
         s
@@ -94,7 +94,7 @@ settle s =
         { s | cells = Builder.rotate (pt * s.stride) ((pb + 1) * s.stride) (s.turn * s.stride) s.cells, turn = 0 }
 
 
-withRegion : Int -> Int -> (moved s : Screen) -> Screen
+withRegion : Int -> Int -> (taken s : Screen) -> Screen
 withRegion top bottom s =
     let
         settled =
@@ -159,7 +159,7 @@ peekCell o x s =
 
 {-| The row at `o`, about to be written from column `x`: the cells between
 its extent `ext` and `x` are made empty. -}
-reachAt : Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+reachAt : Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 reachAt o ext x cells =
     if x > ext then
         Builder.fill (o + ext) (o + x) 0 cells
@@ -169,7 +169,7 @@ reachAt o ext x cells =
 
 
 {-| The row at `o`'s extent made at least `x`, its wrapped flag kept. -}
-extendTo : Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+extendTo : Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 extendTo o cols x cells =
     let
         m =
@@ -182,7 +182,7 @@ extendTo o cols x cells =
         cells
 
 
-setWrapped : Int -> Bool -> (moved s : Screen) -> Screen
+setWrapped : Int -> Bool -> (taken s : Screen) -> Screen
 setWrapped y on s =
     let
         o =
@@ -207,7 +207,7 @@ setWrapped y on s =
 {-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom,
 in `fillCell`. With `keep`, the row that leaves joins the scrollback in the
 ring; the caller has made room (`pageOut`). -}
-screenUp : Bool -> Int -> Int -> Int64 -> (moved screen0 : Screen) -> Screen
+screenUp : Bool -> Int -> Int -> Int64 -> (taken screen0 : Screen) -> Screen
 screenUp keep top bottom fillCell screen0 =
     let
         screen =
@@ -245,7 +245,7 @@ screenUp keep top bottom fillCell screen0 =
         shiftUp top bottom screen |> clearRow bottom fillCell
 
 
-turnRegion : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+turnRegion : Int -> Int -> Int -> (taken s0 : Screen) -> Screen
 turnRegion top bottom by s0 =
     let
         s =
@@ -266,7 +266,7 @@ turnRegion top bottom by s0 =
 
 {-| Logical row `y` made blank: its extent 0, or, when `fillCell` has a
 style (an erase in a background colour), every cell `fillCell`. -}
-clearRow : Int -> Int64 -> (moved s : Screen) -> Screen
+clearRow : Int -> Int64 -> (taken s : Screen) -> Screen
 clearRow y fillCell s =
     let
         o =
@@ -279,7 +279,7 @@ clearRow y fillCell s =
         { s | cells = Builder.set (o + s.cols) (Int64.fromInt s.cols) (Builder.fill o (o + s.cols) fillCell s.cells) }
 
 
-rotate : (moved s0 : Screen) -> Screen
+rotate : (taken s0 : Screen) -> Screen
 rotate s0 =
     let
         s =
@@ -288,24 +288,24 @@ rotate s0 =
     { s | base = phys s 1 }
 
 
-downFrom : Int -> Int -> (moved s : Screen) -> Screen
+downFrom : Int -> Int -> (taken s : Screen) -> Screen
 downFrom i bottom s =
     moveRows bottom (bottom + 1) (i - bottom) s
 
 
-shiftUp : Int -> Int -> (moved s : Screen) -> Screen
+shiftUp : Int -> Int -> (taken s : Screen) -> Screen
 shiftUp i bottom s =
     moveRows (i + 1) i (bottom - i) s
 
 
-shiftDown : Int -> Int -> (moved s : Screen) -> Screen
+shiftDown : Int -> Int -> (taken s : Screen) -> Screen
 shiftDown i top s =
     moveRows top (top + 1) (i - top) s
 
 
 {-| `count` logical rows from `from` copied to start at `to`, each read
 before it is overwritten, in at most three pieces cut at the ring's end. -}
-moveRows : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+moveRows : Int -> Int -> Int -> (taken s0 : Screen) -> Screen
 moveRows from to count s0 =
     let
         s =
@@ -341,12 +341,12 @@ moveRows from to count s0 =
         moveRows (from + run) (to + run) (count - run) (copyRows pf pt run s)
 
 
-copyRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyRows : Int -> Int -> Int -> (taken s : Screen) -> Screen
 copyRows pf pt run s =
     { s | cells = Builder.copyWithin (pt * s.stride) (pf * s.stride) ((pf + run) * s.stride) s.cells }
 
 
-blankRows : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+blankRows : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
 blankRows from to fillCell s =
     if from >= to then
         s

@@ -439,7 +439,7 @@ nextAt m =
 paste. The pty takes what it takes; the rest waits for `File.writable`, which
 the loop races beside its read, so a program that stops reading until its
 output is read never holds the window (V48, geng-lang D1049). -}
-send : Bytes -> (moved m : Model) -> Model
+send : Bytes -> (taken m : Model) -> Model
 send text m =
     let
         -- in the pane's character set (cjk-and-thai.md §10.3, V49); what
@@ -456,13 +456,13 @@ send text m =
 
 {-| Bytes queued as they are, in no character set: a mouse report, whose
 legacy forms are raw bytes. -}
-sendRaw : Bytes -> (moved m : Model) -> Model
+sendRaw : Bytes -> (taken m : Model) -> Model
 sendRaw bytes m =
     { m | out = Outbox.push bytes m.out }
 
 
 {-| The queue written as far as the pty takes it. -}
-flush : File.Handle -> (moved m : Model) -> Task Error Model
+flush : File.Handle -> (taken m : Model) -> Task Error Model
 flush fd m =
     if Outbox.isEmpty m.out then
         Task.succeed m
@@ -476,7 +476,7 @@ flush fd m =
             |> Task.map (\n -> { m | out = Outbox.written n next.outbox })
 
 
-loop : Process.Terminal -> File.Handle -> (moved m00 : Model) -> Task Error Model
+loop : Process.Terminal -> File.Handle -> (taken m00 : Model) -> Task Error Model
 loop terminal fd m00 =
     let
         -- every motion from X only while the program asks for any motion
@@ -500,7 +500,7 @@ loop terminal fd m00 =
 program takes the mouse and Shift is not held to take it back, the I-beam
 otherwise, as Alacritty and Ghostty show them. X is told only when it
 changes. -}
-pointerShape : (moved m : Model) -> Task Error Model
+pointerShape : (taken m : Model) -> Task Error Model
 pointerShape m =
     let
         arrow =
@@ -520,7 +520,7 @@ pointerShape m =
             |> Task.map (\_ -> { m | arrowPointer = arrow })
 
 
-race : Process.Terminal -> File.Handle -> (moved m0 : Model) -> Task Error Model
+race : Process.Terminal -> File.Handle -> (taken m0 : Model) -> Task Error Model
 race terminal fd m0 =
     now
         |> Task.andThen
@@ -584,7 +584,7 @@ race terminal fd m0 =
 
 
 {-| A frame if one is due, then the loop again, unless the window is gone. -}
-step : Process.Terminal -> File.Handle -> Int -> (moved m : Model) -> Task Error Model
+step : Process.Terminal -> File.Handle -> Int -> (taken m : Model) -> Task Error Model
 step terminal fd ms m =
     if m.closed || m.lost then
         Task.succeed m
@@ -601,7 +601,7 @@ step terminal fd ms m =
             loop terminal fd m
 
 
-blink : Int -> (moved m : Model) -> Model
+blink : Int -> (taken m : Model) -> Model
 blink ms m =
     if blinking m && m.blinkAt >= 0 && ms >= m.blinkAt then
         { m | focus = { focused = m.focus.focused, blinkOn = not m.focus.blinkOn }, blinkAt = ms + m.config.blinkMs, urgent = True }
@@ -620,7 +620,7 @@ replyCap =
 
 {-| A read fed to the core and its replies queued, while fewer than
 `replyCap` bytes wait. -}
-feed : File.Handle -> Bytes -> Int -> (moved m : Model) -> Task Error Model
+feed : File.Handle -> Bytes -> Int -> (taken m : Model) -> Task Error Model
 feed fd chunk0 ms m =
     let
         -- an EUC-KR or CP949 pane's bytes in UTF-8 before the core (V49)
@@ -690,7 +690,7 @@ feed fd chunk0 ms m =
 {-| The window's events: a key sent to the program, a new size given to the
 core and the terminal, the focus kept for the cursor and reported under
 mode 1004, a close. -}
-handle : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (moved m : Model) -> Task Error Model
+handle : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (taken m : Model) -> Task Error Model
 handle terminal fd ms evs m =
     when Array.first evs is
         Nothing ->
@@ -723,7 +723,7 @@ shiftAfter ev held =
             held
 
 
-handleOne : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> X11.Event -> (moved m : Model) -> Task Error Model
+handleOne : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> X11.Event -> (taken m : Model) -> Task Error Model
 handleOne terminal fd ms rest ev m =
             when ev is
                 X11.Key k ->
@@ -870,7 +870,7 @@ handleOne terminal fd ms rest ev m =
 
 {-| The events after one that made a selection the window's, or asked
 for a paste: the window told first. -}
-owned : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (moved m : Model) -> Task Error Model
+owned : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (taken m : Model) -> Task Error Model
 owned terminal fd ms rest m =
     when m.toOwn is
         Just own ->
@@ -893,7 +893,7 @@ write to PRIMARY takes a selection's highlight away; a read is answered only
 under `[clipboard] osc52_read = "allow"`, with the selection's text asked of
 its owner as a paste is and sent back as base64, and is otherwise dropped
 with no answer. -}
-clipboardRequests : (moved m : Model) -> Task x Model
+clipboardRequests : (taken m : Model) -> Task x Model
 clipboardRequests m =
     when Array.first m.clips is
         Nothing ->
@@ -945,7 +945,7 @@ clipboardRequests m =
 
 {-| An OSC 52 read's text, as it comes; when it is all there, the answer
 the program asked for, `OSC 52 ; LETTER ; BASE64` ended as its question was. -}
-clipReadIn : Bool -> Bytes -> { letter : Int, bel : Bool, text : Bytes } -> (moved m : Model) -> Model
+clipReadIn : Bool -> Bytes -> { letter : Int, bel : Bool, text : Bytes } -> (taken m : Model) -> Model
 clipReadIn more text r m =
     let
         all =
@@ -975,7 +975,7 @@ clipReadIn more text r m =
 Ghostty and xterm encode a paste (`Vt.Paste`), bracketed when the program
 had mode 2004 set when its first text came, and queued as typed text is, in
 the pane's character set. The view comes to the bottom, as for a key. -}
-pasteIn : Bool -> Bytes -> (moved m : Model) -> Model
+pasteIn : Bool -> Bytes -> (taken m : Model) -> Model
 pasteIn more text m =
     let
         first =
@@ -1024,7 +1024,7 @@ motion with Shift while a button is held, is puritty's own. The wheel is
 not: Ghostty reports it with Shift too, and nvim pages with Shift and the
 wheel. A motion is reported with the lowest-numbered button held, as
 Ghostty reports it. -}
-pointer : Int -> X11.PointerEvent -> (moved m : Model) -> Model
+pointer : Int -> X11.PointerEvent -> (taken m : Model) -> Model
 pointer ms p m =
     let
         modes =
@@ -1099,7 +1099,7 @@ on the alternate screen with mode 1007 set, three arrow keys, as Ghostty
 sends them, in DECCKM's form; else the view scrolled three rows. A step
 sideways does nothing. One step reported to a program that asked for the
 mouse is one report, as xterm sends it; Ghostty sends three. -}
-wheelStep : Int -> (moved m : Model) -> Model
+wheelStep : Int -> (taken m : Model) -> Model
 wheelStep button m =
     let
         up =
@@ -1144,7 +1144,7 @@ wheelStep button m =
 a selection, a second and third within 500 ms on the same cell one by
 words and by lines; a motion while it is held moves its head; letting go
 makes it the window's PRIMARY, or takes it away when nothing was dragged. -}
-selecting : Int -> X11.PointerEvent -> Int -> (moved m : Model) -> Model
+selecting : Int -> X11.PointerEvent -> Int -> (taken m : Model) -> Model
 selecting ms p held m =
     let
         at =
@@ -1433,7 +1433,7 @@ lowestHeld held i =
 
 
 {-| A key sent to the program, the cursor's blink begun again. -}
-key : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (moved m : Model) -> Task Error Model
+key : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
 key terminal fd ms rest k m =
     let
         bytes =
@@ -1566,7 +1566,7 @@ imeLine on line =
 
 
 {-| A frame drawn, and the window's title made the program's. -}
-draw : Int -> (moved m : Model) -> Task x Model
+draw : Int -> (taken m : Model) -> Task x Model
 draw ms m =
     let
         preedit =

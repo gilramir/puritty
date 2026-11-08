@@ -250,7 +250,7 @@ anything that moves or reads rows as runs of slots, and when the region or
 the screen changes. A turn is only ever made of a region that is one stretch
 of the ring (`feedRegion`), and nothing moves `base` without settling first,
 so the region is one stretch here. -}
-settle : (moved s : Screen) -> Screen
+settle : (taken s : Screen) -> Screen
 settle s =
     if s.turn == 0 then
         s
@@ -267,7 +267,7 @@ settle s =
 
 
 {-| The screen settled, its region `top` to `bottom`. -}
-withRegion : Int -> Int -> (moved s : Screen) -> Screen
+withRegion : Int -> Int -> (taken s : Screen) -> Screen
 withRegion top bottom s =
     let
         settled =
@@ -325,7 +325,7 @@ extentOf row =
 {-| The row whose cells start at `o`, about to be written from column `x`:
 when `x` is past its extent `ext`, the cells between, which may hold what a
 row there before held, are made blank. -}
-reachAt : Int -> Int -> Int -> (moved cells : Builder Int) -> Builder Int
+reachAt : Int -> Int -> Int -> (taken cells : Builder Int) -> Builder Int
 reachAt o ext x cells =
     if x > ext then
         Builder.fill (o + ext) (o + x) blank cells
@@ -336,7 +336,7 @@ reachAt o ext x cells =
 
 {-| The row at `o` written by `write o` from column `from`, its extent at
 least `x`. -}
-withExtentAt : Int -> Int -> Int -> (Int -> Builder Int -> Builder Int) -> (moved cells : Builder Int) -> Builder Int
+withExtentAt : Int -> Int -> Int -> (Int -> Builder Int -> Builder Int) -> (taken cells : Builder Int) -> Builder Int
 withExtentAt o from x write cells =
     let
         old =
@@ -352,7 +352,7 @@ place, is the new bottom row (geng-lang `m4-puritty.md` §VA16, D978); the
 caller has made room (`pageOut`). Without it, the ring turns only when it
 holds no scrollback, since a turn would make the leaving row scrollback.
 -}
-screenUp : Bool -> Int -> Int -> (moved screen0 : Screen) -> Screen
+screenUp : Bool -> Int -> Int -> (taken screen0 : Screen) -> Screen
 screenUp keep top bottom screen0 =
     let
         screen =
@@ -397,7 +397,7 @@ screenUp keep top bottom screen0 =
 moved `by` places toward the top, a negative `by` toward the bottom: one
 `copyWithin` of their cells. The rows that come in at the other end hold
 what was there, and every caller clears them. -}
-turnRegion : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+turnRegion : Int -> Int -> Int -> (taken s0 : Screen) -> Screen
 turnRegion top bottom by s0 =
     let
         s =
@@ -417,12 +417,12 @@ turnRegion top bottom by s0 =
 
 
 {-| Logical row `y` made blank in place: its extent set to 0. -}
-clearRowAt : Int -> (moved s : Screen) -> Screen
+clearRowAt : Int -> (taken s : Screen) -> Screen
 clearRowAt y s =
     { s | cells = Builder.set (phys s y * stride + cols) 0 s.cells }
 
 
-rotate : (moved s0 : Screen) -> Screen
+rotate : (taken s0 : Screen) -> Screen
 rotate s0 =
     let
         s =
@@ -432,19 +432,19 @@ rotate s0 =
 
 
 {-| Logical rows `bottom + 1` to `i` each take the row above them. -}
-downFrom : Int -> Int -> (moved s : Screen) -> Screen
+downFrom : Int -> Int -> (taken s : Screen) -> Screen
 downFrom i bottom s =
     moveRows bottom (bottom + 1) (i - bottom) s
 
 
 {-| Logical rows `i` to `bottom - 1` each take the row below them. -}
-shiftUp : Int -> Int -> (moved s : Screen) -> Screen
+shiftUp : Int -> Int -> (taken s : Screen) -> Screen
 shiftUp i bottom s =
     moveRows (i + 1) i (bottom - i) s
 
 
 {-| Logical rows `top + 1` to `i` each take the row above them. -}
-shiftDown : Int -> Int -> (moved s : Screen) -> Screen
+shiftDown : Int -> Int -> (taken s : Screen) -> Screen
 shiftDown i top s =
     moveRows top (top + 1) (i - top) s
 
@@ -453,7 +453,7 @@ shiftDown i top s =
 before it is overwritten. The runs are cut where either crosses the ring's
 end, which makes at most three pieces, and each piece is one `moveWithin`: the last piece first when the rows move
 down, the first when they move up. -}
-moveRows : Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+moveRows : Int -> Int -> Int -> (taken s0 : Screen) -> Screen
 moveRows from to count s0 =
     let
         s =
@@ -492,14 +492,14 @@ moveRows from to count s0 =
 {-| `run` rows from physical row `pf` copied to start at physical row `pt`,
 neither run crossing the ring's end. One row is two `set`s, which cost less
 than a `copyWithin`'s bounds and its record of the run it replaced. -}
-copyRows : Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyRows : Int -> Int -> Int -> (taken s : Screen) -> Screen
 copyRows pf pt run s =
     { s | cells = Builder.copyWithin (pt * stride) (pf * stride) ((pf + run) * stride) s.cells }
 
 
 {-| Logical rows `from` up to `to` made blank, one `fill` of the rows for
 each stretch of the ring they cover, which is one or two. -}
-blankRows : Int -> Int -> (moved s : Screen) -> Screen
+blankRows : Int -> Int -> (taken s : Screen) -> Screen
 blankRows from to s =
     if from >= to then
         s
@@ -515,7 +515,7 @@ blankRows from to s =
 trimmed to its extent and joined into a page (D901). Their slots stay where
 they are, the free part of the ring now, to be cleared and written again in
 place. -}
-pageOut : (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pageOut : (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
 pageOut s back =
     let
         page =
@@ -569,7 +569,7 @@ pageOut s back =
 
 {-| The rows in physical slots `p` to `stop`, each trimmed to its extent and
 appended to `cells`, and their extents to `ends`, each row read once. -}
-physRows : Int -> Int -> Screen -> (moved cells : Builder Int) -> (moved ends : Builder Int) -> { cells : Builder Int, ends : Builder Int }
+physRows : Int -> Int -> Screen -> (taken cells : Builder Int) -> (taken ends : Builder Int) -> { cells : Builder Int, ends : Builder Int }
 physRows p stop s cells ends =
     if p >= stop then
         { cells = cells, ends = ends }
@@ -585,7 +585,7 @@ physRows p stop s cells ends =
         physRows (p + 1) stop s (Builder.appendSlice o (o + ext) s.cells cells) (Builder.pushLast ext ends)
 
 
-trimmedRows : Int -> Int -> Screen -> (moved acc : Builder (Array Int)) -> Builder (Array Int)
+trimmedRows : Int -> Int -> Screen -> (taken acc : Builder (Array Int)) -> Builder (Array Int)
 trimmedRows y stop s acc =
     if y >= stop then
         acc
@@ -597,7 +597,7 @@ trimmedRows y stop s acc =
 {-| The rows in physical slots `p` to `stop`, each row's text appended to
 `text` as UTF-8 and its extent and style runs to `runs`, as `join`'s
 `PackPoints` and `attrRuns` make them. -}
-packRows : Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, runs : Builder UInt8 }
+packRows : Int -> Int -> Screen -> (taken text : Builder UInt8) -> (taken runs : Builder UInt8) -> { text : Builder UInt8, runs : Builder UInt8 }
 packRows p stop s text runs =
     if p >= stop then
         { text = text, runs = runs }
@@ -616,7 +616,7 @@ packRows p stop s text runs =
         packRows (p + 1) stop s row.text row.runs
 
 
-packCells : Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> Int -> Int -> { text : Builder UInt8, runs : Builder UInt8 }
+packCells : Int -> Int -> Screen -> (taken text : Builder UInt8) -> (taken runs : Builder UInt8) -> Int -> Int -> { text : Builder UInt8, runs : Builder UInt8 }
 packCells i stop s text runs style count =
     if i >= stop then
         { text = text, runs = pushRun style count runs }
@@ -646,12 +646,12 @@ packCells i stop s text runs style count =
             packCells (i + 1) stop s next runs st 1
 
 
-pushRun : Int -> Int -> (moved runs : Builder UInt8) -> Builder UInt8
+pushRun : Int -> Int -> (taken runs : Builder UInt8) -> Builder UInt8
 pushRun style count runs =
     Builder.pushLast (UInt8.fromInt count) (Builder.pushLast (UInt8.fromInt style) runs)
 
 
-pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushUtf8 : Int -> (taken b : Builder UInt8) -> Builder UInt8
 pushUtf8 cp b =
     if cp < 0x80 then
         Builder.pushLast (UInt8.fromInt cp) b
@@ -675,7 +675,7 @@ pushUtf8 cp b =
             |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
 
 
-pushPage : Page -> (moved back : Back) -> Back
+pushPage : Page -> (taken back : Back) -> Back
 pushPage page back =
     if Builder.length back.pages < back.limit then
         { back | pages = Builder.pushLast page back.pages }
@@ -854,7 +854,7 @@ asciiEnd bytes stop i =
 -- THE PARSER
 
 
-feed : Bytes -> (moved t : Term) -> Term
+feed : Bytes -> (taken t : Term) -> Term
 feed bytes t =
     let
         n =
@@ -877,7 +877,7 @@ feed bytes t =
             ground bytes n 0 t
 
 
-ground : Bytes -> Int -> Int -> (moved t : Term) -> Term
+ground : Bytes -> Int -> Int -> (taken t : Term) -> Term
 ground bytes n i t =
     if i >= n then
         t
@@ -913,7 +913,7 @@ ground bytes n i t =
 
 
 {-| Wrap first if the last write left the cursor past the end. -}
-wrapped : (moved t : Term) -> Term
+wrapped : (taken t : Term) -> Term
 wrapped t =
     if t.wrapNext then
         lineFeed { t | x = 0, wrapNext = False }
@@ -924,7 +924,7 @@ wrapped t =
 
 {-| The cursor's row, written by `write` from column `t.x`, and the cursor
 moved to column `x`. -}
-written : Int -> (Int -> Builder Int -> Builder Int) -> (moved t : Term) -> Term
+written : Int -> (Int -> Builder Int -> Builder Int) -> (taken t : Term) -> Term
 written x write t =
     let
         s =
@@ -940,7 +940,7 @@ written x write t =
     }
 
 
-writeAscii : Bytes -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Builder Int
+writeAscii : Bytes -> Int -> Int -> Int -> Int -> (taken row : Builder Int) -> Builder Int
 writeAscii bytes i end style x row =
     if i < end then
         writeAscii bytes (i + 1) end style (x + 1) (Builder.set x (Bitwise.or style (byteAt bytes i)) row)
@@ -951,7 +951,7 @@ writeAscii bytes i end style x row =
 
 {-| A run of printable ASCII written to a row, `first` the byte at `i`, which
 `ground` read, and its extent at least `xEnd`. -}
-asciiRow : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int) -> Builder Int
+asciiRow : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int) -> Builder Int
 asciiRow bytes i end style o x xEnd first cells =
     let
         old =
@@ -967,7 +967,7 @@ the compiler sees `Builder.update` handed a partial application of
 putting it back instead costs more than the closure did. `b` is the run's
 first byte, read by `ground`; the scan starts after it (geng-lang
 `m4-puritty.md` §VA29). -}
-printAscii : Bytes -> Int -> Int -> Int -> (moved t0 : Term) -> Term
+printAscii : Bytes -> Int -> Int -> Int -> (taken t0 : Term) -> Term
 printAscii bytes n i b t0 =
     let
         t =
@@ -1000,7 +1000,7 @@ printAscii bytes n i b t0 =
 
 {-| A run of UTF-8, decoded into the row until a byte below 0x20, the row's
 end or a sequence the read cut short. ASCII inside it stays in the run. -}
-printUnicode : Bytes -> Int -> Int -> (moved t0 : Term) -> Term
+printUnicode : Bytes -> Int -> Int -> (taken t0 : Term) -> Term
 printUnicode bytes n i t0 =
     let
         t =
@@ -1048,7 +1048,7 @@ type alias Run =
     { cells : Builder Int, x : Int, next : Int, cut : Int, cp : Int, wide : Bool }
 
 
-decodeRun : Bytes -> Int -> Int -> Int -> Int -> Int -> (moved row : Builder Int) -> Run
+decodeRun : Bytes -> Int -> Int -> Int -> Int -> Int -> (taken row : Builder Int) -> Run
 decodeRun bytes n i style o x row =
     if i >= n || x >= cols then
         { cells = row, x = x, next = i, cut = 0, cp = 0, wide = False }
@@ -1126,7 +1126,7 @@ cont bytes i stop acc =
         acc
 
 
-continueUtf8 : Bytes -> Int -> Int -> Int -> Int -> (moved t : Term) -> Term
+continueUtf8 : Bytes -> Int -> Int -> Int -> Int -> (taken t : Term) -> Term
 continueUtf8 bytes n i acc need t =
     if need <= 0 then
         let
@@ -1155,7 +1155,7 @@ continueUtf8 bytes n i acc need t =
         continueUtf8 bytes n (i + 1) (Bitwise.or (Bitwise.shiftLeftBy 6 acc) (Bitwise.and 0x3F (byteAt bytes i))) (need - 1) t
 
 
-escape : Bytes -> Int -> Int -> (moved t : Term) -> Term
+escape : Bytes -> Int -> Int -> (taken t : Term) -> Term
 escape bytes n i t =
     if i >= n then
         { t | ps = 1 }
@@ -1189,7 +1189,7 @@ escape bytes n i t =
 
 
 {-| An OSC or a string, skipped to BEL or ST. -}
-skipEsc : Bytes -> Int -> Int -> (moved t : Term) -> Term
+skipEsc : Bytes -> Int -> Int -> (taken t : Term) -> Term
 skipEsc bytes n i t =
     if i >= n then
         { t | ps = 3 }
@@ -1209,7 +1209,7 @@ skipEsc bytes n i t =
             skipEsc bytes n (i + 1) t
 
 
-csi : Bytes -> Int -> Int -> (moved t : Term) -> (moved params : Builder Int) -> Int -> Int -> Term
+csi : Bytes -> Int -> Int -> (taken t : Term) -> (taken params : Builder Int) -> Int -> Int -> Term
 csi bytes n i t params cur priv =
     if i >= n then
         { t | ps = 2, params = Builder.toArray params, cur = cur, priv = priv }
@@ -1261,7 +1261,7 @@ isAlt t =
             False
 
 
-dispatch : Int -> Int -> Array Int -> (moved t : Term) -> Term
+dispatch : Int -> Int -> Array Int -> (taken t : Term) -> Term
 dispatch final priv params t =
     if priv == 0x3F then
         if final == 0x68 && param 0 0 params == 1049 then
@@ -1356,7 +1356,7 @@ dispatch final priv params t =
 -- STYLES
 
 
-sgr : Array Int -> Int -> (moved t : Term) -> Term
+sgr : Array Int -> Int -> (taken t : Term) -> Term
 sgr params k t =
     if k >= Array.length params then
         intern t
@@ -1431,7 +1431,7 @@ sgr params k t =
 
 
 {-| The pen's style id, from the table, adding the style if it is new. -}
-intern : (moved t : Term) -> Term
+intern : (taken t : Term) -> Term
 intern t =
     let
         key =
@@ -1453,7 +1453,7 @@ intern t =
 -- SCROLLING AND ERASING
 
 
-lineFeed : (moved t : Term) -> Term
+lineFeed : (taken t : Term) -> Term
 lineFeed t =
     if t.y == t.bottom then
         if t.scroll == scrollFull then
@@ -1492,7 +1492,7 @@ scrollOther =
     0
 
 
-withScroll : (moved t : Term) -> Term
+withScroll : (taken t : Term) -> Term
 withScroll t =
     let
         keep =
@@ -1513,7 +1513,7 @@ withScroll t =
 
 {-| `regionUp 1` of the whole main screen, scrollback kept: `screenUp`'s first
 branch, after `pageOut` when the ring is full. -}
-feedFull : (moved t : Term) -> Term
+feedFull : (taken t : Term) -> Term
 feedFull t =
     let
         s =
@@ -1536,7 +1536,7 @@ feedFull t =
 {-| `regionUp 1` of a region, no scrollback kept: when the region is one
 stretch of the ring, its turn counted on by one, its rows left where they
 are (H1), and the row that left, now its bottom row, cleared. -}
-feedRegion : (moved t : Term) -> Term
+feedRegion : (taken t : Term) -> Term
 feedRegion t =
     if slot t.screen t.top <= slot t.screen t.bottom then
         let
@@ -1560,7 +1560,7 @@ feedRegion t =
         regionUp 1 t.top t.bottom t
 
 
-reverseIndex : (moved t : Term) -> Term
+reverseIndex : (taken t : Term) -> Term
 reverseIndex t =
     if t.y == t.top then
         regionDown 1 t.top t.bottom t
@@ -1574,7 +1574,7 @@ reverseIndex t =
 
 {-| On the main screen, with the region starting at the top, the rows that
 leave go to the scrollback. -}
-regionUp : Int -> Int -> Int -> (moved t : Term) -> Term
+regionUp : Int -> Int -> Int -> (taken t : Term) -> Term
 regionUp count top bottom t =
     if count <= 0 then
         t
@@ -1601,7 +1601,7 @@ regionUp count top bottom t =
             regionUp (count - 1) top bottom { t | screen = screenUp keep top bottom t.screen }
 
 
-regionDown : Int -> Int -> Int -> (moved t0 : Term) -> Term
+regionDown : Int -> Int -> Int -> (taken t0 : Term) -> Term
 regionDown count top bottom t0 =
     let
         t =
@@ -1618,7 +1618,7 @@ regionDown count top bottom t0 =
             regionDown (count - 1) top bottom { t | screen = shiftDown bottom top t.screen |> clearRowAt top }
 
 
-eraseDisplay : Int -> (moved t : Term) -> Term
+eraseDisplay : Int -> (taken t : Term) -> Term
 eraseDisplay how t =
     if how == 2 || how == 3 then
         { t | screen = blankRows 0 lines t.screen }
@@ -1635,7 +1635,7 @@ eraseDisplay how t =
             { line | screen = blankRows (t.y + 1) lines line.screen }
 
 
-eraseLine : Int -> (moved t : Term) -> Term
+eraseLine : Int -> (taken t : Term) -> Term
 eraseLine how t =
     let
         from =
@@ -1693,7 +1693,7 @@ checksum t =
         (Array.range 0 (lines - 1))
 
 
-feedAll : Bytes -> Int -> (moved t : Term) -> Term
+feedAll : Bytes -> Int -> (taken t : Term) -> Term
 feedAll bytes at t =
     if at >= Bytes.length bytes then
         t

@@ -132,7 +132,7 @@ fresh config =
     }
 
 
-setPrivate : Int -> Bool -> (moved t : Term) -> Term
+setPrivate : Int -> Bool -> (taken t : Term) -> Term
 setPrivate p on t =
     if p == 47 || p == 1047 || p == 1048 || p == 1049 then
         -- recorded as well, as Ghostty records every mode before it acts,
@@ -233,7 +233,7 @@ setPrivate p on t =
 when mode 2033 is set and asked for with `CSI ? 998 n`. The core has no
 window to say whether it is hidden, so it answers as libghostty-vt does
 until its host says otherwise: visible (§VC28). -}
-visibilityReport : (moved t : Term) -> Term
+visibilityReport : (taken t : Term) -> Term
 visibilityReport t =
     reply "\u{001B}[?999;1n" t
 
@@ -242,7 +242,7 @@ visibilityReport t =
 to 132 columns or 80, as a host resizes it, its lines reflowed, then erased
 as ED 2 erases it and the cursor put home; without, ignored and recorded
 reset (§VC18). -}
-deccolm : Bool -> (moved t : Term) -> Term
+deccolm : Bool -> (taken t : Term) -> Term
 deccolm on t =
     if Dict.get 40 t.modes /= Just True then
         { t | modes = Dict.set 3 False t.modes }
@@ -262,7 +262,7 @@ deccolm on t =
         cursorTo 0 0 (eraseDisplay False 2 (resizeQuiet cols rows { t | modes = Dict.set 3 on t.modes }))
 
 
-screenMode : Int -> Bool -> (moved t : Term) -> Term
+screenMode : Int -> Bool -> (taken t : Term) -> Term
 screenMode p on t =
     if p == 1049 then
         if on then
@@ -317,7 +317,7 @@ screenMode p on t =
 
 
 {-| XTSAVE: a private mode's state kept for XTRESTORE, one each. -}
-saveMode : Int -> (moved t : Term) -> Term
+saveMode : Int -> (taken t : Term) -> Term
 saveMode p t =
     let
         state =
@@ -332,7 +332,7 @@ saveMode p t =
 
 {-| XTRESTORE: a private mode set as XTSAVE kept it, or to its state in a
 new terminal if it was never kept, as Ghostty restores it. -}
-restoreMode : Int -> (moved t : Term) -> Term
+restoreMode : Int -> (taken t : Term) -> Term
 restoreMode p t =
     when Dict.get p t.savedModes is
         Just on ->
@@ -400,7 +400,7 @@ knownPrivate =
     [ 1, 3, 4, 5, 8, 9, 12, 40, 45, 47, 66, 67, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 1035, 1036, 1039, 1045, 1047, 1048, 1049, 2004, 2026, 2027, 2031, 2033, 2048 ]
 
 
-setAnsi : Int -> Bool -> (moved t : Term) -> Term
+setAnsi : Int -> Bool -> (taken t : Term) -> Term
 setAnsi p on t =
     if p == 4 then
         withPlain { t | insert = on }
@@ -445,7 +445,7 @@ ansiState p t =
 {-| The alternate screen shown, cleared first when `clear`. Once made it is
 kept, its text and its saved cursor, while the main screen is shown, as xterm
 and Ghostty keep it (§VC10). -}
-toAlt : Bool -> (moved t : Term) -> Term
+toAlt : Bool -> (taken t : Term) -> Term
 toAlt clear t =
     if isAlt t then
         if clear then
@@ -479,7 +479,7 @@ toAlt clear t =
 {-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
 kept when its protection was last ISO's, SPA's (§VC18), and in `fill`, the
 erase cell of the screen's own pen (§VC20). -}
-clearAlt : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+clearAlt : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
 clearAlt mode rows fill s =
     if mode == 1 then
         blankUnprotected 0 rows fill s
@@ -490,7 +490,7 @@ clearAlt mode rows fill s =
 
 {-| The main screen shown again, the alternate cleared first when `clear`
 and kept. -}
-toMain : Bool -> (moved t : Term) -> Term
+toMain : Bool -> (taken t : Term) -> Term
 toMain clear t =
     if not t.alt then
         t
@@ -518,7 +518,7 @@ toMain clear t =
 {-| DECSCUSR: the cursor's shape (1 a block, 3 an underline, 5 a bar) and
 whether it blinks, which is mode 12, as Ghostty keeps it. 0 is the default,
 a steady block. -}
-cursorStyle : Int -> (moved t : Term) -> Term
+cursorStyle : Int -> (taken t : Term) -> Term
 cursorStyle p t =
     if p == 0 then
         { t | cursorShape = 1, modes = Dict.set 12 False t.modes }
@@ -534,7 +534,7 @@ cursorStyle p t =
 the cursor writes from now on is protected, or not. The mode, ISO's or
 DEC's, is what ED, EL and ECH go by, and stopping protection does not
 change it, as in Ghostty. -}
-protect : Int -> (moved t : Term) -> Term
+protect : Int -> (taken t : Term) -> Term
 protect how t =
     if how == 0 then
         { t | guard = 0, pen = Bitwise.and (Bitwise.complement protectBit) t.pen }
@@ -543,7 +543,7 @@ protect how t =
         { t | guard = protectBit, protectMode = how, pen = Bitwise.or protectBit t.pen }
 
 
-saveCursor : (moved t : Term) -> Term
+saveCursor : (taken t : Term) -> Term
 saveCursor t =
     let
         s =
@@ -568,7 +568,7 @@ saveCursor t =
     }
 
 
-restoreCursor : (moved t : Term) -> Term
+restoreCursor : (taken t : Term) -> Term
 restoreCursor t =
     let
         v =
@@ -616,7 +616,7 @@ reset t =
 
 {-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14)
 and the main display (DECSASD, §VC26). -}
-softReset : (moved t : Term) -> Term
+softReset : (taken t : Term) -> Term
 softReset t =
     withPen plainAttrs
         (withScroll
@@ -658,7 +658,7 @@ modifyOtherKeysKey =
 {-| XTMODKEYS, `CSI > Pp ; Pv m`, as Ghostty takes it: no parameters, or a
 first one of 0, 1, 2 or 4, turn `modifyOtherKeys` 2 off, except `4 ; 2`,
 which turns it on; any other first parameter, or more than two, is ignored. -}
-modifyKeys : Array Int -> (moved t : Term) -> Term
+modifyKeys : Array Int -> (taken t : Term) -> Term
 modifyKeys params t =
     if Array.isEmpty params then
         { t | modes = Dict.remove modifyOtherKeysKey t.modes }
@@ -682,7 +682,7 @@ softResetModes =
     [ 1, 45, 66, 69, 1045, ansiKey 2, modifyOtherKeysKey ]
 
 
-resetSaved : (moved t : Term) -> Term
+resetSaved : (taken t : Term) -> Term
 resetSaved t =
     let
         s =

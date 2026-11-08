@@ -29,7 +29,7 @@ byteAt i b =
             -1
 
 
-pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushUtf8 : Int -> (taken b : Builder UInt8) -> Builder UInt8
 pushUtf8 cp b =
     if cp < 0x80 then
         Builder.pushLast (UInt8.fromInt cp) b
@@ -61,7 +61,7 @@ type alias Step =
     { lead : Int, out : Builder UInt8, next : Int }
 
 
-step : Bytes -> Int -> Int -> (moved out : Builder UInt8) -> Step
+step : Bytes -> Int -> Int -> (taken out : Builder UInt8) -> Step
 step bytes i lead out =
     let
         byte =
@@ -100,7 +100,7 @@ decodeBytewise lead bytes =
     { lead = done.lead, bytes = Bytes.fromUInt8s (Builder.toArray done.out) }
 
 
-bytewise : Bytes -> Int -> Int -> Int -> (moved out : Builder UInt8) -> { lead : Int, out : Builder UInt8 }
+bytewise : Bytes -> Int -> Int -> Int -> (taken out : Builder UInt8) -> { lead : Int, out : Builder UInt8 }
 bytewise bytes n i lead out =
     if i >= n then
         { lead = lead, out = out }
@@ -129,7 +129,7 @@ decodeRuns lead bytes =
     { lead = done.lead, bytes = Bytes.flatten (Builder.toArray done.pieces) }
 
 
-ascii : Bytes -> Int -> Int -> Int -> (moved pieces : Builder Bytes) -> { lead : Int, pieces : Builder Bytes }
+ascii : Bytes -> Int -> Int -> Int -> (taken pieces : Builder Bytes) -> { lead : Int, pieces : Builder Bytes }
 ascii bytes n start i pieces =
     if i >= n then
         { lead = 0, pieces = Builder.pushLast (Bytes.slice start n bytes) pieces }
@@ -141,7 +141,7 @@ ascii bytes n start i pieces =
         wide bytes n i 0 (Builder.empty 64) (Builder.pushLast (Bytes.slice start i bytes) pieces)
 
 
-wide : Bytes -> Int -> Int -> Int -> (moved out : Builder UInt8) -> (moved pieces : Builder Bytes) -> { lead : Int, pieces : Builder Bytes }
+wide : Bytes -> Int -> Int -> Int -> (taken out : Builder UInt8) -> (taken pieces : Builder Bytes) -> { lead : Int, pieces : Builder Bytes }
 wide bytes n i lead out pieces =
     if i >= n then
         { lead = lead, pieces = Builder.pushLast (Bytes.fromUInt8s (Builder.toArray out)) pieces }

@@ -56,7 +56,7 @@ import Vt.Sgr exposing (..)
 {-| Before columns `x` to `xEnd` of the row at `o` are written, a wide
 character whose other half lies outside them loses that half too, which
 becomes `fill`, the erase cell, as Ghostty's `blankCell` (§VC17). -}
-splitWide : Int64 -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+splitWide : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 splitWide fill o x xEnd ext cells =
     let
         firstCell =
@@ -87,7 +87,7 @@ halves whatever is erased after, a protected one too (§VC18). A function of
 its own: written into `splitWide`, which clang inlines into the writer of
 ASCII runs, where the half inside is written over anyway, it made `gitlog`
 and `ls` 5% slower. -}
-splitWhole : Int64 -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+splitWhole : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 splitWhole fill o x xEnd ext cells =
     let
         firstCell =
@@ -113,7 +113,7 @@ splitWhole fill o x xEnd ext cells =
 {-| `unheadAbove` when `stale`. One call of the writer each path makes,
 written into the screen before this, so that clang still inlines a writer
 called once (§VC10). -}
-unheadIf : Bool -> Int -> (moved s : Screen) -> Screen
+unheadIf : Bool -> Int -> (taken s : Screen) -> Screen
 unheadIf stale y s =
     if stale then
         unheadAbove y s
@@ -126,7 +126,7 @@ unheadIf stale y s =
 cell: once the wide character that wrapped from it is overwritten, Ghostty
 makes the spacer head a narrow cell, which a reflow keeps as a blank
 (§VC17). -}
-unheadAbove : Int -> (moved s : Screen) -> Screen
+unheadAbove : Int -> (taken s : Screen) -> Screen
 unheadAbove y s =
     let
         p =
@@ -144,7 +144,7 @@ unheadAbove y s =
 
 {-| `count` empty cells in `erase` inserted at column `x` of the row at
 `o`, the cells from `x` on moving right and those past the row's end lost. -}
-insertCells : Int -> Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+insertCells : Int -> Int -> Int -> Int64 -> (taken s : Screen) -> Screen
 insertCells o x count erase s =
     let
         ext =
@@ -199,7 +199,7 @@ insertCells o x count erase s =
         { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt newExt)) (Builder.fill (o + x) (o + x + n) erase tidy) }
 
 
-deleteChars : Int -> (moved t : Term) -> Term
+deleteChars : Int -> (taken t : Term) -> Term
 deleteChars count t =
     let
         s =
@@ -255,7 +255,7 @@ deleteChars count t =
         { t | screen = { s | cells = filled }, wrapNext = False }
 
 
-eraseChars : Int -> (moved t : Term) -> Term
+eraseChars : Int -> (taken t : Term) -> Term
 eraseChars count t =
     -- ECH leaves the row not wrapping, as in Ghostty (§VC16)
     let
@@ -277,7 +277,7 @@ eraseChars count t =
 {-| Ghostty's `cursorResetWrap`, which ECH, EL and DCH begin with: the
 cursor's row made not to wrap, and when it did, a spacer head at its end
 made a cell of the erase colour (§VC18). -}
-resetWrap : (moved t : Term) -> Term
+resetWrap : (taken t : Term) -> Term
 resetWrap t =
     if rowWrapped t.y t.screen then
         let
@@ -303,7 +303,7 @@ starts with a wide character, the spacer head that ends the row above is
 made a cell of the erase colour, whatever is erased after. The row above's
 wrap stands in for Ghostty's `wrap_continuation`, and above the screen's
 top it is the scrollback's newest row, while the ring holds it (§VC18). -}
-splitAbove : Int -> (moved t : Term) -> Term
+splitAbove : Int -> (taken t : Term) -> Term
 splitAbove x t =
     if x <= 1 && (t.y > 0 || t.screen.hist > 0) && rowWrapped (t.y - 1) t.screen && wideAt 0 t == wideHead then
         let
@@ -331,7 +331,7 @@ wideAt x t =
 
 {-| Columns `from` to `to` of the cursor's row made empty, in the erase
 cell. -}
-eraseSpan : Bool -> Int -> Int -> (moved t : Term) -> Term
+eraseSpan : Bool -> Int -> Int -> (taken t : Term) -> Term
 eraseSpan guarded from to t =
     let
         s =
@@ -395,7 +395,7 @@ eraseSpan guarded from to t =
 
 {-| EL, and DECSEL when `selective`, which leaves protected cells; EL
 leaves them too in ISO's protection mode. -}
-eraseLine : Bool -> Int -> (moved t : Term) -> Term
+eraseLine : Bool -> Int -> (taken t : Term) -> Term
 eraseLine selective how t =
     let
         guarded =
@@ -435,7 +435,7 @@ eraseLine selective how t =
 
 
 {-| The cells from `from` to `to` that are not protected, in the erase cell. -}
-eraseUnprotected : Int -> Int -> Int64 -> (moved cells : Builder Int64) -> Builder Int64
+eraseUnprotected : Int -> Int -> Int64 -> (taken cells : Builder Int64) -> Builder Int64
 eraseUnprotected from to fill cells =
     if from >= to then
         cells
@@ -448,7 +448,7 @@ eraseUnprotected from to fill cells =
 
 
 {-| Rows `from` to `to`, their cells that are not protected erased. -}
-blankUnprotected : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+blankUnprotected : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
 blankUnprotected from to fill s =
     if from >= to then
         s
@@ -482,7 +482,7 @@ leaves them too in ISO's protection mode. On the main screen, ED 2 with the
 last row that is not blank a prompt's, or its continuation's, scrolls the
 screen into the scrollback first, as ED 22 does: Ghostty's way of keeping
 what was above a prompt cleared with ^L (#905, §VC22). -}
-eraseDisplay : Bool -> Int -> (moved t : Term) -> Term
+eraseDisplay : Bool -> Int -> (taken t : Term) -> Term
 eraseDisplay selective how t =
     if how == 2 && not t.alt && atPrompt (t.rows - 1) t.screen then
         erasePlain selective 2 (scrollClear t)
@@ -532,7 +532,7 @@ rowHasText o ext x s =
             rowHasText o ext (x + 1) s
 
 
-erasePlain : Bool -> Int -> (moved t : Term) -> Term
+erasePlain : Bool -> Int -> (taken t : Term) -> Term
 erasePlain selective how t =
     if (selective || t.protectMode == 1) && how /= 3 && how /= 22 then
         eraseGuarded selective how t
@@ -559,7 +559,7 @@ erasePlain selective how t =
         t
 
 
-eraseGuarded : Bool -> Int -> (moved t : Term) -> Term
+eraseGuarded : Bool -> Int -> (taken t : Term) -> Term
 eraseGuarded selective how t =
     if how == 2 then
         { t | screen = blankUnprotected 0 t.rows t.erase t.screen, wrapNext = False }
@@ -578,7 +578,7 @@ eraseGuarded selective how t =
 scrolled up, past the margins and its protection, until its last row that
 is not empty has gone, into the scrollback on the main screen. The cursor
 goes up with its row, or to the top left when the row goes (§VC18). -}
-scrollClear : (moved t : Term) -> Term
+scrollClear : (taken t : Term) -> Term
 scrollClear t =
     let
         count =
@@ -633,7 +633,7 @@ rowEmpty s o x =
         False
 
 
-clearScrollback : (moved t : Term) -> Term
+clearScrollback : (taken t : Term) -> Term
 clearScrollback t =
     if isAlt t then
         t

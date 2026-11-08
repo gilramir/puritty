@@ -80,7 +80,7 @@ controlFrom bytes i n =
 letter of kind (`p` and `s` PRIMARY, any other CLIPBOARD); nothing after
 the `52;` is no request. DATA `?` asks to read; any other is base64 to
 write, and base64 that does not decode writes nothing. -}
-clipDispatch : Bool -> (moved t : Term) -> Term
+clipDispatch : Bool -> (taken t : Term) -> Term
 clipDispatch bel t =
     let
         data =
@@ -153,7 +153,7 @@ oscNumber text =
         String.toInt text
 
 
-keepByte : Int -> (moved t : Term) -> Term
+keepByte : Int -> (taken t : Term) -> Term
 keepByte b t =
     if Builder.length t.str < stringMax then
         { t | str = Builder.pushLast (UInt8.fromInt b) t.str }
@@ -162,7 +162,7 @@ keepByte b t =
         t
 
 
-oscDispatch : String -> (moved t0 : Term) -> Term
+oscDispatch : String -> (taken t0 : Term) -> Term
 oscDispatch end t0 =
     let
         taken =
@@ -239,7 +239,7 @@ order, the answers in one reply ended as the request was; the first pair
 that does not parse ends it, as in Ghostty (§VC12). An index of 256 to 260
 is one of Ghostty's special colours (OSC 5's), which it passes over: a
 query or a colour that parses goes on to the next pair (§VC17). -}
-paletteColours : String -> Array String -> String -> (moved t : Term) -> Term
+paletteColours : String -> Array String -> String -> (taken t : Term) -> Term
 paletteColours end words answers t =
     when { i = Maybe.andThen digits (Array.get 0 words), spec = Array.get 1 words } is
         { i = Just i, spec = Just spec } ->
@@ -267,7 +267,7 @@ paletteColours end words answers t =
 {-| OSC 10 to 19: colours or `?` for the dynamic colours from `c` on, each
 the next's. The foreground (10), background (11) and cursor (12) are kept;
 the rest are passed over, as Ghostty passes them. -}
-dynamicColours : String -> Int -> Array String -> String -> (moved t : Term) -> Term
+dynamicColours : String -> Int -> Array String -> String -> (taken t : Term) -> Term
 dynamicColours end c words answers t =
     when Array.first words is
         Just spec ->
@@ -302,7 +302,7 @@ dynamicColours end c words answers t =
 {-| The next dynamic colour's word, or the end after OSC 19's. A function of
 its own, not a local one handed the term: a term handed to a function value
 is kept by every path of the parser, and each update of it copies (§VC7). -}
-nextDynamic : String -> Int -> Array String -> String -> (moved t : Term) -> Term
+nextDynamic : String -> Int -> Array String -> String -> (taken t : Term) -> Term
 nextDynamic end c words answers t =
     if c >= 19 then
         withAnswers answers t
@@ -311,7 +311,7 @@ nextDynamic end c words answers t =
         dynamicColours end (c + 1) (Array.dropFirst 1 words) answers t
 
 
-withAnswers : String -> (moved t : Term) -> Term
+withAnswers : String -> (taken t : Term) -> Term
 withAnswers answers t =
     if answers == "" then
         t
@@ -325,7 +325,7 @@ named. As in Ghostty, a name counts when it is a palette index or one of
 the five special colours after it (256 to 260), which the core does not
 keep; any other is passed over, and if every one is, the whole palette is
 set back (§VC20). -}
-resetPalette : Array String -> (moved t : Term) -> Term
+resetPalette : Array String -> (taken t : Term) -> Term
 resetPalette words t =
     let
         named =
@@ -476,7 +476,7 @@ to the line's end), `C` and `D` output, `L` (alone) a fresh line. A
 prompt marks the cursor's row, a continuation with `k=c` or `k=s`, and the
 rows a line feed or a wrap goes to while the prompt or the input lasts are
 continuations; `C` at a row's start takes its mark away. -}
-semanticPrompt : String -> Array String -> Bool -> (moved t : Term) -> Term
+semanticPrompt : String -> Array String -> Bool -> (taken t : Term) -> Term
 semanticPrompt action options onlyL t =
     when action is
         "A" ->

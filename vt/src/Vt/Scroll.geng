@@ -74,7 +74,7 @@ historyBound t =
 
 
 {-| `t` with the rows its scrollback holds now noted in `peak`. -}
-noteReach : (moved t : Term) -> Term
+noteReach : (taken t : Term) -> Term
 noteReach t =
     let
         now =
@@ -94,7 +94,7 @@ noteReach t =
 {-| A fresh line, as Ghostty's for a semantic prompt: CR and IND unless the
 cursor is at the left margin, or in the first column when it is left of the
 margin. -}
-freshLine : (moved t : Term) -> Term
+freshLine : (taken t : Term) -> Term
 freshLine t =
     if t.x == (if t.x < t.left then 0 else t.left) then
         t
@@ -104,7 +104,7 @@ freshLine t =
 
 
 {-| DECSLRM, columns from 1, as Ghostty sets them: the cursor home after. -}
-setMargins : Int -> Int -> (moved t : Term) -> Term
+setMargins : Int -> Int -> (taken t : Term) -> Term
 setMargins l r t =
     let
         left =
@@ -120,7 +120,7 @@ setMargins l r t =
         cursorTo 0 0 (withScroll (withPlain { t | left = left - 1, right = right - 1 }))
 
 
-lineFeed : (moved t : Term) -> Term
+lineFeed : (taken t : Term) -> Term
 lineFeed t =
     if t.y == t.bottom then
         if t.scroll == scrollFull then
@@ -142,7 +142,7 @@ lineFeed t =
 {-| A line feed at the region's bottom that is neither `feedFull`'s nor
 `feedRegion`'s: between narrowed margins, when the cursor is between them,
 or `regionUp`'s. -}
-feedOther : (moved t : Term) -> Term
+feedOther : (taken t : Term) -> Term
 feedOther t =
     if margined t then
         if t.x >= t.left && t.x <= t.right then
@@ -180,7 +180,7 @@ keepsScrollback top t =
     top == 0 && t.back.limit > 0 && not (isAlt t)
 
 
-withScroll : (moved t : Term) -> Term
+withScroll : (taken t : Term) -> Term
 withScroll t =
     let
         keep =
@@ -203,7 +203,7 @@ withScroll t =
 
 
 {-| `regionUp 1` of the whole main screen, scrollback kept. -}
-feedFull : (moved t : Term) -> Term
+feedFull : (taken t : Term) -> Term
 feedFull t =
     let
         s =
@@ -229,7 +229,7 @@ feedFull t =
 {-| `regionUp 1` of a region, no scrollback kept: when the region is one
 stretch of the ring, its turn counted on by one and the row that left, now
 its bottom row, cleared. -}
-feedRegion : (moved t : Term) -> Term
+feedRegion : (taken t : Term) -> Term
 feedRegion t =
     if slot t.screen t.top <= slot t.screen t.bottom then
         let
@@ -253,7 +253,7 @@ feedRegion t =
         regionUp 1 t.top t.bottom t
 
 
-reverseIndex : (moved t : Term) -> Term
+reverseIndex : (taken t : Term) -> Term
 reverseIndex t =
     -- a scroll keeps a pending wrap and a move up clears it, as in
     -- Ghostty, whose RI is a scroll down or a CUU (§VC16)
@@ -278,7 +278,7 @@ reverseIndex t =
 {-| Rows `top` to `bottom` scrolled up `count` times. On the main screen,
 with the region starting at the top, the rows that leave go to the
 scrollback. -}
-regionUp : Int -> Int -> Int -> (moved t : Term) -> Term
+regionUp : Int -> Int -> Int -> (taken t : Term) -> Term
 regionUp count top bottom t =
     -- a loop of its own and not a call of `scrollUpBy`, which clang would
     -- inline into `lineFeed`, and `lineFeed` then not into the ground state
@@ -311,7 +311,7 @@ regionUp count top bottom t =
 the rows they shift when the region is the screen's width (§VC16), and a
 spacer head ending one a plain cell, as its `rowWillBeShifted` makes it
 (§VC21). -}
-unwrapRegion : Int -> Int -> (moved t : Term) -> Term
+unwrapRegion : Int -> Int -> (taken t : Term) -> Term
 unwrapRegion top bottom t =
     if top > bottom then
         t
@@ -321,7 +321,7 @@ unwrapRegion top bottom t =
 
 
 {-| A spacer head ending row `y` made a plain cell in its style. -}
-unheadEnd : Int -> (moved s : Screen) -> Screen
+unheadEnd : Int -> (taken s : Screen) -> Screen
 unheadEnd y s =
     let
         o =
@@ -339,7 +339,7 @@ unheadEnd y s =
 
 {-| `regionUp` with no scrollback kept, for DL, which keeps none in
 Ghostty (§VC16). -}
-scrollUpBy : Bool -> Int -> Int -> Int -> (moved t : Term) -> Term
+scrollUpBy : Bool -> Int -> Int -> Int -> (taken t : Term) -> Term
 scrollUpBy keep count top bottom t =
     if count <= 0 then
         t
@@ -362,7 +362,7 @@ scrollUpBy keep count top bottom t =
         scrollUpBy keep (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
 
 
-regionDown : Int -> Int -> Int -> (moved t0 : Term) -> Term
+regionDown : Int -> Int -> Int -> (taken t0 : Term) -> Term
 regionDown count top bottom t0 =
     let
         t =
@@ -379,7 +379,7 @@ regionDown count top bottom t0 =
 
 
 {-| `resize` without mode 2048's report, as DECCOLM resizes. -}
-resizeQuiet : Int -> Int -> (moved t : Term) -> Term
+resizeQuiet : Int -> Int -> (taken t : Term) -> Term
 resizeQuiet cols0 rows0 t =
     let
         cols =
@@ -397,7 +397,7 @@ resizeQuiet cols0 rows0 t =
         noteReach (resizeTo cols rows (noteReach t))
 
 
-resizeTo : Int -> Int -> (moved t : Term) -> Term
+resizeTo : Int -> Int -> (taken t : Term) -> Term
 resizeTo cols rows t =
     let
         activeClear =
@@ -479,7 +479,7 @@ resizeTo cols rows t =
 
 
 {-| What follows the size: the cursor, the region and margins, the tabs. -}
-resized : Int -> Int -> { x : Int, y : Int, wrap : Bool } -> (moved t0 : Term) -> Term
+resized : Int -> Int -> { x : Int, y : Int, wrap : Bool } -> (taken t0 : Term) -> Term
 resized cols rows cursor t0 =
     let
         t =

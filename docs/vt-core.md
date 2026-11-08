@@ -1,5 +1,9 @@
 # The headless core: `vt/`
 
+*The ownership mark is written `taken` here; it was `moved` until 2026-11-07
+(geng-lang Dnene18), and commit messages before then use that word. §VC20's
+and §VC22's `moved` is something else, `Page.moved`, a page a reflow kept.*
+
 Status: **begun 2026-10-29.** Phase 1 of [`geng-plan.md`](geng-plan.md) §6,
 built on what [`phase1-core.md`](phase1-core.md) measured: the builder
 probe's screen (`probes/geng/core/src/Hot.geng`, its §14–§23) made into a
@@ -32,9 +36,9 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 ```gren
 new : Config -> Term                       -- { cols, rows, scrollbackBytes, pageRows, checksums, cellWidth, cellHeight }
 defaultPageRows : Int                      -- 1,024, Config.pageRows unless a test wants smaller (V33)
-feed : Bytes -> (moved t : Term) -> Term   -- one read's bytes
-takeReplies : (moved t : Term) -> { term : Term, replies : Array Bytes }
-resize : Int -> Int -> (moved t : Term) -> Term   -- cols rows, §VC14
+feed : Bytes -> (taken t : Term) -> Term   -- one read's bytes
+takeReplies : (taken t : Term) -> { term : Term, replies : Array Bytes }
+resize : Int -> Int -> (taken t : Term) -> Term   -- cols rows, §VC14
 dump : Term -> String                      -- §VC3
 historyBound : Term -> Int                 -- for the differential fuzzer, §VC17
 historyReached : Int -> Term -> Bool       -- the same, sticky and inside a read, §VC25, §VC32

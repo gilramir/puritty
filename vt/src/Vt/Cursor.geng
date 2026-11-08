@@ -101,14 +101,14 @@ margined t =
 
 {-| NEL's and LNM's CR, after the line feed, so that a cursor right of the
 margins at the region's bottom does not scroll, as in Ghostty. -}
-carriageReturn : (moved t : Term) -> Term
+carriageReturn : (taken t : Term) -> Term
 carriageReturn t =
     { t | x = crX t, wrapNext = False }
 
 
 {-| LF takes `execute`'s path when LNM is set or a prompt or the input
 lasts, which the ground state's tests in one field. -}
-withLf : (moved t : Term) -> Term
+withLf : (taken t : Term) -> Term
 withLf t =
     { t | lfSlow = t.newline || t.prompt /= 0 }
 
@@ -160,7 +160,7 @@ reportX t =
 
 {-| Rows `top` to `bottom`, between the margins, scrolled up `count`: SU,
 DL, and IND at the region's bottom. -}
-marginUp : Int -> Int -> Int -> (moved t : Term) -> Term
+marginUp : Int -> Int -> Int -> (taken t : Term) -> Term
 marginUp count top bottom t =
     let
         n =
@@ -171,7 +171,7 @@ marginUp count top bottom t =
 
 {-| Rows `top` to `bottom`, between the margins, scrolled down `count`: SD,
 IL, and RI at the region's top. -}
-marginDown : Int -> Int -> Int -> (moved t : Term) -> Term
+marginDown : Int -> Int -> Int -> (taken t : Term) -> Term
 marginDown count top bottom t =
     let
         n =
@@ -181,7 +181,7 @@ marginDown count top bottom t =
 
 
 {-| Rows `y` to `last`, each copied `n` rows up, between the columns. -}
-copyUp : Int -> Int -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyUp : Int -> Int -> Int -> Int -> Int -> (taken s : Screen) -> Screen
 copyUp y last n left right s =
     if y > last then
         s
@@ -191,7 +191,7 @@ copyUp y last n left right s =
 
 
 {-| Rows `y` down to `first`, each copied `n` rows down. -}
-copyDown : Int -> Int -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+copyDown : Int -> Int -> Int -> Int -> Int -> (taken s : Screen) -> Screen
 copyDown y first n left right s =
     if y < first then
         s
@@ -200,7 +200,7 @@ copyDown y first n left right s =
         copyDown (y - 1) first n left right (copySpan y (y + n) left right s)
 
 
-clearSpans : Int -> Int -> Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+clearSpans : Int -> Int -> Int -> Int -> Int64 -> (taken s : Screen) -> Screen
 clearSpans y last left right fill s =
     if y > last then
         s
@@ -211,7 +211,7 @@ clearSpans y last left right fill s =
 
 {-| Columns `left` to `right` of row `src` copied to row `dst`; a wide
 character the margins cut, in either row, goes. -}
-copySpan : Int -> Int -> Int -> Int -> (moved s0 : Screen) -> Screen
+copySpan : Int -> Int -> Int -> Int -> (taken s0 : Screen) -> Screen
 copySpan src dst left right s0 =
     let
         so =
@@ -232,7 +232,7 @@ copySpan src dst left right s0 =
     trim dO (trim so { s | cells = Builder.copyWithin (dO + left) (so + left) (so + right + 1) cut })
 
 
-clearSpan : Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+clearSpan : Int -> Int -> Int -> Int64 -> (taken s0 : Screen) -> Screen
 clearSpan y left right fill s0 =
     let
         o =
@@ -246,7 +246,7 @@ clearSpan y left right fill s0 =
 
 {-| ICH between the margins: the cells from `x` to `right` move right, those
 past `right` lost. -}
-insertMargined : Int -> Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+insertMargined : Int -> Int -> Int -> Int -> Int64 -> (taken s0 : Screen) -> Screen
 insertMargined o x count right erase s0 =
     let
         s =
@@ -270,7 +270,7 @@ insertMargined o x count right erase s0 =
 
 {-| DCH between the margins: the cells past the deleted ones, to `right`,
 move left, and the erase cell comes in at `right`. -}
-deleteMargined : Int -> Int -> Int -> Int -> Int64 -> (moved s0 : Screen) -> Screen
+deleteMargined : Int -> Int -> Int -> Int -> Int64 -> (taken s0 : Screen) -> Screen
 deleteMargined o x count right erase s0 =
     let
         s =
@@ -294,7 +294,7 @@ deleteMargined o x count right erase s0 =
 
 {-| The row at `o` with every cell explicit: those past its extent made
 empty and its extent the row's width, its wrapped flag kept. -}
-widen : Int -> (moved s : Screen) -> Screen
+widen : Int -> (taken s : Screen) -> Screen
 widen o s =
     let
         m =
@@ -308,7 +308,7 @@ makes it but only that far. A span between the margins reads its row only to
 the column past the right margin, so it widens that far and not to the row's
 width: a scroll inside narrow margins costs the margins' width a row, not the
 screen's (§VC11's timeout). -}
-widenTo : Int -> Int -> (moved s : Screen) -> Screen
+widenTo : Int -> Int -> (taken s : Screen) -> Screen
 widenTo o x s =
     let
         m =
@@ -326,7 +326,7 @@ widenTo o x s =
 
 {-| The row at `o`'s extent brought back to its last cell that is not
 empty. -}
-trim : Int -> (moved s : Screen) -> Screen
+trim : Int -> (taken s : Screen) -> Screen
 trim o s =
     let
         m =
@@ -352,7 +352,7 @@ lastFilled o e cells =
 loses its content, both halves narrow and in their style, and when the
 margins reach the row's end or the first two columns, a spacer head at its
 end is a narrow cell. -}
-shifted : Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+shifted : Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 shifted o cols left right cells =
     let
         last =
@@ -369,7 +369,7 @@ shifted o cols left right cells =
 
 
 {-| `cutAt`, the halves keeping their style and protection. -}
-cutKeeping : Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+cutKeeping : Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 cutKeeping o cols c cells =
     if c <= 0 || c >= cols then
         cells
@@ -391,7 +391,7 @@ cutKeeping o cols c cells =
 
 {-| A wide character that a boundary before column `c` cuts in two, both
 halves made `fill`, the erase cell, as Ghostty clears them (§VC18). -}
-cutAt : Int64 -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+cutAt : Int64 -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 cutAt fill o cols c cells =
     if c <= 0 || c >= cols then
         cells
@@ -415,7 +415,7 @@ reportY t =
 
 
 {-| CUP: column `x`, row `y`, from the region's top in origin mode. -}
-cursorTo : Int -> Int -> (moved t : Term) -> Term
+cursorTo : Int -> Int -> (taken t : Term) -> Term
 cursorTo x y t =
     if t.origin then
         { t | x = clamp t.left t.right (x + t.left), y = clamp t.top t.bottom (y + t.top), wrapNext = False }
@@ -476,7 +476,7 @@ of on =
 {-| `plain` kept to what it says: GL is ASCII, autowrap is on and insert is
 off, which is when the ground state's fast paths may write a run (§VC5).
 Set wherever any of the four changes. -}
-withPlain : (moved t : Term) -> Term
+withPlain : (taken t : Term) -> Term
 withPlain t =
     { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) && not t.statusLine }
 
@@ -526,7 +526,7 @@ stopBefore x t =
 {-| CTC as Ghostty takes it (§VC17): 0 or nothing sets a stop at the
 cursor, 2 clears it and 5 clears them all; anything else, or more than one
 parameter, does nothing. -}
-tabControl : Array Int -> (moved t : Term) -> Term
+tabControl : Array Int -> (taken t : Term) -> Term
 tabControl params t =
     if params == [] || params == [ 0 ] then
         { t | tabs = Builder.set t.x 1 t.tabs }
@@ -541,7 +541,7 @@ tabControl params t =
         t
 
 
-clearTabs : Int -> (moved t : Term) -> Term
+clearTabs : Int -> (taken t : Term) -> Term
 clearTabs how t =
     if how == 0 then
         { t | tabs = Builder.set t.x 0 t.tabs }

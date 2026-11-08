@@ -60,7 +60,7 @@ import Vt.Screen exposing (..)
 {-| The oldest `pageRows` rows of the ring's scrollback packed into a page
 (geng-lang D901): each row's text as UTF-8 and its header and style runs
 (§VC6). Their slots stay where they are, the free part of the ring now. -}
-pageOut : Clusters -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pageOut : Clusters -> (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
 pageOut clusters s back =
     let
         pageRows =
@@ -96,7 +96,7 @@ pageOut clusters s back =
     { screen = { s | hist = s.hist - pageRows }, back = pushPage page { back | peak = peak } }
 
 
-packRows : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved heads : Builder UInt8) -> (moved runs : Builder UInt8) -> { text : Builder UInt8, heads : Builder UInt8, runs : Builder UInt8 }
+packRows : Clusters -> Int -> Int -> Screen -> (taken text : Builder UInt8) -> (taken heads : Builder UInt8) -> (taken runs : Builder UInt8) -> { text : Builder UInt8, heads : Builder UInt8, runs : Builder UInt8 }
 packRows clusters p stop s text heads runs =
     if p >= stop then
         { text = text, heads = heads, runs = runs }
@@ -141,7 +141,7 @@ runs after the row's header (§VC6). `wrote` says a run has been written;
 the run in hand, `count` cells of `style`, is written when the style changes
 or the row ends, the last without its count. A row all in the default style
 writes no run (`styled` is false). -}
-packCells : Clusters -> Int -> Int -> Screen -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> Int -> Int -> Bool -> { text : Builder UInt8, runs : Builder UInt8, styled : Bool }
+packCells : Clusters -> Int -> Int -> Screen -> (taken text : Builder UInt8) -> (taken runs : Builder UInt8) -> Int -> Int -> Bool -> { text : Builder UInt8, runs : Builder UInt8, styled : Bool }
 packCells clusters i stop s text runs style count wrote =
     if i >= stop then
         if count == 0 || (style == 0 && not wrote) then
@@ -190,7 +190,7 @@ packSpecial =
 nothing, a cluster as its code points, a spacer head as 0xFF, a cell in a
 background colour alone as 0xFE, and a protected cell's text followed by
 0xFD, which UTF-8 never has either (§VC19). -}
-packOther : Clusters -> Int64 -> (moved text : Builder UInt8) -> Builder UInt8
+packOther : Clusters -> Int64 -> (taken text : Builder UInt8) -> Builder UInt8
 packOther clusters c text =
     let
         w =
@@ -219,7 +219,7 @@ packOther clusters c text =
         next
 
 
-pushU16 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushU16 : Int -> (taken b : Builder UInt8) -> Builder UInt8
 pushU16 v b =
     Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 8 v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) b)
 
@@ -227,7 +227,7 @@ pushU16 v b =
 {-| A cell's code point as UTF-8; an empty cell is a 0 byte, a spacer head
 0xFF (`packCells`). A value no
 scalar value is would be U+FFFD, but the decoder never makes one. -}
-pushUtf8 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushUtf8 : Int -> (taken b : Builder UInt8) -> Builder UInt8
 pushUtf8 cp b =
     if cp < 0x80 then
         Builder.pushLast (UInt8.fromInt cp) b
@@ -251,7 +251,7 @@ pushUtf8 cp b =
             |> Builder.pushLast (UInt8.fromInt (Bitwise.or 0x80 (Bitwise.and 0x3F cp)))
 
 
-pushPage : (moved page : Page) -> (moved back : Back) -> Back
+pushPage : (taken page : Page) -> (taken back : Back) -> Back
 pushPage page back =
     if back.limit == 0 then
         back
@@ -282,7 +282,7 @@ emptyBack pageRows limit =
 {-| `back` holding `pages`, oldest first, instead of its own: a resize's,
 which cut them again (§VC31), its limit applied. `back`'s own pages are
 taken out first (`takePages`). -}
-backOf : (moved pages : Array Page) -> Back -> Back
+backOf : (taken pages : Array Page) -> Back -> Back
 backOf pages back =
     if back.limit == 0 then
         { back | pages = Builder.empty 0, head = 0, bytes = 0, rows = 0 }
@@ -306,7 +306,7 @@ backOf pages back =
 
 {-| The scrollback's pages taken out of it, oldest first, for a resize to
 cut again or take back into the ring. -}
-takePages : (moved back : Back) -> Array Page
+takePages : (taken back : Back) -> Array Page
 takePages back =
     let
         head =
@@ -333,7 +333,7 @@ copyPages back =
     copySlots back back.head []
 
 
-copySlots : Back -> Int -> (moved acc : Array Page) -> Array Page
+copySlots : Back -> Int -> (taken acc : Array Page) -> Array Page
 copySlots back i acc =
     when Builder.get i back.pages is
         Just page ->
@@ -391,7 +391,7 @@ ownedAt bytes i =
 {-| The oldest pages dropped while the pages hold more bytes than the limit
 (V21, §VC32): a slot dropped is emptied, and the slots are moved down once
 half of them are dropped ones. -}
-dropOver : (moved back : Back) -> Back
+dropOver : (taken back : Back) -> Back
 dropOver back =
     if back.bytes <= back.limit || back.head >= Builder.length back.pages then
         compact back
@@ -421,7 +421,7 @@ dropOver back =
             }
 
 
-compact : (moved back : Back) -> Back
+compact : (taken back : Back) -> Back
 compact back =
     if back.head > 0 && 2 * back.head >= Builder.length back.pages then
         let

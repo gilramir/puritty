@@ -114,7 +114,7 @@ plainAt plains pi =
 
 
 {-| A page of `pageRows` rows begun after `done`. -}
-blank : Int -> (moved done : Array Page) -> Out
+blank : Int -> (taken done : Array Page) -> Out
 blank pageRows done =
     { done = done
     , pageRows = pageRows
@@ -125,7 +125,7 @@ blank pageRows done =
     }
 
 
-finish : Int -> (moved o : Out) -> Array Page
+finish : Int -> (taken o : Out) -> Array Page
 finish cols o =
     if Builder.length o.heads == 0 then
         o.done
@@ -150,7 +150,7 @@ finish cols o =
 
 
 {-| Bytes `from` to `to` of page `pi`'s text put after the page's text. -}
-sliceIn : Array Page -> Int -> Int -> Int -> (moved o : Out) -> Out
+sliceIn : Array Page -> Int -> Int -> Int -> (taken o : Out) -> Out
 sliceIn pages pi from to o =
     when Array.get pi pages is
         Just page ->
@@ -162,7 +162,7 @@ sliceIn pages pi from to o =
 
 {-| A row about to start: the page being written kept, and a new one begun
 when it holds `pageRows` rows. -}
-toPage : Int -> (moved o : Out) -> Out
+toPage : Int -> (taken o : Out) -> Out
 toPage cols o =
     let
         pageRows =
@@ -176,7 +176,7 @@ toPage cols o =
 
 
 {-| Every line from page `pi`, its header `h`, text `ti` and runs `r` on. -}
-lines : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (moved o : Out) -> { out : Out, clusters : Clusters }
+lines : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (taken o : Out) -> { out : Out, clusters : Clusters }
 lines reflow old cols plains pages pi h ti r clusters o =
     when (if pi < Array.length plains then Array.get pi pages else Nothing) is
         Nothing ->
@@ -197,7 +197,7 @@ lines reflow old cols plains pages pi h ti r clusters o =
 
 {-| The line from page `pi`, header `h`, text `ti` and runs `r`, cut on its
 bytes, or reflowed as rows, and the lines after it. -}
-anyLine : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (moved o : Out) -> { out : Out, clusters : Clusters }
+anyLine : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (taken o : Out) -> { out : Out, clusters : Clusters }
 anyLine reflow old cols plains pages pi h ti r clusters o =
     let
         line =
@@ -335,7 +335,7 @@ runsEnd runs r left =
 {-| The last row of the last page taken off it, as the ring keeps a row:
 the start of a line the ring's rows go on with, cut at the new width, to
 begin the ring's first line (§VC31). A page left with no row goes. -}
-popLast : Clusters -> (moved pages : Array Page) -> { pages : Array Page, prefix : Row, clusters : Clusters }
+popLast : Clusters -> (taken pages : Array Page) -> { pages : Array Page, prefix : Row, clusters : Clusters }
 popLast clusters pages =
     let
         count =
@@ -503,7 +503,7 @@ pushSpan pi from to acc =
 text, without the empty cells that end its last row (which begins at byte
 `last` of the last span); every row full and wrapped but the last; its text
 copied as slices, a page's worth at a time. -}
-plainLine : Int -> Array Page -> Array Span -> Int -> (moved o : Out) -> Out
+plainLine : Int -> Array Page -> Array Span -> Int -> (taken o : Out) -> Out
 plainLine cols pages spans0 last o =
     let
         spans =
@@ -539,7 +539,7 @@ plainLine cols pages spans0 last o =
 {-| Rows `r` on of a plain line of `count` rows, `left` cells to go, its
 text from span `j` byte `at`: as many as the page has room for, then the
 rest on a new page. -}
-plainRows : Int -> Array Page -> Array Span -> Int -> Int -> Int -> Int -> Int -> (moved o : Out) -> Out
+plainRows : Int -> Array Page -> Array Span -> Int -> Int -> Int -> Int -> Int -> (taken o : Out) -> Out
 plainRows cols pages spans left count r j at o =
     if r >= count then
         o
@@ -569,7 +569,7 @@ plainRows cols pages spans left count r j at o =
 
 {-| `b` rows' headers: full and wrapped, all but the last, which has
 `lastN` cells and, when it `ends` the line, does not wrap. -}
-plainHeads : Int -> Int -> Bool -> Int -> (moved heads : Builder UInt8) -> Builder UInt8
+plainHeads : Int -> Int -> Bool -> Int -> (taken heads : Builder UInt8) -> Builder UInt8
 plainHeads cols lastN ends b heads =
     if b <= 0 then
         heads
@@ -587,7 +587,7 @@ plainHeads cols lastN ends b heads =
 
 {-| `n` bytes of the spans from span `j` byte `at` put after the page's
 text. -}
-takeSpans : Array Page -> Array Span -> Int -> Int -> Int -> (moved o : Out) -> { out : Out, j : Int, at : Int }
+takeSpans : Array Page -> Array Span -> Int -> Int -> Int -> (taken o : Out) -> { out : Out, j : Int, at : Int }
 takeSpans pages spans n j at o =
     if n <= 0 then
         { out = o, j = j, at = at }
@@ -616,7 +616,7 @@ takeSpans pages spans n j at o =
 a wrapped row's up to `old` with empty cells after its extent, the last
 row's up to its last cell that is not empty, or its first cell when it has
 none but a prompt mark, as `joinLines` takes them. -}
-fastLine : Int -> Int -> Array Page -> Array Source -> (moved o : Out) -> Out
+fastLine : Int -> Int -> Array Page -> Array Source -> (taken o : Out) -> Out
 fastLine old cols pages rows o =
     let
         done =
@@ -726,7 +726,7 @@ when `i` is -1, as many at a time as the row being written has room for:
 the row closed, wrapped, when it is full and a cell follows, a new page
 begun when a row starts and the page is full. `run`: the style run in hand, `left` cells of
 `style`, the next at `at`. -}
-chunks : Int -> Array Page -> Src -> Int -> Int -> { at : Int, left : Int, style : Int } -> (moved o : Out) -> Pen -> { out : Out, pen : Pen }
+chunks : Int -> Array Page -> Src -> Int -> Int -> { at : Int, left : Int, style : Int } -> (taken o : Out) -> Pen -> { out : Out, pen : Pen }
 chunks cols pages src i left run o pen =
     if left <= 0 then
         { out = o, pen = pen }
@@ -797,7 +797,7 @@ type alias Src =
 
 {-| `k` cells, bytes `i` to `end` of the source page's text, put after the
 page's text, or empty cells when `i` is -1. -}
-put : Page -> Int -> Int -> Int -> (moved o : Out) -> Out
+put : Page -> Int -> Int -> Int -> (taken o : Out) -> Out
 put page i end k o =
     if i < 0 then
         { o | text = pushZeros k o.text }
@@ -838,7 +838,7 @@ skipCells text i k =
             skipCells text (i + 4) (k - 1)
 
 
-pushZeros : Int -> (moved b : Builder UInt8) -> Builder UInt8
+pushZeros : Int -> (taken b : Builder UInt8) -> Builder UInt8
 pushZeros k b =
     if k <= 0 then
         b
@@ -851,7 +851,7 @@ pushZeros k b =
 `packCells` counts them a cell at a time: `rleft` cells of `rstyle` left in
 the source run in hand, the next at `rr`; an unstyled row's cells are all
 style 0. -}
-styleCells : Owned -> Bool -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> (moved out : Builder UInt8) -> { at : Int, left : Int, rstyle : Int, style : Int, count : Int, wrote : Bool, runs : Builder UInt8 }
+styleCells : Owned -> Bool -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> (taken out : Builder UInt8) -> { at : Int, left : Int, rstyle : Int, style : Int, count : Int, wrote : Bool, runs : Builder UInt8 }
 styleCells runs styled rr rleft rstyle k style count wrote out =
     if k <= 0 then
         { at = rr, left = rleft, rstyle = rstyle, style = style, count = count, wrote = wrote, runs = out }
@@ -895,7 +895,7 @@ styleCells runs styled rr rleft rstyle k style count wrote out =
 
 {-| The row in hand ended: its last style run written, as `packCells`
 ends one, and its header. -}
-closeRow : Bool -> Pen -> (moved o : Out) -> Out
+closeRow : Bool -> Pen -> (taken o : Out) -> Out
 closeRow wrapped pen o =
     let
         styled =
@@ -933,7 +933,7 @@ closeRow wrapped pen o =
 
 {-| A line with a cell of another kind read back into rows, reflowed by
 `reflow` and packed again. -}
-slowLine : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Page -> Array Source -> Clusters -> (moved o : Out) -> { out : Out, clusters : Clusters }
+slowLine : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Page -> Array Source -> Clusters -> (taken o : Out) -> { out : Out, clusters : Clusters }
 slowLine reflow old cols pages rows clusters o =
     let
         read =
@@ -992,7 +992,7 @@ rowAt page src clusters =
     { row = { cells = cells.cells, wrapped = Bitwise.and 0x8000 src.header /= 0, prompt = Bitwise.and 3 (Bitwise.shiftRightZfBy 10 src.header) }, clusters = cells.clusters }
 
 
-packRow : Clusters -> Row -> (moved o : Out) -> Out
+packRow : Clusters -> Row -> (taken o : Out) -> Out
 packRow clusters row o =
     let
         packed =
@@ -1019,7 +1019,7 @@ packRow clusters row o =
 
 
 {-| `packCells` for a row's cells in an array. -}
-packArray : Clusters -> Array Int64 -> Int -> (moved text : Builder UInt8) -> (moved runs : Builder UInt8) -> Int -> Int -> Bool -> { text : Builder UInt8, runs : Builder UInt8, styled : Bool }
+packArray : Clusters -> Array Int64 -> Int -> (taken text : Builder UInt8) -> (taken runs : Builder UInt8) -> Int -> Int -> Bool -> { text : Builder UInt8, runs : Builder UInt8, styled : Bool }
 packArray clusters cells i text runs style count wrote =
     when Array.get i cells is
         Nothing ->

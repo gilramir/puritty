@@ -78,7 +78,7 @@ import Vt.Pages exposing (..)
 
 {-| Mode 2048's report: `CSI 48 ; rows ; cols ; height ; width t`, the last
 two in pixels, when a cell's size is known. -}
-sizeReport : (moved t : Term) -> Term
+sizeReport : (taken t : Term) -> Term
 sizeReport t =
     if pixelsKnown t then
         reply ("\u{001B}[48;" ++ String.fromInt t.rows ++ ";" ++ String.fromInt t.cols ++ ";" ++ String.fromInt (t.rows * t.config.cellHeight) ++ ";" ++ String.fromInt (t.cols * t.config.cellWidth) ++ "t") t
@@ -99,7 +99,7 @@ savedPoint v =
 
 {-| The saved cursor moved where a resize took it; with nothing saved,
 nothing is moved, as Ghostty keeps none (§VC16). -}
-withSaved : { x : Int, y : Int, wrap : Bool } -> (moved s : Screen) -> Screen
+withSaved : { x : Int, y : Int, wrap : Bool } -> (taken s : Screen) -> Screen
 withSaved p s =
     let
         v =
@@ -112,7 +112,7 @@ withSaved p s =
         s
 
 
-withState : Saved -> (moved s : Screen) -> Screen
+withState : Saved -> (taken s : Screen) -> Screen
 withState v s =
     { s | saved = v }
 
@@ -139,7 +139,7 @@ last row to be taken back, to begin the ring's first line. Pages are taken
 back into the ring as before when the screen wants rows they hold, when the
 prompt to clear may begin in them, and all of them when the resize would
 lose cells, with autowrap off or in one column (§VC14). -}
-resizeScreen : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (moved back : Back) -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
+resizeScreen : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (taken back : Back) -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
 resizeScreen clear reflow keep cols rows cursor saved clusters s back =
     let
         pageRows =
@@ -229,7 +229,7 @@ recutPages pageRows clear keep cols rows cursor saved clusters s pages =
 
 {-| What `resizeScreen` makes when the width stays, or changes without
 reflow: the pages not taken back kept as they are. -}
-keepPages : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (moved pages : Array Page) -> { flow : Flow, pages : Array Page, clusters : Clusters }
+keepPages : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (taken pages : Array Page) -> { flow : Flow, pages : Array Page, clusters : Clusters }
 keepPages clear reflow keep cols rows cursor saved clusters s pages =
     let
         count =
@@ -270,7 +270,7 @@ pullPages reflow lossy clear keep cols rows cursor saved clusters s pages =
 the scrollback from the pages left. `before` is the saved cursor's state,
 which the new screen takes over; a resize moves only its position
 (§VC16). -}
-resized : Int -> Bool -> Int -> Int -> Saved -> (moved made : { flow : Flow, pages : Array Page, clusters : Clusters }) -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
+resized : Int -> Bool -> Int -> Int -> Saved -> (taken made : { flow : Flow, pages : Array Page, clusters : Clusters }) -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
 resized clear keep cols rows before made left =
     let
         flow =
@@ -1287,7 +1287,7 @@ foundAt marks from to row x found =
 
 {-| A screen made of the flow's rows: the scrollback written into the ring
 and paged out as it fills, as line feeds would, then the screen's rows. -}
-rebuild : Int -> Int -> Flow -> Clusters -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+rebuild : Int -> Int -> Flow -> Clusters -> (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
 rebuild cols rows flow clusters s back =
     let
         hist =
@@ -1299,7 +1299,7 @@ rebuild cols rows flow clusters s back =
     { screen = writeRows flow.rows flow.hist 0 rows r, back = hist.back }
 
 
-pushHistory : Clusters -> Array Row -> Int -> Int -> (moved s : Screen) -> (moved back : Back) -> { screen : Screen, back : Back }
+pushHistory : Clusters -> Array Row -> Int -> Int -> (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
 pushHistory clusters rows i stop s back =
     if i >= stop then
         { screen = s, back = back }
@@ -1319,7 +1319,7 @@ pushHistory clusters rows i stop s back =
         pushHistory clusters rows (i + 1) stop { written | base = phys written 1, hist = written.hist + 1 } back
 
 
-writeRows : Array Row -> Int -> Int -> Int -> (moved s : Screen) -> Screen
+writeRows : Array Row -> Int -> Int -> Int -> (taken s : Screen) -> Screen
 writeRows rows from y count s =
     if y >= count then
         s
@@ -1328,7 +1328,7 @@ writeRows rows from y count s =
         writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (from + y) rows)) s)
 
 
-writeRow : Int -> Row -> (moved s : Screen) -> Screen
+writeRow : Int -> Row -> (taken s : Screen) -> Screen
 writeRow o row s =
     let
         cells =

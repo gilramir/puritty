@@ -366,7 +366,7 @@ shadow cols rows =
 
 {-| One frame: the shadow brought up to the term's screen, and the display
 list that does the same to the window. -}
-frame : Look -> Focus -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frame : Look -> Focus -> Term -> (taken sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frame look focus t sh0 =
     frameWith look focus noPreedit noHighlight t sh0
 
@@ -390,7 +390,7 @@ noHighlight =
 
 {-| `frame`, with a preedit drawn over the screen from the cursor and a
 selection highlighted. -}
-frameWith : Look -> Focus -> Preedit -> Highlight -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameWith : Look -> Focus -> Preedit -> Highlight -> Term -> (taken sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frameWith look focus preedit hl t sh0 =
     frameOn look focus preedit hl t.screen t.clusters 0 t sh0
 
@@ -400,12 +400,12 @@ frameWith look focus preedit hl t sh0 =
 screen is, so a scroll of the view is found and copied as output's is.
 The cursor is drawn where its row has moved to, if it is still in view;
 no preedit is drawn, since a key typed brings the view back down. -}
-frameBack : Look -> Focus -> Int -> { screen : Screen, clusters : Clusters } -> Highlight -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameBack : Look -> Focus -> Int -> { screen : Screen, clusters : Clusters } -> Highlight -> Term -> (taken sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frameBack look focus back view hl t sh0 =
     frameOn look focus noPreedit hl view.screen view.clusters back t sh0
 
 
-frameOn : Look -> Focus -> Preedit -> Highlight -> Screen -> Clusters -> Int -> Term -> (moved sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
+frameOn : Look -> Focus -> Preedit -> Highlight -> Screen -> Clusters -> Int -> Term -> (taken sh0 : Shadow) -> { shadow : Shadow, list : Bytes }
 frameOn look focus preedit hl s clusters back t sh0 =
     let
         key =
@@ -524,7 +524,7 @@ frameOn look focus preedit hl s clusters back t sh0 =
 {-| Each row's hash, pushed onto `acc`. A loop, because a function that
 captures the screen to read it is refused: a capture takes the builder
 (§3.3). -}
-hashRows : Screen -> Int -> Int -> Int -> (moved acc : Builder Int) -> Builder Int
+hashRows : Screen -> Int -> Int -> Int -> (taken acc : Builder Int) -> Builder Int
 hashRows s y rows cols acc =
     if y >= rows then
         acc
@@ -611,7 +611,7 @@ scanY k y end start score current hashes best =
 {-| The band moved in the shadow as one `CopyArea` moves it in the window;
 with its ink, and with the cells at its edges whose ink the copy cut or
 brought forgotten, so that they are drawn again. -}
-scrollBand : Band -> Int -> (moved sh : Shadow) -> { shadow : Shadow, list : Builder UInt8 }
+scrollBand : Band -> Int -> (taken sh : Shadow) -> { shadow : Shadow, list : Builder UInt8 }
 scrollBand band cols sh =
     let
         edges =
@@ -685,7 +685,7 @@ crossed (1 left, 2 right, 4 up, 8 down). A record off the screen is left
 out. A cell after it in reading order that its ink reaches, that holds a
 glyph and that this frame did not draw, is forgotten, and the shadow
 wants another frame. -}
-inked : Bytes -> (moved sh : Shadow) -> Shadow
+inked : Bytes -> (taken sh : Shadow) -> Shadow
 inked answer sh =
     if Bytes.length answer < 5 then
         sh
@@ -702,7 +702,7 @@ type alias Inking =
     { ink : Builder Int, cells : Builder Int64, pending : Bool }
 
 
-inkRecords : Bytes -> Int -> Int -> Int -> Int -> Builder Int -> (moved r : Inking) -> Inking
+inkRecords : Bytes -> Int -> Int -> Int -> Int -> Builder Int -> (taken r : Inking) -> Inking
 inkRecords b at cols rows stamp drawnIn r =
     if at + 5 > Bytes.length b then
         r
@@ -750,7 +750,7 @@ later =
 
 {-| The neighbour of `i` in `d` forgotten if `i`'s ink reaches it, it holds
 a glyph, and this frame did not draw it. -}
-overlap : Int -> Int -> Int -> Int -> Int -> Builder Int -> Dir -> (moved r : Inking) -> Inking
+overlap : Int -> Int -> Int -> Int -> Int -> Builder Int -> Dir -> (taken r : Inking) -> Inking
 overlap rows cols i bits stamp drawnIn d r =
     let
         n =
@@ -777,7 +777,7 @@ wantsFrame sh =
     sh.pending
 
 
-forget : Int -> (moved cells : Builder Int64) -> Builder Int64
+forget : Int -> (taken cells : Builder Int64) -> Builder Int64
 forget i cells =
     Builder.set i unknown cells
 
@@ -874,7 +874,7 @@ vInto vbit ink cols row x =
 cell's word; every cell whose ink reaches into a cell drawn; every cell
 the old ink of a cell drawn reached, which still shows it; and so on, the
 cells forgotten in the shadow so that the diff draws them. -}
-spread : Screen -> Cursor -> Int -> Int -> (moved sh : Shadow) -> Shadow
+spread : Screen -> Cursor -> Int -> Int -> (taken sh : Shadow) -> Shadow
 spread s cursor rows cols sh =
     { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [] }) }
 
@@ -884,7 +884,7 @@ type alias Work =
 
 
 {-| Every changed cell, queued. -}
-collect : Screen -> Cursor -> Int -> Int -> Int -> (moved w : Work) -> Work
+collect : Screen -> Cursor -> Int -> Int -> Int -> (taken w : Work) -> Work
 collect s cursor y rows cols w =
     if y >= rows then
         w
@@ -897,7 +897,7 @@ collect s cursor y rows cols w =
         collect s cursor (y + 1) rows cols (collectRow s cursor o (extentAt o s) y 0 cols w)
 
 
-collectRow : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> (moved w : Work) -> Work
+collectRow : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> (taken w : Work) -> Work
 collectRow s cursor o ext y x cols w =
     if x >= cols then
         w
@@ -959,7 +959,7 @@ hasAll mask bits =
 
 {-| The queue, a cell at a time: the cell forgotten, and with it its word
 and the cells its ink and its neighbours' ink tie it to, each queued. -}
-spreadWork : Screen -> Int -> Int -> Bool -> Builder Int -> (moved w : Work) -> Builder Int64
+spreadWork : Screen -> Int -> Int -> Bool -> Builder Int -> (taken w : Work) -> Builder Int64
 spreadWork s rows cols inked0 ink w =
     when Array.last w.work is
         Nothing ->
@@ -1013,7 +1013,7 @@ spreadWork s rows cols inked0 ink w =
 
 {-| The cells from `i` to `end`, but `j`, forgotten and queued if not
 forgotten already. -}
-forgetWord : Int -> Int -> Int -> (moved w : Work) -> Work
+forgetWord : Int -> Int -> Int -> (taken w : Work) -> Work
 forgetWord i end j w =
     if i >= end then
         w
@@ -1023,7 +1023,7 @@ forgetWord i end j w =
 
 
 {-| The neighbour of `j` in `d` forgotten if its ink reaches `j`. -}
-pullDir : Int -> Int -> Builder Int -> Int -> Dir -> (moved w : Work) -> Work
+pullDir : Int -> Int -> Builder Int -> Int -> Dir -> (taken w : Work) -> Work
 pullDir rows cols ink j d w =
     let
         n =
@@ -1033,7 +1033,7 @@ pullDir rows cols ink j d w =
 
 
 {-| The neighbour of `i` in `d` forgotten if `i`'s ink, `bits`, reaches it. -}
-evictDir : Int -> Int -> Int -> Int -> Dir -> (moved w : Work) -> Work
+evictDir : Int -> Int -> Int -> Int -> Dir -> (taken w : Work) -> Work
 evictDir rows cols i bits d w =
     let
         n =
@@ -1044,7 +1044,7 @@ evictDir rows cols i bits d w =
 
 {-| The cell at `n` forgotten and queued if `there` and not forgotten
 already. -}
-evict : Int -> Bool -> (moved w : Work) -> Work
+evict : Int -> Bool -> (taken w : Work) -> Work
 evict n there w =
     if there && Builder.get n w.cells /= Just unknown then
         { cells = Builder.set n unknown w.cells, work = Array.pushLast n w.work }
@@ -1053,7 +1053,7 @@ evict n there w =
         w
 
 
-diffRows : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRows : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
 diffRows s clusters cursor y rows cols sh list =
     if y >= rows then
         { shadow = sh, list = list }
@@ -1106,7 +1106,7 @@ preCellPoints cursor i =
 
 {-| Row `y` from column `x`: each changed run written to the list and the
 shadow. -}
-diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> (moved sh : Shadow) -> (moved list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
 diffRow s clusters cursor o ext y x0 cols sh list =
     if x0 >= cols then
         { shadow = sh, list = list }
@@ -1150,7 +1150,7 @@ diffRow s clusters cursor o ext y x0 cols sh list =
 
 
 {-| The cells a run draws, stamped with the frame. -}
-markDrawn : Int -> Int -> Int -> (moved d : Builder Int) -> Builder Int
+markDrawn : Int -> Int -> Int -> (taken d : Builder Int) -> Builder Int
 markDrawn i end stamp d =
     if i >= end then
         d
@@ -1161,7 +1161,7 @@ markDrawn i end stamp d =
 
 {-| The ink of cells about to be drawn forgotten: what draws them answers
 it again. -}
-clearInk : Int -> Int -> (moved ink : Builder Int) -> Builder Int
+clearInk : Int -> Int -> (taken ink : Builder Int) -> Builder Int
 clearInk i end ink =
     if i >= end then
         ink
@@ -1186,7 +1186,7 @@ runEnd s cursor o ext y x last cols cells =
 
 {-| The cells of a run, written to the list and the shadow; each style id
 the first time this frame (`stamp`) is added to `styleIds`. -}
-writeRun : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> (moved stamps : Builder Int) -> (moved styleIds : Builder Int) -> (moved list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
+writeRun : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (taken stamps : Builder Int) -> (taken styleIds : Builder Int) -> (taken list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
 writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
     if x >= end then
         { cells = cells, stamps = stamps, styleIds = styleIds, list = list }
@@ -1225,12 +1225,12 @@ writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
             )
 
 
-push24 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+push24 : Int -> (taken b : Builder UInt8) -> Builder UInt8
 push24 v b =
     push16 (Bitwise.and 0xFFFF v) (Builder.pushLast (UInt8.fromInt (Bitwise.shiftRightZfBy 16 v)) b)
 
 
-push16 : Int -> (moved b : Builder UInt8) -> Builder UInt8
+push16 : Int -> (taken b : Builder UInt8) -> Builder UInt8
 push16 v b =
     Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 v))) b)
 
@@ -1345,7 +1345,7 @@ isSelected cursor i =
 
 {-| A style id's record: its colours resolved (see the module's comment);
 for an id of `0x8000` and more, its cell's under the cursor. -}
-styleRecord : Look -> Term -> Int -> Int -> (moved b : Builder UInt8) -> Builder UInt8
+styleRecord : Look -> Term -> Int -> Int -> (taken b : Builder UInt8) -> Builder UInt8
 styleRecord look t shape id b =
     let
         base =

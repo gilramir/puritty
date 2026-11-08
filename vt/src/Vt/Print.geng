@@ -81,7 +81,7 @@ graphic t b =
 and kept for REP as it was received, which REP maps through the sets in use
 then, as Ghostty prints it again (§VC21). The ground state's path for a
 character set and REP share it, which keeps it out of the parser's loop. -}
-printGraphic : Int -> (moved t : Term) -> Term
+printGraphic : Int -> (taken t : Term) -> Term
 printGraphic b t =
     if t.statusLine then
         -- not printed, its single shift not used up, REP's character
@@ -101,7 +101,7 @@ printGraphic b t =
 
 {-| A character printed uses up a single shift, a mark that joins the cell
 before as well, as in Ghostty. -}
-unshift : (moved t : Term) -> Term
+unshift : (taken t : Term) -> Term
 unshift t =
     if t.single >= 0 then
         withPlain { t | single = -1 }
@@ -116,7 +116,7 @@ decGraphics =
 
 
 {-| Wrap first if the last write left the cursor past the end. -}
-wrapped : (moved t : Term) -> Term
+wrapped : (taken t : Term) -> Term
 wrapped t =
     if t.wrapNext && t.autowrap then
         wrapNow t
@@ -130,7 +130,7 @@ at the left margin. The row is marked only when the cursor wraps from the
 screen's last column, not from a right margin, as in Ghostty. Apart from
 `wrapped`, which every character calls, so that `wrapped` stays small
 enough to inline (§VC13). -}
-wrapNow : (moved t : Term) -> Term
+wrapNow : (taken t : Term) -> Term
 wrapNow t =
     let
         -- read before `t` is handed on, which keeps it written in place
@@ -157,7 +157,7 @@ wrapNow t =
         { fed | x = fed.left }
 
 
-writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (moved row : Builder Int64) -> Builder Int64
+writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (taken row : Builder Int64) -> Builder Int64
 writeAscii bytes i end pen x row =
     if i < end then
         writeAscii bytes (i + 1) end pen (x + 1) (Builder.set x (Bitwise.or pen (Int64.fromInt (byteAt bytes i))) row)
@@ -169,7 +169,7 @@ writeAscii bytes i end pen x row =
 {-| A run of printable ASCII written from column `x` to `xEnd` of the row at
 `o`, `first` the byte at `i`. A wide character the run's ends cut in half is
 made empty. -}
-asciiRow : Bytes -> Int -> Int -> Int64 -> Int64 -> Int -> Int -> Int -> Int -> Int -> (moved cells : Builder Int64) -> Builder Int64
+asciiRow : Bytes -> Int -> Int -> Int64 -> Int64 -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
 asciiRow bytes i end pen erase cols o x xEnd first cells =
     let
         m =
@@ -191,7 +191,7 @@ asciiRow bytes i end pen erase cols o x xEnd first cells =
 {-| One code point of width `w` written at the cursor, through every mode:
 autowrap, insert, a wide character at the row's end, and a mark joined to
 the cell before. -}
-printPoint : Int -> Int -> (moved t0 : Term) -> Term
+printPoint : Int -> Int -> (taken t0 : Term) -> Term
 printPoint cp w t0 =
     if w == 0 then
         joinMark cp t0
@@ -306,7 +306,7 @@ printPoint cp w t0 =
 {-| A wide character where it does not fit, at the right edge or margin:
 with autowrap on, a spacer head in the pen and the character on the next
 row; with it off, nothing, but it is the character REP repeats. -}
-edgeWide : Int -> Int -> (moved t : Term) -> Term
+edgeWide : Int -> Int -> (taken t : Term) -> Term
 edgeWide cp w t =
     if t.autowrap && t.cols >= 2 then
         let
@@ -358,7 +358,7 @@ edgeWide cp w t =
 it is, as Ghostty makes them before it wraps: when the character would end
 before the screen's edge, between the margins when the cursor is between
 them. -}
-insertBefore : (moved t : Term) -> Term
+insertBefore : (taken t : Term) -> Term
 insertBefore t =
     if not t.insert || t.x + 2 >= t.cols then
         t
@@ -384,7 +384,7 @@ insertBefore t =
 
 {-| A mark joined to the cell the last character was written to, as the
 next code point of its cluster. A mark with no cell before it is dropped. -}
-joinMark : Int -> (moved t : Term) -> Term
+joinMark : Int -> (taken t : Term) -> Term
 joinMark cp t =
     let
         s =
@@ -444,7 +444,7 @@ type alias Run =
     { cells : Builder Int64, x : Int, next : Int, last : Int }
 
 
-decodeRun : Bytes -> Int -> Int -> Int64 -> Int -> Int -> Int -> Int -> (moved row : Builder Int64) -> Run
+decodeRun : Bytes -> Int -> Int -> Int64 -> Int -> Int -> Int -> Int -> (taken row : Builder Int64) -> Run
 decodeRun bytes n i pen o cols x last row =
     if i >= n || x >= cols then
         { cells = row, x = x, next = i, last = last }
@@ -566,7 +566,7 @@ wellFormed bytes i b len =
                     )
 
 
-printDecoded : Int -> (moved t : Term) -> Term
+printDecoded : Int -> (taken t : Term) -> Term
 printDecoded cp t =
     if cp < 0xA0 || t.statusLine then
         -- a C1 control as UTF-8 is not printed
@@ -576,7 +576,7 @@ printDecoded cp t =
         printPoint cp (Width.width cp) (unshift t)
 
 
-repeatLast : Int -> (moved t : Term) -> Term
+repeatLast : Int -> (taken t : Term) -> Term
 repeatLast count t =
     if count <= 0 || t.lastPoint == 0 then
         t
@@ -597,7 +597,7 @@ printedWidth cp =
 {-| DECALN: the screen filled with `E`. The pen keeps its colours alone,
 and stays so, and the E's are written in it, unprotected, as Ghostty's
 `decaln` writes them (§VC17). -}
-alignment : (moved t0 : Term) -> Term
+alignment : (taken t0 : Term) -> Term
 alignment t0 =
     let
         a =
@@ -615,7 +615,7 @@ alignment t0 =
     withPlain (withScroll { t | screen = filled, top = 0, bottom = t.rows - 1, left = 0, right = t.cols - 1, origin = False, x = 0, y = 0, wrapNext = False })
 
 
-fillRows : Int -> Int -> Int64 -> (moved s : Screen) -> Screen
+fillRows : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
 fillRows y stop cell s =
     if y >= stop then
         s
