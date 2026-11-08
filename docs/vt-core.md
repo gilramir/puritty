@@ -3846,3 +3846,49 @@ today's rule frees. The leaning is now B.
 **B built** (geng-lang Dnene19, `m4-memory-proofs.md` §MP20): every case of
 `perf.py` within its record, `short-10000` 345.7 M, and the record written
 again with today's counts.
+
+## VC48. Reads the compiler proves, from the checks report (2026-11-08)
+
+geng-lang's checks report (`m4-proof-report.md`) lists, for each `Nothing`
+branch and `withDefault` default in the program, whether the compiler can
+show it never runs. Of the core's 212, 192 could run as far as it could
+tell; geng-lang PR11 read each and classed it. Eighteen are gone here, each
+by a change that leaves no fallback to ask about:
+
+- **Two arrays walked together** with `Array.map2`, not one read at the
+  other's index: `reflowed` (lines and their marks, both reads),
+  `headMarks` and `foundAt` (marks and where each was found).
+- **A loop's bound written**: `trimmed`'s `n` and `lastUsed`'s `i` are below
+  their array's length, so each read is `Array.getProven`. `countBlank`,
+  `noWide`, `lineStart` and `Recut.plainsOf` test the index at the read
+  instead, where proving it of their callers would ask the same of a
+  `+` that nothing bounds; `lineStart` takes the pages' length itself rather
+  than a `count` beside them.
+- **Nothing to look up**: `continuations` counts the wrapped rows of a
+  slice; `takeSpans` starts a span at `max at span.from`, with -1 for a new
+  span, so neither it nor `plainLine` reads the next span to find its
+  start; `lineCps` reads a wide tail's head only in the branch where the
+  tail was there; `Charset.pointers` folds over the index with its
+  positions.
+- **A refinement**: `Charset.Decoder` holds a `Lead`, `0` or `0x81` to
+  `0xFE`, the constructor contract geng-lang's own guide shows with this
+  type, and `go` promises it of the decoder it answers, so the table read
+  is `Array.getProven` and a wider lead is refused at build; `dcsHeader`'s
+  `i` is `0 <= i`; `defaultColour` answers 0 for a negative index, where it
+  read the palette from its end.
+
+Held to: the unit tests 68 of 68, replay 325 of 325 with `core-dump` built
+again (replay does not build it), the charset gate's 17 lines, the app
+built. `perf.py`: the throughput counts the same to 0.1 M; six resize
+cases fewer (`long-10000` 247.1 M from 265.1, `long-100000` 272.0 from
+290.4 and 677.1 from 709.2 unlimited, `short-10000` 329.2 from 345.7),
+the arrays walked together making no range of indexes to read by; the
+record written again with them. The report after: 174 of the core's
+fallbacks can run, 18 fewer, and 101 of its checks hold where 46 did
+(geng-lang PR12).
+
+What is left, by PR11's classes: 92 fallbacks are meant to run; 41 need an
+invariant of a record held in another (`Screen` in `Term`, `Term` in the
+app's model), which the language does not allow yet; the rest need
+`core` contracts (`Maybe.map`, `Array.Builder.get`) or larger changes
+(`alt` and `other` as one custom type, `Sgr`'s parameter index).

@@ -94,16 +94,11 @@ recut pageRows reflow old cols clusters n pages =
 
 plainsOf : Int -> Array Page -> Int -> Array Bool -> Array Bool
 plainsOf n pages i acc =
-    if i >= n then
+    if i >= n || i >= Array.length pages || i < 0 then
         acc
 
     else
-        when Array.get i pages is
-            Just page ->
-                plainsOf n pages (i + 1) (Array.pushLast (plainPage page) acc)
-
-            Nothing ->
-                acc
+        plainsOf n pages (i + 1) (Array.pushLast (plainPage (Array.getProven i pages)) acc)
 
 
 {-| Whether page `pi` is plain; false for one past the pages `recut`
@@ -533,7 +528,7 @@ plainLine cols pages spans0 last o =
             else
                 (total + cols - 1) // cols
     in
-    plainRows cols pages spans total count 0 0 (Maybe.withDefault 0 (Maybe.map .from (Array.first spans))) o
+    plainRows cols pages spans total count 0 0 -1 o
 
 
 {-| Rows `r` on of a plain line of `count` rows, `left` cells to go, its
@@ -586,7 +581,8 @@ plainHeads cols lastN ends b heads =
 
 
 {-| `n` bytes of the spans from span `j` byte `at` put after the page's
-text. -}
+text; an `at` before the span's `from`, -1 to start a span, is its
+`from`. -}
 takeSpans : Array Page -> Array Span -> Int -> Int -> Int -> (taken o : Out) -> { out : Out, j : Int, at : Int }
 takeSpans pages spans n j at o =
     if n <= 0 then
@@ -598,15 +594,19 @@ takeSpans pages spans n j at o =
                 { out = o, j = j, at = at }
 
             Just span ->
-                if at >= span.to then
-                    takeSpans pages spans n (j + 1) (Maybe.withDefault 0 (Maybe.map .from (Array.get (j + 1) spans))) o
+                let
+                    from =
+                        max at span.from
+                in
+                if from >= span.to then
+                    takeSpans pages spans n (j + 1) -1 o
 
                 else
                     let
                         t =
-                            min n (span.to - at)
+                            min n (span.to - from)
                     in
-                    takeSpans pages spans (n - t) j (at + t) (sliceIn pages span.pi at (at + t) o)
+                    takeSpans pages spans (n - t) j (from + t) (sliceIn pages span.pi from (from + t) o)
 
 
 -- A LINE ON ITS BYTES

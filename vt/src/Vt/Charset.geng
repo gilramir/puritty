@@ -54,7 +54,12 @@ Opaque, so that only `decode` makes one and its lead is always 0 or 0x81–0xFE
 (geng-lang `m4-refine-next.md` RX6): a forged lead read the index from its
 end. -}
 type Decoder
-    = Decoder Int
+    = Decoder Lead
+
+
+{-| A lead byte kept between reads, or 0 for none. -}
+type alias Lead =
+    (lead : Int where lead == 0 || (0x81 <= lead && lead <= 0xFE))
 
 
 decoder : Decoder
@@ -91,7 +96,7 @@ decode (Decoder lead) bytes =
     { decoder = Decoder done.lead, bytes = Builder.toBytes done.out }
 
 
-go : Bytes -> Int -> Int -> Int -> (taken out : Builder) -> { lead : Int, out : Builder }
+go : Bytes -> Int -> Int -> Lead -> (taken out : Builder) -> { lead : Int where lead == 0 || (0x81 <= lead && lead <= 0xFE), out : Builder }
 go bytes n i lead out =
     if i >= n then
         { lead = lead, out = out }
@@ -105,7 +110,7 @@ go bytes n i lead out =
             let
                 cp =
                     if byte >= 0x41 && byte <= 0xFE then
-                        Maybe.withDefault 0 (Array.get ((lead - 0x81) * 190 + byte - 0x41) index)
+                        Array.getProven ((lead - 0x81) * 190 + byte - 0x41) index
 
                     else
                         0
@@ -196,7 +201,7 @@ utf8 cp out =
 encoder takes it. Built the first time it is used. -}
 pointers : Dict Int Int
 pointers =
-    Array.foldr (\i acc -> Dict.set (Maybe.withDefault 0 (Array.get i index)) i acc) Dict.empty (Array.initialize (Array.length index) 0 identity)
+    Array.foldr (\e acc -> Dict.set e.cp e.i acc) Dict.empty (Array.indexedMap (\i cp -> { i = i, cp = cp }) index)
         |> Dict.remove 0
 
 

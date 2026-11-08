@@ -256,7 +256,7 @@ pullPages reflow lossy clear keep cols rows cursor saved clusters s pages =
                     count
 
                  else
-                    lineStart pages count 0
+                    lineStart pages 0
                 )
     in
     if clear == 1 && r0.taken < count && (promptStartIn r0.flow.rows (finalRow rows r0.flow)).top then
@@ -435,7 +435,7 @@ pullUntil reflow keep cols rows cursor saved clusters s pages k =
             flowFrom reflow keep cols rows cursor saved s paged.rows (k < count) noPrefix
     in
     if flow.short && k < count then
-        pullUntil reflow keep cols rows cursor saved clusters s pages (lineStart pages count (k + 1))
+        pullUntil reflow keep cols rows cursor saved clusters s pages (lineStart pages (k + 1))
 
     else
         { flow = flow, clusters = paged.clusters, taken = k }
@@ -489,22 +489,23 @@ flowFrom reflow keep cols rows cursor saved s paged more prefix =
 
 {-| At least the newest `k` of the pages, and as many more as the line the
 oldest of them starts in runs on from. -}
-lineStart : Array Page -> Int -> Int -> Int
-lineStart pages count k =
+lineStart : Array Page -> Int -> Int
+lineStart pages k =
+    let
+        count =
+            Array.length pages
+    in
     if k >= count then
         count
 
+    else if k < 0 then
+        k
+
+    else if lastWrapped (Array.getProven (count - k - 1) pages) then
+        lineStart pages (k + 1)
+
     else
-        when Array.get (count - k - 1) pages is
-            Just page ->
-                if lastWrapped page then
-                    lineStart pages count (k + 1)
-
-                else
-                    k
-
-            Nothing ->
-                k
+        k
 
 
 {-| A cursor waiting to wrap that a resize moved off the right edge goes on
@@ -606,7 +607,8 @@ reflowed old cols rows =
             joined =
                 joinLines old cols { rows = rows, hist = 0, cursor = none, saved = none, y0 = 0, more = False, short = False } 0 { lines = [], line = [], cursor = { line = -1, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = [] }
         in
-        Array.mapAndFlatten (\li -> (splitLine cols (Maybe.withDefault [] (Array.get li joined.lines)) (Maybe.withDefault [] (Array.get li joined.marks)) [] 0).rows) (Array.range 0 (Array.length joined.lines - 1))
+        Array.map2 (\line marks -> (splitLine cols line marks [] 0).rows) joined.lines joined.marks
+            |> Array.flatten
 
 
 {-| An empty cell, as Ghostty's `isEmpty`: no text, narrow, and not in a
@@ -683,22 +685,16 @@ changeRows keep old rows flow =
         flow
 
 
-countBlank : Array Row -> Int -> Int -> Int -> Int
+countBlank : (rows : Array Row) -> (i : Int where i < Array.length rows) -> Int -> Int -> Int
 countBlank rows i stop n =
-    if i < stop then
+    if i < stop || i < 0 then
         n
 
+    else if blankRow (Array.getProven i rows) then
+        countBlank rows (i - 1) stop (n + 1)
+
     else
-        when Array.get i rows is
-            Just row ->
-                if blankRow row then
-                    countBlank rows (i - 1) stop (n + 1)
-
-                else
-                    n
-
-            Nothing ->
-                n
+        n
 
 
 {-| A point moved up `by` rows; one whose row is dropped goes to the top
@@ -878,29 +874,30 @@ reflowCols old cols prefix flow =
 {-| The rows from `from` to `to` that carry on a row that wrapped. -}
 continuations : Array Row -> Int -> Int -> Int
 continuations rows from to =
-    Array.foldl
-        (\r n ->
-            when Array.get (r - 1) rows is
-                Just prev ->
-                    if prev.wrapped then
-                        n + 1
-
-                    else
-                        n
-
-                Nothing ->
-                    n
-        )
+    -- row `r` carries on row `r - 1`, so the rows asked of are those
+    -- from `from - 1` up to `to - 1`
+    if to < 1 then
         0
-        (Array.range (max 1 from) to)
+
+    else
+        Array.foldl
+            (\prev n ->
+                if prev.wrapped then
+                    n + 1
+
+                else
+                    n
+            )
+            0
+            (Array.slice (max 0 (from - 1)) to rows)
 
 
-lastUsed : Array (Array Int64) -> Int -> Int -> Int
+lastUsed : (lines : Array (Array Int64)) -> (i : Int where i < Array.length lines) -> Int -> Int
 lastUsed lines i floor =
-    if i <= floor then
+    if i <= floor || i < 0 then
         floor
 
-    else if Array.isEmpty (Maybe.withDefault [] (Array.get i lines)) then
+    else if Array.isEmpty (Array.getProven i lines) then
         lastUsed lines (i - 1) floor
 
     else
@@ -1096,12 +1093,12 @@ withoutSpacer cells =
             cells
 
 
-trimmed : Array Int64 -> Int -> Array Int64
+trimmed : (cells : Array Int64) -> (n : Int where n <= Array.length cells) -> Array Int64
 trimmed cells n =
     if n <= 0 then
         []
 
-    else if emptyCell (Maybe.withDefault 0 (Array.get (n - 1) cells)) then
+    else if emptyCell (Array.getProven (n - 1) cells) then
         trimmed cells (n - 1)
 
     else
@@ -1177,10 +1174,10 @@ splitAt cols line starts marks first j p row rows found =
 {-| No cell from `j` to `to` is the head of a wide character. -}
 noWide : Array Int64 -> Int -> Int -> Bool
 noWide line j to =
-    if j >= to then
+    if j >= to || j < 0 || j >= Array.length line then
         True
 
-    else if cellWide (Maybe.withDefault 0 (Array.get j line)) == wideHead then
+    else if cellWide (Array.getProven j line) == wideHead then
         False
 
     else
@@ -1231,14 +1228,15 @@ markOffset at =
 `x`. -}
 headMarks : Array Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
 headMarks marks j row x found =
-    Array.indexedMap
-        (\k f ->
-            if Maybe.withDefault -1 (Array.get k marks) == -2 - j then
+    Array.map2
+        (\m f ->
+            if m == -2 - j then
                 { row = row, x = x }
 
             else
                 f
         )
+        marks
         found
 
 
@@ -1270,11 +1268,11 @@ anyIn marks from to k =
 
 foundAt : Array Int -> Int -> Int -> Int -> Int -> Array { row : Int, x : Int } -> Array { row : Int, x : Int }
 foundAt marks from to row x found =
-    Array.indexedMap
-        (\k f ->
+    Array.map2
+        (\m f ->
             let
                 at =
-                    markOffset (Maybe.withDefault -1 (Array.get k marks))
+                    markOffset m
             in
             if at >= from && at < to then
                 { row = row, x = x }
@@ -1282,6 +1280,7 @@ foundAt marks from to row x found =
             else
                 f
         )
+        marks
         found
 
 
