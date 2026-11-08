@@ -1,0 +1,135 @@
+module Vt.Prompt exposing
+    ( setPrompt
+    , outputStart
+    , withRedraw
+    , promptStart
+    , promptAfter
+    , promptFeed
+    )
+
+{-| The prompt marks of rows, which OSC 133's semantic prompts set
+(`docs/vt-core.md` §VC22, §VC45). -}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Vt.Base64 as Base64
+import Dict exposing (Dict)
+import Int64
+import Math
+import UInt8
+import Vt.Keys as Keys
+import Vt.Width as Width
+import Vt.Cell exposing (..)
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Term as State
+import Vt.Screen exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Resize exposing (..)
+import Vt.Recut exposing (recut)
+import Vt.Dump exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Cursor exposing (..)
+
+
+{-| Row `y`'s prompt mark set to `mark`. -}
+setPrompt : Int -> Int -> (moved s : Screen) -> Screen
+setPrompt y mark s =
+    let
+        o =
+            rowOffset s y + s.cols
+
+        m =
+            Maybe.withDefault 0 (Builder.get o s.cells)
+    in
+    { s | cells = Builder.set o (Bitwise.or (Bitwise.and (Bitwise.complement 0x60000) m) (Bitwise.shiftLeftBy 17 (Int64.fromInt mark))) s.cells }
+
+
+{-| `C`: output, and a prompt mark taken off the cursor's row when the
+cursor is at its start. -}
+outputStart : (moved t : Term) -> Term
+outputStart t =
+    let
+        s =
+            t.screen
+
+        unmark =
+            t.x == 0 && metaPrompt (metaAt (rowOffset s t.y) s) /= 0
+    in
+    if unmark then
+        withLf { t | prompt = 0, screen = setPrompt t.y 0 s }
+
+    else
+        withLf { t | prompt = 0, screen = s }
+
+
+{-| kitty's `redraw` option, the first one: `0` the shell does not write
+its prompt again after a resize, `1` it does, `last` only its last row. -}
+withRedraw : Array String -> (moved t : Term) -> Term
+withRedraw options t =
+    when Array.findFirst (\o -> String.startsWith "redraw=" o) options is
+        Just found ->
+            when String.dropFirst 7 found.value is
+                "0" ->
+                    { t | redraw = 1 }
+
+                "1" ->
+                    { t | redraw = 0 }
+
+                "last" ->
+                    { t | redraw = 2 }
+
+                _ ->
+                    t
+
+        Nothing ->
+            t
+
+
+{-| A prompt begins at the cursor: its row marked a prompt, or with `k=c` or
+`k=s`, the first `k` option, a continuation. -}
+promptStart : Array String -> (moved t : Term) -> Term
+promptStart options t =
+    let
+        kind =
+            when Array.findFirst (\o -> String.startsWith "k=" o) options is
+                Just found ->
+                    String.dropFirst 2 found.value
+
+                Nothing ->
+                    ""
+
+        mark =
+            if kind == "c" || kind == "s" then
+                2
+
+            else
+                1
+    in
+    withLf { t | prompt = 1, screen = setPrompt t.y mark t.screen }
+
+
+{-| After a line feed, or a wrap when `wrap`, while a prompt or the input
+lasts: the row it went to a continuation, as Ghostty's `index` and
+`printWrap` mark it; with the input to the line's end (`I`), a line feed
+ends the input and marks nothing, and a wrap neither (§VC22). -}
+promptAfter : Bool -> (moved t : Term) -> Term
+promptAfter wrap t =
+    if t.prompt == 0 then
+        t
+
+    else if t.prompt == 3 then
+        if wrap then
+            t
+
+        else
+            withLf { t | prompt = 0 }
+
+    else
+        { t | screen = setPrompt t.y 2 t.screen }
+
+
+promptFeed : (moved t : Term) -> Term
+promptFeed t =
+    promptAfter False t
