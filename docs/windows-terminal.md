@@ -9,7 +9,7 @@ commit. Anything not read directly in code is marked **inference** or
 **unverified**. Earlier analyses are cited as A§n (`alacritty.md`), G§n
 (`ghostty.md`) and S§n (`synthesis.md`).
 
-This is the main reference for visiterm's Windows side. Section 2 (ConPTY) is
+This is the main reference for puritty's Windows side. Section 2 (ConPTY) is
 the most important part. It corrects some things that S§10 and A§2.3 took
 from older ConPTY behaviour.
 
@@ -187,7 +187,7 @@ closing just breaks the signal pipe. Conhost's `PtySignalInputThread::_Shutdown`
 → `VtIo::SendCloseEvent` → `CloseConsoleProcessState()` sends
 `CTRL_CLOSE_EVENT` to the clients (`PtySignalInputThread.cpp:322-326`,
 `VtIo.cpp:300-322`). Exit is detected when the output pipe reads EOF or
-`ERROR_BROKEN_PIPE`. **Rule for visiterm:** keep the output reader running
+`ERROR_BROKEN_PIPE`. **Rule for puritty:** keep the output reader running
 until EOF regardless; then either OS behaviour is safe.
 
 **Flags** (`conpty-static.h:26-38`). Only these four exist at this commit:
@@ -229,7 +229,7 @@ they are synchronous on both ends. That is why Alacritty needs helper threads
 - **Why bundle at all.** Inbox conhost before 24H2 still has VtEngine and its
   re-rendering. Every fix in §2.8 reaches users only through the bundled
   DLL or a new Windows release. Alacritty's approach of an optional
-  `conpty.dll` found on PATH (A§2.3) is the same idea. For visiterm, **ship
+  `conpty.dll` found on PATH (A§2.3) is the same idea. For puritty, **ship
   it** rather than make it optional.
 - **ConDrv architecture.** `EnsureNativeArchitecture()` in WT's
   `main.cpp` exists because conhost must match the ConDrv architecture. Ship
@@ -460,7 +460,7 @@ its own buffer. Only "Goal 1" (remove VtEngine) is done at this commit. The
 `Server` library and productisation are not (**unverified beyond spec status
 and the absence of an in-proc path in `TerminalConnection`**).
 
-**For visiterm** this all supports S§3.2: route SSH sessions around ConPTY with
+**For puritty** this all supports S§3.2: route SSH sessions around ConPTY with
 an embedded client. ConPTY is now good enough for local shells (PowerShell,
 cmd, WSL) provided the terminal:
 
@@ -507,7 +507,7 @@ When Windows Terminal is the default terminal and a user double-clicks
 5. WT wraps the handles with `ConptyPackPseudoConsole`
    (`ConptyConnection.cpp:335-383`).
 
-This is a ConPTY feature visiterm only needs if it wants to be selectable as
+This is a ConPTY feature puritty only needs if it wants to be selectable as
 the Windows default terminal. The spec is `doc/specs/#492 - Default Terminal/`.
 
 ---
@@ -606,13 +606,13 @@ interface ITerminalConnection {
   uses VT input mode and Console APIs, so it gets all of §2.7.
 - **tmux appears only in docs** (pane specs). There is no control-mode support.
 
-### 3.5 Mapping to visiterm's backend interface
+### 3.5 Mapping to puritty's backend interface
 
 WT's interface is very close to the one S§3.2 needs. Differences to adopt or
 avoid:
 
 - **Bytes vs UTF-16.** WT decodes in the backend and hands UTF-16 to the
-  parser. visiterm should hand **bytes** to a UTF-8-native parser (G§3).
+  parser. puritty should hand **bytes** to a UTF-8-native parser (G§3).
   The backend must not decode, especially for tmux `%output`, where
   unescaping comes first.
 - **Capabilities.** Replace downcasts with optional capability methods: clear,
@@ -668,7 +668,7 @@ avoid:
   graphics protocol.
 - **OSC** is buffered with **no length limit** apart from a 2 MiB cap on OSC 8
   URIs, and dispatched at the terminator (`OutputStateMachineEngine.cpp:763-925`,
-  `.hpp:23`). This is a memory-exhaustion risk; cap it in visiterm.
+  `.hpp:23`). This is a memory-exhaustion risk; cap it in puritty.
 - **REP** repeats a single UTF-16 unit (`OutputStateMachineEngine.cpp:152-170`),
   which is wrong for astral characters and clusters.
 
@@ -737,7 +737,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   - Ambiguous is narrow by default (GH#2066). Optional wide.
 - **Streaming.** `GraphemeState` lets a cluster continue across separate
   writes. A later VS16 or combining mark re-measures the previous cell and
-  rewrites it in place (`Row.cpp:676-718`). Visiterm needs the same for
+  rewrites it in place (`Row.cpp:676-718`). Puritty needs the same for
   chunked PTY reads.
 
 ### 4.4 Buffer: TextBuffer, ROW, attributes
@@ -838,7 +838,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 - **README self-critique.** The atlas README says that translating the buffer
   into GDI-style primitives (brush changes, `PaintBufferLine` per run) is
   "pretty wasteful… incredibly bug prone" and that AtlasEngine should read
-  the TextBuffer directly. Visiterm's headless-core/renderer split (S§3.1)
+  the TextBuffer directly. Puritty's headless-core/renderer split (S§3.1)
   should pass the renderer a row snapshot, not a stream of draw calls.
 
 ### 5.2 AtlasEngine (`src/renderer/atlas`)
@@ -849,7 +849,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 - Outside the lock, `Present` does the GPU work (`AtlasEngine.cpp:16-20`,
   `AtlasEngine.r.cpp:10-31`).
 - Consequence: shaping cost extends the lock hold. Ghostty and Alacritty
-  shape on the render side from a snapshot (G§5). Visiterm should snapshot
+  shape on the render side from a snapshot (G§5). Puritty should snapshot
   under the lock and shape outside it.
 
 **Backend choice** (`AtlasEngine.r.cpp:102-302`):
@@ -1015,7 +1015,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 - **WddmConEngine** is for the OneCore full-screen console. It is irrelevant
   here.
 
-### 5.4 Relevance to visiterm's Windows renderer
+### 5.4 Relevance to puritty's Windows renderer
 
 - **Mostly yes:** D3D11 + DirectWrite, instanced quads, a single atlas, dual-source
   ClearType and shader-side gamma. This is the strongest available reference
@@ -1055,7 +1055,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   128 KiB chunk is parsed under one lock hold, and the renderer waits for its
   ticket. Ghostty bounds this differently (G§2).
 - **Pane count.** One reader thread plus one render thread per pane means many
-  threads with many panes. Visiterm's tmux mode (many panes over one
+  threads with many panes. Puritty's tmux mode (many panes over one
   connection) argues for a different split: one reader per *connection* and a
   shared render thread per window (S§4).
 
@@ -1084,7 +1084,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   - Resizing is keyboard-only in 5% steps; no draggable splitter was found.
   - `WM_SIZING` snaps the window so **every** pane fits whole cells
     (`Pane::CalcSnappedDimension`, `IslandWindow.cpp:246-300`).
-  - Visiterm's tmux layouts are n-ary trees (`%layout-change`). WT's binary
+  - Puritty's tmux layouts are n-ary trees (`%layout-change`). WT's binary
     tree would need an n-ary generalisation.
 - **XAML Islands cost.** Many workarounds are needed:
   - Keys XAML swallows (F7, Alt-up, Alt+Space) are intercepted in the
@@ -1095,7 +1095,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   - Alt+Numpad is re-implemented by hand.
   - `TerminateProcess` on exit avoids XAML teardown crashes (GH#15410).
 
-  Visiterm has no XAML, and this list is a good argument for staying with
+  Puritty has no XAML, and this list is a good argument for staying with
   plain Win32 plus your own title bar or the native one.
 - **DPI:** a PerMonitorV2 manifest. `WM_DPICHANGED` just applies the suggested
   rect. The control re-rasterises on CompositionScale changes, whose event
@@ -1194,7 +1194,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 
 ---
 
-## 10. Lessons for visiterm
+## 10. Lessons for puritty
 
 **ConPTY and the Windows backend**
 
@@ -1216,7 +1216,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
    - **Answer DSR-CPR fast**, from the parse thread (S§3.3).
    - **Implement win32-input-mode (9001)** and focus events (1004). Treat
      them as always on for ConPTY panes.
-   - Pass `PSEUDOCONSOLE_GLYPH_WIDTH_*` matching visiterm's width mode.
+   - Pass `PSEUDOCONSOLE_GLYPH_WIDTH_*` matching puritty's width mode.
    - Send ShowHide/Reparent so `GetConsoleWindow()` behaves.
    - Map "clear scrollback" to `ConptyClearPseudoConsole`.
    - Never send 0×0.
@@ -1224,7 +1224,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
    `ClosePseudoConsole` as possibly blocking, as on old inbox kernel32. Call
    it from a thread that isn't the output reader, or after the reader is
    done. Detect exit by output EOF, then `GetExitCodeProcess` (§2.1, §3.2).
-5. **Win32-input-mode is the Windows-side key encoding visiterm needs**, on
+5. **Win32-input-mode is the Windows-side key encoding puritty needs**, on
    top of kitty/legacy for SSH and tmux. Ghostty and Alacritty don't have it.
    Its format is trivial (§2.5).
 6. **Consider the default-terminal handoff later** (§2.9). It needs a COM
@@ -1316,9 +1316,9 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
     heuristics. They encode years of bug reports.
 15. **Testing:**
     - A headless `ControlCore` with a `MockConnection` is the pattern for
-      visiterm's backend tests.
+      puritty's backend tests.
     - Add a fake ConPTY peer that emits the startup handshake
-      (`ESC[c ESC[?1004h ESC[?9001h`) and checks visiterm's replies.
+      (`ESC[c ESC[?1004h ESC[?9001h`) and checks puritty's replies.
     - Record real ConPTY sessions with the conhost TraceLogging provider for
       replay tests (S§11).
-    - WT has no esctest runs. Visiterm should (S§11).
+    - WT has no esctest runs. Puritty should (S§11).

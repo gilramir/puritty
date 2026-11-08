@@ -5,7 +5,7 @@
     ./run.py --panes 4 --rows packed --runs 3
     ./run.py --env GENG_NURSERY=16777216   # a variant of the runtime's settings
 
-Each run sets GENG_GC_PAUSES (geng-lang m4-visiterm.md §VA7) and keeps the
+Each run sets GENG_GC_PAUSES (geng-lang m4-puritty.md §VA7) and keeps the
 pauses whose start falls inside the probe's `cat`. A minor collection's time
 includes any full one Boehm ran inside it; a full one outside a minor is its
 own pause. Each run is capped with systemd-run's MemoryMax.
@@ -18,7 +18,7 @@ the oldest row reachable), and options.patch (GENG_MARKERS=n,
 GENG_ATOMIC_BYTES=1), §VA7.2 and §VA7.4.
 census-kinds.patch (GENG_HEAP_CENSUS=n splits them into atomic and scanned, and
 counts the scanned words that point into the heap) and owned-inline.patch
-(GENG_BO_INLINE=1 makes a `Bytes.Owned` one atomic object) are visiterm's
+(GENG_BO_INLINE=1 makes a `Bytes.Owned` one atomic object) are puritty's
 phase2-window.md §15.4, run with the x11 probe.
 """
 

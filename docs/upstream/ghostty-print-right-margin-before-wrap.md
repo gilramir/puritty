@@ -2,7 +2,7 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** v1.4.0 (`83fb95624`). Found by visiterm's differential
+**Found against:** v1.4.0 (`83fb95624`). Found by puritty's differential
 fuzzer (`vt-core.md` §VC20). Not to be filed (`README.md`). The oracle
 carries the fix as `harness/oracle/patches/0008-print-recomputes-the-right-margin-after-a-wrap.patch`.
 
@@ -23,7 +23,7 @@ the default makes `printSlice` hand over to `print`.
 
 ## Reproduction
 
-With libghostty-vt, 10 columns by 1 row (visiterm `corpus/replay/print-margin-wide-wrap`):
+With libghostty-vt, 10 columns by 1 row (puritty `corpus/replay/print-margin-wide-wrap`):
 
 ```
 ESC [?69h ESC [2;3s   left and right margins, columns 2 and 3

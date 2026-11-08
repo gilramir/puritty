@@ -3,7 +3,7 @@
 # (docs/phase3-select.md): xclip owns CLIPBOARD and sel reads it, then sel
 # owns it and xclip reads it, at 1 KB, 1 MB and 10 MB of text.
 #   REMOTE=HOST runs sel on HOST over ssh -X, its display this Xvfb.
-# Run from visiterm's devbox (Xvfb); xclip is the system's.
+# Run from puritty's devbox (Xvfb); xclip is the system's.
 set -e
 cd "$(dirname "$0")"
 W=$(realpath ../..)/.harness-work/select

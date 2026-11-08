@@ -1,4 +1,4 @@
-/* gdump: libghostty-vt fed bytes and printed as visiterm's screen dump
+/* gdump: libghostty-vt fed bytes and printed as puritty's screen dump
  * (docs/vt-core.md §VC3), for ghostty-dump and for the fuzzer's comparison
  * with the core (vt-diff, §VC16). */
 #define _GNU_SOURCE

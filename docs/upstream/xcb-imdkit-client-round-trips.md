@@ -3,7 +3,7 @@
 **Repository:** `fcitx/xcb-imdkit`
 
 **Found against:** 1.0.9 and `main` at `621048bd` (2026-10-09). Found by
-visiterm's phase 3 survey (`docs/phase3-input.md` §3.3). Kept for Gilbert
+puritty's phase 3 survey (`docs/phase3-input.md` §3.3). Kept for Gilbert
 to decide on; not filed.
 
 ## Summary
@@ -51,7 +51,7 @@ grep -c 'Reply to' trace.log
 
 ## Fix
 
-visiterm carries it as `packages/x11/patches/xcb-imdkit-0001-no-round-trips.patch`:
+puritty carries it as `packages/x11/patches/xcb-imdkit-0001-no-round-trips.patch`:
 the client interns the whole rotation once, pipelined (one round trip at
 its first message), and sends through a variant of `_xcb_send_xim_message`
 that takes the atom and sends both requests unchecked. The server side is

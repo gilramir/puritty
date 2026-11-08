@@ -2,7 +2,7 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** v1.4.0 (`83fb95624`). Found by visiterm's differential
+**Found against:** v1.4.0 (`83fb95624`). Found by puritty's differential
 fuzzer (`vt-core.md` §VC18). Not to be filed (`README.md`). The oracle
 carries the fix as `harness/oracle/patches/0006-reflow-a-spacer-head-does-not-wrap.patch`.
 
@@ -19,7 +19,7 @@ it.
 
 ## Reproduction
 
-With libghostty-vt, 10 columns by 5 rows (visiterm `corpus/replay/reflow-dropped-head-full-row`):
+With libghostty-vt, 10 columns by 5 rows (puritty `corpus/replay/reflow-dropped-head-full-row`):
 
 ```
 002abcdef中           中 does not fit at column 9: a spacer head there, 中 on row 1

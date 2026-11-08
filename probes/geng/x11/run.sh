@@ -2,7 +2,7 @@
 # Phase 2's survey (docs/phase2-window.md §5, §16): the x11 probe, or a
 # reference terminal, on each workload, the bytes of its X connection
 # counted by xcount.py. Start Xvfb as :77 and the proxy first, from
-# visiterm's devbox. §16 starts Xvfb without MIT-SHM, as a server across
+# puritty's devbox. §16 starts Xvfb without MIT-SHM, as a server across
 # ssh is: a terminal that would put its frames in shared memory then sends
 # them on the wire, as it would there.
 #

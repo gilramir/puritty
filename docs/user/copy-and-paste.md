@@ -1,4 +1,4 @@
-# Copy and paste in visiterm
+# Copy and paste in puritty
 
 *Status: this guide describes phase 3's design as decided on 2026-11-03
 ([`../phase3-select.md`](../phase3-select.md) §10–§11), and all of it is
@@ -13,13 +13,13 @@ each piece and then gives a quick reference at the end.
 
 ## 1. The two clipboards
 
-X, the window system visiterm runs on, has two places text can be copied
+X, the window system puritty runs on, has two places text can be copied
 to. Every X program shares them.
 
 | | **the selection** (X calls it PRIMARY) | **the clipboard** (X calls it CLIPBOARD) |
 |---|---|---|
-| how text gets there | **just by selecting it**. No key needed | an explicit copy: Ctrl+Shift+C in visiterm, Ctrl+C in most other programs |
-| how you paste it | the **middle mouse button** (or the right one, if you choose, §3), or Shift+Insert | Ctrl+Shift+V in visiterm, Ctrl+V in most other programs |
+| how text gets there | **just by selecting it**. No key needed | an explicit copy: Ctrl+Shift+C in puritty, Ctrl+C in most other programs |
+| how you paste it | the **middle mouse button** (or the right one, if you choose, §3), or Shift+Insert | Ctrl+Shift+V in puritty, Ctrl+V in most other programs |
 | what replaces it | selecting anything else, in any program | the next copy, in any program |
 | what it is for | quick copying of something you can see | the copy-and-paste you know from other systems |
 
@@ -28,13 +28,13 @@ Ctrl+Shift+C does not change the selection. So you can keep something on
 the clipboard for later while you select and middle-click other things.
 
 **Why Ctrl+Shift, not Ctrl?** In a terminal, Ctrl+C interrupts the running
-program and Ctrl+V tells the shell to take the next key literally. visiterm
+program and Ctrl+V tells the shell to take the next key literally. puritty
 must pass those to the program, so its own copy and paste keys add Shift,
 as most Linux terminals do.
 
-**When visiterm exits.** X keeps no copy of either one: the text stays in
+**When puritty exits.** X keeps no copy of either one: the text stays in
 the program it was copied from, which hands it over when someone pastes.
-When visiterm closes, what it put in the selection is gone. Most desktops,
+When puritty closes, what it put in the selection is gone. Most desktops,
 Mint's among them, run a clipboard manager that keeps the *clipboard* after
 its program exits; nothing keeps the *selection*.
 
@@ -46,7 +46,7 @@ its program exits; nothing keeps the *selection*.
 - **Double-click** to select a word, **triple-click** to select a line.
   Keep the button down after a double or triple click and drag to select
   more words or lines. (Thai text has no spaces between words; until
-  visiterm learns Thai word breaks, a run of Thai is selected as one word.)
+  puritty learns Thai word breaks, a run of Thai is selected as one word.)
 - To select into the history that has scrolled away, scroll back first
   (the wheel, Shift+PgUp, Shift+Home). A selection can also span more than
   a screen: press the button, move the view with Shift+PgUp, Shift+PgDn,
@@ -59,7 +59,7 @@ A word is a run of characters that are all *word boundaries* or all not.
 The boundaries are tab, space and ``'"│`|:;,()[]{}<>$`` (Ghostty's list),
 so a double click on `path/to/file.txt` takes all of it, on `a=b` all three
 characters, and on `===` the three `=`. Everyone draws this line
-differently, so it is yours to set in `~/.config/visiterm/config.toml`:
+differently, so it is yours to set in `~/.config/puritty/config.toml`:
 
 ```toml
 [selection]
@@ -71,7 +71,7 @@ Write the whole list: the setting replaces the default rather than adding
 to it.
 
 What you selected goes into the selection (PRIMARY) **when you let go of the
-button**. visiterm reads the text out then:
+button**. puritty reads the text out then:
 
 - a long line the terminal wrapped onto several rows is copied as one line;
 - spaces at the end of each line are left out;
@@ -87,10 +87,10 @@ after the screen has changed.
 
 Some programs ask the terminal for the mouse: **nvim** does by default,
 **tmux** does with `set -g mouse on`, and so do htop, mc and many others.
-Then a click or drag goes to the program, not to visiterm. tmux selects into
+Then a click or drag goes to the program, not to puritty. tmux selects into
 its own copy buffer, nvim moves its cursor or starts a visual selection.
 
-**Hold Shift** to make visiterm select instead, whatever the program wants.
+**Hold Shift** to make puritty select instead, whatever the program wants.
 Shift+drag, Shift+double-click and Shift+triple-click work as above.
 
 ---
@@ -105,7 +105,7 @@ Shift+drag, Shift+double-click and Shift+triple-click work as above.
 
 **Middle or right button.** xterm and most Linux programs paste with the
 middle button; PuTTY pastes with the right one. Choose in
-`~/.config/visiterm/config.toml`:
+`~/.config/puritty/config.toml`:
 
 ```toml
 [mouse]
@@ -116,7 +116,7 @@ The other button does nothing. When a program has the mouse (nvim, tmux
 with `mouse on`), the paste button goes to the program; hold Shift to
 paste with it anyway.
 
-visiterm sends the pasted text to the program as if typed, with three
+puritty sends the pasted text to the program as if typed, with three
 changes, the same ones xterm makes:
 
 1. **Control characters that could act are turned into spaces**: NUL,
@@ -130,7 +130,7 @@ changes, the same ones xterm makes:
    you press Enter.
 3. **If it did not ask**, each newline is sent as Enter.
 
-> **Careful:** visiterm does not ask before a paste. Pasting several lines
+> **Careful:** puritty does not ask before a paste. Pasting several lines
 > into a program that has not asked for bracketed paste (an old shell, a
 > shell with it turned off, `cat`, some remote shells) runs each line as you
 > paste it, exactly as if you had typed it with Enter after each.
@@ -157,14 +157,14 @@ remote machine over ssh**, where the program cannot reach your X display:
   when nvim has no other clipboard (over ssh, for instance).
 - other programs and scripts that say they support OSC 52.
 
-visiterm puts it on **the clipboard** (CLIPBOARD), unless the program asks
+puritty puts it on **the clipboard** (CLIPBOARD), unless the program asks
 for the selection (PRIMARY) instead. Paste it with Ctrl+Shift+V as usual.
 Up to about 6 MB of text is taken; a larger copy is ignored.
 
 ### Reading the clipboard is off
 
 OSC 52 can also *ask* the terminal for your clipboard, and the terminal
-answers by typing it to the program. visiterm **does not answer**, because
+answers by typing it to the program. puritty **does not answer**, because
 the question can come from anything that prints to your screen: a remote
 server you are logged in to, or a file you `cat`. If you had just copied a
 password, the asker would get it. Alacritty, WezTerm and Windows Terminal
@@ -180,7 +180,7 @@ anyway, set:
 osc52_read = "allow"
 ```
 
-visiterm never asks you about it either way.
+puritty never asks you about it either way.
 
 ---
 
@@ -193,8 +193,8 @@ visiterm never asks you about it either way.
 | paste the clipboard | Ctrl+Shift+V | Ctrl+Shift+V (in insert mode it arrives as a bracketed paste) |
 | paste the selection | Shift+middle button (tmux takes the middle button itself), or Shift+Insert | Shift+middle button (nvim takes the middle button itself), or Shift+Insert |
 
-A Shift+drag in tmux selects what is on visiterm's screen. That includes
-tmux's status line and the borders of other panes, because visiterm does
+A Shift+drag in tmux selects what is on puritty's screen. That includes
+tmux's status line and the borders of other panes, because puritty does
 not know about tmux's panes. To select within one pane, use tmux's own copy
 mode.
 

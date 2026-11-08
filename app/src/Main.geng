@@ -1,11 +1,11 @@
 module Main exposing (main)
 
-{-| visiterm (`docs/renderer.md` §R10, §R12): a program on a terminal,
+{-| puritty (`docs/renderer.md` §R10, §R12): a program on a terminal,
 drawn in an X window.
 
-    visiterm [--config FILE] [--title TITLE] [PROGRAM ARGS...]
+    puritty [--config FILE] [--title TITLE] [PROGRAM ARGS...]
 
-`--` before PROGRAM keeps its own flags from being taken for visiterm's.
+`--` before PROGRAM keeps its own flags from being taken for puritty's.
 The command line is `gren-argparse` with its `os` runner; what it gives
 wins over the settings file.
 
@@ -25,7 +25,7 @@ due:
 
 A resize of the window is given to the core and to the terminal; the
 focus is drawn in the cursor and, under mode 1004, reported to the
-program; the program's title (OSC 0 and 2) is the window's. visiterm ends
+program; the program's title (OSC 0 and 2) is the window's. puritty ends
 when the program does, with its exit status (1 for one a signal ended),
 or when the window is closed, asking the program to end.
 
@@ -157,11 +157,11 @@ cli =
             }
     , flags =
         Argparse.Parser.initFlags (\config title -> { config = config, title = title })
-            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/visiterm/config.toml"
+            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/puritty/config.toml"
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "title") Argparse.Parser.stringParser "The window's title while the program has set none"
     , commonDescription = Nothing
     , summary = "Runs a program on a terminal in an X window:"
-    , example = PP.words "visiterm --title notes -- vim -O a.txt b.txt"
+    , example = PP.words "puritty --title notes -- vim -O a.txt b.txt"
     , builder = \program flags -> Run { config = flags.config, title = flags.title, program = program }
     }
 
@@ -172,7 +172,7 @@ main =
         |> Task.andThen
             (\env ->
                 Argparse.Program.runRootWithContext env
-                    { name = "visiterm"
+                    { name = "puritty"
                     , version = "0.1.0"
                     , command = cli
                     , init =
@@ -189,7 +189,7 @@ main =
                                         }
                                     )
                                 |> Task.andThen (\config -> start ctx.cp ctx.vars config)
-                                |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "visiterm: " ++ why, value = 2 })
+                                |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
                     }
             )
 
@@ -217,7 +217,7 @@ settings fs vars given =
                     Just { path = p, required = True }
 
                 Nothing ->
-                    Maybe.map (\d -> { path = Path.fromString (d ++ "/visiterm/config.toml"), required = False }) dir
+                    Maybe.map (\d -> { path = Path.fromString (d ++ "/puritty/config.toml"), required = False }) dir
     in
     when file is
         Nothing ->
@@ -292,11 +292,11 @@ start cp vars config =
                             (Array.dropFirst 1 command)
                             { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                             |> Task.mapError Os.Error.toString
-                            |> Task.andThen (\child -> run (Dict.member "VISITERM_IME_LOG" vars) charset config cell child)
+                            |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) charset config cell child)
             )
 
 
-{-| `imeLog`: with `VISITERM_IME_LOG` set, each commit and each change to
+{-| `imeLog`: with `PURITTY_IME_LOG` set, each commit and each change to
 the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). -}
 run : Bool -> Charset -> Config -> X11.Cell -> Process.Child -> Task String {}
@@ -745,7 +745,7 @@ handleOne terminal fd ms rest ev m =
                             else if isCopyKey k then
                                 -- Ctrl+Shift+C: the selection to CLIPBOARD
                                 -- (docs/user/copy-and-paste.md), the key
-                                -- visiterm's with or without one
+                                -- puritty's with or without one
                                 owned terminal fd ms rest
                                     (when m.selection is
                                         Just s ->
@@ -819,7 +819,7 @@ handleOne terminal fd ms rest ev m =
 
                 X11.Pointer p ->
                     if isZoomStep p then
-                        -- Ctrl and the wheel: visiterm's always, a point a
+                        -- Ctrl and the wheel: puritty's always, a point a
                         -- step, the steps that came together one zoom
                         -- (docs/phase3-select.md §11, §17)
                         let
@@ -1020,7 +1020,7 @@ pasteIn more text m =
 reported to a program that asked for mouse reports, in its format, by
 Ghostty's encoder (`Vt.Mouse`). Shift takes the mouse back from it, as in
 Ghostty, xterm and kitty: a press or release of a button with Shift, or a
-motion with Shift while a button is held, is visiterm's own. The wheel is
+motion with Shift while a button is held, is puritty's own. The wheel is
 not: Ghostty reports it with Shift too, and nvim pages with Shift and the
 wheel. A motion is reported with the lowest-numbered button held, as
 Ghostty reports it. -}

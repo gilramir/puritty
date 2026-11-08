@@ -2,7 +2,7 @@
 # What only a real RHEL8 host shows (docs/geng-plan.md §1.1, §9 Q9).
 # Read-only: it installs nothing, writes nothing, and needs no compiler.
 # Run it as an ordinary user, ideally in a session with DISPLAY set the way
-# visiterm would be used (for example inside `ssh -X`), and send the output.
+# puritty would be used (for example inside `ssh -X`), and send the output.
 
 section() { printf '\n== %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }

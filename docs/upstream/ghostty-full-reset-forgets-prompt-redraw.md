@@ -2,7 +2,7 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** v1.4.0 (`83fb95624`). Found by visiterm's differential
+**Found against:** v1.4.0 (`83fb95624`). Found by puritty's differential
 fuzzer (`vt-core.md` §VC22). Not to be filed (`README.md`). The oracle
 carries the fix as `harness/oracle/patches/0011-a-full-reset-keeps-the-embedders-prompt-redraw.patch`.
 
@@ -21,7 +21,7 @@ other flag the embedder chooses, the checksum's, is kept apart as
 
 ## Reproduction
 
-With libghostty-vt, 8 columns by 4 rows (visiterm `corpus/replay/prompt-redraw-off`):
+With libghostty-vt, 8 columns by 4 rows (puritty `corpus/replay/prompt-redraw-off`):
 
 ```
 out CR LF ESC ]133;A ST $ SP ab   a prompt being written

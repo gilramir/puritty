@@ -2,7 +2,7 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** v1.4.0 (`83fb95624`). Found by visiterm's differential
+**Found against:** v1.4.0 (`83fb95624`). Found by puritty's differential
 fuzzer (`vt-core.md` §VC17). Not to be filed (`README.md`). The oracle
 carries the fix as `harness/oracle/patches/0002-widening-without-reflow-unwraps-every-row.patch`.
 
@@ -18,7 +18,7 @@ flag either way.
 
 ## Reproduction
 
-With libghostty-vt, 8 columns by 3 rows (visiterm `corpus/replay/resize-alt-widen-in-capacity`):
+With libghostty-vt, 8 columns by 3 rows (puritty `corpus/replay/resize-alt-widen-in-capacity`):
 
 ```
 ESC [?47h       the alternate screen, its page made at 8 columns

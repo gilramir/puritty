@@ -1,4 +1,4 @@
-/* visiterm's window on X11 (docs/renderer.md, V34–V37): the C that only C
+/* puritty's window on X11 (docs/renderer.md, V34–V37): the C that only C
  * can do. Geng decides what is drawn and sends it as a display list
  * (`Vt.View`'s comment is its definition); this executes it, and turns the
  * X server's events into records Geng decodes.
@@ -29,7 +29,7 @@
  *
  * One window a process (geng-plan.md Q6), so the state is this file's.
  *
- * Events (V36), the records `visiterm_x11_take` answers, each a kind byte:
+ * Events (V36), the records `puritty_x11_take` answers, each a kind byte:
  *   1 a key (V47, docs/phase3-input.md §4): its action in 1 byte (release
  *     0, press 1, repeat 2), its X keycode in 1, its modifiers in 2 as
  *     Ghostty's bits (shift 1, ctrl 2, alt 4, super 8, caps lock 16, num
@@ -58,11 +58,11 @@
  *  10 a selection this window owned is another's now (docs/phase3-select.md
  *     §14): 0 PRIMARY, 1 CLIPBOARD;
  *  11 a paste's text has come (docs/phase3-select.md §15): 1 when more is
- *     to come, 0 when it is the last; `visiterm_x11_pasted` takes it.
+ *     to come, 0 when it is the last; `puritty_x11_pasted` takes it.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
- * context whose preedit visiterm draws (on-the-spot). Every press and
+ * context whose preedit puritty draws (on-the-spot). Every press and
  * release is sent to the IME, and a key it gives back is recorded then,
  * read with its own event's modifiers; its commits and preedits are
  * recorded as they come, in their order. The context is never destroyed
@@ -71,7 +71,7 @@
  * An expose is answered here, from the pixmap.
  *
  * X11_STATS=1 prints counts when the program ends; X11_SHOT=FILE writes
- * the window then, as `visiterm_x11_shot` does. */
+ * the window then, as `puritty_x11_shot` does. */
 #define _GNU_SOURCE
 #include <fontconfig/fontconfig.h>
 #include <poll.h>
@@ -1168,7 +1168,7 @@ static void at_exit(void) {
 /* EVENTS */
 
 /* What the window always asks of X: motion only while a button is held,
- * unless visiterm_x11_motion asks for all of it. */
+ * unless puritty_x11_motion asks for all of it. */
 #define BASE_EVENTS                                                                                                  \
     (XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_FOCUS_CHANGE | \
      XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |                \
@@ -1461,7 +1461,7 @@ static void xim_opened(xcb_xim_t *m, void *u) {
 static void xim_quiet(const char *fmt, ...) { (void) fmt; }
 
 static void xim_setup(int screen_number) {
-    if (getenv("VISITERM_NO_XIM")) return;
+    if (getenv("PURITTY_NO_XIM")) return;
     xcb_compound_text_init();
     xim = xcb_xim_create(conn, screen_number, NULL);
     if (!xim) return;
@@ -1583,7 +1583,7 @@ static void primary_metrics(void) {
  * monitor's size from RandR; else 96. The X screen's own size in
  * millimetres is the server's arithmetic for 96, and says nothing. */
 static int screen_dpi(void) {
-    const char *forced = getenv("VISITERM_DPI");
+    const char *forced = getenv("PURITTY_DPI");
     if (forced && atoi(forced) > 0) return atoi(forced);
     xcb_get_property_reply_t *rm = xcb_get_property_reply(
         conn, xcb_get_property(conn, 0, screen->root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING, 0, 1 << 20), NULL);
@@ -1663,7 +1663,7 @@ static void pointers_setup(void) {
     xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &pointer_text);
 }
 
-geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
+geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
                               void *title_bytes, geng_wait *wait) {
     /* the display first: the font's size in pixels is its dpi's (V50) */
     int screen_number = 0;
@@ -1742,7 +1742,7 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
     utf8_string = atom("UTF8_STRING");
     selection_atoms();
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, wm_protocols, XCB_ATOM_ATOM, 32, 1, &wm_delete);
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "visiterm\0Visiterm\0");
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "puritty\0Puritty\0");
     /* WM_NORMAL_HINTS (ICCCM 4.1.2.3): a minimum of one cell, the base 0,
      * and a step of a cell. Flags: PMinSize 16, PResizeInc 64, PBaseSize 256. */
     uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) cw, (uint32_t) ch, 0, 0, (uint32_t) cw, (uint32_t) ch, 0, 0, 0, 0, 0, 0, 0};
@@ -1766,7 +1766,7 @@ geng_cancel visiterm_x11_open(int32_t c, int32_t r, int32_t points, void *font_b
 
 /* Executes one frame's display list. Answers 0, or -1 once the connection
  * has failed. */
-geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
+geng_cancel puritty_x11_draw(void *list, geng_wait *wait) {
     double t0 = ns();
     if (glyph_bytes > glyph_cap) reset_glyphs();
     geng_bytes *b = list;
@@ -1846,10 +1846,10 @@ geng_cancel visiterm_x11_draw(void *list, geng_wait *wait) {
  * the socket in its own calls (a flush, a reply) and queues what events it
  * finds, so the descriptor can be quiet while events wait: `drain` reads
  * what is queued and what the socket has, and only when it has made no
- * record does the loop wait on the descriptor. `visiterm_x11_events`
+ * record does the loop wait on the descriptor. `puritty_x11_events`
  * answers that records are there and takes none, since `Task.race` drops a
  * losing branch's answer when two answer in one round (§12);
- * `visiterm_x11_take`, after the race, takes them. */
+ * `puritty_x11_take`, after the race, takes them. */
 typedef struct xwait {
     geng_wait *wait;
     geng_io *io;
@@ -1886,7 +1886,7 @@ static geng_task *x_stop(void *env) {
     return NULL;
 }
 
-geng_cancel visiterm_x11_events(geng_wait *wait) {
+geng_cancel puritty_x11_events(geng_wait *wait) {
     if (answer(wait)) return (geng_cancel) {0};
     xwait *w = geng_alloc(sizeof *w, XWAIT_HEADER);
     *w = (xwait) {.wait = wait, .io = NULL};
@@ -1896,7 +1896,7 @@ geng_cancel visiterm_x11_events(geng_wait *wait) {
 }
 
 /* The records since the last take. */
-geng_cancel visiterm_x11_take(geng_wait *wait) {
+geng_cancel puritty_x11_take(geng_wait *wait) {
     drain();
     geng_bytes *b = geng_alloc_atomic(sizeof *b + (size_t) evlen, GENG_HEADER_BYTES(sizeof *b + (size_t) evlen));
     b->length = evlen;
@@ -1913,7 +1913,7 @@ geng_cancel visiterm_x11_take(geng_wait *wait) {
 /* The font at `points` (V50's zoom): every face sized again, the glyph
  * set begun again, the window kept at its size in pixels and so the cells
  * that fit it reported as a new size. Answers the new cell as `open` does. */
-geng_cancel visiterm_x11_zoom(int32_t points, geng_wait *wait) {
+geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
     if (points >= 4 && points <= 200 && points != points0) {
         points0 = points;
         for (int f = 0; f < nfaces; f++)
@@ -1968,7 +1968,7 @@ static struct {
 } xfer[8];
 
 static void selection_atoms(void) {
-    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "VISITERM_PASTE"};
+    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE"};
     xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste};
     xcb_intern_atom_cookie_t ck[7];
     for (int i = 0; i < 7; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
@@ -2120,7 +2120,7 @@ static void selection_clear(xcb_selection_clear_event_t *c) {
  * comes (paste_poll, at the end of each drain), never waited for, so a
  * paste of megabytes over ssh -X does not stop the window. INCR pieces
  * are read as the owner puts them. What comes is kept here, UTF-8, and
- * a record says so; Geng takes it with visiterm_x11_pasted. One paste at
+ * a record says so; Geng takes it with puritty_x11_pasted. One paste at
  * a time: another asked for while one is under way is not made, unless
  * the first has waited 10 s for an owner that never answered. */
 
@@ -2200,7 +2200,7 @@ static void paste_poll(void) {
 
 /* A paste of PRIMARY (0) or CLIPBOARD (1). Answers 1 when it is asked
  * for, 0 when another is under way. */
-geng_cancel visiterm_x11_paste(int32_t which, geng_wait *wait) {
+geng_cancel puritty_x11_paste(int32_t which, geng_wait *wait) {
     int asked = 0;
     if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
     if (!pst.active && (which == 0 || which == 1)) {
@@ -2219,7 +2219,7 @@ geng_cancel visiterm_x11_paste(int32_t which, geng_wait *wait) {
 }
 
 /* What a paste has brought since it was last taken, UTF-8. */
-geng_cancel visiterm_x11_pasted(geng_wait *wait) {
+geng_cancel puritty_x11_pasted(geng_wait *wait) {
     geng_bytes *b = geng_alloc_atomic(sizeof *b + plen, GENG_HEADER_BYTES(sizeof *b + plen));
     b->length = (int64_t) plen;
     b->pad = 0;
@@ -2234,7 +2234,7 @@ geng_cancel visiterm_x11_pasted(geng_wait *wait) {
 
 /* The window owns PRIMARY (0) or CLIPBOARD (1) with this text, from the
  * time of the last event the window had (ICCCM 2.1). */
-geng_cancel visiterm_x11_select(int32_t which, void *text, geng_wait *wait) {
+geng_cancel puritty_x11_select(int32_t which, void *text, geng_wait *wait) {
     geng_bytes *t = text;
     if (which == 0 || which == 1) {
         free(sel[which].data);
@@ -2253,7 +2253,7 @@ geng_cancel visiterm_x11_select(int32_t which, void *text, geng_wait *wait) {
 /* Every motion of the pointer over the window, or only those while a
  * button is held (docs/phase3-select.md §4): all while a program asks for
  * any motion (mode 1003), since over ssh -X each is 32 bytes on the wire. */
-geng_cancel visiterm_x11_motion(int32_t all, geng_wait *wait) {
+geng_cancel puritty_x11_motion(int32_t all, geng_wait *wait) {
     if ((all != 0) != all_motion) {
         all_motion = all != 0;
         uint32_t mask = BASE_EVENTS | (all_motion ? XCB_EVENT_MASK_POINTER_MOTION : 0);
@@ -2266,7 +2266,7 @@ geng_cancel visiterm_x11_motion(int32_t all, geng_wait *wait) {
 
 /* Where the IME's candidate window belongs (V46): the cell's baseline, as
  * XIM's spot location is. Sent only when it moves. */
-geng_cancel visiterm_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
+geng_cancel puritty_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
     if (have_xic && (x != spot_x || y != spot_y)) {
         spot_x = x;
         spot_y = y;
@@ -2281,7 +2281,7 @@ geng_cancel visiterm_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
 }
 
 /* The pointer over the window: 0 the I-beam, 1 the arrow. */
-geng_cancel visiterm_x11_pointer(int32_t arrow, geng_wait *wait) {
+geng_cancel puritty_x11_pointer(int32_t arrow, geng_wait *wait) {
     xcb_cursor_t c = arrow ? pointer_arrow : pointer_text;
     xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &c);
     xcb_flush(conn);
@@ -2289,7 +2289,7 @@ geng_cancel visiterm_x11_pointer(int32_t arrow, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-geng_cancel visiterm_x11_title(void *text, geng_wait *wait) {
+geng_cancel puritty_x11_title(void *text, geng_wait *wait) {
     geng_bytes *t = text;
     set_title(t->data, (int) t->length);
     xcb_flush(conn);
@@ -2297,7 +2297,7 @@ geng_cancel visiterm_x11_title(void *text, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-geng_cancel visiterm_x11_shot(void *path_bytes, geng_wait *wait) {
+geng_cancel puritty_x11_shot(void *path_bytes, geng_wait *wait) {
     char *path = string_of(path_bytes);
     int r = write_shot(path);
     free(path);

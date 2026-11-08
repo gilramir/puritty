@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """What tmux sends its terminal for a copy (docs/phase3-select.md): tmux
-on a pty, as visiterm runs it, with set-clipboard on; `load-buffer -w` of
+on a pty, as puritty runs it, with set-clipboard on; `load-buffer -w` of
 SIZE bytes; the OSC 52 sequences read from the master counted and sized.
 
   osc52.py SIZE...

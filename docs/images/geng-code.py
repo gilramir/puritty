@@ -1,8 +1,8 @@
 import re, sys
-src = open('/home/gram/prj/visiterm/vt/src/Vt/Charset.geng').read().split('\n')
+src = open('/home/gram/prj/puritty/vt/src/Vt/Charset.geng').read().split('\n')
 first, last = 81, 126
 lines = src[first-1:last]
-assert not any('visiterm' in l for l in lines)
+assert not any('puritty' in l for l in lines)
 E='\\e'
 def fg(h): return f'{E}[38;2;{int(h[0:2],16)};{int(h[2:4],16)};{int(h[4:6],16)}m'
 def bg(h): return f'{E}[48;2;{int(h[0:2],16)};{int(h[2:4],16)};{int(h[4:6],16)}m'

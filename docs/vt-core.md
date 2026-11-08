@@ -7,7 +7,7 @@ package with a whole parser, modes and replies around it, and the gate it is
 held to from its first day. This document says what the code does; its
 decisions are numbered V1, V2, … and referenced by number afterwards, as
 geng-lang's are. Geng-side work it finds is geng-lang's, under
-`m4-visiterm.md` (§VA49 is the first).
+`m4-puritty.md` (§VA49 is the first).
 
 Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 21.1.8. geng-lang `15637bf7`, the fork `ba3b9a30` (D1019, §VC8), `core` `0f90c92`.
@@ -18,7 +18,7 @@ Machine as `phase1-core.md` §10: Ryzen 9 9950X, Linux, devbox's clang
 
 | piece | where | what it is |
 |---|---|---|
-| the core | `vt/` (`github.com/gilramir/visiterm-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; under it, not exposed, `Vt.Cell`, `Vt.Style`, `Vt.Term`, `Vt.Screen`, `Vt.Pages`, `Vt.Recut` (§VC31), `Vt.Resize`, `Vt.Dump` (§VC23) and `Vt.Width`, generated |
+| the core | `vt/` (`github.com/gilramir/puritty-vt`, `runtime = "any"`) | `Vt`: `new`, `feed`, `takeReplies`, `resize`, `dump`; under it, not exposed, `Vt.Cell`, `Vt.Style`, `Vt.Term`, `Vt.Screen`, `Vt.Pages`, `Vt.Recut` (§VC31), `Vt.Resize`, `Vt.Dump` (§VC23) and `Vt.Width`, generated |
 | the core's dump | `harness/dump/` (`core-dump COLS ROWS FILE [CHUNK [RESIZES]]`) | feeds a file to a `Vt.Term`, a read of `CHUNK` bytes at a time, resized where `RESIZES` says (§VC14), and prints §VC3 |
 | the oracle | `harness/oracle/` (`ghostty-dump COLS ROWS FILE [RESIZES]`) | the same for libghostty-vt at the vendored v1.4.0 (`83fb95624`; `d8619f1bc` before §VC15) with `patches/` applied (V12, §VC17), through its C API; `widths`, its width table (V13) |
 | the gate | `harness/replay.py`, `corpus/replay/` | §VC4 |
@@ -130,7 +130,7 @@ slot, past its `cols` cells, is its extent (bits 0–15) and its wrapped flag
 
 The probe's own build had been missing a pass. `build-hot.sh` set
 `GENG_CORE_PASSES` without `inplace`, which geng-lang's measurements of the
-probe have had since D984 (`bench/compare/visiterm.toml`); without it
+probe have had since D984 (`bench/compare/puritty.toml`); without it
 `vte-scrolling` is 710 instructions a line instead of 499 and twice the time.
 Both build scripts now name it, and the table above is with it.
 
@@ -250,7 +250,7 @@ character and 64 marks, as Ghostty keeps them).
 
 **V4 · The replies are Ghostty's for now**: DA1 `?62;22c`, DA2 `>1;0;0c`,
 DA3 `!|00000000`, DECRQM's answers, DECRQSS's forms; XTVERSION answers
-`visiterm`. What visiterm says it is is a product question for phase 3,
+`puritty`. What puritty says it is is a product question for phase 3,
 when programs start asking it; until then matching the oracle keeps the
 gate whole.
 
@@ -410,7 +410,7 @@ This is the throughput item of phase 1's exit (`geng-plan.md` §6).
 ## VC8. What it found in Geng
 
 **`Core.Pass.InPlace` lifted a read out of a closure past the `let` that
-bound what it read** (geng-lang D1019, `m4-visiterm.md` §VA49). `dump`'s
+bound what it read** (geng-lang D1019, `m4-puritty.md` §VA49). `dump`'s
 `historyRows` maps a closure over the scrollback's rows that calls `phys
 t.screen y`; inlined, that is one `let` whose first binding is `t.screen`
 and whose second reads `turn` from the first. The pass's hoist (D986), which
@@ -420,7 +420,7 @@ program: "the local `$n54` is not in scope". Fixed in the fork, with
 `corpus/accept/inplace-hoist-let`.
 
 **The parser's speed turned on clang inlining `dispatch`** into its only
-caller (geng-lang `m4-visiterm.md` §VA50, registered there): §VC10's
+caller (geng-lang `m4-puritty.md` §VA50, registered there): §VC10's
 additions took it past LLVM's bonus for a function called once, and every
 CSI became an out-of-line call. Nothing in Geng was changed; §VC10 says
 what the core does about it.
@@ -615,7 +615,7 @@ input, and the times are §VC7's (five runs each, least and most, ms):
 
 and the other nine level with §VC7's. This is geng-lang's to know: a Geng
 program's speed on its hottest path turned on a clang heuristic that the
-program cannot see and Geng has no word for (`m4-visiterm.md` §VA50).
+program cannot see and Geng has no word for (`m4-puritty.md` §VA50).
 
 ---
 
@@ -633,7 +633,7 @@ step of its build (geng-lang `m3-embed.md` D629) is repeated with them.
 
 A host could not hand the library `Bytes`: the embed ABI's `bytes_from` was
 specified and never built. geng-lang built it for this (D1020, `m3-embed.md`
-§EM22, `m4-visiterm.md` §VA51).
+§EM22, `m4-puritty.md` §VA51).
 
 **V7 · The fuzzer's findings are what the core itself can tell.** An
 input's first three bytes choose the columns (1 to 132), the rows (1 to 50)
@@ -712,7 +712,7 @@ reading of the cell before the run was meant to keep: geng-lang's `floatin`
 pass moved the read into the branch that used it, past the run, which writes
 the row in place, and the read saw `é`. A local the inliner made of the
 builder, `$n0 = s.cells`, hid that the read and the write named the same
-buffer. geng-lang fixed the pass (D1021, `m4-visiterm.md` §VA52); nothing
+buffer. geng-lang fixed the pass (D1021, `m4-puritty.md` §VA52); nothing
 the core had before read a builder through such a local in a way the pass
 could move.
 
@@ -1038,7 +1038,7 @@ answer XTWINOPS 8 or DECCOLM with one.
 
 The oracle was libghostty-vt at `d8619f1bc`, a `tip` build of 2026-10-18,
 191 commits before v1.4.0 (2026-10-27). It is now v1.4.0 (`83fb95624`).
-v1.4.0 needs Zig 0.17, and visiterm's devbox had 0.16 from the nixpkgs
+v1.4.0 needs Zig 0.17, and puritty's devbox had 0.16 from the nixpkgs
 commit geng-lang's clang comes from; Zig alone is pinned to a later one,
 `31ecbaca` (nixos-unstable as fetched on 2026-10-30), which has `zig_0_17` 0.17.0.
 `ghostty-dump.c` and `ghostty-pty.c` built against the new library
@@ -1437,7 +1437,7 @@ none divergent. One more Ghostty bug is patched in the oracle (0006).
   `CSI 19 t` answers the text area's size as `CSI 9 ; rows ; cols t`, as
   `CSI 18 t` does with 8 (`size-report-19`). DA2, DA3 and XTVERSION take no
   second intermediate, since Ghostty counts the marker as one
-  (`da-two-intermediates`). XTVERSION's name, `visiterm` against
+  (`da-two-intermediates`). XTVERSION's name, `puritty` against
   `libghostty`, is an identity, not a difference: `diff.h` writes the core's
   name into Ghostty's reply before it compares.
 - **OSC.** A colour's index is decimal digits only, as Ghostty's
@@ -1625,7 +1625,7 @@ that pages: `gitlog` 8.6%, `ls` 10.4%, `vte-scrolling_fullscreen` 11.9%.
 The mask has to be written as a literal, `0x3E00000`: written as
 `Bitwise.or 0xE00000 (Bitwise.or bgBit protectBit)` it is a top-level value
 the program computes on first use, and each read of it in the loop cost
-about 17 instructions, 331 M on `gitlog` (geng-lang `m4-visiterm.md`
+about 17 instructions, 331 M on `gitlog` (geng-lang `m4-puritty.md`
 §VA54). geng-lang D1023 (§VA55) has the inliner fold it into the literal,
 and the core writes the `Bitwise.or` again, at the literal's instructions.
 
@@ -3057,7 +3057,7 @@ instructions a resize to 0.95 M, 500 short lines from 13.2 M to 3.3 M.
 **The ring made with `Builder.repeat`.** `newScreen` made the ring, `rows
 + 513` rows of `cols + 1` cells, as `Builder.fromArray (Array.repeat n
 0)`: the array, then the builder's copy of it at its first write. geng-lang
-added `Builder.repeat` to `core` for it (its D1025, `m4-visiterm.md`
+added `Builder.repeat` to `core` for it (its D1025, `m4-puritty.md`
 §VA58), which makes the builder alone. In instructions it looks worse on
 the larger inputs (4.2 M a resize on 1,000 short lines against 3.7 M),
 because the copies it saves are `memcpy` and `memset`, which count as one
@@ -3143,7 +3143,7 @@ start-up and the resize's own cost are not one figure.
 geng-lang decided (`m4-free.md` §FR9) that a builder's buffer is freed
 where the ownership checker sees the builder dropped (D1026), and that the
 core's pages hold their bytes affinely after it (D1027), which is the
-change on visiterm's side: a survey first of what reads a page and whether
+change on puritty's side: a survey first of what reads a page and whether
 each read can borrow. Two costs it found are registered here (D1030), for
 after those, since what a resize allocates changes once the pages are
 owned:
@@ -3345,7 +3345,7 @@ taking it out with `Builder.swap` costs the in-place marks 312 → 29.
 
 geng-lang's D1030 registered two costs of a resize here (§VC36), for after
 the pages were owned (§VC39): `gitlog`'s cut of coloured lines, and the
-rows between the old ring and the new. This measures both on visiterm
+rows between the old ring and the new. This measures both on puritty
 9496e75's core, against Ghostty, and says what each would buy.
 
 **Where a resize goes.** A scratch build adds `Vt.probe`, which runs one
@@ -3552,7 +3552,7 @@ They add to 54 of the 58. Most are larger than their work: one field test,
 10. What they cost is what they do to clang's code for `ground`'s loop, into
 which `printAscii` and `asciiRow` are inlined, not the tests themselves.
 The probe paid the same kind of cost for each layer it grew (geng-lang
-`m4-visiterm.md` §VA15).
+`m4-puritty.md` §VA15).
 
 **Two edits that keep every rule.**
 
@@ -3568,7 +3568,7 @@ The probe paid the same kind of cost for each layer it grew (geng-lang
 D1002), 31 runs each: as built 40–42 ms (median 41); `-falign-loops=64`
 39–42 (40); `-falign-loops=32` 40–43 (41); `-O3` 1,467 M instructions,
 44–45. A millisecond at most, and not one to rely on (geng-lang
-`m4-visiterm.md` §VA50).
+`m4-puritty.md` §VA50).
 
 **Where the rest of a line goes.** Of the 540: the scroll and its page,
 about 256 (`lf` less the empty input, a line), of which writing the row into

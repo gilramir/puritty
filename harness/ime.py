@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""The IME gate (docs/phase3-input.md V45): visiterm with real IMEs.
+"""The IME gate (docs/phase3-input.md V45): puritty with real IMEs.
 
 For each IME and engine of the matrix (fcitx5 and ibus, each with Korean,
-Japanese and pinyin), from the nixpkgs commit visiterm's devbox pins
+Japanese and pinyin), from the nixpkgs commit puritty's devbox pins
 (harness/ime/imes.nix), on an Xvfb of its own with a session bus and a
-fresh home: each case starts visiterm on a program that records every byte
+fresh home: each case starts puritty on a program that records every byte
 it receives on a raw terminal, types the case's keys with xdotool, and
 pins two things to corpus/ime/CASE/IME-ENGINE.txt:
 
   - the bytes the program received, escaped;
-  - visiterm's IME log (VISITERM_IME_LOG): each commit and each preedit as
-    visiterm holds it after an IME event, in order.
+  - puritty's IME log (PURITTY_IME_LOG): each commit and each preedit as
+    puritty holds it after an IME event, in order.
 
 How the preedit is drawn is the view gate's (corpus/view/cases/view-preedit-*).
 
@@ -20,7 +20,7 @@ usage:
     harness/ime.py --pair fcitx5-mozc
     harness/ime.py --update      write the pins; read the diff first
 
-Build visiterm first (app/build.sh). Run from visiterm's devbox (Xvfb).
+Build puritty first (app/build.sh). Run from puritty's devbox (Xvfb).
 """
 import argparse, os, shutil, signal, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PINS = ROOT / "corpus" / "ime"
 WORK = ROOT / ".harness-work" / "ime-gate"
-VISITERM = ROOT / "app" / "visiterm"
+PURITTY = ROOT / "app" / "puritty"
 DISPLAY = ":81"
 
 # IME, engine, the keys that switch the engine on for a new input context
@@ -101,7 +101,7 @@ class Session:
                 f"[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM={engine}\n\n[Groups/0/Items/0]\n"
                 f"Name=keyboard-us\nLayout=\n\n[Groups/0/Items/1]\nName={engine}\nLayout=\n\n[GroupOrder]\n0=Default\n")
             (c / "config").write_text("[Behavior]\nActiveByDefault=True\nShareInputState=No\n")
-            # visiterm draws the preedit (on-the-spot, §3.1)
+            # puritty draws the preedit (on-the-spot, §3.1)
             (c / "conf" / "xim.conf").write_text("UseOnTheSpot=True\n")
             self.env["XMODIFIERS"] = "@im=fcitx"
             self.procs.append(subprocess.Popen(
@@ -135,10 +135,10 @@ class Session:
         self.reset()
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "received"
-            v = subprocess.Popen([str(VISITERM), "--", "sh", "-c", f"stty raw -echo; exec cat > {out}"],
-                                 env=dict(self.env, VISITERM_IME_LOG="1"), stdout=subprocess.PIPE,
+            v = subprocess.Popen([str(PURITTY), "--", "sh", "-c", f"stty raw -echo; exec cat > {out}"],
+                                 env=dict(self.env, PURITTY_IME_LOG="1"), stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
-            # keys go through the IME once visiterm says its input context is
+            # keys go through the IME once puritty says its input context is
             # made; a key before that reaches the program as itself
             ready = False
             deadline = time.time() + 15
@@ -149,7 +149,7 @@ class Session:
                 if line.strip() == b"ime ready":
                     ready = True
                     break
-            win = subprocess.run([self.tools["xdotool"] + "/bin/xdotool", "search", "--sync", "--name", "visiterm"],
+            win = subprocess.run([self.tools["xdotool"] + "/bin/xdotool", "search", "--sync", "--name", "puritty"],
                                  env=self.env, capture_output=True, text=True).stdout.split()
             if win:
                 self.xdo("windowfocus", "--sync", win[0])

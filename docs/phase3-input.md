@@ -25,7 +25,7 @@ in C, the encoding in Geng (V30), a frame at once after a key (V31).
 | Do the IMEs order a commit and the key that ended it as S§9 needs? | **Yes, every IME, in every case tried**: Return, Left and Ctrl+C after a syllable, a syllable split by its next vowel. The commit comes before the key given back. The two frameworks disagree on whether the preedit ends before or after the commit | 3.2 |
 | What does XIM cost a key? | **Locally 0.15–1.6 ms. Over `ssh -X` from gmktec7, 16–24 ms a key event**, against a 5 ms ping: xcb-imdkit's client makes five or six blocking round trips for each, four of them avoidable. A key without the IME was one round trip (phase 2 §14.3) | 3.3 |
 | What does the kitty encoder need from the C? | Ghostty's encoder takes **a physical key, press, repeat or release, sided modifiers with the locks, the modifiers the layout consumed, the text, and the unshifted code point**. The C sends a keysym, four modifiers and text. libghostty-vt's key, mouse and paste encoders are an oracle for a gate | 4 |
-| Does a paste fit the loop? | **No, as the loop is written.** A pty takes 15–37 KB and then stops until the program reads; a program that echoes stops reading until visiterm reads. Main waits for each write, so a paste of more than that into `cat` hangs the window. A write raced and cancelled cannot say how much it wrote: a gap in `os` | 5 |
+| Does a paste fit the loop? | **No, as the loop is written.** A pty takes 15–37 KB and then stops until the program reads; a program that echoes stops reading until puritty reads. Main waits for each write, so a paste of more than that into `cat` hangs the window. A write raced and cancelled cannot say how much it wrote: a gap in `os` | 5 |
 | What does an EUC-KR decoder in Geng cost? | **+12–15% on `gitlog`, +72% on Korean text**, beside the core. Geng is near C's floor on ASCII and 4× it on Korean, because user code has no byte writer | 6 |
 | Where should the font's size come from? | **`Xft.dpi`, then the monitor's size from RandR, then 96.** Gilbert's desktop says 192, its monitors are 163 dpi, and the X screen says 96 | 7 |
 
@@ -34,13 +34,13 @@ in C, the encoding in Geng (V30), a frame at once after a key (V31).
 ## 2. How it was measured
 
 Machine as `geng-plan.md` §1.2: this machine (`nene`), AMD Ryzen 7 8845HS,
-Linux 6.8. visiterm `2e3d994`, geng-lang `e13c28c3`, devbox's clang at
+Linux 6.8. puritty `2e3d994`, geng-lang `e13c28c3`, devbox's clang at
 `-O2`. gmktec7 for `ssh -X`, as in phase 2. No other load.
 
 The probes:
 
 - [`../probes/ime/`](../probes/ime/): `xim`, an XIM client through
-  xcb-imdkit 1.0.9 in C, as visiterm's would be: one window, an input
+  xcb-imdkit 1.0.9 in C, as puritty's would be: one window, an input
   context whose preedit the client draws (on-the-spot,
   `XIMPreeditCallbacks`), every key press and release sent to the IME, and
   each callback logged with its time from the key the server sent.
@@ -96,7 +96,7 @@ converter, and came out right for Hangul, kana, kanji and hanzi.
 - **The commit always comes before the key that ended it.** Neither IME
   forwards a key during composition. Neither drops one.
 - **The two orders differ inside one key**: fcitx5 commits and then clears
-  the preedit; ibus clears and ends the preedit and then commits. visiterm
+  the preedit; ibus clears and ends the preedit and then commits. puritty
   takes both: it holds the preedit as its own string, a commit never
   touches it, and each draw replaces `[first, first + length)`. A preedit
   done with a commit still to come draws nothing in between, since nothing
@@ -148,11 +148,11 @@ protocol's for a reply that does not fit a ClientMessage.
 Two more things follow from the same code:
 
 - **The waits are inside the calls.** `xcb_xim_forward_event` and
-  `xcb_xim_filter_event` block until their replies come. On visiterm's one
+  `xcb_xim_filter_event` block until their replies come. On puritty's one
   loop, 20 ms a key over `ssh -X` is 20 ms in which no output is read and
   no frame drawn.
 - **ETX is not `ssh -X`.** There the IME runs in the desktop session on the
-  same host as visiterm and the X server, so each round trip is local. It
+  same host as puritty and the X server, so each round trip is local. It
   is measured in phase 6.
 
 xcb-imdkit's tracker has no report of this. A patched client keeps one
@@ -167,7 +167,7 @@ xcb-imdkit's server side, which fcitx5 links, has a bug closed on
 client destroys an input context while a key is in flight in sync mode,
 the server never leaves sync mode for that client, and every later key is
 swallowed until the client restarts. The pinned 1.0.9 has it, as will the
-fcitx5 on any desktop for some time. visiterm cannot fix the server, but it
+fcitx5 on any desktop for some time. puritty cannot fix the server, but it
 can avoid the trigger: an input context is never destroyed while a key
 sent to it has no answer, and focus changes unset the context's focus and
 keep it.
@@ -179,7 +179,7 @@ keep it.
 libghostty-vt v1.4.0, the core's oracle, has encoders in its C API:
 `ghostty_key_encoder_encode`, `ghostty_mouse_encoder_encode`,
 `ghostty_paste_encode` and `ghostty_focus_encode`. Their options are the
-modes visiterm's core already keeps: DECCKM (1), the keypad (66), 1035,
+modes puritty's core already keeps: DECCKM (1), the keypad (66), 1035,
 1036, `modifyOtherKeys` 2, the kitty flags of the stack top
 (`Vt.Term.Keys`), and DECBKM. A gate like the replay gate's, the Geng
 encoder against Ghostty's for every key and mode, needs no new oracle.
@@ -220,7 +220,7 @@ finish before it reads again. `os` makes the master non-blocking, and a
 write that would block waits in the scheduler's `poll`, so the loop is not
 stuck in a syscall. But it is stuck in the task: a paste larger than the
 table's first column into `cat` fills the pty; `cat` then blocks writing
-its echo, which visiterm is not reading; and visiterm waits for a write
+its echo, which puritty is not reading; and puritty waits for a write
 `cat` will never make room for.
 
 The way out is a write the loop can race with its read, as the read is
@@ -299,7 +299,7 @@ Gilbert found 11 points very small on gmktec7's desktop (`renderer.md`
 
 The screen's size is the X server's arithmetic for 96 dpi, and says
 nothing. `Xft.dpi` is what the desktop's scale setting writes, and what
-GTK, Qt and Xft programs size their fonts by, so visiterm at 11 points
+GTK, Qt and Xft programs size their fonts by, so puritty at 11 points
 would match them. The order: `Xft.dpi` if set, else the RandR size of the
 monitor that holds the window, else 96. Over `ssh -X` both are read from
 the display's server, so they are the desktop's, as they should be.
@@ -336,10 +336,10 @@ the display's server, so they are the desktop's, as they should be.
    for xcb-imdkit's maintainers, kept for you to decide on. Writing our own
    XIM client instead is a larger piece of C for the same result.
 2. **An IME gate.** `harness/ime.py` runs the six pairs of §3.1 on Xvfb
-   with scripts of §3.2's cases, against visiterm itself, and pins what the
+   with scripts of §3.2's cases, against puritty itself, and pins what the
    program on the pty receives and what the preedit overlay shows. Leaning:
    yes, with the probe's settings made the gate's (§3.1).
-3. **Ordering as §3.2 found it.** visiterm holds the preedit as its own
+3. **Ordering as §3.2 found it.** puritty holds the preedit as its own
    string, changed only by draws; a commit goes out through the key path
    whenever it comes; a key given back is encoded from its own event's
    modifiers (§4); the candidate window goes to the reverse run, else the
@@ -381,9 +381,9 @@ no `GetProperty` before an append, requests sent unchecked. A report for its
 maintainers is kept in `docs/upstream/`, not filed.
 
 **V45 · An IME gate.** `harness/ime.py` runs §3.1's six pairs against
-visiterm and pins what the program on the pty receives and the preedit shown.
+puritty and pins what the program on the pty receives and the preedit shown.
 
-**V46 · §3.2's ordering.** The preedit is visiterm's string, changed only by
+**V46 · §3.2's ordering.** The preedit is puritty's string, changed only by
 draws; a commit goes out by the key path when it comes; a key given back is
 read with its own event's modifiers; the candidate window goes to the reverse
 run, else the caret; an input context is never destroyed with a key in flight.
@@ -408,7 +408,7 @@ run time**: Ctrl+= and Ctrl+− by a point, Ctrl+0 back to the configured size.
 
 geng-lang D1049 (`m3-os.md` §OS30, §OS31) gives `os` `File.writeSome`,
 which never waits and answers the count, and `File.writable`, a wait that
-takes nothing. visiterm's `Main` now:
+takes nothing. puritty's `Main` now:
 
 - queues everything it sends in the model's `out`: keys, the core's
   replies, focus reports;
@@ -421,9 +421,9 @@ takes nothing. visiterm's `Main` now:
   never dropped.
 
 A program that writes 400,000 cursor-position requests on a raw terminal
-and never reads the replies: visiterm at `2e3d994` hangs (killed by
+and never reads the replies: puritty at `2e3d994` hangs (killed by
 `timeout` after 60 s, status 124); now the program runs to its end and
-visiterm exits with its status, 3.
+puritty exits with its status, 3.
 
 ---
 
@@ -494,8 +494,8 @@ fork before it. It is registered in geng-lang, not re-recorded here.
 `packages/x11/patches/xcb-imdkit-0001-no-round-trips.patch` interns the
 client's rotating property atoms once, pipelined, and sends each message
 with neither request checked and no `GetProperty` before its append.
-`packages/x11/build-imdkit.sh` builds it as `libvisiterm-xcb-imdkit.so`, with
-an rpath and `visiterm-xcb-imdkit.pc`, a name no system library has, so
+`packages/x11/build-imdkit.sh` builds it as `libpuritty-xcb-imdkit.so`, with
+an rpath and `puritty-xcb-imdkit.pc`, a name no system library has, so
 that the app can never load another. It is shared, not static: LGPL-2.1
 is simplest that way, and how the RHEL8 release carries it is phase 6's
 (Q12). The devbox gains xcb-util, which it needs.
@@ -509,7 +509,7 @@ done) waits for three. The first message pays one round trip for all 1,024
 atoms. The report is `docs/upstream/xcb-imdkit-client-round-trips.md`.
 
 **The window** (`packages/x11`, V46). When an input method is there,
-`open` creates an input context whose preedit visiterm draws, every key
+`open` creates an input context whose preedit puritty draws, every key
 press and release goes to it, and a key it gives back is recorded then,
 read with its own event's modifiers (§12). Its commits, preedit draws and
 the preedit's end are records 5, 6 and 7, in the order the IME sent them;
@@ -518,7 +518,7 @@ context's focus, and nothing destroys it while the window lives. `drain`
 flushes the connection, since a forwarded key causes no frame and so no
 flush of its own: without that, the IME saw the first key only.
 `X11.spot` sends the candidate window's place when it moves, the cell's
-baseline. `VISITERM_NO_XIM` turns it off.
+baseline. `PURITTY_NO_XIM` turns it off.
 
 **The preedit** (V46). `Main` keeps it as code points with a feedback each,
 changed only by draws (`[first, first + length)` replaced); a commit goes
@@ -537,10 +537,10 @@ table the frame marks style ids in to below the highest cursor id, which
 recorded a style twice; it is now the whole 16-bit space.
 
 **The IME gate** (V45), `harness/ime.py`: the six pairs of §3.1, each on an
-Xvfb with a session bus and a fresh home; per case a fresh visiterm on a
-program that records what it receives, keys typed once visiterm says its
-input context is made, and the received bytes and visiterm's IME log
-(`VISITERM_IME_LOG`, each commit and each preedit as visiterm holds it)
+Xvfb with a session bus and a fresh home; per case a fresh puritty on a
+program that records what it receives, keys typed once puritty says its
+input context is made, and the received bytes and puritty's IME log
+(`PURITTY_IME_LOG`, each commit and each preedit as puritty holds it)
 pinned in `corpus/ime/CASE/PAIR.txt`. ibus keeps an engine's mode across
 input contexts, so each ibus case switches the engine away and back
 first; without that, alternate cases started in Latin. Fourteen runs:
@@ -567,7 +567,7 @@ The pixel gate passes 36 of 36 with the new `packages/x11`.
 `open` connects to the display before it loads a face, and sizes every face
 at the screen's resolution: `Xft.dpi` from the root's `RESOURCE_MANAGER`,
 else the primary monitor's width over its millimetres from RandR (1.5's
-`GetMonitors`), else 96; `VISITERM_DPI` sets it outright. `X11_STATS`
+`GetMonitors`), else 96; `PURITTY_DPI` sets it outright. `X11_STATS`
 prints it. A fallback face is sized as before, from the primary cell.
 
 **`X11.zoom`** sizes every face again at a new point size, begins the glyph
@@ -590,7 +590,7 @@ when that client leaves):
 | `Xft.dpi: 192` | 192 | 1440×816 | 24×80 |
 | `Xft.dpi: 144` | 144 | 1040×624 | 24×80 |
 | `Xcursor.size` only | 96 | 720×408 | 24×80 |
-| `VISITERM_DPI=120` | 120 | 880×504 | 24×80 |
+| `PURITTY_DPI=120` | 120 | 880×504 | 24×80 |
 | 96, then Ctrl+= twice | 96 | 720×408 | 20×72 |
 | then Ctrl+0 | 96 | 720×408 | 24×80 |
 
@@ -607,7 +607,7 @@ designs, with WHATWG's index as `Vt.EucKrIndex`, generated by
 `vt/gen-euckr.py` from `vt/data/index-euc-kr.txt` (2024-09-18):
 
 - **the decoder** is §6's, written into geng-lang's new `Bytes.Builder`
-  (D1050, `m4-visiterm.md` §VA63): a run of 16 or more ASCII bytes copied
+  (D1050, `m4-puritty.md` §VA63): a run of 16 or more ASCII bytes copied
   whole with `append`, a shorter one pushed byte by byte, a lead and its
   trail read in one step when both are in the read, each code point
   written with `pushCodePoint`; a lead that ends a read is kept;
@@ -631,7 +631,7 @@ clang inlined neither its growth test nor its UTF-8 writer; with the room
 tested inline and `pushCodePoint`, 40% more (61–62 ms). The form `core`'s
 refinement gate accepts, every goal proved, took the growth test out of
 line again (88–90 ms) until the room was tested on locals first (64–66;
-geng-lang `m4-visiterm.md` §VA63). What is left is the loop's own reads
+geng-lang `m4-puritty.md` §VA63). What is left is the loop's own reads
 through `Maybe`; reading with `Bytes.getAt` under the checker's proof
 changed nothing measurable, and was taken out.
 
@@ -639,7 +639,7 @@ changed nothing measurable, and was taken out.
 `cp949`), else the locale's codeset (`ko_KR.euckr`, `.EUC-KR`, `.CP949`,
 `.UHC`); a non-UTF-8 pane's pty has IUTF8 off. Every read is decoded before
 the core; everything sent goes through the encoder, which is right for all
-of it while visiterm sends no raw bytes (legacy mouse reports will be the
+of it while puritty sends no raw bytes (legacy mouse reports will be the
 first, C§10.3 rule 3). The count of characters sent as `?` is shown in the
 window's title.
 

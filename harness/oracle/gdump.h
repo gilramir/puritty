@@ -1,4 +1,4 @@
-/* gdump: libghostty-vt fed bytes and printed as visiterm's screen dump. */
+/* gdump: libghostty-vt fed bytes and printed as puritty's screen dump. */
 #ifndef GDUMP_H
 #define GDUMP_H
 #include <stddef.h>

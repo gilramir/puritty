@@ -6,21 +6,21 @@ the best settings screens do. The surveys are in `docs/research/`:
 - `terminal-survey.md`: complaints and wishlists for Ghostty, Alacritty,
   Kitty, WezTerm, PuTTY, MobaXterm, Windows Terminal and Warp.
 - `config-ui-survey.md`: the best and worst settings UIs, and how to save to
-  a hand-edited TOML file. Its design for visiterm is in `settings-ui.md`.
+  a hand-edited TOML file. Its design for puritty is in `settings-ui.md`.
 
-This document checks the terminal survey against what visiterm already has
+This document checks the terminal survey against what puritty already has
 or has planned (`geng-plan.md` §6), and proposes where each remaining item
 goes. Nothing here changes the phase plan until Gilbert agrees.
 
 ## 1. What the survey confirms
 
-The survey's "biggest opening" is the work visiterm already has planned.
+The survey's "biggest opening" is the work puritty already has planned.
 
-| Survey item | visiterm |
+| Survey item | puritty |
 |---|---|
 | Native tmux control mode on Linux; nothing but iTerm2 does it well | Phase 4, with tmux 3.8's floating panes. The survey makes this the headline feature. |
 | Clipboard across local tmux → ssh → remote tmux | OSC 52 writes are in (§16). Add a phase 4 test that copies through that whole chain. |
-| `xterm-ghostty` breaks remote hosts until terminfo is copied | Not a problem: visiterm sets `TERM=xterm-256color`. Keep it that way, or fall back to it if visiterm ever gets its own entry. |
+| `xterm-ghostty` breaks remote hosts until terminfo is copied | Not a problem: puritty sets `TERM=xterm-256color`. Keep it that way, or fall back to it if puritty ever gets its own entry. |
 | Fast startup, low input lag, correct UTF-8, true colour | Phases 1–3, with measurements in `geng-plan.md` §1. |
 | Plain-text config you can keep in git | `config.toml` already, and the settings UI keeps it (see `settings-ui.md`). |
 | No login, no telemetry | Already true. Say so in the README. |
@@ -56,7 +56,7 @@ hosts:
 5. File transfer inside the session: an SFTP panel or drag-and-drop.
 6. Reconnect, restoring tabs, layouts and titles. tmux control mode does much
    of this for free when the remote end runs tmux.
-7. None of MobaXterm's free-tier caps, which is easy since visiterm has none.
+7. None of MobaXterm's free-tier caps, which is easy since puritty has none.
 
 X11 forwarding (MobaXterm's built-in X server) is out of scope.
 
@@ -89,17 +89,17 @@ A volume setting can come later if the clicks are too loud.
   program, including auto-repeat. Modifiers alone (Shift, Ctrl) don't click,
   and neither do paste or keys the IME holds while composing. When the IME
   commits text, one click for the commit.
-- **Audio output.** visiterm has none yet. On Mint, PulseAudio's simple API
+- **Audio output.** puritty has none yet. On Mint, PulseAudio's simple API
   (`libpulse-simple`) also works on PipeWire through its Pulse layer, and it
   accepts mu-law directly. Playing must never block the event loop, so sounds
   go to a small audio thread or a non-blocking stream. A click that can't
   play (no audio server) is dropped silently. Typing must not wait on it.
-- **ETX on RHEL8.** visiterm runs on the VM there, so sound would play on the
+- **ETX on RHEL8.** puritty runs on the VM there, so sound would play on the
   VM and probably not reach Gilbert's speakers. Check whether ETX forwards
   audio; if it doesn't, the feature is for Mint (and later Windows) only.
 - **Licence.** The two files are Q10 Editor's. Using them in Gilbert's own
-  builds is one thing; shipping them in a released visiterm needs Q10's
-  author's permission, or replacement sounds that visiterm owns.
+  builds is one thing; shipping them in a released puritty needs Q10's
+  author's permission, or replacement sounds that puritty owns.
   `assets/sounds/` is the place for either.
 
 ## 4. Proposed order
@@ -117,12 +117,12 @@ where `geng-plan.md` had it:
 6. **Images**, all three protocols (§5).
 7. Search and scrollbar, key bindings, then the Windows product with hosts in
    the settings window.
-8. **VDI mode** (§6), well after visiterm works on Windows, and only what
+8. **VDI mode** (§6), well after puritty works on Windows, and only what
    measurements justify.
 
 ## 5. Images
 
-*Gilbert, 2026-11-06:* after phase 4, visiterm shows images, and supports all
+*Gilbert, 2026-11-06:* after phase 4, puritty shows images, and supports all
 three ways programs send them, not just the one that suits tmux. Gilbert
 uses tmux all the time; other users may not.
 
@@ -147,15 +147,15 @@ compressed transfer, Unicode placeholders, animation last).
 
 - **tmux control mode.** How a control-mode client receives a pane's Sixel
   images, or whether it does: check tmux's source before designing, as
-  phase 4 did for floating panes. Kitty and iTerm2 images reach visiterm
+  phase 4 did for floating panes. Kitty and iTerm2 images reach puritty
   through tmux only with `allow-passthrough`, and break when panes move;
-  that is tmux's limit, and visiterm should handle it cleanly, not mend it.
+  that is tmux's limit, and puritty should handle it cleanly, not mend it.
 - **Image decoders.** iTerm2's and Kitty's PNG, plus JPEG and GIF for iTerm2,
   and zlib for Kitty's compressed data. On RHEL8 every library is pinned
   (Q12), so a small bundled decoder (stb_image) may be simpler than libpng,
   libjpeg and giflib. Decide in the survey.
 - **Safety.** Kitty's protocol can ask the terminal to read a file or shared
-  memory by name. A remote program must not make visiterm read local files:
+  memory by name. A remote program must not make puritty read local files:
   file and shared-memory transfer are limited to temporary files, or off,
   as Kitty itself does. Every image has a size limit, and all images
   together a memory limit (a setting, as Kitty's is), with the oldest
@@ -165,24 +165,24 @@ compressed transfer, Unicode placeholders, animation last).
   iTerm2's through its own report. Programs like chafa pick a protocol from
   these answers.
 - **The oracle.** Ghostty supports Kitty graphics but not Sixel. Where
-  libghostty-vt has no answer, visiterm's image handling needs its own tests
+  libghostty-vt has no answer, puritty's image handling needs its own tests
   (recorded sequences with expected placements, and rendered pixels).
 - **ETX.** Measure bytes per image update there, as phase 2 measured text.
 
 **Settings:** `[images] enabled = true`, and the memory limit. They appear on
 the settings window's Advanced page.
 
-## 6. VDI mode: visiterm inside a remote Windows desktop
+## 6. VDI mode: puritty inside a remote Windows desktop
 
 *Gilbert, 2026-11-06:* one of Gilbert's workflows is a Windows desktop reached
 through Omnissa Horizon Client (VDI), with PuTTY or MobaXterm on it connecting
-to a Linux host by ssh. Could visiterm, running on that remote desktop, do
-anything to make it better? This comes well after visiterm works on Windows,
+to a Linux host by ssh. Could puritty, running on that remote desktop, do
+anything to make it better? This comes well after puritty works on Windows,
 and only what measurements justify gets built.
 
 **The limit.** Horizon's Blast protocol (and PCoIP) sends pixels: it captures
 the remote desktop's screen, finds what changed and compresses it as images
-or video. It never sees text, so visiterm can't send text instead. It can
+or video. It never sees text, so puritty can't send text instead. It can
 only make its pixels cheaper to send.
 
 **What might help:**
@@ -207,11 +207,11 @@ only make its pixels cheaper to send.
 session" (`GetSystemMetrics(SM_REMOTESESSION)` is false). The Horizon agent
 is believed to write `ViewClient_*` values, the protocol among them, under
 `HKCU\Volatile Environment`; check that on Gilbert's VDI. With detection,
-visiterm switches to a VDI profile (items 1–3); a setting forces it on or
+puritty switches to a VDI profile (items 1–3); a setting forces it on or
 off, in case detection misses.
 
 **What can't change.** Typing goes to the VDI, then to the Linux host, and
-the echo comes back as pixels; visiterm can't hide that delay, since
+the echo comes back as pixels; puritty can't hide that delay, since
 mosh-style local echo needs the terminal on Gilbert's own machine.
 
 **Measurements first.** Horizon Performance Tracker, run inside the
@@ -220,10 +220,10 @@ session, shows Blast's bandwidth and frame rate. With the same workloads
 in `less`), compare:
 
 1. PuTTY with Font quality "ClearType", "Antialiased" and "Non-Antialiased"
-   (Window → Appearance). It doesn't need visiterm, so it can be done
+   (Window → Appearance). It doesn't need puritty, so it can be done
    whenever this work comes up, and shows whether item 3 matters.
 2. Cursor blink on and off.
-3. Once visiterm runs on Windows: frame interval 16 vs 50 ms, and scrolling
+3. Once puritty runs on Windows: frame interval 16 vs 50 ms, and scrolling
    presented as a move vs as a full redraw (item 5).
 
 Whatever doesn't show up in the numbers isn't built.

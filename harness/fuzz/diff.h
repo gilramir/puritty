@@ -92,7 +92,7 @@ answers with its own name, which is not a difference (docs/vt-core.md
 §VC18). Only in a `reply` line: a row can hold the same text, and the
 fuzzer finds that it can (§VC19). */
 static size_t own_name(char *d, size_t n) {
-  static const char from[] = "P>|libghostty\\x1b", to[] = "P>|visiterm\\x1b";
+  static const char from[] = "P>|libghostty\\x1b", to[] = "P>|puritty\\x1b";
   size_t fl = sizeof from - 1, tl = sizeof to - 1, o = 0;
   int reply = n >= 6 && memcmp(d, "reply ", 6) == 0;
   for (size_t i = 0; i < n;) {

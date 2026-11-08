@@ -2,7 +2,7 @@
 # Builds the x11 probe: a program on a pty drawn in an X window
 # (docs/phase2-window.md §5), with geng-lang's compiler, devbox's clang, the
 # passes harness/bench/build.sh builds core-bench with, and the X and font
-# libraries from visiterm's devbox. Run it inside visiterm's devbox:
+# libraries from puritty's devbox. Run it inside puritty's devbox:
 # `devbox run probes/geng/x11/app/build.sh`.
 set -e
 cd "$(dirname "$0")"

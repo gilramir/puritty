@@ -2,7 +2,7 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** v1.4.0 (`83fb95624`). Found by visiterm's differential
+**Found against:** v1.4.0 (`83fb95624`). Found by puritty's differential
 fuzzer (`vt-core.md` §VC17). Not to be filed (`README.md`). The oracle
 carries the fix as `harness/oracle/patches/0005-a-wide-cell-keeps-its-own-spacer-head.patch`.
 
@@ -18,7 +18,7 @@ before, so the row above ends in a blank that a reflow keeps.
 
 ## Reproduction
 
-With libghostty-vt, 4 columns by 3 rows (visiterm `corpus/replay/wide-keeps-own-spacer-head`):
+With libghostty-vt, 4 columns by 3 rows (puritty `corpus/replay/wide-keeps-own-spacer-head`):
 
 ```
 ESC [2;1H f中     row 1: "f", 中 at columns 1-2

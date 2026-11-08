@@ -1,5 +1,5 @@
 # The IMEs of the phase 3 matrix (docs/phase3-input.md), from the nixpkgs
-# commit visiterm's devbox pins: fcitx5 and ibus, each with its Korean,
+# commit puritty's devbox pins: fcitx5 and ibus, each with its Korean,
 # Japanese and pinyin engines.
 let
   pkgs = import (builtins.fetchTarball

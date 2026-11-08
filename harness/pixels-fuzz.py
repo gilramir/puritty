@@ -13,7 +13,7 @@ A case that differs is minimized (a token at a time taken out while it
 still differs) and left in .harness-work/pixels/fuzz/ as a case for
 harness/pixels.py's format.
 
-usage (from visiterm's devbox, after harness/pixels/build.sh):
+usage (from puritty's devbox, after harness/pixels/build.sh):
     harness/pixels-fuzz.py [N] [--seed S]
 """
 

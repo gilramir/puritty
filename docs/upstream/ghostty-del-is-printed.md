@@ -3,7 +3,7 @@
 **Repository:** `ghostty-org/ghostty`
 
 **Found against:** v1.4.0 (`83fb95624`) and `d8619f1bc`; the code is the
-same on `main` at `cf0ab14ae` (2026-10-30). Found by visiterm's
+same on `main` at `cf0ab14ae` (2026-10-30). Found by puritty's
 differential fuzzer (`vt-core.md` §VC16). Not to be filed (`README.md`).
 
 ## Summary
@@ -22,7 +22,7 @@ other state (`parse_table.zig`, "anywhere": `0x7F => ignore`).
 
 ```
 printf 'a\x7fb' > del.bin
-ghostty-dump 10 2 del.bin     # visiterm harness/oracle
+ghostty-dump 10 2 del.bin     # puritty harness/oracle
 ```
 
 ## Where

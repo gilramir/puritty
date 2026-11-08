@@ -10,7 +10,7 @@ not confirmed in code are marked **inference** or **unverified**. Compared with 
 Alacritty and Ghostty docs, this one spends more space on the parts WezTerm has and
 they don't: the domain/pane abstraction, the embedded SSH client, the multiplexer
 protocol and the tmux control-mode integration. Those are the parts closest to
-visiterm's Windows product. Section references like "A§5" and "G§8" point into
+puritty's Windows product. Section references like "A§5" and "G§8" point into
 [`alacritty.md`](alacritty.md) and [`ghostty.md`](ghostty.md), and "S§7" into
 [`synthesis.md`](synthesis.md).
 
@@ -26,7 +26,7 @@ visiterm's Windows product. Section references like "A§5" and "G§8" point into
   (`wezterm-ssh/src/pty.rs:44`) or **a tmux pane** (`mux/src/tmux_pty.rs:125`). So
   SSH and tmux panes reuse the whole local terminal stack. The one `Pane` that does
   *not* have a local terminal is `ClientPane` (remote mux), which holds a line cache
-  fed by the server. This split maps directly onto visiterm's backend interface.
+  fed by the server. This split maps directly onto puritty's backend interface.
 - **`Domain`** (`mux/src/domain.rs:50`) is a factory and lifecycle owner for panes:
   local, WSL, exec, serial, SSH, mux client, and tmux. It has `spawn_pane`,
   `split_pane`, `attach`, `detach` and `state`.
@@ -159,7 +159,7 @@ remote use:
 
 ## 2. Domains and panes: the backend abstraction
 
-This is the most reusable idea in WezTerm for visiterm. S§3.2 calls for a backend
+This is the most reusable idea in WezTerm for puritty. S§3.2 calls for a backend
 interface (PTY / tmux pane / SSH channel). WezTerm has one, split into **two
 layers**, and the split is worth copying.
 
@@ -195,7 +195,7 @@ this. `RemoteSshDomain::spawn_pane` says so in a comment: "Wrap up the pty etc. 
 a LocalPane. That allows for eg: tmux integration to be tunnelled via the remote
 session without duplicating a lot of logic over here" (`mux/src/ssh.rs:756-758`).
 It also means `tmux -CC` works inside an embedded SSH pane with no extra code,
-which is exactly visiterm's Windows use case.
+which is exactly puritty's Windows use case.
 
 Weak points of this layer:
 
@@ -506,7 +506,7 @@ the blocking-mode switch at `:644-650`.
 | Survives disconnect | no | panes survive on server; client must reattach manually (SSH flavour not auto-reconnect) |
 | Auth UI | in the pane | separate ConnectionUI window |
 
-The `None` flavour is the right model for visiterm's Windows SSH backend: one
+The `None` flavour is the right model for puritty's Windows SSH backend: one
 transport per host, one channel per pane. The `WezTerm` flavour is the "mosh-like"
 option that needs a server-side component; tmux `-CC` gives similar persistence
 without installing anything new.
@@ -761,7 +761,7 @@ while the changelog says "`tmux -CC` support is now very usable" (#6602,
 (`config/src/ssh.rs:24`), so tmux as a persistence layer for SSH domains was planned
 but never built.
 
-What visiterm can take: the grammar coverage and the `vis` decoder are good test
+What puritty can take: the grammar coverage and the `vis` decoder are good test
 oracles; the idea of making a tmux pane "just another `MasterPty`" is right; the GUI
 round-trip for new-tab/split (send the command, create the native object only when
 tmux's notification arrives) is right. What to do differently: tolerate unknown
@@ -967,7 +967,7 @@ WezTerm has nothing for the remote-X case:
 - No docs, comments or changelog entries discuss remote displays.
 
 This confirms S§6: none of the three reference terminals has a server-side X11
-renderer. visiterm's X11 backend is new ground.
+renderer. puritty's X11 backend is new ground.
 
 ---
 
@@ -1078,7 +1078,7 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
 
 ---
 
-## 12. Lessons for visiterm
+## 12. Lessons for puritty
 
 ### 12.1 The backend interface
 
@@ -1155,7 +1155,7 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
     line, no alt screen, not after a password-looking prompt or with echo off), and
     by confirming predictions mosh-style. With tmux `-CC` over SSH this is the place
     it would help most.
-16. **Version handshakes should negotiate, not demand equality.** If visiterm ever has
+16. **Version handshakes should negotiate, not demand equality.** If puritty ever has
     a helper on the remote side (terminfo installer, persistent session helper),
     design capability negotiation up front.
 
@@ -1190,7 +1190,7 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
 25. **Remote X11 gets nothing from WezTerm.** Its renderer is EGL/WGL/wgpu with a
     full rebuild every frame (cached per line on the CPU side), RENDER only for
     cursors, and Mesa llvmpipe as the "software" mode. That reinforces S§6: the
-    server-side X11 backend is visiterm's own work.
+    server-side X11 backend is puritty's own work.
 26. **Windows rendering:** WezTerm's experience (WGL default because EGL/ANGLE
     resizes badly; WGL dies on driver updates; DX12 via wgpu crashed on some Win11
     systems; RDP needs software GL) argues for a native D3D11 renderer on Windows

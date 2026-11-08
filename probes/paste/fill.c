@@ -1,6 +1,6 @@
 /* How many bytes a pty's master takes before a write would block, with
  * PROGRAM on the slave and nobody reading the master (docs/phase3-input.md):
- * the paste that can be written before visiterm must read again. It stops
+ * the paste that can be written before puritty must read again. It stops
  * at 1 MB, which a program that keeps reading takes.
  *   fill raw|cooked PROGRAM...   (cooked: the tty's default modes, echo on) */
 #define _GNU_SOURCE

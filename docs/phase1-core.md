@@ -8,7 +8,7 @@ kept in Geng and what each way costs against D902's budget (`geng-plan.md`
 §1.3), and whether the rest of phase 1's exit (the oracle, esctest2, the
 fuzzer) can be run at all. It found a soundness bug in Geng on the way. As
 with geng-lang's surveys, these sections stay as written when the work lands
-below them. The Geng side is geng-lang's `m4-visiterm.md` §VA9.
+below them. The Geng side is geng-lang's `m4-puritty.md` §VA9.
 
 Machine and builds as §1.2: AMD Ryzen 7 8845HS, Linux 6.8, idle. geng-lang
 `572b6571`, the compiler fork `a6522467`, `core` `3d676f7`, devbox's clang
@@ -25,7 +25,7 @@ inputs are §1.2's thirteen, byte for byte.
 | Does an in-place screen help, and does Geng have one? | **`Array.Builder` is one, and it halves most inputs**: `cup` 264 → 144 ms, `vte-scrolling` 1,054 → 347. It meets the budget on two inputs. But **it is not sound**: natively and on node a read of a builder after another builder was made from it sees the newer write, and an `Array` that `toArray` handed out changes. It was found here, and it is Geng's own (D753), not stock Gren's | 4 |
 | What stands between that and the budget? | A new header allocated for every cell written (half of `ls`'s time), row moves that each allocate (the small scroll regions, 1,250 ms against 179), and a parse that allocates its parameters. Three of `core`'s array builders go an element at a time | 4.3, 5 |
 | Can the rest of the exit be run? | **Yes, all three.** libghostty-vt's C API writes bytes, reads every cell and calls back with the replies it writes to the pty; esctest2 is reachable and needs a pty harness; devbox's clang builds a libFuzzer target, and the embed ABI can make `Bytes` from a host buffer | 6 |
-| Unicode | `core`'s streaming grapheme segmenter, `Unicode.Grapheme`, exists and is not exposed; `core` has no width tables, which the plan has visiterm generate anyway | 5.3 |
+| Unicode | `core`'s streaming grapheme segmenter, `Unicode.Grapheme`, exists and is not exposed; `core` has no width tables, which the plan has puritty generate anyway | 5.3 |
 
 ---
 
@@ -254,10 +254,10 @@ machine. It does, but `core` exposes only `Unicode` (its version) and the
 `String` functions over whole strings (`graphemes`, `foldlGraphemes`), and a
 terminal needs the state machine itself, one codepoint at a time across
 reads (S§5.3, "streaming must re-open the previous cell"). Either `core`
-exposes `Unicode.Grapheme`, or visiterm carries a second copy of its 256
+exposes `Unicode.Grapheme`, or puritty carries a second copy of its 256
 lines and its 10,000 lines of tables, kept in step with `core`'s Unicode
 version by hand. Width tables are not in `core`, and the plan already has
-visiterm generate them (§5's `unicode-width`), since the width model is a
+puritty generate them (§5's `unicode-width`), since the width model is a
 pane's policy.
 
 ---
@@ -305,7 +305,7 @@ pane's policy.
 ## 8. For Gilbert
 
 1. **The builder's stale read** (§4.2). This is a soundness bug in Geng and
-   is fixed whatever visiterm does; the question is how. geng-lang §VA9.2
+   is fixed whatever puritty does; the question is how. geng-lang §VA9.2
    lays out the options. *Leaning:* the old handle becomes a record of what
    the write replaced (a version tree, Baker's persistent arrays), so the
    newest handle stays in place at the cost of one more store a write and an
@@ -342,7 +342,7 @@ and a code-point encoder), D906 (`Unicode.Grapheme` exposed), D907 (D902
 stays the bar); and question 5, the cell's width, is decided in the core's
 design by measurement.
 
-D903 is built (geng-lang `m4-visiterm.md` §VA10). `builder-stale`'s case is
+D903 is built (geng-lang `m4-puritty.md` §VA10). `builder-stale`'s case is
 in geng-lang's corpus as `accept/builder-stale`, with seven rows more, and
 passes on every fork target. It was not one more store a write: an older
 handle's record keeps what follows it alive, which a generational,
@@ -433,7 +433,7 @@ are larger than §VA7.7's (packed, 4 panes, 188 MB where 148; pages 68 where
 
 ## 11. D904 and D905 built (2026-10-24)
 
-geng-lang `m4-visiterm.md` §VA11. `Array.Builder` has `setMany`, `fill` and
+geng-lang `m4-puritty.md` §VA11. `Array.Builder` has `setMany`, `fill` and
 `copyWithin`, each one call and one builder, `append` is one call, and
 `Array.repeat`, `initialize` and `flatten` each make their array in one call;
 `Bytes.fromCodePoints` encodes an `Array Int` of code points as UTF-8, or
@@ -462,7 +462,7 @@ thirteen inputs against this machine's budget.
 
 ## 12. D906 built and D907's measurement (2026-10-25)
 
-geng-lang `m4-visiterm.md` §VA13 and §VA14.
+geng-lang `m4-puritty.md` §VA13 and §VA14.
 
 **`Unicode.Grapheme` is exposed** (D906). Its `State` is one opaque `Int`
 (geng-lang D912): `step : Char -> State -> State` and `isBoundary : State ->
@@ -560,7 +560,7 @@ most, ms, the same `core` and fork for both:
 
 ## 14. The screen's ring holds recent scrollback (2026-10-26)
 
-geng-lang's `m4-visiterm.md` §VA15 found where the builder probe's time
+geng-lang's `m4-puritty.md` §VA15 found where the builder probe's time
 goes, and §VA16 builds Gilbert's answers (D978–D983). In the probe:
 
 - **The ring holds recent scrollback as rows** (D978), as Alacritty's grid
@@ -604,7 +604,7 @@ run (geng-lang §VA16.1 has every step between):
 
 ## 15. Records in place, tail calls as jumps, and regions turned (2026-10-27)
 
-geng-lang's `m4-visiterm.md` §VA17 to §VA20 build what §14 asked and what
+geng-lang's `m4-puritty.md` §VA17 to §VA20 build what §14 asked and what
 measuring after it found. The compiler writes 80 of the probe's 84 updates
 of `Term` and `Screen` in place (D984–D988), with nothing in the probe
 changed; the parser's functions call one another with `musttail` jumps
@@ -647,7 +647,7 @@ geng-lang's own measurement on its day:
 
 ## 16. A page written straight into its builders (2026-10-27)
 
-geng-lang's `m4-visiterm.md` §VA21 priced a line of `vte-scrolling` by kind
+geng-lang's `m4-puritty.md` §VA21 priced a line of `vte-scrolling` by kind
 of cost and measured four changes; Gilbert took all four (§VA22 there). Two
 are the probe's:
 
@@ -681,7 +681,7 @@ instructions a line, and geng-lang measures it next (§VA23).
 
 ## 17. A page read by slot and appended by run (2026-10-27)
 
-geng-lang's `m4-visiterm.md` §VA23 measured the paging, and Gilbert took
+geng-lang's `m4-puritty.md` §VA23 measured the paging, and Gilbert took
 §VA23.3's leanings (§VA24 there, D995 and D996):
 
 - **A page of the `cells` packing is read by physical slot.** `pageOut`
@@ -700,7 +700,7 @@ were. `vte-scrolling` 2,550 → 2,227 M instructions, 78–79 → 68–70 ms;
 
 ## 18. The probe's own logic (2026-10-28)
 
-geng-lang's `m4-visiterm.md` §VA27 surveyed the probe's own logic with
+geng-lang's `m4-puritty.md` §VA27 surveyed the probe's own logic with
 `geng profile` and `bench/compare`, and Gilbert took §VA27.4's leanings:
 
 - **A row's extent is the row's last cell**, past its `cols`, and the
@@ -725,7 +725,7 @@ Every input's checksum is the same, and so is every page's.
 
 ## 19. A run's first byte read once (2026-10-28)
 
-geng-lang's `m4-visiterm.md` §VA29, P8d, which Gilbert took: `ground`
+geng-lang's `m4-puritty.md` §VA29, P8d, which Gilbert took: `ground`
 hands `printAscii` the printable byte it read, `asciiEnd` starts after it,
 and `asciiRow` writes it. `vte-scrolling` 556 → 535 instructions a line,
 the region scrolls 3.5% fewer; the inputs of long runs 1.4–4.5% more,
@@ -733,8 +733,8 @@ level in time. Every checksum and page is the same.
 
 ## 20. A line feed's kind decided once (2026-10-29)
 
-geng-lang's `m4-visiterm-scrolls.md` H2, which Gilbert took (its
-`m4-visiterm.md` §VA41): `Term` keeps a `scroll` kind, set by `withScroll`
+geng-lang's `m4-puritty-scrolls.md` H2, which Gilbert took (its
+`m4-puritty.md` §VA41): `Term` keeps a `scroll` kind, set by `withScroll`
 where the region, the screen or the scrollback change. A line feed at the
 region's bottom goes straight to `feedFull` (the whole main screen,
 scrollback kept) or `feedRegion` (a region, none kept), and only the other
@@ -745,7 +745,7 @@ kinds take `regionUp` and `screenUp`'s chain of tests. `vte-scrolling`
 
 ## 21. A region keeps its own turn (2026-10-29)
 
-geng-lang's `m4-visiterm-scrolls.md` H1 (its `m4-visiterm.md` §VA42). A
+geng-lang's `m4-puritty-scrolls.md` H1 (its `m4-puritty.md` §VA42). A
 `Screen` keeps its region (`top`, `height`) and a `turn`. `phys` maps a
 row inside the region through the turn, and the rest of the ring through
 `slot`, which is `phys` as it was. A line feed at the bottom of a region
@@ -762,7 +762,7 @@ mixes of every sequence the probe handles.
 
 ## 22. The screen's cells in one builder (2026-10-29)
 
-geng-lang's `m4-visiterm-scrolls.md` H4, surveyed in its `m4-visiterm.md`
+geng-lang's `m4-puritty-scrolls.md` H4, surveyed in its `m4-puritty.md`
 §VA43 and taken in §VA44. The ring is one `Builder Int` of `cols + 1` cells
 a slot, a row's cells and then its extent. Every row function takes the
 row's offset, so a print is a store into the one builder, and a moved row
@@ -779,7 +779,7 @@ row, which this one cannot have.
 
 ## 23. Scrollback pages in D901's form (2026-10-29)
 
-geng-lang `m4-visiterm.md` §VA46–§VA48. Every figure of this probe before
+geng-lang `m4-puritty.md` §VA46–§VA48. Every figure of this probe before
 here was taken with `PACK=cells`, a page as its rows' cells at 4 bytes each,
 which is not D901's form and holds 2.3–3.6× its memory. D901's own form,
 `PACK=points`, took 199 ms of `vte-scrolling` against 42.
@@ -803,5 +803,5 @@ probe with `Int64` cells, its style id in bits 32–47, costs 0–4.3% more
 instructions and is level in time, so a cell is an `Int64`
 (`Hot64.geng`, `build-hot64.sh`). `build-hot.sh` had been building without
 geng-lang's `inplace` pass, which every geng-lang measurement of this probe
-since D984 has had (`bench/compare/visiterm.toml`); it names it now, and
+since D984 has had (`bench/compare/puritty.toml`); it names it now, and
 without it `vte-scrolling` is 710 instructions a line, not 499.

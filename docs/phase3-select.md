@@ -21,23 +21,23 @@ survey here, these sections stay as written when the work lands below them.
 
 | asked | found | § |
 |---|---|---|
-| Can the window show the scrollback? | **No: nothing in visiterm scrolls back**, and the plan's phase 3 list does not name it. The wheel is how it is done, so it belongs with the mouse. The rows are there: the core's ring holds recent ones, and D901's pages the rest. Reading the whole scrollback (94,095 rows) as text takes 544 ms, 5.8 µs a row, so a screen in the oldest pages costs at most two 1,024-row pages, about 12 ms, once | 3 |
+| Can the window show the scrollback? | **No: nothing in puritty scrolls back**, and the plan's phase 3 list does not name it. The wheel is how it is done, so it belongs with the mouse. The rows are there: the core's ring holds recent ones, and D901's pages the rest. Reading the whole scrollback (94,095 rows) as text takes 544 ms, 5.8 µs a row, so a screen in the oldest pages costs at most two 1,024-row pages, about 12 ms, once | 3 |
 | What does a mouse report need? | Ghostty's encoder is 290 lines before its tests, and libghostty-vt has it behind a C API, so a gate like the key gate's can hold a Geng port to it. The core already keeps modes 1000–1016 and 1007 | 4 |
 | What do the X selections cost? | **Locally nothing: 10 MB pasted in 2.6 ms, served in 19 ms. Over `ssh -X` from gmktec7, a 10 MB paste takes 1.1 s and a copy 0.24–1.0 s by piece size.** One blocking `GetProperty` of a 1 MB piece holds the caller for about 100 ms there, so the transfer has to run in the loop, not in a call | 5 |
 | What does a paste cost through a pty? | **10 MB into a raw program (a shell's line editor, vim) in 12–21 ms; into cooked `cat`, 1.0–1.3 s**, the line discipline's own speed, which V48's queue already rides out. Ghostty's paste rules (unsafe controls to spaces, brackets, CR for LF) are in libghostty-vt too, for the same gate | 6 |
 | What does an OSC 52 cost? | **tmux 3.4 sends a copy as one OSC 52, unlimited: 4 MB of text is 5.3 MB of base64.** The core keeps 4,096 bytes of a string and drops the rest, at 9 ms for those 5.3 MB. Ghostty keeps OSC 52 up to 8 MB. Base64 in Geng on `Bytes.Builder` decodes 5.3 MB in 10.4 ms, so nothing is needed from geng-lang | 7 |
-| Should Ctrl and the wheel zoom? | **Of the five terminals vendored here, only Windows Terminal does, and only when no program has taken the mouse.** nvim 0.9.5 takes the mouse by default (`mouse=nvi`), so under that rule the zoom is dead in nvim. Neither nvim nor tmux 3.4 binds anything to Ctrl and the wheel, so visiterm taking it always costs programs nothing they do by default | 8 |
+| Should Ctrl and the wheel zoom? | **Of the five terminals vendored here, only Windows Terminal does, and only when no program has taken the mouse.** nvim 0.9.5 takes the mouse by default (`mouse=nvi`), so under that rule the zoom is dead in nvim. Neither nvim nor tmux 3.4 binds anything to Ctrl and the wheel, so puritty taking it always costs programs nothing they do by default | 8 |
 
 ---
 
 ## 2. How it was measured
 
-This machine (`nene`), AMD Ryzen 7 8845HS, Linux 6.8, visiterm `d63beab`,
+This machine (`nene`), AMD Ryzen 7 8845HS, Linux 6.8, puritty `d63beab`,
 geng-lang `7fd24703`, devbox's clang at `-O2`. gmktec7 for `ssh -X`, 4.7 ms
 ping. No other load.
 
 - [`../probes/select/`](../probes/select/): `sel`, an X selection client
-  in xcb as visiterm's would be: `sel get SELECTION TARGET` asks for a
+  in xcb as puritty's would be: `sel get SELECTION TARGET` asks for a
   selection and reads it, `INCR` included; `sel own SELECTION FILE` owns
   one and answers `TARGETS`, `UTF8_STRING`, `STRING`, `TEXT` and
   `text/plain;charset=utf-8`, in `INCR` pieces of `CHUNK` bytes when the
@@ -46,7 +46,7 @@ ping. No other load.
   `gitlog.txt`; `REMOTE=HOST` runs `sel` there over `ssh -X`.
 - [`../probes/paste/paste.py`](../probes/paste/paste.py): SIZE bytes of
   text written to a pty's master in non-blocking writes, the master read
-  all the while, as visiterm's loop does since V48.
+  all the while, as puritty's loop does since V48.
 - [`../probes/paste/osc52.py`](../probes/paste/osc52.py): tmux on a pty
   with `set-clipboard on`; `load-buffer -w` of SIZE bytes; the OSC 52 read
   back from the master.
@@ -133,7 +133,7 @@ that has not taken the mouse gets arrow keys.
 
 ## 5. Selection and the X selections
 
-A copy is visiterm owning PRIMARY (on a selection) or CLIPBOARD (on a copy
+A copy is puritty owning PRIMARY (on a selection) or CLIPBOARD (on a copy
 key) and answering each `SelectionRequest` with the text; a paste is
 asking the owner with `ConvertSelection` and reading a property. Text
 larger than the server's largest request goes as `INCR`: a piece at a time,
@@ -166,7 +166,7 @@ The 10 MB copy served in pieces, the same way:
 | 1 MB | 10 | 243 ms |
 | 4 MB | 3 | 235 ms |
 
-What this says for visiterm's loop:
+What this says for puritty's loop:
 
 - **A paste has to be read in the loop, a piece at a time.** `sel` reads
   each piece with a blocking `GetProperty`: over `ssh -X` a 1 MB piece holds
@@ -225,7 +225,7 @@ acting strangely. With 2004 set, newlines are not asked about
 (`clipboard-paste-bracketed-safe`). The bytes replaced are xterm's list:
 NUL, BS, ENQ, EOT, ESC, DEL, and the tty's own control characters, so that
 a paste cannot send a signal or edit the line (Ctrl+C, Ctrl+\\, Ctrl+U,
-Ctrl+Z, Ctrl+Q, Ctrl+S, Ctrl+W, Ctrl+V, Ctrl+R, Ctrl+O). visiterm has
+Ctrl+Z, Ctrl+Q, Ctrl+S, Ctrl+W, Ctrl+V, Ctrl+R, Ctrl+O). puritty has
 nowhere to ask yet (§10).
 
 Where a paste comes from: X's PRIMARY with the middle button or
@@ -287,7 +287,7 @@ Decoding it: geng-lang's `core` has no base64, nor does any package here.
 One written in Geng into a `Bytes.Builder` (`probes/base64`), four
 characters to three bytes, decodes the 5.3 MB in **10.4 ms** (104 ms for
 ten), about 510 MB/s; coreutils' `base64 -d` does it in 3.5 ms with its
-process start. A 4 MB copy from tmux costs visiterm about 20 ms in Geng,
+process start. A 4 MB copy from tmux costs puritty about 20 ms in Geng,
 kept and decoded, and then the C owns CLIPBOARD as for any copy (§5).
 Nothing is needed from geng-lang.
 
@@ -319,7 +319,7 @@ used.
 
 So there are two rules that work:
 
-- **Ctrl and the wheel are always visiterm's**, as Ctrl+= already is
+- **Ctrl and the wheel are always puritty's**, as Ctrl+= already is
   (V50): a program never sees them. It loses nothing a default nvim or
   tmux does; a user's own mapping of `<C-ScrollWheelUp>` would stop
   working.
@@ -377,7 +377,7 @@ without a mouse, and Ctrl+0 has no wheel form. The leaning is to keep both.
    and Shift+Insert; copy to CLIPBOARD with Ctrl+Shift+C.** The C reads the
    selection in the loop, a piece at a time; Ghostty's paste encoder,
    ported and gated, writes it into V48's queue. Ghostty asks before an
-   unsafe paste and visiterm has nowhere to ask: the leaning is to paste
+   unsafe paste and puritty has nowhere to ask: the leaning is to paste
    as xterm does, with the unsafe bytes Ghostty replaces still replaced,
    and register the confirmation for phase 7. The other choice is a
    confirmation line drawn in the window, which is the larger piece of
@@ -401,7 +401,7 @@ OSC 52 (5); the zoom (6) with the wheel.
 
 ## 11. Gilbert's answers (2026-11-03)
 
-**4, paste: as xterm does.** Gilbert does not want visiterm to ask before a
+**4, paste: as xterm does.** Gilbert does not want puritty to ask before a
 paste, as Ghostty does. A paste is written with xterm's bytes replaced by
 spaces (§6), bracketed when the program set 2004 and with LF as CR when it
 did not, and never refused. No confirmation is registered for later.
@@ -422,7 +422,7 @@ terminals do by default (their sources):
 | a key typed | to the bottom | to the bottom | to the bottom | to the bottom | stays (`ScrollOnKey` off) |
 | new output | stays | stays | stays | stays | to the bottom (`ScrollOnDisp` on) |
 
-visiterm takes the majority: a notch is 3 rows; Shift+PgUp/PgDn a page and
+puritty takes the majority: a notch is 3 rows; Shift+PgUp/PgDn a page and
 Shift+Home/End the top and bottom, all given to the program on the
 alternate screen, as Alacritty and WezTerm do; a key typed brings the view
 to the bottom and new output leaves it where it is; in the alternate screen
@@ -436,10 +436,10 @@ wanted; Shift takes the mouse back for a selection; the wheel goes to a
 program that has taken the mouse.
 
 **3, selection: taken** as §10 has it, with one consequence written out:
-when another program takes PRIMARY (X's `SelectionClear`), visiterm stops
+when another program takes PRIMARY (X's `SelectionClear`), puritty stops
 highlighting its selection, as xterm does.
 
-**6, Ctrl and the wheel: taken.** Always visiterm's, a point a notch, the
+**6, Ctrl and the wheel: taken.** Always puritty's, a point a notch, the
 wheel events of one read summed into one zoom, Ctrl+=, Ctrl+− and Ctrl+0
 kept.
 
@@ -493,14 +493,14 @@ the tracking changes). `Main` keeps the buttons held, and reports a motion
 with the lowest of them, as Ghostty does.
 
 **Shift**: a press or release of a button with Shift, or a motion with
-Shift while a button is held, is visiterm's own and is not reported (it
+Shift while a button is held, is puritty's own and is not reported (it
 will select, §5). The wheel is not taken by Shift: Ghostty's
 `scrollCallback` reports it whatever the modifiers, and nvim pages with
 Shift and the wheel, so the program gets Shift+wheel (code 68 for a step
 up).
 
 **The pointer gate** (`harness/pointer.py`, `corpus/pointer/`) drives
-visiterm on Xvfb with xdotool, on a program that sets the case's modes and
+puritty on Xvfb with xdotool, on a program that sets the case's modes and
 records every byte it reads: 16 cases, every one as the encoder says, among
 them presses and releases of each button, the wheel without releases, Ctrl
 and Alt, Shift, X10's raw bytes, mode 9's presses alone, no motion under
@@ -582,7 +582,7 @@ the wheel or a key moves it, or output comes. No cache is kept; daily use
 can say otherwise.
 
 **Open, for daily use**: Gilbert (2026-11-03) keeps one report a wheel
-step for now; once he uses visiterm, ask him to compare it with Ghostty's
+step for now; once he uses puritty, ask him to compare it with Ghostty's
 three in nvim and tmux and say which he wants.
 
 **Gates for §12 and §13**: replay 325 of 325, view 344 of 344, keys
@@ -668,7 +668,7 @@ the head, by words or lines when it began so, keeping the first word or
 line on the far side; letting go makes the text the window's PRIMARY, and
 a press and release with no drag takes the highlight away and leaves
 PRIMARY as it was, as xterm does. Ctrl+Shift+C gives the selection to
-CLIPBOARD, and is visiterm's with or without one. The highlight goes on a
+CLIPBOARD, and is puritty's with or without one. The highlight goes on a
 resize, when the screen it was made on is no longer up, when another
 program takes PRIMARY, and when a row of it still on the screen changes
 (each row's hash taken when it was made; rows that scrolled off do not
@@ -726,7 +726,7 @@ piece seen while a read is out is now read when its reply is taken.
 
 **`Main`**: the paste button (with no program reporting the mouse, or with
 Shift) and Shift+Insert paste PRIMARY; Ctrl+Shift+V pastes CLIPBOARD. All
-three are visiterm's before the encoder. Whether the paste is bracketed is
+three are puritty's before the encoder. Whether the paste is bracketed is
 mode 2004 when its first text comes; each piece goes through `Vt.Paste`
 into V48's queue as typed text does, in the pane's character set, and the
 view comes to the bottom. A paste of nothing sends nothing.
@@ -738,7 +738,7 @@ with ESC, Ctrl+C, DEL, NUL, CR LF and Ctrl+U, unbracketed and bracketed
 (the bracket's end, its ESC a space, stays inside); Korean and a combining
 accent from PRIMARY by the middle button and by Shift+Insert; an owner of
 STRING alone, read as Latin-1 (`café naïve`); 320,000 bytes through INCR,
-bracketed, whole; visiterm's own selection pasted back; the middle button
+bracketed, whole; puritty's own selection pasted back; the middle button
 reported to a program that asked, and pasting with Shift; the right button
 pasting under `paste_button = "right"`, the middle doing nothing; and
 Ctrl+V with nothing owned, nothing sent. 43 cases pass.
@@ -794,7 +794,7 @@ OSC after them and the text after that are as they were.
 **`Main`** does the requests between turns of the loop: a write makes the
 window own the selection with the text, as a copy does (a write to PRIMARY
 takes a selection's highlight away, since the selection is no longer
-visiterm's); a read, when allowed, asks the selection's owner for its text
+puritty's); a read, when allowed, asks the selection's owner for its text
 as a paste does and answers `OSC 52 ; LETTER ; BASE64`, ended as the
 question was. One read or paste at a time: a read asked for during a paste
 is not answered.
@@ -803,7 +803,7 @@ is not answered.
 read back with xclip; a read refused (nothing comes back) and one allowed
 (`ESC]52;c;cGFzdGVkIHRleHQKbGluZSB0d28=BEL` for `pasted text\nline two`);
 3,000,000 bytes written, as tmux sends a large copy whole (§7), read back
-whole; and a write to PRIMARY after visiterm's own selection, which xclip
+whole; and a write to PRIMARY after puritty's own selection, which xclip
 then reads.
 
 **The perf gate moved, and the record with it.** With the OSC 52 state as
@@ -839,7 +839,7 @@ findings).
 
 ## 17. Ctrl and the wheel zoom (2026-11-03)
 
-As §11 has it: Ctrl and the wheel are visiterm's always, a point a step,
+As §11 has it: Ctrl and the wheel are puritty's always, a point a step,
 and never reach a program, even one that asked for the mouse. A step up
 or down of the wheel with Ctrl alone is a zoom's step; the steps that come
 in the same take of events (a touchpad's stroke sends several) are summed,
@@ -876,7 +876,7 @@ found the view's decoded pages to be the frame loop's largest old garbage:
 about 165 MB over `core-view`'s 399 views of `gitlog.txt`, each 1,024-row
 page decoded whole into rows of its own, which the view keeps two of and
 then drops. Its D1054 (Gilbert's answer, §MP9) is that geng-lang adds no
-owned array for them. visiterm decodes only the rows a frame shows,
+owned array for them. puritty decodes only the rows a frame shows,
 straight into the view's screen, which is what such an array would have
 freed. Not built; measured against the census when it is.
 
@@ -887,7 +887,7 @@ queue (§11 of `phase3-input.md`) copying itself: `send` and `sendRaw` add
 to `out` with `Bytes.flatten [ m.out, bytes ]`, which copies the whole
 queue for every key, report, reply or paste added while anything is still
 queued. Normally the queue is empty and this costs nothing. It grows while
-the program is not reading: busy, stopped, or blocked on output visiterm
+the program is not reading: busy, stopped, or blocked on output puritty
 has not read yet.
 
 **The probe**, `probes/queue/`: `Main.send`'s queue, a paste in it, then
@@ -985,7 +985,7 @@ built: Gilbert to decide.
 
 ## 20. V51 built: the output queue is a two-list queue (2026-11-04)
 
-**V51 · What visiterm sends the program waits in a two-list queue of
+**V51 · What puritty sends the program waits in a two-list queue of
 pieces**, Gilbert's choice from §19. `app/src/Outbox.geng`: a piece is
 consed onto `back`, written from `front`, and `back` is reversed onto
 `front` when `front` is empty or is one small piece, so every piece is moved
@@ -995,9 +995,9 @@ goes back on `front`. The queue keeps its size in bytes, which `feed`'s
 `replyCap` test and the loop's tests read. `Main`'s `send`, `sendRaw` and
 `flush` call it, and nothing else in `Main` changed.
 
-**Measured in visiterm** on Xvfb, V48's case (§11 of `phase3-input.md`): a
+**Measured in puritty** on Xvfb, V48's case (§11 of `phase3-input.md`): a
 program on a raw terminal writes N cursor-position requests, reads none of
-the replies, and exits with status 3. Wall time to visiterm's exit, which is
+the replies, and exits with status 3. Wall time to puritty's exit, which is
 3 every time:
 
 | requests | before | after |
@@ -1019,9 +1019,9 @@ not formatted before and is left so.
 
 ## 21. The pointer: the theme's I-beam, and its arrow while the program takes the mouse (2026-11-04)
 
-Gilbert, using visiterm beside Alacritty: visiterm's pointer was an arrow,
+Gilbert, using puritty beside Alacritty: puritty's pointer was an arrow,
 where Alacritty's is the I-beam, the better shape for selecting text.
-visiterm set no cursor on its window, so it showed the root window's.
+puritty set no cursor on its window, so it showed the root window's.
 
 - **The two pointers** come from the user's cursor theme, as other programs
   load them: `xcb-util-cursor` (`libxcb-cursor` 0.1.6, new in devbox and in
@@ -1032,7 +1032,7 @@ visiterm set no cursor on its window, so it showed the root window's.
 - **Nix's `xcb-util-cursor` does not search `/usr/share/icons`**: its
   compiled path is the home directory's two and its own store path, so on a
   distribution's desktop it found no theme and fell back to the cursor
-  font. visiterm sets `XCURSOR_PATH` to libXcursor's own path
+  font. puritty sets `XCURSOR_PATH` to libXcursor's own path
   (`~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps`)
   when the user has not set one.
 - **The shape**, as Alacritty and Ghostty show it: the I-beam, and the arrow
@@ -1052,8 +1052,8 @@ pass: pointer 51 of 51, pixels 36 of 36, IME 14 of 14.
 
 ## 22. The palette's 16 colours in the settings (2026-11-04)
 
-Gilbert, beside Alacritty: visiterm's text was less bright. Measured from
-his screenshot, Alacritty draws `#d8d8d8` on `#181818` and visiterm
+Gilbert, beside Alacritty: puritty's text was less bright. Measured from
+his screenshot, Alacritty draws `#d8d8d8` on `#181818` and puritty
 `#c5c8c6` on `#1d1f21`, libghostty-vt's defaults, which the core takes
 because Ghostty is its oracle. Foreground and background could already be
 set (`[colours]`); the 16 named colours, which tmux's status line and `ls`
@@ -1065,14 +1065,14 @@ each one left out stays libghostty-vt's, and more than 16 are refused
 
 **They are the core's**, not the renderer's alone: `Term` has `named`, the
 16 colours before a program sets one, libghostty-vt's in `new` and the
-embedder's after `Vt.withPalette`, which visiterm calls once at start.
+embedder's after `Vt.withPalette`, which puritty calls once at start.
 `paletteColour` reads it where no OSC 4 has set the colour, so the colours
 drawn, what OSC 4 answers and what OSC 104 and RIS go back to are the
 configured ones, as Ghostty does with its configured palette. A core made
 without `withPalette`, as every gate and the oracle make it, has
 libghostty-vt's.
 
-**Checked** in visiterm on Xvfb, with `palette = ["#000000", "#ff0000"]`:
+**Checked** in puritty on Xvfb, with `palette = ["#000000", "#ff0000"]`:
 OSC 4 asks colour 1 and is answered `rgb:ffff/0000/0000`, colour 2
 libghostty-vt's `rgb:b5b5/bdbd/6868`; set to `#00ff00` it is answered so;
 after OSC 104 1, and after an OSC 4 to `#0000ff` and RIS, it is

@@ -12,7 +12,7 @@ after (§7). As with every survey here, these sections stay as written when
 the work lands below them.
 
 Gilbert's answer to Q13 came with the request to start (2026-10-30):
-visiterm ships no fonts and uses the system's (`geng-plan.md` §9.3).
+puritty ships no fonts and uses the system's (`geng-plan.md` §9.3).
 
 ---
 
@@ -31,7 +31,7 @@ visiterm ships no fonts and uses the system's (`geng-plan.md` §9.3).
 ## 2. How it was measured
 
 Machine as `geng-plan.md` §1.2: AMD Ryzen 7 8845HS, 16 threads, Linux 6.8.
-visiterm `757c4ff`, geng-lang `685c6f43`, the compiler fork at `0a907d06`,
+puritty `757c4ff`, geng-lang `685c6f43`, the compiler fork at `0a907d06`,
 devbox's clang at `-O2` with the passes `harness/bench/build.sh` builds
 `core-bench` with. The inputs are `geng-plan.md` §1.2's thirteen, byte for
 byte.
@@ -76,7 +76,7 @@ rows (`vt-core.md` §VC2). Three ways for a renderer to see what changed:
 1. **Keep last frame's handle.** D903 made a builder persistent, so an old
    handle could be read; D963 since made a builder affine, and the compiler
    refuses a second use. Not available; and while it was, a held older
-   handle made each write record a diff (`m4-visiterm.md` §VA10).
+   handle made each write record a diff (`m4-puritty.md` §VA10).
 2. **The core records damage**: a dirty flag per row, scroll deltas, cleared
    by the renderer. A write on every path that changes a row, measured
    against D902's budget, which the core meets on `cup` by less than a
@@ -170,7 +170,7 @@ ownership checker, each worked around in a line:
 
 Neither blocks anything. They are the shapes a renderer reading the core
 will write first, so they go in geng-lang's register as one item
-(`m4-visiterm.md` §VA56).
+(`m4-puritty.md` §VA56).
 
 The renderer reads `Term`'s fields and `Vt.Screen`'s functions, which `Vt`
 does not expose; the probe builds beside a copy of the modules. The real
@@ -187,7 +187,7 @@ with `TIOCSWINSZ` and starts the child with `posix_spawnp`:
 `POSIX_SPAWN_SETSID`, the slave opened as fd 0 without `O_NOCTTY` (a
 session leader opening a terminal acquires it as its controlling terminal),
 `dup2` to 1 and 2, an empty signal mask and default dispositions, as `os`
-starts a child. Nothing of visiterm's runs between `fork` and `exec`, which
+starts a child. Nothing of puritty's runs between `fork` and `exec`, which
 was the plan's reason for putting the child side in C (`geng-plan.md` §3.2):
 glibc's spawn
 does it. `POSIX_SPAWN_SETSID` is glibc 2.26, so RHEL8's 2.28 has it.
@@ -210,7 +210,7 @@ For `gitlog` the pty and the core together take about what the pty alone
 does: the kernel's `ONLCR` work in `cat`'s writes (`geng-plan.md` §1.2)
 runs while the core parses. For `ls` and `cup` the sum shows. Alacritty in a window, from
 `geng-plan.md` §1.2: `ls` 236–268, `cup` 107–113, `gitlog` 309–314; those include its
-drawing and a shell's `cat`, so they are the bar the whole of visiterm has
+drawing and a shell's `cat`, so they are the bar the whole of puritty has
 to meet, not this probe alone. What the probe says is that the loop, the
 rows and the core leave the room.
 
@@ -288,7 +288,7 @@ none needed for the exit:
 
 ## 6. The environment
 
-- **Fonts on this machine** (Q13: the system's are what visiterm uses).
+- **Fonts on this machine** (Q13: the system's are what puritty uses).
   `fc-match monospace` is DejaVu Sans Mono. Present: Noto Sans Mono CJK in
   all five regions (JP, KR, SC, TC, HK) and Noto Sans CJK, Noto Sans Thai,
   Noto Serif Thai, Noto Looped Thai, Noto Color Emoji, Droid Sans Fallback,
@@ -344,7 +344,7 @@ In the order the build will meet them:
    it. **Leaning: put it in `os`**: a `Connection` that is a terminal of a
    given size, its master a handle that reads and writes as a pipe's does,
    and a resize. It keeps one copy of the pidfd, reaping and signal-mask
-   logic (`m3-os.md` D527, D531, D774) instead of a second in visiterm, and
+   logic (`m3-os.md` D527, D531, D774) instead of a second in puritty, and
    it is something `os` lacks for anyone. It is a geng-lang decision.
 2. **Scrolls found by the renderer** (§3.2). Leaning: the renderer, by row
    hashes; the core records no damage and no deltas. Revisit only if a
@@ -352,7 +352,7 @@ In the order the build will meet them:
 3. **The renderer's read of the core** (§3.3). Leaning: `Vt.View` in the
    core's package, so it reads the screen's own representation with no
    copy; its display list is the boundary to C.
-4. **A second host for `ssh -X`.** Which machine should run visiterm
+4. **A second host for `ssh -X`.** Which machine should run puritty
    remotely for the exit's measurement? Until then, an X connection over
    TCP on this machine stands in for the bytes, which are the same, and not
    for the latency.
@@ -378,8 +378,8 @@ is open.
 
 **D1024 (geng-lang) · A pty is `os`'s.** `Os.Process` starts a program on a
 pty as a terminal `Connection` of a given size; the master is a handle that
-reads and writes as a pipe's does, and resizes (geng-lang `m4-visiterm.md`
-§VA57). visiterm has no `pty` package (`geng-plan.md` §5). It is built in
+reads and writes as a pipe's does, and resizes (geng-lang `m4-puritty.md`
+§VA57). puritty has no `pty` package (`geng-plan.md` §5). It is built in
 geng-lang, designed first in `m3-os.md`; until then §4's probe stands in.
 
 **V18 · The renderer finds scrolls; the core records no damage.** The
@@ -523,7 +523,7 @@ takes them; and the terminal's read waits on §OS27's question.
    is missed, and not built now.
 3. **`ssh -X` from `192.168.1.100`.** Its key is not authorized here:
    `ssh-copy-id -i ~/.ssh/id_ed25519.pub gram@192.168.1.100` from this
-   machine, after checking the fingerprint above. visiterm and the X
+   machine, after checking the fingerprint above. puritty and the X
    libraries also have to build or be copied there.
 
 ### 12.6 `ssh -X` from gmktec7, and the answers (2026-11-02)
@@ -963,7 +963,7 @@ The probe on gmktec7, its display this machine's Xvfb, `typo` here:
   stays 0.24–0.33 ms. The 29 ms tails came in a run whose pings reached
   28 ms. In a later run whose pings stayed within 3.5–4.8 ms, the p95 was
   5.2.
-- **Nothing to win in visiterm.** Nothing in the path waits on a reply;
+- **Nothing to win in puritty.** Nothing in the path waits on a reply;
   the X requests are written and flushed.
 - **The keymap.** It costs 36–39 ms to load over the link, against
   0.35–0.74 ms here: `xkb_x11_keymap_new_from_device` makes its requests
@@ -1026,7 +1026,7 @@ to build for it. ETX's number is recorded beside gmktec7's in phase 6.
 ## 15. GC pauses with the renderer on the loop (2026-11-02)
 
 §7's seventh item. G7's budget is 16 ms a pause and its goal 4 ms
-(geng-lang `m4-visiterm.md` §VA7). Phase 0 measured it on a probe's heap
+(geng-lang `m4-puritty.md` §VA7). Phase 0 measured it on a probe's heap
 of joined pages, 3.0–3.7 ms at four and eight panes (§VA7.7). This is the
 real core, with the renderer's allocation on top: a display list a frame,
 the shadow, and the loop's race each turn.
@@ -1295,7 +1295,7 @@ Xvfb ran at `-dpi 96`, the probe's FreeType size, so the Xft terminals'
 cells match the probe's (9 px wide; xterm's and st's 18 px high to the
 probe's 17: windows 1444×904 and 1440×850). It ran without MIT-SHM, as a
 server across ssh is: a terminal that would put a frame in shared memory
-then sends it on the wire. No other drawer here uses it. visiterm
+then sends it on the wire. No other drawer here uses it. puritty
 babea81, the compiler 58d59f90; two runs of each, and a third of xterm
 (below).
 

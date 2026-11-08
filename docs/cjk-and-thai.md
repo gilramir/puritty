@@ -1,8 +1,8 @@
-# CJK, Thai and grapheme clusters: what the references do, and what visiterm needs
+# CJK, Thai and grapheme clusters: what the references do, and what puritty needs
 
 Requirement: Korean, Chinese, Japanese and Thai must render well, including grapheme
 clusters. This doc compares how the five reference terminals handle these scripts and
-turns that into design rules for visiterm. §10 covers a related requirement: hosts
+turns that into design rules for puritty. §10 covers a related requirement: hosts
 that use the legacy Korean encoding EUC-KR instead of UTF-8. The summary is folded
 into [`synthesis.md`](synthesis.md) §3.4, §5.3, §6.5 and §9.
 
@@ -38,7 +38,7 @@ pinned versions.
 - **Han unification needs a language setting.** The same codepoint (直, 骨, 返) has
   different correct shapes for Japanese, Simplified Chinese, Traditional Chinese and
   Korean. Most references rely on the OS locale; WezTerm hard-codes HarfBuzz language
-  `en` and passes an empty locale to DirectWrite. visiterm needs a per-profile CJK
+  `en` and passes an empty locale to DirectWrite. puritty needs a per-profile CJK
   language that feeds font fallback *and* shaping (§5.2).
 - **Wide glyphs need deliberate fitting.** CJK glyphs are 1 em wide; a 2-cell box in a
   typical Latin mono font is ~1.2 em. Options: left-aligned at natural size
@@ -108,7 +108,7 @@ and lines wrap in the wrong place. The cases that matter for these scripts:
 
 Hangul and Thai mostly agree across models. The disagreements are SARA AM's cell
 structure (Ghostty and WT make one wide cell where wcwidth implies two narrow ones;
-visiterm uses two narrow cells, §2.2) and the ambiguous characters.
+puritty uses two narrow cells, §2.2) and the ambiguous characters.
 
 ### 2.2 SARA AM and other spacing marks
 
@@ -127,7 +127,7 @@ The references differ:
 The column count agrees in all cases, so cursor positions stay in sync. What differs is
 whether cursor movement and selection treat กำ as one unit.
 
-**Tentative choice for visiterm** (not final; open to revisiting): SARA AM takes its
+**Tentative choice for puritty** (not final; open to revisiting): SARA AM takes its
 own narrow cell in every width mode, so arrow keys and selection treat กำ as two
 units, as legacy terminals and wcwidth do.
 Consequences:
@@ -140,7 +140,7 @@ Consequences:
   over the consonant (and above any tone mark), so that ink lands in the previous cell
   (see §4 and the ink-extent rule in §9).
 - Applications using mode 2027 expect one cluster here. Column totals still agree, so
-  cursor positions stay in sync; only visiterm's own cursor and selection units differ.
+  cursor positions stay in sync; only puritty's own cursor and selection units differ.
 - Indic spacing vowel signs (Mc) are not covered by this decision; they follow UAX #29
   for now.
 
@@ -200,7 +200,7 @@ base and its marks. The references show three behaviours:
   the second half of wide cells. No per-cluster cap.
 - Alacritty caps marks at 9, PuTTY at 32 (then U+FFFD).
 
-For visiterm: Ghostty's side table, bounded by **bytes per cluster** (enough for a Thai
+For puritty: Ghostty's side table, bounded by **bytes per cluster** (enough for a Thai
 consonant with three marks, a full Hangul syllable, and long emoji ZWJ sequences)
 rather than a small mark count.
 
@@ -259,7 +259,7 @@ Lessons:
 - Cell height in every reference comes from the **primary font only**; fallback fonts
   never influence it. Only manual line-height settings exist.
 
-**For visiterm:**
+**For puritty:**
 
 - Don't clip glyphs to their cell. Draw backgrounds for the whole damaged region,
   then glyphs.
@@ -290,7 +290,7 @@ DejaVu Sans Mono ≈0.6, Consolas 0.55, Iosevka 0.5), so two cells are 1.0–1.2
 4. **Shrink only glyphs that overflow:** WezTerm scales a glyph down if it's wider than
    2.25 cells.
 
-For visiterm: Ghostty's ideograph-width scaling, then centre horizontally in the 2-cell
+For puritty: Ghostty's ideograph-width scaling, then centre horizontally in the 2-cell
 box, align on the Latin baseline, and shrink only if it still overflows. Plus:
 
 - **PuTTY's "narrow" trick:** when the terminal says a character is 1 cell but the
@@ -342,7 +342,7 @@ right one:
 | PuTTY | Pango context language (GTK); optional explicit "font for wide (CJK) text" |
 
 There is no in-band escape sequence for language tagging (general knowledge), so it has
-to be configuration. **visiterm:** a per-profile CJK language (ja, ko, zh-Hans,
+to be configuration. **puritty:** a per-profile CJK language (ja, ko, zh-Hans,
 zh-Hant, zh-HK), defaulting from the OS locale, passed to all three of fontconfig,
 DirectWrite and the shaper; plus per-script or per-range font overrides (Ghostty's
 `font-codepoint-map`).
@@ -367,7 +367,7 @@ UTF-16 must emit surrogate pairs.
   atlas (tall fallback glyphs, emoji), it would clear every frame (inferred).
 
 Reading a Chinese or Japanese document can easily put thousands of distinct glyphs on
-screen over a few minutes. **visiterm:** several fixed-size atlas pages with LRU or
+screen over a few minutes. **puritty:** several fixed-size atlas pages with LRU or
 epoch eviction at page granularity, sized for CJK from the start, capped at the
 device's maximum texture size.
 
@@ -425,7 +425,7 @@ Nobody does this fully right:
   the target clause or caret inside the preedit. WT's `GetTextExt` ignores the range
   it is asked about.
 
-### 7.4 Design for visiterm
+### 7.4 Design for puritty
 
 - Draw the preedit as an **overlay**, never written into the grid, measured with the
   pane's width model and **shaped** like normal text, keeping combining marks.
@@ -462,7 +462,7 @@ Nobody does this fully right:
 
 ---
 
-## 9. Rules for visiterm
+## 9. Rules for puritty
 
 1. **Clusters in cells:** UAX #29 incl. GB6–8, GB9a (except SARA AM, rule 3), GB9c; side-table storage bounded by
    bytes; streaming that re-opens the previous cell (Ghostty/WT).
@@ -485,7 +485,7 @@ Nobody does this fully right:
    overrides.
 8. **Bundle or recommend** a CJK and Thai fallback set (Noto Sans CJK / Noto Sans Mono
    CJK, Noto Sans Thai), since no reference bundles one. *Decided 2026-10-30 (Q13,
-   `geng-plan.md` §9.3): recommend, not bundle; visiterm uses the system's.*
+   `geng-plan.md` §9.3): recommend, not bundle; puritty uses the system's.*
 9. **Atlas pages with LRU eviction**, sized for CJK; LRU for server-side X11 glyph sets.
 10. **Async font fallback** (WezTerm), invalidating only affected rows, not the whole
     shape cache.
@@ -528,7 +528,7 @@ shows their Korean output as garbage and sends them UTF-8 they can't read.
 - **xterm** handles non-UTF-8 locales by running the shell under `luit`, a filter that
   converts between the locale's encoding and UTF-8 (general knowledge).
 
-So visiterm needs its own conversion. PuTTY is prior art for the setting and its UI
+So puritty needs its own conversion. PuTTY is prior art for the setting and its UI
 only.
 
 ### 10.2 Facts about the encoding
@@ -562,7 +562,7 @@ General knowledge; check against the WHATWG Encoding Standard and glibc's charma
 1. **A "remote character set" setting per profile:** UTF-8 (default), EUC-KR or
    CP949.
    - **Linux local PTY:** default from the process locale (`nl_langinfo(CODESET)`
-     after `setlocale(LC_ALL, "")`). This covers the remote X11 case, where visiterm
+     after `setlocale(LC_ALL, "")`). This covers the remote X11 case, where puritty
      itself runs on an RHEL8 host and inherits EUC-KR from the login environment.
    - **SSH** (system `ssh` in a PTY on Linux, the embedded client on Windows): the
      terminal can't learn the remote locale, so the setting goes in the host profile.
@@ -601,7 +601,7 @@ General knowledge; check against the WHATWG Encoding Standard and glibc's charma
    model (§2.3).
 6. **Selection and copy need nothing extra.** The grid is Unicode, so copied text is
    UTF-8.
-7. **X11 hygiene when visiterm runs in an EUC-KR locale** (general knowledge):
+7. **X11 hygiene when puritty runs in an EUC-KR locale** (general knowledge):
    - Use `Xutf8LookupString`, not `XmbLookupString`, for XIM commits; the latter
      returns the locale's encoding.
    - Clipboard: request `UTF8_STRING`, and fall back to `COMPOUND_TEXT` for old
@@ -624,7 +624,7 @@ whether the outer terminal handles UTF-8 (general knowledge). To check:
 
 - whether EUC-KR written by a program inside tmux survives tmux's own parsing, in
   normal and `-CC` mode;
-- in `-CC` mode, whether converting `%output` bytes in visiterm is enough, or whether
+- in `-CC` mode, whether converting `%output` bytes in puritty is enough, or whether
   `capture-pane` and reattach show mangled text;
 - which tmux version RHEL8 ships. If it is older than 3.2, the flow-control features
   in [`synthesis.md`](synthesis.md) §7.3 are not available.

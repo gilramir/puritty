@@ -1,4 +1,4 @@
-/* sel: an X selection client in xcb, as visiterm's would be
+/* sel: an X selection client in xcb, as puritty's would be
  * (docs/phase3-select.md). Times what a paste and a copy cost.
  *
  *   sel get SELECTION TARGET   ask for SELECTION as TARGET, INCR included;
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
   xcb_create_window(c, 0, win, s->root, 0, 0, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_ONLY, s->root_visual,
                     XCB_CW_EVENT_MASK, &mask);
   A_INCR = atom("INCR");
-  A_PROP = atom("VISITERM_SEL");
+  A_PROP = atom("PURITTY_SEL");
   A_TARGETS = atom("TARGETS");
   A_UTF8 = atom("UTF8_STRING");
   A_STRING = XCB_ATOM_STRING;

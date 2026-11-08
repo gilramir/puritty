@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the c-call probe with devbox's clang (geng-lang's) and libxcb from
-# visiterm's devbox, which pkg-config finds through the package's [native]
-# table (geng-lang D890). Run it inside visiterm's devbox: `devbox run ./build.sh`.
+# puritty's devbox, which pkg-config finds through the package's [native]
+# table (geng-lang D890). Run it inside puritty's devbox: `devbox run ./build.sh`.
 set -e
 cd "$(dirname "$0")"
 R=/home/gram/prj/geng-lang

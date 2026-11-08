@@ -7,8 +7,8 @@ window's picture is held to its pin, corpus/pixels/NAME.png, pixel for
 pixel.
 
 What is drawn depends on the fonts, so the gate sees only its own: the
-packages FONTS names, built from the nixpkgs commit visiterm's devbox pins
-(Q13: the tests pin fonts; visiterm ships none), and a fontconfig file
+packages FONTS names, built from the nixpkgs commit puritty's devbox pins
+(Q13: the tests pin fonts; puritty ships none), and a fontconfig file
 that names their directories and nothing else, written to
 .harness-work/pixels/fonts.conf. FreeType, HarfBuzz, fontconfig and Xvfb
 are devbox's, from the same commit, so a picture changes only when the
@@ -28,7 +28,7 @@ in frames is also drawn in one, and the two pictures must be the same:
 what a later frame draws over, the cells whose ink reached into it among
 them, it must draw again (V40).
 
-usage (from visiterm's devbox, after harness/pixels/build.sh):
+usage (from puritty's devbox, after harness/pixels/build.sh):
     harness/pixels.py              every case
     harness/pixels.py -f thai      cases whose name contains "thai"
     harness/pixels.py --update     write the pins; look at each before
@@ -269,7 +269,7 @@ def main():
     if not DRIVER.exists():
         sys.exit("pixels.py: build harness/pixels/core-pixels first (harness/pixels/build.sh)")
     if shutil.which("Xvfb") is None:
-        sys.exit("pixels.py: no Xvfb; run from visiterm's devbox")
+        sys.exit("pixels.py: no Xvfb; run from puritty's devbox")
     conf = write_fonts_conf()
     cases = sorted(c for c in CASES.glob("*.txt") if a.filter in c.stem)
     xvfb, display = start_xvfb()

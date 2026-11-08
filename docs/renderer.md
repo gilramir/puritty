@@ -5,7 +5,7 @@ Status: **survey, answered 2026-11-02: Gilbert took §R5's five leanings
 Gilbert took the leanings of what the pixel gate found (§R14, §R15:
 V40–V42); V40 and V41 are built (§R16, §R17; with V43, a change to V24
 he accepted). Step 6, the exit, is done: over `ssh -X` from gmktec7
-to this machine's Xvfb, and by Gilbert at gmktec7's desktop with visiterm
+to this machine's Xvfb, and by Gilbert at gmktec7's desktop with puritty
 running here (§R18). Phase 2's renderer is finished.** Phase 2 of [`geng-plan.md`](geng-plan.md) §6 builds the
 window: the X11 renderer, its fonts, the loop that runs a shell in it. Its
 survey is [`phase2-window.md`](phase2-window.md), whose leanings are all
@@ -15,7 +15,7 @@ in probes. This document starts the real renderer the way
 probes do and do not do, the places where the probes and the plan disagree,
 one measurement the plan asks for that nothing has made, and a build order.
 
-Measured against visiterm b4566ea, geng-lang c28c234b, the compiler
+Measured against puritty b4566ea, geng-lang c28c234b, the compiler
 58d59f90, on devbox's Xvfb at 96 dpi.
 
 ---
@@ -161,7 +161,7 @@ What each step needs decided is in brackets.
 3. **`packages/x11`** [§R5.1, §R5.3, §R5.4], from the probe's C: the frame's
    styles, the attributes, the cursor, a resize, focus, close and title;
    the glyph set's bound.
-4. **The app**, `visiterm`, from the probe's loop: `$SHELL`, the exit
+4. **The app**, `puritty`, from the probe's loop: `$SHELL`, the exit
    status, a resize carried to the core and the pty, the paint cooldown and
    the synchronized-output timeout, config through TOML and
    `gren-argparse`.
@@ -280,7 +280,7 @@ not an A/B of one build against another.
 ## R9. Step 3 built: `packages/x11`, and the cursor in the view (2026-11-02)
 
 **The package** (V36), `packages/x11`: `X11.geng`, the API, and
-`src/Ext/visiterm_x11.c`, the probe's C taken over and the probe's own
+`src/Ext/puritty_x11.c`, the probe's C taken over and the probe's own
 package (`probes/geng/x11/pkg`) removed. The x11 probe builds on it.
 
 - `X11.open` takes a `Settings` record (cells, the font as fontconfig names
@@ -317,7 +317,7 @@ What the C draws that the probe's did not:
   colour pictures freed. V37 said the next frame redraws the screen; it
   need not, since the pixmap keeps what the old glyphs drew, so nothing is
   redrawn and glyphs are uploaded again as frames use them.
-- `WM_DELETE_WINDOW`, `WM_CLASS` `visiterm`, and the focus, reported once
+- `WM_DELETE_WINDOW`, `WM_CLASS` `puritty`, and the focus, reported once
   each time it changes (pointer-only focus events left out).
 
 **The cursor, in `Vt.View`.** C keeps nothing between frames (V35), so
@@ -371,12 +371,12 @@ dies with `DecodeProblem` and the outline as JSON (geng-lang
 
 ## R10. Step 4 built: the app (2026-11-02)
 
-`app/` is visiterm: `Main.geng`, the loop; `Config.geng`, the settings;
+`app/` is puritty: `Main.geng`, the loop; `Config.geng`, the settings;
 `Keys.geng`, what a key sends. It builds with `app/build.sh` from
-visiterm's devbox, and is native (`runtime = "os"`).
+puritty's devbox, and is native (`runtime = "os"`).
 
-**Settings** are a TOML file, `$XDG_CONFIG_HOME/visiterm/config.toml` or
-`~/.config/visiterm/config.toml`, read with `gren-toml`; none at all is
+**Settings** are a TOML file, `$XDG_CONFIG_HOME/puritty/config.toml` or
+`~/.config/puritty/config.toml`, read with `gren-toml`; none at all is
 the defaults. `Config.geng`'s comment lists every key: the window's
 columns, rows and title; the font's family, size, fallback language and
 glyph cache (V37, 4 MB at least, since a smaller cap than a screen's
@@ -384,14 +384,14 @@ glyphs uploads them every frame, §R9); the default colours and whether
 bold brightens; the cursor's blink; the frame interval and the
 synchronized-output timeout; the scrollback in lines; the program. A key
 the file does not know is refused, naming it and the keys there are, as
-the compiler's own manifest does, and visiterm exits 2; so does a value
+the compiler's own manifest does, and puritty exits 2; so does a value
 out of its range. The fallback language defaults to the locale's
 (`LC_ALL`, `LC_CTYPE`, `LANG`, as fontconfig names it: `ja`, `ko`,
 `zh-tw`), as V25 says.
 
 **The program** is the settings' `program.command`, or `$SHELL`, or
 `/bin/sh`, on `os`'s terminal (D1024) with `TERM=xterm-256color` and
-`COLORTERM=truecolor` added to the environment. visiterm ends with the
+`COLORTERM=truecolor` added to the environment. puritty ends with the
 program's exit status (1 when a signal ended it); when the window is
 closed, it asks the program to end (`Process.kill`, SIGTERM) and exits 0.
 
@@ -421,7 +421,7 @@ program runs:
 
 | what | how | seen |
 |---|---|---|
-| exit status | `sh -c '…; exit 3'` | visiterm exits 3 |
+| exit status | `sh -c '…; exit 3'` | puritty exits 3 |
 | title | OSC 2 `a title` | `poke` finds the window by it |
 | synchronized output, a 1 s timeout | `A`, then under `?2026h` `B`, 0.6 s, `C`, `?2026l` | 0.3 s into the hold only `A` shows; after it `ABC` |
 | the same, 150 ms | | 0.3 s into the hold `AB` shows |
@@ -434,7 +434,7 @@ Not checked: typing into a shell (the key path is the probe's, measured in
 phase2 §14, with DECCKM added); a desktop's window manager; `ssh -X`. Those
 are step 6's.
 
-**Its command line is not built** (§R11): visiterm reads no arguments
+**Its command line is not built** (§R11): puritty reads no arguments
 yet.
 
 ## R11. For Gilbert: `gren-argparse` on `os`
@@ -444,7 +444,7 @@ which is a `node` package: `Argparse.Program`, the runner, uses `Node`,
 `Terminal` and `Node.setExitCode`, and `Argparse.Parser`'s `pathParser`
 answers node's `FileSystem.Path`. The rest of the parser and
 `Argparse.PrettyPrinter` use nothing of a platform. An `os` program cannot
-depend on a `node` package, so visiterm cannot use it as it is.
+depend on a `node` package, so puritty cannot use it as it is.
 
 **Leaning: make it two packages.** `gren-argparse` 3.0.0 becomes
 `runtime = "any"`: `Argparse.Parser` and `Argparse.PrettyPrinter`, with
@@ -455,7 +455,7 @@ runners are each platform's: `Argparse.Program` for node in a package of
 its own (`gren-argparse-node`), and one for `os` beside it
 (`gren-argparse-os`), each a few hundred lines over the same parser. The
 cost is a major version: node programs import their runner from a new
-package and pass `pathParser` a function. visiterm then takes
+package and pass `pathParser` a function. puritty then takes
 `gren-argparse` and `gren-argparse-os`, and its command line is `-e
 PROGRAM ARGS...`, `--config FILE`, `--title` and `--class` to begin with.
 
@@ -482,13 +482,13 @@ columns, as a pty nobody has sized does, where they wrapped at their
 seven of them and `os-no-subcommand` natively, and runs the suite, 136
 pass.
 
-**visiterm's command line**, `app/src/Main.geng`:
+**puritty's command line**, `app/src/Main.geng`:
 
-    visiterm [--config FILE] [--title TITLE] [PROGRAM ARGS...]
+    puritty [--config FILE] [--title TITLE] [PROGRAM ARGS...]
 
 `--config` names the settings file, which must then be there; `--title`
 and a program override the settings'. `--` before a program keeps its own
-flags from being taken for visiterm's (`visiterm -- vim -O a b`), since
+flags from being taken for puritty's (`puritty -- vim -O a b`), since
 the parser cannot take one argument and then the rest. `--help` and
 `--version` are the runner's; a bad flag is reported on standard error
 with exit 1, and a bad settings file or a window that will not open with
@@ -616,7 +616,7 @@ What it found:
 3. **The CJK region** (§R13.1). Leaning: **rely on the system's rules**,
    as now. Mint has them from Debian's fonts-noto-cjk (other
    distributions not checked); a system without them draws Japanese forms for every language, which a
-   per-range font setting (C§9 rule 7, phase 3) can override. visiterm
+   per-range font setting (C§9 rule 7, phase 3) can override. puritty
    naming Noto's regions itself would tie it to one font family.
 
 ## R15. Gilbert's answers (2026-11-02)
@@ -633,7 +633,7 @@ the frame when it redraws a cell they reach into.
 whole pixels, before the exit.
 
 **V42 · The CJK region is the system's fontconfig rules'.** Gilbert
-expects visiterm to want its own override later, Chinese fonts above all;
+expects puritty to want its own override later, Chinese fonts above all;
 it is registered with C§9 rule 7's per-range font settings in phase 3
 (`geng-plan.md` §6).
 
@@ -788,7 +788,7 @@ The exit (`geng-plan.md` §6, phase 2) is a shell on this desktop and over
 and `:0` accepts a connection and never answers its setup, as in phase2
 §6. That half waits on Gilbert (below).
 
-**Over `ssh -X`.** visiterm, built here, runs on gmktec7 as it is: its 23
+**Over `ssh -X`.** puritty, built here, runs on gmktec7 as it is: its 23
 libraries are in gmktec7's nix store, and it finds gmktec7's own fonts
 through fontconfig (DejaVu Sans Mono for `monospace`). This shell has no
 desktop, so the display is this machine's Xvfb, through `ssh -X`: the X
@@ -796,14 +796,14 @@ server is here and the program there, as the exit's shape is; a byte
 counter (`probes/geng/x11/xcount.py`) sits between the ssh client and the
 server.
 
-- **A shell.** visiterm with no program runs gmktec7's `$SHELL` (bash),
-  which titles the window `gram@gmktec7: ~/visiterm-exit`; typed into
+- **A shell.** puritty with no program runs gmktec7's `$SHELL` (bash),
+  which titles the window `gram@gmktec7: ~/puritty-exit`; typed into
   with xdotool, `echo` and `printf` print `80x24`, `TERM=xterm-256color`,
   an italic, a wrapped line and the prompt's colours, and `exit 7` ends
-  visiterm, and ssh, with status 7.
+  puritty, and ssh, with status 7.
 - **A resize and a close**, made by `poke`: `stty size` in the program
   reads 24 80, then 29 100 after the window is made 900×500; a close ends
-  visiterm with status 0 and leaves no program behind on gmktec7.
+  puritty with status 0 and leaves no program behind on gmktec7.
 - **gmktec7's fonts**: Thai, Hangul, emoji, a flag, Devanagari, box
   drawing and the attributes draw from its own faces. Han did not (below).
 
@@ -822,7 +822,7 @@ hatching. 36 cases pass; 1,000 fuzzed screens draw the same in frames.
 **Found, not fixed: a keymap changed under a key.** Characters xdotool
 types that the keymap lacks (Thai, Han, box drawing) arrive as others.
 xdotool maps a spare keycode, presses it and maps it back at once;
-visiterm reloads its keymap on XKB's map notify, by asking the server,
+puritty reloads its keymap on XKB's map notify, by asking the server,
 which by then has the old map again. A person's keyboard does not remap a
 key per keystroke; an input method or a layout switch changes the map and
 keeps it. Input is phase 3's, and it is registered there.
@@ -841,7 +841,7 @@ to the server, every run's replies the same 16,900):
 local figures within a few percent: the forwarding adds nothing to the X
 stream. Against phase2 §16's references: core-font xterm's vim scroll is
 500 a line and its `htop` 7.5–7.8 KB a second; Xft xterm's vim scroll
-935. visiterm is level with core-font xterm on a vim scroll, where §R9's
+935. puritty is level with core-font xterm on a vim scroll, where §R9's
 renderer was some 20% below it (404–417 a line) before V40 drew words
 whole, and above it on `htop`, as §R9's was (8.2–8.5 KB a second); §R16's
 unsafe-to-break links are what would win the scroll back.
@@ -849,15 +849,15 @@ The counter is a byte counter, not a decoding tracer; xtrace's per-request
 breakdown was not needed to answer the exit's question.
 
 **What Gilbert's half is.** On his desktop, logged in, in a terminal:
-`~/prj/visiterm/app/visiterm` runs his `$SHELL` in a window. The things
+`~/prj/puritty/app/puritty` runs his `$SHELL` in a window. The things
 only a desktop shows: a window manager's resize, focus and close; a
 compositor's frame timing; his keyboard, including any layout switch;
 Fira Code (`[font] family = "Fira Code"` in
-`~/.config/visiterm/config.toml`); tmux and vim at full size.
+`~/.config/puritty/config.toml`); tmux and vim at full size.
 
 **Gilbert's half (2026-11-02).** Gilbert ran `ssh -X nene
-~/prj/visiterm/app/visiterm` at gmktec7's desktop, the other direction
-from the runs above: visiterm here, its window on a real desktop with a
+~/prj/puritty/app/puritty` at gmktec7's desktop, the other direction
+from the runs above: puritty here, its window on a real desktop with a
 window manager and compositor. "It works over ssh -X from gmktec7; it
 scrolls very fast." His screen is large, and the font was very small: the
 C sizes every face at 96 dpi, whatever the screen's, and the default is

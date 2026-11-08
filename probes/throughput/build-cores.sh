@@ -3,7 +3,7 @@
 #   OUT/ghostty/bin/ghostty-bench   Ghostty's own terminal-stream benchmark, from
 #                                   vendor/ghostty at REV, with ghostty-scrollback.patch
 #   OUT/alacritty-core              alacritty-core/, on vendor/alacritty's alacritty_terminal
-# Run from visiterm's root inside its devbox (Zig 0.16). Rust comes from the
+# Run from puritty's root inside its devbox (Zig 0.16). Rust comes from the
 # same nixpkgs commit as devbox.json, since alacritty_terminal needs rustc 1.88.
 #
 # usage: devbox run -- probes/throughput/build-cores.sh OUT

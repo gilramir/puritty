@@ -1,6 +1,6 @@
-# Plan: visiterm for Linux, written in Geng
+# Plan: puritty for Linux, written in Geng
 
-Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of visiterm itself is built yet. Phase 1 is surveyed, 2026-10-24 ([`phase1-core.md`](phase1-core.md)): no grid of immutable rows meets the budget, and `Array.Builder`, which halves it, has a soundness bug in Geng to fix first; its questions wait on Gilbert. The core is begun, 2026-10-29 ([`vt-core.md`](vt-core.md)): `vt/` agrees with libghostty-vt on the 98 cases of the replay corpus and meets the throughput budget on all thirteen inputs.** It turns [`synthesis.md`](synthesis.md)
+Status: **plan, 2026-10-23; Gilbert answered §9 the same day. Phase 0 is done, 2026-10-24: G1, G8, G6, G2 and G5 are built in geng-lang, G7's pauses are measured and answered, and the throughput budget is set (§1.3). Nothing of puritty itself is built yet. Phase 1 is surveyed, 2026-10-24 ([`phase1-core.md`](phase1-core.md)): no grid of immutable rows meets the budget, and `Array.Builder`, which halves it, has a soundness bug in Geng to fix first; its questions wait on Gilbert. The core is begun, 2026-10-29 ([`vt-core.md`](vt-core.md)): `vt/` agrees with libghostty-vt on the 98 cases of the replay corpus and meets the throughput budget on all thirteen inputs.** It turns [`synthesis.md`](synthesis.md)
 into work, for the Linux product only, in Geng (`~/prj/geng-lang`, the Gren fork with
 a native C backend). The Windows product, the embedded SSH client and ConPTY are out
 of scope.
@@ -45,7 +45,7 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
   - **No compiler check of a C row against its declaration.** A wrong type in a C row
     corrupts memory silently. That is not acceptable for this app (G8).
   - **Two platforms, in order** (Gilbert, 2026-10-23). Platform 1 is this Linux
-    Mint machine, a local X11 desktop: visiterm is built and used there first.
+    Mint machine, a local X11 desktop: puritty is built and used there first.
     Platform 2 is RHEL8 under ETX, which needs glibc 2.28, kernel 4.18 and 2018's
     HarfBuzz, while Geng's `os` package currently needs pidfds (§1.1, G10). It is
     its own phase, after daily use on Mint (phase 6).
@@ -60,7 +60,7 @@ references name the geng-lang document and decision (`ffi.md` F4, D757).
 - **Eight phases, 0 to 7** (§6), each starting as a measured survey, as geng-lang's work does.
   The terminal becomes usable for daily work at the end of phase 3.
 - **Gilbert answered the questions** on 2026-10-23 (§9.1). Mint is platform 1;
-  RHEL8 is required as platform 2, where visiterm runs in an ETX remote X11 desktop
+  RHEL8 is required as platform 2, where puritty runs in an ETX remote X11 desktop
   on a VM with no GPU, so the server-side X11 renderer is the product's main path
   on both. One process per window. Every
   recommendation was taken. Geng-side tracking is in geng-lang's register (D888–D890).
@@ -85,7 +85,7 @@ with their build scripts. Every run is shown.
 | The same grid probe on node | Not measured: the build succeeded but the program printed nothing on the node runtime, and it was not pursued. Native is the target |
 
 **The two workarounds for libxcb**, which were G1's evidence. G1 is built since
-(geng-lang D890–D892, `m4-visiterm.md` §VA2): the probe's package now names `xcb`
+(geng-lang D890–D892, `m4-puritty.md` §VA2): the probe's package now names `xcb`
 in a `[native]` table, and `probes/geng/c-call/app/build.sh` builds it with devbox's
 clang and Nix's libxcb from this repository's `devbox.json`, with no workaround
 (`devbox run probes/geng/c-call/app/build.sh`). What was measured first:
@@ -109,7 +109,7 @@ reference terminals on the same inputs (§6, phase 0 item 7).
 - Every task runs on one thread, and `Task.parallel` is `Task.concurrent` natively.
 - The collector is a copying nursery in front of conservative, non-moving Boehm.
   Marking stops the program. Pause times on a heap like this one's are measured
-  since (phase 0 item 6, geng-lang `m4-visiterm.md` §VA7): over the budget with a
+  since (phase 0 item 6, geng-lang `m4-puritty.md` §VA7): over the budget with a
   row per object, under it with a page per `Bytes`, which is how scrollback is kept
   (§3.3).
 - `SIGINT` and `SIGTERM` end the program at once, and release handlers don't run.
@@ -121,7 +121,7 @@ reference terminals on the same inputs (§6, phase 0 item 7).
 
 ### 1.1 RHEL8, measured in a container
 
-Gilbert's answer to Q4: visiterm must run on RHEL8 too, while development stays on
+Gilbert's answer to Q4: puritty must run on RHEL8 too, while development stays on
 Mint with devbox (geng-lang D889). An AlmaLinux 8 container (`podman`,
 `almalinux:8`, 2026-10-23) shows RHEL8's userland. It can't show RHEL8's kernel,
 which is 4.18. §9 asks Gilbert for what only a real host shows.
@@ -139,8 +139,8 @@ which is 4.18. §9 asks Gilbert for what only a real host shows.
 | fcitx5 | **not packaged** | — | The RHEL8 IME is **ibus 1.5.19** |
 | libthai | 0.1.27 | runtime only | Fine |
 | Mesa EGL | 23.1.4 | — | GLES 3 possible locally; irrelevant over `ssh -X` |
-| Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts come from the system; visiterm ships none (Q13, §9.3) |
-| **tmux** | 2.7 packaged; **3.6 installed** where visiterm will run | 3.4 | The packaged 2.7 predates 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Gilbert's hosts have 3.6, so visiterm requires 3.2 (Q11) |
+| Noto Sans CJK, Noto Sans Thai | packaged (2023, 2016) | — | Fallback fonts come from the system; puritty ships none (Q13, §9.3) |
+| **tmux** | 2.7 packaged; **3.6 installed** where puritty will run | 3.4 | The packaged 2.7 predates 3.2's per-window `refresh-client -C @win` and `pause-after` flow control (S§7.3 items 3 and 5). Gilbert's hosts have 3.6, so puritty requires 3.2 (Q11) |
 
 ### 1.2 The reference terminals' throughput, measured 2026-10-24
 
@@ -251,9 +251,9 @@ beside them: `ls` in 149–156 ms, `cup` in 222–230 ms (113 ns a cell).
 
 ### 1.3 The core's throughput budget
 
-**Headless, on this machine, visiterm's core takes each input of §1.2 at least
+**Headless, on this machine, puritty's core takes each input of §1.2 at least
 as fast as Alacritty's core does with its default 10,000 lines of scrollback,
-while keeping visiterm's own scrollback** (100,000 lines a pane, as G7
+while keeping puritty's own scrollback** (100,000 lines a pane, as G7
 measured). It is geng-lang D902, and phase 1's exit holds the core to it:
 
 | input | budget | | input | budget |
@@ -276,9 +276,9 @@ Why this bar:
 3. **Ghostty's core is not the bar**, though it is faster on most inputs: it is
    slower on three, and the window it feeds is slower than Alacritty's here.
    Its numbers stay as the reference for what a core can do.
-4. **It is necessary, not sufficient.** visiterm parses and renders on one
+4. **It is necessary, not sufficient.** puritty parses and renders on one
    thread (§3.1); Alacritty parses on a thread of its own. Phase 2 measures
-   the frame cost on the loop and the same `cat`s in a visiterm window,
+   the frame cost on the loop and the same `cat`s in a puritty window,
    against Alacritty's times above.
 
 **Against it, the grid probe**: `ls` is under (152 ms against 195), though the
@@ -288,7 +288,7 @@ run, copies its 160-cell row and copies the 50-row array, about 210 words a
 cell. vte-cursor_motion is the same shape. This is the number §3.3 said G4
 waits for, but it is the probe's, not the core's: phase 1 measures the real
 core's cell write before G4 or an in-place update of a row in its grid is
-decided (geng-lang `m4-visiterm.md` §VA8).
+decided (geng-lang `m4-puritty.md` §VA8).
 
 **Development moved to a second machine the same day (§1.4), and the budget
 is measured again there**: its rule is the same, its numbers are §1.4's, and
@@ -501,7 +501,7 @@ attribute runs (WezTerm's scheme, S§5.2), suits immutable rows well. Whether a 
 an `Array Int` or a `Bytes` is measured, not guessed.
 
 **Cold scrollback is kept in pages, decided 2026-10-24** (geng-lang D901, from G7).
-When a page of 256 rows fills (1,024 since visiterm V33, `phase2-window.md` §15.6), its rows' text is joined into one `Bytes` and their
+When a page of 256 rows fills (1,024 since puritty V33, `phase2-window.md` §15.6), its rows' text is joined into one `Bytes` and their
 attribute runs into another, and the page, not the row, is the unit of cold storage.
 A cold row is read by slicing its page; reflow and search decode a page at a time.
 The screen and the page being filled stay rows. Pages sit in a ring (`Array.set`),
@@ -574,7 +574,7 @@ per build, adds `--cflags` to that package's C compile and appends `--libs` **af
 every object. A missing module is a build error that names the package and the
 module. This also needs a decision on **where libraries come from**:
 
-- devbox's Nix toolchain, with the libraries in visiterm's own `devbox.json`, so a
+- devbox's Nix toolchain, with the libraries in puritty's own `devbox.json`, so a
   build is reproducible; or
 - the system compiler and system libraries, which is what a release build for
   RHEL8 needs anyway (G10).
@@ -610,7 +610,7 @@ what `concurrency-native.md` explores, without a threaded scheduler.
 **G6 · A monotonic clock in `core`.** It is registered already. Frame pacing, the
 paint cooldown, the sync-output timeout and keepalives all need it.
 
-**G7 · A GC pause budget.** Phase 0 measures pauses with a heap like visiterm's:
+**G7 · A GC pause budget.** Phase 0 measures pauses with a heap like puritty's:
 100k lines of scrollback in several panes, during `cat` of a large file. The plan's
 target is that no pause exceeds one frame (16 ms), with 4 ms as the goal. Whatever is
 measured is written down, and the fix, if one is needed, is a geng-lang decision.
@@ -628,7 +628,7 @@ The same harness feeds identical input to libghostty-vt for the differential gat
 (§7). No language change is needed, only an embed ABI that carries `Bytes` in and
 out of an exported function efficiently. That is to be checked in phase 1.
 
-**G10 · Running on old Linux.** visiterm must run on RHEL8 (Q4, geng-lang D889):
+**G10 · Running on old Linux.** puritty must run on RHEL8 (Q4, geng-lang D889):
 glibc 2.28 and kernel 4.18 (§1.1). `os` starts children with `pidfd_spawn` or `posix_spawn`
 plus `pidfd_open`, and `pidfd_open` arrived in Linux 5.3, so `os` needs a fallback
 that is still safe against pid reuse. Whether RHEL8's kernel backports it has not
@@ -646,7 +646,7 @@ does not build. That is trivial, and it is noted so that it isn't forgotten.
 ## 5. New packages
 
 They start inside this repository, under `packages/`, as `[sources]` paths, the way
-geng-lang develops its own. A package that is useful outside visiterm moves out to
+geng-lang develops its own. A package that is useful outside puritty moves out to
 its own repository once its API settles (Q5).
 
 | Package | Kind | Contents |
@@ -662,12 +662,12 @@ its own repository once its API settles (Q5).
 | `gles` | C rows | EGL and GLES 3 for phase 5 |
 | `signal` | C rows | G2, if it doesn't go into `os` |
 
-The app itself, `visiterm`, holds the model, the update loop, the renderers' Geng
+The app itself, `puritty`, holds the model, the update loop, the renderers' Geng
 side, configuration and the C that executes display lists.
 
 System libraries all have runtime packages on this machine. HarfBuzz, xcb-xkb,
 xcb-imdkit, xkbcommon-x11, xcb-shm and libthai lack development headers here, so
-visiterm's devbox supplies them (G1).
+puritty's devbox supplies them (G1).
 
 ---
 
@@ -676,7 +676,7 @@ visiterm's devbox supplies them (G1).
 Each phase starts as a **survey document** that measures before building (the
 geng-lang habit). It ends with its gate passing and the documents saying what the
 code does. Geng-side work in a phase lands in geng-lang with its own decisions and
-gates, committed at the same checkpoint as the visiterm side.
+gates, committed at the same checkpoint as the puritty side.
 
 **Phase 0 · Groundwork (mostly geng-lang).**
 
@@ -696,8 +696,8 @@ gates, committed at the same checkpoint as the visiterm side.
    by the nursery, and the row crashed 5 runs of 5. A post costs about 170 ns a
    message from one thread (`answer/app/src/Bench.geng`); a row whose thread
    starts and answers once, about 82 µs, most of it the thread.
-6. G7: measure GC pauses on a visiterm-shaped heap. **Measured 2026-10-24**
-   (geng-lang `m4-visiterm.md` §VA7; `probes/geng/gcpause`). Minor collections
+6. G7: measure GC pauses on a puritty-shaped heap. **Measured 2026-10-24**
+   (geng-lang `m4-puritty.md` §VA7; `probes/geng/gcpause`). Minor collections
    are 0.3 ms at worst. Boehm's full collections stop the program about 7.5 ms
    for each 100,000 rows of scrollback kept as a `Bytes` per row: 16 ms at one
    pane of 100,000 lines, 31–38 ms at four, 57–62 ms at eight, so the budget
@@ -716,13 +716,13 @@ gates, committed at the same checkpoint as the visiterm side.
    core's throughput budget from that. **Measured 2026-10-24** (§1.2,
    `probes/throughput`): Alacritty is the fastest in a window on every input,
    and a shell's pty alone is a floor of about 140 MB/s of `ls`. **The budget**
-   (§1.3, geng-lang D902): headless, visiterm's core is at least as fast as
+   (§1.3, geng-lang D902): headless, puritty's core is at least as fast as
    Alacritty's core on each input. §1's grid probe meets it on `ls` and is 2.6×
    over on `cup`, a row copied for each cell.
 8. Moved to phase 6: RHEL8 is platform 2. Gilbert's run of
    `probes/rhel8/inspect.sh` is still welcome whenever it suits, since it costs
    nothing to look early.
-9. visiterm's `devbox.json` with the C libraries and Zig 0.16 (libghostty-vt's
+9. puritty's `devbox.json` with the C libraries and Zig 0.16 (libghostty-vt's
    minimum, for the oracle). **Done 2026-10-23**, from the nixpkgs commit geng-lang's
    clang and gcc come from: libxcb 1.17.0 (with render, xkb, renderutil 0.3.10,
    keysyms 0.4.1), xkbcommon 1.13.2, HarfBuzz 13.2.1, FreeType 2.14.3, fontconfig
@@ -768,7 +768,7 @@ Exit: runs a shell on **this Mint desktop**, and over `ssh -X` from another
 host, which stands in for ETX until phase 6. Bytes per update are
 measured with an X protocol tracer and recorded for `tail -f`, `htop` and a vim
 scroll. The C§9 script corpus renders correctly under the fonts the tests pin (Q13:
-visiterm ships none).
+puritty ships none).
 
 **Phase 3 · Input, clipboard, IME, EUC-KR.** *Survey begun 2026-11-02:
 [`phase3-input.md`](phase3-input.md): the IME matrix runs scripted on
@@ -803,11 +803,11 @@ ibus-hangul, Mozc, a pinyin IME) passes its scripted tests, and the EUC-KR corpu
 (C§10.5) passes. The time to rasterise a screen of ideographs not seen
 before, 25–40 ms in phase 2's survey, is measured in that daily use, and a
 C thread for it is decided then (V27, `phase2-window.md` §13).
-visiterm's own font settings for a script or range (C§9 rule 7), above
+puritty's own font settings for a script or range (C§9 rule 7), above
 all for Chinese, so the region of Han forms does not depend on the
 system's fontconfig rules (V42, `renderer.md` §R15).
 A keymap changed and changed back around one key (xdotool's typing of
-characters the keymap lacks) reaches visiterm after the change is undone,
+characters the keymap lacks) reaches puritty after the change is undone,
 since it reloads the keymap by asking the server (`renderer.md` §R18).
 The font's size from the screen's resolution (`Xft.dpi`, else its
 physical size) rather than a fixed 96 dpi, and a zoom at run time: on
@@ -819,7 +819,7 @@ wide (C§10.3 rule 5): the core's width table has no such setting yet.
 
 **Between phases 3 and 4 · Settings.** *Gilbert, 2026-11-04 and
 2026-11-06:* a user should not have to edit `config.toml`, and should never
-have to restart visiterm for a change. This was planned for the Windows
+have to restart puritty for a change. This was planned for the Windows
 work; Gilbert moved it ahead of phase 4. Designed in `settings-ui.md`, and
 placed by `feature-plan.md` §4, in this order:
 
@@ -828,10 +828,10 @@ placed by `feature-plan.md` §4, in this order:
 2. **A settings schema**: one table of every setting (key, type, bounds,
    default, label, description, search words, page), from which
    `Config.decode`, the window and the documented example all come.
-   Unknown keys and bad values are reported and visiterm starts with the
+   Unknown keys and bad values are reported and puritty starts with the
    rest, where today it exits.
 3. **The settings window**: its own top-level window beside the terminal,
-   drawn by visiterm as text cells, so the terminal is the live preview.
+   drawn by puritty as text cells, so the terminal is the live preview.
    Search over every page, a marker and a reset on each changed setting, a
    "Modified only" filter. Changes apply at once, with Undo. Opened with
    Ctrl+Comma or from a Ctrl+right-click menu. `gren-toml`'s `Toml.Edit`
@@ -846,7 +846,7 @@ surfaces, layout mapping, sizing with paused parsing, `%begin` matching, flow co
 the attach race, recorded-session tests. tmux 3.2 or later is required (Q11): an
 older tmux is refused with a message saying so, not served in a degraded mode.
 *Gilbert, 2026-11-04:* when phase 4 starts, the latest tmux is built and
-installed, and visiterm is made to work with it. tmux 3.7 added floating
+installed, and puritty is made to work with it. tmux 3.7 added floating
 panes and 3.8 made them usable (moved and resized by command, swapped,
 joined, kept above a zoomed pane), with modal panes beside them; 3.8's
 layout strings are a JSON subset that includes floating panes, which a
@@ -863,7 +863,7 @@ iTerm2's, then Kitty's. Begins with a survey; the questions for it are in
 `feature-plan.md` §5 (tmux control mode and images, image decoders on RHEL8,
 file transfer safety, memory limits, the oracle's gaps, bytes over ETX).
 
-**Phase 5 · The GPU renderer.** Local use on Mint only: on RHEL8 visiterm runs in
+**Phase 5 · The GPU renderer.** Local use on Mint only: on RHEL8 puritty runs in
 ETX on a VM with no GPU (Q10), where the X11 renderer is the path. It is an
 option, not a requirement: the X11 renderer serves Mint's local desktop too. EGL and GLES 3, the same display list, partial
 redraw with buffer age, runtime selection by S§6.4's rules, failure visible and never
@@ -872,7 +872,7 @@ fatal.
 **Phase 6 · Platform 2: RHEL8 under ETX.** G10: the pidfd question settled on a
 real RHEL8 kernel (`probes/rhel8/inspect.sh`), and a fallback in `os` if it needs
 one; the release build in an AlmaLinux 8 container against glibc 2.28, with pinned
-HarfBuzz, FreeType and xcb-imdkit linked in (Q12); every API visiterm uses checked
+HarfBuzz, FreeType and xcb-imdkit linked in (Q12); every API puritty uses checked
 against RHEL8's libxcb 1.13.1 and xkbcommon 0.9.1; ibus 1.5.19 with ibus-hangul in
 the IME matrix; the ETX X server's extensions checked, RENDER above all.
 
@@ -940,30 +940,30 @@ The main risk is a crash, and the plan attacks it on several fronts:
 - **Q3, G1's shape:** yes: a `[native] pkg-config` list in a package's `geng.toml`,
   libraries after the objects, Nix libraries for development and the gates, the
   AlmaLinux 8 container for releases (geng-lang D890).
-- **Q4, RHEL8:** visiterm must run on RHEL8, though development is on Mint with
-  devbox (geng-lang D889). **Mint comes first:** Gilbert uses visiterm on this
+- **Q4, RHEL8:** puritty must run on RHEL8, though development is on Mint with
+  devbox (geng-lang D889). **Mint comes first:** Gilbert uses puritty on this
   Mint machine first, and RHEL8 is platform 2 (phase 6). §1.1 has what a container showed.
 - **Q5, packages in this repository until their APIs settle:** yes.
 - **Q6, one process per top-level window:** yes (§3.5).
 - **Q7, the GPU renderer after daily use:** yes, and Q10 makes it a Mint-only
   feature.
-- **Q8, the register:** visiterm's own documents stay here. The work it asks of Geng
+- **Q8, the register:** puritty's own documents stay here. The work it asks of Geng
   and the issues it finds are tracked in geng-lang's register, under "The native
-  application: visiterm" (D888).
+  application: puritty" (D888).
 - **Q9, a real RHEL8 host:** `probes/rhel8/inspect.sh` was mailed to Gilbert, to run
   inside the ETX desktop. Its output settles G10 (pidfds on RHEL8's kernel) and says
   which extensions ETX's X server has, RENDER above all.
-- **Q10, how visiterm runs on RHEL8:** in an ETX (Exceed TurboX) remote X11 desktop
+- **Q10, how puritty runs on RHEL8:** in an ETX (Exceed TurboX) remote X11 desktop
   on a VM, with no GPU. The server-side X11 renderer (S§6.2) is therefore the main
   path, not a fallback. Where ETX's X server runs relative to the VM, and so how far
   the X connection is, is for the inspection to show. Drawing only what changed pays
   either way, since ETX has to carry every changed pixel to Gilbert's screen.
-- **Q11, tmux:** Gilbert runs tmux 3.6 on RHEL8 and RHEL9, so visiterm requires
+- **Q11, tmux:** Gilbert runs tmux 3.6 on RHEL8 and RHEL9, so puritty requires
   tmux 3.2 and has no degraded mode (phase 4).
 - **Q12, bundle pinned HarfBuzz and FreeType:** yes.
 - **Q14:** dropped. The plan builds what the synthesis describes. New features, from
   Gilbert or as questions about a specific feature, are considered as they come up.
-- **Threads:** Gilbert is open to exploring real threads in Geng if visiterm needs
+- **Threads:** Gilbert is open to exploring real threads in Geng if puritty needs
   them, and thinks it may be too early. Nothing measured yet asks for them. Two
   measurements would: GC pauses (G7, phase 0) and frame cost on the one loop
   (phase 2). If either breaks its budget, threads are one option considered then,
@@ -977,7 +977,7 @@ None.
 
 ### 9.3 Answered later
 
-- **Q13, fallback fonts, 2026-10-30:** visiterm does **not** ship fonts. It
+- **Q13, fallback fonts, 2026-10-30:** puritty does **not** ship fonts. It
   uses the system's, found through fontconfig, Noto Sans Mono CJK and Noto Sans
   Thai included when the system has them. The rendering tests (S§11 item 9) pin
   their own copies as test fixtures, which are not shipped.

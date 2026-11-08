@@ -1,7 +1,7 @@
 /* ghostty-dump: the differential oracle's reference side.
  *
  * Feeds a file of bytes to libghostty-vt and prints the terminal in
- * visiterm's screen dump (docs/vt-core.md §VC3), which the core prints too, so
+ * puritty's screen dump (docs/vt-core.md §VC3), which the core prints too, so
  * the two are compared as text. The dump itself is gdump.c's, which the
  * fuzzer's comparison with the core calls too (§VC16).
  *

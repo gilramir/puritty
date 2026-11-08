@@ -17,7 +17,7 @@ ECHO="clear; stty raw -echo; exec dd bs=1 count=$((KEYS + 1)) status=none"
 for t in "$@"; do
   case $t in
     probe) (cd "$HERE/../geng/x11/app" && X11_STATS=1 ./x11 race sh -c "$ECHO") > "/tmp/typo-$t.log" 2>&1 &
-           NAME=visiterm-probe ;;
+           NAME=puritty-probe ;;
     xterm) "$(pkg xterm)/bin/xterm" -T typo-xterm -fa 'DejaVu Sans Mono' -fs 11 -geometry 160x50 -e sh -c "$ECHO" &
            NAME=typo-xterm ;;
     st) "$(pkg st)/bin/st" -t typo-st -f 'DejaVu Sans Mono:size=11' -g 160x50 -e sh -c "$ECHO" &

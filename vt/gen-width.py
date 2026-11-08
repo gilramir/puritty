@@ -116,7 +116,7 @@ print(f"""module Vt.Width exposing (width, pictographic)
 {len(wide)} wide ranges and {len(none)} zero-width ranges, and {len(picto)}
 ranges of Extended_Pictographic but not Emoji_Modifier_Base from
 emoji-data.txt {emoji_version()}. Below U+20000 a
-codepoint's width is two bits of `table` (geng-lang `m4-visiterm.md` §VA15.6's
+codepoint's width is two bits of `table` (geng-lang `m4-puritty.md` §VA15.6's
 P3, a literal here so that nothing builds it at run time); above, a binary
 search of the ranges. -}}
 

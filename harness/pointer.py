@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The pointer gate (docs/phase3-select.md §4, §11): visiterm's window on
+"""The pointer gate (docs/phase3-select.md §4, §11): puritty's window on
 Xvfb, the mouse driven with xdotool, and what a program that asked for
 mouse reports receives.
 
@@ -7,7 +7,7 @@ The encoder is the mouse gate's (harness/mouse.py, against libghostty-vt);
 this one holds the path from X to it: that presses, releases, wheel steps
 and motion reach the encoder with the right buttons, modifiers and cells,
 that X sends every motion only while mode 1003 asks for it, and that Shift
-takes the mouse back. Each case starts visiterm (default settings, 96 dpi,
+takes the mouse back. Each case starts puritty (default settings, 96 dpi,
 no IME, a fresh home) on a program that sets the case's modes and records
 every byte it receives on a raw terminal, runs the case's actions, and pins
 the bytes to corpus/pointer/CASE.txt.
@@ -29,7 +29,7 @@ usage:
     harness/pointer.py -f drag    cases whose name contains "drag"
     harness/pointer.py --update   write the pins; read the diff first
 
-Build visiterm first (app/build.sh). Run from visiterm's devbox (Xvfb);
+Build puritty first (app/build.sh). Run from puritty's devbox (Xvfb);
 xdotool is built as the IME gate builds it (harness/ime/imes.nix).
 """
 import argparse, os, signal, subprocess, sys, tempfile, time
@@ -38,7 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PINS = ROOT / "corpus" / "pointer"
 WORK = ROOT / ".harness-work" / "pointer"
-VISITERM = ROOT / "app" / "visiterm"
+PURITTY = ROOT / "app" / "puritty"
 DISPLAY = ":82"
 
 SGR = "\\e[?1000h\\e[?1006h"
@@ -61,7 +61,7 @@ CASES = [
     ("sgr-buttons", SGR, "move:50,30 click:2 click:3"),
     ("sgr-wheel", SGR, "move:50,30 click:4 click:5 click:4"),
     ("sgr-modifiers", SGR, "move:50,30 key-down:ctrl click:1 key-up:ctrl key-down:alt click:1 key-up:alt"),
-    ("sgr-shift-is-visiterms", SGR, "move:50,30 key-down:shift click:1 down:1 move:100,30 up:1 click:4 key-up:shift click:1"),
+    ("sgr-shift-is-purittys", SGR, "move:50,30 key-down:shift click:1 down:1 move:100,30 up:1 click:4 key-up:shift click:1"),
     ("x10-click", "\\e[?1000h", "move:50,30 click:1"),
     ("x10-only-presses", "\\e[?9h", "move:50,30 click:1 click:4"),
     ("normal-no-motion", SGR, "move:50,30 down:1 move:100,30 up:1"),
@@ -160,16 +160,16 @@ def own(env, which, name):
 
 
 def run(xdo, env, modes, actions, before="", config=""):
-    conf = Path(env["XDG_CONFIG_HOME"]) / "visiterm" / "config.toml"
+    conf = Path(env["XDG_CONFIG_HOME"]) / "puritty" / "config.toml"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text(config)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "received"
         read = []
         owners = []
-        v = subprocess.Popen([str(VISITERM), "--", "sh", "-c", f"{before}{';' if before else ''} printf '{modes}'; stty raw -echo; exec cat > {out}"],
+        v = subprocess.Popen([str(PURITTY), "--", "sh", "-c", f"{before}{';' if before else ''} printf '{modes}'; stty raw -echo; exec cat > {out}"],
                              env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        win = subprocess.run([xdo, "search", "--sync", "--name", "visiterm"], env=env, capture_output=True,
+        win = subprocess.run([xdo, "search", "--sync", "--name", "puritty"], env=env, capture_output=True,
                              text=True).stdout.split()[0]
         subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
         time.sleep(0.5)
@@ -235,7 +235,7 @@ def main():
     home = WORK / "home"
     home.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, DISPLAY=DISPLAY, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"),
-               VISITERM_NO_XIM="1", VISITERM_DPI="96", LANG="C.UTF-8")
+               PURITTY_NO_XIM="1", PURITTY_DPI="96", LANG="C.UTF-8")
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.5)

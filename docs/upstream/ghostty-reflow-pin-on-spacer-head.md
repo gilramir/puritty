@@ -2,7 +2,7 @@
 
 **Repository:** `ghostty-org/ghostty`
 
-**Found against:** v1.4.0 (`83fb95624`). Found by visiterm's differential
+**Found against:** v1.4.0 (`83fb95624`). Found by puritty's differential
 fuzzer (`vt-core.md` §VC17). Not to be filed (`README.md`). The oracle
 carries the fix as `harness/oracle/patches/0004-reflow-moves-a-pin-with-a-wide-cell-not-its-spacer.patch`.
 
@@ -18,7 +18,7 @@ stays.
 
 ## Reproduction
 
-With libghostty-vt, 10 columns by 4 rows (visiterm `corpus/replay/resize-cursor-wide-respaced`):
+With libghostty-vt, 10 columns by 4 rows (puritty `corpus/replay/resize-cursor-wide-respaced`):
 
 ```
 027abcdef中 CR   中 does not fit at column 9 and wraps; the cursor goes onto it

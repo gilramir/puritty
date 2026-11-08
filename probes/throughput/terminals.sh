@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs inside.sh in each reference terminal, one after another, on a private
 # Xvfb with Mesa's llvmpipe for the two GL terminals. Every program comes from
-# the nixpkgs commit visiterm's devbox.json pins. Font: DejaVu Sans Mono 11 in
+# the nixpkgs commit puritty's devbox.json pins. Font: DejaVu Sans Mono 11 in
 # all four; each terminal otherwise keeps its own defaults.
 #
 # usage: terminals.sh INPUTS OUT [TERMINAL...]   (default: all four)

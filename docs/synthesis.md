@@ -287,7 +287,7 @@ setting but decodes per byte, so it can't handle two-byte encodings (C§10.1).
   SSH-channel and (if it works at all, see below) tmux panes.
 - **Setting:** remote character set per profile (UTF-8, EUC-KR, CP949). Local PTYs
   default from the process locale; this is what makes the remote X11 case work, where
-  visiterm runs on the RHEL8 host itself. SSH hosts set it in their profile. Each pane
+  puritty runs on the RHEL8 host itself. SSH hosts set it in their profile. Each pane
   can switch at runtime.
 - **Decoder:** stateful across reads; always accepts the CP949 superset; an invalid
   trail byte gives U+FFFD and is reprocessed, so ESC is never swallowed; never
@@ -736,7 +736,7 @@ apply to the remote X11 renderer, where the X connection is the slow link:
 - Fix: at most one outstanding update per pane per client, computed when the
   transport can accept it ("latest state wins"); explicit scroll deltas; cell-run
   diffs.
-- Negotiate protocol versions instead of demanding an exact match, if visiterm ever
+- Negotiate protocol versions instead of demanding an exact match, if puritty ever
   has a remote helper.
 
 ---
@@ -900,7 +900,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
   malicious server can print a fake "Enter passphrase:" too. PuTTY marks lines it
   writes itself with a trust bit and draws an icon in the margin that server bytes
   can't produce; server banners and keyboard-interactive prompts are framed and
-  stripped of control characters. visiterm should either draw prompts out of band
+  stripped of control characters. puritty should either draw prompts out of band
   (overlay or dialog) or copy the trust bit. Announce each hop ("Connecting via
   jumphost…") before any prompt so the user knows who is asking. This matters more
   for an embedded client than for `ssh` in a PTY, because the app *is* the trusted
@@ -949,7 +949,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
   fonts and FreeType to draw them; WT uses DirectWrite throughout.
 - **Memory:** `VirtualAlloc` reserve/commit replaces `mmap` for page storage (G§4.2,
   T§4.4).
-- **Default-terminal handoff** (making visiterm the console host for console apps) is
+- **Default-terminal handoff** (making puritty the console host for console apps) is
   possible via a COM server implementing `ITerminalHandoff3`. Optional; v2 material
   (T§2.9).
 

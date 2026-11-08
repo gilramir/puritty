@@ -1,4 +1,4 @@
-/* An XIM client through xcb-imdkit, as visiterm's would be
+/* An XIM client through xcb-imdkit, as puritty's would be
  * (docs/phase3-input.md): one window, an input context with the preedit
  * drawn by the client (on-the-spot, XIMPreeditCallbacks), every key press
  * and release sent to the IME, and each thing the IME does logged in order
@@ -50,7 +50,7 @@ static void name_key(xcb_key_press_event_t *e, char *out, size_t n) {
     xkb_keysym_get_name(sym, out, n);
 }
 
-/* What the IME gave back is what visiterm would encode: its state from
+/* What the IME gave back is what puritty would encode: its state from
  * the event's own modifiers, as the server saw them when it was pressed. */
 static void forward(xcb_xim_t *m, xcb_xic_t c, xcb_key_press_event_t *e, void *u) {
     (void) m; (void) c; (void) u;

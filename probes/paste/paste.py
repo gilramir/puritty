@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The floor of a paste through a pty (docs/phase3-select.md): SIZE bytes of
 text written to the master in WRITE-byte writes, the master read all the
-while, as visiterm's loop does since V48, into PROGRAM on the slave.
+while, as puritty's loop does since V48, into PROGRAM on the slave.
 
   paste.py SIZE WRITE PROGRAM...      e.g. paste.py 10485760 65536 cat
 

@@ -2,14 +2,14 @@
 # Builds core-pixels, the pixel gate's program (docs/renderer.md §R13): a
 # case fed to the core, its frames drawn by packages/x11, and the window
 # written as a picture. geng-lang's compiler and devbox's clang, with the
-# passes app/build.sh builds visiterm with. Run from visiterm's devbox,
+# passes app/build.sh builds puritty with. Run from puritty's devbox,
 # which has the C libraries packages/x11 links.
 set -e
 cd "$(dirname "$0")"
 R=/home/gram/prj/geng-lang
-# xcb-imdkit with visiterm's patches (V44), linked by its own name
+# xcb-imdkit with puritty's patches (V44), linked by its own name
 ../../packages/x11/build-imdkit.sh
-I=$(realpath ../../vendor/xcb-imdkit/visiterm/lib/pkgconfig)
+I=$(realpath ../../vendor/xcb-imdkit/puritty/lib/pkgconfig)
 C=$R/vendor/gren-lang/compiler
 PATH=$R/.devbox/nix/profile/default/bin:$PATH \
 GENG_BIN=$C/geng GENG_CORE=$R/vendor/gren-lang/core GENG_CC=$R/.devbox/nix/profile/default/bin/clang NIX_HARDENING_ENABLE= \

@@ -11,7 +11,7 @@
 #             100 ms apart, "key:Return" presses and releases keys,
 #             "sleep:0.5" waits.
 #
-# Run from visiterm's devbox (Xvfb); the IMEs and xdotool are built from the
+# Run from puritty's devbox (Xvfb); the IMEs and xdotool are built from the
 # nixpkgs commit the devbox pins, by harness/ime/imes.nix. Everything an IME writes goes
 # to a fresh home under .harness-work/ime.
 set -e
@@ -39,7 +39,7 @@ fcitx5)
   printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=%s\n\n[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n\n[Groups/0/Items/1]\nName=%s\nLayout=\n\n[GroupOrder]\n0=Default\n' \
     "$ENGINE" "$ENGINE" >"$XDG_CONFIG_HOME/fcitx5/profile"
   printf '[Behavior]\nActiveByDefault=True\nShareInputState=No\n' >"$XDG_CONFIG_HOME/fcitx5/config"
-  # the preedit is the client's to draw (on-the-spot), as visiterm's is
+  # the preedit is the client's to draw (on-the-spot), as puritty's is
   mkdir -p "$XDG_CONFIG_HOME/fcitx5/conf"
   printf 'UseOnTheSpot=True\n' >"$XDG_CONFIG_HOME/fcitx5/conf/xim.conf"
   export XMODIFIERS=@im=fcitx

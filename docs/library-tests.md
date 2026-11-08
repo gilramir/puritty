@@ -50,9 +50,9 @@ Terminal with its `ci.yml` pipeline.
 
 - **Ghostty** has by far the most tests. It is also the only project that fuzzes and
   runs a conformance suite in CI. That supports using libghostty-vt as the benchmark
-  even if visiterm doesn't adopt it (synthesis §3.1).
+  even if puritty doesn't adopt it (synthesis §3.1).
 - **Alacritty and vte** are well tested for their size, and their code is small.
-  The recorded-session replay tests are worth copying for visiterm's headless core
+  The recorded-session replay tests are worth copying for puritty's headless core
   (synthesis §11).
 - **Windows Terminal** is uneven. The parser and terminal core are reasonably
   tested, but much of the VT coverage lives in conhost's tests, and the renderer has

@@ -6,7 +6,7 @@ development tree. Unless noted, paths are relative to `vendor/putty/`. Line numb
 come from that snapshot and will drift. Anything not read directly in code is marked
 **inference** or **unverified**.
 
-PuTTY matters for visiterm for one reason above all: it is the long-standing
+PuTTY matters for puritty for one reason above all: it is the long-standing
 Windows-native terminal with a **built-in SSH client**, and it sets what Windows SSH
 users expect. That covers the host-key dialog, Pageant, saved sessions, "Restart
 Session", and plink/pscp/psftp. Its code is old-style C, but the architecture
@@ -28,7 +28,7 @@ Contents:
 10. Saved sessions, configuration, command-line tools
 11. Testing and fuzzing
 12. Notable challenges and security history
-13. Lessons for visiterm
+13. Lessons for puritty
 
 ---
 
@@ -40,7 +40,7 @@ Contents:
   `pty`/`conpty` local backends in pterm) implements one `BackendVtable`
   (`putty.h:703`). The terminal, line discipline and window know nothing about
   which backend they're talking to. This is the closest existing analogue to
-  visiterm's "PTY / tmux pane / SSH channel" backend interface.
+  puritty's "PTY / tmux pane / SSH channel" backend interface.
 - **The backend talks *up* through a `Seat`** (`putty.h:1088`), a vtable of about 30
   methods. It carries session output (with a returned backlog for flow control), EOF,
   async prompts (passwords, host keys, weak-crypto warnings), trust-status changes,
@@ -148,7 +148,7 @@ language with interfaces or traits maps onto this directly.
 
 `BackendVtable` (`putty.h:703–760`):
 
-| Method | Meaning | visiterm analogue |
+| Method | Meaning | puritty analogue |
 |---|---|---|
 | `init(vt, seat, &backend, logctx, conf, host, port, &realhost, nodelay, keepalive)` | Start connecting, **asynchronously**. Returns an error string or NULL; the connection completes later | `open()` |
 | `free` | Tear down | `close()` |
@@ -368,7 +368,7 @@ The heaviest users are `userauth2-client.c` (29 yields), `login1.c` (20),
 `transport2.c` (13) and `kex2-client.c` (8). Connection-layer code is ordinary
 event-driven code, since channel multiplexing doesn't suit a linear script.
 
-**Why this matters for visiterm.** Login and key exchange are naturally sequential
+**Why this matters for puritty.** Login and key exchange are naturally sequential
 scripts ("send KEXINIT, wait for KEXINIT, wait for user to approve host key, send
 …"). Written as coroutines or async functions, they stay readable while running on
 a single non-blocking event loop. In a language with async/await or green threads,
@@ -412,7 +412,7 @@ SSH-1 is still present: `bpp1.c`, `login1.c`, `connection1*.c`, the CRC-attack
 detector, and SSH-1 RSA keys. The default is SSH-2 only (`conf.h:248–270`, default
 `3`). The old "SSH-2 with fallback to SSH-1" modes were removed, so a downgrade
 attack isn't possible. The PPL abstraction was designed to cover "the three SSH-2
-layers and both SSH-1 phases" (`ppl.h:1–4`). visiterm should not implement SSH-1.
+layers and both SSH-1 phases" (`ppl.h:1–4`). puritty should not implement SSH-1.
 
 ### 2.5 The same code as a server
 
@@ -426,7 +426,7 @@ them:
   with no crypto.
 
 Running client and server from one codebase makes end-to-end protocol tests
-practical. A visiterm SSH client needs some equivalent fake server for tests.
+practical. A puritty SSH client needs some equivalent fake server for tests.
 
 ---
 
@@ -434,7 +434,7 @@ practical. A visiterm SSH client needs some equivalent fake server for tests.
 
 PuTTY implements **all of its own crypto** in `crypto/`: AES with AES-NI/NEON
 back-ends, ChaCha20-Poly1305, curve25519/448, NIST curves, ML-KEM, NTRU Prime, RSA,
-mp_int, Argon2. visiterm should not copy that; use a vetted library. The
+mp_int, Argon2. puritty should not copy that; use a vetted library. The
 *negotiation policy and UX* around the crypto are still worth studying.
 
 ### 3.1 Algorithms
@@ -510,7 +510,7 @@ This is a good model for actionable security warnings.
   per-session **transient host key cache** (`ssh/transient-hostkey-cache.c`) lets
   later non-GSS rekeys accept only keys already vouched for in that session.
 
-Windows corporate users do use this. It is not a v1 feature for visiterm, but keep
+Windows corporate users do use this. It is not a v1 feature for puritty, but keep
 the auth-method list extensible.
 
 ---
@@ -625,7 +625,7 @@ Details that matter for UX:
 - The client loads **only PPK** (or a public-key file for agent use). **OpenSSH
   private keys are rejected** with "Unable to use key file" (`userauth2-client.c:474–505`).
   Users must convert them in PuTTYgen (`import.c` reads OpenSSH PEM, OpenSSH new
-  format and ssh.com). This is notorious friction; visiterm should read
+  format and ssh.com). This is notorious friction; puritty should read
   `~/.ssh/id_*` directly.
 - **PPK v3** (`sshpubk.c:729–845`, `doc/pubkeyfmt.but`):
   - The passphrase key comes from Argon2id, with memory/passes/parallelism stored in
@@ -656,7 +656,7 @@ Details that matter for UX:
   request asynchronously to the local agent, and synthesises `SSH_AGENT_FAILURE` if
   the agent gives no reply.
 
-visiterm on Windows should try, in order, the OpenSSH agent pipe and the Pageant pipe
+puritty on Windows should try, in order, the OpenSSH agent pipe and the Pageant pipe
 (plus WM_COPYDATA for old Pageants). Both speak the standard agent protocol.
 
 ### 5.4 Auth plugins
@@ -710,7 +710,7 @@ defences:
    jumphost…" printed as trusted text, so the user knows which hop wants which
    password.
 
-**For visiterm:** embedded-SSH prompts on Windows should be **out-of-band UI** (a
+**For puritty:** embedded-SSH prompts on Windows should be **out-of-band UI** (a
 pane overlay or dialog drawn by the app, never by VT text). That gives the trust
 distinction structurally. If prompts are rendered in-terminal for keyboard flow,
 adopt PuTTY's per-line trust bit plus an unforgeable margin glyph. Either way, frame
@@ -762,10 +762,10 @@ The design is documented at length in `ssh/sharing.c:1–126`.
 - Sharing turns off "simple" mode, because the big single-channel window would be
   wrong (`ssh.c:201–209`).
 
-For visiterm on Windows, all tabs live in one process. Sharing becomes **in-process
+For puritty on Windows, all tabs live in one process. Sharing becomes **in-process
 channel multiplexing**: one SSH connection object, many session channels, which is
-simpler. PuTTY's cross-process design is worth copying only if visiterm also wants
-CLI tools (an scp-like helper, a `visiterm ssh` subcommand) to piggyback on an open
+simpler. PuTTY's cross-process design is worth copying only if puritty also wants
+CLI tools (an scp-like helper, a `puritty ssh` subcommand) to piggyback on an open
 GUI connection.
 
 ### 6.2 Port forwarding
@@ -854,7 +854,7 @@ like OpenSSH `ProxyCommand`), and three SSH flavours: `PROXY_SSH_TCPIP`
   - The modal fatal-error MessageBox also blocks interaction with the window until
     dismissed. Users dislike this.
 
-For visiterm: detect dead connections with replying keepalives, show the
+For puritty: detect dead connections with replying keepalives, show the
 disconnected state *in the pane* (not modally), keep scrollback, offer
 one-key reconnect, and with tmux `-CC` make reconnect re-attach.
 
@@ -948,7 +948,7 @@ a table-driven DEC/vte parser.
 ### 8.5 Repaint: damage-limited by design
 
 This was built for slow GDI and X11 links, and it is the part most relevant to
-visiterm's remote-X11 renderer.
+puritty's remote-X11 renderer.
 
 1. **Coalescing** (`terminal.c:1291–1349`):
    - A state change calls `term_schedule_update`, which queues one top-level
@@ -1136,7 +1136,7 @@ any other.
 - NTSTATUS-style negative exit codes are clipped (`:387–410`).
 
 Windows PuTTY (the SSH client) **never goes through ConPTY**. This is exactly the
-split visiterm plans: embedded SSH for remote sessions, ConPTY only for local
+split puritty plans: embedded SSH for remote sessions, ConPTY only for local
 shells.
 
 ---
@@ -1155,7 +1155,7 @@ shells.
 - **"Default Settings"** is a saved session with a reserved name.
 - **Saved sessions are full snapshots.** Every key is written, so later changes to
   Default Settings don't propagate. This is a long-standing user complaint
-  (**inference** from the save loop). visiterm should store overrides on top of
+  (**inference** from the save loop). puritty should store overrides on top of
   inherited defaults.
 - **Jump list:** recently launched sessions appear in the Windows taskbar jump list
   (`windows/jump-list.c`).
@@ -1172,7 +1172,7 @@ shells.
 - PuTTY's config UX is widely considered dated: a modal tree of tiny panels, and
   "Load/Save" semantics that confuse users (you must click Save after editing).
   Users still value the **saved-session list** itself: named hosts, each with its
-  own key, user, port forwards and colours. visiterm's equivalent is probably
+  own key, user, port forwards and colours. puritty's equivalent is probably
   `~/.ssh/config` hosts plus a light per-host profile overlay.
 
 ### 10.3 Command-line tools
@@ -1196,7 +1196,7 @@ shells.
 - **Pre-connect command:** new in this tree (`config.c:2516–2520`,
   `cmdline.c:474`). Exact semantics are **unverified**.
 
-SFTP shares the connection layer. For visiterm, file transfer would be one more
+SFTP shares the connection layer. For puritty, file transfer would be one more
 channel type ("drag a file onto an SSH pane") on the same connection object. Keep
 it out of v1, but don't design the connection API so that only session channels are
 possible.
@@ -1220,7 +1220,7 @@ possible.
 | `PUTTY_FUZZING` CMake option (`cmake/setup.cmake:16`) | Builds SSH with `none` cipher/MAC added to the KEXINIT lists (`transport2.c:857–891`) and a constant RNG (`sshrand.c:15–25`), so a fuzzer can drive the protocol stack from plaintext input |
 | Uppity / psusan | An in-tree SSH server built from the same layers, for end-to-end tests |
 
-Lessons for visiterm:
+Lessons for puritty:
 
 - A **headless terminal core plus a draw-call trace** makes renderer damage
   testable.
@@ -1268,7 +1268,7 @@ knowledge of PuTTY's advisories and are marked **unverified** here.
 - **Resize races:** the parser pauses on remote-initiated resizes. Backend resizes
   are sent only at drag end.
 - **Legacy compatibility:** VT52, SCO and Linux console modes, many keyboard modes,
-  and codepages. Most are irrelevant to visiterm.
+  and codepages. Most are irrelevant to puritty.
 
 ### 12.3 What a modern terminal should do differently
 
@@ -1289,12 +1289,12 @@ knowledge of PuTTY's advisories and are marked **unverified** here.
 
 ---
 
-## 13. Lessons for visiterm
+## 13. Lessons for puritty
 
 **Backend and Seat**
 
 1. **Adopt a Backend/Seat pair, not just a Backend.** PuTTY's `Backend` (down) plus
-   `Seat` (up) split maps onto visiterm's PTY / tmux pane / SSH channel backends.
+   `Seat` (up) split maps onto puritty's PTY / tmux pane / SSH channel backends.
    - Down: `send`, `size`, `special`, `sendbuffer`, `unthrottle`, `sendok`.
    - Up: `output → backlog`, `eof`, `remote_exit`, `connection_fatal`, `nonfatal`,
      async `prompt`, `confirm_host_key`, `set_trust_status`, `specials_changed`.
@@ -1323,7 +1323,7 @@ knowledge of PuTTY's advisories and are marked **unverified** here.
    other channels keep running while a dialog is up. Model prompt results as
    `{pending, ok, user-abort, software-abort(msg)}`. The abort distinction decides
    whether to show an error.
-6. **Connection sharing is in-process for visiterm.** Keep one connection object per
+6. **Connection sharing is in-process for puritty.** Keep one connection object per
    `(user, host, port, proxy chain)` and open one session channel per tab. Copy
    three PuTTY details:
    - The connection outlives its first tab while other channels exist.

@@ -1,8 +1,8 @@
 import sys
-sys.path.insert(0, '/home/gram/prj/visiterm/harness')
+sys.path.insert(0, '/home/gram/prj/puritty/harness')
 from pathlib import Path
 import importlib.util
-spec = importlib.util.spec_from_file_location('pixels', '/home/gram/prj/visiterm/harness/pixels.py')
+spec = importlib.util.spec_from_file_location('pixels', '/home/gram/prj/puritty/harness/pixels.py')
 px = importlib.util.module_from_spec(spec); spec.loader.exec_module(px)
 case, out = Path(sys.argv[1]), Path(sys.argv[2])
 conf = px.write_fonts_conf()
