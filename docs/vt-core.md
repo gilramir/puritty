@@ -4149,3 +4149,37 @@ renderer and the X11 code are not trained, and compiled as before.
 
 `perf.py` measures the plain build, whose instructions the record holds.
 `app/build.sh` does not use a profile unless asked.
+
+## VC55. Packing a page in runs (2026-11-09)
+
+§VC53's second item. geng-lang added three general primitives to `core`'s
+`Array.Builder` (its `m3-bytes-access.md` §BA21, Dnene32): `pushUtf8`, a
+code point's UTF-8 in one write; `spanMasked`, how far a run of words agree
+under a mask; and `appendNarrowed`, words' low bytes onto a builder of
+bytes.
+
+`packCells` now asks, once a style run is in hand, how far the cells go
+that are plain ASCII in that style: every bit of the cell above the low
+seven equal to `styleBits style` (`plainMask`), which leaves out a wide
+cell, a cluster, a background-only or protected cell, a code point from
+0x80 up and another style. That run is packed with `appendNarrowed` and
+counted into the run in hand; a cell outside it is `packCell`, the old
+step, whose code point is now `Builder.pushUtf8`'s. The bytes written are
+the same: 325 replay cases, 345 view cases and the selection cases pass.
+
+`perf.py`, instructions, against the build before: `vte-scrolling_fullscreen`
+−54.7%, `ls` −43.5%, `gitlog` −33.6%; the rest within 0.3%. Cycles, the
+least of seven runs over each input ten times over: `vte-scrolling_fullscreen`
+−54.5%, `ls` −45.4%, `gitlog` −25.7%; the rest within noise. The record
+holds the new counts.
+
+**Two findings on the way.** `pushUtf8` compiled as one C function was not
+inlined where `pushLast` had been, and `vte-scrolling`, whose rows are a
+character or two, counted 4.7% more; with its ASCII byte always inlined and
+the rest out of line it counts what it did. And the resizes of
+`long-10000` were 6.7% over their record before this change: commit
+23eddf6, which took `hiddenHist`'s clamp out, made them 4% dearer in
+instructions with no cycle change measured, and its message did not
+count them. `geng decisions` over the two builds found no inline or
+in-place decision changed, so it is clang's compile of the code around
+it; the clamp stays out, and the record moves.
