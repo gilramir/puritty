@@ -4129,3 +4129,23 @@ has no option for it yet (geng-lang `docs/open-items.md`).
    of the 178 M.
 4. Scrolling in a region: `lineFeed`, `clearRow`, `inRegion` and `phys`,
    300 M between them, each small.
+
+## VC54. A profile-guided build of puritty (2026-11-09)
+
+geng-lang built §VC53's measurement into `geng make` (its `m4-profile.md`
+§PF12, Dnene31). `harness/bench/pgo.sh` builds `core-bench` with
+`--profile-generate`, runs it once over each of the thirteen inputs, and
+builds it again plainly, leaving the counts in
+`harness/bench/core-bench.profile/`; `app/build.sh
+--profile-use=$PWD/harness/bench/core-bench.profile` builds puritty with them.
+
+`core-bench` built so, against a plain build of the same source, in
+cycles: `cup` −24.4%, `gitlog` −19.9%, `ls` −31.7%, `vte-dense_cells`
+−22.6%, `vte-light_cells` −7.5%, `vte-scrolling_fullscreen` −30.2%,
+`vte-scrolling_top_region` −24.7%, `vte-scrolling` −23.6%, `vte-unicode`
+−8.1%. puritty itself is a different program over the same `vt`: clang
+found 38 of its 2,782 functions' counts out of date and used the rest. The
+renderer and the X11 code are not trained, and compiled as before.
+
+`perf.py` measures the plain build, whose instructions the record holds.
+`app/build.sh` does not use a profile unless asked.
