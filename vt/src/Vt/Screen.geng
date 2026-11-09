@@ -47,7 +47,7 @@ import Vt.Term exposing (..)
 
 
 {-| The physical slot of logical row `y`, through the region's turn. -}
-phys : Screen -> Int -> Int
+phys : (s : Screen) -> (y : Int where 0 - s.size <= y && y <= s.size) -> (r : Int where 0 <= r && r < s.size)
 phys s y =
     if s.turn == 0 then
         slot s y
@@ -56,7 +56,7 @@ phys s y =
         slot s (inRegion s y)
 
 
-inRegion : Screen -> Int -> Int
+inRegion : (s : Screen) -> (y : Int where 0 - s.size <= y && y <= s.size) -> (r : Int where r == y || (0 <= r && r < s.rows))
 inRegion s y =
     let
         v =
@@ -78,7 +78,7 @@ inRegion s y =
 
 
 {-| The region's rows put where its turn says they are, its turn 0. -}
-settle : (taken s : Screen) -> Screen
+settle : (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size && r.turn == 0)
 settle s =
     if s.turn == 0 then
         s
@@ -94,7 +94,7 @@ settle s =
         { s | cells = Builder.rotate (pt * s.stride) ((pb + 1) * s.stride) (s.turn * s.stride) s.cells, turn = 0 }
 
 
-withRegion : Int -> Int -> (taken s : Screen) -> Screen
+withRegion : (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 withRegion top bottom s =
     let
         settled =
@@ -105,7 +105,7 @@ withRegion top bottom s =
 
 {-| The physical slot of logical row `y` in the ring alone; a negative `y`
 is scrollback in the ring, `-1` the newest. -}
-slot : Screen -> Int -> Int
+slot : (s : Screen) -> (y : Int where 0 - s.size <= y && y <= s.size) -> (r : Int where 0 <= r && r < s.size)
 slot s y =
     let
         p =
@@ -122,7 +122,7 @@ slot s y =
 
 
 {-| The offset of logical row `y`'s first cell. -}
-rowOffset : Screen -> Int -> Int
+rowOffset : (s : Screen) -> (y : Int where 0 - s.hist <= y && y < s.rows) -> (r : Int where 0 <= r && r + s.stride <= Builder.length s.cells)
 rowOffset s y =
     phys s y * s.stride
 
@@ -159,7 +159,7 @@ peekCell o x s =
 
 {-| The row at `o`, about to be written from column `x`: the cells between
 its extent `ext` and `x` are made empty. -}
-reachAt : Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+reachAt : Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 reachAt o ext x cells =
     if x > ext then
         Builder.fill (o + ext) (o + x) 0 cells
@@ -169,7 +169,7 @@ reachAt o ext x cells =
 
 
 {-| The row at `o`'s extent made at least `x`, its wrapped flag kept. -}
-extendTo : Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+extendTo : Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 extendTo o cols x cells =
     let
         m =
@@ -182,7 +182,7 @@ extendTo o cols x cells =
         cells
 
 
-setWrapped : Int -> Bool -> (taken s : Screen) -> Screen
+setWrapped : (y : Int where 0 - s.hist <= y && y < s.rows) -> Bool -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 setWrapped y on s =
     let
         o =
@@ -207,7 +207,7 @@ setWrapped y on s =
 {-| Rows `top` to `bottom` move up one; a blank row comes in at the bottom,
 in `fillCell`. With `keep`, the row that leaves joins the scrollback in the
 ring; the caller has made room (`pageOut`). -}
-screenUp : Bool -> Int -> Int -> Int64 -> (taken screen0 : Screen) -> Screen
+screenUp : Bool -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < screen0.rows) -> Int64 -> (taken screen0 : Screen) -> (r : Screen where r.rows == screen0.rows && r.cols == screen0.cols && r.size == screen0.size)
 screenUp keep top bottom fillCell screen0 =
     let
         screen =
@@ -219,7 +219,9 @@ screenUp keep top bottom fillCell screen0 =
         whole =
             top == 0 && bottom == last
     in
-    if keep then
+    -- the caller has made room for a row kept; were it not there, the row
+    -- would go as it does with no scrollback
+    if keep && screen.hist + screen.rows < screen.size then
         if whole then
             { screen | base = phys screen 1, hist = screen.hist + 1 } |> clearRow last fillCell
 
@@ -245,7 +247,7 @@ screenUp keep top bottom fillCell screen0 =
         shiftUp top bottom screen |> clearRow bottom fillCell
 
 
-turnRegion : Int -> Int -> Int -> (taken s0 : Screen) -> Screen
+turnRegion : (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < s0.rows) -> Int -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 turnRegion top bottom by s0 =
     let
         s =
@@ -266,7 +268,7 @@ turnRegion top bottom by s0 =
 
 {-| Logical row `y` made blank: its extent 0, or, when `fillCell` has a
 style (an erase in a background colour), every cell `fillCell`. -}
-clearRow : Int -> Int64 -> (taken s : Screen) -> Screen
+clearRow : (y : Int where 0 - s.hist <= y && y < s.rows) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 clearRow y fillCell s =
     let
         o =
@@ -279,7 +281,7 @@ clearRow y fillCell s =
         { s | cells = Builder.set (o + s.cols) (Int64.fromInt s.cols) (Builder.fill o (o + s.cols) fillCell s.cells) }
 
 
-rotate : (taken s0 : Screen) -> Screen
+rotate : (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 rotate s0 =
     let
         s =
@@ -288,24 +290,24 @@ rotate s0 =
     { s | base = phys s 1 }
 
 
-downFrom : Int -> Int -> (taken s : Screen) -> Screen
+downFrom : (i : Int where 0 - s.size <= i && i < s.size) -> (bottom : Int where 0 - s.size <= bottom && bottom < s.size) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 downFrom i bottom s =
     moveRows bottom (bottom + 1) (i - bottom) s
 
 
-shiftUp : Int -> Int -> (taken s : Screen) -> Screen
+shiftUp : (i : Int where 0 - s.size <= i && i < s.size) -> (bottom : Int where 0 - s.size <= bottom && bottom < s.size) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 shiftUp i bottom s =
     moveRows (i + 1) i (bottom - i) s
 
 
-shiftDown : Int -> Int -> (taken s : Screen) -> Screen
+shiftDown : (i : Int where 0 - s.size <= i && i < s.size) -> (top : Int where 0 - s.size <= top && top < s.size) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 shiftDown i top s =
     moveRows top (top + 1) (i - top) s
 
 
 {-| `count` logical rows from `from` copied to start at `to`, each read
 before it is overwritten, in at most three pieces cut at the ring's end. -}
-moveRows : Int -> Int -> Int -> (taken s0 : Screen) -> Screen
+moveRows : (from : Int where 0 - s0.size <= from && from + count <= s0.size) -> (to : Int where 0 - s0.size <= to && to + count <= s0.size) -> (count : Int) -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 moveRows from to count s0 =
     let
         s =
@@ -341,12 +343,12 @@ moveRows from to count s0 =
         moveRows (from + run) (to + run) (count - run) (copyRows pf pt run s)
 
 
-copyRows : Int -> Int -> Int -> (taken s : Screen) -> Screen
+copyRows : Int -> Int -> Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 copyRows pf pt run s =
     { s | cells = Builder.copyWithin (pt * s.stride) (pf * s.stride) ((pf + run) * s.stride) s.cells }
 
 
-blankRows : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
+blankRows : (from : Int where 0 - s.hist <= from) -> (to : Int where to <= s.rows) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 blankRows from to fillCell s =
     if from >= to then
         s

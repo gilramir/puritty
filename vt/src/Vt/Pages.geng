@@ -60,11 +60,13 @@ import Vt.Screen exposing (..)
 {-| The oldest `pageRows` rows of the ring's scrollback packed into a page
 (geng-lang D901): each row's text as UTF-8 and its header and style runs
 (§VC6). Their slots stay where they are, the free part of the ring now. -}
-pageOut : Clusters -> (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
+pageOut : Clusters -> (taken s : Screen) -> (taken back : Back) -> (r : { screen : Screen, back : Back } where r.screen.rows == s.rows && r.screen.cols == s.cols && r.screen.size == s.size && r.screen.hist + r.screen.rows < r.screen.size)
 pageOut clusters s back =
     let
+        -- the ring's scrollback is a page or more whenever a page goes out,
+        -- as a ring keeping one is `2 * pageRows + 1` rows past the screen
         pageRows =
-            back.pageRows
+            min back.pageRows s.hist
 
         first =
             phys s (0 - s.hist)
@@ -269,12 +271,12 @@ pushPage page back =
             { back
                 | pages = Builder.pushLast page back.pages
                 , bytes = back.bytes + bytes
-                , rows = back.rows + rows
+                , rows = addRows back.rows rows
             }
 
 
 {-| No scrollback, with `limit` bytes for one in pages of `pageRows` rows. -}
-emptyBack : Int -> Int -> Back
+emptyBack : (pageRows : Int where 16 <= pageRows && pageRows <= 4096) -> Int -> Back
 emptyBack pageRows limit =
     { pages = Builder.empty 0, head = 0, pageRows = pageRows, limit = limit, bytes = 0, rows = 0, peak = 0, dropped = False, gone = 0 }
 
@@ -293,7 +295,7 @@ backOf pages back =
                 Array.foldl (\p n -> n + pageBytes p) 0 pages
 
             rows =
-                Array.foldl (\p n -> n + pageRowCount p) 0 pages
+                rowsIn pages 0 0
         in
         dropOver
             { back
@@ -365,7 +367,7 @@ pageBytes page =
     Owned.length page.text + Owned.length page.heads + Owned.length page.runs
 
 
-pageRowCount : Page -> Int
+pageRowCount : Page -> (r : Int where 0 <= r)
 pageRowCount page =
     Owned.length page.heads // 2
 
@@ -393,7 +395,8 @@ ownedAt bytes i =
 half of them are dropped ones. -}
 dropOver : (taken back : Back) -> Back
 dropOver back =
-    if back.bytes <= back.limit || back.head >= Builder.length back.pages then
+    -- 536,870,912 is 2^29, the most rows `Back` counts (§VC51)
+    if (back.bytes <= back.limit && back.rows < 536870912) || back.head >= Builder.length back.pages then
         compact back
 
     else
@@ -415,10 +418,33 @@ dropOver back =
                 | pages = Builder.set head (emptyPage {}) back.pages
                 , head = head + 1
                 , bytes = back.bytes - out.bytes
-                , rows = back.rows - out.rows
+                , rows = back.rows - min back.rows out.rows
                 , dropped = True
-                , gone = back.gone + out.rows
+                , gone = addRows back.gone out.rows
             }
+
+
+{-| Two counts of rows added, stopping at 2^29, the most `Back` counts.
+536,870,912 is 2^29, the most rows `Back` counts (§VC51). -}
+addRows : (a : Int where 0 <= a && a <= 536870912) -> (b : Int where 0 <= b) -> (r : Int where 0 <= r && r <= 536870912)
+addRows a b =
+    if b > 536870912 - a then
+        536870912
+
+    else
+        a + b
+
+
+{-| The rows of `pages` from the `i`th on, added to `n`. 536,870,912 is 2^29,
+the most rows `Back` counts (§VC51). -}
+rowsIn : Array Page -> Int -> (n : Int where 0 <= n && n <= 536870912) -> (r : Int where 0 <= r && r <= 536870912)
+rowsIn pages i n =
+    when Array.get i pages is
+        Just page ->
+            rowsIn pages (i + 1) (addRows n (pageRowCount page))
+
+        Nothing ->
+            n
 
 
 compact : (taken back : Back) -> Back

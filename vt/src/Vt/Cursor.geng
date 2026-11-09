@@ -73,20 +73,23 @@ slotSet g t =
     Bitwise.and 3 (Bitwise.shiftRightZfBy (2 * g) t.sets)
 
 
-param : Int -> Int -> Array Int -> Int
+param : Int -> (default : Int where 0 <= default && default <= 65535) -> Array Int -> (r : Int where 0 <= r && r <= 65535 && (default < 1 || 1 <= r))
 param k default params =
     when Array.get k params is
         Just 0 ->
             default
 
         Just v ->
-            v
+            -- the parser keeps each to 0..65535 (`Vt.Parse.csi`), and 0 is
+            -- the case above; an array's elements carry no refinement, so
+            -- it is said again
+            clamp 1 65535 v
 
         Nothing ->
             default
 
 
-rowWrapped : Int -> Screen -> Bool
+rowWrapped : (y : Int where 0 - s.hist <= y && y < s.rows) -> (s : Screen) -> Bool
 rowWrapped y s =
     Bitwise.and wrappedBit (metaAt (rowOffset s y) s) /= 0
 
@@ -115,7 +118,7 @@ withLf t =
 
 {-| Where CR takes the cursor: the left margin, or the first column from
 left of it outside origin mode. -}
-crX : Term -> Int
+crX : (t : Term) -> (r : Int where 0 <= r && r <= t.left)
 crX t =
     if t.left == 0 then
         0
@@ -129,7 +132,7 @@ crX t =
 
 {-| The column printing wraps after, plus one: the right margin, or the
 screen's last column from right of it. -}
-rightEdge : Term -> Int
+rightEdge : (t : Term) -> (r : Int where 1 <= r && r <= t.cols)
 rightEdge t =
     if t.x <= t.right then
         t.right + 1
@@ -138,7 +141,7 @@ rightEdge t =
         t.cols
 
 
-tabFloor : Term -> Int
+tabFloor : (t : Term) -> (r : Int where 0 <= r && r <= t.left)
 tabFloor t =
     if t.origin then
         t.left
@@ -160,7 +163,7 @@ reportX t =
 
 {-| Rows `top` to `bottom`, between the margins, scrolled up `count`: SU,
 DL, and IND at the region's bottom. -}
-marginUp : Int -> Int -> Int -> (taken t : Term) -> Term
+marginUp : Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t.rows) -> (taken t : Term) -> Term
 marginUp count top bottom t =
     let
         n =
@@ -171,7 +174,7 @@ marginUp count top bottom t =
 
 {-| Rows `top` to `bottom`, between the margins, scrolled down `count`: SD,
 IL, and RI at the region's top. -}
-marginDown : Int -> Int -> Int -> (taken t : Term) -> Term
+marginDown : Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t.rows) -> (taken t : Term) -> Term
 marginDown count top bottom t =
     let
         n =
@@ -181,7 +184,7 @@ marginDown count top bottom t =
 
 
 {-| Rows `y` to `last`, each copied `n` rows up, between the columns. -}
-copyUp : Int -> Int -> Int -> Int -> Int -> (taken s : Screen) -> Screen
+copyUp : (y : Int where 0 - s.hist <= y - n) -> (last : Int where last < s.rows) -> (n : Int where 0 <= n) -> Int -> Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 copyUp y last n left right s =
     if y > last then
         s
@@ -191,7 +194,7 @@ copyUp y last n left right s =
 
 
 {-| Rows `y` down to `first`, each copied `n` rows down. -}
-copyDown : Int -> Int -> Int -> Int -> Int -> (taken s : Screen) -> Screen
+copyDown : (y : Int where y + n < s.rows) -> (first : Int where 0 - s.hist <= first) -> (n : Int where 0 <= n) -> Int -> Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 copyDown y first n left right s =
     if y < first then
         s
@@ -200,7 +203,7 @@ copyDown y first n left right s =
         copyDown (y - 1) first n left right (copySpan y (y + n) left right s)
 
 
-clearSpans : Int -> Int -> Int -> Int -> Int64 -> (taken s : Screen) -> Screen
+clearSpans : (y : Int where 0 - s.hist <= y) -> (last : Int where last < s.rows) -> Int -> Int -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 clearSpans y last left right fill s =
     if y > last then
         s
@@ -211,7 +214,7 @@ clearSpans y last left right fill s =
 
 {-| Columns `left` to `right` of row `src` copied to row `dst`; a wide
 character the margins cut, in either row, goes. -}
-copySpan : Int -> Int -> Int -> Int -> (taken s0 : Screen) -> Screen
+copySpan : (src : Int where 0 - s0.hist <= src && src < s0.rows) -> (dst : Int where 0 - s0.hist <= dst && dst < s0.rows) -> Int -> Int -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 copySpan src dst left right s0 =
     let
         so =
@@ -232,7 +235,7 @@ copySpan src dst left right s0 =
     trim dO (trim so { s | cells = Builder.copyWithin (dO + left) (so + left) (so + right + 1) cut })
 
 
-clearSpan : Int -> Int -> Int -> Int64 -> (taken s0 : Screen) -> Screen
+clearSpan : (y : Int where 0 - s0.hist <= y && y < s0.rows) -> Int -> Int -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 clearSpan y left right fill s0 =
     let
         o =
@@ -246,7 +249,7 @@ clearSpan y left right fill s0 =
 
 {-| ICH between the margins: the cells from `x` to `right` move right, those
 past `right` lost. -}
-insertMargined : Int -> Int -> Int -> Int -> Int64 -> (taken s0 : Screen) -> Screen
+insertMargined : Int -> (x : Int where 0 <= x && x <= 1000) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 insertMargined o x count right erase s0 =
     let
         s =
@@ -270,7 +273,7 @@ insertMargined o x count right erase s0 =
 
 {-| DCH between the margins: the cells past the deleted ones, to `right`,
 move left, and the erase cell comes in at `right`. -}
-deleteMargined : Int -> Int -> Int -> Int -> Int64 -> (taken s0 : Screen) -> Screen
+deleteMargined : Int -> (x : Int where 0 <= x && x <= 1000) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 deleteMargined o x count right erase s0 =
     let
         s =
@@ -294,7 +297,7 @@ deleteMargined o x count right erase s0 =
 
 {-| The row at `o` with every cell explicit: those past its extent made
 empty and its extent the row's width, its wrapped flag kept. -}
-widen : Int -> (taken s : Screen) -> Screen
+widen : Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 widen o s =
     let
         m =
@@ -308,7 +311,7 @@ makes it but only that far. A span between the margins reads its row only to
 the column past the right margin, so it widens that far and not to the row's
 width: a scroll inside narrow margins costs the margins' width a row, not the
 screen's (§VC11's timeout). -}
-widenTo : Int -> Int -> (taken s : Screen) -> Screen
+widenTo : Int -> Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 widenTo o x s =
     let
         m =
@@ -326,7 +329,7 @@ widenTo o x s =
 
 {-| The row at `o`'s extent brought back to its last cell that is not
 empty. -}
-trim : Int -> (taken s : Screen) -> Screen
+trim : Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 trim o s =
     let
         m =
@@ -352,7 +355,7 @@ lastFilled o e cells =
 loses its content, both halves narrow and in their style, and when the
 margins reach the row's end or the first two columns, a spacer head at its
 end is a narrow cell. -}
-shifted : Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+shifted : Int -> (cols : Int where 1 <= cols && cols <= 1000) -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 shifted o cols left right cells =
     let
         last =
@@ -369,7 +372,7 @@ shifted o cols left right cells =
 
 
 {-| `cutAt`, the halves keeping their style and protection. -}
-cutKeeping : Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+cutKeeping : Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 cutKeeping o cols c cells =
     if c <= 0 || c >= cols then
         cells
@@ -391,7 +394,7 @@ cutKeeping o cols c cells =
 
 {-| A wide character that a boundary before column `c` cuts in two, both
 halves made `fill`, the erase cell, as Ghostty clears them (§VC18). -}
-cutAt : Int64 -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+cutAt : Int64 -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 cutAt fill o cols c cells =
     if c <= 0 || c >= cols then
         cells
@@ -418,7 +421,9 @@ reportY t =
 cursorTo : Int -> Int -> (taken t : Term) -> Term
 cursorTo x y t =
     if t.origin then
-        { t | x = clamp t.left t.right (x + t.left), y = clamp t.top t.bottom (y + t.top), wrapNext = False }
+        -- `clamp t.left t.right (x + t.left)`, written so that the sum
+        -- cannot wrap
+        { t | x = t.left + clamp 0 (t.right - t.left) x, y = t.top + clamp 0 (t.bottom - t.top) y, wrapNext = False }
 
     else
         { t | x = clamp 0 (t.cols - 1) x, y = clamp 0 (t.rows - 1) y, wrapNext = False }
@@ -426,7 +431,7 @@ cursorTo x y t =
 
 {-| The cursor's column and row as CUP gives them, from the margins in
 origin mode. -}
-originX : Term -> Int
+originX : (t : Term) -> (r : Int where 0 <= r && r < t.cols)
 originX t =
     if t.origin then
         max 0 (t.x - t.left)
@@ -435,7 +440,7 @@ originX t =
         t.x
 
 
-originY : Term -> Int
+originY : (t : Term) -> (r : Int where 0 <= r && r < t.rows)
 originY t =
     if t.origin then
         max 0 (t.y - t.top)
@@ -445,7 +450,7 @@ originY t =
 
 
 {-| How far up CUU goes: the region's top when the cursor is in it. -}
-upperLimit : Term -> Int
+upperLimit : (t : Term) -> (r : Int where 0 <= r && r <= t.top)
 upperLimit t =
     if t.y >= t.top then
         t.top
@@ -454,7 +459,7 @@ upperLimit t =
         0
 
 
-lowerLimit : Term -> Int
+lowerLimit : (t : Term) -> (r : Int where 0 <= r && r < t.rows)
 lowerLimit t =
     if t.y <= t.bottom then
         t.bottom
@@ -481,7 +486,7 @@ withPlain t =
     { t | plain = t.single < 0 && slotSet t.gl t == 0 && t.autowrap && not t.insert && not (margined t) && not t.statusLine }
 
 
-nextTab : Int -> Int -> Term -> Int
+nextTab : (x : Int where 0 <= x && x < t.cols) -> Int -> (t : Term) -> (r : Int where 0 <= r && r < t.cols)
 nextTab x count t =
     if count <= 0 || x >= t.right then
         x
@@ -490,7 +495,7 @@ nextTab x count t =
         nextTab (stopAfter (x + 1) t) (count - 1) t
 
 
-stopAfter : Int -> Term -> Int
+stopAfter : (x : Int where 0 <= x) -> (t : Term) -> (r : Int where 0 <= r && r < t.cols)
 stopAfter x t =
     if x >= t.right then
         t.right
@@ -502,7 +507,7 @@ stopAfter x t =
         stopAfter (x + 1) t
 
 
-previousTab : Int -> Int -> Term -> Int
+previousTab : (x : Int where 0 <= x && x < t.cols) -> Int -> (t : Term) -> (r : Int where 0 <= r && r < t.cols)
 previousTab x count t =
     if count <= 0 || x <= tabFloor t then
         x
@@ -511,7 +516,7 @@ previousTab x count t =
         previousTab (stopBefore (x - 1) t) (count - 1) t
 
 
-stopBefore : Int -> Term -> Int
+stopBefore : (x : Int where x < t.cols) -> (t : Term) -> (r : Int where 0 <= r && r < t.cols)
 stopBefore x t =
     if x <= tabFloor t then
         tabFloor t

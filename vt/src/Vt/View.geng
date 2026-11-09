@@ -458,11 +458,13 @@ frameOn look focus preedit hl s clusters back t sh0 =
             else
                 { sh0 | styleIds = Builder.empty 64, pending = False }
 
+        -- the shadow is made again at a change of size, so its rows are the
+        -- screen's and its columns the term's
         rows =
-            sh1.rows
+            s.rows
 
         cols =
-            sh1.cols
+            t.cols
 
         current =
             Builder.toArray (hashRows s 0 rows cols (Builder.empty rows))
@@ -524,7 +526,7 @@ frameOn look focus preedit hl s clusters back t sh0 =
 {-| Each row's hash, pushed onto `acc`. A loop, because a function that
 captures the screen to read it is refused: a capture takes the builder
 (§3.3). -}
-hashRows : Screen -> Int -> Int -> Int -> (taken acc : Builder Int) -> Builder Int
+hashRows : (s : Screen) -> (y : Int where 0 - s.hist <= y) -> (rows : Int where rows <= s.rows) -> Int -> (taken acc : Builder Int) -> Builder Int
 hashRows s y rows cols acc =
     if y >= rows then
         acc
@@ -777,7 +779,7 @@ wantsFrame sh =
     sh.pending
 
 
-forget : Int -> (taken cells : Builder Int64) -> Builder Int64
+forget : Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 forget i cells =
     Builder.set i unknown cells
 
@@ -874,7 +876,7 @@ vInto vbit ink cols row x =
 cell's word; every cell whose ink reaches into a cell drawn; every cell
 the old ink of a cell drawn reached, which still shows it; and so on, the
 cells forgotten in the shadow so that the diff draws them. -}
-spread : Screen -> Cursor -> Int -> Int -> (taken sh : Shadow) -> Shadow
+spread : (s : Screen) -> Cursor -> (rows : Int where rows <= s.rows) -> Int -> (taken sh : Shadow) -> Shadow
 spread s cursor rows cols sh =
     { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [] }) }
 
@@ -884,7 +886,7 @@ type alias Work =
 
 
 {-| Every changed cell, queued. -}
-collect : Screen -> Cursor -> Int -> Int -> Int -> (taken w : Work) -> Work
+collect : (s : Screen) -> Cursor -> (y : Int where 0 - s.hist <= y) -> (rows : Int where rows <= s.rows) -> Int -> (taken w : Work) -> Work
 collect s cursor y rows cols w =
     if y >= rows then
         w
@@ -969,46 +971,53 @@ spreadWork s rows cols inked0 ink w =
             let
                 y =
                     j // cols
-
-                x =
-                    modBy cols j
-
-                o =
-                    rowOffset s y
-
-                ext =
-                    extentAt o s
-
-                l =
-                    if inWord s o ext y cols x w.cells then
-                        wordLeft s o ext y cols x w.cells
-
-                    else
-                        x
-
-                r =
-                    if inWord s o ext y cols x w.cells then
-                        wordRight s o ext y cols x w.cells
-
-                    else
-                        x + 1
-
-                worded =
-                    forgetWord (y * cols + l) (y * cols + r) j { cells = Builder.set j unknown w.cells, work = Array.dropLast 1 w.work }
             in
-            spreadWork s
-                rows
-                cols
-                inked0
-                ink
-                (if inked0 then
-                    Array.foldl (pullDir rows cols ink j)
-                        (Array.foldl (evictDir rows cols j (inkAt j ink)) worded dirs)
-                        dirs
+            -- the queue holds only cells of the screen, which an array's
+            -- elements cannot say
+            if y < 0 || y >= s.rows then
+                spreadWork s rows cols inked0 ink { w | work = Array.dropLast 1 w.work }
 
-                 else
-                    worded
-                )
+            else
+                let
+                    x =
+                        modBy cols j
+
+                    o =
+                        rowOffset s y
+
+                    ext =
+                        extentAt o s
+
+                    l =
+                        if inWord s o ext y cols x w.cells then
+                            wordLeft s o ext y cols x w.cells
+
+                        else
+                            x
+
+                    r =
+                        if inWord s o ext y cols x w.cells then
+                            wordRight s o ext y cols x w.cells
+
+                        else
+                            x + 1
+
+                    worded =
+                        forgetWord (y * cols + l) (y * cols + r) j { cells = Builder.set j unknown w.cells, work = Array.dropLast 1 w.work }
+                in
+                spreadWork s
+                    rows
+                    cols
+                    inked0
+                    ink
+                    (if inked0 then
+                        Array.foldl (pullDir rows cols ink j)
+                            (Array.foldl (evictDir rows cols j (inkAt j ink)) worded dirs)
+                            dirs
+
+                     else
+                        worded
+                    )
 
 
 {-| The cells from `i` to `end`, but `j`, forgotten and queued if not
@@ -1053,7 +1062,7 @@ evict n there w =
         w
 
 
-diffRows : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRows : (s : Screen) -> Clusters -> Cursor -> (y : Int where 0 - s.hist <= y) -> (rows : Int where rows <= s.rows) -> (cols : Int where cols <= 1000) -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
 diffRows s clusters cursor y rows cols sh list =
     if y >= rows then
         { shadow = sh, list = list }
@@ -1106,7 +1115,7 @@ preCellPoints cursor i =
 
 {-| Row `y` from column `x`: each changed run written to the list and the
 shadow. -}
-diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (x0 : Int where 0 <= x0) -> (cols : Int where cols <= 1000) -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
 diffRow s clusters cursor o ext y x0 cols sh list =
     if x0 >= cols then
         { shadow = sh, list = list }
@@ -1172,7 +1181,7 @@ clearInk i end ink =
 
 {-| Past the last changed cell of a run that starts before `x`; `last` is
 the last changed cell seen. -}
-runEnd : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+runEnd : Screen -> Cursor -> Int -> Int -> Int -> (x : Int where 0 <= x) -> (last : Int where 0 <= last && last < x) -> (cols : Int where cols <= 1000) -> Builder Int64 -> (r : Int where last < r)
 runEnd s cursor o ext y x last cols cells =
     if x >= cols || x - last > 1 then
         last + 1
@@ -1266,29 +1275,30 @@ cursorOf focus s back t =
     let
         blinking =
             Dict.get 12 t.modes == Just True
-
-        -- the cursor's row in the screen drawn: `back` rows lower in a
-        -- view scrolled back
-        y =
-            t.y + back
-
-        o =
-            rowOffset s y
-
-        head =
-            if t.x > 0 && cellWide (cellOf s o (extentAt o s) t.x) == wideTail then
-                t.x - 1
-
-            else
-                t.x
-
-        wide =
-            cellWide (cellOf s o (extentAt o s) head) == wideHead && head + 1 < t.cols
     in
-    if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || y >= t.rows || t.x < 0 || y < 0 then
+    -- the cursor's row in the screen drawn is `back` rows lower in a view
+    -- scrolled back, and is read only when it is in view
+    if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || t.x < 0 || back >= s.rows - t.y || back < 0 - t.y then
         { at = -1, cells = 0, shape = 0, preAt = -1, pre = [], selFrom = -1, selTo = -1 }
 
     else
+        let
+            y =
+                t.y + back
+
+            o =
+                rowOffset s y
+
+            head =
+                if t.x > 0 && cellWide (cellOf s o (extentAt o s) t.x) == wideTail then
+                    t.x - 1
+
+                else
+                    t.x
+
+            wide =
+                cellWide (cellOf s o (extentAt o s) head) == wideHead && head + 1 < t.cols
+        in
         { preAt = -1
         , pre = []
         , selFrom = -1

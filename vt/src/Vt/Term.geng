@@ -98,7 +98,7 @@ type Plainness
 (the slots before it are pages dropped, emptied), each of `pageRows` rows
 as `pageOut` cuts them (`Config.pageRows`). `limit`: the most bytes
 the pages may hold (V21, §VC32), none when 0; `bytes` and `rows`: what they
-hold. `peak`: the most rows the scrollback may have held, the ring's with
+hold, the rows at most 2^29, the pages dropped past it as past the limit. `peak`: the most rows the scrollback may have held, the ring's with
 the pages', and `dropped`: whether a page has gone for the limit; both stay
 once set, and are noted inside a read, where a resize by DECCOLM can bring
 the scrollback back down. Ghostty prunes at another point than the core, so
@@ -107,7 +107,7 @@ may have (§VC17, §VC25, `Vt.historyReached`). -}
 type alias Back =
     { pages : Builder Page
     , head : Int
-    , pageRows : Int
+    , pageRows : Int where 16 <= pageRows && pageRows <= 4096
     , limit : Int
     , bytes : Int
     , rows : Int
@@ -115,8 +115,9 @@ type alias Back =
     , dropped : Bool
       -- the rows dropped from the oldest end since the term was made, so
       -- that a view scrolled back can stay on its rows as more come in
-      -- (`Vt.rowsPushed`)
-    , gone : Int
+      -- (`Vt.rowsPushed`); it and `rows` stop at 2^29, so that a sum of
+      -- the two and the ring's stays inside `Int` (§VC51)
+    , gone : Int where 0 <= rows && rows <= 536870912 && 0 <= gone && gone <= 536870912
     }
 
 
@@ -269,10 +270,10 @@ type alias Screen =
     , stride : Int
     , base : Int
     , hist : Int
-    , size : Int
+    , size : Int where 0 <= hist && hist + rows <= size && 1 <= cols && cols <= 1000 && 1 <= rows && rows <= 1000 && rows < size && size <= 9193 && 0 <= base && base < size && stride == cols + 1 && Builder.length cells == size * stride
     , top : Int
     , height : Int
-    , turn : Int
+    , turn : Int where 0 <= top && 1 <= height && top + height <= rows && 0 <= turn && turn < height
     , saved : Saved
     }
 
@@ -287,16 +288,16 @@ type alias Term =
     , otherErase : Int64
     , heads : Bool
     , alt : Bool
-    , config : Config
+    , config : Config where 1 <= config.cols && config.cols <= 1000 && 1 <= config.rows && config.rows <= 1000 && 16 <= config.pageRows && config.pageRows <= 4096
     , cols : Int
-    , rows : Int
+    , rows : Int where 1 <= cols && cols <= 1000 && 1 <= rows && rows <= 1000 && screen.cols == cols && screen.rows == rows
     , x : Int
-    , y : Int
+    , y : Int where 0 <= x && x < cols && 0 <= y && y < rows
     , wrapNext : Bool
     , top : Int
     , bottom : Int
     , left : Int
-    , right : Int
+    , right : Int where 0 <= top && top <= bottom && bottom < rows && 0 <= left && left <= right && right < cols
     , scroll : Int
     , attrs : Attrs
     , pen : Int64
@@ -431,12 +432,17 @@ type alias Clip =
     { selection : Int, text : Maybe Bytes, letter : Int, bel : Bool }
 
 
-newScreen : Int -> Int -> Int -> Screen
+newScreen : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> (size : Int where rows < size && size <= 9193) -> (r : Screen where r.rows == rows && r.cols == cols)
 newScreen cols rows size =
-    { cells = Builder.repeat (size * (cols + 1)) 0
+    let
+        -- one sum, so that the cells' length and the stride are one product
+        stride =
+            cols + 1
+    in
+    { cells = Builder.repeat (size * stride) 0
     , cols = cols
     , rows = rows
-    , stride = cols + 1
+    , stride = stride
     , base = 0
     , hist = 0
     , size = size

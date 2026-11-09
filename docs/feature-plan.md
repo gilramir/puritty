@@ -268,6 +268,18 @@ What each place shows:
 Size: small for the window-wide indicator, which needs only state the core
 already has; medium for the per-pane overlay, after phase 4.
 
+**A "Copied" flash** (Gilbert, 2026-11-09, from ChromeOS's Terminal app):
+when a program's OSC 52 write reaches the clipboard, the Terminal app
+shows a "Copied" badge over the screen for about half a second and fades
+it out. Selecting text in tmux over ssh then says at once that the copy
+got through, which is the question above answered at the moment it
+matters. puritty knows the moment: the core counts OSC 52 requests
+(`Osc52.requests`), and the app writes the clipboard when it takes them.
+The same badge could say when one was refused ("Copy blocked" by
+puritty's settings) or when a read was asked. Size: small, an overlay
+drawn by the app with a timer, no new state in the core; it needs a
+setting to turn it off.
+
 ### A tmux configuration helper
 
 In control mode puritty talks to the tmux server, so it can ask it its

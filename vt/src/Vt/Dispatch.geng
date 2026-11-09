@@ -435,9 +435,10 @@ dispatchRare final params t =
 
 
 {-| A count, 1 when there is no parameter, and 0 when it is 0. -}
-count0 : Array Int -> Int
+count0 : Array Int -> (r : Int where 0 <= r && r <= 65535)
 count0 params =
-    Maybe.withDefault 1 (Array.first params)
+    -- the parser keeps each parameter to 0..65535 (`Vt.Parse.csi`)
+    clamp 0 65535 (Maybe.withDefault 1 (Array.first params))
 
 
 {-| The finals whose count of 0 does nothing, as in Ghostty, where for the
@@ -491,7 +492,7 @@ above if that row wrapped into this one, and stops at the region's top; with
 the extended form (?1045) it goes on whether the row wrapped or not, and from
 the region's top to its bottom. A pending wrap takes one of the `n`. As xterm
 and Ghostty do (§VC12). -}
-cursorLeft : Int -> (taken t : Term) -> Term
+cursorLeft : (n : Int where 0 <= n && n <= 65535) -> (taken t : Term) -> Term
 cursorLeft n t =
     let
         mode =
@@ -538,7 +539,7 @@ cursorLeft n t =
             reverseLeft mode lm count { t | wrapNext = False }
 
 
-reverseLeft : Int -> Int -> Int -> (taken t : Term) -> Term
+reverseLeft : Int -> (lm : Int where 0 <= lm && lm <= t0.x && lm <= t0.right) -> (count : Int where 0 <= count && count <= 65535) -> (taken t0 : Term) -> Term
 reverseLeft mode lm count t0 =
     let
         amount =
@@ -596,6 +597,7 @@ rectChecksum params t =
             else
                 0
 
+        edge : Int -> (default : Int where 0 <= default && default <= 65535) -> (m : Int where 0 <= m && m <= 1000) -> (most : Int where 1 <= most) -> (r : Int where 1 <= r && r <= most)
         edge i default m most =
             clamp 1 most (param i default params + m)
 

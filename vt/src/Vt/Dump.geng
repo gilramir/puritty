@@ -1,5 +1,5 @@
 module Vt.Dump exposing
-    ( screenRow
+    ( screenRows
     , ringRow
     , historyRows
     , rowLines
@@ -44,9 +44,21 @@ import Vt.Resize exposing (..)
 -- THE DUMP
 
 
-screenRow : Int -> Term -> DumpRow
-screenRow y t =
-    ringRow (rowOffset t.screen y) t
+{-| The screen's rows. -}
+screenRows : Term -> Array DumpRow
+screenRows t =
+    ringRows 0 t.rows t []
+
+
+{-| The ring's rows `y` to `stop - 1`, a loop, as a function that captures
+the screen to read it would take its builder. -}
+ringRows : (y : Int where 0 - t.screen.hist <= y) -> (stop : Int where stop <= t.rows) -> (t : Term) -> Array DumpRow -> Array DumpRow
+ringRows y stop t acc =
+    if y >= stop then
+        acc
+
+    else
+        ringRows (y + 1) stop t (Array.pushLast (ringRow (rowOffset t.screen y) t) acc)
 
 
 ringRow : Int -> Term -> DumpRow
@@ -96,7 +108,7 @@ historyRows t =
                     paged.rows
 
             ring =
-                Array.map (\y -> ringRow (phys t.screen y * t.screen.stride) t) (Array.range (0 - t.screen.hist) -1)
+                ringRows (0 - t.screen.hist) 0 t []
         in
         Array.append ring pages
 
@@ -221,7 +233,7 @@ styleText a =
 
 {-| The sum so far in bits 0–15, and bit 16 while the cell counted next is
 the rectangle's first, the one blank the DEC checksum does not leave out. -}
-checksumRows : Term -> Int -> Int -> Int -> Int -> Int -> Int
+checksumRows : (t : Term) -> Int -> Int -> (y : Int where 0 - t.screen.hist <= y) -> (bottom : Int where bottom < t.rows) -> Int -> Int
 checksumRows t left right y bottom acc =
     if y > bottom then
         acc

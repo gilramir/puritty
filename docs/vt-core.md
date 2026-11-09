@@ -3952,3 +3952,69 @@ named the type, and stopped at the app.
 Held to: the unit tests 68 of 68, replay 325 of 325 on `core-dump` built
 again, the charset gate, the app built, and every `perf.py` count the same
 to the 0.1 M it prints.
+
+
+## VC51. Every read of a screen row proved in range (2026-11-09)
+
+geng-lang's refinement checker now holds every read and write of a screen
+row in `vt` to the ring's range, with nothing left unproved (its
+`m4-refine-t1.md` TO19.8, from 90 errors at TO19.4). What the core says now:
+
+- **Invariants.** `Term`'s screen is its size (`screen.rows == rows`,
+  `screen.cols == cols`). `Screen`'s scrollback fits in its ring
+  (`0 <= hist`, `hist + rows <= size`), and every ring has a row past its
+  screen (`rows < size`; a view's `viewAt` makes one row more for it).
+  `Back` counts at most 2^29 rows held and 2^29 dropped (below).
+- **Signatures.** The 36 functions that make a screen from a screen say
+  they keep its `rows`, `cols`, `hist` and `size`; every row a function
+  takes is refined, a logical row `0 - s.hist <= y && y < s.rows`, or the
+  ring's bounds for `moveRows` and its kin; the parser's byte index is
+  never negative, and below the read's length where a byte is read.
+- **Loops for maps over ranges.** `Array.map` over `Array.range` cannot
+  say its index is in range, so `Dump.screenRows`, `Dump.ringRows` and
+  `Resize.ringRowsOf` are loops, as `Vt.ringRows` already was.
+- **Tests where a fact cannot be written.** The hidden screen of
+  `toAlt`/`toMain` is the term's size, which a `Maybe Screen` cannot
+  carry: `altScreen` makes a new alternate screen for one that were not,
+  and `toMain` leaves the alternate screen up. `screenUp` keeps a row only
+  when the ring has room for it, which `pageOut` makes, and `pageOut`
+  packs at most `hist` rows; `spreadWork` skips a queued cell outside the
+  screen; `cursorOf` reads the cursor's row only once it is in view;
+  `unheadAbove` does nothing with no row above; `hiddenHist` clamps the
+  hidden ring's count to its invariant. No unit test or replay case takes
+  any of these branches.
+- **Functions of their own for the checker.** `insertFor` (`printPoint`'s
+  insert) and `altScreen`: a three-way `if` choosing a screen is too large
+  a question for the checker inline. Neither costs an instruction.
+
+**The scrollback's counts are capped.** `back.gone`, the rows ever dropped
+from the scrollback, only grew, and at 32 bits would have wrapped after
+2^31 rows, about an hour of `yes`, taking a selection's absolute rows with
+it. Gilbert chose a cap: `Back.rows` and `Back.gone` stop at 2^29
+(536,870,912), added with saturation (`Pages.addRows`), and `dropOver`
+drops a page at the cap as at the byte limit, so that the ring's rows, the
+pages' and the dropped ones add up inside `Int`. A selection's absolute
+row is read through `Vt.fromAbsolute`, which saturates 2^30 rows above the
+screen. The bounds in the signatures are written as numbers, since a
+refinement reads only literals: 536,880,105 is 2^29 + 9,193 (the pages'
+cap and the largest ring), 1,073,751,017 is 2^30 + 9,193.
+
+**What it cost, and what was found.** The first build was up to 118%
+slower on scrolling: the resize, rewritten to keep the screen in the term,
+handed it to a reader, so `resizeTo`'s result was not fresh, nor
+`dispatch`'s, and the in-place pass copied the screen at every line feed
+(`GENG_INPLACE_REPORT` named it: "a call of resizeTo, whose result is not
+fresh"). The resize takes the screen and sets the new one with the size in
+one update, as `Term`'s invariant needs. Of the run-time tests,
+`printAscii`'s stop as `i + min (n - i) (cols - t.x)` cost 17% on
+`vte-light_cells` and `unheadIf`'s `y > 0` 2.3% on `vte-unicode`; the stop
+is now an `if` computed once and the test moved into `unheadAbove`, and
+both cost nothing. What is left, accepted by Gilbert and recorded in
+`corpus/perf/baseline.tsv`: `vte-scrolling` +1.35%, the four region cases
++1.87%, `vte-unicode` +1.35%, from the overflow-safe forms in `decodeRun`
+and `printAscii` (three provable forms of `decodeRun` were counted, and
+this one is the least), and two resizes of `short-10000` +3.7%, with
+`long-10000`'s 3.5% lower.
+
+Held to: the unit tests 68 of 68, replay 325 of 325 on `core-dump` built
+again, and `perf.py`'s counts, recorded.

@@ -50,27 +50,38 @@ import Vt.Cursor exposing (..)
 import Vt.Prompt exposing (..)
 
 
-{-| The rows the scrollback holds at the terminal's width: the ring's and
-the pages', which have the screen's width (V20), so the count is exact.
-For the differential fuzzer, which compares the scrollback only while
-neither the core nor Ghostty may have pruned it, as they prune it
-differently (§VC17); `historyReached` says whether either may have (§VC25). -}
-historyBound : Term -> Int
+{-| The rows the scrollback holds at the terminal's width: the ring's and the
+pages', which have the screen's width (V20), so the count is exact. For the
+differential fuzzer, which compares the scrollback only while neither the
+core nor Ghostty may have pruned it, as they prune it differently (§VC17);
+`historyReached` says whether either may have (§VC25). 536,880,105 is 2^29 +
+9,193: the most rows the pages count (`Back`, §VC51) and the most a ring
+keeps. -}
+historyBound : Term -> (r : Int where 0 <= r && r <= 536880105)
 historyBound t =
     let
         ring =
             if t.alt then
-                when t.other is
-                    Just main ->
-                        main.hist
-
-                    Nothing ->
-                        0
+                hiddenHist t.other
 
             else
                 t.screen.hist
     in
     ring + t.back.rows
+
+
+{-| The scrollback in the hidden main screen's ring, while the alternate
+screen is up. `Screen`'s invariant keeps it from 0 to 9193, which the
+checker does not yet know of a screen out of this `Maybe` (geng-lang
+`open-items.md`), so it is said again. -}
+hiddenHist : Maybe Screen -> (r : Int where 0 <= r && r <= 9193)
+hiddenHist other =
+    when other is
+        Just main ->
+            clamp 0 9193 main.hist
+
+        Nothing ->
+            0
 
 
 {-| `t` with the rows its scrollback holds now noted in `peak`. -}
@@ -278,7 +289,7 @@ reverseIndex t =
 {-| Rows `top` to `bottom` scrolled up `count` times. On the main screen,
 with the region starting at the top, the rows that leave go to the
 scrollback. -}
-regionUp : Int -> Int -> Int -> (taken t : Term) -> Term
+regionUp : Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t.rows) -> (taken t : Term) -> (r : Term where r.rows == t.rows)
 regionUp count top bottom t =
     -- a loop of its own and not a call of `scrollUpBy`, which clang would
     -- inline into `lineFeed`, and `lineFeed` then not into the ground state
@@ -311,7 +322,7 @@ regionUp count top bottom t =
 the rows they shift when the region is the screen's width (§VC16), and a
 spacer head ending one a plain cell, as its `rowWillBeShifted` makes it
 (§VC21). -}
-unwrapRegion : Int -> Int -> (taken t : Term) -> Term
+unwrapRegion : (top : Int where 0 <= top) -> (bottom : Int where bottom < t.rows) -> (taken t : Term) -> Term
 unwrapRegion top bottom t =
     if top > bottom then
         t
@@ -321,7 +332,7 @@ unwrapRegion top bottom t =
 
 
 {-| A spacer head ending row `y` made a plain cell in its style. -}
-unheadEnd : Int -> (taken s : Screen) -> Screen
+unheadEnd : (y : Int where 0 - s.hist <= y && y < s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 unheadEnd y s =
     let
         o =
@@ -339,7 +350,7 @@ unheadEnd y s =
 
 {-| `regionUp` with no scrollback kept, for DL, which keeps none in
 Ghostty (§VC16). -}
-scrollUpBy : Bool -> Int -> Int -> Int -> (taken t : Term) -> Term
+scrollUpBy : Bool -> Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t.rows) -> (taken t : Term) -> (r : Term where r.rows == t.rows)
 scrollUpBy keep count top bottom t =
     if count <= 0 then
         t
@@ -362,7 +373,7 @@ scrollUpBy keep count top bottom t =
         scrollUpBy keep (count - 1) top bottom { t | screen = screenUp keep top bottom t.erase t.screen }
 
 
-regionDown : Int -> Int -> Int -> (taken t0 : Term) -> Term
+regionDown : Int -> (top : Int where 0 <= top && top <= bottom) -> (bottom : Int where bottom < t0.rows) -> (taken t0 : Term) -> (r : Term where r.rows == t0.rows)
 regionDown count top bottom t0 =
     let
         t =
@@ -397,7 +408,7 @@ resizeQuiet cols0 rows0 t =
         noteReach (resizeTo cols rows (noteReach t))
 
 
-resizeTo : Int -> Int -> (taken t : Term) -> Term
+resizeTo : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> (taken t : Term) -> Term
 resizeTo cols rows t =
     let
         activeClear =
@@ -414,7 +425,12 @@ resizeTo cols rows t =
 
         config =
             t.config
+
+        widened =
+            cols /= t.cols
     in
+    -- each new screen is set with the size, the cursor and the region and
+    -- margins in one update, which `Term`'s invariant holds them to
     if t.alt then
         when t.other is
             Just main0 ->
@@ -429,11 +445,19 @@ resizeTo cols rows t =
                         resizeScreen hiddenClear t.autowrap True cols rows t.hidden (savedPoint main.saved) t.clusters main t.back
 
                     a =
-                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active (emptyBack config.pageRows 0)
+                        resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active (emptyBack (clamp 16 4096 config.pageRows) 0)
                 in
-                resized cols rows a.cursor
+                resized widened a.cursor.wrap
                     { t
                         | screen = withSaved a.saved a.screen
+                        , cols = cols
+                        , rows = rows
+                        , x = a.cursor.x
+                        , y = a.cursor.y
+                        , top = 0
+                        , bottom = rows - 1
+                        , left = 0
+                        , right = cols - 1
                         , other = Just (withSaved m.saved m.screen)
                         , hidden = m.cursor
                         , back = m.back
@@ -456,11 +480,19 @@ resizeTo cols rows t =
                         settle alt0
 
                     a =
-                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt (emptyBack config.pageRows 0)
+                        resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt (emptyBack (clamp 16 4096 config.pageRows) 0)
                 in
-                resized cols rows m.cursor
+                resized widened m.cursor.wrap
                     { t
                         | screen = withSaved m.saved m.screen
+                        , cols = cols
+                        , rows = rows
+                        , x = m.cursor.x
+                        , y = m.cursor.y
+                        , top = 0
+                        , bottom = rows - 1
+                        , left = 0
+                        , right = cols - 1
                         , other = Just (withSaved a.saved a.screen)
                         , hidden = a.cursor
                         , back = m.back
@@ -469,37 +501,35 @@ resizeTo cols rows t =
                     }
 
             Nothing ->
-                resized cols rows m.cursor
+                resized widened m.cursor.wrap
                     { t
                         | screen = withSaved m.saved m.screen
+                        , cols = cols
+                        , rows = rows
+                        , x = m.cursor.x
+                        , y = m.cursor.y
+                        , top = 0
+                        , bottom = rows - 1
+                        , left = 0
+                        , right = cols - 1
                         , back = m.back
                         , clusters = m.clusters
                         , config = { config | cols = cols, rows = rows }
                     }
 
 
-{-| What follows the size: the cursor, the region and margins, the tabs. -}
-resized : Int -> Int -> { x : Int, y : Int, wrap : Bool } -> (taken t0 : Term) -> Term
-resized cols rows cursor t0 =
+{-| What follows a resize, the term already its new size with its cursor
+and its region and margins the whole screen: the tabs made again when the
+width changed, the pending wrap, and the scroll. -}
+resized : Bool -> Bool -> (taken t0 : Term) -> Term
+resized widened wrap t0 =
     let
         t =
-            if cols == t0.cols then
-                t0
+            if widened then
+                { t0 | tabs = Builder.fromArray (Array.initialize t0.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
 
             else
-                { t0 | tabs = Builder.fromArray (Array.initialize cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
+                t0
     in
-    withScroll
-        { t
-            | cols = cols
-            , rows = rows
-            , x = cursor.x
-            , y = cursor.y
-            , wrapNext = cursor.wrap
-            -- a reflow may have written spacer heads
-            , heads = True
-            , top = 0
-            , bottom = rows - 1
-            , left = 0
-            , right = cols - 1
-        }
+    -- a reflow may have written spacer heads
+    withScroll { t | wrapNext = wrap, heads = True }

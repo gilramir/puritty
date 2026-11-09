@@ -55,7 +55,7 @@ import Vt.Sgr exposing (..)
 import Vt.Edit exposing (..)
 
 
-fresh : Config -> Term
+fresh : (config : Config where 1 <= config.cols && config.cols <= 1000 && 1 <= config.rows && config.rows <= 1000 && 16 <= config.pageRows && config.pageRows <= 4096) -> Term
 fresh config =
     { screen = newScreen config.cols config.rows (config.rows + 2 * config.pageRows + 1)
     , other = Nothing
@@ -460,18 +460,7 @@ toAlt clear t =
                 t.screen
 
             alt =
-                when t.other is
-                    Just kept ->
-                        if clear then
-                            -- in its own pen, as it was left: Ghostty
-                            -- erases before it copies the cursor (§VC20)
-                            clearAlt t.otherProtect t.rows t.otherErase kept
-
-                        else
-                            kept
-
-                    Nothing ->
-                        newScreen t.cols t.rows (t.rows + 1)
+                altScreen clear t.cols t.rows t.otherProtect t.otherErase t.other
         in
         withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape }
 
@@ -479,13 +468,36 @@ toAlt clear t =
 {-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
 kept when its protection was last ISO's, SPA's (§VC18), and in `fill`, the
 erase cell of the screen's own pen (§VC20). -}
-clearAlt : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
+clearAlt : Int -> (rows : Int where rows <= s.rows) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 clearAlt mode rows fill s =
     if mode == 1 then
         blankUnprotected 0 rows fill s
 
     else
         blankRows 0 rows fill s
+
+
+{-| The alternate screen `toAlt` shows: the one kept, cleared first when
+`clear`, in its own pen, as it was left, since Ghostty erases before it
+copies the cursor (§VC20); or a new one. The one kept is the term's size, as
+every resize makes both screens; a `Maybe` cannot say so, and one that were
+not would be made again. -}
+altScreen : Bool -> (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Int -> Int64 -> (taken other : Maybe Screen) -> (r : Screen where r.rows == rows && r.cols == cols)
+altScreen clear cols rows mode erase other =
+    when other is
+        Just kept ->
+            if kept.rows == rows && kept.cols == cols then
+                if clear then
+                    clearAlt mode rows erase kept
+
+                else
+                    kept
+
+            else
+                newScreen cols rows (rows + 1)
+
+        Nothing ->
+            newScreen cols rows (rows + 1)
 
 
 {-| The main screen shown again, the alternate cleared first when `clear`
@@ -497,19 +509,25 @@ toMain clear t =
 
     else
         when t.other is
+            -- the main screen is the term's size, as every resize makes
+            -- both; were it not, the alternate screen would stay
             Just main ->
-                let
-                    alt =
-                        if clear then
-                            clearAlt t.protectMode t.rows t.erase t.screen
+                if main.rows /= t.rows || main.cols /= t.cols then
+                    t
 
-                        else
-                            t.screen
-                in
-                -- cleared, the alternate screen is erased as ED 2 does,
-                -- which ends a pending wrap before the cursor is carried
-                -- over, as in Ghostty (§VC17)
-                withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape, wrapNext = t.wrapNext && not clear }
+                else
+                    let
+                        alt =
+                            if clear then
+                                clearAlt t.protectMode t.rows t.erase t.screen
+
+                            else
+                                t.screen
+                    in
+                    -- cleared, the alternate screen is erased as ED 2 does,
+                    -- which ends a pending wrap before the cursor is carried
+                    -- over, as in Ghostty (§VC17)
+                    withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape, wrapNext = t.wrapNext && not clear }
 
             Nothing ->
                 t
@@ -576,8 +594,10 @@ restoreCursor t =
     in
     withPlain <| withPen v.attrs
         { t
-            | x = min (t.cols - 1) v.x
-            , y = min (t.rows - 1) v.y
+            -- a saved position is on the screen it was saved on, which a
+            -- resize may since have made smaller
+            | x = clamp 0 (t.cols - 1) v.x
+            , y = clamp 0 (t.rows - 1) v.y
             , wrapNext = v.wrapNext
             , origin = v.origin
             , sets = v.sets
@@ -689,3 +709,4 @@ resetSaved t =
             t.screen
     in
     { t | screen = { s | saved = noSaved } }
+

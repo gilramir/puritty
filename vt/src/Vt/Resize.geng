@@ -99,7 +99,7 @@ savedPoint v =
 
 {-| The saved cursor moved where a resize took it; with nothing saved,
 nothing is moved, as Ghostty keeps none (§VC16). -}
-withSaved : { x : Int, y : Int, wrap : Bool } -> (taken s : Screen) -> Screen
+withSaved : { x : Int, y : Int, wrap : Bool } -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 withSaved p s =
     let
         v =
@@ -112,7 +112,7 @@ withSaved p s =
         s
 
 
-withState : Saved -> (taken s : Screen) -> Screen
+withState : Saved -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 withState v s =
     { s | saved = v }
 
@@ -139,7 +139,7 @@ last row to be taken back, to begin the ring's first line. Pages are taken
 back into the ring as before when the screen wants rows they hold, when the
 prompt to clear may begin in them, and all of them when the resize would
 lose cells, with autowrap off or in one column (§VC14). -}
-resizeScreen : Int -> Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (taken back : Back) -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
+resizeScreen : Int -> Bool -> Bool -> (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool } -> Clusters -> Screen -> (taken back : Back) -> (r : { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } } where r.screen.rows == rows && r.screen.cols == cols && 0 <= r.cursor.x && r.cursor.x < cols && 0 <= r.cursor.y && r.cursor.y < rows)
 resizeScreen clear reflow keep cols rows cursor saved clusters s back =
     let
         pageRows =
@@ -270,7 +270,7 @@ pullPages reflow lossy clear keep cols rows cursor saved clusters s pages =
 the scrollback from the pages left. `before` is the saved cursor's state,
 which the new screen takes over; a resize moves only its position
 (§VC16). -}
-resized : Int -> Bool -> Int -> Int -> Saved -> (taken made : { flow : Flow, pages : Array Page, clusters : Clusters }) -> Back -> { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } }
+resized : Int -> Bool -> (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Saved -> (taken made : { flow : Flow, pages : Array Page, clusters : Clusters }) -> Back -> (r : { screen : Screen, back : Back, clusters : Clusters, cursor : { x : Int, y : Int, wrap : Bool }, saved : { x : Int, y : Int, wrap : Bool } } where r.screen.rows == rows && r.screen.cols == cols && 0 <= r.cursor.x && r.cursor.x < cols && 0 <= r.cursor.y && r.cursor.y < rows)
 resized clear keep cols rows before made left =
     let
         flow =
@@ -290,8 +290,16 @@ resized clear keep cols rows before made left =
         v =
             flow.saved
 
+        -- a count of rows, never below 0
+        hist =
+            max 0 flow.hist
+
         vy =
-            v.row - flow.hist
+            if v.row < hist then
+                -1
+
+            else
+                v.row - hist
     in
     { screen = withState before built.screen
     , back = built.back
@@ -299,11 +307,11 @@ resized clear keep cols rows before made left =
     , cursor =
         -- a cursor whose row went into the scrollback goes home, as
         -- Ghostty's cursorReload puts it (§VC16)
-        if c.row < flow.hist then
+        if c.row < hist then
             offEdge cols { x = 0, y = 0, wrap = c.wrap }
 
         else
-            offEdge cols { x = c.x, y = min (rows - 1) (c.row - flow.hist), wrap = c.wrap }
+            offEdge cols { x = c.x, y = min (rows - 1) (c.row - hist), wrap = c.wrap }
     , saved =
         if vy >= 0 && vy < rows then
             offEdge cols { x = v.x, y = vy, wrap = v.wrap }
@@ -456,13 +464,13 @@ flowFrom : Bool -> Bool -> Int -> Int -> { x : Int, y : Int, wrap : Bool } -> { 
 flowFrom reflow keep cols rows cursor saved s paged more prefix =
     let
         history =
-            paged ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range (0 - s.hist) -1)
+            paged ++ ringRowsOf (0 - s.hist) 0 s []
 
         h0 =
             Array.length history
 
         flow0 =
-            { rows = history ++ Array.map (\y -> ringRowOf (rowOffset s y) s) (Array.range 0 (s.rows - 1))
+            { rows = history ++ ringRowsOf 0 s.rows s []
             , hist = h0
             , cursor = { row = h0 + cursor.y, x = cursor.x, wrap = cursor.wrap }
             -- none saved, none carried: Ghostty tracks a saved cursor
@@ -517,14 +525,33 @@ lineStart pages k =
 
 
 {-| A cursor waiting to wrap that a resize moved off the right edge goes on
-to the next cell instead, as Ghostty's does. -}
-offEdge : Int -> { x : Int, y : Int, wrap : Bool } -> { x : Int, y : Int, wrap : Bool }
+to the next cell instead, as Ghostty's does; its column inside the screen. -}
+offEdge : (cols : Int where 1 <= cols && cols <= 1000) -> (p : { x : Int, y : Int, wrap : Bool }) -> (r : { x : Int, y : Int, wrap : Bool } where 0 <= r.x && r.x < cols && r.y == p.y)
 offEdge cols p =
     if p.wrap && p.x /= cols - 1 then
-        { x = min (cols - 1) (p.x + 1), y = p.y, wrap = False }
+        { x =
+            if p.x >= cols - 1 then
+                cols - 1
+
+            else
+                max 0 (p.x + 1)
+        , y = p.y
+        , wrap = False
+        }
 
     else
-        { x = min (cols - 1) p.x, y = p.y, wrap = p.wrap }
+        { x = clamp 0 (cols - 1) p.x, y = p.y, wrap = p.wrap }
+
+
+{-| The ring's rows `y` to `stop - 1`, a loop, as a function that captures
+the screen to read it would take its builder. -}
+ringRowsOf : (y : Int where 0 - s.hist <= y) -> (stop : Int where stop <= s.rows) -> (s : Screen) -> Array Row -> Array Row
+ringRowsOf y stop s acc =
+    if y >= stop then
+        acc
+
+    else
+        ringRowsOf (y + 1) stop s (Array.pushLast (ringRowOf (rowOffset s y) s) acc)
 
 
 ringRowOf : Int -> Screen -> Row
@@ -1294,7 +1321,7 @@ foundAt marks from to row x found =
 
 {-| A screen made of the flow's rows: the scrollback written into the ring
 and paged out as it fills, as line feeds would, then the screen's rows. -}
-rebuild : Int -> Int -> Flow -> Clusters -> (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
+rebuild : Int -> (rows : Int where rows <= s.rows) -> Flow -> Clusters -> (taken s : Screen) -> (taken back : Back) -> (r : { screen : Screen, back : Back } where r.screen.rows == s.rows && r.screen.cols == s.cols)
 rebuild cols rows flow clusters s back =
     let
         hist =
@@ -1306,7 +1333,7 @@ rebuild cols rows flow clusters s back =
     { screen = writeRows flow.rows flow.hist 0 rows r, back = hist.back }
 
 
-pushHistory : Clusters -> Array Row -> Int -> Int -> (taken s : Screen) -> (taken back : Back) -> { screen : Screen, back : Back }
+pushHistory : Clusters -> Array Row -> Int -> Int -> (taken s : Screen) -> (taken back : Back) -> (r : { screen : Screen, back : Back } where r.screen.rows == s.rows && r.screen.cols == s.cols)
 pushHistory clusters rows i stop s back =
     if i >= stop then
         { screen = s, back = back }
@@ -1326,7 +1353,7 @@ pushHistory clusters rows i stop s back =
         pushHistory clusters rows (i + 1) stop { written | base = phys written 1, hist = written.hist + 1 } back
 
 
-writeRows : Array Row -> Int -> Int -> Int -> (taken s : Screen) -> Screen
+writeRows : Array Row -> Int -> (y : Int where 0 - s.hist <= y) -> (count : Int where count <= s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 writeRows rows from y count s =
     if y >= count then
         s
@@ -1335,7 +1362,7 @@ writeRows rows from y count s =
         writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (from + y) rows)) s)
 
 
-writeRow : Int -> Row -> (taken s : Screen) -> Screen
+writeRow : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> Row -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 writeRow o row s =
     let
         cells =

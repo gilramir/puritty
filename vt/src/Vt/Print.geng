@@ -157,7 +157,7 @@ wrapNow t =
         { fed | x = fed.left }
 
 
-writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (taken row : Builder Int64) -> Builder Int64
+writeAscii : Bytes -> Int -> Int -> Int64 -> Int -> (taken row : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length row)
 writeAscii bytes i end pen x row =
     if i < end then
         writeAscii bytes (i + 1) end pen (x + 1) (Builder.set x (Bitwise.or pen (Int64.fromInt (byteAt bytes i))) row)
@@ -169,7 +169,7 @@ writeAscii bytes i end pen x row =
 {-| A run of printable ASCII written from column `x` to `xEnd` of the row at
 `o`, `first` the byte at `i`. A wide character the run's ends cut in half is
 made empty. -}
-asciiRow : Bytes -> Int -> Int -> Int64 -> Int64 -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+asciiRow : Bytes -> Int -> Int -> Int64 -> Int64 -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 asciiRow bytes i end pen erase cols o x xEnd first cells =
     let
         m =
@@ -186,6 +186,22 @@ asciiRow bytes i end pen erase cols o x xEnd first cells =
                 cells
     in
     Builder.set (o + cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt (max xEnd old))) (writeAscii bytes (i + 1) end pen (o + x + 1) (Builder.set (o + x) (Bitwise.or pen (Int64.fromInt first)) (reachAt o old x cut)))
+
+
+{-| `printPoint`'s insert before the character: none (0), between the
+margins (1), or across the row (2). A function of its own, so that the
+checker holds each branch to its result's refinement and does not merge
+the screens' fields. -}
+insertFor : Int -> Int -> (x : Int where 0 <= x && x < s.cols) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+insertFor inserting o x count right erase s =
+    if inserting == 0 then
+        s
+
+    else if inserting == 1 then
+        insertMargined o x count right erase s
+
+    else
+        insertCells o x count erase s
 
 
 {-| One code point of width `w` written at the cursor, through every mode:
@@ -216,12 +232,13 @@ printPoint cp w t0 =
             one =
                 w == 2 && rightEdge t - t.left <= 1
 
+            -- a width other than 0 and 2 is 1, which `Width.width` answers
             wc =
-                if one then
+                if one || w /= 2 then
                     1
 
                 else
-                    w
+                    2
 
             cc =
                 if one then
@@ -264,14 +281,7 @@ printPoint cp w t0 =
                     rowOffset s0 t.y
 
                 s =
-                    if inserting == 0 then
-                        s0
-
-                    else if inserting == 1 then
-                        insertMargined o t.x wc t.right t.erase s0
-
-                    else
-                        insertCells o t.x wc t.erase s0
+                    insertFor inserting o t.x wc t.right t.erase s0
 
                 ext =
                     extentAt o s
@@ -444,7 +454,7 @@ type alias Run =
     { cells : Builder Int64, x : Int, next : Int, last : Int }
 
 
-decodeRun : Bytes -> Int -> Int -> Int64 -> Int -> Int -> Int -> Int -> (taken row : Builder Int64) -> Run
+decodeRun : Bytes -> Int -> (i : Int where 0 <= i) -> Int64 -> Int -> (cols : Int where cols <= 1000) -> (x : Int) -> Int -> (taken row : Builder Int64) -> (r : Run where Builder.length r.cells == Builder.length row && i <= r.next && x <= r.x)
 decodeRun bytes n i pen o cols x last row =
     if i >= n || x >= cols then
         { cells = row, x = x, next = i, last = last }
@@ -465,12 +475,16 @@ decodeRun bytes n i pen o cols x last row =
                 len =
                     leadLength b
 
+                -- the whole sequence is in the read
+                fits =
+                    len /= 0 && len <= n - i
+
                 cp =
-                    if len == 0 || i + len > n then
-                        -1
+                    if fits then
+                        wellFormed bytes i b len
 
                     else
-                        wellFormed bytes i b len
+                        -1
 
                 w =
                     if cp < 0xA0 then
@@ -479,10 +493,10 @@ decodeRun bytes n i pen o cols x last row =
                     else
                         Width.width cp
             in
-            if w == 1 then
+            if fits && w == 1 then
                 decodeRun bytes n (i + len) pen o cols (x + 1) cp (Builder.set (o + x) (Bitwise.or pen (Int64.fromInt cp)) row)
 
-            else if w == 2 && x + 2 <= cols then
+            else if fits && w == 2 && x + 2 <= cols then
                 decodeRun bytes n (i + len) pen o cols (x + 2) cp (Builder.set (o + x + 1) (Bitwise.or pen (Int64.fromInt wideTail)) (Builder.set (o + x) (Bitwise.or pen (Int64.fromInt (Bitwise.or wideHead cp))) row))
 
             else
@@ -491,7 +505,7 @@ decodeRun bytes n i pen o cols x last row =
 
 {-| How many bytes a UTF-8 sequence that starts with `b` has, or 0 when no
 well-formed one starts with it. -}
-leadLength : Int -> Int
+leadLength : Int -> (r : Int where 0 <= r && r <= 4)
 leadLength b =
     if b >= 0xC2 && b <= 0xDF then
         2
@@ -615,7 +629,7 @@ alignment t0 =
     withPlain (withScroll { t | screen = filled, top = 0, bottom = t.rows - 1, left = 0, right = t.cols - 1, origin = False, x = 0, y = 0, wrapNext = False })
 
 
-fillRows : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
+fillRows : (y : Int where 0 - s.hist <= y) -> (stop : Int where stop <= s.rows) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 fillRows y stop cell s =
     if y >= stop then
         s

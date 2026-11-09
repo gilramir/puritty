@@ -84,17 +84,19 @@ type alias Config =
 
 
 {-| The rows the scrollback holds at the terminal's width
-(`Vt.Scroll.historyBound`). -}
-historyBound : Term -> Int
+(`Vt.Scroll.historyBound`). 536,880,105 is 2^29 + 9,193: the most rows the
+pages count (`Back`, §VC51) and the most a ring keeps. -}
+historyBound : Term -> (r : Int where 0 <= r && r <= 536880105)
 historyBound t =
     Scroll.historyBound t
 
 
-{-| The rows above the screen a view can scroll back to
-(`docs/phase3-select.md` §1, §11): the main screen's scrollback, in the
-ring and in the pages; none while the alternate screen is up, which keeps
-none. -}
-scrollbackRows : Term -> Int
+{-| The rows above the screen a view can scroll back to (`docs/phase3-select.md`
+§1, §11): the main screen's scrollback, in the ring and in the pages; none
+while the alternate screen is up, which keeps none. 536,880,105 is 2^29 +
+9,193: the most rows the pages count (`Back`, §VC51) and the most a ring
+keeps. -}
+scrollbackRows : Term -> (r : Int where 0 <= r && r <= 536880105)
 scrollbackRows t =
     if t.alt then
         0
@@ -103,12 +105,29 @@ scrollbackRows t =
         t.screen.hist + t.back.rows
 
 
-{-| The rows that have entered the main screen's scrollback since the term
-was made: those it holds and those dropped from its oldest end. A view
-scrolled back stays on its rows by moving up as many as this grew by. -}
-rowsPushed : Term -> Int
+{-| The rows that have entered the main screen's scrollback since the term was
+made: those it holds and those dropped from its oldest end. A view scrolled
+back stays on its rows by moving up as many as this grew by. 1,073,751,017
+is 2^30 + 9,193: the rows the scrollback holds and those dropped, each at
+most 2^29, and the ring's. -}
+rowsPushed : Term -> (r : Int where 0 <= r && r <= 1073751017)
 rowsPushed t =
     historyBound t + t.back.gone
+
+
+{-| An absolute row (`Point`'s) as a row of the screen, `pushed` rows having
+entered the scrollback: below the screen's top for one in the scrollback.
+One more than 2^30 rows above the screen is taken as that far, which is
+above any scrollback (§VC51), so that a point from anywhere is never past
+`Int`'s range. 1,073,751,017 is 2^30 + 9,193: the rows the scrollback holds
+and those dropped, each at most 2^29, and the ring's. -}
+fromAbsolute : Int -> (pushed : Int where 0 <= pushed && pushed <= 1073751017) -> (r : Int where 0 - 1073741824 <= r)
+fromAbsolute row pushed =
+    if row < pushed - 1073741824 then
+        0 - 1073741824
+
+    else
+        row - pushed
 
 
 {-| The screen a view scrolled `back` rows up shows, as a screen of its
@@ -126,15 +145,17 @@ viewAt back0 t =
         read =
             rowsBetween (0 - back) t.rows t
     in
-    { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows t.rows), clusters = read.clusters }
+    -- a ring has a row past its screen's, which a view never uses
+    { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
 
 
-{-| `count` rows of the main screen and its scrollback from logical row
-`first` on (negative in the scrollback), read as `viewAt` reads them: the
-ring's copied, the pages' read with their clusters interned in a copy of
-the term's table. The caller keeps `first` and the count within the
-scrollback and the screen. -}
-rowsBetween : Int -> Int -> Term -> { rows : Array Row, clusters : Clusters }
+{-| `count` rows of the main screen and its scrollback from logical row `first`
+on (negative in the scrollback), read as `viewAt` reads them: the ring's
+copied, the pages' read with their clusters interned in a copy of the term's
+table. The caller keeps `first` and the count within the scrollback and the
+screen. 536,880,105 is 2^29 + 9,193: the most rows the pages count (`Back`,
+§VC51) and the most a ring keeps. -}
+rowsBetween : (first : Int where 0 - 536880105 <= first && first <= t.rows) -> (count : Int where 0 <= count && first + count <= t.rows) -> (t : Term) -> { rows : Array Row, clusters : Clusters }
 rowsBetween first count t =
     let
         hist =
@@ -153,7 +174,9 @@ rowsBetween first count t =
             viewPages t.back t.back.head 0 (t.back.rows + first + hist) fromPages t.clusters []
 
         ring =
-            ringRows (first + fromPages) (first + count) t []
+            -- from the ring's oldest row: a read that ends above it reads
+            -- none of it
+            ringRows (max (0 - hist) (first + fromPages)) (first + count) t []
     in
     { rows = paged.rows ++ ring, clusters = paged.clusters }
 
@@ -185,10 +208,10 @@ selectionText p q t =
             rowsPushed t
 
         ya =
-            ordered.a.row - pushed
+            fromAbsolute ordered.a.row pushed
 
         yb =
-            ordered.b.row - pushed
+            fromAbsolute ordered.b.row pushed
 
         first =
             max ya (0 - scrollbackRows t)
@@ -413,11 +436,14 @@ lineCells p t =
         pushed =
             rowsPushed t
 
+        most =
+            scrollbackRows t
+
         y =
-            clamp (0 - scrollbackRows t) (t.rows - 1) (p.row - pushed)
+            clamp (0 - most) (t.rows - 1) (fromAbsolute p.row pushed)
 
         first =
-            max (0 - scrollbackRows t) (y - 100)
+            max (0 - most) (y - 100)
 
         last =
             min (t.rows - 1) (y + 100)
@@ -524,10 +550,10 @@ rowsHash a b t =
             rowsPushed t
 
         first =
-            max 0 (min a b - pushed)
+            max 0 (fromAbsolute (min a b) pushed)
 
         last =
-            min (t.rows - 1) (max a b - pushed)
+            min (t.rows - 1) (fromAbsolute (max a b) pushed)
     in
     if last < first then
         0
@@ -550,7 +576,7 @@ hashRowsOf rows h0 =
 
 {-| The ring's rows `y` to `stop - 1`, a loop, since a function that
 captures the screen to read it would take its builder. -}
-ringRows : Int -> Int -> Term -> Array Row -> Array Row
+ringRows : (y : Int where 0 - t.screen.hist <= y) -> (stop : Int where stop <= t.rows) -> (t : Term) -> Array Row -> Array Row
 ringRows y stop t acc =
     if y >= stop then
         acc
@@ -605,7 +631,9 @@ promptJump delta back0 t =
                 back
 
 
-promptUp : Int -> Int -> Term -> Maybe Int
+-- 536,880,105 is 2^29 + 9,193: the most rows the pages count (`Back`,
+-- §VC51) and the most a ring keeps
+promptUp : (y : Int where y < t.rows) -> (stop : Int where 0 - 536880105 <= stop) -> (t : Term) -> Maybe Int
 promptUp y stop t =
     if y < stop then
         Nothing
@@ -617,7 +645,9 @@ promptUp y stop t =
         promptUp (y - 1) stop t
 
 
-promptDown : Int -> Int -> Term -> Maybe Int
+-- 536,880,105 is 2^29 + 9,193: the most rows the pages count (`Back`,
+-- §VC51) and the most a ring keeps
+promptDown : (y : Int where 0 - 536880105 <= y) -> (stop : Int where stop < t.rows) -> (t : Term) -> Maybe Int
 promptDown y stop t =
     if y > stop then
         Nothing
@@ -629,7 +659,9 @@ promptDown y stop t =
         promptDown (y + 1) stop t
 
 
-pastContinuations : Int -> Term -> Int
+-- 536,880,105 is 2^29 + 9,193: the most rows the pages count (`Back`,
+-- §VC51) and the most a ring keeps
+pastContinuations : (y : Int where 0 - 536880105 <= y) -> Term -> (r : Int where y <= r)
 pastContinuations y t =
     if y < t.rows && promptMark y t == 2 then
         pastContinuations (y + 1) t
@@ -638,10 +670,11 @@ pastContinuations y t =
         y
 
 
-{-| The prompt mark of logical row `y` of the main screen and its
-scrollback: 0 none, 1 a prompt's start, 2 its continuation, as the ring's
-meta slot and a page's row header keep it. -}
-promptMark : Int -> Term -> Int
+{-| The prompt mark of logical row `y` of the main screen and its scrollback: 0
+none, 1 a prompt's start, 2 its continuation, as the ring's meta slot and a
+page's row header keep it. 536,880,105 is 2^29 + 9,193: the most rows the
+pages count (`Back`, §VC51) and the most a ring keeps. -}
+promptMark : (y : Int where 0 - 536880105 <= y && y < t.rows) -> (t : Term) -> Int
 promptMark y t =
     if y >= 0 - t.screen.hist then
         metaPrompt (metaAt (rowOffset t.screen y) t.screen)
@@ -849,13 +882,13 @@ keyOptions t =
 -- SCROLLING
 
 
-{-| The terminal made `cols` by `rows`, as its host resizes it, by
-Ghostty's rules (§VC14, V8). The main screen's lines reflow to the new
-width, its scrollback with them, unless autowrap is off; the alternate
-screen's rows are cut or extended and never reflow. The cursor and the saved cursors move
-with the cells they are on. The scroll region and the margins are reset,
-and the tab stops when the width changes. With mode 2048 set the new size
-is reported, as Ghostty reports it even when the size is the same (V15). -}
+{-| The terminal made `cols` by `rows`, as its host resizes it, by Ghostty's
+rules (§VC14, V8). The main screen's lines reflow to the new width, its
+scrollback with them, unless autowrap is off; the alternate screen's rows
+are cut or extended and never reflow. The cursor and the saved cursors move
+with the cells they are on. The scroll region and the margins are reset, and
+the tab stops when the width changes. With mode 2048 set the new size is
+reported, as Ghostty reports it even when the size is the same (V15). -}
 resize : Int -> Int -> (taken t : Term) -> Term
 resize cols rows t =
     let
@@ -897,7 +930,7 @@ dump t =
             Array.indexedMap (\i row -> rowLines ("h" ++ String.fromInt i) row t.styles) history
 
         screenLines =
-            Array.map (\y -> rowLines (String.fromInt y) (screenRow y t) t.styles) (Array.range 0 (t.rows - 1))
+            Array.indexedMap (\y row -> rowLines (String.fromInt y) row t.styles) (screenRows t)
 
         replyLines =
             Array.map (\r -> "reply " ++ escapeReply r) t.replies

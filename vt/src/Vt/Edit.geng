@@ -56,7 +56,7 @@ import Vt.Sgr exposing (..)
 {-| Before columns `x` to `xEnd` of the row at `o` are written, a wide
 character whose other half lies outside them loses that half too, which
 becomes `fill`, the erase cell, as Ghostty's `blankCell` (§VC17). -}
-splitWide : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+splitWide : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 splitWide fill o x xEnd ext cells =
     let
         firstCell =
@@ -87,7 +87,7 @@ halves whatever is erased after, a protected one too (§VC18). A function of
 its own: written into `splitWide`, which clang inlines into the writer of
 ASCII runs, where the half inside is written over anyway, it made `gitlog`
 and `ls` 5% slower. -}
-splitWhole : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> Builder Int64
+splitWhole : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 splitWhole fill o x xEnd ext cells =
     let
         firstCell =
@@ -113,7 +113,7 @@ splitWhole fill o x xEnd ext cells =
 {-| `unheadAbove` when `stale`. One call of the writer each path makes,
 written into the screen before this, so that clang still inlines a writer
 called once (§VC10). -}
-unheadIf : Bool -> Int -> (taken s : Screen) -> Screen
+unheadIf : Bool -> (y : Int where y <= s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 unheadIf stale y s =
     if stale then
         unheadAbove y s
@@ -125,26 +125,31 @@ unheadIf stale y s =
 {-| The row above `y` ending in a spacer head made to end in an empty
 cell: once the wide character that wrapped from it is overwritten, Ghostty
 makes the spacer head a narrow cell, which a reflow keeps as a blank
-(§VC17). -}
-unheadAbove : Int -> (taken s : Screen) -> Screen
+(§VC17). None when the ring has no row above `y`; a caller's `stale`
+says `y` is below the screen's top anyway, but a `Bool` cannot carry it. -}
+unheadAbove : (y : Int where y <= s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 unheadAbove y s =
-    let
-        p =
-            rowOffset s (y - 1) + s.cols - 1
-
-        c =
-            Maybe.withDefault 0 (Builder.get p s.cells)
-    in
-    if cellWide c == spacerHead then
-        { s | cells = Builder.set p (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
+    if y <= 0 - s.hist then
+        s
 
     else
-        s
+        let
+            p =
+                rowOffset s (y - 1) + s.cols - 1
+
+            c =
+                Maybe.withDefault 0 (Builder.get p s.cells)
+        in
+        if cellWide c == spacerHead then
+            { s | cells = Builder.set p (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
+
+        else
+            s
 
 
 {-| `count` empty cells in `erase` inserted at column `x` of the row at
 `o`, the cells from `x` on moving right and those past the row's end lost. -}
-insertCells : Int -> Int -> Int -> Int64 -> (taken s : Screen) -> Screen
+insertCells : Int -> (x : Int where 0 <= x && x <= s.cols) -> (count : Int where 0 <= count && count <= 65535) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 insertCells o x count erase s =
     let
         ext =
@@ -435,7 +440,7 @@ eraseLine selective how t =
 
 
 {-| The cells from `from` to `to` that are not protected, in the erase cell. -}
-eraseUnprotected : Int -> Int -> Int64 -> (taken cells : Builder Int64) -> Builder Int64
+eraseUnprotected : Int -> Int -> Int64 -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 eraseUnprotected from to fill cells =
     if from >= to then
         cells
@@ -448,7 +453,7 @@ eraseUnprotected from to fill cells =
 
 
 {-| Rows `from` to `to`, their cells that are not protected erased. -}
-blankUnprotected : Int -> Int -> Int64 -> (taken s : Screen) -> Screen
+blankUnprotected : (from : Int where 0 - s.hist <= from) -> (to : Int where to <= s.rows) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 blankUnprotected from to fill s =
     if from >= to then
         s
@@ -492,7 +497,7 @@ eraseDisplay selective how t =
 
 
 {-| From row `y` up, the first row with a prompt mark or text: a mark. -}
-atPrompt : Int -> Screen -> Bool
+atPrompt : (y : Int where y < s.rows) -> (s : Screen) -> Bool
 atPrompt y s =
     if y < 0 then
         False
@@ -609,7 +614,7 @@ scrollClear t =
 
 {-| The rows down to the last that is not empty, `y` and above: Ghostty's
 `Cell.isEmpty`, for which a cell in a background colour alone is not. -}
-filledRows : Screen -> Int -> Int
+filledRows : (s : Screen) -> (y : Int where -1 <= y && y < s.rows) -> (r : Int where 0 <= r && r <= y + 1 && r <= 1001)
 filledRows s y =
     if y < 0 then
         0
