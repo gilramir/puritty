@@ -4066,3 +4066,66 @@ faster. `--cycles` prints the median of five counts of `cycles:u` beside
 each case, and `--against OTHER` counts another `core-bench` beside the one
 built, instructions and cycles, with the change; cycles move by a few
 percent run to run, more on a loaded machine.
+
+## VC53. Where the time goes now, and what profile-guided optimization gives (2026-11-09)
+
+**The profile.** `geng profile` (geng-lang `m4-profile.md` T2) over
+`harness/bench` with this commit's `vt`, two inputs. `gitlog`, 2,910 M
+instructions:
+
+| function | M instructions | of which ownership checks |
+|---|---|---|
+| `Vt.Pages.pushUtf8` | 648 | 178 |
+| `Vt.Parse.resume` (the parser, everything inlined) | 482 | 13 |
+| `Vt.Pages.packCells` | 353 | 0 |
+| `Vt.Pages.packRows` | 324 | 9 |
+| `Array.Builder.set` | 236 | 130 |
+| `Vt.Parse.csi` | 205 | 10 |
+
+Packing rows into scrollback pages (§VC6), `pushUtf8`, `packCells` and
+`packRows`, is 1,325 M, 46% of `gitlog`: every row that scrolls off is
+packed once, a byte pushed at a time, and each push tests that the builder
+is its own (geng-lang D1000) and has room. The ownership tests are 12% of
+the whole. `vte-scrolling_top_region`, 1,040 M: the parser 493 M,
+`Vt.Scroll.lineFeed` 136, `Vt.Screen.clearRow` 91, `inRegion` 71, `phys`
+67; nothing allocates.
+
+**Profile-guided optimization.** The kept C of a `--debug-info` build,
+compiled again by its `compile.sh` with clang 21's
+`-fprofile-instr-generate`, run over the thirteen inputs, and compiled a
+third time with `-fprofile-instr-use`. Cycles, the least of seven runs of
+each input ten times over, interleaved; the output is the same:
+
+| input | before | trained on all 13 | trained on 6 |
+|---|---|---|---|
+| `cup` | 2,731 M | −22.7% | −12.3% |
+| `gitlog` | 4,812 M | −20.1% | −16.4% |
+| `ls` | 3,592 M | −31.9% | −22.7% (not trained on) |
+| `vte-dense_cells` | 1,060 M | −22.7% | −10.9% |
+| `vte-light_cells` | 317 M | −6.8% | +10.8% (not trained on) |
+| `vte-scrolling_fullscreen` | 1,061 M | −30.0% | −26.9% (not trained on) |
+| `vte-scrolling_top_region` | 1,433 M | −25.1% | +3.8% (not trained on) |
+| `vte-scrolling` | 2,052 M | −23.4% | −17.5% |
+| `vte-unicode` | 835 M | −8.4% | −10.4% |
+
+The six were `gitlog`, `vte-scrolling`, `vte-dense_cells`, `cup`,
+`vte-unicode` and `vte-cursor_motion`. Trained on everything, every input
+is 7% to 32% faster, on all but `vte-light_cells` more than §VC52's
+primitive gave; it also gives clang what the layout of the parser's one function has
+lacked (§VC51). Trained on half, two of the inputs left out are slower: a
+path the training never ran is laid out as cold. So the training set is
+part of the build, and must run every path that matters. The toolchain
+has no option for it yet (geng-lang `docs/open-items.md`).
+
+**What is left, largest first.**
+
+1. Profile-guided builds, as above: a toolchain question.
+2. Packing pages: a run of plain cells (no `packSpecial` bit, one style)
+   is its code points' low bytes, so it could be packed in one step, a
+   primitive over the cells as `Bytes.spanWithin` is over bytes; or the
+   newest pages could be kept as cells, copied whole, and packed later.
+3. The ownership test on each push: `pushUtf8` tests up to four times for
+   one code point. A push of several bytes that tests once would cut most
+   of the 178 M.
+4. Scrolling in a region: `lineFeed`, `clearRow`, `inRegion` and `phys`,
+   300 M between them, each small.
