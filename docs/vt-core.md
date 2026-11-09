@@ -4183,3 +4183,30 @@ instructions with no cycle change measured, and its message did not
 count them. `geng decisions` over the two builds found no inline or
 in-place decision changed, so it is clang's compile of the code around
 it; the clamp stays out, and the record moves.
+
+## VC56. Scrolling in a region: what is left is layout (2026-11-09)
+
+§VC53's fourth item. `vte-scrolling_top_region` is `y\r\n` in a region of
+rows 2 to 50: a character, a carriage return, a line feed that turns the
+region (`feedRegion`, O(1)) and clears its bottom row. By source line
+(`perf record` on a `--debug-info` build, cycles) nothing is large: the
+integer comparisons inlined all through it 12%, `clearRow`'s write of the
+row's meta slot 5.6%, the parser's byte read 5.2%, the builder's ownership
+test 5.1%, and `Bytes.spanWithin` 4% to 5%, called for the run of one
+printable byte after each `y`.
+
+**Tried and not kept.** `geng_prim_bytes_span_within` with its first byte
+tested inline before the call (a run that ends at once paying a load and
+two compares): `vte-scrolling_top_region` +0.9% in cycles,
+`vte-light_cells` +23.0%, `vte-scrolling_fullscreen` +16.4%, `ls` +6.7%.
+The primitive is a function of its own so that the parser's one large
+function does not compile it by its neighbours (geng-lang
+`m3-bytes-access.md` §BA19), and an inline prelude undid that.
+
+**Profile-guided, on top of §VC55** (`harness/bench/pgo.sh`, then
+`--profile-use`, cycles against the plain build): `vte-scrolling_top_region`
+−24.9%, `cup` −24.7%, `vte-dense_cells` −22.9%, `vte-scrolling` −19.2%,
+`gitlog` −12.3%, `ls` −10.3%, `vte-light_cells` −8.4%, `vte-unicode`
+−7.0%, `vte-scrolling_fullscreen` −5.6%. What a hand edit of the region's
+path could win, a trained build wins without one, and the edit risks the
+swings above. Not pursued by hand.
