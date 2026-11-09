@@ -113,7 +113,7 @@ splitWhole fill o x xEnd ext cells =
 {-| `unheadAbove` when `stale`. One call of the writer each path makes,
 written into the screen before this, so that clang still inlines a writer
 called once (§VC10). -}
-unheadIf : Bool -> (y : Int where y <= s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+unheadIf : (stale : Bool) -> (y : Int where y <= s.rows && (not stale || 1 - s.hist <= y)) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 unheadIf stale y s =
     if stale then
         unheadAbove y s
@@ -125,26 +125,21 @@ unheadIf stale y s =
 {-| The row above `y` ending in a spacer head made to end in an empty
 cell: once the wide character that wrapped from it is overwritten, Ghostty
 makes the spacer head a narrow cell, which a reflow keeps as a blank
-(§VC17). None when the ring has no row above `y`; a caller's `stale`
-says `y` is below the screen's top anyway, but a `Bool` cannot carry it. -}
-unheadAbove : (y : Int where y <= s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+(§VC17). -}
+unheadAbove : (y : Int where 1 - s.hist <= y && y <= s.rows) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 unheadAbove y s =
-    if y <= 0 - s.hist then
-        s
+    let
+        p =
+            rowOffset s (y - 1) + s.cols - 1
+
+        c =
+            Maybe.withDefault 0 (Builder.get p s.cells)
+    in
+    if cellWide c == spacerHead then
+        { s | cells = Builder.set p (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
 
     else
-        let
-            p =
-                rowOffset s (y - 1) + s.cols - 1
-
-            c =
-                Maybe.withDefault 0 (Builder.get p s.cells)
-        in
-        if cellWide c == spacerHead then
-            { s | cells = Builder.set p (Bitwise.and (Bitwise.complement 0x600000) c) s.cells }
-
-        else
-            s
+        s
 
 
 {-| `count` empty cells in `erase` inserted at column `x` of the row at
