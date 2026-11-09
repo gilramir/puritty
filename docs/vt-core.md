@@ -4018,3 +4018,51 @@ this one is the least), and two resizes of `short-10000` +3.7%, with
 
 Held to: the unit tests 68 of 68, replay 325 of 325 on `core-dump` built
 again, and `perf.py`'s counts, recorded.
+
+
+## VC52. The ASCII scan is a primitive, and what proofs bought (2026-11-09)
+
+After §VC51, two ideas for turning the proofs into speed were counted, and a
+third was built.
+
+**Cell reads with `getProven`.** With `rowOffset` proved, `metaAt`,
+`extentAt`, `cellAt` and `peekCell` can read with `Array.Builder.getProven`,
+no `Maybe` and no test of the index (their offset refined as `rowOffset`'s
+result, their column below `s.cols`, and the 36 functions that keep a
+screen promising its `stride` and its cells' length too, since the checker
+cannot equate two products `size * stride`). It proved, and the C lost
+twelve comparisons; but `vte-light_cells` took 90 ms with it where it took
+78 without, and the instructions of its ASCII scan, `asciiEnd`, went from 62 M to
+108 M though the scan had not changed: everything is inlined into the
+parser's one function, and the readers, smaller without their tests, were
+inlined in more places, and clang compiled the scan in it differently. Not
+kept.
+
+**No wrapping in the C.** `geng_prim.h` adds through `uint32_t`, so that
+`Int` wraps, and clang cannot assume a sum does not. Compiled again with
+plain signed sums everywhere (unsound, to measure the most a proof of no
+overflow could give): `gitlog` 948 to 907 ms, the rest within a few, and
+`vte-light_cells` counting 7% more instructions while no slower. A sum the
+checker proves is a sum the backend could emit so; that is worth at most a
+few percent here, and is not built.
+
+**The scan as a primitive.** The scan was the largest single cost of
+`vte-light_cells`, and moved with whatever else changed. geng-lang made it
+`Bytes.spanWithin`, a run of bytes in a range, 16 bytes a step natively
+(its `m3-bytes-access.md` §BA19, §BA20, Dnene27), and `asciiEnd` is now one
+call of it. The counts and times are in §BA20: `vte-light_cells` 78 to
+59 ms, `ls` 726 to 659, `gitlog` 948 to 896, `vte-scrolling_fullscreen`
+212 to 196; the region cases about 4% slower in time and 1.8% in
+instructions, `vte-scrolling` 2%, which is the parser's layout moving, as
+in §VC51. In cycles: `vte-light_cells` −24.9%,
+`vte-scrolling_fullscreen` −12.3%, `ls` −8.4%, `gitlog` −5.6%, the region
+cases +3.5% to +4.0%. The record holds the new instruction counts. The cell reads with `getProven` were counted again with the
+primitive in: still a loss (59 to 72 ms), and still not kept.
+
+**Counting cycles.** `perf.py` holds instructions to the record because they
+repeat to the instruction, but they are not time: a SIMD step reads 16
+bytes in an instruction or two, and the unwrapped build counted more and ran
+faster. `--cycles` prints the median of five counts of `cycles:u` beside
+each case, and `--against OTHER` counts another `core-bench` beside the one
+built, instructions and cycles, with the change; cycles move by a few
+percent run to run, more on a loaded machine.

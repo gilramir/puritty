@@ -33,6 +33,14 @@ throughput one.
   ./harness/perf.py -f resize             # cases whose name contains it
   ./harness/perf.py --update              # write the counts as the record
   ./harness/perf.py --inputs DIR          # copy the thirteen inputs in first
+  ./harness/perf.py --no-times --cycles   # and the median cycles of five runs
+  ./harness/perf.py --against OLD-BENCH   # this build beside another: counts and cycles
+
+Instructions repeat to the instruction, which is why the record holds them,
+but they are not time: a SIMD step reads 16 bytes in an instruction or two,
+and wrapping arithmetic made some cases count more and run faster
+(docs/vt-core.md §VC52). `--cycles` and `--against` print cycles beside
+them, the median of five runs, which move by a few percent run to run.
 
 Times need a quiet machine: do not run it beside the fuzzers or a gate.
 """
@@ -124,13 +132,40 @@ def run(args, memory="12G"):
     return p
 
 
-def instructions(file, extra):
-    p = run(["setarch", "-R", "perf", "stat", "-x,", "-e", "instructions:u", str(BENCH), str(file)] + extra)
+def counted(file, extra, bench=None, events=("instructions:u",)):
+    """One run's counts of `events`, by event name."""
+    bench = bench or BENCH
+    p = run(["setarch", "-R", "perf", "stat", "-x,", "-e", ",".join(events), str(bench), str(file)] + extra)
+    found = {}
     for line in p.stderr.splitlines():
         fields = line.split(",")
-        if len(fields) > 2 and fields[2].startswith("instructions"):
-            return int(fields[0])
-    sys.exit(f"perf.py: no count from perf stat:\n{p.stderr}")
+        if len(fields) > 2:
+            for e in events:
+                if fields[2].startswith(e.split(":")[0]) and fields[0].isdigit():
+                    found[e] = int(fields[0])
+    if len(found) != len(events):
+        sys.exit(f"perf.py: no count from perf stat:\n{p.stderr}")
+    return found
+
+
+def instructions(file, extra, bench=None):
+    return counted(file, extra, bench)["instructions:u"]
+
+
+def cycles(file, extra, bench=None, runs=5):
+    """The median of `runs` counts of cycles:u: unlike instructions, they
+    follow time, a SIMD step's 16 bytes and a stall alike, but move by a few
+    percent from run to run."""
+    xs = sorted(counted(file, extra, bench, ("cycles:u",))["cycles:u"] for _ in range(runs))
+    return xs[len(xs) // 2]
+
+
+def measured(file, extra, kind, how, bench=None):
+    """`how` (instructions or cycles) of a case: a resize's are its twenty
+    resizes less the feeding alone."""
+    if kind == "throughput":
+        return how(file, extra, bench)
+    return how(file, ["resizes", "20", "80", "50"] + extra, bench) - how(file, ["resizes", "0", "80", "50"] + extra, bench)
 
 
 def least_time(file, runs=5):
@@ -153,6 +188,21 @@ def load_baseline():
     return rows
 
 
+def compare(other, filt):
+    """Each case on the built core-bench and on `other`: instructions, and
+    the median of five counts of cycles, with the change from `other`."""
+    print(f"{'case':<46} {'instructions':>24} {'cycles (median of 5)':>26}")
+    for name, file, extra, _budget, kind in cases():
+        if filt not in name:
+            continue
+        if kind == "resize":
+            file = resize_input(name.split("/")[2])
+        i0, i1 = (measured(file, extra, kind, instructions, b) for b in (other, BENCH))
+        c0, c1 = (measured(file, extra, kind, cycles, b) for b in (other, BENCH))
+        print(f"{name:<46} {i0 / 1e6:>9,.1f} {i1 / 1e6:>9,.1f} {100.0 * (i1 - i0) / i0:>+6.1f}%"
+              f" {c0 / 1e6:>9,.1f} {c1 / 1e6:>9,.1f} {100.0 * (c1 - c0) / c0:>+6.1f}%", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-f", dest="filter", default="", help="only cases whose name contains this")
@@ -160,6 +210,8 @@ def main():
     ap.add_argument("--no-times", action="store_true", help="skip the time budgets")
     ap.add_argument("--inputs", help="copy the thirteen throughput inputs from this directory first")
     ap.add_argument("--tolerance", type=float, help="percent over the record that fails (default 1, resizes 3)")
+    ap.add_argument("--cycles", action="store_true", help="also print the median cycles:u of five runs")
+    ap.add_argument("--against", metavar="BENCH", help="compare with another core-bench: both builds' instructions and median cycles, no record")
     a = ap.parse_args()
 
     if a.inputs:
@@ -172,6 +224,9 @@ def main():
     if missing:
         sys.exit(f"perf.py: {INPUTS} lacks {', '.join(missing)}: give --inputs DIR once")
 
+    if a.against:
+        return compare(Path(a.against), a.filter)
+
     base = load_baseline()
     new = dict(base)
     failed, lower = [], []
@@ -181,10 +236,7 @@ def main():
         if kind == "resize":
             file = resize_input(name.split("/")[2])
         digest = sha(file)
-        if kind == "throughput":
-            count = instructions(file, extra)
-        else:
-            count = instructions(file, ["resizes", "20", "80", "50"] + extra) - instructions(file, ["resizes", "0", "80", "50"] + extra)
+        count = measured(file, extra, kind, instructions)
         tol = a.tolerance if a.tolerance is not None else (1.0 if kind == "throughput" else 3.0)
         note = ""
         if name in base and not a.update:
@@ -204,6 +256,8 @@ def main():
         elif name not in base and not a.update:
             note = "  no record"
         line = f"{name:<46} {count / 1e6:>10,.1f} M{note}"
+        if a.cycles:
+            line += f"   {measured(file, extra, kind, cycles) / 1e6:,.1f} M cycles"
         if budget is not None and not a.no_times:
             lo, hi = least_time(file)
             line += f"   {lo}-{hi} ms (budget {budget})"
