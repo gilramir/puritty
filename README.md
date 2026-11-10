@@ -124,6 +124,11 @@ than silently ignored, and puritty goes on with the rest: the report is
 on standard error, at the top of a new window, and on the title until the
 file is fixed.
 
+`puritty settings` opens a window to change them without editing the file:
+search, a page of settings at a time, each change written to the file and
+taken by every open window as you make it, Ctrl+Z to undo. It edits the
+file in place and keeps your comments.
+
 ```toml
 [window]
 columns = 120

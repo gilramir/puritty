@@ -571,3 +571,48 @@ written while valid, one refused, undo, Esc putting back, on and off with
 its marker, a reset, a search across pages with its counts, a choice
 going round, Modified only empty, Esc closing, Hangul committed and drawn
 two cells a character, a page clicked, a narrow window.
+
+## ST20 · Step 5b built: `puritty settings` (2026-11-10)
+
+`puritty settings [--config FILE]` opens the settings window: a process of
+its own (V57), the same program with a first word that the terminal's
+command line does not take, so `puritty -- settings` still runs a program
+of that name. **`app/src/SettingsProgram.geng`** is the window around
+`SettingsWindow` (ST19): it opens a `Window` with its own look (V60: the
+platform's font at the default size, the default colours), feeds the
+model's screen to a `Vt.Term` of its own and draws it with `Vt.View` as
+the terminal draws, and turns the window's events into the model's
+inputs: keys (a press or a repeat), an input method's commit and its
+preedit, drawn as the terminal draws one, a resize, a left click by cell,
+and closing. Each `Write` is `SettingsFile.change` with `Schema.write`
+(ST18), and a write that fails is shown at the foot. The settings file's
+directory is watched here too (`watchSettings`), so that an edit by hand
+shows in the window; the window's own writes come back that way as what it
+already shows. **`app/src/SettingsSource.geng`** holds what the terminal
+and the window share: where the file is, reading it leniently, and
+watching it, moved out of `Main`.
+
+**The settings gate**, `harness/settings.py`: `puritty settings` on Xvfb,
+driven with xdotool's keys, its file held to a pin. **9 of 9**: a size
+typed, bold turned on, a reset that takes its emptied table, a file's
+comments kept, an undo, a search and a choice, a value typed that the
+setting does not take (nothing written), an edit by hand read before the
+next key (bold turned on by hand, then off by Enter), and a terminal beside
+the window taking a background typed in it, as its own picture shows. On
+Windows the window was opened on beelink1 and pictured: Cascadia Mono,
+`%APPDATA%`'s file read, a Hangul title counted on its page.
+
+**Held as before:** `app/tests` 45 of 45, pointer 51 of 51, IME 14 of 14,
+reload 15 of 15 on Linux and 14 of 14 on Windows.
+
+**Left for 5c and after:**
+
+- *The font list* (ST8): a font is typed by its family's name for now;
+  `Window.fonts`, the families each platform has, and a list to filter
+  come next.
+- *The mouse* beyond a left click on a page or a setting: the wheel, a
+  click on a value to change it, on the reset mark, on Modified only.
+- *The settings gate on Windows*: the window is pictured there, not yet
+  driven with keys; `harness/events`' driver can do it, in Gilbert's
+  session.
+- *Opening it from a terminal* is step 6.

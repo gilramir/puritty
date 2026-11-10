@@ -1,0 +1,366 @@
+module SettingsProgram exposing (run)
+
+{-| `puritty settings` (`docs/settings.md` ST2, ST7): the settings window,
+a process of its own (V57). `SettingsWindow` is what it shows and does;
+this is the window around it. Its screen is fed to a terminal core of its
+own and drawn as the terminal's is, so its text, fonts, input method and
+both platforms are the terminal's. It keeps its own look (V60): the
+platform's font at the default size and the default colours, so that no
+setting can make the window that changes it unreadable.
+
+Each change is written to the file at once (`SettingsFile`), which every
+terminal follows (ST3); the file's directory is watched here too, so that
+an edit by hand shows in the window.
+-}
+
+import Bytes exposing (Bytes)
+import Config
+import Dict exposing (Dict)
+import Os.Directory as Directory
+import Os.Error
+import Os.File as File
+import Os.Path as Path
+import Platform
+import Schema
+import SettingsFile exposing (Store)
+import SettingsSource exposing (Given, Read(..))
+import SettingsWindow
+import Source exposing (Source)
+import Task exposing (Task)
+import Vt
+import Vt.View as View
+import Window
+
+
+type alias State =
+    { window : SettingsWindow.Model
+    , term : Vt.Term
+    , shadow : View.Shadow
+    , preedit : { points : Array Int, feedback : Array Int, caret : Int }
+    , store : Maybe Store
+    , given : Given
+    , events : Maybe (Source Directory.Change)
+    , closed : Bool
+    , lost : Bool
+      -- with PURITTY_SHOT set, the file each frame's picture is written to,
+      -- for the settings gate (harness/settings.py)
+    , shotPath : Maybe String
+    }
+
+
+size : { cols : Int, rows : Int }
+size =
+    { cols = 100, rows = 30 }
+
+
+run : { fs : File.Permission, vars : Dict String String, config : Maybe Path.Path } -> Task String {}
+run r =
+    let
+        given =
+            { file = SettingsSource.settingsFile r.vars r.config, fs = r.fs, title = Nothing, program = [] }
+    in
+    Platform.locale r.vars
+        |> Task.andThen
+            (\locale ->
+                SettingsSource.readSettings given
+                    |> Task.andThen
+                        (\read ->
+                            Window.open
+                                { cols = size.cols
+                                , rows = size.rows
+                                , font = Platform.font
+                                , points = Config.defaults.points
+                                , lang = locale.language
+                                , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
+                                , title = "puritty settings"
+                                }
+                                |> Task.andThen
+                                    (\opened ->
+                                        when opened is
+                                            Err why ->
+                                                Task.fail ("cannot open the window: " ++ why)
+
+                                            Ok cell ->
+                                                SettingsSource.watchSettings given
+                                                    |> Task.andThen (\events -> loop (first given read cell events (Dict.get "PURITTY_SHOT" r.vars)))
+                                                    |> Task.map (\_ -> {})
+                                    )
+                        )
+            )
+
+
+first : Given -> Read -> Window.Cell -> Maybe (Source Directory.Change) -> Maybe String -> State
+first given read cell events shotPath =
+    let
+        got =
+            when read is
+                Gave g ->
+                    g
+
+                Unread why ->
+                    { config = Config.defaults, problems = [ why ] }
+
+        path =
+            Maybe.map (\f -> Path.toString f.path) given.file |> Maybe.withDefault "(no settings file)"
+    in
+    { window =
+        SettingsWindow.init
+            { config = got.config
+            , path = path
+            , reports = got.problems
+            , cols = size.cols
+            , rows = size.rows
+            }
+    , term =
+        Vt.new
+            { cols = size.cols
+            , rows = size.rows
+            , scrollbackBytes = 0
+            , pageRows = Vt.defaultPageRows
+            , checksums = False
+            , cellWidth = cell.width
+            , cellHeight = cell.height
+            }
+    , shadow = View.shadow size.cols size.rows
+    , preedit = { points = [], feedback = [], caret = 0 }
+    , store = Maybe.map (\f -> SettingsFile.store given.fs f.path) given.file
+    , given = given
+    , events = events
+    , closed = False
+    , lost = False
+    , shotPath = shotPath
+    }
+
+
+{-| Draw, then wait for the window or the file, until the window is closed
+or lost. -}
+loop : (taken s0 : State) -> Task String State
+loop s0 =
+    draw s0
+        |> Task.andThen
+            (\s ->
+                if s.closed || s.lost then
+                    Task.succeed s
+
+                else
+                    let
+                        file =
+                            when s.events is
+                                Just events ->
+                                    [ Source.next events |> Task.map FileChanged ]
+
+                                Nothing ->
+                                    []
+                    in
+                    Task.race (Window.events |> Task.map WindowEvents) file
+                        |> Task.andThen
+                            (\turn ->
+                                when turn is
+                                    WindowEvents up ->
+                                        if not up then
+                                            Task.succeed { s | lost = True }
+
+                                        else
+                                            Window.take |> Task.andThen (\evs -> handle evs s)
+
+                                    FileChanged change ->
+                                        fileChanged change s
+                            )
+                        |> Task.andThen loop
+            )
+
+
+type Turn
+    = WindowEvents Bool
+    | FileChanged (Maybe Directory.Change)
+
+
+draw : (taken s : State) -> Task x State
+draw s =
+    let
+        term =
+            Vt.feed (Bytes.fromString (SettingsWindow.view s.window)) s.term
+
+        preedit =
+            { text = String.fromArray (Array.mapAndKeepJust Char.fromCode s.preedit.points)
+            , feedback = s.preedit.feedback
+            , caret = s.preedit.caret
+            }
+
+        look =
+            { foreground = Config.defaults.foreground, background = Config.defaults.background, boldIsBright = False }
+
+        spot =
+            View.preeditSpot preedit term
+
+        f =
+            View.frameWith look View.focused preedit View.noHighlight term s.shadow
+    in
+    Window.draw f.list
+        |> Task.andThen (\up -> Window.spot spot |> Task.map (\_ -> up))
+        |> Task.andThen
+            (\up ->
+                when s.shotPath is
+                    Just path ->
+                        Window.shot path |> Task.map (\_ -> up)
+
+                    Nothing ->
+                        Task.succeed up
+            )
+        |> Task.map
+            (\up ->
+                { s
+                    | term = term
+                    , shadow = View.inked (Maybe.withDefault Bytes.empty up) f.shadow
+                    , lost = s.lost || up == Nothing
+                }
+            )
+
+
+handle : Array Window.Event -> (taken s : State) -> Task String State
+handle evs s =
+    when Array.popFirst evs is
+        Nothing ->
+            Task.succeed s
+
+        Just { first = ev, rest } ->
+            one ev s |> Task.andThen (handle rest)
+
+
+one : Window.Event -> (taken s : State) -> Task String State
+one ev s =
+    when ev is
+        Window.Key k ->
+            if k.action == 0 then
+                Task.succeed s
+
+            else
+                input (SettingsWindow.Key { sym = k.sym, mods = k.mods, text = Bytes.toStringLossy k.text }) s
+
+        Window.Commit text ->
+            input (SettingsWindow.Typed (Bytes.toStringLossy text)) s
+
+        Window.Preedit p ->
+            let
+                cps =
+                    Array.map Char.toCode (String.toArray (Bytes.toStringLossy p.text))
+
+                old =
+                    s.preedit
+
+                points =
+                    Array.takeFirst p.first old.points ++ cps ++ Array.dropFirst (p.first + p.length) old.points
+
+                feedback =
+                    Array.takeFirst p.first old.feedback
+                        ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault 0 (Array.get i p.feedback))
+                        ++ Array.dropFirst (p.first + p.length) old.feedback
+            in
+            Task.succeed { s | preedit = { points = points, feedback = feedback, caret = p.caret } }
+
+        Window.PreeditDone ->
+            Task.succeed { s | preedit = { points = [], feedback = [], caret = 0 } }
+
+        Window.Resized r ->
+            input (SettingsWindow.Resized { cols = r.cols, rows = r.rows })
+                { s | term = Vt.resize r.cols r.rows s.term, shadow = View.shadow r.cols r.rows }
+
+        Window.Pointer p ->
+            if p.action == 0 && p.button == 1 && p.cellWidth > 0 && p.cellHeight > 0 then
+                input (SettingsWindow.Click { col = p.x // p.cellWidth, row = p.y // p.cellHeight }) s
+
+            else
+                Task.succeed s
+
+        Window.Close ->
+            Task.succeed { s | closed = True }
+
+        _ ->
+            Task.succeed s
+
+
+{-| An input to the window, and what it asks done. -}
+input : SettingsWindow.Input -> (taken s : State) -> Task String State
+input i s =
+    let
+        r =
+            SettingsWindow.update i s.window
+    in
+    Array.foldl (\e t -> t |> Task.andThen (effect e)) (Task.succeed { s | window = r.model }) r.effects
+
+
+effect : SettingsWindow.Effect -> (taken s : State) -> Task String State
+effect e s =
+    when e is
+        SettingsWindow.Close ->
+            Task.succeed { s | closed = True }
+
+        SettingsWindow.Write w ->
+            when s.store is
+                Nothing ->
+                    Task.succeed { s | window = SettingsWindow.told "There is no settings file to write to" s.window }
+
+                Just store ->
+                    SettingsFile.change (Schema.write w.setting w.value) store
+                        |> Task.map Ok
+                        |> Task.onError (\why -> Task.succeed (Err why))
+                        |> Task.andThen
+                            (\written ->
+                                when written is
+                                    Ok st ->
+                                        Task.succeed { s | store = Just st }
+
+                                    Err why ->
+                                        Task.succeed { s | window = SettingsWindow.told ("Not written: " ++ why) s.window }
+                            )
+
+
+{-| The file changed: read again, and its settings shown. The window's own
+writes come back this way too, as what it already shows. -}
+fileChanged : Maybe Directory.Change -> (taken s : State) -> Task String State
+fileChanged change s =
+    let
+        ours path =
+            when s.given.file is
+                Just f ->
+                    Path.filename path == Path.filename f.path
+
+                Nothing ->
+                    False
+
+        again =
+            when change is
+                Just (Directory.Added path) ->
+                    Just (ours path)
+
+                Just (Directory.Changed path) ->
+                    Just (ours path)
+
+                Just (Directory.Removed path) ->
+                    Just (ours path)
+
+                Just Directory.Lost ->
+                    Just True
+
+                _ ->
+                    Nothing
+    in
+    when again is
+        Just True ->
+            SettingsSource.readSettings s.given
+                |> Task.onError (\why -> Task.succeed (Unread why))
+                |> Task.map
+                    (\read ->
+                        when read is
+                            Gave g ->
+                                { s | window = SettingsWindow.fileRead { config = g.config, reports = g.problems } s.window }
+
+                            Unread why ->
+                                { s | window = SettingsWindow.told why s.window }
+                    )
+
+        Just False ->
+            Task.succeed s
+
+        Nothing ->
+            Task.succeed { s | events = Nothing }

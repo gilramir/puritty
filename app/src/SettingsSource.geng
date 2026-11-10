@@ -1,0 +1,164 @@
+module SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, settingsFile, readSettings, overridden, watchSettings, directoryOf)
+
+{-| Where the settings come from (`docs/settings.md` ST3): the file the
+command line names or the user's, read leniently (`Schema.decode`), and
+its directory watched; the terminal (`Main`) and the settings window
+(`SettingsProgram`) both read it so.
+-}
+
+import Bytes
+import Config exposing (Config)
+import Dict exposing (Dict)
+import Os.Directory as Directory
+import Os.Error
+import Os.File as File
+import Os.Path as Path
+import Platform
+import Schema
+import Source exposing (Source)
+import Task exposing (Task)
+
+
+{-| What the command line gave: the settings file, if any (one it names
+must be there), and the title and program, which win over the file's. -}
+type alias Given =
+    { file : Maybe { path : Path.Path, required : Bool }
+    , fs : File.Permission
+    , title : Maybe String
+    , program : Array String
+    }
+
+
+{-| What reading the settings file gave: the settings, with what was wrong
+in the file, each report's setting left at its default; or nothing read,
+and why (a file that is not TOML, or that cannot be read). -}
+type Read
+    = Gave { config : Config, problems : Array String }
+    | Unread String
+
+
+{-| The settings followed while the window runs (docs/settings.md ST3,
+ST4): what the command line gave, the locale the language and charset fall
+back on, the settings directory's changes while it is watched, and when a
+change seen is to be read (-1 for none waiting). -}
+type alias Settings =
+    { given : Given
+    , locale : Platform.Locale
+    , events : Maybe (Source Directory.Change)
+    , at : Int
+    }
+
+
+{-| How long after a change to the settings file it is read, so that an
+editor's save, often several writes, is read once and whole. -}
+reloadDelayMs : Int
+reloadDelayMs =
+    50
+
+
+{-| The settings file: the one the command line names, which must be
+there, or the user's, which need not be; none when the platform names no
+place for it. -}
+settingsFile : Dict String String -> Maybe Path.Path -> Maybe { path : Path.Path, required : Bool }
+settingsFile vars named =
+    when named is
+        Just p ->
+            Just { path = p, required = True }
+
+        Nothing ->
+            Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) (Platform.settingsDirectory vars)
+
+
+{-| The settings: the file's, leniently (`Schema.decode`), or the defaults
+when the user has none, with the command line's title and program over
+them. Only a file the command line names and that cannot be read fails. -}
+readSettings : Given -> Task String Read
+readSettings given =
+    when given.file is
+        Nothing ->
+            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
+
+        Just f ->
+            let
+                path =
+                    Path.toString f.path
+            in
+            File.readFile given.fs f.path
+                |> Task.map
+                    (\bytes ->
+                        when Schema.decode (Bytes.toStringLossy bytes) is
+                            Ok decoded ->
+                                Gave
+                                    { config = overridden given decoded.config
+                                    , problems = Array.map (\r -> path ++ " line " ++ String.fromInt r.line ++ ": " ++ r.message) decoded.reports
+                                    }
+
+                            Err r ->
+                                Unread (path ++ " line " ++ String.fromInt r.line ++ " is not TOML: " ++ r.message)
+                    )
+                |> Task.onError
+                    (\err ->
+                        if err.kind == Os.Error.NotFound && not f.required then
+                            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
+
+                        else if f.required then
+                            Task.fail (Os.Error.toString err)
+
+                        else
+                            Task.succeed (Unread (Os.Error.toString err))
+                    )
+
+
+{-| The command line's title and program over the settings'. -}
+overridden : Given -> Config -> Config
+overridden given config =
+    { config
+        | title = Maybe.withDefault config.title given.title
+        , command = if Array.isEmpty given.program then config.command else given.program
+    }
+
+
+{-| The directory a settings file is in: its parent, or `.` for a bare
+name. -}
+directoryOf : Path.Path -> Path.Path
+directoryOf path =
+    when Path.parent path is
+        Just d ->
+            if Path.toString d == "" then
+                Path.fromString "."
+
+            else
+                d
+
+        Nothing ->
+            Path.fromString "."
+
+
+{-| The settings file's directory watched, into a source of its own: the
+user's made first when it is not there, so that a file written into it
+later is seen. Nothing is followed when there is no file, or the directory
+cannot be watched. -}
+watchSettings : Given -> Task x (Maybe (Source Directory.Change))
+watchSettings given =
+    when given.file is
+        Nothing ->
+            Task.succeed Nothing
+
+        Just f ->
+            let
+                dir =
+                    directoryOf f.path
+            in
+            Source.new
+                |> Task.andThen
+                    (\events ->
+                        (if f.required then
+                            Task.succeed {}
+
+                         else
+                            Directory.createAll given.fs dir
+                        )
+                            |> Task.andThen (\_ -> Directory.watch given.fs dir events identity)
+                            |> Task.map (\_ -> Just events)
+                    )
+                |> Task.onError (\_ -> Task.succeed Nothing)

@@ -44,6 +44,8 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Config exposing (Config)
 import Schema
+import SettingsProgram
+import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSettings, settingsFile, watchSettings, overridden)
 import Outbox exposing (Outbox)
 import Console
 import Dict exposing (Dict)
@@ -131,43 +133,6 @@ type alias Model =
     }
 
 
-{-| What reading the settings file gave: the settings, with what was wrong
-in the file, each report's setting left at its default; or nothing read,
-and why (a file that is not TOML, or that cannot be read). -}
-type Read
-    = Gave { config : Config, problems : Array String }
-    | Unread String
-
-
-{-| What the command line gave: the settings file, if any (one it names
-must be there), and the title and program, which win over the file's. -}
-type alias Given =
-    { file : Maybe { path : Path.Path, required : Bool }
-    , fs : File.Permission
-    , title : Maybe String
-    , program : Array String
-    }
-
-
-{-| The settings followed while the window runs (docs/settings.md ST3,
-ST4): what the command line gave, the locale the language and charset fall
-back on, the settings directory's changes while it is watched, and when a
-change seen is to be read (-1 for none waiting). -}
-type alias Settings =
-    { given : Given
-    , locale : Platform.Locale
-    , events : Maybe (Source Directory.Change)
-    , at : Int
-    }
-
-
-{-| How long after a change to the settings file it is read, so that an
-editor's save, often several writes, is read once and whole. -}
-reloadDelayMs : Int
-reloadDelayMs =
-    50
-
-
 {-| A selection: from `anchor` to `head`, in either order, both included.
 `mode` 0 by cells, 1 by words, 2 by lines; a drag by words or lines keeps
 the first word or line, `first` to `last`, whichever way it goes. `made`
@@ -228,6 +193,52 @@ main =
     Os.Env.getEnvironment
         |> Task.andThen
             (\env ->
+                -- `puritty settings`: the settings window, a process of its
+                -- own (docs/settings.md ST2, V57); `puritty -- settings`
+                -- runs a program of that name
+                if Array.first env.args == Just "settings" then
+                    settingsMain { env | args = Array.dropFirst 1 env.args }
+
+                else
+                    terminalMain env
+            )
+
+
+settingsMain : Os.Env.Environment -> Task Never {}
+settingsMain env =
+    Argparse.Program.runRootWithContext env
+        { name = "puritty settings"
+        , version = "0.1.0"
+        , command = settingsCli
+        , init =
+            \_ -> Task.map2 (\fs vars -> { fs = fs, vars = vars }) File.initialize Os.Env.getEnvironmentVariables
+        , onCommand =
+            \_ ctx (Settings asked) ->
+                SettingsProgram.run { fs = ctx.fs, vars = ctx.vars, config = asked }
+                    |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty settings: " ++ why, value = 2 })
+        }
+
+
+type SettingsCommand
+    = Settings (Maybe Path.Path)
+
+
+settingsCli : Argparse.Parser.Command {} (Maybe Path.Path) SettingsCommand
+settingsCli =
+    { word = ""
+    , arguments = Argparse.Parser.noArgs
+    , flags =
+        Argparse.Parser.initFlags identity
+            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/puritty/config.toml (on Windows %APPDATA%\\puritty\\config.toml)"
+    , commonDescription = Nothing
+    , summary = "Opens the settings window, whose changes every puritty window takes at once:"
+    , example = PP.words "puritty settings"
+    , builder = \_ config -> Settings config
+    }
+
+
+terminalMain : Os.Env.Environment -> Task Never {}
+terminalMain env =
                 Argparse.Program.runRootWithContext env
                     { name = "puritty"
                     , version = "0.1.0"
@@ -262,108 +273,6 @@ main =
                                     )
                                 |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
                     }
-            )
-
-
-{-| The settings file: the one the command line names, which must be
-there, or the user's, which need not be; none when the platform names no
-place for it. -}
-settingsFile : Dict String String -> Maybe Path.Path -> Maybe { path : Path.Path, required : Bool }
-settingsFile vars named =
-    when named is
-        Just p ->
-            Just { path = p, required = True }
-
-        Nothing ->
-            Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) (Platform.settingsDirectory vars)
-
-
-{-| The settings: the file's, leniently (`Schema.decode`), or the defaults
-when the user has none, with the command line's title and program over
-them. Only a file the command line names and that cannot be read fails. -}
-readSettings : Given -> Task String Read
-readSettings given =
-    when given.file is
-        Nothing ->
-            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
-
-        Just f ->
-            let
-                path =
-                    Path.toString f.path
-            in
-            File.readFile given.fs f.path
-                |> Task.map
-                    (\bytes ->
-                        when Schema.decode (Bytes.toStringLossy bytes) is
-                            Ok decoded ->
-                                Gave
-                                    { config = overridden given decoded.config
-                                    , problems = Array.map (\r -> path ++ " line " ++ String.fromInt r.line ++ ": " ++ r.message) decoded.reports
-                                    }
-
-                            Err r ->
-                                Unread (path ++ " line " ++ String.fromInt r.line ++ " is not TOML: " ++ r.message)
-                    )
-                |> Task.onError
-                    (\err ->
-                        if err.kind == Os.Error.NotFound && not f.required then
-                            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
-
-                        else if f.required then
-                            Task.fail (Os.Error.toString err)
-
-                        else
-                            Task.succeed (Unread (Os.Error.toString err))
-                    )
-
-
-{-| The command line's title and program over the settings'. -}
-overridden : Given -> Config -> Config
-overridden given config =
-    { config
-        | title = Maybe.withDefault config.title given.title
-        , command = if Array.isEmpty given.program then config.command else given.program
-    }
-
-
-{-| The settings file's directory watched, into a source of its own: the
-user's made first when it is not there, so that a file written into it
-later is seen. Nothing is followed when there is no file, or the directory
-cannot be watched. -}
-watchSettings : Given -> Task x (Maybe (Source Directory.Change))
-watchSettings given =
-    when given.file is
-        Nothing ->
-            Task.succeed Nothing
-
-        Just f ->
-            let
-                dir =
-                    when Path.parent f.path is
-                        Just d ->
-                            if Path.toString d == "" then
-                                Path.fromString "."
-
-                            else
-                                d
-
-                        Nothing ->
-                            Path.fromString "."
-            in
-            Source.new
-                |> Task.andThen
-                    (\events ->
-                        (if f.required then
-                            Task.succeed {}
-
-                         else
-                            Directory.createAll given.fs dir
-                        )
-                            |> Task.andThen (\_ -> Directory.watch given.fs dir events identity)
-                            |> Task.map (\_ -> Just events)
-                    )
-                |> Task.onError (\_ -> Task.succeed Nothing)
 
 
 start : Process.Permission -> Dict String String -> Given -> Array String -> Config -> Task String {}
