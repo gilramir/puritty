@@ -1,0 +1,104 @@
+module SettingsFile exposing (Store, store, change)
+
+{-| Writing `config.toml` (`docs/settings.md` ST6): each change read from
+the file as it is now, so that an edit by hand since is kept, edited in
+place by `Schema.write`, and written whole beside it and moved over it, so
+that a terminal reading it at that moment (ST3) sees the old file or the
+new one, never half of either.
+
+@docs Store, store, change
+
+-}
+
+import Bytes exposing (Bytes)
+import Os.Directory as Directory
+import Os.Error
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Task exposing (Task)
+import Toml
+
+
+{-| A settings file being changed, and whether this session has kept a
+copy of it as it was (`config.toml.bak`) yet. -}
+type alias Store =
+    { fs : File.Permission
+    , path : Path
+    , backedUp : Bool
+    }
+
+
+store : File.Permission -> Path -> Store
+store fs path =
+    { fs = fs, path = path, backedUp = False }
+
+
+{-| The file changed by `edit`, and the store after it. A file that is not
+there is an empty one, and is made, with its directory. One that is not
+UTF-8 or not TOML is not written, and why is the answer: nothing in it is
+lost. An edit that changes no byte writes nothing. The first write of a
+store copies the file as it was to `config.toml.bak` first. -}
+change : (Toml.Document -> Toml.Document) -> Store -> Task String Store
+change edit s =
+    let
+        name =
+            Path.toString s.path
+
+        dir =
+            when Path.parent s.path is
+                Just d ->
+                    if Path.toString d == "" then Nothing else Just d
+
+                Nothing ->
+                    Nothing
+
+        beside suffix =
+            Path.append (Path.fromString (Path.filename s.path ++ suffix)) (Maybe.withDefault (Path.fromString ".") dir)
+    in
+    File.readFile s.fs s.path
+        |> Task.map Just
+        |> Task.onError
+            (\e ->
+                if e.kind == Os.Error.NotFound then
+                    Task.succeed Nothing
+
+                else
+                    Task.fail (Os.Error.toString e)
+            )
+        |> Task.andThen
+            (\old ->
+                when Toml.parseBytes (Maybe.withDefault Bytes.empty old) is
+                    Err e ->
+                        Task.fail (name ++ " line " ++ String.fromInt e.row ++ " is not TOML, or not UTF-8: " ++ Toml.errorToString e ++ "; nothing is written")
+
+                    Ok doc ->
+                        let
+                            -- a document no edit touched is written back as
+                            -- it was read, byte for byte
+                            edited =
+                                edit doc
+
+                            same =
+                                Toml.toString edited == Toml.toString doc
+                        in
+                        if same then
+                            Task.succeed s
+
+                        else
+                            (when old is
+                                Just bytes ->
+                                    if s.backedUp then
+                                        Task.succeed {}
+
+                                    else
+                                        File.writeFile s.fs bytes (beside ".bak")
+
+                                Nothing ->
+                                    Maybe.map (Directory.createAll s.fs) dir
+                                        |> Maybe.withDefault (Task.succeed {})
+                            )
+                                |> Task.andThen (\_ -> File.writeFile s.fs (Toml.toBytes edited) (beside ".new"))
+                                |> Task.andThen (\_ -> File.move s.fs { from = beside ".new", to = s.path })
+                                |> Task.mapError Os.Error.toString
+                                |> Task.map (\_ -> { s | backedUp = True })
+            )

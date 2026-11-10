@@ -11,6 +11,7 @@ import Node
 import Schema
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
+import Toml
 
 
 main : Task Never {}
@@ -21,7 +22,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema ]
+                    , suites = [ schema, writing ]
                     }
             )
 
@@ -162,5 +163,166 @@ schema =
                                 |> Array.map Schema.keyName
                     in
                     Expect.equal [] wrong
+          }
+        ]
+
+
+{-| A file as a user keeps it, comments and all. -}
+sample : String
+sample =
+    """
+    # My puritty settings
+
+    [window]
+    columns = 100   # wide
+    rows = 0x1E     # thirty, in hex
+    title = "work"
+
+    # fonts
+    [font]
+    family = "Fira Code"
+    """
+        -- a file ends its last line; Gren's multi-line string does not
+        ++ "\n"
+
+
+{-| The file after writing each setting and value in turn. -}
+written : String -> Array { key : Array String, value : Schema.Value } -> String
+written text changes =
+    when Toml.parse text is
+        Ok doc ->
+            Array.foldl
+                (\c d ->
+                    when Schema.find c.key is
+                        Just s ->
+                            Schema.write s c.value d
+
+                        Nothing ->
+                            d
+                )
+                doc
+                changes
+                |> Toml.toString
+
+        Err _ ->
+            "not TOML"
+
+
+{-| A value of a setting's kind other than its default. -}
+another : Schema.Setting -> Schema.Value
+another s =
+    when s.kind is
+        Schema.WholeIn r ->
+            Schema.Whole (if r.low == 0 then 1 else r.low)
+
+        Schema.AnyText ->
+            Schema.Text "something else"
+
+        Schema.FontFamily ->
+            Schema.Text "Some Font"
+
+        Schema.OnOff ->
+            Schema.Flag (s.get Config.defaults /= Schema.Flag True)
+
+        Schema.OneColour ->
+            Schema.Colour 0x123456
+
+        Schema.ColourList _ ->
+            Schema.Colours [ 0x010203, 0xFFFEFD ]
+
+        Schema.OneOf names ->
+            Schema.Text (Maybe.withDefault "" (Array.last names))
+
+        Schema.Command ->
+            Schema.Words [ "vim", "-O", "a b.txt" ]
+
+
+writing : U.Suite
+writing =
+    run "Writing"
+        [ { name = "a setting written as it is changes no byte"
+          , test = \_ -> Expect.equal sample (written sample [ { key = [ "window", "columns" ], value = Schema.Whole 100 } ])
+          }
+        , { name = "a value the file writes another way is kept as it writes it"
+          , test = \_ -> Expect.equal sample (written sample [ { key = [ "window", "rows" ], value = Schema.Whole 30 } ])
+          }
+        , { name = "a setting set and then reset gives the file back"
+          , test =
+                \_ ->
+                    Expect.equal sample
+                        (written sample [ { key = [ "font", "size" ], value = Schema.Whole 14 }, { key = [ "font", "size" ], value = Schema.Whole 11 } ])
+          }
+        , { name = "a setting in a table the file lacks, set and reset, gives the file back"
+          , test =
+                \_ ->
+                    Expect.equal sample
+                        (written sample [ { key = [ "colours", "background" ], value = Schema.Colour 0x102030 }, { key = [ "colours", "background" ], value = Schema.Colour 0x1D1F21 } ])
+          }
+        , { name = "a setting set is read back from the file"
+          , test =
+                \_ ->
+                    Expect.equal { size = 14, columns = 100, family = "Fira Code" }
+                        (let
+                            c =
+                                decoded (written sample [ { key = [ "font", "size" ], value = Schema.Whole 14 } ])
+                         in
+                         { size = c.points, columns = c.columns, family = c.font }
+                        )
+          }
+        , { name = "a reset takes the key and its comment out, and keeps the table's others"
+          , test =
+                \_ ->
+                    Expect.equal
+                        (String.replace "columns = 100   # wide\n" "" sample)
+                        (written sample [ { key = [ "window", "columns" ], value = Schema.Whole 80 } ])
+          }
+        , { name = "a table emptied by a reset goes"
+          , test = \_ -> Expect.equal "" (written "[font]\nsize = 14\n" [ { key = [ "font", "size" ], value = Schema.Whole 11 } ])
+          }
+        , { name = "a table emptied by a reset stays when a comment is over its header"
+          , test =
+                \_ ->
+                    Expect.equal "# kept by hand\n[font]\n"
+                        (written "# kept by hand\n[font]\nsize = 14 # mine\n" [ { key = [ "font", "size" ], value = Schema.Whole 11 } ])
+          }
+        , { name = "an optional setting unset is taken out"
+          , test =
+                \_ ->
+                    Expect.equal "[font]\nsize = 14\n"
+                        (written "[font]\nsize = 14\nlanguage = \"ja\"\n" [ { key = [ "font", "language" ], value = Schema.Unset } ])
+          }
+        , { name = "every setting written to an empty file is read back as written"
+          , test =
+                \_ ->
+                    let
+                        wrong =
+                            Schema.settings
+                                |> Array.keepIf
+                                    (\s ->
+                                        let
+                                            v =
+                                                another s
+                                        in
+                                        s.get (decoded (written "" [ { key = s.key, value = v } ])) /= v
+                                    )
+                                |> Array.map Schema.keyName
+                    in
+                    Expect.equal [] wrong
+          }
+        , { name = "every setting written to an empty file is reported for nothing"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (Array.mapAndKeepJust
+                            (\s ->
+                                when reported (written "" [ { key = s.key, value = another s } ]) is
+                                    [] ->
+                                        Nothing
+
+                                    r ->
+                                        Just (Schema.keyName s ++ ": " ++ String.join "; " r)
+                            )
+                            Schema.settings
+                        )
           }
         ]

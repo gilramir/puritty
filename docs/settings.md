@@ -139,7 +139,8 @@ documented example to the table.
 ## ST6 · Writing the file
 
 - `Toml.Edit.set` for a changed key, `remove` for one reset to its
-  default (its table too, when nothing is left in it). Only the keys
+  default (its table too, when nothing is left in it and no comment is
+  over its header, ST18). Only the keys
   touched change; the file is never generated again.
 - Written to `config.toml.new` beside it, then moved over it: a terminal
   reading at that moment sees the old file or the new one, never half.
@@ -311,7 +312,7 @@ built, as the Windows steps did.
 3. **The schema and the lenient decoder** (ST5), the notice in the
    terminal for a bad key, the documented example from the table.
    *Built (ST17).*
-4. **Writing** (ST6), with its round-trip tests.
+4. **Writing** (ST6), with its round-trip tests. *Built (ST18).*
 5. **The settings window** (ST7, ST8): every page of today's settings,
    search, modified only, reset, Undo; `harness/settings.py`.
 6. **Opening it** (ST9): Ctrl+Comma, the Ctrl+right-click menu, the
@@ -486,3 +487,45 @@ the key left out gives; the title carries a report and loses it once the
 file is fixed. **15 of 15 on Linux, 14 of 14 on Windows**; pointer 51 of
 51 and IME 14 of 14 hold. The start notice was looked at once: two lines
 in yellow above the program's first line.
+
+## ST18 · Step 4 built: writing the file (2026-11-10)
+
+**`Schema.write`** changes one setting in a parsed document: `Toml.Edit.set`
+when it differs from its default, which keeps the file's comments and
+layout and leaves a value the file already means as the file writes it
+(`rows = 0x1E` stays when 30 is written); `Toml.Edit.remove` when it is
+its default or unset, so the file holds only what differs.
+
+A table left empty by a reset goes too, unless a comment is over its
+header. In gren-toml a comment directly above a `[header]` is the header's,
+and `removeTable` takes it with the table: the first form lost a file's
+opening `# kept by hand` when the last key of the `[font]` under it was
+reset. An empty `[font]` left in the file costs nothing; a user's comment
+lost is what `settings-ui.md` §5 says never happens.
+
+**`SettingsFile.change`** is the write on the system: the file read as it
+is now, so that a hand edit since is kept; parsed from its bytes, so that
+one that is not UTF-8 or not TOML is refused and nothing in it is lost;
+nothing written when the edit changes no byte; else written whole to
+`config.toml.new` and moved over the file (`MoveFileExW` replaces on
+Windows), so that a terminal reading it (ST3) sees the old file or the new
+one. The first write of a session copies the file as it was to
+`config.toml.bak`, and a missing file's directory is made.
+
+**Held by:** `app/tests`, 30 of 30, with the writing suite: a setting
+written as it is changes no byte; a value the file spells otherwise is
+kept as spelled; a setting set and reset gives the file back, in a table
+the file had and in one it lacked; a set setting reads back; a reset takes
+its key and the key's comment and keeps the table's others; an emptied
+table goes, and stays under a comment; an optional setting unset goes;
+every setting written to an empty file reads back as written and is
+reported for nothing. `harness/store.py` runs `SettingsFile.change` on the
+system, step by step, and holds the file, its backup and any `.new` to one
+pin, **the same on Linux and on Windows** (`--windows beelink1`): a file
+and a directory not there, the same value writing nothing, a hand edit
+kept, one backup a session, a new session's backup, both settings reset,
+and a file that is not TOML refused with its line.
+
+One edge of gren-toml was seen and needs no change: a file whose last
+line has no newline gains one when a table is added after it, and keeps it
+when the table is removed. A file written by an editor ends its last line.

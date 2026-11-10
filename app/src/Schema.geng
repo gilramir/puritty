@@ -2,6 +2,7 @@ module Schema exposing
     ( Setting, Kind(..), Value(..), Page(..), Applies(..), Report
     , settings, find, keyName, pages, pageName
     , decode, Decoded
+    , write
     , example
     )
 
@@ -16,7 +17,7 @@ From the table come the decoder, which is lenient (`decode`), the settings
 window's rows and its search (step 5), and the example below, which a test
 holds to it.
 
-@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, example
+@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, write, example
 
 -}
 
@@ -26,6 +27,7 @@ import Toml
 import Toml.Ast as Ast
 import Toml.Table
 import Toml.Decode
+import Toml.Edit
 
 
 {-| One setting. `key` is its path in the file, `["font", "size"]`;
@@ -773,6 +775,73 @@ distance a b =
         a
         |> Array.last
         |> Maybe.withDefault 0
+
+
+
+-- WRITING
+
+
+{-| A setting written into the file (`docs/settings.md` ST6): set when it
+differs from its default, which `Toml.Edit.set` does in place, keeping the
+file's comments and layout, and leaving a value the file already means as
+the file writes it; taken out when it is the default (or unset), so the
+file holds only what differs, and its table with it when nothing is left
+under it and it has no comment of its own, which would go with it. Nothing
+else in the file changes. -}
+write : Setting -> Value -> Toml.Document -> Toml.Document
+write s v doc =
+    if v == s.get Config.defaults then
+        let
+            removed =
+                Toml.Edit.remove s.key doc
+
+            table =
+                Array.slice 0 (Array.length s.key - 1) s.key
+
+            -- a comment over a header is the header's in gren-toml, and goes
+            -- with the table: a table with one stays, empty (ST18)
+            headerComments =
+                Toml.Edit.tableComments table removed
+
+            emptied =
+                not (Array.isEmpty table)
+                    && not (Array.any (\path -> Array.slice 0 (Array.length table) path == table) (Toml.Edit.paths removed))
+                    && Array.isEmpty headerComments.leading
+                    && headerComments.trailing == Nothing
+        in
+        if emptied then
+            Toml.Edit.removeTable table removed
+
+        else
+            removed
+
+    else
+        Toml.Edit.set s.key (editValue v) doc
+
+
+editValue : Value -> Toml.Edit.Value
+editValue v =
+    when v is
+        Whole n ->
+            Toml.Edit.int n
+
+        Text t ->
+            Toml.Edit.string t
+
+        Flag b ->
+            Toml.Edit.bool b
+
+        Colour n ->
+            Toml.Edit.string (hex n)
+
+        Colours p ->
+            Toml.Edit.array (Array.map (\n -> Toml.Edit.string (hex n)) p)
+
+        Words w ->
+            Toml.Edit.array (Array.map Toml.Edit.string w)
+
+        Unset ->
+            Toml.Edit.string ""
 
 
 
