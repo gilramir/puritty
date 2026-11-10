@@ -8,6 +8,7 @@ module Main exposing (main)
     ssh-tests known-hosts FILE
     ssh-tests config FILE
     ssh-tests login HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--passphrase P] [--password P] [--responses A,B] [--rekey]
+        [--exec CMD | --shell] [--pty COLS,ROWS] [--not-utf8] [--env NAME=VALUE] [--stdin TEXT] [--resize COLS,ROWS] [--stdin2 TEXT] [--stdin-bytes N] [--eof] [--hex] [--keepalive]
 
 `connect` makes the exchange with the server, asks for the `ssh-userauth`
 service, and asks to authenticate with `none`, whose refusal says the keys
@@ -40,6 +41,7 @@ import Os.Random
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
 import Ssh.Config as Config
+import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
@@ -951,6 +953,8 @@ type alias Session =
     , auth : Maybe Auth.Auth
     , identities : Array { identity : Auth.Identity, file : Maybe Bytes }
     , agent : Maybe Net.Socket
+    , connection : Maybe Connection.Connection
+    , output : Array Bytes
     , exchanges : Int
     , done : Bool
     }
@@ -1008,6 +1012,8 @@ login r target =
                                             , auth = Nothing
                                             , identities = identities ++ ready.agent.identities
                                             , agent = ready.agent.socket
+                                            , connection = Nothing
+                                            , output = []
                                             , exchanges = 0
                                             , done = False
                                             }
@@ -1098,15 +1104,22 @@ onEvent event session =
             Task.succeed { session | auth = Maybe.map (Auth.withServerSigAlgs algorithms) session.auth }
 
         Received payload ->
-            when session.auth is
-                Just auth ->
+            when { auth = session.auth, connection = session.connection } is
+                { connection = Just connection } ->
+                    if Connection.isConnectionMessage payload then
+                        onConnection (Connection.received payload connection) session
+
+                    else
+                        say "received another message" |> Task.map (\_ -> session)
+
+                { auth = Just auth } ->
                     if Auth.isAuthMessage payload then
                         onAuth (Auth.received payload auth) session
 
                     else
                         say "received another message" |> Task.map (\_ -> session)
 
-                Nothing ->
+                _ ->
                     Task.succeed session
 
         Closed closed ->
@@ -1156,7 +1169,10 @@ onAuthEvent event session =
             say "authenticated"
                 |> Task.andThen
                     (\_ ->
-                        if Array.member "--rekey" session.options then
+                        if option "--exec" session.options /= Nothing || Array.member "--shell" session.options then
+                            onConnection (Connection.open (sessionOf session.options)) session
+
+                        else if Array.member "--rekey" session.options then
                             onTransport (Transport.rekey session.transport) session
 
                         else
@@ -1283,3 +1299,153 @@ agentRead socket got =
                         else
                             agentRead socket (Bytes.flatten [ got, more ])
                     )
+
+
+-- THE SESSION
+
+
+sessionOf : Array String -> Connection.Session
+sessionOf options =
+    let
+        size =
+            option "--pty" options
+                |> Maybe.map (String.split ",")
+                |> Maybe.andThen
+                    (\parts ->
+                        when parts is
+                            [ c, r ] ->
+                                Maybe.map2 (\columns rows -> { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
+
+                            _ ->
+                                Nothing
+                    )
+    in
+    { terminal = Maybe.map (\s -> { term = "xterm-256color", columns = s.columns, rows = s.rows, utf8 = not (Array.member "--not-utf8" options) }) size
+    , env =
+        option "--env" options
+            |> Maybe.map
+                (\e ->
+                    when String.split "=" e is
+                        [ name, value ] ->
+                            [ { name = name, value = value } ]
+
+                        _ ->
+                            []
+                )
+            |> Maybe.withDefault []
+    , command = option "--exec" options
+    }
+
+
+unescape : String -> String
+unescape text =
+    String.replace "\\n" "\n" text
+
+
+onConnection : Connection.Step -> Session -> Task Os.Error.Error Session
+onConnection step session0 =
+    let
+        withConnection =
+            { session0 | connection = Just step.connection }
+
+        sent =
+            Array.foldl
+                (\payload acc -> acc |> Task.andThen (\session -> onTransport (Transport.send payload session.transport) session))
+                (Task.succeed withConnection)
+                step.send
+    in
+    Array.foldl (\e acc -> acc |> Task.andThen (\session -> onConnectionEvent e session)) sent step.events
+
+
+{-| Run a connection step on the session's connection, if it has one. -}
+withConnectionDo : (Connection.Connection -> Connection.Step) -> Session -> Task Os.Error.Error Session
+withConnectionDo f session =
+    when session.connection is
+        Just connection ->
+            onConnection (f connection) session
+
+        Nothing ->
+            Task.succeed session
+
+
+onConnectionEvent : Connection.Event -> Session -> Task Os.Error.Error Session
+onConnectionEvent event session =
+    when event is
+        Connection.Started ->
+            let
+                options =
+                    session.options
+
+                text name =
+                    option name options |> Maybe.map (\t -> Bytes.fromString (unescape t))
+
+                bulk =
+                    option "--stdin-bytes" options |> Maybe.andThen String.toInt |> Maybe.map (\n -> Bytes.fromString (String.repeat n "x"))
+
+                steps =
+                    [ Maybe.map Connection.write (text "--stdin")
+                    , Maybe.map Connection.write bulk
+                    , option "--resize" options
+                        |> Maybe.map (String.split ",")
+                        |> Maybe.andThen
+                            (\parts ->
+                                when parts is
+                                    [ c, r ] ->
+                                        Maybe.map2 (\columns rows -> Connection.resize { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
+
+                                    _ ->
+                                        Nothing
+                            )
+                    , Maybe.map Connection.write (text "--stdin2")
+                    , if Array.member "--eof" options then
+                        Just Connection.sendEof
+
+                      else
+                        Nothing
+                    , if Array.member "--keepalive" options then
+                        Just Connection.keepalive
+
+                      else
+                        Nothing
+                    ]
+                        |> Array.mapAndFlatten (\m -> Maybe.map (\x -> [ x ]) m |> Maybe.withDefault [])
+            in
+            say "started"
+                |> Task.andThen (\_ -> Array.foldl (\f acc -> acc |> Task.andThen (withConnectionDo f)) (Task.succeed session) steps)
+
+        Connection.Refused why ->
+            say ("refused: " ++ why) |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True })
+
+        Connection.Output bytes ->
+            Task.succeed { session | output = Array.pushLast bytes session.output }
+
+        Connection.ErrorOutput bytes ->
+            say ("stderr: " ++ String.trim (Bytes.toStringLossy bytes)) |> Task.map (\_ -> session)
+
+        Connection.Exited status ->
+            say ("exit status " ++ String.fromInt status) |> Task.map (\_ -> session)
+
+        Connection.Killed signal ->
+            say ("killed by " ++ signal.signal) |> Task.map (\_ -> session)
+
+        Connection.KeepaliveUnanswered n ->
+            say ("keepalive sent; " ++ String.fromInt n ++ " unanswered before it") |> Task.map (\_ -> session)
+
+        Connection.Ended ->
+            let
+                all =
+                    Bytes.flatten session.output
+
+                shown =
+                    if Array.member "--hex" session.options then
+                        "output (hex): " ++ toHex all
+
+                    else if Bytes.length all > 4096 then
+                        "output: " ++ String.fromInt (Bytes.length all) ++ " bytes"
+
+                    else
+                        "output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy all))
+            in
+            say shown
+                |> Task.andThen (\_ -> say "the channel closed")
+                |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True })

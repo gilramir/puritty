@@ -1,0 +1,603 @@
+module Ssh.Connection exposing
+    ( Connection
+    , Event(..)
+    , Session
+    , Step
+    , close
+    , isConnectionMessage
+    , keepalive
+    , open
+    , received
+    , resize
+    , sendEof
+    , write
+    )
+
+{-| SSH's connection protocol, a client's one session (RFC 4254; puritty
+`docs/ssh-client.md` SC11 step 7): a `session` channel, its terminal
+(`pty-req`, with `IUTF8` as the terminal's character set says), its
+variables (`env`), a shell or a command, the bytes both ways under each
+side's window, the terminal's size (`window-change`), and how it ended
+(`exit-status`, `exit-signal`). Keepalives are global requests a server
+must answer.
+
+Pure, as the transport and authentication are: each step answers the
+payloads to send and what happened.
+-}
+
+import Bytes exposing (Bytes)
+import Ssh.Wire as Wire
+import UInt8
+
+
+{-| What the session is: the terminal, if it has one (its type, size and
+whether it is UTF-8), the variables to ask for, and the command, or the
+user's shell for none.
+-}
+type alias Session =
+    { terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool }
+    , env : Array { name : String, value : String }
+    , command : Maybe String
+    }
+
+
+{-| What happened:
+
+  - `Started`: the shell or command runs.
+  - `Refused`: the server would not open the channel, give the terminal or
+    run the command, and why; the session is over.
+  - `Output`, `ErrorOutput`: the program's bytes, as they came, in no
+    character set.
+  - `Exited`: its exit status; `Killed`: the signal that ended it.
+  - `Ended`: the channel is closed; nothing more comes.
+  - `KeepaliveUnanswered`: keepalives the server has not answered, counted.
+
+-}
+type Event
+    = Started
+    | Refused String
+    | Output Bytes
+    | ErrorOutput Bytes
+    | Exited Int
+    | Killed { signal : String, message : String }
+    | Ended
+    | KeepaliveUnanswered Int
+
+
+type alias Step =
+    { connection : Connection, send : Array Bytes, events : Array Event }
+
+
+type Connection
+    = Connection State
+
+
+type Phase
+    = Opening
+    | Requesting (Array String)
+    | Running
+    | Closing
+    | Closed
+
+
+{-| The remote channel and window once open; ours; what waits for room in
+theirs; how many of our requests wait for an answer, in order; keepalives
+in flight. -}
+type alias State =
+    { session : Session
+    , phase : Phase
+    , remote : Int
+    , remoteWindow : Int
+    , remoteMaxPacket : Int
+    , localWindow : Int
+    , consumed : Int
+    , pending : Bytes
+    , eofPending : Bool
+    , sentEof : Bool
+    , keepalives : Int
+    , send : Array Bytes
+    , events : Array Event
+    }
+
+
+ourChannel : Int
+ourChannel =
+    0
+
+
+{-| Our window and largest packet: 2 MiB and 32 KiB, as OpenSSH's. -}
+windowSize : Int
+windowSize =
+    2097152
+
+
+maxPacket : Int
+maxPacket =
+    32768
+
+
+msgGlobalRequest : Int
+msgGlobalRequest =
+    80
+
+
+msgRequestSuccess : Int
+msgRequestSuccess =
+    81
+
+
+msgRequestFailure : Int
+msgRequestFailure =
+    82
+
+
+msgOpen : Int
+msgOpen =
+    90
+
+
+msgOpenConfirmation : Int
+msgOpenConfirmation =
+    91
+
+
+msgOpenFailure : Int
+msgOpenFailure =
+    92
+
+
+msgWindowAdjust : Int
+msgWindowAdjust =
+    93
+
+
+msgData : Int
+msgData =
+    94
+
+
+msgExtendedData : Int
+msgExtendedData =
+    95
+
+
+msgEof : Int
+msgEof =
+    96
+
+
+msgClose : Int
+msgClose =
+    97
+
+
+msgRequest : Int
+msgRequest =
+    98
+
+
+msgSuccess : Int
+msgSuccess =
+    99
+
+
+msgFailure : Int
+msgFailure =
+    100
+
+
+{-| Whether a payload is the connection protocol's: 80 to 127. -}
+isConnectionMessage : Bytes -> Bool
+isConnectionMessage payload =
+    let
+        n =
+            numberOf payload
+    in
+    n >= 80 && n <= 127
+
+
+numberOf : Bytes -> Int
+numberOf payload =
+    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+
+
+finish : State -> Step
+finish st =
+    { connection = Connection { st | send = [], events = [] }, send = st.send, events = st.events }
+
+
+emit : Event -> State -> State
+emit e st =
+    { st | events = Array.pushLast e st.events }
+
+
+queue : Bytes -> State -> State
+queue payload st =
+    { st | send = Array.pushLast payload st.send }
+
+
+{-| The session channel asked for, once authentication is done. -}
+open : Session -> Step
+open session =
+    finish
+        { session = session
+        , phase = Opening
+        , remote = 0
+        , remoteWindow = 0
+        , remoteMaxPacket = 0
+        , localWindow = windowSize
+        , consumed = 0
+        , pending = Bytes.empty
+        , eofPending = False
+        , sentEof = False
+        , keepalives = 0
+        , send =
+            [ Bytes.flatten
+                [ Wire.writeByte msgOpen
+                , Wire.writeText "session"
+                , Wire.writeUint32 ourChannel
+                , Wire.writeUint32 windowSize
+                , Wire.writeUint32 maxPacket
+                ]
+            ]
+        , events = []
+        }
+
+
+channelRequest : State -> String -> Bool -> Bytes -> Bytes
+channelRequest st name wantReply body =
+    Bytes.flatten [ Wire.writeByte msgRequest, Wire.writeUint32 st.remote, Wire.writeText name, Wire.writeBool wantReply, body ]
+
+
+{-| The terminal's modes (RFC 4254 §8): `IUTF8` (42), and the end. -}
+modes : Bool -> Bytes
+modes utf8 =
+    Bytes.flatten
+        [ Wire.writeByte 42
+        , Wire.writeUint32
+            (if utf8 then
+                1
+
+             else
+                0
+            )
+        , Wire.writeByte 0
+        ]
+
+
+{-| The requests after the channel opens, in order: the terminal, each
+variable (no reply asked: a server that does not take one says nothing,
+as OpenSSH's `AcceptEnv` does), then the shell or command. Those that ask
+for a reply are named in `Requesting`, to match the replies in order. -}
+afterOpen : State -> State
+afterOpen st =
+    let
+        terminal =
+            when st.session.terminal is
+                Just t ->
+                    [ { payload =
+                            channelRequest st
+                                "pty-req"
+                                True
+                                (Bytes.flatten
+                                    [ Wire.writeText t.term
+                                    , Wire.writeUint32 t.columns
+                                    , Wire.writeUint32 t.rows
+                                    , Wire.writeUint32 0
+                                    , Wire.writeUint32 0
+                                    , Wire.writeString (modes t.utf8)
+                                    ]
+                                )
+                      , awaits = Just "the terminal"
+                      }
+                    ]
+
+                Nothing ->
+                    []
+
+        variables =
+            Array.map
+                (\v -> { payload = channelRequest st "env" False (Bytes.flatten [ Wire.writeText v.name, Wire.writeText v.value ]), awaits = Nothing })
+                st.session.env
+
+        run =
+            when st.session.command is
+                Just command ->
+                    { payload = channelRequest st "exec" True (Wire.writeText command), awaits = Just "the command" }
+
+                Nothing ->
+                    { payload = channelRequest st "shell" True Bytes.empty, awaits = Just "the shell" }
+
+        all =
+            terminal ++ variables ++ [ run ]
+    in
+    Array.foldl (\r acc -> queue r.payload acc)
+        { st | phase = Requesting (Array.mapAndFlatten (\r -> Maybe.map (\a -> [ a ]) r.awaits |> Maybe.withDefault []) all) }
+        all
+
+
+{-| A payload that [`isConnectionMessage`](#isConnectionMessage). -}
+received : Bytes -> Connection -> Step
+received payload (Connection st) =
+    let
+        n =
+            numberOf payload
+
+        body =
+            Wire.reader payload |> Wire.take 1 |> Result.map .next
+    in
+    if n == msgGlobalRequest then
+        -- hostkeys-00@openssh.com and others: refused where an answer is
+        -- wanted, and not acted on
+        when body |> Result.andThen Wire.name |> Result.andThen (\r -> Wire.boolean r.next) is
+            Ok want ->
+                finish
+                    (if want.value then
+                        queue (Wire.writeByte msgRequestFailure) st
+
+                     else
+                        st
+                    )
+
+            Err _ ->
+                finish st
+
+    else if n == msgRequestSuccess || n == msgRequestFailure then
+        -- a keepalive answered
+        finish { st | keepalives = max 0 (st.keepalives - 1) }
+
+    else if st.phase == Closed then
+        finish st
+
+    else
+        finish (onChannel n body st)
+
+
+onChannel : Int -> Result String Wire.Reader -> State -> State
+onChannel n body st =
+    let
+        afterChannel =
+            body |> Result.andThen Wire.uint32
+    in
+    if n == msgOpenConfirmation then
+        when
+            afterChannel
+                |> Result.andThen (\ours -> Wire.uint32 ours.next)
+                |> Result.andThen
+                    (\theirs ->
+                        Wire.uint32Clamped theirs.next
+                            |> Result.andThen (\window -> Wire.uint32Clamped window.next |> Result.map (\most -> { remote = theirs.value, window = window.value, most = most.value }))
+                    )
+        is
+            Ok opened ->
+                if st.phase /= Opening then
+                    st
+
+                else
+                    afterOpen { st | remote = opened.remote, remoteWindow = opened.window, remoteMaxPacket = max 1 (min opened.most maxPacket) }
+
+            Err _ ->
+                ended (emit (Refused "a channel confirmation that does not read") st)
+
+    else if n == msgOpenFailure then
+        let
+            why =
+                afterChannel
+                    |> Result.andThen (\reason -> Wire.name reason.next)
+                    |> Result.map .value
+                    |> Result.withDefault ""
+        in
+        ended (emit (Refused ("the server would not open a session: " ++ why)) st)
+
+    else if n == msgWindowAdjust then
+        when afterChannel |> Result.andThen (\c -> Wire.uint32Clamped c.next) is
+            Ok more ->
+                flush { st | remoteWindow = min 2147483647 (st.remoteWindow + more.value) }
+
+            Err _ ->
+                st
+
+    else if n == msgData then
+        when afterChannel |> Result.andThen (\c -> Wire.string c.next) is
+            Ok data ->
+                consume (Bytes.length data.value) (emit (Output data.value) st)
+
+            Err _ ->
+                st
+
+    else if n == msgExtendedData then
+        when afterChannel |> Result.andThen (\c -> Wire.uint32 c.next) |> Result.andThen (\code -> Wire.string code.next) is
+            Ok data ->
+                consume (Bytes.length data.value) (emit (ErrorOutput data.value) st)
+
+            Err _ ->
+                st
+
+    else if n == msgEof then
+        st
+
+    else if n == msgClose then
+        ended
+            (if st.phase == Closing then
+                st
+
+             else
+                queue (Bytes.flatten [ Wire.writeByte msgClose, Wire.writeUint32 st.remote ]) st
+            )
+
+    else if n == msgRequest then
+        channelRequestFromServer afterChannel st
+
+    else if n == msgSuccess || n == msgFailure then
+        replied (n == msgSuccess) st
+
+    else
+        st
+
+
+ended : State -> State
+ended st =
+    emit Ended { st | phase = Closed }
+
+
+{-| Our window used by what came; given back once half is used, so the
+server never waits for room while the program reads. -}
+consume : Int -> State -> State
+consume n st =
+    let
+        used =
+            st.consumed + n
+    in
+    if used >= windowSize // 2 then
+        queue (Bytes.flatten [ Wire.writeByte msgWindowAdjust, Wire.writeUint32 st.remote, Wire.writeUint32 used ]) { st | consumed = 0 }
+
+    else
+        { st | consumed = used }
+
+
+{-| A reply to the first of our requests that wanted one. -}
+replied : Bool -> State -> State
+replied ok st =
+    when st.phase is
+        Requesting awaiting ->
+            when Array.popFirst awaiting is
+                Just a ->
+                    if not ok then
+                        emit (Refused ("the server refused " ++ a.first)) (closing st)
+
+                    else if Array.isEmpty a.rest then
+                        flush (emit Started { st | phase = Running })
+
+                    else
+                        { st | phase = Requesting a.rest }
+
+                Nothing ->
+                    st
+
+        _ ->
+            st
+
+
+{-| `exit-status` and `exit-signal`; anything else the server asks is
+refused when it wants an answer (OpenSSH's `keepalive@openssh.com`). -}
+channelRequestFromServer : Result String { value : Int, next : Wire.Reader } -> State -> State
+channelRequestFromServer afterChannel st =
+    when afterChannel |> Result.andThen (\c -> Wire.name c.next) |> Result.andThen (\name -> Wire.boolean name.next |> Result.map (\want -> { name = name.value, want = want.value, rest = want.next })) is
+        Ok request ->
+            if request.name == "exit-status" then
+                when Wire.uint32 request.rest is
+                    Ok status ->
+                        emit (Exited status.value) st
+
+                    Err _ ->
+                        st
+
+            else if request.name == "exit-signal" then
+                when Wire.name request.rest |> Result.andThen (\signal -> Wire.boolean signal.next |> Result.andThen (\core -> Wire.name core.next) |> Result.map (\message -> { signal = signal.value, message = message.value })) is
+                    Ok signal ->
+                        emit (Killed signal) st
+
+                    Err _ ->
+                        st
+
+            else if request.want then
+                queue (Bytes.flatten [ Wire.writeByte msgFailure, Wire.writeUint32 st.remote ]) st
+
+            else
+                st
+
+        Err _ ->
+            st
+
+
+{-| What waits, sent as far as the server's window and largest packet let
+it, then the EOF if one was asked for after it. -}
+flush : State -> State
+flush st =
+    if st.phase /= Running then
+        st
+
+    else if not (Bytes.isEmpty st.pending) && st.remoteWindow > 0 then
+        let
+            n =
+                min (Bytes.length st.pending) (min st.remoteWindow st.remoteMaxPacket)
+        in
+        flush
+            (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 st.remote, Wire.writeString (Bytes.slice 0 n st.pending) ])
+                { st | pending = Bytes.slice n (Bytes.length st.pending) st.pending, remoteWindow = st.remoteWindow - n }
+            )
+
+    else if Bytes.isEmpty st.pending && st.eofPending && not st.sentEof then
+        queue (Bytes.flatten [ Wire.writeByte msgEof, Wire.writeUint32 st.remote ]) { st | sentEof = True, eofPending = False }
+
+    else
+        st
+
+
+{-| Bytes for the program: what the keys typed, in the session's
+character set. Sent as the server's window allows; the rest waits. -}
+write : Bytes -> Connection -> Step
+write bytes (Connection st) =
+    if st.sentEof || st.eofPending || st.phase == Closed || st.phase == Closing then
+        finish st
+
+    else
+        finish (flush { st | pending = Bytes.flatten [ st.pending, bytes ] })
+
+
+{-| The end of what the program is sent, after what waits. -}
+sendEof : Connection -> Step
+sendEof (Connection st) =
+    finish (flush { st | eofPending = True })
+
+
+{-| The terminal's new size (`window-change`). -}
+resize : { columns : Int, rows : Int } -> Connection -> Step
+resize size (Connection st) =
+    let
+        session =
+            st.session
+
+        terminal =
+            Maybe.map (\t -> { t | columns = size.columns, rows = size.rows }) session.terminal
+    in
+    if st.phase == Closed || st.phase == Opening || terminal == Nothing then
+        finish { st | session = { session | terminal = terminal } }
+
+    else
+        finish
+            (queue
+                (channelRequest st "window-change" False (Bytes.flatten [ Wire.writeUint32 size.columns, Wire.writeUint32 size.rows, Wire.writeUint32 0, Wire.writeUint32 0 ]))
+                { st | session = { session | terminal = terminal } }
+            )
+
+
+{-| A keepalive (OpenSSH's `ServerAliveInterval`): a global request the
+server must answer, success or failure. Those still unanswered are
+counted, and the caller ends the connection past its
+`ServerAliveCountMax`. -}
+keepalive : Connection -> Step
+keepalive (Connection st) =
+    let
+        waiting =
+            st.keepalives + 1
+    in
+    finish
+        (emit (KeepaliveUnanswered st.keepalives)
+            (queue (Bytes.flatten [ Wire.writeByte msgGlobalRequest, Wire.writeText "keepalive@openssh.com", Wire.writeBool True ]) { st | keepalives = waiting })
+        )
+
+
+{-| The channel closed from this side. -}
+close : Connection -> Step
+close (Connection st) =
+    if st.phase == Closed || st.phase == Closing || st.phase == Opening then
+        finish st
+
+    else
+        finish (closing st)
+
+
+closing : State -> State
+closing st =
+    queue (Bytes.flatten [ Wire.writeByte msgClose, Wire.writeUint32 st.remote ]) { st | phase = Closing }

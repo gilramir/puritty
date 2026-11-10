@@ -687,6 +687,8 @@ Each ends with its gate passing, and the gates before it still passing.
    and `SetEnv`, shell or command, `window-change`, exit status,
    keepalives. *Gate:* the EUC-KR case; a resize seen by `stty size`; `exit
    3` ending puritty with 3; `tmux -CC` attaching.
+   **Done 2026-11-10:** SC17. `exit 3` ending puritty with 3 is the
+   window's, step 8; `tmux -CC` waits for it too.
 8. **The window**: puritty's screen, the strip, the host-key screens, the
    mismatch dialog, disconnect and reconnect. *Gate:* the hosts gate's new
    cases; the settings gate's way of holding a screen (ST7) for each prompt.
@@ -1013,3 +1015,44 @@ keys. 4 cases in `sshd.py`.
 **Not yet:** Windows' agent pipe and Pageant (step 9); `publickey-hostbound-v00@openssh.com`;
 which keys to offer from `~/.ssh/config` (`IdentityFile`, `IdentitiesOnly`),
 which is the window's (step 8).
+
+## SC17 · The session as built (2026-11-10)
+
+SC11's step 7: `Ssh.Connection`, RFC 4254's client for one session
+channel, pure as the layers under it.
+
+**What it does.** It opens a `session` channel with a 2 MiB window and
+32 KiB packets, as OpenSSH's; asks for the terminal (`pty-req`, its type
+and size, and its modes: `IUTF8` set for a UTF-8 terminal and cleared for
+any other, as V49 does for a local pty), each variable (`env`, no reply
+asked, since OpenSSH says nothing to one its `AcceptEnv` does not take),
+then the shell or the command; and matches the replies to the requests
+that asked, in order, so a refused terminal or command ends the session
+with why. It sends the program's input in the server's window and
+largest packet, keeping the rest until a `WINDOW_ADJUST`, then the EOF
+after it; gives its own window back once half is used; sends
+`window-change`; reports output and error output as bytes in no character
+set, `exit-status`, `exit-signal`, and the channel's close, closing its
+side. A server's global request or channel request that wants an answer
+and is not one of these is refused (OpenSSH's `hostkeys-00@openssh.com`
+asks none). A keepalive is `keepalive@openssh.com`, a global request the
+server must answer, and those unanswered are counted for the caller's
+`ServerAliveCountMax`. A window or packet size of 2^31 or more is read as
+2^31 - 1 (`Wire.uint32Clamped`), since some servers send 2^32 - 1.
+
+**Against OpenSSH 9.6** (`sshd.py`'s 13 session cases, after an Ed25519
+login): **EUC-KR bytes** (`printf` of 한글's `c7 d1 b1 db`) arrive as
+they were sent; `exit 3` is exit status 3; `stty size` on a 100 by 30
+terminal says `30 100`; a resize to 120 by 40 before a line is read says
+`40 120`; `stty -a` shows `iutf8` for a UTF-8 terminal and `-iutf8` for
+one that is not; `LANG=ko_KR.EUC-KR` reaches the command under `AcceptEnv
+LANG` and is dropped without it; 5,000,000 bytes out and 3,000,000 bytes in
+(`wc -c` after the EOF), so both windows turn over many times; error
+output; `kill -TERM $$` as the TERM signal; a keepalive. **Against
+Windows 11's sshd** from nene: output, exit status 3, and a terminal 100
+columns wide, through ConPTY.
+
+**Not yet:** `SetEnv` from `~/.ssh/config`, which the window passes as
+`env` (step 8); a server's global requests before the channel opens go to
+the layer that has the session, which the window's loop is (step 8);
+`tmux -CC`; X11 and agent forwarding, port forwarding.

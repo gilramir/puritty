@@ -82,6 +82,25 @@ AGENT_CASES = [
 ]
 
 
+# the session (step 7): name, client options after a login with the ed key,
+# sshd config lines
+SESSION_CASES = [
+    ("session-euc-kr", ["--exec", r"printf '\307\321\261\333'", "--hex"], []),
+    ("session-exit-3", ["--exec", "exit 3"], []),
+    ("session-pty-size", ["--exec", "stty size", "--pty", "100,30"], []),
+    ("session-resize", ["--exec", "read x; stty size; exit 5", "--pty", "100,30", "--resize", "120,40", "--stdin2", "\\n"], []),
+    ("session-iutf8", ["--exec", "stty -a | tr ' ;' '\\n\\n' | grep iutf8", "--pty", "80,24"], []),
+    ("session-not-iutf8", ["--exec", "stty -a | tr ' ;' '\\n\\n' | grep iutf8", "--pty", "80,24", "--not-utf8"], []),
+    ("session-env", ["--exec", "echo $LANG", "--env", "LANG=ko_KR.EUC-KR"], ["AcceptEnv LANG"]),
+    ("session-env-refused", ["--exec", "echo ${LANG:-unset}", "--env", "LANG=ko_KR.EUC-KR"], []),
+    ("session-big-output", ["--exec", "head -c 5000000 /dev/zero"], []),
+    ("session-big-input", ["--exec", "wc -c", "--stdin-bytes", "3000000", "--eof"], []),
+    ("session-stderr", ["--exec", "echo oops >&2; exit 1"], []),
+    ("session-signal", ["--exec", "kill -TERM $$"], []),
+    ("session-keepalive", ["--exec", "sleep 1", "--keepalive"], []),
+]
+
+
 class Agent:
     def __init__(self, keys, adds):
         self.path = WORK / f"agent.{os.getpid()}.{free_port()}"
@@ -211,6 +230,21 @@ def main():
             print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
         else:
             print(f"ok   {name}")
+    for name, options, extra in SESSION_CASES:
+        server = Server(extra)
+        try:
+            got = run_client(["login", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--identity", keys["ed"], *options])
+        finally:
+            server.stop()
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     for name, adds, extra in AGENT_CASES:
         server = Server(extra)
         agent = Agent(keys, adds)
@@ -245,7 +279,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(AGENT_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

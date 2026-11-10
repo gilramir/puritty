@@ -11,6 +11,7 @@ module Ssh.Wire exposing
     , string
     , take
     , uint32
+    , uint32Clamped
     , wrapInt
     , writeBool
     , writeByte
@@ -87,6 +88,20 @@ uint32 r =
 
     else
         Ok { value = wrapInt (Bytes.slice r.at (r.at + 4) r.bytes), next = { r | at = r.at + 4 } }
+
+
+{-| A `uint32` that is a count, such as a channel's window: 2^31 or more
+is read as 2^31 - 1, more than this client ever has in flight. -}
+uint32Clamped : Reader -> Result String { value : Int, next : Reader }
+uint32Clamped r =
+    if remaining r < 4 then
+        Err "a uint32 past the end"
+
+    else if byteAt r.at r.bytes >= 128 then
+        Ok { value = 2147483647, next = { r | at = r.at + 4 } }
+
+    else
+        uint32 r
 
 
 {-| Four bytes, big-endian, as an `Int`, wrapped to 32 bits signed. -}
