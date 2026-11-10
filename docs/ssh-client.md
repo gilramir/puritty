@@ -1091,3 +1091,42 @@ What it decides, as OpenSSH does and SC9 asks:
 options; `sshd.py`'s ten `driver-*` cases hold the decisions above
 against OpenSSH 9.6, with the port, the file's path, the fingerprint and
 the user masked in the pins.
+
+**The window** (puritty `app/src/Main.geng`, `Backend.geng`). A host
+whose `client` is `"built-in"` (`settings.md` ST28) starts `Backend.ssh`
+instead of a program on a pty: its options are `Ssh.Session.optionsFor`'s,
+`~/.ssh/config` and what it includes resolved by `Ssh.Config` with the host
+entry's user, port and key first, as `ssh -l -p -i` put theirs (question
+9), the home, the local user and `SSH_AUTH_SOCK` from the environment, and
+the terminal's size and character set (`IUTF8` as V49 says). A small
+supervisor runs the session, and runs it again on a reconnect, until the
+window hangs up. `Backend.read` answers the terminal's bytes or a notice,
+which a pty never sends.
+
+**puritty's own screen** (SC9) is up before the session runs, while it
+asks, and after it failed: a `Vt.Term` puritty writes, of the window's
+size, drawn instead of the session's, its text from the server (a banner,
+a prompt's words) with every control character shown as `?`; the window's
+title is `puritty: ssh to NAME` while it is up, which no server can set,
+since the session's own title is not shown until it runs. Keys go to it:
+`A` trusts and remembers an unknown key, `O` trusts it once, `Esc`
+declines; a password, a passphrase and a server's prompts are typed
+there, shown as `*` unless the server asks for an echo, with what an IME
+commits taken as typed; after a failure, `Enter` closes the window and `R`
+connects again. A session that ends ends the window with its exit status
+(`Exited`), which is puritty's exit status, 255 for a signal.
+
+**The gate** (`harness/sshwindow.py`): `puritty --host test` on Xvfb
+against the local sshd, keys pressed with xdotool. Eight cases hold the
+title while puritty's screen is up, puritty's exit status (the command's,
+7), whether `known_hosts` took the key, and the size `stty size` saw
+there (24 80): trust and remember, trust once, a known host, a passphrase,
+a wrong passphrase then the right one, a key declined (the failure screen,
+then Enter: status 0), a changed key, and no key that logs in followed by
+R and Enter.
+
+**Not yet:** the strip outside the cell grid that SC9 asks for (the title
+is the marker for now); the changed-key dialog (a changed key is refused
+outright, which is stricter); a jump host (the built-in client does not
+take `jump` yet; such a host stays OpenSSH's); the session's exit status
+when it is killed by a signal, which is 255 as `ssh`'s.

@@ -119,7 +119,7 @@ schema =
           , test =
                 \_ ->
                     Expect.equal
-                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build" } ]
+                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build", client = Just "built-in" } ]
                         (decoded Schema.example).hosts
           }
         , { name = "a host with no host is reported and left out"
@@ -856,5 +856,27 @@ hosts =
                     in
                     Expect.equal { background = 0x2A1010, points = 13, charset = Just "euc-kr", title = "build", plainTitle = "work", foreground = config.foreground }
                         { background = c.background, points = c.points, charset = c.charset, title = c.title, plainTitle = plain.title, foreground = c.foreground }
+          }
+        , { name = "a host whose client is built-in is the built-in client's, unless it goes through a jump host (ssh-client.md SC18)"
+          , test =
+                \_ ->
+                    let
+                        plainHost =
+                            Config.host "plain" "p.example.com"
+
+                        builtIn =
+                            { plainHost | client = Just "built-in" }
+
+                        remoteOf h =
+                            (Hosts.session config h).remote |> Maybe.map .name
+                    in
+                    Expect.equal [ Just "plain", Nothing, Nothing, Nothing ]
+                        (Array.map remoteOf
+                            [ builtIn
+                            , { builtIn | jump = Just "bastion" }
+                            , { plainHost | client = Just "openssh" }
+                            , plainHost
+                            ]
+                        )
           }
         ]

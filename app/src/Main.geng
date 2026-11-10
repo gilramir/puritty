@@ -41,7 +41,7 @@ import Argparse.Parser
 import Argparse.PrettyPrinter as PP
 import Argparse.Program
 import Bitwise
-import Backend exposing (Backend)
+import Backend exposing (Backend, Incoming(..))
 import Bytes exposing (Bytes)
 import Config exposing (Config)
 import Hosts
@@ -58,9 +58,11 @@ import Platform
 import Os.Directory as Directory
 import Os.Error exposing (Error)
 import Os.File as File
+import Os.Net as Net
 import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
 import Process as Sleep
+import Ssh.Session as Session
 import Source exposing (Source)
 import Task exposing (Task)
 import Time
@@ -139,6 +141,23 @@ type alias Model =
       -- the items of the one the platform shows, and of its system menu
     , menu : Maybe Menu
     , shownItems : Array { label : String, args : Array String }
+      -- the built-in ssh client's session (docs/ssh-client.md SC18): what
+      -- puritty's own screen shows until the session runs, a question it
+      -- asks, how the session ended
+    , ssh : Maybe SshScreen
+    }
+
+
+{-| puritty's own screen for an ssh session: the host, what has happened,
+the question asked and what has been typed for it, whether the session
+runs, why it failed, and its exit status. -}
+type alias SshScreen =
+    { host : String
+    , lines : Array String
+    , asking : Maybe { ask : Session.Ask, typed : String, given : Array String }
+    , started : Bool
+    , failed : Maybe String
+    , exitStatus : Maybe Int
     }
 
 
@@ -172,7 +191,7 @@ type alias Selection =
 
 
 type Turn
-    = Read Bytes
+    = Read Incoming
     | Events Bool
     | Due
     | Writable
@@ -503,17 +522,62 @@ begin cp vars given problems locale config cell =
                                                 )
                                                 w.self
                                     in
-                                    spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
-                                        |> Task.mapError Os.Error.toString
-                                        |> Task.andThen
-                                            (\child ->
-                                                when Backend.pty child is
-                                                    Nothing ->
-                                                        Task.fail "the program has no terminal"
+                                    (when config.remote is
+                                        Just host ->
+                                            sshBackend vars config charset host
 
-                                                    Just remote ->
-                                                        run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell remote { given = given, locale = locale, events = w.events, at = -1 } problems opener)
+                                        Nothing ->
+                                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                                                |> Task.mapError Os.Error.toString
+                                                |> Task.andThen
+                                                    (\child ->
+                                                        when Backend.pty child is
+                                                            Nothing ->
+                                                                Task.fail "the program has no terminal"
+
+                                                            Just remote ->
+                                                                Task.succeed { remote = remote, problems = [] }
+                                                    )
+                                    )
+                                        |> Task.andThen
+                                            (\started ->
+                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener
+                                            )
                                 )
+
+
+{-| The built-in ssh client's session to a host (`docs/ssh-client.md`
+SC18): its options from `~/.ssh/config` with the host entry's over them,
+the home, the local user and the agent's socket from the environment. -}
+sshBackend : Dict String String -> Config -> Charset -> Config.Host -> Task String { remote : Backend, problems : Array String }
+sshBackend vars config charset host =
+    Task.map2 (\net fs -> { net = net, fs = fs }) Net.initialize File.initialize
+        |> Task.andThen
+            (\permissions ->
+                let
+                    home =
+                        Dict.get "HOME" vars |> Maybe.withDefault (Dict.get "USERPROFILE" vars |> Maybe.withDefault "")
+
+                    localUser =
+                        Dict.get "USER" vars |> Maybe.withDefault (Dict.get "USERNAME" vars |> Maybe.withDefault "")
+                in
+                Session.optionsFor permissions
+                    { host = host.host
+                    , user = host.user
+                    , port = host.port
+                    , identity = host.identity
+                    , command = host.command
+                    , home = home
+                    , localUser = localUser
+                    , agent = Dict.get "SSH_AUTH_SOCK" vars
+                    , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 }
+                    }
+                    |> Task.andThen
+                        (\resolved ->
+                            Backend.ssh permissions resolved.options
+                                |> Task.map (\remote -> { remote = remote, problems = Array.map (\p -> "~/.ssh/config: " ++ p) resolved.problems })
+                        )
+            )
 
 
 {-| The first of the commands that starts: one that is not found gives way
@@ -602,6 +666,10 @@ run imeLog shotPath charset config cell remote settings problems opener =
                             , settingsWindow = opener
                             , menu = Nothing
                             , shownItems = []
+                            , ssh =
+                                Maybe.map
+                                    (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
+                                    config.remote
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -616,7 +684,12 @@ finish remote m =
         remote.kill |> Task.andThen (\_ -> Task.fail "the window is lost")
 
     else if m.closed then
-        remote.kill |> Task.andThen (\_ -> Os.Env.exitWithCode 0)
+        remote.kill
+            |> Task.andThen
+                (\_ ->
+                    Os.Env.exitWithCode
+                        (m.ssh |> Maybe.andThen .exitStatus |> Maybe.withDefault 0)
+                )
 
     else
         remote.waitForExit
@@ -818,12 +891,15 @@ race remote m0 =
                                 |> Task.andThen
                                     (\ms ->
                                         when turn is
-                                            Read chunk ->
+                                            Read (Data chunk) ->
                                                 if Bytes.length chunk == 0 then
                                                     Task.succeed m
 
                                                 else
                                                     feed remote chunk ms m |> Task.andThen (\next -> step remote ms next)
+
+                                            Read (Notice told) ->
+                                                step remote ms (sshNoticed told m)
 
                                             Events up ->
                                                 if not up then
@@ -1382,11 +1458,338 @@ shiftAfter ev held =
             held
 
 
+-- PURITTY'S OWN SCREEN, for the built-in ssh client (docs/ssh-client.md
+-- SC9, SC18): what happens before the session runs, its questions, and
+-- why it failed, written by puritty and never by the server, with the
+-- window's title its own while it is up.
+
+
+{-| Whether puritty's own screen is up: before the session runs, while it
+asks, and after it failed. -}
+ownScreenUp : Model -> Bool
+ownScreenUp m =
+    when m.ssh is
+        Just screen ->
+            not screen.started || screen.failed /= Nothing || screen.asking /= Nothing
+
+        Nothing ->
+            False
+
+
+{-| A notice from the session, taken into the screen's state. A session
+that ended as it should ends the window, with its exit status; one that
+failed or never started leaves the screen up to say why. -}
+sshNoticed : Session.Notice -> (taken m : Model) -> Model
+sshNoticed told m =
+    when m.ssh is
+        Nothing ->
+            m
+
+        Just screen ->
+            let
+                said line =
+                    { screen | lines = Array.takeLast 200 (Array.pushLast line screen.lines) }
+
+                updated =
+                    when told is
+                        Session.Status text ->
+                            said (cleanText text)
+
+                        Session.Banner text ->
+                            { screen | lines = Array.takeLast 200 (screen.lines ++ Array.map (\l -> "| " ++ cleanText l) (String.lines (String.trimRight text))) }
+
+                        Session.Asking ask ->
+                            { screen | asking = Just { ask = ask, typed = "", given = [] } }
+
+                        Session.Started ->
+                            { screen | started = True }
+
+                        Session.Exited status ->
+                            { screen | exitStatus = Just status }
+
+                        Session.Failed why ->
+                            { screen | failed = Just (cleanText why) }
+
+                        Session.Ended ->
+                            if screen.started && screen.failed == Nothing then
+                                screen
+
+                            else
+                                { screen | failed = Just (Maybe.withDefault "the connection ended" screen.failed) }
+
+                        Session.Output _ ->
+                            screen
+
+                ended =
+                    told == Session.Ended && screen.started && screen.failed == Nothing
+            in
+            { m | ssh = Just updated, urgent = True, closed = m.closed || ended }
+
+
+{-| Text from the server or the network made safe to show: control
+characters, escapes among them, as `?`. -}
+cleanText : String -> String
+cleanText text =
+    String.map
+        (\c ->
+            let
+                n =
+                    Char.toCode c
+            in
+            if n < 32 || n == 127 || (n >= 128 && n < 160) then
+                '?'
+
+            else
+                c
+        )
+        text
+
+
+{-| A key on puritty's own screen: the question's answer, or after a
+failure Enter to close and R to connect again; Escape declines a question,
+and before the session runs closes the window. -}
+sshKey : Backend -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+sshKey remote k m =
+    let
+        enter =
+            k.sym == 0xFF0D || k.sym == 0xFF8D
+
+        escape =
+            k.sym == 0xFF1B
+
+        backspace =
+            k.sym == 0xFF08
+
+        letter =
+            String.toLower (Bytes.toStringLossy k.text)
+    in
+    when m.ssh is
+        Nothing ->
+            Task.succeed m
+
+        Just screen ->
+            when screen.asking is
+                Just asking ->
+                    let
+                        answered answer line model =
+                            sshAnswered remote answer line screen model
+                    in
+                    when asking.ask is
+                        Session.TrustHostKey _ ->
+                            if letter == "a" then
+                                answered (Session.Trust { remember = True }) "the key is trusted and remembered" m
+
+                            else if letter == "o" then
+                                answered (Session.Trust { remember = False }) "the key is trusted this once" m
+
+                            else if escape || letter == "n" then
+                                answered Session.Decline "the key is not trusted" m
+
+                            else
+                                Task.succeed m
+
+                        Session.Responses r ->
+                            if escape then
+                                answered Session.Decline "the prompts are not answered" m
+
+                            else if enter then
+                                let
+                                    given =
+                                        Array.pushLast asking.typed asking.given
+                                in
+                                if Array.length given >= Array.length r.prompts then
+                                    answered (Session.GiveAll given) "answered" m
+
+                                else
+                                    Task.succeed { m | ssh = Just { screen | asking = Just { asking | typed = "", given = given } }, urgent = True }
+
+                            else
+                                Task.succeed (editTyped backspace k m)
+
+                        _ ->
+                            if escape then
+                                answered Session.Decline "not given" m
+
+                            else if enter then
+                                answered (Session.Give asking.typed) "given" m
+
+                            else
+                                Task.succeed (editTyped backspace k m)
+
+                Nothing ->
+                    if screen.failed /= Nothing && letter == "r" then
+                        remote.reconnect
+                            |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
+
+                    else if (screen.failed /= Nothing && enter) || escape then
+                        Task.succeed { m | closed = True }
+
+                    else
+                        Task.succeed m
+
+
+{-| The question answered: the answer to the session, and a line said. -}
+sshAnswered : Backend -> Session.Answer -> String -> SshScreen -> (taken m : Model) -> Task Error Model
+sshAnswered remote answer line screen m =
+    remote.answer answer
+        |> Task.map (\_ -> { m | ssh = Just { screen | asking = Nothing, lines = Array.pushLast line screen.lines }, urgent = True })
+
+
+{-| A key typed into the question: a character added, or one taken off. -}
+editTyped : Bool -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Model
+editTyped backspace k m =
+    if backspace then
+        updateTyped (String.dropLast 1) m
+
+    else
+        sshTyped (Bytes.toStringLossy k.text) m
+
+
+sshTyped : String -> (taken m : Model) -> Model
+sshTyped text m =
+    updateTyped (\typed -> typed ++ String.fromArray (Array.keepIf (\c -> Char.toCode c >= 32 && Char.toCode c /= 127) (String.toArray text))) m
+
+
+updateTyped : (String -> String) -> (taken m : Model) -> Model
+updateTyped f m =
+    when m.ssh is
+        Just screen ->
+            when screen.asking is
+                Just asking ->
+                    { m | ssh = Just { screen | asking = Just { asking | typed = f asking.typed } }, urgent = True }
+
+                Nothing ->
+                    m
+
+        Nothing ->
+            m
+
+
+{-| The own screen as a terminal of the window's size: a heading, what has
+happened, then the question or the failure and the keys that answer it. -}
+ownTerm : Model -> SshScreen -> Vt.Term
+ownTerm m screen =
+    let
+        dim t =
+            "\u{001B}[2m" ++ t ++ "\u{001B}[0m"
+
+        bold t =
+            "\u{001B}[1m" ++ t ++ "\u{001B}[0m"
+
+        line t =
+            t ++ "\r\n"
+
+        hidden t =
+            String.repeat (String.count t) "*"
+
+        question =
+            when screen.asking is
+                Just asking ->
+                    when asking.ask is
+                        Session.TrustHostKey k ->
+                            [ line ""
+                            , line (bold ("The host " ++ cleanText k.host ++ " is not known."))
+                            , line ("  Its " ++ k.algorithm ++ " key's fingerprint:")
+                            , line ("    " ++ k.fingerprint)
+                            , if Array.isEmpty k.knownTypes then
+                                ""
+
+                              else
+                                line ("  It is known by its " ++ String.join ", " k.knownTypes ++ " key, not this one.")
+                            , line ""
+                            , line "  A: trust it and remember it    O: trust it this once    Esc: do not connect"
+                            ]
+
+                        Session.Password p ->
+                            [ line "", line (bold (cleanText p.prompt ++ ": ") ++ hidden asking.typed), line "", line (dim "  Enter: log in    Esc: do not use a password") ]
+
+                        Session.Passphrase p ->
+                            [ line "", line (bold ("The passphrase for " ++ cleanText p.file ++ ": ") ++ hidden asking.typed), line "", line (dim "  Enter: unlock the key    Esc: do not use this key") ]
+
+                        Session.Responses r ->
+                            let
+                                current =
+                                    Array.get (Array.length asking.given) r.prompts
+
+                                shown =
+                                    when current is
+                                        Just prompt ->
+                                            line
+                                                (bold (cleanText prompt.text)
+                                                    ++ (if prompt.echo then
+                                                            asking.typed
+
+                                                        else
+                                                            hidden asking.typed
+                                                       )
+                                                )
+
+                                        Nothing ->
+                                            ""
+                            in
+                            [ line ""
+                            , if r.name == "" then "" else line (bold ("The server asks: " ++ cleanText r.name))
+                            , if r.instruction == "" then "" else line (cleanText r.instruction)
+                            , shown
+                            , line ""
+                            , line (dim "  Enter: answer    Esc: do not answer")
+                            ]
+
+                Nothing ->
+                    when screen.failed is
+                        Just why ->
+                            [ line "", line (bold "The session could not go on:"), line ("  " ++ why), line "", line "  Enter: close    R: connect again" ]
+
+                        Nothing ->
+                            []
+
+        -- the cursor only where something is typed
+        typing =
+            when screen.asking is
+                Just asking ->
+                    when asking.ask is
+                        Session.TrustHostKey _ ->
+                            False
+
+                        _ ->
+                            True
+
+                Nothing ->
+                    False
+
+        text =
+            String.join ""
+                ([ "\u{001B}[2J\u{001B}[H"
+                 , if typing then "\u{001B}[?25h" else "\u{001B}[?25l"
+                 , line (bold ("puritty: ssh to " ++ cleanText screen.host))
+                 , line ""
+                 ]
+                    ++ Array.map (\l -> line (dim ("  " ++ l))) (Array.takeLast (max 1 (m.term.rows - 12)) screen.lines)
+                    ++ question
+                )
+    in
+    Vt.new
+        { cols = m.term.cols
+        , rows = m.term.rows
+        , scrollbackBytes = 0
+        , pageRows = Vt.defaultPageRows
+        , checksums = False
+        , cellWidth = m.term.config.cellWidth
+        , cellHeight = m.term.config.cellHeight
+        }
+        |> Vt.feed (Bytes.fromString text)
+
+
 handleOne : Backend -> Int -> Array Window.Event -> Window.Event -> (taken m : Model) -> Task Error Model
 handleOne remote ms rest ev m =
             when ev is
                 Window.Key k ->
-                  if m.menu /= Nothing && k.action /= 0 then
+                  if ownScreenUp m then
+                    -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
+                    (if k.action /= 0 then sshKey remote k m else Task.succeed m)
+                        |> Task.andThen (\next -> handle remote ms rest next)
+
+                  else if m.menu /= Nothing && k.action /= 0 then
                     -- the menu takes the keys while it is open
                     when m.menu is
                         Just menu ->
@@ -1463,6 +1866,11 @@ handleOne remote ms rest ev m =
                     menuChosen c m |> Task.andThen (\next -> handle remote ms rest next)
 
                 Window.Commit text ->
+                  if ownScreenUp m then
+                    -- what the IME commits, typed into the question
+                    handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
+
+                  else
                     -- the key path: the text as typed, never as a paste (V46)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
                         |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
@@ -2272,13 +2680,26 @@ draw ms m =
         highlight =
             highlightOf m
 
+        ownUp =
+            ownScreenUp m
+
+        own =
+            if ownUp then
+                Maybe.map (ownTerm m) m.ssh
+
+            else
+                Nothing
+
         f =
-            when m.menu is
-                Just menu ->
+            when { own = own, menu = m.menu } is
+                { own = Just t } ->
+                    View.frameWith m.look m.focus { text = "", feedback = [], caret = 0 } View.noHighlight t m.shadow
+
+                { menu = Just menu } ->
                     -- the menu painted over a copy of the screen (ST26)
                     View.frameBack m.look m.focus 0 (Vt.viewPainted (menuPaints menu m.term.cols m.term.rows) m.term) highlight m.term m.shadow
 
-                Nothing ->
+                _ ->
                     if back > 0 then
                         View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
 
@@ -2289,7 +2710,11 @@ draw ms m =
             View.preeditSpot preedit m.term
 
         title =
-            (if m.term.title == "" then
+            (if ownUp then
+                -- puritty's own while its screen is up, which no server can set
+                "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
+
+             else if m.term.title == "" then
                 m.config.title
 
              else

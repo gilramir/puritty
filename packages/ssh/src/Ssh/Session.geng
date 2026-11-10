@@ -6,6 +6,7 @@ module Ssh.Session exposing
     , Options
     , Permissions
     , fingerprint
+    , optionsFor
     , run
     )
 
@@ -23,6 +24,7 @@ connection and says which lines of which file hold the old key.
 -}
 
 import Bytes exposing (Bytes)
+import Dict
 import Os.Directory as Directory
 import Os.Error
 import Os.File as File
@@ -34,6 +36,7 @@ import Source exposing (Source)
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
 import Ssh.Base64 as Base64
+import Ssh.Config as Config
 import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Transport as Transport
@@ -93,6 +96,7 @@ type Input
     | Resize { columns : Int, rows : Int }
     | Answered Answer
     | Hangup
+    | Reconnect
 
 
 {-| What the window is told:
@@ -420,6 +424,9 @@ onInput input st =
 
         Answered answer ->
             onAnswer answer st
+
+        Reconnect ->
+            Task.succeed st
 
 
 withConnection : (Connection.Connection -> Connection.Step) -> State -> Task Os.Error.Error State
@@ -822,3 +829,241 @@ isJust m =
 
         Nothing ->
             False
+
+
+-- OPTIONS FROM ~/.ssh/config
+
+
+{-| A host's options as OpenSSH would resolve them (SC7, SC15): the
+user's `~/.ssh/config` and what it includes, with the puritty host entry's
+user, port and key before the file's lines, as `ssh -l -p -i` put theirs
+(SC12 question 9). `home` and `localUser` stand for `~` and `%u`; `agent`
+is `SSH_AUTH_SOCK`'s value, where there is one. The settings' problems
+(a line that does not read, a `Match` this client cannot judge) come back
+beside the options.
+-}
+optionsFor :
+    Permissions
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, command : Maybe String, home : String, localUser : String, agent : Maybe String, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
+    -> Task x { options : Options, problems : Array String }
+optionsFor permissions given =
+    let
+        userFile =
+            given.home ++ "/.ssh/config"
+
+        entry =
+            [ Maybe.map (\u -> { file = "puritty", lineNumber = 0, keyword = "user", args = [ u ] }) given.user
+            , Maybe.map (\p -> { file = "puritty", lineNumber = 0, keyword = "port", args = [ String.fromInt p ] }) given.port
+            , Maybe.map (\i -> { file = "puritty", lineNumber = 0, keyword = "identityfile", args = [ i ] }) given.identity
+            ]
+                |> Array.mapAndFlatten (\m -> Maybe.map (\d -> [ d ]) m |> Maybe.withDefault [])
+    in
+    readConfigFile permissions userFile
+        |> Task.andThen
+            (\parsed ->
+                includedFiles permissions given.home parsed.directives Dict.empty 0
+                    |> Task.map
+                        (\files ->
+                            let
+                                source pattern =
+                                    Dict.foldl
+                                        (\path directives acc ->
+                                            if matchesPath pattern path then
+                                                Array.pushLast { path = path, directives = directives } acc
+
+                                            else
+                                                acc
+                                        )
+                                        []
+                                        files
+
+                                settings =
+                                    Config.resolve { host = given.host, localUser = given.localUser, home = given.home } source (entry ++ parsed.directives) []
+
+                                one key fallback =
+                                    Dict.get key settings.values |> Maybe.andThen Array.first |> Maybe.withDefault fallback
+
+                                all key =
+                                    Dict.get key settings.values |> Maybe.withDefault []
+
+                                expand path =
+                                    if String.startsWith "~/" path then
+                                        given.home ++ String.dropFirst 1 path
+
+                                    else
+                                        String.replace "%d" given.home (String.replace "%u" given.localUser path)
+
+                                strict =
+                                    when String.toLower (one "stricthostkeychecking" "ask") is
+                                        "yes" ->
+                                            "yes"
+
+                                        "true" ->
+                                            "yes"
+
+                                        "no" ->
+                                            "no"
+
+                                        "off" ->
+                                            "no"
+
+                                        "false" ->
+                                            "no"
+
+                                        "accept-new" ->
+                                            "accept-new"
+
+                                        _ ->
+                                            "ask"
+
+                                agentPath =
+                                    when Dict.get "identityagent" settings.values |> Maybe.andThen Array.first is
+                                        Just "none" ->
+                                            Nothing
+
+                                        Just "SSH_AUTH_SOCK" ->
+                                            given.agent
+
+                                        Just path ->
+                                            Just (expand path)
+
+                                        Nothing ->
+                                            given.agent
+
+                                remoteCommand =
+                                    when given.command is
+                                        Just c ->
+                                            Just c
+
+                                        Nothing ->
+                                            Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first
+                            in
+                            { options =
+                                { host = one "hostname" given.host
+                                , port = String.toInt (one "port" "22") |> Maybe.withDefault 22
+                                , user = one "user" given.localUser
+                                , identityFiles = Array.map expand (all "identityfile")
+                                , identitiesOnly = String.toLower (one "identitiesonly" "no") == "yes"
+                                , agent = agentPath
+                                , knownHostsFiles = all "userknownhostsfile"
+                                , strictHostKeyChecking = strict
+                                , hostKeyAlias = Dict.get "hostkeyalias" settings.values |> Maybe.andThen Array.first
+                                , session =
+                                    { terminal = given.terminal
+                                    , env =
+                                        all "setenv"
+                                            |> Array.mapAndFlatten
+                                                (\pair ->
+                                                    when String.split "=" pair is
+                                                        [ name, value ] ->
+                                                            [ { name = name, value = value } ]
+
+                                                        _ ->
+                                                            []
+                                                )
+                                    , command = remoteCommand
+                                    }
+                                , keepaliveSeconds = String.toInt (one "serveraliveinterval" "0") |> Maybe.withDefault 0
+                                , keepaliveCountMax = String.toInt (one "serveralivecountmax" "3") |> Maybe.withDefault 3
+                                }
+                            , problems = parsed.problems ++ settings.problems
+                            }
+                        )
+            )
+
+
+readConfigFile : Permissions -> String -> Task x { directives : Array Config.Directive, problems : Array String }
+readConfigFile permissions path =
+    File.readFile permissions.fs (Path.fromString path)
+        |> Task.map (\text -> Config.parse path (Bytes.toStringLossy text))
+        |> Task.onError (\_ -> Task.succeed { directives = [], problems = [] })
+
+
+{-| Every file an `Include` may name, read: each pattern's directory
+listed and its last part matched, as deep as 16 files include others. -}
+includedFiles : Permissions -> String -> Array Config.Directive -> Dict.Dict String (Array Config.Directive) -> Int -> Task x (Dict.Dict String (Array Config.Directive))
+includedFiles permissions home directives found depth =
+    let
+        patterns =
+            directives
+                |> Array.keepIf (\d -> d.keyword == "include")
+                |> Array.mapAndFlatten .args
+                |> Array.map
+                    (\p ->
+                        if String.startsWith "~/" p then
+                            home ++ String.dropFirst 1 p
+
+                        else if String.startsWith "/" p then
+                            p
+
+                        else
+                            home ++ "/.ssh/" ++ p
+                    )
+    in
+    if depth >= 16 || Array.isEmpty patterns then
+        Task.succeed found
+
+    else
+        patterns
+            |> Array.map
+                (\pattern ->
+                    let
+                        path =
+                            Path.fromString pattern
+
+                        directory =
+                            Path.parent path |> Maybe.withDefault path
+                    in
+                    Directory.list permissions.fs directory
+                        |> Task.map (\entries -> Array.keepIf (matchesPath pattern) (Array.map (\e -> Path.toString e.path) entries))
+                        |> Task.onError (\_ -> Task.succeed [])
+                )
+            |> Task.sequence
+            |> Task.map Array.flatten
+            |> Task.andThen
+                (\paths ->
+                    paths
+                        |> Array.keepIf (\p -> not (Dict.member p found))
+                        |> Array.map (\p -> readConfigFile permissions p |> Task.map (\r -> { path = p, directives = r.directives }))
+                        |> Task.sequence
+                        |> Task.andThen
+                            (\read ->
+                                let
+                                    more =
+                                        Array.foldl (\r d -> Dict.set r.path r.directives d) found read
+                                in
+                                includedFiles permissions home (Array.mapAndFlatten .directives read) more (depth + 1)
+                            )
+                )
+
+
+{-| A path against an `Include` pattern: `*` and `?` within its last part. -}
+matchesPath : String -> String -> Bool
+matchesPath pattern path =
+    globPath (String.toArray pattern) (String.toArray path)
+
+
+globPath : Array Char -> Array Char -> Bool
+globPath pattern name =
+    when Array.popFirst pattern is
+        Nothing ->
+            Array.isEmpty name
+
+        Just p ->
+            if p.first == '*' then
+                globPath p.rest name
+                    || (when Array.popFirst name is
+                            Just n ->
+                                n.first /= '/' && globPath pattern n.rest
+
+                            Nothing ->
+                                False
+                       )
+
+            else
+                when Array.popFirst name is
+                    Just n ->
+                        (p.first == '?' || p.first == n.first) && globPath p.rest n.rest
+
+                    Nothing ->
+                        False

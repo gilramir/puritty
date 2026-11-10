@@ -1,29 +1,44 @@
-module Backend exposing (Backend, pty)
+module Backend exposing (Backend, Incoming(..), pty, ssh)
 
-{-| What a window's terminal talks to (`docs/ssh-client.md` SC11 step 1):
-the bytes the remote end writes, the bytes it is sent, its size, and its
-end. Today a program on a pseudo terminal is the only one; the built-in ssh
-client's session will be another, so the loop in `Main` knows neither.
+{-| What a window's terminal talks to (`docs/ssh-client.md` SC11 step 1,
+SC18): the bytes the remote end writes, the bytes it is sent, its size,
+and its end. Either a program on a pseudo terminal or the built-in ssh
+client's session; the loop in `Main` knows neither.
 -}
 
 import Bytes exposing (Bytes)
 import Os.Error exposing (Error)
 import Os.File as File
 import Os.Process as Process
+import Process as Light
+import Source exposing (Source)
+import Ssh.Session as Session
 import Task exposing (Task)
 
 
-{-| `read` answers what came, an empty `Bytes` once the remote end is done;
-`writeSome` takes what it can and answers how much; `writable` waits until
-it can take more, and the loop races it beside `read` (V48). `kill` ends the
-remote end; `waitForExit` answers its exit status, negative for none. -}
+{-| What a read answers: the terminal's bytes (none once the remote end is
+done), or what the ssh session tells the window, which a pseudo terminal
+never does. -}
+type Incoming
+    = Data Bytes
+    | Notice Session.Notice
+
+
+{-| `read` answers what came; `writeSome` takes what it can and answers how
+much; `writable` waits until it can take more, and the loop races it beside
+`read` (V48). `kill` ends the remote end; `waitForExit` answers its exit
+status, negative for none. `answer` and `reconnect` are the ssh session's:
+the user's answer to its question, and a new connection after one ended.
+-}
 type alias Backend =
-    { read : Task Error Bytes
+    { read : Task Error Incoming
     , writeSome : Bytes -> Task Error Int
     , writable : Task Error {}
     , resize : { columns : Int, rows : Int } -> Task Error {}
     , kill : Task String {}
     , waitForExit : Task String Int
+    , answer : Session.Answer -> Task Error {}
+    , reconnect : Task Error {}
     }
 
 
@@ -38,11 +53,79 @@ pty child =
                     fd =
                         Process.terminalHandle terminal
                 in
-                { read = File.read fd
+                { read = File.read fd |> Task.map Data
                 , writeSome = \bytes -> File.writeSome bytes fd
                 , writable = File.writable fd
                 , resize = \size -> Process.resize terminal size
                 , kill = Process.kill child
                 , waitForExit = Process.waitForExit child
+                , answer = \_ -> Task.succeed {}
+                , reconnect = Task.succeed {}
                 }
+            )
+
+
+{-| The built-in ssh client's session, run beside the window's loop: what
+it tells the window comes through `read`, keys, sizes and answers go to it.
+Its exit status is what it tells (`Session.Exited`), which `Main` keeps; a
+session that ends waits for a reconnect or a hang-up. -}
+ssh : Session.Permissions -> Session.Options -> Task x Backend
+ssh permissions options =
+    Task.map2 (\notices inputs -> { notices = notices, inputs = inputs }) Source.new Source.new
+        |> Task.andThen
+            (\sources ->
+                Light.spawn (supervise permissions options sources)
+                    |> Task.map
+                        (\_ ->
+                            { read =
+                                Source.next sources.notices
+                                    |> Task.map
+                                        (\notice ->
+                                            when notice is
+                                                Nothing ->
+                                                    Data Bytes.empty
+
+                                                Just (Session.Output bytes) ->
+                                                    Data bytes
+
+                                                Just other ->
+                                                    Notice other
+                                        )
+                            , writeSome = \bytes -> Source.emit sources.inputs (Session.Keys bytes) |> Task.map (\_ -> Bytes.length bytes)
+                            , writable = Task.succeed {}
+                            , resize = \size -> Source.emit sources.inputs (Session.Resize size)
+                            , kill = Source.emit sources.inputs Session.Hangup
+                            , waitForExit = Task.succeed -1
+                            , answer = \a -> Source.emit sources.inputs (Session.Answered a)
+                            , reconnect = Source.emit sources.inputs Session.Reconnect
+                            }
+                        )
+            )
+
+
+{-| The session run, and again on each reconnect, until the window hangs
+up; then the notices close, which ends the window's reads. -}
+supervise : Session.Permissions -> Session.Options -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task x {}
+supervise permissions options sources =
+    Session.run permissions options sources.notices sources.inputs
+        |> Task.andThen (\_ -> afterEnd permissions options sources)
+
+
+afterEnd : Session.Permissions -> Session.Options -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task x {}
+afterEnd permissions options sources =
+    Source.next sources.inputs
+        |> Task.andThen
+            (\input ->
+                when input is
+                    Just Session.Reconnect ->
+                        supervise permissions options sources
+
+                    Just Session.Hangup ->
+                        Source.close sources.notices
+
+                    Nothing ->
+                        Source.close sources.notices
+
+                    Just _ ->
+                        afterEnd permissions options sources
             )
