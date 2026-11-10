@@ -66,8 +66,7 @@ no flags; that is Windows' font, the same in every program. Shaping took
 drawing found Fira Code, applied its ligatures, and fell back to Hangul, Thai
 and emoji by itself; its emoji is monochrome, since GDI draws no colour
 glyphs, and Fira Code's box-drawing glyphs do not join (puritty draws those
-itself anyway). The window as Gilbert's screen showed it, a console behind it
-(below):
+itself anyway). The window as Gilbert's screen showed it (below):
 
 ![The window probe on beelink1](images/windows-probe-window.png)
 
