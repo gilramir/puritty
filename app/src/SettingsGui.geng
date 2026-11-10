@@ -119,6 +119,33 @@ text t =
         Bytes.flatten [ bytes ([ 7 ] ++ u16 (Bitwise.and 0xFFFF t.x) ++ u16 (Bitwise.and 0xFFFF t.y) ++ [ t.size ] ++ rgb t.color ++ u16 (Bytes.length b)), b ]
 
 
+{-| Text in a font named for it (record 9), where the font has the
+characters, else in the interface font. A name longer than 255 bytes is
+not a font's, and its text is in the interface font. -}
+textIn : String -> { x : Int, y : Int, size : Int, color : Int, text : String } -> Bytes
+textIn font t =
+    let
+        b =
+            Bytes.fromString t.text
+
+        name =
+            Bytes.fromString font
+    in
+    if Bytes.isEmpty b then
+        Bytes.empty
+
+    else if Bytes.length name > 255 then
+        text t
+
+    else
+        Bytes.flatten
+            [ bytes ([ 9 ] ++ u16 (Bitwise.and 0xFFFF t.x) ++ u16 (Bitwise.and 0xFFFF t.y) ++ [ t.size ] ++ rgb t.color ++ [ Bytes.length name ])
+            , name
+            , bytes (u16 (Bytes.length b))
+            , b
+            ]
+
+
 clip : { x : Int, y : Int, w : Int, h : Int } -> Bytes
 clip c =
     bytes ([ 8 ] ++ u16 (max 0 c.x) ++ u16 (max 0 c.y) ++ u16 (max 0 c.w) ++ u16 (max 0 c.h))
@@ -213,7 +240,7 @@ sideBar lang m size side px body d0 =
             3 * size.cellHeight
 
         names =
-            Array.map (\p -> Words.pageName lang p) Schema.pages ++ [ Words.pageName lang Schema.HostsPage ]
+            Array.map (\p -> pageNameOf lang p) Schema.pages ++ [ pageNameOf lang Schema.HostsPage ]
 
         counts =
             Array.map (\p -> SettingsWindow.pageCount m p) Schema.pages ++ [ Array.length (SettingsWindow.hostRows m) ]
@@ -327,6 +354,50 @@ header lang m size x0 cw px body small preedit d =
         |> draw (text { x = switchBox.x, y = y + fieldH // 2 + body // 3, size = body, color = look.text, text = switchLabel })
         |> draw (switchOf px switchX (y + (fieldH - px 18) // 2) m.modifiedOnly)
         |> target switchBox OnModifiedOnly
+
+
+{-| A page's name in the window's language (`Words.lookup`). -}
+pageNameOf : Lang -> Schema.Page -> String
+pageNameOf lang page =
+    Words.lookup lang ("page." ++ pageKey page) (Schema.pageName page)
+
+
+pageKey : Schema.Page -> String
+pageKey page =
+    when page is
+        Schema.Appearance ->
+            "appearance"
+
+        Schema.WindowPage ->
+            "window"
+
+        Schema.TextAndLanguage ->
+            "textAndLanguage"
+
+        Schema.MouseAndSelection ->
+            "mouseAndSelection"
+
+        Schema.Clipboard ->
+            "clipboard"
+
+        Schema.Program ->
+            "program"
+
+        Schema.Advanced ->
+            "advanced"
+
+        Schema.HostsPage ->
+            "hosts"
+
+
+settingLabel : Lang -> Setting -> String
+settingLabel lang s =
+    Words.lookup lang ("setting." ++ Schema.tableKey s ++ ".label") s.label
+
+
+settingDescription : Lang -> Setting -> String
+settingDescription lang s =
+    Words.lookup lang ("setting." ++ Schema.tableKey s ++ ".description") s.description
 
 
 {-| The text, or as much of it as fits in `room` pixels followed by "…". -}
@@ -499,7 +570,7 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
             labelY + small + px 5
 
         description =
-            Words.description lang s
+            settingDescription lang s
                 ++ (if s.applies == Schema.NewWindows then " " ++ said.newWindows else "")
 
         valueBox =
@@ -514,7 +585,7 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
     d
         |> draw (if modified then box { x = x0 - px 12, y = y + px 10, w = px 3, h = rowH - px 20, r = 1, color = look.accent } else Bytes.empty)
         |> draw (clip textClip)
-        |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = fit body textClip.w (Words.label lang s) })
+        |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = fit body textClip.w (settingLabel lang s) })
         |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = fit small textClip.w description })
         |> draw (clip { x = x0 - px 16, y = 3 * (rowH // 3), w = vx + valueW + resetW - x0 + px 16, h = (m.rows - 5) * (rowH // 3) })
         |> valueOf lang m s valueBox typingHere preedit px body
@@ -677,8 +748,11 @@ hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit d =
                 d
 
 
-{-| The fonts offered while a font is typed: a list under its field, the
-one Enter would take marked, drawn over the rows after it. -}
+{-| The font list, under the font's field while it is typed (SG7): the
+system's monospace fonts that match what is typed, each name in its own
+font, the one Up and Down picked highlighted, ten at a time and scrolled to
+keep it in view; and under them a line of sample text in the picked font,
+or in the typed one before a pick. -}
 suggestionsOf : Lang -> Model -> Int -> Int -> Int -> Int -> Int -> (Int -> Int) -> (Int -> Int) -> Int -> Drawn -> Drawn
 suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
     when m.typing is
@@ -694,17 +768,38 @@ suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
                     itemH =
                         px 26
 
+                    many =
+                        10
+
+                    first =
+                        max 0 (min (Array.length offered - many) (t.pick - many + 1))
+
                     shown =
-                        Array.takeFirst 10 offered
+                        Array.slice first (first + many) offered
+
+                    sampleSize =
+                        px 15
+
+                    sampleH =
+                        px 40
 
                     top =
                         rowY m.row + (3 * fieldH // 2) + px 22
 
+                    itemsH =
+                        max 1 (Array.length shown) * itemH
+
                     listH =
-                        max 1 (Array.length shown) * itemH + px 8
+                        itemsH + px 8 + sampleH
 
                     listBox =
                         { x = vx, y = top, w = valueW, h = listH }
+
+                    sampleFont =
+                        Array.get t.pick offered |> Maybe.withDefault (String.trim (String.fromArray t.chars))
+
+                    sampleY =
+                        top + px 4 + itemsH
                 in
                 (d
                     |> draw noClip
@@ -717,18 +812,28 @@ suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
                          else
                             Bytes.empty
                         )
+                    |> draw (box { x = vx + px 1, y = sampleY + px 2, w = valueW - px 2, h = 1, r = 0, color = look.fieldLine })
+                    |> draw (clip { x = vx + px 1, y = sampleY, w = valueW - px 2, h = sampleH })
+                    |> draw
+                        (if sampleFont == "" then
+                            Bytes.empty
+
+                         else
+                            textIn sampleFont { x = vx + px 12, y = sampleY + px 4 + sampleH // 2 + sampleSize // 3, size = sampleSize, color = look.strong, text = said.sample }
+                        )
+                    |> draw noClip
                 )
                     |> (\dd ->
-                            Array.indexedMap (\i f -> { i = i, f = f }) shown
+                            Array.indexedMap (\i f -> { i = first + i, f = f }) shown
                                 |> Array.foldl
                                     (\e acc ->
                                         let
                                             b =
-                                                { x = vx + px 4, y = top + px 4 + e.i * itemH, w = valueW - px 8, h = itemH }
+                                                { x = vx + px 4, y = top + px 4 + (e.i - first) * itemH, w = valueW - px 8, h = itemH }
                                         in
                                         acc
                                             |> draw (if e.i == t.pick then box { x = b.x, y = b.y, w = b.w, h = b.h, r = px 4, color = look.accent } else Bytes.empty)
-                                            |> draw (text { x = b.x + px 8, y = b.y + itemH // 2 + body // 3, size = body, color = if e.i == t.pick then 0xFFFFFF else look.text, text = e.f })
+                                            |> draw (textIn e.f { x = b.x + px 8, y = b.y + itemH // 2 + body // 3, size = body, color = if e.i == t.pick then 0xFFFFFF else look.text, text = e.f })
                                             |> target b (OnSuggestion e.i)
                                     )
                                     dd
@@ -783,12 +888,17 @@ footer lang m size px small d =
                                 said.hintRows
 
         shown =
-            if m.message /= "" then m.message else hint
+            when m.message is
+                Just message ->
+                    Words.say lang message
+
+                Nothing ->
+                    hint
     in
     d
         |> draw (box { x = 0, y = y, w = w, h = 1, r = 0, color = look.line })
         |> draw (box { x = 0, y = y + 1, w = w, h = 2 * line - 1, r = 0, color = look.side })
-        |> draw (text { x = px 16, y = y + line + small // 3, size = small, color = if error then look.error else if m.message /= "" then look.accentText else look.dim, text = shown })
+        |> draw (text { x = px 16, y = y + line + small // 3, size = small, color = if error then look.error else if m.message /= Nothing then look.accentText else look.dim, text = shown })
 
 
 {-| A field being typed into: the text with what the IME composes at the

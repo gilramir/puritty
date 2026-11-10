@@ -1,22 +1,33 @@
 module Words exposing
     ( Lang(..)
-    , Words
-    , description
-    , label
     , langOf
-    , pageName
+    , Words
     , words
+    , Message
+    , message
+    , with
+    , plain
+    , say
+    , lookup
+    , american
+    , english
+    , korean
     )
 
 {-| The settings window's words in English and Korean
-(`docs/settings-gui.md` SG4). English is the schema's own, in American
-spelling (*color*; the file's keys, such as `[colours]`, are the file
-format's and keep theirs); Korean is this table's. A setting with no Korean
-here shows its English, so a new setting never shows nothing.
+(`docs/settings-gui.md` SG4, SG7), as gren-i18next's tables: a key's text
+in the window's language, else in English. English is American (*color*;
+the file's keys, such as `[colours]`, are the file format's and keep
+theirs). A setting's English is the schema's own (`lookup`), so only its
+Korean is here, under `setting.<its key>.label` and `.description`.
+
+What the window says (a check's problem, a host made, a write that failed)
+is a `Message`, a key and the values its `{{name}}` placeholders take,
+and is put in words only where it is shown, in the language of the window
+that shows it.
 -}
 
-import Dict exposing (Dict)
-import Schema exposing (Setting)
+import I18Next exposing (Delims(..), Translations)
 
 
 type Lang
@@ -33,6 +44,74 @@ langOf name =
 
     else
         English
+
+
+{-| Something the window says: a table's key and its placeholders' values. -}
+type alias Message =
+    { key : String
+    , values : Array { placeholder : String, replacement : String }
+    }
+
+
+{-| A message with no placeholders. -}
+message : String -> Message
+message key =
+    { key = key, values = [] }
+
+
+{-| A placeholder's value added to a message. -}
+with : String -> String -> Message -> Message
+with placeholder replacement m =
+    { m | values = Array.pushLast { placeholder = placeholder, replacement = replacement } m.values }
+
+
+{-| Text said as it is, in every language: a reason the system gave. -}
+plain : String -> Message
+plain text =
+    message "message.plain" |> with "text" text
+
+
+{-| A message in a language's words, in English where the language has
+none for it. -}
+say : Lang -> Message -> String
+say lang m =
+    I18Next.trf (tables lang) Curly m.key m.values
+
+
+{-| A key's text in a language, or `fallback` (the schema's English, in
+American spelling) where the language has none. -}
+lookup : Lang -> String -> String -> String
+lookup lang key fallback =
+    when lang is
+        English ->
+            american fallback
+
+        Korean ->
+            if I18Next.hasKey korean key then
+                I18Next.t korean key
+
+            else
+                american fallback
+
+
+tables : Lang -> Array Translations
+tables lang =
+    when lang is
+        English ->
+            [ english ]
+
+        Korean ->
+            [ korean, english ]
+
+
+{-| British spelling as American, in what is shown. -}
+american : String -> String
+american text =
+    text
+        |> String.replace "colours" "colors"
+        |> String.replace "Colours" "Colors"
+        |> String.replace "colour" "color"
+        |> String.replace "Colour" "Color"
 
 
 {-| The window's own words. -}
@@ -72,191 +151,265 @@ type alias Words =
 
 words : Lang -> Words
 words lang =
-    when lang is
-        English ->
-            { search = "Search settings"
-            , modifiedOnly = "Modified only"
-            , newWindows = "New windows take it."
-            , noMatch = "No setting matches."
-            , nothingModified = "Nothing here differs from its default."
-            , quickConnect = "Quick connect"
-            , quickConnectHint = "user@host:port"
-            , quickConnectDescription = "Connect without saving a host."
-            , newHost = "New host…"
-            , newHostDescription = "A host of the settings, named as you type."
-            , systemDefault = "The system's"
-            , systemShell = "The system's shell"
-            , defaults = "The defaults"
-            , ofSixteen = "of 16"
-            , on = "On"
-            , off = "Off"
-            , noFont = "No font of the system's has that name."
-            , monospaced = "monospaced"
-            , sample = "The quick brown fox · 0O 1lI · 한글"
-            , reset = "Reset"
-            , title = "puritty settings"
-            , hostsTitle = "puritty hosts"
-            , hintTyping = "Enter keep · Esc as it was"
-            , hintFont = "Type to narrow · Up and Down choose · Enter take it · Esc as it was"
-            , hintSearch = "Type to search · Down to the settings · Esc clear"
-            , hintPages = "Up and Down choose a page · Tab move · Esc close"
-            , hintRows = "Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close"
-            , hintHosts = "Enter change · Del unset · ← the hosts · Ctrl+D copy · Ctrl+Z undo"
-            , hintHostList = "Enter connects in a new window · → change · Del remove · Ctrl+D copy · Esc close"
-            , hintHostListHere = "Enter connects here · → change · Del remove · Ctrl+D copy · Esc close"
-            }
-
-        Korean ->
-            { search = "설정 검색"
-            , modifiedOnly = "변경한 것만"
-            , newWindows = "새 창부터 적용됩니다."
-            , noMatch = "일치하는 설정이 없습니다."
-            , nothingModified = "기본값과 다른 설정이 없습니다."
-            , quickConnect = "빠른 연결"
-            , quickConnectHint = "사용자@호스트:포트"
-            , quickConnectDescription = "호스트를 저장하지 않고 연결합니다."
-            , newHost = "새 호스트…"
-            , newHostDescription = "입력하는 이름으로 새 호스트를 만듭니다."
-            , systemDefault = "시스템 기본값"
-            , systemShell = "시스템 셸"
-            , defaults = "기본값"
-            , ofSixteen = "/ 16"
-            , on = "켬"
-            , off = "끔"
-            , noFont = "그런 이름의 글꼴이 시스템에 없습니다."
-            , monospaced = "고정폭"
-            , sample = "The quick brown fox · 0O 1lI · 한글"
-            , reset = "초기화"
-            , title = "puritty 설정"
-            , hostsTitle = "puritty 호스트"
-            , hintTyping = "Enter 적용 · Esc 취소"
-            , hintFont = "입력해서 좁히기 · 위아래 선택 · Enter 적용 · Esc 취소"
-            , hintSearch = "입력해서 검색 · 아래 화살표로 설정 · Esc 지우기"
-            , hintPages = "위아래로 페이지 선택 · Tab 이동 · Esc 닫기"
-            , hintRows = "Enter 변경 · Del 초기화 · Ctrl+Z 되돌리기 · Ctrl+M 변경한 것만 · Esc 닫기"
-            , hintHosts = "Enter 변경 · Del 지우기 · ← 호스트 목록 · Ctrl+D 복사 · Ctrl+Z 되돌리기"
-            , hintHostList = "Enter 새 창으로 연결 · → 변경 · Del 삭제 · Ctrl+D 복사 · Esc 닫기"
-            , hintHostListHere = "Enter 이 창에서 연결 · → 변경 · Del 삭제 · Ctrl+D 복사 · Esc 닫기"
-            }
+    { search = say lang (message "window.search")
+    , modifiedOnly = say lang (message "window.modifiedOnly")
+    , newWindows = say lang (message "window.newWindows")
+    , noMatch = say lang (message "window.noMatch")
+    , nothingModified = say lang (message "window.nothingModified")
+    , quickConnect = say lang (message "window.quickConnect")
+    , quickConnectHint = say lang (message "window.quickConnectHint")
+    , quickConnectDescription = say lang (message "window.quickConnectDescription")
+    , newHost = say lang (message "window.newHost")
+    , newHostDescription = say lang (message "window.newHostDescription")
+    , systemDefault = say lang (message "window.systemDefault")
+    , systemShell = say lang (message "window.systemShell")
+    , defaults = say lang (message "window.defaults")
+    , ofSixteen = say lang (message "window.ofSixteen")
+    , on = say lang (message "window.on")
+    , off = say lang (message "window.off")
+    , noFont = say lang (message "window.noFont")
+    , monospaced = say lang (message "window.monospaced")
+    , sample = say lang (message "window.sample")
+    , reset = say lang (message "window.reset")
+    , title = say lang (message "window.title")
+    , hostsTitle = say lang (message "window.hostsTitle")
+    , hintTyping = say lang (message "window.hintTyping")
+    , hintFont = say lang (message "window.hintFont")
+    , hintSearch = say lang (message "window.hintSearch")
+    , hintPages = say lang (message "window.hintPages")
+    , hintRows = say lang (message "window.hintRows")
+    , hintHosts = say lang (message "window.hintHosts")
+    , hintHostList = say lang (message "window.hintHostList")
+    , hintHostListHere = say lang (message "window.hintHostListHere")
+    }
 
 
-pageName : Lang -> Schema.Page -> String
-pageName lang page =
-    when lang is
-        English ->
-            Schema.pageName page
-
-        Korean ->
-            when page is
-                Schema.Appearance ->
-                    "모양"
-
-                Schema.WindowPage ->
-                    "창"
-
-                Schema.TextAndLanguage ->
-                    "텍스트 및 언어"
-
-                Schema.MouseAndSelection ->
-                    "마우스 및 선택"
-
-                Schema.Clipboard ->
-                    "클립보드"
-
-                Schema.Program ->
-                    "프로그램"
-
-                Schema.Advanced ->
-                    "고급"
-
-                Schema.HostsPage ->
-                    "호스트"
+table : Array { key : String, text : String } -> Translations
+table entries =
+    I18Next.fromTree (Array.map (\e -> { label = e.key, item = I18Next.string e.text }) entries)
 
 
-{-| A setting's key as this table knows it: its path joined by dots, a
-host's field without the host's name (`hosts.*.user`). -}
-keyOf : Setting -> String
-keyOf s =
-    when s.key is
-        [ "hosts", _ ] ->
-            "hosts.name"
+english : Translations
+english =
+    table
+        [ { key = "window.search", text = "Search settings" }
+        , { key = "window.modifiedOnly", text = "Modified only" }
+        , { key = "window.newWindows", text = "New windows take it." }
+        , { key = "window.noMatch", text = "No setting matches." }
+        , { key = "window.nothingModified", text = "Nothing here differs from its default." }
+        , { key = "window.quickConnect", text = "Quick connect" }
+        , { key = "window.quickConnectHint", text = "user@host:port" }
+        , { key = "window.quickConnectDescription", text = "Connect without saving a host." }
+        , { key = "window.newHost", text = "New host…" }
+        , { key = "window.newHostDescription", text = "A host of the settings, named as you type." }
+        , { key = "window.systemDefault", text = "The system's" }
+        , { key = "window.systemShell", text = "The system's shell" }
+        , { key = "window.defaults", text = "The defaults" }
+        , { key = "window.ofSixteen", text = "of 16" }
+        , { key = "window.on", text = "On" }
+        , { key = "window.off", text = "Off" }
+        , { key = "window.noFont", text = "No font of the system's has that name." }
+        , { key = "window.monospaced", text = "monospaced" }
+        , { key = "window.sample", text = "Ab 0O 1lI {}[] 한글" }
+        , { key = "window.reset", text = "Reset" }
+        , { key = "window.title", text = "puritty settings" }
+        , { key = "window.hostsTitle", text = "puritty hosts" }
+        , { key = "window.hintTyping", text = "Enter keep · Esc as it was" }
+        , { key = "window.hintFont", text = "Type to narrow · Up and Down choose · Enter take it · Esc as it was" }
+        , { key = "window.hintSearch", text = "Type to search · Down to the settings · Esc clear" }
+        , { key = "window.hintPages", text = "Up and Down choose a page · Tab move · Esc close" }
+        , { key = "window.hintRows", text = "Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close" }
+        , { key = "window.hintHosts", text = "Enter change · Del unset · ← the hosts · Ctrl+D copy · Ctrl+Z undo" }
+        , { key = "window.hintHostList", text = "Enter connects in a new window · → change · Del remove · Ctrl+D copy · Esc close" }
+        , { key = "window.hintHostListHere", text = "Enter connects here · → change · Del remove · Ctrl+D copy · Esc close" }
+        , { key = "message.plain", text = "{{text}}" }
+        , { key = "message.more", text = "{{first}} (and {{more}} more)" }
+        , { key = "message.modifiedOnly", text = "Only the settings that differ from their defaults" }
+        , { key = "message.connecting", text = "Connecting to {{name}}" }
+        , { key = "message.fromSshConfig", text = "{{name}} is ~/.ssh/config's; it is changed there" }
+        , { key = "message.removeFromList", text = "To remove the host, go back to the list and press Delete there" }
+        , { key = "message.hostNeedsAddress", text = "A host must say where to connect" }
+        , { key = "message.isDefault", text = "{{key}} is its default again" }
+        , { key = "message.backAsItWas", text = "{{key}} is back as it was" }
+        , { key = "message.hostsBack", text = "The hosts are back as they were" }
+        , { key = "message.nothingToUndo", text = "Nothing to undo" }
+        , { key = "message.hostExists", text = "There is a host called {{name}} already" }
+        , { key = "message.copied", text = "{{name}} is a copy of {{from}}" }
+        , { key = "message.hostAdded", text = "{{name}} is a host of the settings now" }
+        , { key = "message.hostRemoved", text = "{{name}} is removed · Ctrl+Z puts it back" }
+        , { key = "message.renamed", text = "{{from}} is {{to}} now" }
+        , { key = "message.hostMade", text = "{{name}} is made: say where it connects" }
+        , { key = "message.notAnAddress", text = "\"{{text}}\" is not where to connect, as user@host:port" }
+        , { key = "message.noFile", text = "There is no settings file to write to" }
+        , { key = "message.notWritten", text = "Not written: {{why}}" }
+        , { key = "message.notStarted", text = "Not started: {{why}}" }
+        , { key = "message.noExecutable", text = "This program's own file is not known, so no window can be started" }
+        , { key = "problem.outOfRange", text = "{{n}} is not from {{low}} to {{high}}" }
+        , { key = "problem.notWhole", text = "not a whole number" }
+        , { key = "problem.noFont", text = "no font named" }
+        , { key = "problem.notTrueOrFalse", text = "not true or false" }
+        , { key = "problem.tooManyColors", text = "{{n}} colors, where the palette has {{most}}" }
+        , { key = "problem.notColors", text = "not a list of colors" }
+        , { key = "problem.notOneOf", text = "\"{{text}}\" is not one of {{choices}}" }
+        , { key = "problem.notCommand", text = "not a list of strings, the program and its arguments" }
+        , { key = "problem.addressEmpty", text = "where to connect is empty" }
+        , { key = "problem.notString", text = "not a string" }
+        , { key = "problem.notColor", text = "\"{{text}}\" is not a color as #rrggbb" }
+        , { key = "problem.hostNeedsName", text = "a host needs a name" }
+        , { key = "problem.whereToConnect", text = "where to connect: a name or an address" }
+        , { key = "problem.notLaunch", text = "\"{{text}}\" is not \"shell\", \"hosts\" or \"host:\" and a host's name" }
+        , { key = "problem.quoteNotClosed", text = "a quote not closed" }
+        ]
 
-        [ "hosts", _, field ] ->
-            "hosts.*." ++ field
 
-        [ "hosts", _, table, field ] ->
-            "hosts.*." ++ table ++ "." ++ field
-
-        _ ->
-            String.join "." s.key
-
-
-label : Lang -> Setting -> String
-label lang s =
-    when lang is
-        English ->
-            american s.label
-
-        Korean ->
-            Dict.get (keyOf s) korean |> Maybe.map .label |> Maybe.withDefault (american s.label)
-
-
-description : Lang -> Setting -> String
-description lang s =
-    when lang is
-        English ->
-            american s.description
-
-        Korean ->
-            Dict.get (keyOf s) korean |> Maybe.map .description |> Maybe.withDefault (american s.description)
-
-
-{-| The schema's British spelling as American, in what is shown. -}
-american : String -> String
-american text =
-    text
-        |> String.replace "colours" "colors"
-        |> String.replace "Colours" "Colors"
-        |> String.replace "colour" "color"
-        |> String.replace "Colour" "Color"
-
-
-korean : Dict String { label : String, description : String }
+korean : Translations
 korean =
-    Dict.empty
-        |> Dict.set "window.columns" { label = "열", description = "창을 열 때의 너비(칸)." }
-        |> Dict.set "window.rows" { label = "행", description = "창을 열 때의 높이(줄)." }
-        |> Dict.set "window.title" { label = "제목", description = "프로그램이 제목을 정하지 않았을 때의 창 제목." }
-        |> Dict.set "font.family" { label = "글꼴", description = "시스템에 있는 글꼴 이름." }
-        |> Dict.set "font.size" { label = "글꼴 크기", description = "포인트 단위." }
-        |> Dict.set "font.language" { label = "대체 글꼴 언어", description = "대체 글꼴을 고를 때의 언어로, 한자의 모양을 정합니다(ja, ko, zh-cn, zh-tw). 지정하지 않으면 시스템의 언어." }
-        |> Dict.set "font.glyph_cache_mb" { label = "글리프 캐시", description = "다시 그리기 전까지 보관하는 글리프의 양." }
-        |> Dict.set "colours.foreground" { label = "글자색", description = "색이 지정되지 않은 글자의 색." }
-        |> Dict.set "colours.background" { label = "배경색", description = "색이 지정되지 않은 글자 뒤의 색." }
-        |> Dict.set "colours.bold_is_bright" { label = "굵은 글자는 밝게", description = "처음 여덟 색 중 하나인 굵은 글자를 밝은 색으로 그립니다." }
-        |> Dict.set "colours.palette" { label = "팔레트", description = "0번부터의 16가지 이름 있는 색. 주지 않은 색은 기본값." }
-        |> Dict.set "cursor.blink_ms" { label = "커서 깜박임", description = "프로그램이 커서 깜박임을 요청할 때 깜박임 한 번의 절반. 0이면 깜박이지 않습니다." }
-        |> Dict.set "frames.every_ms" { label = "화면 갱신 간격", description = "출력을 최대 이 간격으로 그립니다." }
-        |> Dict.set "frames.sync_timeout_ms" { label = "동기 출력 제한 시간", description = "프로그램이 화면을 붙잡아 둘 수 있는 시간(모드 2026)." }
-        |> Dict.set "scrollback.lines" { label = "스크롤백", description = "이만큼의 꽉 찬 줄을 기록으로 보관합니다. 0이면 보관하지 않습니다." }
-        |> Dict.set "program.command" { label = "명령", description = "실행할 프로그램과 인수. 비워 두면 시스템 셸." }
-        |> Dict.set "start" { label = "puritty가 여는 것", description = "아무것도 붙이지 않은 `puritty`가 여는 것: \"shell\"은 로컬 셸, \"hosts\"는 호스트 목록, \"host:이름\"은 그 호스트." }
-        |> Dict.set "terminal.charset" { label = "문자 집합", description = "프로그램이 읽고 쓰는 문자 집합. 지정하지 않으면 로캘의 것." }
-        |> Dict.set "selection.word_boundaries" { label = "단어 경계", description = "더블 클릭할 때 단어를 끝내는 문자들." }
-        |> Dict.set "mouse.paste_button" { label = "붙여넣기 버튼", description = "선택한 것을 붙여넣는 마우스 버튼." }
-        |> Dict.set "clipboard.osc52_read" { label = "프로그램의 클립보드 읽기 허용", description = "프로그램이 OSC 52로 클립보드를 읽을 수 있는지." }
-        |> Dict.set "hosts.name" { label = "이름", description = "목록과 명령줄(puritty --host 이름)에서 쓰는 호스트의 이름." }
-        |> Dict.set "hosts.*.host" { label = "호스트", description = "연결할 곳: 이름이나 주소." }
-        |> Dict.set "hosts.*.user" { label = "사용자", description = "로그인할 사용자. 지정하지 않으면 ssh가 정합니다." }
-        |> Dict.set "hosts.*.port" { label = "포트", description = "지정하지 않으면 ssh의 기본값인 22." }
-        |> Dict.set "hosts.*.identity" { label = "키", description = "로그인에 쓸 개인 키 파일. 지정하지 않으면 ssh가 정합니다." }
-        |> Dict.set "hosts.*.jump" { label = "경유", description = "거쳐서 연결할 다른 호스트의 이름, 또는 사용자@호스트:포트." }
-        |> Dict.set "hosts.*.command" { label = "명령", description = "로그인 셸 대신 터미널에서 실행할 명령." }
-        |> Dict.set "hosts.*.charset" { label = "문자 집합", description = "호스트의 문자 집합. 지정하지 않으면 설정의 것." }
-        |> Dict.set "hosts.*.title" { label = "제목", description = "창 제목. 지정하지 않으면 호스트의 이름." }
-        |> Dict.set "hosts.*.client" { label = "클라이언트", description = "연결할 ssh: 터미널의 OpenSSH, 또는 puritty 자체. 지정하지 않으면 Windows에서는 puritty 자체, Linux에서는 OpenSSH." }
-        |> Dict.set "hosts.*.colours.foreground" { label = "글자색", description = "설정 대신 쓰는 글자색." }
-        |> Dict.set "hosts.*.colours.background" { label = "배경색", description = "설정 대신 쓰는 배경색. 운영 서버에는 붉은 색을 흔히 씁니다." }
-        |> Dict.set "hosts.*.colours.palette" { label = "팔레트", description = "설정 대신 쓰는 16가지 이름 있는 색." }
-        |> Dict.set "hosts.*.font.family" { label = "글꼴", description = "설정 대신 쓰는 글꼴." }
-        |> Dict.set "hosts.*.font.size" { label = "글꼴 크기", description = "설정 대신 쓰는 포인트 크기." }
+    table
+        [ { key = "window.search", text = "설정 검색" }
+        , { key = "window.modifiedOnly", text = "변경한 것만" }
+        , { key = "window.newWindows", text = "새 창부터 적용됩니다." }
+        , { key = "window.noMatch", text = "일치하는 설정이 없습니다." }
+        , { key = "window.nothingModified", text = "기본값과 다른 설정이 없습니다." }
+        , { key = "window.quickConnect", text = "빠른 연결" }
+        , { key = "window.quickConnectHint", text = "사용자@호스트:포트" }
+        , { key = "window.quickConnectDescription", text = "호스트를 저장하지 않고 연결합니다." }
+        , { key = "window.newHost", text = "새 호스트…" }
+        , { key = "window.newHostDescription", text = "입력하는 이름으로 새 호스트를 만듭니다." }
+        , { key = "window.systemDefault", text = "시스템 기본값" }
+        , { key = "window.systemShell", text = "시스템 셸" }
+        , { key = "window.defaults", text = "기본값" }
+        , { key = "window.ofSixteen", text = "/ 16" }
+        , { key = "window.on", text = "켬" }
+        , { key = "window.off", text = "끔" }
+        , { key = "window.noFont", text = "그런 이름의 글꼴이 시스템에 없습니다." }
+        , { key = "window.monospaced", text = "고정폭" }
+        , { key = "window.sample", text = "Ab 0O 1lI {}[] 한글" }
+        , { key = "window.reset", text = "초기화" }
+        , { key = "window.title", text = "puritty 설정" }
+        , { key = "window.hostsTitle", text = "puritty 호스트" }
+        , { key = "window.hintTyping", text = "Enter 적용 · Esc 취소" }
+        , { key = "window.hintFont", text = "입력해서 좁히기 · 위아래 선택 · Enter 적용 · Esc 취소" }
+        , { key = "window.hintSearch", text = "입력해서 검색 · 아래 화살표로 설정 · Esc 지우기" }
+        , { key = "window.hintPages", text = "위아래로 페이지 선택 · Tab 이동 · Esc 닫기" }
+        , { key = "window.hintRows", text = "Enter 변경 · Del 초기화 · Ctrl+Z 되돌리기 · Ctrl+M 변경한 것만 · Esc 닫기" }
+        , { key = "window.hintHosts", text = "Enter 변경 · Del 지우기 · ← 호스트 목록 · Ctrl+D 복사 · Ctrl+Z 되돌리기" }
+        , { key = "window.hintHostList", text = "Enter 새 창으로 연결 · → 변경 · Del 삭제 · Ctrl+D 복사 · Esc 닫기" }
+        , { key = "window.hintHostListHere", text = "Enter 이 창에서 연결 · → 변경 · Del 삭제 · Ctrl+D 복사 · Esc 닫기" }
+        , { key = "page.appearance", text = "모양" }
+        , { key = "page.window", text = "창" }
+        , { key = "page.textAndLanguage", text = "텍스트 및 언어" }
+        , { key = "page.mouseAndSelection", text = "마우스 및 선택" }
+        , { key = "page.clipboard", text = "클립보드" }
+        , { key = "page.program", text = "프로그램" }
+        , { key = "page.advanced", text = "고급" }
+        , { key = "page.hosts", text = "호스트" }
+        , { key = "setting.window.columns.label", text = "열" }
+        , { key = "setting.window.rows.label", text = "행" }
+        , { key = "setting.window.title.label", text = "제목" }
+        , { key = "setting.font.family.label", text = "글꼴" }
+        , { key = "setting.font.size.label", text = "글꼴 크기" }
+        , { key = "setting.font.language.label", text = "대체 글꼴 언어" }
+        , { key = "setting.font.glyph_cache_mb.label", text = "글리프 캐시" }
+        , { key = "setting.colours.foreground.label", text = "글자색" }
+        , { key = "setting.colours.background.label", text = "배경색" }
+        , { key = "setting.colours.bold_is_bright.label", text = "굵은 글자는 밝게" }
+        , { key = "setting.colours.palette.label", text = "팔레트" }
+        , { key = "setting.cursor.blink_ms.label", text = "커서 깜박임" }
+        , { key = "setting.frames.every_ms.label", text = "화면 갱신 간격" }
+        , { key = "setting.frames.sync_timeout_ms.label", text = "동기 출력 제한 시간" }
+        , { key = "setting.scrollback.lines.label", text = "스크롤백" }
+        , { key = "setting.program.command.label", text = "명령" }
+        , { key = "setting.start.label", text = "puritty가 여는 것" }
+        , { key = "setting.terminal.charset.label", text = "문자 집합" }
+        , { key = "setting.selection.word_boundaries.label", text = "단어 경계" }
+        , { key = "setting.mouse.paste_button.label", text = "붙여넣기 버튼" }
+        , { key = "setting.clipboard.osc52_read.label", text = "프로그램의 클립보드 읽기 허용" }
+        , { key = "setting.hosts.name.label", text = "이름" }
+        , { key = "setting.hosts.*.host.label", text = "호스트" }
+        , { key = "setting.hosts.*.user.label", text = "사용자" }
+        , { key = "setting.hosts.*.port.label", text = "포트" }
+        , { key = "setting.hosts.*.identity.label", text = "키" }
+        , { key = "setting.hosts.*.jump.label", text = "경유" }
+        , { key = "setting.hosts.*.command.label", text = "명령" }
+        , { key = "setting.hosts.*.charset.label", text = "문자 집합" }
+        , { key = "setting.hosts.*.title.label", text = "제목" }
+        , { key = "setting.hosts.*.client.label", text = "클라이언트" }
+        , { key = "setting.hosts.*.colours.foreground.label", text = "글자색" }
+        , { key = "setting.hosts.*.colours.background.label", text = "배경색" }
+        , { key = "setting.hosts.*.colours.palette.label", text = "팔레트" }
+        , { key = "setting.hosts.*.font.family.label", text = "글꼴" }
+        , { key = "setting.hosts.*.font.size.label", text = "글꼴 크기" }
+        , { key = "setting.window.columns.description", text = "창을 열 때의 너비(칸)." }
+        , { key = "setting.window.rows.description", text = "창을 열 때의 높이(줄)." }
+        , { key = "setting.window.title.description", text = "프로그램이 제목을 정하지 않았을 때의 창 제목." }
+        , { key = "setting.font.family.description", text = "시스템에 있는 글꼴 이름." }
+        , { key = "setting.font.size.description", text = "포인트 단위." }
+        , { key = "setting.font.language.description", text = "대체 글꼴을 고를 때의 언어로, 한자의 모양을 정합니다(ja, ko, zh-cn, zh-tw). 지정하지 않으면 시스템의 언어." }
+        , { key = "setting.font.glyph_cache_mb.description", text = "다시 그리기 전까지 보관하는 글리프의 양." }
+        , { key = "setting.colours.foreground.description", text = "색이 지정되지 않은 글자의 색." }
+        , { key = "setting.colours.background.description", text = "색이 지정되지 않은 글자 뒤의 색." }
+        , { key = "setting.colours.bold_is_bright.description", text = "처음 여덟 색 중 하나인 굵은 글자를 밝은 색으로 그립니다." }
+        , { key = "setting.colours.palette.description", text = "0번부터의 16가지 이름 있는 색. 주지 않은 색은 기본값." }
+        , { key = "setting.cursor.blink_ms.description", text = "프로그램이 커서 깜박임을 요청할 때 깜박임 한 번의 절반. 0이면 깜박이지 않습니다." }
+        , { key = "setting.frames.every_ms.description", text = "출력을 최대 이 간격으로 그립니다." }
+        , { key = "setting.frames.sync_timeout_ms.description", text = "프로그램이 화면을 붙잡아 둘 수 있는 시간(모드 2026)." }
+        , { key = "setting.scrollback.lines.description", text = "이만큼의 꽉 찬 줄을 기록으로 보관합니다. 0이면 보관하지 않습니다." }
+        , { key = "setting.program.command.description", text = "실행할 프로그램과 인수. 비워 두면 시스템 셸." }
+        , { key = "setting.start.description", text = "아무것도 붙이지 않은 `puritty`가 여는 것: \"shell\"은 로컬 셸, \"hosts\"는 호스트 목록, \"host:이름\"은 그 호스트." }
+        , { key = "setting.terminal.charset.description", text = "프로그램이 읽고 쓰는 문자 집합. 지정하지 않으면 로캘의 것." }
+        , { key = "setting.selection.word_boundaries.description", text = "더블 클릭할 때 단어를 끝내는 문자들." }
+        , { key = "setting.mouse.paste_button.description", text = "선택한 것을 붙여넣는 마우스 버튼." }
+        , { key = "setting.clipboard.osc52_read.description", text = "프로그램이 OSC 52로 클립보드를 읽을 수 있는지." }
+        , { key = "setting.hosts.name.description", text = "목록과 명령줄(puritty --host 이름)에서 쓰는 호스트의 이름." }
+        , { key = "setting.hosts.*.host.description", text = "연결할 곳: 이름이나 주소." }
+        , { key = "setting.hosts.*.user.description", text = "로그인할 사용자. 지정하지 않으면 ssh가 정합니다." }
+        , { key = "setting.hosts.*.port.description", text = "지정하지 않으면 ssh의 기본값인 22." }
+        , { key = "setting.hosts.*.identity.description", text = "로그인에 쓸 개인 키 파일. 지정하지 않으면 ssh가 정합니다." }
+        , { key = "setting.hosts.*.jump.description", text = "거쳐서 연결할 다른 호스트의 이름, 또는 사용자@호스트:포트." }
+        , { key = "setting.hosts.*.command.description", text = "로그인 셸 대신 터미널에서 실행할 명령." }
+        , { key = "setting.hosts.*.charset.description", text = "호스트의 문자 집합. 지정하지 않으면 설정의 것." }
+        , { key = "setting.hosts.*.title.description", text = "창 제목. 지정하지 않으면 호스트의 이름." }
+        , { key = "setting.hosts.*.client.description", text = "연결할 ssh: 터미널의 OpenSSH, 또는 puritty 자체. 지정하지 않으면 Windows에서는 puritty 자체, Linux에서는 OpenSSH." }
+        , { key = "setting.hosts.*.colours.foreground.description", text = "설정 대신 쓰는 글자색." }
+        , { key = "setting.hosts.*.colours.background.description", text = "설정 대신 쓰는 배경색. 운영 서버에는 붉은 색을 흔히 씁니다." }
+        , { key = "setting.hosts.*.colours.palette.description", text = "설정 대신 쓰는 16가지 이름 있는 색." }
+        , { key = "setting.hosts.*.font.family.description", text = "설정 대신 쓰는 글꼴." }
+        , { key = "setting.hosts.*.font.size.description", text = "설정 대신 쓰는 포인트 크기." }
+        , { key = "message.plain", text = "{{text}}" }
+        , { key = "message.more", text = "{{first}} (외 {{more}}개)" }
+        , { key = "message.modifiedOnly", text = "기본값과 다른 설정만 보입니다" }
+        , { key = "message.connecting", text = "{{name}}에 연결하는 중" }
+        , { key = "message.fromSshConfig", text = "{{name}}은(는) ~/.ssh/config의 호스트입니다. 거기서 바꿉니다" }
+        , { key = "message.removeFromList", text = "호스트를 지우려면 목록으로 돌아가 Delete를 누릅니다" }
+        , { key = "message.hostNeedsAddress", text = "호스트에는 연결할 곳이 있어야 합니다" }
+        , { key = "message.isDefault", text = "{{key}}이(가) 다시 기본값입니다" }
+        , { key = "message.backAsItWas", text = "{{key}}이(가) 이전 값으로 돌아갔습니다" }
+        , { key = "message.hostsBack", text = "호스트가 이전대로 돌아갔습니다" }
+        , { key = "message.nothingToUndo", text = "되돌릴 것이 없습니다" }
+        , { key = "message.hostExists", text = "{{name}}(이)라는 호스트가 이미 있습니다" }
+        , { key = "message.copied", text = "{{name}}은(는) {{from}}의 복사본입니다" }
+        , { key = "message.hostAdded", text = "{{name}}이(가) 이제 설정의 호스트입니다" }
+        , { key = "message.hostRemoved", text = "{{name}}을(를) 지웠습니다 · Ctrl+Z로 되돌립니다" }
+        , { key = "message.renamed", text = "{{from}}의 이름이 이제 {{to}}입니다" }
+        , { key = "message.hostMade", text = "{{name}}을(를) 만들었습니다. 연결할 곳을 입력하세요" }
+        , { key = "message.notAnAddress", text = "\"{{text}}\"은(는) 사용자@호스트:포트 형식의 연결할 곳이 아닙니다" }
+        , { key = "message.noFile", text = "쓸 설정 파일이 없습니다" }
+        , { key = "message.notWritten", text = "쓰지 못했습니다: {{why}}" }
+        , { key = "message.notStarted", text = "시작하지 못했습니다: {{why}}" }
+        , { key = "message.noExecutable", text = "이 프로그램의 파일을 알 수 없어 창을 열 수 없습니다" }
+        , { key = "problem.outOfRange", text = "{{n}}은(는) {{low}}부터 {{high}}까지의 값이 아닙니다" }
+        , { key = "problem.notWhole", text = "정수가 아닙니다" }
+        , { key = "problem.noFont", text = "글꼴 이름이 없습니다" }
+        , { key = "problem.notTrueOrFalse", text = "true나 false가 아닙니다" }
+        , { key = "problem.tooManyColors", text = "색이 {{n}}개입니다. 팔레트에는 {{most}}개까지입니다" }
+        , { key = "problem.notColors", text = "색의 목록이 아닙니다" }
+        , { key = "problem.notOneOf", text = "\"{{text}}\"은(는) {{choices}} 중 하나가 아닙니다" }
+        , { key = "problem.notCommand", text = "프로그램과 인수의 문자열 목록이 아닙니다" }
+        , { key = "problem.addressEmpty", text = "연결할 곳이 비어 있습니다" }
+        , { key = "problem.notString", text = "문자열이 아닙니다" }
+        , { key = "problem.notColor", text = "\"{{text}}\"은(는) #rrggbb 형식의 색이 아닙니다" }
+        , { key = "problem.hostNeedsName", text = "호스트에는 이름이 있어야 합니다" }
+        , { key = "problem.whereToConnect", text = "연결할 곳: 이름이나 주소" }
+        , { key = "problem.notLaunch", text = "\"{{text}}\"은(는) \"shell\", \"hosts\", 또는 \"host:\"와 호스트 이름이 아닙니다" }
+        , { key = "problem.quoteNotClosed", text = "닫히지 않은 따옴표가 있습니다" }
+        ]

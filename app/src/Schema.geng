@@ -1,6 +1,6 @@
 module Schema exposing
     ( Setting, Kind(..), Value(..), Page(..), Applies(..), Report
-    , settings, find, keyName, pages, pageName
+    , settings, find, keyName, tableKey, pages, pageName
     , decode, Decoded
     , write
     , hostFields, nameSetting, writeHost, deleteHost, renameHost
@@ -30,6 +30,7 @@ import Toml.Ast as Ast
 import Toml.Table
 import Toml.Decode
 import Toml.Edit
+import Words exposing (Message)
 
 
 {-| One setting. `key` is its path in the file, `["font", "size"]`;
@@ -597,6 +598,25 @@ hostAt at name value acc =
             report (at.line here) (named ++ " is a table, written [" ++ named ++ "]") acc
 
 
+{-| A setting's key as the settings window's tables of words know it
+(`Words`): its path joined by dots, a host's field without the host's name
+(`hosts.*.user`), and a host's name `hosts.name`. -}
+tableKey : Setting -> String
+tableKey s =
+    when s.key is
+        [ "hosts", _ ] ->
+            "hosts.name"
+
+        [ "hosts", _, field ] ->
+            "hosts.*." ++ field
+
+        [ "hosts", _, table, field ] ->
+            "hosts.*." ++ table ++ "." ++ field
+
+        _ ->
+            String.join "." s.key
+
+
 hostName : String -> String
 hostName name =
     if String.all (\c -> Char.isAlphaNum c || c == '-' || c == '_') name && name /= "" then
@@ -774,23 +794,23 @@ read integerHere kind value =
                     Err "not true or false"
 
         OneColour ->
-            string value |> Result.andThen colour |> Result.map Colour
+            string value |> Result.andThen (inEnglish colour) |> Result.map Colour
 
         ColourList r ->
             when value is
                 Toml.Table.ArrayValue items ->
                     if Array.length items > r.most then
-                        Err (String.fromInt (Array.length items) ++ " colours, where the palette has " ++ String.fromInt r.most)
+                        Err (String.fromInt (Array.length items) ++ " colors, where the palette has " ++ String.fromInt r.most)
 
                     else
                         Array.foldl
-                            (\item acc -> Result.map2 Array.pushLast (string item |> Result.andThen colour) acc)
+                            (\item acc -> Result.map2 Array.pushLast (string item |> Result.andThen (inEnglish colour)) acc)
                             (Ok [])
                             items
                             |> Result.map Colours
 
                 _ ->
-                    Err "not a list of colours"
+                    Err "not a list of colors"
 
         OneOf names ->
             string value
@@ -813,13 +833,20 @@ read integerHere kind value =
                     Err "not a list of strings, the program and its arguments"
 
         Launch ->
-            string value |> Result.andThen launch |> Result.map Text
+            string value |> Result.andThen (inEnglish launch) |> Result.map Text
 
         HostName ->
             string value |> Result.map Text
 
         Address ->
             string value |> Result.andThen (\t -> if t == "" then Err "where to connect is empty" else Ok (Text t))
+
+
+{-| A check that answers a `Message`, its message in English, as the
+file's reports are (they go to the terminal with the file's line). -}
+inEnglish : (a -> Result Message b) -> a -> Result String b
+inEnglish check value =
+    check value |> Result.mapError (Words.say Words.English)
 
 
 integer : ({} -> Result String Int) -> Toml.Table.Value -> Result String Int
@@ -843,7 +870,7 @@ string value =
 
 
 {-| A colour as `#rrggbb`. -}
-colour : String -> Result String Int
+colour : String -> Result Message Int
 colour text =
     let
         digits =
@@ -858,10 +885,10 @@ colour text =
                 Ok v
 
             else
-                Err ("\"" ++ text ++ "\" is not a colour as #rrggbb")
+                Err (Words.message "problem.notColor" |> Words.with "text" text)
 
         Nothing ->
-            Err ("\"" ++ text ++ "\" is not a colour as #rrggbb")
+            Err (Words.message "problem.notColor" |> Words.with "text" text)
 
 
 hexDigit : Char -> Maybe Int
@@ -1175,7 +1202,7 @@ toText v =
 {-| What the settings window's text gives a setting, or why it does not
 take it: the file's checks, on text (`read`). An optional setting left
 empty is unset. -}
-fromText : Setting -> String -> Result String Value
+fromText : Setting -> String -> Result Message Value
 fromText s text0 =
     let
         text =
@@ -1190,19 +1217,24 @@ fromText s text0 =
                 when String.toInt text is
                     Just n ->
                         if n < r.low || n > r.high then
-                            Err (String.fromInt n ++ " is not from " ++ String.fromInt r.low ++ " to " ++ String.fromInt r.high)
+                            Err
+                                (Words.message "problem.outOfRange"
+                                    |> Words.with "n" (String.fromInt n)
+                                    |> Words.with "low" (String.fromInt r.low)
+                                    |> Words.with "high" (String.fromInt r.high)
+                                )
 
                         else
                             Ok (Whole n)
 
                     Nothing ->
-                        Err "not a whole number"
+                        Err (Words.message "problem.notWhole")
 
             AnyText ->
                 Ok (Text text0)
 
             FontFamily ->
-                if text == "" then Err "no font named" else Ok (Text text)
+                if text == "" then Err (Words.message "problem.noFont") else Ok (Text text)
 
             OnOff ->
                 if text == "true" then
@@ -1212,7 +1244,7 @@ fromText s text0 =
                     Ok (Flag False)
 
                 else
-                    Err "not true or false"
+                    Err (Words.message "problem.notTrueOrFalse")
 
             OneColour ->
                 colour text |> Result.map Colour
@@ -1223,7 +1255,7 @@ fromText s text0 =
                         if text == "" then [] else Array.map String.trim (String.split "," text)
                 in
                 if Array.length parts > r.most then
-                    Err (String.fromInt (Array.length parts) ++ " colours, where the palette has " ++ String.fromInt r.most)
+                    Err (Words.message "problem.tooManyColors" |> Words.with "n" (String.fromInt (Array.length parts)) |> Words.with "most" (String.fromInt r.most))
 
                 else
                     Array.foldl (\part acc -> Result.map2 Array.pushLast (colour part) acc) (Ok []) parts
@@ -1234,7 +1266,7 @@ fromText s text0 =
                     Ok (Text text)
 
                 else
-                    Err ("\"" ++ text ++ "\" is not " ++ alternatives names)
+                    Err (Words.message "problem.notOneOf" |> Words.with "text" text |> Words.with "choices" (String.join ", " (Array.map (\n -> "\"" ++ n ++ "\"") names)))
 
             Command ->
                 words text |> Result.map Words
@@ -1243,14 +1275,14 @@ fromText s text0 =
                 launch text |> Result.map Text
 
             HostName ->
-                if text == "" then Err "a host needs a name" else Ok (Text text)
+                if text == "" then Err (Words.message "problem.hostNeedsName") else Ok (Text text)
 
             Address ->
-                if text == "" then Err "where to connect: a name or an address" else Ok (Text text)
+                if text == "" then Err (Words.message "problem.whereToConnect") else Ok (Text text)
 
 
 {-| What `start` takes: `shell`, `hosts`, or `host:` and a host's name. -}
-launch : String -> Result String String
+launch : String -> Result Message String
 launch text =
     if text == "shell" || text == "hosts" then
         Ok text
@@ -1259,11 +1291,11 @@ launch text =
         Ok text
 
     else
-        Err ("\"" ++ text ++ "\" is not \"shell\", \"hosts\" or \"host:\" and a host's name")
+        Err (Words.message "problem.notLaunch" |> Words.with "text" text)
 
 
 {-| A command's words: split at spaces, a quoted word kept whole. -}
-words : String -> Result String (Array String)
+words : String -> Result Message (Array String)
 words text =
     let
         step c acc =
@@ -1291,7 +1323,7 @@ words text =
             String.foldl step { done = [], word = "", quoted = False, any = False } text
     in
     if end.quoted then
-        Err "a quote not closed"
+        Err (Words.message "problem.quoteNotClosed")
 
     else if end.any || end.word /= "" then
         Ok (Array.pushLast end.word end.done)

@@ -441,7 +441,7 @@ writeWith : (Toml.Document -> Toml.Document) -> State -> Task String State
 writeWith edit s =
     when s.store is
         Nothing ->
-            Task.succeed { s | window = SettingsWindow.told "There is no settings file to write to" s.window }
+            Task.succeed { s | window = SettingsWindow.told (Words.message "message.noFile") s.window }
 
         Just store ->
             SettingsFile.change edit store
@@ -454,7 +454,7 @@ writeWith edit s =
                                 Task.succeed { s | store = Just st }
 
                             Err why ->
-                                Task.succeed { s | window = SettingsWindow.told ("Not written: " ++ why) s.window }
+                                Task.succeed { s | window = SettingsWindow.told (Words.message "message.notWritten" |> Words.with "why" why) s.window }
                     )
 
 
@@ -475,14 +475,14 @@ connect h args s =
                         (\failed ->
                             when failed is
                                 Just why ->
-                                    { s | window = SettingsWindow.told ("Not started: " ++ why) s.window }
+                                    { s | window = SettingsWindow.told (Words.message "message.notStarted" |> Words.with "why" why) s.window }
 
                                 Nothing ->
                                     s
                         )
 
             Nothing ->
-                Task.succeed { s | window = SettingsWindow.told "This program's own file is not known, so no window can be started" s.window }
+                Task.succeed { s | window = SettingsWindow.told (Words.message "message.noExecutable") s.window }
 
 
 {-| The file changed: read again, and its settings shown. The window's own
@@ -526,7 +526,7 @@ fileChanged change s =
                                 { s | window = SettingsWindow.fileRead { config = g.config, reports = g.problems } s.window }
 
                             Unread why ->
-                                { s | window = SettingsWindow.told why s.window }
+                                { s | window = SettingsWindow.told (Words.plain why) s.window }
                     )
 
         Just False ->

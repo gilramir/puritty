@@ -8,6 +8,7 @@ gren-unit-node: the settings' table and its lenient decoder. Run with
 import Config
 import Expect exposing (Expectation)
 import Hosts
+import I18Next
 import Node
 import Schema
 import Screen
@@ -15,6 +16,7 @@ import SettingsWindow
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Toml
+import Words
 
 
 main : Task Never {}
@@ -25,7 +27,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing, window, hosts ]
+                    , suites = [ schema, writing, window, hosts, words ]
                     }
             )
 
@@ -168,7 +170,7 @@ schema =
           , test = \_ -> Expect.equal [ "2: colours.background: not a string; \"#1d1f21\" is used" ] (reported "[colours]\nbackground = 12\n")
           }
         , { name = "a colour that is not #rrggbb is reported"
-          , test = \_ -> Expect.equal [ "2: colours.foreground: \"#fff\" is not a colour as #rrggbb; \"#c5c8c6\" is used" ] (reported "[colours]\nforeground = \"#fff\"\n")
+          , test = \_ -> Expect.equal [ "2: colours.foreground: \"#fff\" is not a color as #rrggbb; \"#c5c8c6\" is used" ] (reported "[colours]\nforeground = \"#fff\"\n")
           }
         , { name = "a choice not among a setting's is reported with them"
           , test = \_ -> Expect.equal [ "2: mouse.paste_button: \"left\" is not \"middle\" or \"right\"; \"middle\" is used" ] (reported "[mouse]\npaste_button = \"left\"\n")
@@ -176,7 +178,7 @@ schema =
         , { name = "a palette longer than 16 is reported"
           , test =
                 \_ ->
-                    Expect.equal [ "2: colours.palette: 17 colours, where the palette has 16; [] is used" ]
+                    Expect.equal [ "2: colours.palette: 17 colors, where the palette has 16; [] is used" ]
                         (reported ("[colours]\npalette = [" ++ String.join ", " (Array.repeat 17 "\"#000000\"") ++ "]\n"))
           }
         , { name = "a line after a value that runs on is counted"
@@ -678,6 +680,38 @@ window =
                     Expect.equal { offered = [ "Window                │     Fira Code", "Text & language       │     Fira Mono" ], said = [] }
                         { offered = Array.keepIf (String.contains "     Fira") r.screen, said = r.said }
           }
+        , { name = "the font list offers every font until the name is changed"
+          , test =
+                \_ ->
+                    let
+                        many =
+                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) ++ [ "DejaVu Sans Mono" ] }
+
+                        r =
+                            SettingsWindow.update k.enter many
+                    in
+                    when r.model.typing is
+                        Just t ->
+                            Expect.equal 13 (Array.length (SettingsWindow.suggestions r.model t))
+
+                        Nothing ->
+                            Expect.fail "not typing"
+          }
+        , { name = "the eleventh font is reached by Down and written"
+          , test =
+                \_ ->
+                    let
+                        many =
+                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) }
+
+                        r =
+                            Screen.feedInputs ([ k.enter ] ++ Array.repeat 11 k.down ++ [ k.enter ]) many
+                    in
+                    Expect.equal [ "font.family = Font 11" ] (said r.effects)
+          }
+        , { name = "the keypad's Down, NumLock off, picks as Down does"
+          , test = \_ -> Expect.equal [ "font.family = Fira Mono" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ press 0xFF99, press 0xFF99, k.enter ])).said
+          }
         , { name = "a font is written when it is chosen, not as it is typed"
           , test = \_ -> Expect.equal [ "font.family = Fira Mono" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ k.down, k.down, k.enter ])).said
           }
@@ -878,5 +912,66 @@ hosts =
                             , plainHost
                             ]
                         )
+          }
+        ]
+
+
+{-| The tables of words (`docs/settings-gui.md` SG4, SG7): Korean has
+every English key and no other, every setting has a Korean label and
+description, and a message's values are put in its words. -}
+words : U.Suite
+words =
+    let
+        own key =
+            String.startsWith "window." key || String.startsWith "message." key || String.startsWith "problem." key
+
+        everySetting =
+            Schema.settings ++ Schema.hostFields "h" ++ [ Schema.nameSetting "h" ]
+
+        settingKeys =
+            everySetting
+                |> Array.mapAndFlatten (\st -> [ "setting." ++ Schema.tableKey st ++ ".label", "setting." ++ Schema.tableKey st ++ ".description" ])
+    in
+    run "Words"
+        [ { name = "English has every key of Korean's own words"
+          , test = \_ -> Expect.equal [] (I18Next.keys Words.korean |> Array.keepIf own |> Array.keepIf (\key -> not (I18Next.hasKey Words.english key)))
+          }
+        , { name = "Korean has every key of English"
+          , test = \_ -> Expect.equal [] (I18Next.keys Words.english |> Array.keepIf (\key -> not (I18Next.hasKey Words.korean key)))
+          }
+        , { name = "every setting has a Korean label and description"
+          , test = \_ -> Expect.equal [] (Array.keepIf (\key -> not (I18Next.hasKey Words.korean key)) settingKeys)
+          }
+        , { name = "every setting Korean names is a setting"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (I18Next.keys Words.korean
+                            |> Array.keepIf (String.startsWith "setting.")
+                            |> Array.keepIf (\key -> not (Array.member key settingKeys))
+                        )
+          }
+        , { name = "a message's values are put in its words, in either language"
+          , test =
+                \_ ->
+                    let
+                        m =
+                            Words.message "problem.outOfRange" |> Words.with "n" "1" |> Words.with "low" "4" |> Words.with "high" "200"
+                    in
+                    Expect.equal
+                        { english = "1 is not from 4 to 200", korean = "1은(는) 4부터 200까지의 값이 아닙니다" }
+                        { english = Words.say Words.English m, korean = Words.say Words.Korean m }
+          }
+        , { name = "a key Korean lacks is the English given"
+          , test = \_ -> Expect.equal "Fallback" (Words.lookup Words.Korean "page.none" "Fallback")
+          }
+        , { name = "English is American"
+          , test = \_ -> Expect.equal "The color of text" (Words.lookup Words.English "setting.x.label" "The colour of text")
+          }
+        , { name = "the window's words are found, not their keys"
+          , test =
+                \_ ->
+                    Expect.equal { english = "Search settings", korean = "설정 검색" }
+                        { english = (Words.words Words.English).search, korean = (Words.words Words.Korean).search }
           }
         ]

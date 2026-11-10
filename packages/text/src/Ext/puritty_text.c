@@ -1091,15 +1091,19 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
  * rasterised as the terminal's is, a code point it lacks found by the same
  * fallback; rounded boxes, their corners glyph masks the renderer makes;
  * and a clip. A frame of these is drawn in order, each glyph run drawn as
- * it is placed, so a box drawn after text covers it. */
+ * it is placed, so a box drawn after text covers it. Text can also be in a
+ * font named for it, as the font list draws each name in its own font
+ * (SG7): such a face is only used where it is named, never as a fallback
+ * for the interface font's text. */
 
-#define UI_FACES 16
+#define UI_FACES 128
 typedef struct {
     FT_Face ft;
     hb_font_t *hb;
     char *file;
     int index;
     int px; /* the pixel size it was last set to */
+    int named; /* loaded for a font a text named, not the interface's */
 } UiFace;
 
 static UiFace ui_faces[UI_FACES];
@@ -1133,6 +1137,7 @@ static int ui_load(const char *file, int index) {
     U->file = copy(file);
     U->index = index;
     U->px = 0;
+    U->named = 0;
     FT_Set_Pixel_Sizes(U->ft, 0, 16);
     U->hb = hb_ft_font_create_referenced(U->ft);
     return n_ui_faces++;
@@ -1174,7 +1179,7 @@ static struct { uint32_t cp; int face; } ui_fcache[UI_FCACHE];
 
 static int ui_face_for(uint32_t cp) {
     for (int f = 0; f < n_ui_faces; f++)
-        if (ui_covers(f, cp)) return f;
+        if (!ui_faces[f].named && ui_covers(f, cp)) return f;
     unsigned h = (cp * 2654435761u) % UI_FCACHE;
     for (unsigned k = 0; k < UI_FCACHE; k++) {
         unsigned j = (h + k) % UI_FCACHE;
@@ -1191,6 +1196,32 @@ static int ui_face_for(uint32_t cp) {
     ui_fcache[h].cp = cp + 1;
     ui_fcache[h].face = face;
     return face;
+}
+
+/* The face for a font a text names, by the platform's file for the name,
+ * each name looked up once; -1 when there is none or no room. */
+#define UI_NAMES 128
+static struct { char *name; int face; } ui_names[UI_NAMES];
+static int n_ui_names;
+
+static int ui_named(const uint8_t *name, int n) {
+    for (int k = 0; k < n_ui_names; k++)
+        if ((int) strlen(ui_names[k].name) == n && memcmp(ui_names[k].name, name, (size_t) n) == 0) return ui_names[k].face;
+    if (n_ui_names == UI_NAMES) return -1;
+    char *z = malloc((size_t) n + 1);
+    memcpy(z, name, (size_t) n);
+    z[n] = 0;
+    int index = 0, before = n_ui_faces, f = -1;
+    char *file = pt_font_file(z, 0, &index);
+    if (file) {
+        f = ui_load(file, index);
+        if (f >= before) ui_faces[f].named = 1;
+        free(file);
+    }
+    ui_names[n_ui_names].name = z;
+    ui_names[n_ui_names].face = f;
+    n_ui_names++;
+    return f;
 }
 
 static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
@@ -1226,10 +1257,11 @@ static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
     return id;
 }
 
-/* Text laid out in the interface font at `px` pixels an em, its pen from
- * `x` on the baseline `y`: drawn in `rgb` when `draw`, and its width
- * answered either way. */
-static int ui_text(const uint8_t *s, int n, int x, int y, int px, uint32_t rgb, int draw) {
+/* Text laid out in the interface font at `px` pixels an em, or in the
+ * face `first` where it has the code point, its pen from `x` on the
+ * baseline `y`: drawn in `rgb` when `draw`, and its width answered either
+ * way. */
+static int ui_text(const uint8_t *s, int n, int x, int y, int px, uint32_t rgb, int draw, int first) {
     if (ui_primary() < 0 || px <= 0) return 0;
     uint32_t cps[1024];
     int ncp = 0;
@@ -1243,9 +1275,11 @@ static int ui_text(const uint8_t *s, int n, int x, int y, int px, uint32_t rgb, 
     }
     int pen = x;
     for (int a = 0; a < ncp;) {
-        int f = ui_face_for(cps[a]);
+#define UI_FACE(cp) (first >= 0 && ui_covers(first, cp) ? first : ui_face_for(cp))
+        int f = UI_FACE(cps[a]);
         int b = a + 1;
-        while (b < ncp && (ignorable(cps[b]) || ui_face_for(cps[b]) == f)) b++;
+        while (b < ncp && (ignorable(cps[b]) || UI_FACE(cps[b]) == f)) b++;
+#undef UI_FACE
         ui_size(f, px);
         hb_buffer_clear_contents(hbuf);
         hb_buffer_add_utf32(hbuf, cps + a, b - a, 0, b - a);
@@ -1273,7 +1307,7 @@ static int ui_text(const uint8_t *s, int n, int x, int y, int px, uint32_t rgb, 
     return pen - x;
 }
 
-int pt_measure(const uint8_t *s, int n, int px) { return ui_text(s, n, 0, 0, px, 0, 0); }
+int pt_measure(const uint8_t *s, int n, int px) { return ui_text(s, n, 0, 0, px, 0, 0, -1); }
 
 /* A fill within the clip. */
 static void ui_fill(uint32_t rgb, int x, int y, int w, int h) {
@@ -1356,8 +1390,20 @@ static const uint8_t *ui_record(const uint8_t *p, const uint8_t *end) {
     if (p[0] == 7 && p + 11 <= end) {
         int n = U16(9);
         if (p + 11 + n > end) return NULL;
-        ui_text(p + 11, n, (int16_t) U16(1), (int16_t) U16(3), p[5], ((uint32_t) p[6] << 16) | ((uint32_t) p[7] << 8) | p[8], 1);
+        ui_text(p + 11, n, (int16_t) U16(1), (int16_t) U16(3), p[5], ((uint32_t) p[6] << 16) | ((uint32_t) p[7] << 8) | p[8], 1, -1);
         return p + 11 + n;
+    }
+    /* 9: text in a named font: as 7, the font's name (its length a byte)
+     * before the text's length */
+    if (p[0] == 9 && p + 10 <= end) {
+        int m = p[9];
+        if (p + 12 + m > end) return NULL;
+        const uint8_t *q = p + 10 + m;
+        int n = (q[0] << 8) | q[1];
+        if (q + 2 + n > end) return NULL;
+        int face = ui_primary() < 0 ? -1 : ui_named(p + 10, m);
+        ui_text(q + 2, n, (int16_t) U16(1), (int16_t) U16(3), p[5], ((uint32_t) p[6] << 16) | ((uint32_t) p[7] << 8) | p[8], 1, face);
+        return q + 2 + n;
     }
     if (p[0] == 8 && p + 9 <= end) {
         ui_clip = (PtRect) {U16(1), U16(3), U16(5), U16(7)};
@@ -1409,7 +1455,7 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
             p = draw_run(p, end, 0);
             if (y < first) first = y;
             if (y > last) last = y;
-        } else if (p[0] >= 6 && p[0] <= 8) {
+        } else if (p[0] >= 6 && p[0] <= 9) {
             const uint8_t *next = ui_record(p, end);
             if (!next) break;
             p = next;

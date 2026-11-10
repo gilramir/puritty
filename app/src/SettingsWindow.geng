@@ -37,6 +37,7 @@ import Config exposing (Config)
 import Hosts
 import Schema exposing (Kind(..), Setting, Value(..))
 import Vt.Width
+import Words exposing (Message)
 
 
 type Focus
@@ -52,7 +53,7 @@ type alias Typing =
     { chars : Array Char
     , caret : Int
     , before : Value
-    , problem : Maybe String
+    , problem : Maybe Message
     , pick : Int
     }
 
@@ -71,7 +72,7 @@ type alias Model =
     , modifiedOnly : Bool
     , typing : Maybe Typing
     , undo : Array Undo
-    , message : String
+    , message : Maybe Message
     , fonts : Array String
       -- the hosts of ~/.ssh/config, listed with the file's (V63), and
       -- whether the window is the host list, which a session replaces (V65)
@@ -149,10 +150,16 @@ init r =
     , message =
         when Array.first r.reports is
             Just first ->
-                first ++ (if Array.length r.reports > 1 then " (and " ++ String.fromInt (Array.length r.reports - 1) ++ " more)" else "")
+                Just
+                    (if Array.length r.reports > 1 then
+                        Words.message "message.more" |> Words.with "first" first |> Words.with "more" (String.fromInt (Array.length r.reports - 1))
+
+                     else
+                        Words.plain first
+                    )
 
             Nothing ->
-                ""
+                Nothing
     }
 
 
@@ -165,9 +172,9 @@ fileRead r m =
 
 
 {-| A message at the foot, from the program: a write that failed. -}
-told : String -> Model -> Model
+told : Message -> Model -> Model
 told message m =
-    { m | message = message }
+    { m | message = Just message }
 
 
 
@@ -311,13 +318,13 @@ hostNamed m name =
 
 {-| The hosts changed: the model's at once, the file's by the effects, and
 undone together by Ctrl+Z. -}
-hostsChanged : Array Config.Host -> Array Effect -> String -> Model -> { model : Model, effects : Array Effect }
+hostsChanged : Array Config.Host -> Array Effect -> Message -> Model -> { model : Model, effects : Array Effect }
 hostsChanged hosts effects message m =
     let
         config =
             m.config
     in
-    { model = keepInView { m | config = { config | hosts = hosts }, undo = Array.pushLast (HostsWere config.hosts) m.undo, message = message }
+    { model = keepInView { m | config = { config | hosts = hosts }, undo = Array.pushLast (HostsWere config.hosts) m.undo, message = Just message }
     , effects = effects
     }
 
@@ -378,7 +385,11 @@ update input m =
             in
             done { m | scroll = max 0 (min most (m.scroll + 3 * steps)) }
 
-        Key k ->
+        Key pressed ->
+            let
+                k =
+                    { pressed | sym = mainKey pressed.sym }
+            in
             if Bitwise.and k.mods 2 /= 0 then
                 control k m
 
@@ -424,6 +435,42 @@ sym =
     }
 
 
+{-| A keypad key the window takes as its main key: the keypad's arrows,
+Home, End, Page Up and Down and Delete, as NumLock off gives them (and as
+Windows gives a key sent without its extended flag). -}
+mainKey : Int -> Int
+mainKey s =
+    if s == 0xFF97 then
+        sym.up
+
+    else if s == 0xFF99 then
+        sym.down
+
+    else if s == 0xFF96 then
+        0xFF51
+
+    else if s == 0xFF98 then
+        0xFF53
+
+    else if s == 0xFF95 then
+        0xFF50
+
+    else if s == 0xFF9C then
+        0xFF57
+
+    else if s == 0xFF9A then
+        0xFF55
+
+    else if s == 0xFF9B then
+        0xFF56
+
+    else if s == 0xFF9F then
+        0xFFFF
+
+    else
+        s
+
+
 isEnter : Int -> Bool
 isEnter s =
     s == sym.enter || s == sym.keypadEnter
@@ -466,7 +513,7 @@ control k m =
         undo { m | typing = Nothing }
 
     else if letter == 0x6D then
-        done (keepInView { m | modifiedOnly = not m.modifiedOnly, row = 0, message = if m.modifiedOnly then "" else "Only the settings that differ from their defaults" })
+        done (keepInView { m | modifiedOnly = not m.modifiedOnly, row = 0, message = if m.modifiedOnly then Nothing else Just (Words.message "message.modifiedOnly") })
 
     else if letter == 0x66 then
         done { m | focus = OnSearch, typing = Nothing }
@@ -489,7 +536,7 @@ control k m =
                         { h | name = copyName m h.name }
 
                     made =
-                        hostsChanged (m.config.hosts ++ [ copy ]) [ PutHost copy ] (copy.name ++ " is a copy of " ++ h.name) { m | typing = Nothing }
+                        hostsChanged (m.config.hosts ++ [ copy ]) [ PutHost copy ] (Words.message "message.copied" |> Words.with "name" copy.name |> Words.with "from" h.name) { m | typing = Nothing }
 
                     r =
                         made.model
@@ -600,12 +647,12 @@ rowsKey k m =
             else if (isEnter k.sym || k.sym == sym.space) && inList m then
                 if m.row <= 1 then
                     -- quick connect, or a new host's name
-                    done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = "" }
+                    done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
 
                 else
                     when hostAt m m.row is
                         Just h ->
-                            { model = { m | message = "Connecting to " ++ h.name }, effects = [ ConnectHost h.name ] }
+                            { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }, effects = [ ConnectHost h.name ] }
 
                         Nothing ->
                             done m
@@ -615,12 +662,12 @@ rowsKey k m =
                 when hostAt m m.row is
                     Just h ->
                         if h.own then
-                            done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = "" })
+                            done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = Nothing })
 
                         else
                             let
                                 saved =
-                                    hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (h.name ++ " is a host of the settings now") m
+                                    hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
 
                                 after =
                                     saved.model
@@ -637,7 +684,7 @@ rowsKey k m =
                         Maybe.withDefault "" m.form
 
                     back =
-                        { m | form = Nothing, message = "" }
+                        { m | form = Nothing, message = Nothing }
 
                     row =
                         Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault 0
@@ -648,10 +695,10 @@ rowsKey k m =
                 when hostAt m m.row is
                     Just h ->
                         if h.own then
-                            hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (h.name ++ " is removed · Ctrl+Z puts it back") m
+                            hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
 
                         else
-                            done { m | message = h.name ++ " is ~/.ssh/config's; it is changed there" }
+                            done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
 
                     Nothing ->
                         done m
@@ -668,13 +715,13 @@ rowsKey k m =
                 when focused m is
                     Just s ->
                         if s.kind == Schema.HostName then
-                            done { m | message = "To remove the host, go back to the list and press Delete there" }
+                            done { m | message = Just (Words.message "message.removeFromList") }
 
                         else if not s.optional && s.page == Schema.HostsPage then
-                            done { m | message = "A host must say where to connect" }
+                            done { m | message = Just (Words.message "message.hostNeedsAddress") }
 
                         else
-                            set s (if s.page == Schema.HostsPage then Unset else s.get Config.defaults) { m | message = Schema.keyName s ++ " is its default again" }
+                            set s (if s.page == Schema.HostsPage then Unset else s.get Config.defaults) { m | message = Just (Words.message "message.isDefault" |> Words.with "key" (Schema.keyName s)) }
 
                     Nothing ->
                         done m
@@ -722,7 +769,7 @@ change s m =
                 chars =
                     String.toArray (Schema.toText now)
             in
-            done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing, pick = -1 }, message = "" }
+            done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing, pick = -1 }, message = Nothing }
 
 
 {-| A setting given a value: the model's at once, the file's by the
@@ -748,7 +795,7 @@ undo m =
         Just { last, initial } ->
             when last is
                 Was w ->
-                    { model = { m | config = w.setting.set w.value m.config, undo = initial, message = Schema.keyName w.setting ++ " is back as it was" }
+                    { model = { m | config = w.setting.set w.value m.config, undo = initial, message = Just (Words.message "message.backAsItWas" |> Words.with "key" (Schema.keyName w.setting)) }
                     , effects = [ Write { setting = w.setting, value = w.value } ]
                     }
 
@@ -766,12 +813,12 @@ undo m =
                         config =
                             m.config
                     in
-                    { model = keepInView { m | config = { config | hosts = before }, undo = initial, form = Nothing, message = "The hosts are back as they were" }
+                    { model = keepInView { m | config = { config | hosts = before }, undo = initial, form = Nothing, message = Just (Words.message "message.hostsBack") }
                     , effects = effects
                     }
 
         Nothing ->
-            done { m | message = "Nothing to undo" }
+            done { m | message = Just (Words.message "message.nothingToUndo") }
 
 
 typingKey : { sym : Int, mods : Int, text : String } -> Typing -> Model -> { model : Model, effects : Array Effect }
@@ -792,18 +839,18 @@ typingKey k t m =
                 String.trim (String.fromArray t.chars)
         in
         if to == from then
-            done { m | typing = Nothing, message = "" }
+            done { m | typing = Nothing, message = Nothing }
 
         else if to == "" then
-            done { m | message = "a host needs a name" }
+            done { m | message = Just (Words.message "problem.hostNeedsName") }
 
         else if hostNamed m to /= Nothing then
-            done { m | message = "There is a host called " ++ to ++ " already" }
+            done { m | message = Just (Words.message "message.hostExists" |> Words.with "name" to) }
 
         else
             let
                 renamed =
-                    hostsChanged (Array.map (\h -> if h.name == from then { h | name = to } else h) m.config.hosts) [ RenameHost { from = from, to = to } ] (from ++ " is " ++ to ++ " now") { m | typing = Nothing }
+                    hostsChanged (Array.map (\h -> if h.name == from then { h | name = to } else h) m.config.hosts) [ RenameHost { from = from, to = to } ] (Words.message "message.renamed" |> Words.with "from" from |> Words.with "to" to) { m | typing = Nothing }
 
                 r =
                     renamed.model
@@ -818,7 +865,7 @@ typingKey k t m =
                     back =
                         s.get m.config /= t.before
                 in
-                { model = { m | config = s.set t.before m.config, typing = Nothing, message = "" }
+                { model = { m | config = s.set t.before m.config, typing = Nothing, message = Nothing }
                 , effects = if back then [ Write { setting = s, value = t.before } ] else []
                 }
 
@@ -834,10 +881,10 @@ typingKey k t m =
                         Maybe.withDefault (String.trim (String.fromArray t.chars)) (Array.get t.pick (suggestions m t))
                 in
                 if name == "" then
-                    done { m | message = "no font named" }
+                    done { m | message = Just (Words.message "problem.noFont") }
 
                 else
-                    set s (Text name) { m | typing = Nothing, message = "" }
+                    set s (Text name) { m | typing = Nothing, message = Nothing }
 
             Nothing ->
                 done { m | typing = Nothing }
@@ -852,7 +899,7 @@ typingKey k t m =
     else if isEnter k.sym || k.sym == sym.tab then
         when t.problem is
             Just why ->
-                done { m | message = why }
+                done { m | message = Just why }
 
             Nothing ->
                 when focused m is
@@ -864,7 +911,7 @@ typingKey k t m =
                         done
                             { m
                                 | typing = Nothing
-                                , message = ""
+                                , message = Nothing
                                 , undo = if now /= t.before then Array.pushLast (Was { setting = s, value = t.before }) m.undo else m.undo
                             }
 
@@ -910,15 +957,15 @@ newHostKey k t m =
     in
     if isEnter k.sym then
         if name == "" then
-            done { m | message = "a host needs a name" }
+            done { m | message = Just (Words.message "problem.hostNeedsName") }
 
         else if hostNamed m name /= Nothing then
-            done { m | message = "There is a host called " ++ name ++ " already" }
+            done { m | message = Just (Words.message "message.hostExists" |> Words.with "name" name) }
 
         else
             let
                 made =
-                    hostsChanged (m.config.hosts ++ [ Config.host name name ]) [ PutHost (Config.host name name) ] (name ++ " is made: say where it connects") { m | typing = Nothing }
+                    hostsChanged (m.config.hosts ++ [ Config.host name name ]) [ PutHost (Config.host name name) ] (Words.message "message.hostMade" |> Words.with "name" name) { m | typing = Nothing }
 
                 r =
                     made.model
@@ -937,18 +984,18 @@ quickKey k t m =
             String.trim (String.fromArray t.chars)
 
         edited chars caret =
-            done { m | typing = Just { t | chars = chars, caret = caret }, message = "" }
+            done { m | typing = Just { t | chars = chars, caret = caret }, message = Nothing }
     in
     if k.sym == sym.escape then
-        done { m | typing = Nothing, message = "" }
+        done { m | typing = Nothing, message = Nothing }
 
     else if isEnter k.sym then
         when Hosts.quick text is
             Just _ ->
-                { model = { m | typing = Nothing, message = "Connecting to " ++ text }, effects = [ ConnectQuick text ] }
+                { model = { m | typing = Nothing, message = Just (Words.message "message.connecting" |> Words.with "name" text) }, effects = [ ConnectQuick text ] }
 
             Nothing ->
-                done { m | message = "\"" ++ text ++ "\" is not where to connect, as user@host:port" }
+                done { m | message = Just (Words.message "message.notAnAddress" |> Words.with "text" text) }
 
     else if k.sym == sym.backspace && t.caret > 0 then
         edited (Array.slice 0 (t.caret - 1) t.chars ++ Array.slice t.caret (Array.length t.chars) t.chars) (t.caret - 1)
@@ -1005,10 +1052,10 @@ typedSetting t m =
                         writes =
                             if v /= s.get m.config then [ Write { setting = s, value = v } ] else []
                     in
-                    { model = { m | config = s.set v m.config, typing = Just { t | problem = Nothing }, message = "" }, effects = writes }
+                    { model = { m | config = s.set v m.config, typing = Just { t | problem = Nothing }, message = Nothing }, effects = writes }
 
                 Err why ->
-                    done { m | typing = Just { t | problem = Just why }, message = why }
+                    done { m | typing = Just { t | problem = Just why }, message = Just why }
 
         Nothing ->
             done { m | typing = Nothing }
@@ -1265,16 +1312,19 @@ isFamily m =
             False
 
 
-{-| The system's fonts whose names hold what is typed, the first eight. -}
+{-| The system's fonts whose names hold what is typed; all of them while the
+font's name is as it was when typing began (SG7). -}
 suggestions : Model -> Typing -> Array String
 suggestions m t =
     let
+        name =
+            String.trim (String.fromArray t.chars)
+
         q =
-            String.toLower (String.trim (String.fromArray t.chars))
+            if name == Schema.toText t.before then "" else String.toLower name
     in
     m.fonts
         |> Array.keepIf (\f -> q == "" || String.contains q (String.toLower f))
-        |> Array.takeFirst 8
 
 
 
@@ -1423,7 +1473,7 @@ screen m =
                                 m.row * linesPerRow + 1
 
                             offered =
-                                suggestions m t
+                                suggestions m t |> Array.takeFirst 8
 
                             lines =
                                 if Array.isEmpty offered then
@@ -1726,17 +1776,18 @@ footer m =
                             else
                                 "Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close"
     in
-    if m.message /= "" then
-        [ { style = if (m.typing |> Maybe.andThen .problem) /= Nothing then "31" else "33", text = m.message } ]
+    when m.message is
+        Just said ->
+            [ { style = if (m.typing |> Maybe.andThen .problem) /= Nothing then "31" else "33", text = Words.say Words.English said } ]
 
-    else
-        [ { style = "2", text = (when focused m is
-                Just s ->
-                    if m.focus == OnRows then Schema.keyName s ++ " · " else ""
+        Nothing ->
+            [ { style = "2", text = (when focused m is
+                    Just s ->
+                        if m.focus == OnRows then Schema.keyName s ++ " · " else ""
 
-                Nothing ->
-                    ""
-            ) ++ hints } ]
+                    Nothing ->
+                        ""
+                ) ++ hints } ]
 
 
 

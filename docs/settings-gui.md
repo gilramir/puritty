@@ -109,7 +109,82 @@ rather than a separate `Ui` module; steps 1, 2 and 5 are not.
   longer uses them; the app tests read the model through them. Their
   header has the drawn window's three lines. They are to give way to tests
   that read the model and click through `Hit`.
-- **Not yet in Korean.** A check's message (such as "not a whole number")
-  comes from `SettingsWindow`, in English. The
-  font list shows names in the interface font, with no mark for the
-  monospaced fonts and no sample.
+- **Then:** a check's message came from `SettingsWindow` in English
+  only, and the font list showed its names in the interface font. SG7
+  covers both.
+
+## SG7 · The words as gren-i18next's tables, and the font list (2026-11-10)
+
+**The words.** At Gilbert's suggestion, his gren-i18next is ported to
+Geng (geng-lang `vendor/gilramir/gren-i18next`, `docs/releasing.md`
+Dnene43), and `Words` uses it:
+
+- **The tables.** There are two `Translations`, `english` and `korean`,
+  built in Geng with `I18Next.fromTree` rather than read from JSON. They
+  are compiled in with no file to find at run time, and a quote needs no
+  escape. A window word is `window.<name>`, a page `page.<name>`, a
+  message `message.<name>` or `problem.<name>`, and a setting's Korean
+  `setting.<its key>.label` and `.description`. English for a setting is
+  the schema's own, so `english` does not repeat it, and
+  `Schema.tableKey` gives a setting's key in the tables. A text is said
+  with `I18Next.trf [korean, english]`, so a key without Korean is said
+  in English.
+- **Messages.** What the window says is a `Words.Message`, a key plus
+  the values its `{{name}}` placeholders take. Schema's checks of typed
+  text (`fromText`) and every message of `SettingsWindow` and
+  `SettingsProgram` are messages, said in the window's language only
+  where they are drawn. A reason the system gives (a write that failed)
+  is `Words.plain`, said as it is in every language.
+- **What stays English.** The file's reports go to the terminal with
+  the file's line numbers, so they stay English: `Schema.read` says the
+  shared checks' messages in English (`inEnglish`). Its spelling is now
+  American throughout ("colors", "a color as #rrggbb"), with the file's
+  keys (`[colours]`) unchanged. Two of the app tests' expected reports
+  changed only in that spelling.
+- **The tests.** The app tests' `Words` suite holds that:
+  - Korean has every English key, and English has every key of Korean's
+    own words;
+  - every setting has a Korean label and description;
+  - every setting Korean names exists;
+  - a message's values are put into its text in both languages;
+  - English is American.
+
+  A key missing from a table would show the key itself, which these
+  checks catch. The app tests are 97.
+
+**The font list.** SG3 planned "the monospaced ones first and marked".
+Both platforms' lists hold only monospace fonts (`puritty_x11_fonts`,
+`puritty_win32_fonts`; a proportional font is no terminal's font), so
+there is nothing to mark. What changed:
+
+- **Each name in its own font.** A new renderer record, 9, is text in a
+  named font: as record 7, with the font's name (its length a byte)
+  before the text. The renderer finds the face once per name through
+  the platform's `pt_font_file`. The face is used only for the characters
+  it has; the rest come from the interface font's faces and fallback. A
+  face loaded for a name is marked `named`, so it is never a fallback for
+  the interface's own text. Up to 128 faces.
+- **A sample line** under the list ("Ab 0O 1lI {}[] 한글") is drawn in the
+  font Up and Down picked, or in the typed name before a pick.
+- **Every font is offered** while the field's name is as it was when
+  typing began. The list used to be filtered by the current font's own
+  name, so it showed one font until that name was erased. The list also
+  used to stop at eight fonts, so a ninth could not be picked. It is now
+  ten at a time and scrolls with the pick. The text view the tests read
+  keeps its eight.
+- **No colour fonts on Linux.** fontconfig calls Noto Color Emoji
+  monospace, and it was listed, its names drawn with emoji-width spaces.
+  Colour fonts are now left out, as Windows' list already left them out.
+- **The keypad's keys.** The keypad's arrows, Home, End, Page Up and
+  Down, and Delete (as NumLock off gives them) work as the main keys do.
+  This was found when keys sent to beelink1 by `WScript.Shell.SendKeys`
+  arrived without the extended flag, as the keypad's Down (0xFF99), and
+  did nothing.
+
+Pictures were taken on Xvfb in English and Korean (the list in DejaVu
+Sans Mono and Fira Code), and on beelink1 in Korean (BatangChe, Cascadia,
+Consolas, Courier New and the rest, each in its face; the sample in
+Cascadia Code).
+
+Still open: the pixels gate has no cases for records 6 to 9 (SG5 step 1),
+and the app tests read the model through the old text screen (SG6).

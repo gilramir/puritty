@@ -201,10 +201,11 @@ static geng_bytes *family_lines(char **names, int n) {
 
 /* The families of the monospace fonts fontconfig has, for the settings
  * window (docs/settings.md ST8): spacing mono, dual (most CJK monospace
- * fonts) or charcell, each once. */
+ * fonts) or charcell, each once, and not colour (an emoji font is
+ * monospace to fontconfig, and is no terminal's font), as Windows' list. */
 geng_cancel puritty_x11_fonts(geng_wait *wait) {
     FcPattern *p = FcPatternCreate();
-    FcObjectSet *os = FcObjectSetBuild(FC_FAMILY, FC_SPACING, NULL);
+    FcObjectSet *os = FcObjectSetBuild(FC_FAMILY, FC_SPACING, FC_COLOR, NULL);
     FcFontSet *set = FcFontList(NULL, p, os);
     char **names = NULL;
     int n = 0;
@@ -212,6 +213,8 @@ geng_cancel puritty_x11_fonts(geng_wait *wait) {
         int spacing;
         FcChar8 *family;
         if (FcPatternGetInteger(set->fonts[i], FC_SPACING, 0, &spacing) != FcResultMatch || spacing < FC_DUAL) continue;
+        FcBool colour;
+        if (FcPatternGetBool(set->fonts[i], FC_COLOR, 0, &colour) == FcResultMatch && colour) continue;
         if (FcPatternGetString(set->fonts[i], FC_FAMILY, 0, &family) != FcResultMatch) continue;
         int seen = 0;
         for (int k = 0; k < n && !seen; k++) seen = strcmp(names[k], (const char *) family) == 0;
