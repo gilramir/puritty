@@ -152,14 +152,15 @@ server since about 6.5 (2014) takes:
 | known_hosts | plain and hashed names | HMAC-SHA1 |
 | extensions | `ext-info-c`, `server-sig-algs`, strict KEX, `keepalive@openssh.com` | |
 
-Two cases want more, and SC12 asks about both:
+**Decided (2026-11-10):** v1 must support at least `curve25519-sha256` kex;
+`ssh-ed25519` and `ecdsa-sha2-nistp256` host keys, both verified from the
+start; `chacha20-poly1305@openssh.com` and `aes256-gcm@openssh.com`; and
+public-key and password login. The FIPS set (`ecdh-sha2-nistp256` or
+`diffie-hellman-group14-sha256`, AES-CTR with `hmac-sha2-256-etm`) is not
+in v1.
 
-- **RHEL8 in FIPS mode** has no curve25519, Ed25519 or ChaCha20 (general
-  knowledge about RHEL's crypto policies; not measured). It needs
-  `ecdh-sha2-nistp256` (RFC 5656) or `diffie-hellman-group14-sha256` (RFC
-  8268), AES-GCM or AES-CTR with `hmac-sha2-256-etm`, and RSA or ECDSA host
-  keys. Gilbert's EUC-KR colleagues' hosts are RHEL8 (`cjk-and-thai.md`
-  §10); whether they run FIPS mode is not known here.
+One case wants more later, and SC12 asks about it:
+
 - **Post-quantum kex**, `mlkem768x25519-sha256`: ML-KEM-768 and SHA3.
 
 ## SC3 · What Geng has today
@@ -707,17 +708,16 @@ Each ends with its gate passing, and the gates before it still passing.
 7. **Secrets in Geng's heap** (SC3, SC6). *Leaning: private keys and saved
    passwords as C handles that are cleared; session keys as Geng `Bytes`,
    accepted.*
-8. **ProxyJump in v1.** Do the hosts Gilbert and his colleagues use need a
-   jump host from the start? *Leaning: right after step 7,* since `jump`
+8. **ProxyJump in v1.** Do the hosts Gilbert uses need a jump host from
+   the start? *Leaning: right after step 7,* since `jump`
    is already a host field (ST10).
 9. **A host entry over `~/.ssh/config`** (SC7): applied as a `Host` block
    before the file's, so the entry wins and the file fills in the rest.
    *Leaning: yes,* which is what `ssh -p … -l …` does today (ST23).
 10. **Sharing a connection between windows** (SC8). *Leaning: not v1;*
     within a window when tabs come.
-11. **The RHEL8 hosts** (SC2.1): are they in FIPS mode? If so the FIPS set
-    (ECDH P-256, AES-GCM or CTR with `hmac-sha2-256-etm`, RSA and ECDSA host
-    keys) moves into v1. *Leaning: ask the colleagues before step 4.*
+11. **The FIPS set** (SC2.1). **Decided 2026-11-10:** not in v1; v1
+    must support the set SC2.1 names, ECDSA P-256 host keys included.
 12. **Post-quantum kex** (`mlkem768x25519-sha256`): v1 or later. *Leaning:
     after v1 and before release,* since OpenSSH warns without it and PuTTY's
     subset already has ML-KEM.
