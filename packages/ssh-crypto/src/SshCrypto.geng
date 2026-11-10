@@ -1,0 +1,316 @@
+module SshCrypto exposing
+    ( Cipher(..)
+    , Hash(..)
+    , Keyed
+    , Mac(..)
+    , aesCtr
+    , bcryptPbkdf
+    , blockSize
+    , equal
+    , hash
+    , hmac
+    , open
+    , openLength
+    , seal
+    , signatureAlgorithms
+    , tagLength
+    , verify
+    , x25519Public
+    , x25519Shared
+    )
+
+{-| The cryptography an ssh client needs, from PuTTY's (puritty
+`docs/ssh-client.md` SC6, SC11 step 3), as pure functions over bytes: the
+hashes, HMAC, curve25519 key exchange, host-key signatures, the packet
+ciphers, and what an OpenSSH key file's private part is encrypted with.
+
+Nothing here draws random bytes: a private value is the caller's, from
+[`Os.Random.bytes`](Os.Random#bytes). Nothing keeps state between calls: a
+packet cipher is keyed again for each packet from the sequence number and
+how many packets the keys have sealed or opened.
+
+@docs Hash, hash, Mac, hmac, equal, x25519Public, x25519Shared, signatureAlgorithms, verify, Cipher, Keyed, tagLength, blockSize, seal, openLength, open, aesCtr, bcryptPbkdf
+
+-}
+
+import Bytes exposing (Bytes)
+
+
+{-| A hash: SHA-1 (for a hashed `known_hosts` name only), SHA-256,
+SHA-384, SHA-512.
+-}
+type Hash
+    = Sha1
+    | Sha256
+    | Sha384
+    | Sha512
+
+
+{-| The hash of the bytes.
+-}
+hash : Hash -> Bytes -> Bytes
+hash which data =
+    hashExtern
+        (when which is
+            Sha1 ->
+                0
+
+            Sha256 ->
+                1
+
+            Sha384 ->
+                2
+
+            Sha512 ->
+                3
+        )
+        data
+
+
+{-| An HMAC's hash.
+-}
+type Mac
+    = HmacSha1
+    | HmacSha256
+    | HmacSha512
+
+
+{-| The HMAC of the bytes with a key of any length (RFC 2104).
+-}
+hmac : Mac -> Bytes -> Bytes -> Bytes
+hmac which key data =
+    hmacExtern
+        (when which is
+            HmacSha1 ->
+                0
+
+            HmacSha256 ->
+                1
+
+            HmacSha512 ->
+                2
+        )
+        key
+        data
+
+
+{-| Whether two `Bytes` are the same, in a time that depends only on their
+lengths: for comparing a secret with what was sent.
+-}
+equal : Bytes -> Bytes -> Bool
+equal a b =
+    equalExtern a b == 1
+
+
+{-| The X25519 public value, 32 bytes, of a private value of 32 random
+bytes (RFC 7748; clamped as it says). `Nothing` for a private value of
+another length.
+-}
+x25519Public : Bytes -> Maybe Bytes
+x25519Public secret =
+    if Bytes.length secret /= 32 then
+        Nothing
+
+    else
+        nonEmpty (x25519PublicExtern secret)
+
+
+{-| The shared secret `K` of curve25519-sha256 (RFC 8731): from this
+side's private value and the other side's public value, as an SSH `mpint`
+with its length first, which is how the exchange hash and the keys take it.
+`Nothing` for a public value that is not 32 bytes or gives no secret (all
+zeros, RFC 7748 §6.1), which the exchange must refuse.
+-}
+x25519Shared : Bytes -> Bytes -> Maybe Bytes
+x25519Shared secret theirs =
+    if Bytes.length secret /= 32 || Bytes.length theirs /= 32 then
+        Nothing
+
+    else
+        nonEmpty (x25519SharedExtern secret theirs)
+
+
+{-| The signature algorithms [`verify`](#verify) knows, in the order an ssh
+client asks for them.
+-}
+signatureAlgorithms : Array String
+signatureAlgorithms =
+    [ "ssh-ed25519", "ecdsa-sha2-nistp256", "rsa-sha2-512", "rsa-sha2-256" ]
+
+
+{-| Whether `signature`, an SSH signature blob, is the signature of `data`
+by the SSH public key blob `publicKey` under `algorithm`, one of
+[`signatureAlgorithms`](#signatureAlgorithms). Anything else, a blob that is
+not one, or a signature naming another algorithm, is `False`.
+-}
+verify : { algorithm : String, publicKey : Bytes, signature : Bytes, data : Bytes } -> Bool
+verify v =
+    verifyExtern (Bytes.fromString v.algorithm) v.publicKey v.signature v.data == 1
+
+
+{-| A packet cipher, each with its own MAC: chacha20-poly1305@openssh.com
+(a 64-byte key and no IV), aes128-gcm@openssh.com (16 and 12) and
+aes256-gcm@openssh.com (32 and 12).
+-}
+type Cipher
+    = ChaCha20Poly1305
+    | Aes128Gcm
+    | Aes256Gcm
+
+
+cipherCode : Cipher -> Int
+cipherCode cipher =
+    when cipher is
+        ChaCha20Poly1305 ->
+            0
+
+        Aes128Gcm ->
+            1
+
+        Aes256Gcm ->
+            2
+
+
+{-| The tag's length after a sealed packet: 16 for each.
+-}
+tagLength : Cipher -> Int
+tagLength cipher =
+    tagLengthExtern (cipherCode cipher)
+
+
+{-| What the packet after its length field must be a multiple of: 8 for
+ChaCha20-Poly1305, 16 for AES-GCM.
+-}
+blockSize : Cipher -> Int
+blockSize cipher =
+    blockSizeExtern (cipherCode cipher)
+
+
+{-| The keys, the packet's sequence number (mod 2^32), and how many
+packets these keys sealed before this one.
+-}
+type alias Keyed =
+    { cipher : Cipher, key : Bytes, iv : Bytes, sequence : Int, count : Int }
+
+
+{-| A packet sealed: given its length field, padding length, payload and
+padding in the clear, the bytes that go on the wire, the tag last.
+`Nothing` for keys of the wrong length or a packet that is not whole blocks.
+-}
+seal : Keyed -> Bytes -> Maybe Bytes
+seal k packet =
+    nonEmpty (sealExtern (cipherCode k.cipher) k.key k.iv k.sequence k.count packet)
+
+
+{-| The packet length the first four bytes received give: decrypted for
+ChaCha20-Poly1305, as they are for AES-GCM. It is not yet authenticated:
+check it is sane before reading that much.
+-}
+openLength : { cipher : Cipher, key : Bytes, sequence : Int } -> Bytes -> Maybe Int
+openLength k first =
+    let
+        n =
+            openLengthExtern (cipherCode k.cipher) k.key k.sequence first
+    in
+    if n < 0 then
+        Nothing
+
+    else
+        Just n
+
+
+{-| A packet received, its four length bytes as they came, the rest and
+the tag, opened: the packet in the clear as [`seal`](#seal) was given it,
+or `Nothing` when its tag does not hold.
+-}
+open : Keyed -> Bytes -> Maybe Bytes
+open k sealed =
+    nonEmpty (openExtern (cipherCode k.cipher) k.key k.iv k.sequence k.count sealed)
+
+
+{-| AES in counter mode, a 16- or 32-byte key and a 16-byte counter block,
+over whole blocks: an OpenSSH key file's `aes256-ctr`. Encrypting and
+decrypting are the same. `Nothing` for other lengths.
+-}
+aesCtr : { key : Bytes, iv : Bytes } -> Bytes -> Maybe Bytes
+aesCtr k data =
+    if (Bytes.length k.key /= 16 && Bytes.length k.key /= 32) || Bytes.length k.iv /= 16 || modBy 16 (Bytes.length data) /= 0 then
+        Nothing
+
+    else
+        Just (aesCtrExtern k.key k.iv data)
+
+
+{-| OpenSSH's `bcrypt_pbkdf`: `length` bytes (1 to 1024) from a passphrase
+and a salt over `rounds` rounds, an OpenSSH key file's KDF. It takes about
+6 ms a round: a key file's 16 take 0.1 s, so a program with a window to
+keep drawing runs it apart.
+-}
+bcryptPbkdf : { passphrase : Bytes, salt : Bytes, rounds : Int, length : Int } -> Maybe Bytes
+bcryptPbkdf p =
+    nonEmpty (bcryptPbkdfExtern p.passphrase p.salt p.rounds p.length)
+
+
+nonEmpty : Bytes -> Maybe Bytes
+nonEmpty b =
+    if Bytes.isEmpty b then
+        Nothing
+
+    else
+        Just b
+
+
+
+-- EXTERNS
+
+
+@externPure(c, "ssh_crypto_hash")
+hashExtern : Int -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_hmac")
+hmacExtern : Int -> Bytes -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_equal")
+equalExtern : Bytes -> Bytes -> Int
+
+
+@externPure(c, "ssh_crypto_x25519Public")
+x25519PublicExtern : Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_x25519Shared")
+x25519SharedExtern : Bytes -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_verify")
+verifyExtern : Bytes -> Bytes -> Bytes -> Bytes -> Int
+
+
+@externPure(c, "ssh_crypto_tagLength")
+tagLengthExtern : Int -> Int
+
+
+@externPure(c, "ssh_crypto_blockSize")
+blockSizeExtern : Int -> Int
+
+
+@externPure(c, "ssh_crypto_seal")
+sealExtern : Int -> Bytes -> Bytes -> Int -> Int -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_openLength")
+openLengthExtern : Int -> Bytes -> Int -> Bytes -> Int
+
+
+@externPure(c, "ssh_crypto_open")
+openExtern : Int -> Bytes -> Bytes -> Int -> Int -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_aesCtr")
+aesCtrExtern : Bytes -> Bytes -> Bytes -> Bytes
+
+
+@externPure(c, "ssh_crypto_bcryptPbkdf")
+bcryptPbkdfExtern : Bytes -> Bytes -> Int -> Int -> Bytes

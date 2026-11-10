@@ -658,8 +658,15 @@ Each ends with its gate passing, and the gates before it still passing.
    *Gate:* corpus cases against a local listener: connect, refused, timeout,
    a name that does not resolve, a read that loses a race keeping its bytes,
    a large write; run on beelink1 too.
+   **Done 2026-11-10** (geng-lang Dnene41, `m4-puritty.md` §VA66):
+   `Os.Net.connect` with Happy Eyeballs, `listen` and `accept`,
+   `Os.Random.bytes`, and four connection kinds of `Os.Error`;
+   `accept/os-net` passes on Linux, Wine and beelink1. Timeout is a race
+   against `Process.sleep`, not a parameter; an unreachable address and a
+   name that does not resolve have no case (the harness has no network).
 3. **`ssh-crypto`.** *Gate:* the known-answer and Wycheproof tests, on both
    platforms; ChaCha20-Poly1305 and AES-GCM throughput measured beside SC4's.
+   **Done 2026-11-10:** SC13.
 4. **Transport**: version, packets, curve25519-sha256, Ed25519/RSA/ECDSA
    host-key verification, strict KEX, ext-info, rekey. *Gate:* the local
    sshd for each algorithm; the first replays; the scripted server's bad
@@ -731,3 +738,81 @@ answered on its own (SC2.1). The work follows SC11 in order.
 13. **The mismatch dialog** (SC9): a native Windows dialog, or puritty's
     own screen like every other prompt. *Leaning: native,* the one modal
     dialog, as `synthesis.md` §10.2 says.
+
+## SC13 · ssh-crypto as built (2026-11-10)
+
+`packages/ssh-crypto` is SC11's step 3, as SC6 and questions 2 and 3 said:
+PuTTY's primitives in C, under one Geng module, `SshCrypto`, of pure
+functions over `Bytes`.
+
+**What it carries of PuTTY.** `vendor.sh` copies 48 of PuTTY's C files
+(the crypto subset SC4 compiled, SHA-3 and MD5 which `ecc-ssh.c` and
+`rsa.c` name, eleven of `utils/` and three of `stubs/`) and the headers
+they include, unchanged, from `vendor/putty` at the commit in
+`src/Ext/putty/COMMIT` (`7507c54b`). A package compiles only
+`src/Ext/*.c`, so each PuTTY file is compiled through a one-line file of
+its own there (`pc_*.c`). Two files are ssh-crypto's own: `putty/putty.h`,
+in place of PuTTY's, which the `*-select.c` files include and which would
+bring PuTTY's whole program; and `ssh_crypto_config.h`, what PuTTY's CMake
+would find. The AES-NI, SHA-NI and CLMUL files are compiled with those
+instructions enabled for their functions alone (`#pragma clang attribute`),
+and PuTTY picks them at run time when the CPU has them, as it does in
+PuTTY. Compiled with `-Wall`, none warns.
+
+**The functions.** Hashes (SHA-1, -256, -384, -512); HMAC (SHA-1, -256,
+-512); a constant-time `equal`; X25519's public value and shared `K` (as
+the SSH `mpint` the exchange hash takes); `verify` for `ssh-ed25519`,
+`ecdsa-sha2-nistp256`, `rsa-sha2-256` and `rsa-sha2-512`, over SSH's
+blobs; `seal`, `openLength` and `open` for whole packets under
+`chacha20-poly1305@openssh.com` and `aes128`/`aes256-gcm@openssh.com`;
+AES-CTR and `bcrypt_pbkdf` for OpenSSH key files. Nothing draws random
+bytes: PuTTY's `random_read` answers only what a row supplies (the X25519
+private value) and is a crash otherwise. Nothing keeps state: a packet
+cipher is keyed again per packet from the sequence number and the count of
+packets under those keys, AES-GCM's nonce counter set to the starting IV's
+plus the count, as that many of PuTTY's `next_message` would leave it.
+Signing (step 6) is not here yet.
+
+**Two places PuTTY accepts what the standards refuse**, found by
+Wycheproof: an RSA signature not below the modulus (RFC 8017 §5.2.2), and
+an Ed25519 point encoding `x = 0` with the sign bit set (RFC 8032 §5.1.3).
+`ssh_crypto.c` refuses both before PuTTY sees them;
+`docs/upstream/putty-verify-accepts-malleable-signatures.md` has the
+report, not filed.
+
+**The gate.** `packages/ssh-crypto/tests/make-vectors.py` writes
+`vectors.txt`, 2,421 vectors, none from PuTTY: FIPS 180's and RFC 4231's
+and 2202's examples and random inputs against Python's `hashlib` and
+`hmac`; RFC 7748's X25519 parties and Wycheproof's `x25519` (266);
+Wycheproof's `ed25519`, `ecdsa_secp256r1_sha256` and the six
+`rsa_signature_{2048,3072,4096}_sha{256,512}` files, as SSH blobs (2,000
+with OpenSSH's own); `ssh-keygen -Y sign`'s signatures with each key type;
+36 packets sealed by `cryptography`'s ChaCha20, Poly1305 and AES-GCM to
+OpenSSH's two specifications, with counters that wrap; SP 800-38A's
+AES-CTR; and three `ssh-keygen` key files with a passphrase, which must
+decrypt to equal check words and the public key, and must not under the
+wrong passphrase. A packet is also opened with each of seven bytes
+changed and under the next nonce, and refused. Left out, and counted in
+the file's head: Wycheproof's "acceptable" cases (x25519 254, ed25519 29,
+rsa 6), which a verifier may take either way, and 221 ECDSA signatures
+whose DER does not parse and so have no SSH form. `tests/build.sh` builds
+the runner (`--windows` for the `.exe`); `ssh-crypto-tests` reads
+`vectors.txt` and ends with status 1 on any failure.
+
+| | nene (Ryzen 9 9950X), Linux | beelink1 (Ryzen 7 5700U), Windows 11 |
+|---|---|---|
+| vectors | 2,421 pass | 2,421 pass |
+| chacha20-poly1305, MB/s | 486, 489, 493 | 188, 189, 191 |
+| aes128-gcm, MB/s | 1,560 (three runs) | 860, 871, 871 |
+| aes256-gcm, MB/s | 1,560 (three runs) | 945, 958, 972 |
+
+Measured by `ssh-crypto-tests --bench`: 2,048 packets of 32,756 bytes
+sealed with each, from Geng, each call keying again. On Windows the
+clock's 15.6 ms steps make a run of about 70 ms good to some 20%, which is
+why AES-128 reads slower than AES-256 there. Against SC4's: PuTTY's
+ChaCha20-Poly1305 seals at about half of SC4's scalar C ChaCha20 alone on
+nene and 1.8 times the Geng probe's 270 MB/s; AES-GCM with AES-NI and
+CLMUL at three times that. Either is far above what a connection carries.
+On nene, decrypting ChaCha20-Poly1305 would add about a fifth to the CPU
+the core spends parsing a `cat` of a large file (108 to 124 MB/s,
+`geng-plan.md` §1.3); AES-GCM about a fourteenth.

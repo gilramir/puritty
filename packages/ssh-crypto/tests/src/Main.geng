@@ -1,0 +1,453 @@
+module Main exposing (main)
+
+{-| ssh-crypto's tests (puritty `docs/ssh-client.md` SC11 step 3): every
+vector in `vectors.txt` (`make-vectors.py`), checked through `SshCrypto`,
+with a count for each kind and the first failures of each. It ends with
+status 1 when any fails.
+
+    ssh-crypto-tests [VECTORS]
+    ssh-crypto-tests --bench
+
+`--bench` seals 2,048 packets of 32,756 bytes with each packet cipher,
+and says how fast.
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Dict exposing (Dict)
+import Int64
+import Os.Env
+import Os.Error
+import Os.File as File
+import Os.Path as Path
+import SshCrypto exposing (Cipher(..))
+import Task exposing (Task)
+import Time
+import UInt8
+
+
+main : Task Never {}
+main =
+    Task.map2 (\env perm -> { env = env, perm = perm }) Os.Env.getEnvironment File.initialize
+        |> Task.andThen
+            (\r ->
+                let
+                    path =
+                        Array.findLast (\a -> String.endsWith ".txt" a) r.env.args
+                            |> Maybe.map .value
+                            |> Maybe.withDefault "vectors.txt"
+                in
+                if Array.member "--bench" r.env.args then
+                    bench
+
+                else
+                    File.readFile r.perm (Path.fromString path)
+                        |> Task.andThen (\bytes -> report (run (Bytes.toStringLossy bytes)))
+                        |> Task.onError (\e -> Console.write ("cannot read " ++ path ++ ": " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 2))
+            )
+
+
+type alias Tally =
+    { pass : Int, fail : Int, failures : Array String }
+
+
+run : String -> Dict String Tally
+run text =
+    String.lines text
+        |> Array.foldl
+            (\line tallies ->
+                if String.isEmpty line || String.startsWith "#" line then
+                    tallies
+
+                else
+                    let
+                        kind =
+                            String.words line |> Array.first |> Maybe.withDefault ""
+
+                        tally =
+                            Dict.get kind tallies |> Maybe.withDefault { pass = 0, fail = 0, failures = [] }
+                    in
+                    Dict.set kind
+                        (if check kind (fields line) then
+                            { tally | pass = tally.pass + 1 }
+
+                         else
+                            { tally
+                                | fail = tally.fail + 1
+                                , failures =
+                                    if Array.length tally.failures < 20 then
+                                        Array.pushLast (String.takeFirst 300 line) tally.failures
+
+                                    else
+                                        tally.failures
+                            }
+                        )
+                        tallies
+            )
+            Dict.empty
+
+
+report : Dict String Tally -> Task x {}
+report tallies =
+    let
+        failed =
+            Dict.foldl (\_ t n -> n + t.fail) 0 tallies
+
+        text =
+            Dict.foldl
+                (\kind t acc ->
+                    acc
+                        ++ kind
+                        ++ ": "
+                        ++ String.fromInt t.pass
+                        ++ " pass, "
+                        ++ String.fromInt t.fail
+                        ++ " fail\n"
+                        ++ String.join "" (Array.map (\f -> "  FAIL " ++ f ++ "\n") t.failures)
+                )
+                ""
+                tallies
+    in
+    Console.write text
+        |> Task.andThen (\_ -> if failed > 0 then Os.Env.exitWithCode 1 else Task.succeed {})
+
+
+type alias Fields =
+    Dict String String
+
+
+fields : String -> Fields
+fields line =
+    String.words line
+        |> Array.dropFirst 1
+        |> Array.foldl
+            (\w d ->
+                when String.split "=" w is
+                    [ k, v ] ->
+                        Dict.set k v d
+
+                    _ ->
+                        d
+            )
+            Dict.empty
+
+
+hex : Fields -> String -> Bytes
+hex f name =
+    fromHex (Dict.get name f |> Maybe.withDefault "-")
+
+
+int : Fields -> String -> Int
+int f name =
+    Dict.get name f |> Maybe.andThen String.toInt |> Maybe.withDefault -999
+
+
+fromHex : String -> Bytes
+fromHex s =
+    if s == "-" then
+        Bytes.empty
+
+    else
+        let
+            digit c =
+                let
+                    n =
+                        Char.toCode c
+                in
+                if n >= 48 && n <= 57 then
+                    n - 48
+
+                else if n >= 97 && n <= 102 then
+                    n - 87
+
+                else
+                    0
+
+            chars =
+                String.toArray s
+        in
+        Array.range 0 (Array.length chars // 2 - 1)
+            |> Array.map
+                (\i ->
+                    UInt8.fromIntWrap
+                        (16 * (Array.get (2 * i) chars |> Maybe.map digit |> Maybe.withDefault 0)
+                            + (Array.get (2 * i + 1) chars |> Maybe.map digit |> Maybe.withDefault 0)
+                        )
+                )
+            |> Bytes.fromUInt8s
+
+
+hashOf : Int -> SshCrypto.Hash
+hashOf n =
+    when n is
+        0 ->
+            SshCrypto.Sha1
+
+        1 ->
+            SshCrypto.Sha256
+
+        2 ->
+            SshCrypto.Sha384
+
+        _ ->
+            SshCrypto.Sha512
+
+
+cipherOf : Int -> Cipher
+cipherOf n =
+    when n is
+        0 ->
+            ChaCha20Poly1305
+
+        1 ->
+            Aes128Gcm
+
+        _ ->
+            Aes256Gcm
+
+
+check : String -> Fields -> Bool
+check kind f =
+    when kind is
+        "hash" ->
+            SshCrypto.hash (hashOf (int f "which")) (hex f "data") == hex f "out"
+
+        "hashrepeat" ->
+            SshCrypto.hash (hashOf (int f "which")) (Bytes.flatten (Array.repeat (int f "count") (hex f "byte"))) == hex f "out"
+
+        "hmac" ->
+            let
+                mac =
+                    when int f "which" is
+                        0 ->
+                            SshCrypto.HmacSha1
+
+                        1 ->
+                            SshCrypto.HmacSha256
+
+                        _ ->
+                            SshCrypto.HmacSha512
+            in
+            SshCrypto.hmac mac (hex f "key") (hex f "data") == hex f "out"
+
+        "x25519pub" ->
+            SshCrypto.x25519Public (hex f "secret") == Just (hex f "pub")
+
+        "x25519" ->
+            let
+                got =
+                    SshCrypto.x25519Shared (hex f "secret") (hex f "theirs")
+            in
+            if int f "result" == 1 then
+                got == Just (hex f "k")
+
+            else
+                got == Nothing
+
+        "verify" ->
+            SshCrypto.verify
+                { algorithm = Bytes.toStringLossy (hex f "alg")
+                , publicKey = hex f "pub"
+                , signature = hex f "sig"
+                , data = hex f "data"
+                }
+                == (int f "result" == 1)
+
+        "packet" ->
+            checkPacket f
+
+        "aesctr" ->
+            SshCrypto.aesCtr { key = hex f "key", iv = hex f "iv" } (hex f "data") == Just (hex f "out")
+
+        "keyfile" ->
+            checkKeyFile f
+
+        _ ->
+            False
+
+
+{-| Sealed as the vector says; opened back; its length read; and a packet
+with one byte changed anywhere, or opened under the next nonce (the next
+sequence number for ChaCha20-Poly1305, the next count for AES-GCM),
+refused. -}
+checkPacket : Fields -> Bool
+checkPacket f =
+    let
+        keyed =
+            { cipher = cipherOf (int f "cipher"), key = hex f "key", iv = hex f "iv", sequence = int f "seq", count = int f "count" }
+
+        plain =
+            hex f "plain"
+
+        sealed =
+            hex f "sealed"
+
+        flipped at =
+            Bytes.flatten
+                [ Bytes.slice 0 at sealed
+                , Bytes.fromUInt8s [ UInt8.fromIntWrap (1 + (Bytes.get at sealed |> Maybe.map UInt8.toInt |> Maybe.withDefault 0)) ]
+                , Bytes.slice (at + 1) (Bytes.length sealed) sealed
+                ]
+
+        n =
+            Bytes.length sealed
+    in
+    (SshCrypto.seal keyed plain == Just sealed)
+        && (SshCrypto.open keyed sealed == Just plain)
+        && (SshCrypto.openLength { cipher = keyed.cipher, key = keyed.key, sequence = keyed.sequence } (Bytes.slice 0 4 sealed) == Just (Bytes.length plain - 4))
+        && Array.all (\at -> SshCrypto.open keyed (flipped at) == Nothing) [ 0, 3, 4, n // 2, n - 17, n - 16, n - 1 ]
+        -- ChaCha20-Poly1305's nonce is the sequence number, AES-GCM's the count
+        && (SshCrypto.open { keyed | sequence = keyed.sequence + 1 } sealed
+                == (if keyed.cipher == ChaCha20Poly1305 then
+                        Nothing
+
+                    else
+                        Just plain
+                   )
+           )
+        && (SshCrypto.open { keyed | count = keyed.count + 1 } sealed
+                == (if keyed.cipher == ChaCha20Poly1305 then
+                        Just plain
+
+                    else
+                        Nothing
+                   )
+           )
+
+
+{-| An OpenSSH key file's private part, decrypted with the key and IV
+`bcrypt_pbkdf` gives from the passphrase: its two check words are equal,
+and it holds the end of the public key. The wrong passphrase gives check words that
+differ. -}
+checkKeyFile : Fields -> Bool
+checkKeyFile f =
+    let
+        decrypt passphrase =
+            SshCrypto.bcryptPbkdf { passphrase = passphrase, salt = hex f "salt", rounds = int f "rounds", length = 48 }
+                |> Maybe.andThen (\k -> SshCrypto.aesCtr { key = Bytes.slice 0 32 k, iv = Bytes.slice 32 48 k } (hex f "encrypted"))
+
+        checksHold d =
+            Bytes.slice 0 4 d == Bytes.slice 4 8 d
+
+        pub =
+            hex f "pub"
+
+        -- the public key's last 32 bytes: an RSA key's private part holds
+        -- its numbers in another order than its public blob, n last in both
+        tail =
+            Bytes.slice (Bytes.length pub - 32) (Bytes.length pub) pub
+
+        holds d =
+            Array.any (\i -> Bytes.slice i (i + 32) d == tail) (Array.range 8 (Bytes.length d - 32))
+    in
+    when { right = decrypt (hex f "passphrase"), wrong = decrypt (Bytes.fromString "hunter3") } is
+        { right = Just d, wrong = Just w } ->
+            checksHold d && holds d && not (checksHold w)
+
+        _ ->
+            False
+
+
+-- BENCH
+
+
+bench : Task x {}
+bench =
+    [ ChaCha20Poly1305, Aes128Gcm, Aes256Gcm ]
+        |> Array.map benchOne
+        |> Task.sequence
+        |> Task.map (\_ -> {})
+
+
+{-| 2,048 packets of 32,756 bytes, each sealed under its own count and sequence
+number, so no two calls are the same. -}
+benchOne : Cipher -> Task x {}
+benchOne cipher =
+    let
+        keyLength =
+            when cipher is
+                ChaCha20Poly1305 ->
+                    64
+
+                Aes128Gcm ->
+                    16
+
+                Aes256Gcm ->
+                    32
+
+        key =
+            Bytes.fromUInt8s (Array.map UInt8.fromIntWrap (Array.range 1 keyLength))
+
+        iv =
+            Bytes.fromUInt8s (Array.map UInt8.fromIntWrap (Array.range 1 12))
+
+        -- the length field, then 32,752 bytes: a multiple of both blocks
+        packet =
+            Bytes.flatten [ Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0, 0, 127, 240 ]), Bytes.fromString (String.repeat 32752 "p") ]
+
+        count =
+            2048
+
+        -- the sequence numbers start at the clock's, so no pass can seal
+        -- before the clock is read
+        sealAll from i total =
+            if i >= count then
+                total
+
+            else
+                sealAll from
+                    (i + 1)
+                    (total
+                        + (SshCrypto.seal { cipher = cipher, key = key, iv = iv, sequence = from + i, count = i } packet
+                            |> Maybe.map Bytes.length
+                            |> Maybe.withDefault 0
+                          )
+                    )
+    in
+    Time.now
+        |> Task.andThen
+            (\t0 ->
+                let
+                    total =
+                        sealAll (millis t0) 0 0
+                in
+                Time.now
+                    |> Task.andThen
+                        (\t1 ->
+                            let
+                                ms =
+                                    max 1 (millis t1 - millis t0)
+                            in
+                            Console.write
+                                (cipherName cipher
+                                    ++ ": "
+                                    ++ String.fromInt (total // 1048576)
+                                    ++ " MiB sealed in "
+                                    ++ String.fromInt ms
+                                    ++ " ms, "
+                                    ++ String.fromInt (total // 1000 // ms)
+                                    ++ " MB/s\n"
+                                )
+                        )
+            )
+
+
+cipherName : Cipher -> String
+cipherName cipher =
+    when cipher is
+        ChaCha20Poly1305 ->
+            "chacha20-poly1305"
+
+        Aes128Gcm ->
+            "aes128-gcm"
+
+        Aes256Gcm ->
+            "aes256-gcm"
+
+
+{-| The clock's milliseconds in an `Int`, wrapped: a difference of two
+taken less than 24 days apart is right. -}
+millis : Time.Posix -> Int
+millis t =
+    Int64.toIntWrap (Time.posixToMillis t)
