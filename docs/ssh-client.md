@@ -1056,3 +1056,38 @@ columns wide, through ConPTY.
 `env` (step 8); a server's global requests before the channel opens go to
 the layer that has the session, which the window's loop is (step 8);
 `tmux -CC`; X11 and agent forwarding, port forwarding.
+
+## SC18 · The window's session (step 8, begun 2026-11-10)
+
+**`Ssh.Session`** is the client as one task, for puritty's window to run
+beside its loop: it connects, makes the exchange, holds the host's key to
+`known_hosts`, logs in with the key files and an agent, and runs the
+session channel, telling the window what happens through a `Source` of
+notices (`Status`, `Asking`, `Banner`, `Started`, `Output`, `Exited`,
+`Failed`, `Ended`) and taking keys, sizes, answers and a hang-up through a
+`Source` of inputs. Its loop races the socket's read, the inputs and the
+keepalive's timer; a read and a `Source.next` that lose keep what they
+took (D1045, D377).
+
+What it decides, as OpenSSH does and SC9 asks:
+
+- **Nothing goes to a server before its key is settled.** Authentication
+  begins only when the keys are in use *and* the host's key is trusted.
+- **A known key** goes on; **a revoked one** is refused; **a changed one**
+  is refused with no question, the message saying which line of the known
+  hosts holds the old key and what to do if the host was rebuilt; **an
+  unknown one** is refused under `StrictHostKeyChecking yes`, written
+  without a question under `accept-new` and `no`, and asked about under
+  `ask` (the default): trust and remember, trust this once, or decline.
+  The known key types order the host key algorithms (SC15).
+- **A key file with a passphrase** is asked about only when the server
+  would take its key (SC16), and asked again after a wrong passphrase,
+  three tries in all; the key is loaded, signs, and is forgotten.
+- **Keepalives**, when `ServerAliveInterval` is set, end the session after
+  `ServerAliveCountMax` go unanswered.
+- **The exit status** is the program's, 255 for a signal, as `ssh` gives.
+
+`ssh-tests session` drives it as the window does, answering from its
+options; `sshd.py`'s ten `driver-*` cases hold the decisions above
+against OpenSSH 9.6, with the port, the file's path, the fingerprint and
+the user masked in the pins.

@@ -18,6 +18,7 @@ usage (after tests/build.sh):
 """
 
 import argparse
+import re
 import getpass
 import os
 import shutil
@@ -98,6 +99,23 @@ SESSION_CASES = [
     ("session-stderr", ["--exec", "echo oops >&2; exit 1"], []),
     ("session-signal", ["--exec", "kill -TERM $$"], []),
     ("session-keepalive", ["--exec", "sleep 1", "--keepalive"], []),
+]
+
+
+# Ssh.Session (step 8): name, how known_hosts starts (empty, holding the
+# server's key, or holding another key for it), client options. The
+# port and the file's path are written as PORT and KNOWN_HOSTS in the pins.
+SESSION_DRIVER_CASES = [
+    ("driver-trust-remember", "empty", ["--identity", "{ed}", "--trust"]),
+    ("driver-trust-once", "empty", ["--identity", "{ed}", "--trust-once"]),
+    ("driver-decline", "empty", ["--identity", "{ed}"]),
+    ("driver-known", "known", ["--identity", "{ed}"]),
+    ("driver-changed", "other", ["--identity", "{ed}", "--trust"]),
+    ("driver-strict-yes", "empty", ["--identity", "{ed}", "--strict", "yes"]),
+    ("driver-accept-new", "empty", ["--identity", "{ed}", "--strict", "accept-new"]),
+    ("driver-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"]),
+    ("driver-wrong-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "wrong"]),
+    ("driver-unknown-key-then-agentless", "known", ["--identity", "{other}", "--identity", "{rsa}"]),
 ]
 
 
@@ -245,6 +263,30 @@ def main():
             print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
         else:
             print(f"ok   {name}")
+    other_key = WORK / "userkeys" / "other.pub"
+    for name, start, options in SESSION_DRIVER_CASES:
+        server = Server([])
+        kh = WORK / f"known_hosts.{name}"
+        server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
+        lookup = f"[127.0.0.1]:{server.port}"
+        kh.write_text("" if start == "empty" else f"{lookup} {' '.join(server_pub if start == 'known' else other_key.read_text().split()[:2])}\n")
+        try:
+            got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
+                              "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])
+            got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text() else "no") + "\n"
+        finally:
+            server.stop()
+        got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))
+        got = got.replace(f"as {getpass.getuser()}", "as USER")
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     for name, adds, extra in AGENT_CASES:
         server = Server(extra)
         agent = Agent(keys, adds)
@@ -279,7 +321,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(AGENT_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

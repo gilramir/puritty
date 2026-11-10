@@ -8,6 +8,8 @@ module Main exposing (main)
     ssh-tests known-hosts FILE
     ssh-tests config FILE
     ssh-tests login HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--passphrase P] [--password P] [--responses A,B] [--rekey]
+    ssh-tests session HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--known-hosts FILE] [--strict ask|yes|accept-new|no]
+        [--trust | --trust-once] [--passphrase P] [--password P] [--responses A,B] [--exec CMD] [--pty COLS,ROWS] [--stdin TEXT]
         [--exec CMD | --shell] [--pty COLS,ROWS] [--not-utf8] [--env NAME=VALUE] [--stdin TEXT] [--resize COLS,ROWS] [--stdin2 TEXT] [--stdin-bytes N] [--eof] [--hex] [--keepalive]
 
 `connect` makes the exchange with the server, asks for the `ssh-userauth`
@@ -38,11 +40,14 @@ import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
 import Os.Random
+import Process
+import Source exposing (Source)
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
 import Ssh.Config as Config
 import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
+import Ssh.Session as Session
 import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
 import SshCrypto
@@ -86,7 +91,12 @@ configOrMore r =
                     login r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
 
                 _ ->
-                    fuzzOrUsage r
+                    when afterWord "session" r.args is
+                        [ host, port ] ->
+                            sessionMode r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
+
+                        _ ->
+                            fuzzOrUsage r
 
 
 fuzzOrUsage : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
@@ -1449,3 +1459,117 @@ onConnectionEvent event session =
             say shown
                 |> Task.andThen (\_ -> say "the channel closed")
                 |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True })
+
+
+-- SSH.SESSION, as the window drives it
+
+
+sessionMode : { args : Array String, fs : File.Permission, net : Net.Permission } -> { host : String, port : Int } -> Task Never {}
+sessionMode r target =
+    let
+        many name =
+            Array.indexedMap (\i a -> { index = i, arg = a }) r.args
+                |> Array.keepIf (\a -> a.arg == name)
+                |> Array.mapAndFlatten (\a -> Array.get (a.index + 1) r.args |> Maybe.map (\f -> [ f ]) |> Maybe.withDefault [])
+
+        options =
+            { host = target.host
+            , port = target.port
+            , user = option "--user" r.args |> Maybe.withDefault "nobody"
+            , identityFiles = many "--identity"
+            , identitiesOnly = False
+            , agent = option "--agent" r.args
+            , knownHostsFiles = many "--known-hosts"
+            , strictHostKeyChecking = option "--strict" r.args |> Maybe.withDefault "ask"
+            , hostKeyAlias = Nothing
+            , session = sessionOf r.args
+            , keepaliveSeconds = 0
+            , keepaliveCountMax = 3
+            }
+    in
+    Task.map2 (\notices inputs -> { notices = notices, inputs = inputs }) Source.new Source.new
+        |> Task.andThen
+            (\sources ->
+                Process.spawn (Session.run { net = r.net, fs = r.fs } options sources.notices sources.inputs)
+                    |> Task.andThen (\_ -> watch r.args sources [])
+            )
+
+
+{-| The session's notices, each a line, each question answered from the
+options; the output shown at the end. -}
+watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Array Bytes -> Task Never {}
+watch args sources output =
+    Source.next sources.notices
+        |> Task.andThen
+            (\notice ->
+                let
+                    answer a =
+                        Source.emit sources.inputs (Session.Answered a)
+
+                    next =
+                        watch args sources output
+                in
+                when notice is
+                    Nothing ->
+                        Task.succeed {}
+
+                    Just (Session.Status text) ->
+                        say text |> Task.andThen (\_ -> next)
+
+                    Just (Session.Banner text) ->
+                        say ("banner: " ++ String.trim text) |> Task.andThen (\_ -> next)
+
+                    Just (Session.Asking ask) ->
+                        (when ask is
+                            Session.TrustHostKey k ->
+                                say ("asked to trust " ++ k.host ++ "'s " ++ k.algorithm ++ " key")
+                                    |> Task.andThen
+                                        (\_ ->
+                                            if Array.member "--trust" args then
+                                                answer (Session.Trust { remember = True })
+
+                                            else if Array.member "--trust-once" args then
+                                                answer (Session.Trust { remember = False })
+
+                                            else
+                                                answer Session.Decline
+                                        )
+
+                            Session.Password _ ->
+                                say "asked for a password" |> Task.andThen (\_ -> answer (option "--password" args |> Maybe.map Session.Give |> Maybe.withDefault Session.Decline))
+
+                            Session.Passphrase _ ->
+                                say "asked for a passphrase" |> Task.andThen (\_ -> answer (option "--passphrase" args |> Maybe.map Session.Give |> Maybe.withDefault Session.Decline))
+
+                            Session.Responses _ ->
+                                say "asked to answer prompts" |> Task.andThen (\_ -> answer (option "--responses" args |> Maybe.map (\a -> Session.GiveAll (String.split "," a)) |> Maybe.withDefault Session.Decline))
+                        )
+                            |> Task.andThen (\_ -> next)
+
+                    Just Session.Started ->
+                        say "started"
+                            |> Task.andThen
+                                (\_ ->
+                                    when option "--stdin" args is
+                                        Just text ->
+                                            Source.emit sources.inputs (Session.Keys (Bytes.fromString (unescape text)))
+
+                                        Nothing ->
+                                            Task.succeed {}
+                                )
+                            |> Task.andThen (\_ -> next)
+
+                    Just (Session.Output bytes) ->
+                        watch args sources (Array.pushLast bytes output)
+
+                    Just (Session.Exited status) ->
+                        say ("output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten output))))
+                            |> Task.andThen (\_ -> say ("exit status " ++ String.fromInt status))
+                            |> Task.andThen (\_ -> watch args sources [])
+
+                    Just (Session.Failed why) ->
+                        say ("failed: " ++ why) |> Task.andThen (\_ -> next)
+
+                    Just Session.Ended ->
+                        say "ended"
+            )
