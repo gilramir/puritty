@@ -1450,14 +1450,22 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 
 static void *window_thread(void *arg) {
     (void) arg;
-    WNDCLASSW wc;
+    WNDCLASSEXW wc;
     memset(&wc, 0, sizeof wc);
+    wc.cbSize = sizeof wc;
     wc.lpfnWndProc = proc;
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = L"puritty";
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR) IDC_IBEAM);
-    wc.hIcon = LoadIconW(NULL, (LPCWSTR) IDI_APPLICATION);
-    RegisterClassW(&wc);
+    /* the exe's icon (app/windows/icon), each size taken from the .ico's own
+     * picture of it: the large for Alt+Tab, the small for the title bar and
+     * the taskbar; Windows' own where the exe has none */
+    wc.hIcon = (HICON) LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON),
+                                  GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
+    wc.hIconSm = (HICON) LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                    GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+    if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, (LPCWSTR) IDI_APPLICATION);
+    RegisterClassExW(&wc);
     DWORD style = WS_OVERLAPPEDWINDOW, ex = 0;
     RECT r = {0, 0, open_cols * cell_w, open_rows * cell_h};
     AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) open_dpi);

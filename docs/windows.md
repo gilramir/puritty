@@ -752,3 +752,38 @@ unchanged, on Linux and Windows.
 **The settings window and the host list show an arrow**, not the
 terminal's I-beam (Gilbert: the settings window's pointer should be a
 pointer), and give the I-beam back when the host list becomes a session.
+
+## WS24 · The exe's icon (2026-11-10)
+
+Gilbert asked for an icon: a small lambda in front of a CRT. Six drafts
+were drawn. He chose D, an outlined CRT with a `>` prompt and a solid
+lambda in front, all in one color, to try on Windows, with A (a beige
+three-quarter CRT and an amber lambda) as the fallback.
+
+- **The art** is in `app/windows/icon`, as two SVGs:
+  - `puritty.svg` is for 32 px and up.
+  - `puritty-small.svg` is for 16 to 24 px. Its strokes are at least a
+    pixel wide at 16, and it has no prompt, which would only be a smudge
+    there.
+
+  The gap around the lambda is cut out of the CRT by a mask, so it is
+  transparent and the icon is one color over whatever is behind it.
+  The color is a blue, `#2B8BE6`, chosen because it reads on a light
+  Explorer and a dark taskbar alike. A pure black or white one-color icon
+  would vanish on one of the two.
+- **The .ico.** `build.sh` renders each size (16, 20, 24, 32, 40, 48,
+  64, 256) with Chromium from geng-lang's browser harness, and
+  `pack-ico.py` packs them as PNG entries into `puritty.ico`. The PNGs
+  and the .ico are committed, so building the exe needs neither
+  Chromium nor Python.
+- **The exe.** `build-windows.sh` compiles `puritty.rc` with the
+  toolchain's `windres` into `.harness-work/windows/icon.res.o`, and
+  links it as resource 1.
+- **The window.** It registers with `RegisterClassExW`. It loads
+  resource 1 at the system's large and small icon sizes, so that each
+  is the .ico's own picture of that size and not a scaled one. Windows'
+  own application icon is used where the exe has none.
+
+Checked on beelink1: the title bar shows the small cut, and the taskbar
+button the 32 px picture. The window on Linux still has no icon of its
+own (`_NET_WM_ICON`), and neither does a desktop file.
