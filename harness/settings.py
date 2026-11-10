@@ -131,6 +131,54 @@ def run_case(env0, xdo, name, before, keys):
     return got, extra
 
 
+def windows_named(env, xdo, name):
+    out = subprocess.run([xdo, "search", "--name", f"^{name}$"], env=env, capture_output=True, text=True).stdout
+    return out.split()
+
+
+def run_opening(env0, xdo, name):
+    """Opening the window (ST9): Ctrl+Comma in a terminal, twice, opens one;
+    a second `puritty settings` raises the first and ends."""
+    home = WORK / name
+    shutil.rmtree(home, ignore_errors=True)
+    (home / "config" / "puritty").mkdir(parents=True)
+    env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"))
+    started = []
+    try:
+        if name == "ctrl-comma":
+            t = subprocess.Popen([str(APP), "--title", "reload-term", "--", "sh", "-c", "exec sleep 600"], env=env,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            started.append(t)
+            win = subprocess.run([xdo, "search", "--sync", "--name", "reload-term"], env=env, capture_output=True,
+                                 text=True, timeout=10).stdout.split()[0]
+            subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
+            subprocess.run([xdo, "key", "ctrl+comma"], env=env, check=True)
+            time.sleep(1.5)
+            first = len(windows_named(env, xdo, "puritty settings"))
+            subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
+            subprocess.run([xdo, "key", "ctrl+comma"], env=env, check=True)
+            time.sleep(1.5)
+            second = len(windows_named(env, xdo, "puritty settings"))
+            got = f"after one: {first}; after two: {second}\n"
+        else:
+            a = subprocess.Popen([str(APP), "settings"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            started.append(a)
+            time.sleep(1.5)
+            b = subprocess.run([str(APP), "settings"], env=env, capture_output=True, timeout=10)
+            got = f"the second ended with {b.returncode}; windows: {len(windows_named(env, xdo, 'puritty settings'))}\n"
+    finally:
+        for w in windows_named(env, xdo, "puritty settings"):
+            subprocess.run([xdo, "windowclose", w], env=env)
+        for p in started:
+            p.terminate()
+            p.wait(5)
+        time.sleep(0.3)
+    return got, None
+
+
+OPENING = ["ctrl-comma", "second-raises"]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("-f", dest="filter", default="")
@@ -148,12 +196,15 @@ def main():
     time.sleep(0.5)
     fails = runs = 0
     try:
-        for name, before, keys in CASES:
+        for name, before, keys in CASES + [(o, None, None) for o in OPENING]:
             if a.filter not in name:
                 continue
             runs += 1
-            got, extra = run_case(env, xdo, name, before, keys)
-            pin = PINS / f"{name}.toml"
+            if keys is None:
+                got, extra = run_opening(env, xdo, name)
+            else:
+                got, extra = run_case(env, xdo, name, before, keys)
+            pin = PINS / (f"{name}.txt" if keys is None else f"{name}.toml")
             if a.update:
                 PINS.mkdir(parents=True, exist_ok=True)
                 pin.write_text(got)

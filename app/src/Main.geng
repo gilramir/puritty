@@ -130,6 +130,9 @@ type alias Model =
       -- what was wrong in the settings file when it was last read, the
       -- first of it shown in the title (docs/settings.md ST17)
     , troubles : Array String
+      -- how Ctrl+Comma starts the settings window (docs/settings.md ST9):
+      -- this program's own file, with `settings`, not tied to this one
+    , settingsWindow : Maybe { cp : Process.Permission, program : String, args : Array String }
     }
 
 
@@ -316,12 +319,31 @@ startIn cp vars given problems locale config =
                             charset =
                                 Charset.fromName (Maybe.withDefault locale.charset config.charset)
                         in
-                        watchSettings given
+                        Task.map2 (\events self -> { events = events, self = self })
+                            (watchSettings given)
+                            (Os.Env.executable |> Task.map Just |> Task.onError (\_ -> Task.succeed Nothing))
                             |> Task.andThen
-                                (\events ->
+                                (\w ->
+                                    let
+                                        opener =
+                                            Maybe.map
+                                                (\self ->
+                                                    { cp = cp
+                                                    , program = Path.toString self
+                                                    , args =
+                                                        when given.file is
+                                                            Just f ->
+                                                                if f.required then [ "settings", "--config", Path.toString f.path ] else [ "settings" ]
+
+                                                            Nothing ->
+                                                                [ "settings" ]
+                                                    }
+                                                )
+                                                w.self
+                                    in
                                     spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                                         |> Task.mapError Os.Error.toString
-                                        |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = events, at = -1 } problems)
+                                        |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = w.events, at = -1 } problems opener)
                                 )
             )
 
@@ -351,8 +373,8 @@ the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Process.Child -> Settings -> Array String -> Task String {}
-run imeLog shotPath charset config cell child settings problems =
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Process.Child -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
+run imeLog shotPath charset config cell child settings problems opener =
     when Process.terminal child is
         Nothing ->
             Task.fail "the program has no terminal"
@@ -413,6 +435,7 @@ run imeLog shotPath charset config cell child settings problems =
                             , settings = settings
                             , shotPath = shotPath
                             , troubles = problems
+                            , settingsWindow = opener
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -851,6 +874,29 @@ applySettings new m =
         Task.succeed applied
 
 
+{-| Ctrl+Comma, as Windows Terminal, VS Code and Ghostty open their
+settings (`settings-ui.md` §1): in the usual key encoding a program cannot
+tell it from a comma. -}
+isSettingsKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+isSettingsKey k =
+    k.action /= 0 && Bitwise.and k.mods 15 == 2 && k.sym == 0x2C
+
+
+{-| The settings window started, not tied to this window; a failure said
+on standard error. -}
+openSettings : (taken m : Model) -> Task x Model
+openSettings m =
+    when m.settingsWindow is
+        Just w ->
+            Process.spawn w.cp w.program w.args (Process.defaultSpawnOptions Ignored)
+                |> Task.map (\_ -> {})
+                |> Task.onError (\e -> Console.writeErr ("puritty: the settings window: " ++ Os.Error.toString e ++ "\n"))
+                |> Task.map (\_ -> m)
+
+        Nothing ->
+            Console.writeErr "puritty: the settings window: this program's own file is not known\n" |> Task.map (\_ -> m)
+
+
 {-| The frame just drawn, written to `PURITTY_SHOT`'s file when it is set. -}
 shoot : (taken m : Model) -> Task x Model
 shoot m =
@@ -988,6 +1034,12 @@ handleOne : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> Wind
 handleOne terminal fd ms rest ev m =
             when ev is
                 Window.Key k ->
+                  if isSettingsKey k then
+                    -- Ctrl+Comma: the settings window (docs/settings.md ST9),
+                    -- which raises one already open
+                    openSettings m |> Task.andThen (\next -> handle terminal fd ms rest next)
+
+                  else
                     when zoomOf m k is
                         Just points ->
                             Window.zoom points

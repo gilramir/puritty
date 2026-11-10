@@ -59,6 +59,25 @@ run r =
         given =
             { file = SettingsSource.settingsFile r.vars r.config, fs = r.fs, title = Nothing, program = [] }
     in
+    -- one settings window: a second raises the first and ends (ST8)
+    Window.raise title
+        |> Task.andThen
+            (\already ->
+                if already then
+                    Task.succeed {}
+
+                else
+                    openWindow r given
+            )
+
+
+title : String
+title =
+    "puritty settings"
+
+
+openWindow : { fs : File.Permission, vars : Dict String String, config : Maybe Path.Path } -> Given -> Task String {}
+openWindow r given =
     Platform.locale r.vars
         |> Task.andThen
             (\locale ->
@@ -72,7 +91,7 @@ run r =
                                 , points = Config.defaults.points
                                 , lang = locale.language
                                 , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
-                                , title = "puritty settings"
+                                , title = title
                                 }
                                 |> Task.andThen
                                     (\opened ->

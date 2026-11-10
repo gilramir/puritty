@@ -316,7 +316,8 @@ built, as the Windows steps did.
 5. **The settings window** (ST7, ST8): every page of today's settings,
    search, modified only, reset, Undo; `harness/settings.py`.
 6. **Opening it** (ST9): Ctrl+Comma, the Ctrl+right-click menu, the
-   Windows system menu, raising one already open.
+   Windows system menu, raising one already open. *Ctrl+Comma and raising
+   built (ST22).*
 7. **Hosts** (ST10, ST11): the entries, `~/.ssh/config`'s, `--host`,
    quick connect, the Hosts page, `start` (V64) and the list that
    becomes the session (V65).
@@ -650,3 +651,41 @@ DotumChe and Fira Code first.
 chosen, a name typed taken as typed); the settings gate 10 of 10, with
 `font-chosen` (Fira Code from "fira" on the gate's fonts); pixels 36 of 36
 on Linux and on Windows, events 13 of 13, reload 14 of 14 on Windows.
+
+## ST22 · Step 6, first part: Ctrl+Comma, and one settings window (2026-11-10)
+
+**Ctrl+Comma** in a terminal starts the settings window: this program's
+own file again (`Os.Env.executable`, geng-lang Dnene40, which `os` did not
+have), with `settings`, and `--config FILE` when the terminal was given
+one, on `Os.Process`'s `Ignored` connection, so that it is tied to the
+terminal by nothing and outlives it. A failure is said on standard error.
+In the usual key encoding a program cannot tell Ctrl+Comma from a comma,
+so nothing a program could ask for is taken from it (`settings-ui.md`
+§1).
+
+**One settings window.** `puritty settings` first looks for a window
+titled "puritty settings" and, if there is one, brings it forward and
+ends (`Window.raise`, ST8): a second Ctrl+Comma, or a second `puritty
+settings` from a shell, raises the first. On X11 the candidates are the
+window manager's `_NET_CLIENT_LIST`, or with none the root's children and
+theirs, matched by `_NET_WM_NAME` or `WM_NAME`; one found is asked active
+with `_NET_ACTIVE_WINDOW` and raised and focused itself, for a display
+with no window manager; it is asked on a connection of its own, before
+this process has a window. On Windows it is `FindWindowW` of puritty's
+class and the title, and `SetForegroundWindow`, which Windows allows a
+process the foreground one started.
+
+**Held by** the settings gate, now 12 of 12 with two cases: `ctrl-comma`
+(one window after one Ctrl+Comma, and after two) and `second-raises` (the
+second ends with 0, one window). **On Windows**, in Gilbert's session
+with the events gate's driver: Ctrl+Comma in a terminal started one child
+`puritty.exe` titled "puritty settings", and it took the foreground (the
+driver's own check that the terminal had it stopped the case, which is
+the sign); a second `puritty settings` over ssh ended with 0, the first
+still running. Held as before: `app/tests` 48 of 48, pointer 51 of 51, IME
+14 of 14, reload 15 of 15 and 14 of 14, pixels 36 of 36 on both, events 13
+of 13.
+
+**Left of step 6:** the Ctrl+right-click menu (Windows' own on Windows,
+drawn by puritty on Linux) and the Windows system menu's items, which come
+with the hosts (step 7) since they list them.

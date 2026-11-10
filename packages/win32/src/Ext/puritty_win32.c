@@ -1651,6 +1651,24 @@ geng_cancel puritty_win32_setfont(int32_t points, void *font_bytes, void *lang_b
     return (geng_cancel) {0};
 }
 
+/* RAISING ANOTHER WINDOW (docs/settings.md ST8): puritty's window titled
+ * `name`, restored if it is minimized and brought to the foreground, which
+ * Windows allows a process the foreground one started. Answers 1 when one
+ * was found. */
+geng_cancel puritty_win32_raise(void *name_bytes, geng_wait *wait) {
+    char *name = string_of(name_bytes);
+    wchar_t *w = wide(name);
+    free(name);
+    HWND h = FindWindowW(L"puritty", w);
+    free(w);
+    if (h != NULL) {
+        if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+        SetForegroundWindow(h);
+    }
+    geng_succeed(wait, geng_slot_I4(h != NULL));
+    return (geng_cancel) {0};
+}
+
 geng_cancel puritty_win32_title(void *text, geng_wait *wait) {
     char *t = string_of(text);
     wchar_t *w = wide(t);

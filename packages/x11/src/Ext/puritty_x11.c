@@ -1465,6 +1465,91 @@ geng_cancel puritty_x11_title(void *text, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* RAISING ANOTHER WINDOW (docs/settings.md ST8)
+ *
+ * A window of this display whose title is `name`, brought forward, on a
+ * connection of its own, since it is asked before this process has a
+ * window: the window manager's `_NET_CLIENT_LIST`, or with none the root's
+ * children and theirs, searched by `_NET_WM_NAME` and `WM_NAME`; one found
+ * is asked active with `_NET_ACTIVE_WINDOW` and raised and focused itself,
+ * for a display with no window manager. Answers 1 when one was found. */
+
+static xcb_atom_t atom_on(xcb_connection_t *c, const char *name) {
+    xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(c, xcb_intern_atom(c, 0, (uint16_t) strlen(name), name), NULL);
+    xcb_atom_t a = r ? r->atom : XCB_ATOM_NONE;
+    free(r);
+    return a;
+}
+
+static int titled(xcb_connection_t *c, xcb_window_t w, const char *name, xcb_atom_t net_name, xcb_atom_t utf8) {
+    const xcb_atom_t props[2] = {net_name, XCB_ATOM_WM_NAME};
+    const xcb_atom_t types[2] = {utf8, XCB_ATOM_STRING};
+    for (int k = 0; k < 2; k++) {
+        xcb_get_property_reply_t *r = xcb_get_property_reply(c, xcb_get_property(c, 0, w, props[k], types[k], 0, 1024), NULL);
+        if (r == NULL) continue;
+        int len = xcb_get_property_value_length(r);
+        int same_name = len == (int) strlen(name) && memcmp(xcb_get_property_value(r), name, (size_t) len) == 0;
+        free(r);
+        if (same_name) return 1;
+    }
+    return 0;
+}
+
+geng_cancel puritty_x11_raise(void *name_bytes, geng_wait *wait) {
+    char *name = string_of(name_bytes);
+    int found = 0;
+    xcb_connection_t *c = xcb_connect(NULL, NULL);
+    if (!xcb_connection_has_error(c)) {
+        xcb_screen_t *s = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
+        xcb_atom_t clients = atom_on(c, "_NET_CLIENT_LIST"), active = atom_on(c, "_NET_ACTIVE_WINDOW");
+        xcb_atom_t net_name = atom_on(c, "_NET_WM_NAME"), utf8 = atom_on(c, "UTF8_STRING");
+        xcb_window_t *ws = NULL;
+        int n = 0;
+        xcb_get_property_reply_t *list = xcb_get_property_reply(c, xcb_get_property(c, 0, s->root, clients, XCB_ATOM_WINDOW, 0, 4096), NULL);
+        if (list != NULL && xcb_get_property_value_length(list) > 0) {
+            n = xcb_get_property_value_length(list) / 4;
+            ws = malloc((size_t) n * sizeof *ws);
+            memcpy(ws, xcb_get_property_value(list), (size_t) n * sizeof *ws);
+        } else {
+            xcb_query_tree_reply_t *t = xcb_query_tree_reply(c, xcb_query_tree(c, s->root), NULL);
+            for (int i = 0; t != NULL && i < xcb_query_tree_children_length(t); i++) {
+                xcb_window_t top = xcb_query_tree_children(t)[i];
+                ws = realloc(ws, (size_t) (n + 1) * sizeof *ws);
+                ws[n++] = top;
+                xcb_query_tree_reply_t *u = xcb_query_tree_reply(c, xcb_query_tree(c, top), NULL);
+                for (int j = 0; u != NULL && j < xcb_query_tree_children_length(u); j++) {
+                    ws = realloc(ws, (size_t) (n + 1) * sizeof *ws);
+                    ws[n++] = xcb_query_tree_children(u)[j];
+                }
+                free(u);
+            }
+            free(t);
+        }
+        free(list);
+        for (int i = 0; i < n && !found; i++) {
+            if (!titled(c, ws[i], name, net_name, utf8)) continue;
+            found = 1;
+            xcb_client_message_event_t ev = {0};
+            ev.response_type = XCB_CLIENT_MESSAGE;
+            ev.format = 32;
+            ev.window = ws[i];
+            ev.type = active;
+            ev.data.data32[0] = 1;
+            ev.data.data32[1] = XCB_CURRENT_TIME;
+            xcb_send_event(c, 0, s->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY, (const char *) &ev);
+            const uint32_t above = XCB_STACK_MODE_ABOVE;
+            xcb_configure_window(c, ws[i], XCB_CONFIG_WINDOW_STACK_MODE, &above);
+            xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, ws[i], XCB_CURRENT_TIME);
+        }
+        free(ws);
+        xcb_flush(c);
+    }
+    xcb_disconnect(c);
+    free(name);
+    geng_succeed(wait, geng_slot_I4(found));
+    return (geng_cancel) {0};
+}
+
 geng_cancel puritty_x11_shot(void *path_bytes, geng_wait *wait) {
     char *path = string_of(path_bytes);
     int r = write_shot(path);
