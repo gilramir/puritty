@@ -269,6 +269,12 @@ another monitor, if he has one.
 4. **One app, two manifests** (WS10), or a Geng feature for dependencies by
    platform first. *Leaning: two manifests now.*
 5. **The IME** (WS6): IMM32 first, TSF when needed. *Leaning: IMM32.*
+6. **Windows' own libraries in a package** (WS15): a `[native]` key that
+   names system libraries, or a `.pc` file the package carries. *Leaning:
+   the key; a `.pc` file for libraries that are not packages is a work-around.*
+7. **The GUI subsystem** (WS15): a key in the application's manifest
+   (`[native] subsystem = "gui"`), or a `geng make` flag. *Leaning: the
+   manifest, since it is a property of the program, not of one build.*
 
 ## WS14 · Step 1 built: the text libraries for Windows (2026-11-09)
 
