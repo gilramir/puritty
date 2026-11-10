@@ -1,0 +1,108 @@
+module Ssh.Agent exposing
+    ( identities
+    , requestIdentities
+    , signRequest
+    , signature
+    , unframe
+    )
+
+{-| What a client says to an SSH agent and reads back (the agent protocol,
+draft-ietf-sshm-ssh-agent; puritty `docs/ssh-client.md` SC2, SC11 step 6):
+the keys it holds, and a signature by one of them. The agent's private keys
+never leave it. Moving the bytes is the caller's: a Unix-domain socket on
+Linux (`Os.Net.connectLocal`), a named pipe on Windows.
+
+Every message goes with its length first; [`unframe`](#unframe) takes one
+whole message off what has been read.
+-}
+
+import Bytes exposing (Bytes)
+import Ssh.Wire as Wire
+import UInt8
+
+
+frame : Bytes -> Bytes
+frame payload =
+    Wire.writeString payload
+
+
+{-| The first whole message in what has been read, and what follows it;
+`Nothing` until all of it has come. -}
+unframe : Bytes -> Maybe { message : Bytes, rest : Bytes }
+unframe buffer =
+    when Wire.string (Wire.reader buffer) is
+        Ok m ->
+            Just { message = m.value, rest = Wire.end m.next }
+
+        Err _ ->
+            Nothing
+
+
+{-| SSH_AGENTC_REQUEST_IDENTITIES. -}
+requestIdentities : Bytes
+requestIdentities =
+    frame (Wire.writeByte 11)
+
+
+{-| SSH_AGENT_IDENTITIES_ANSWER's keys, each its public blob and comment.
+-}
+identities : Bytes -> Result String (Array { publicKey : Bytes, comment : String })
+identities message =
+    let
+        keys r count acc =
+            if count <= 0 then
+                Ok acc
+
+            else
+                Wire.string r
+                    |> Result.andThen (\blob -> Wire.name blob.next |> Result.andThen (\comment -> keys comment.next (count - 1) (Array.pushLast { publicKey = blob.value, comment = comment.value } acc)))
+    in
+    if Bytes.get 0 message /= Just (UInt8.fromIntWrap 12) then
+        Err "the agent did not list its keys"
+
+    else
+        Wire.reader message
+            |> Wire.take 1
+            |> Result.andThen (\r -> Wire.uint32 r.next)
+            |> Result.andThen
+                (\count ->
+                    if count.value > 1024 then
+                        Err "the agent says it holds more than 1024 keys"
+
+                    else
+                        keys count.next count.value []
+                )
+
+
+{-| SSH_AGENTC_SIGN_REQUEST: the key, the data, and for an RSA key the
+algorithm's flag (`SSH_AGENT_RSA_SHA2_256` 2, `_512` 4). -}
+signRequest : { publicKey : Bytes, data : Bytes, algorithm : String } -> Bytes
+signRequest r =
+    let
+        flags =
+            when r.algorithm is
+                "rsa-sha2-256" ->
+                    2
+
+                "rsa-sha2-512" ->
+                    4
+
+                _ ->
+                    0
+    in
+    frame (Bytes.flatten [ Wire.writeByte 13, Wire.writeString r.publicKey, Wire.writeString r.data, Wire.writeUint32 flags ])
+
+
+{-| SSH_AGENT_SIGN_RESPONSE's signature blob, or why there is none
+(SSH_AGENT_FAILURE: the agent refused, or its user said no). -}
+signature : Bytes -> Result String Bytes
+signature message =
+    when Bytes.get 0 message |> Maybe.map UInt8.toInt is
+        Just 14 ->
+            Wire.reader message |> Wire.take 1 |> Result.andThen (\r -> Wire.string r.next) |> Result.map .value
+
+        Just 5 ->
+            Err "the agent refused to sign"
+
+        _ ->
+            Err "the agent answered something else"

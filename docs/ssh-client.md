@@ -679,10 +679,10 @@ Each ends with its gate passing, and the gates before it still passing.
    thread), the agent (Linux's socket for the gate, then Windows' pipe and
    Pageant), password, keyboard-interactive. *Gate:* sshd with each method
    and with `MaxAuthTries 2`; a wrong passphrase.
-   **Key files, password and keyboard-interactive done 2026-11-10:** SC16.
-   The agent is not yet: Linux's socket needs a Unix-domain connection in
-   geng-lang's `Os.Net`, Windows' pipe an `Os.File` open of a named pipe,
-   and Pageant its pipe's name.
+   **Done 2026-11-10:** SC16, Linux's agent with it (geng-lang Dnene42).
+   Windows' agent pipe and Pageant move to step 9: beelink1's OpenSSH
+   agent service is disabled and Pageant is not running, and turning either
+   on is a change to Gilbert's machine.
 7. **Connection**: session channel, `pty-req` with modes and `IUTF8`, `env`
    and `SetEnv`, shell or command, `window-change`, exit status,
    keepalives. *Gate:* the EUC-KR case; a resize seen by `stty size`; `exit
@@ -999,6 +999,17 @@ check: a password, a wrong one twice, a banner, two prompts, two rounds
 of keyboard-interactive, partial success, and a password-change request.
 Gate: 9 login cases in `sshd.py`, 7 in `scripted.py`.
 
-**Not yet:** the agent (above); `publickey-hostbound-v00@openssh.com`;
+**The agent.** `Ssh.Agent` writes and reads the agent protocol's messages
+(draft-ietf-sshm-ssh-agent): the keys it holds, and a signature by one,
+with the RSA flags; the agent's private keys never leave it. On Linux the
+connection is geng-lang's `Os.Net.connectLocal` (Dnene42) to
+`SSH_AUTH_SOCK`. `ssh-tests login --agent` offers the agent's keys after
+the key files', and asks the agent to sign. Against an `ssh-agent` of the
+case's own and OpenSSH 9.6: an Ed25519 key, an RSA key (`rsa-sha2-512`),
+an unknown key before a known one, and a key added with `ssh-add -c`, which
+with no way to confirm the agent refuses to sign, so the login runs out of
+keys. 4 cases in `sshd.py`.
+
+**Not yet:** Windows' agent pipe and Pageant (step 9); `publickey-hostbound-v00@openssh.com`;
 which keys to offer from `~/.ssh/config` (`IdentityFile`, `IdentitiesOnly`),
 which is the window's (step 8).

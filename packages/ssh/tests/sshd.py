@@ -71,6 +71,38 @@ LOGIN_CASES = [
 ]
 
 
+# the agent (step 6): name, the keys ssh-add gives an ssh-agent of the
+# case's own (`-c` for one that must be confirmed, which with no askpass is
+# refused), sshd config lines
+AGENT_CASES = [
+    ("login-agent-ed25519", [("ed", [])], []),
+    ("login-agent-rsa", [("rsa", [])], []),
+    ("login-agent-unknown-then-known", [("other", []), ("ed", [])], []),
+    ("login-agent-confirm-refused", [("ed", ["-c"])], []),
+]
+
+
+class Agent:
+    def __init__(self, keys, adds):
+        self.path = WORK / f"agent.{os.getpid()}.{free_port()}"
+        self.proc = subprocess.Popen(["ssh-agent", "-D", "-a", str(self.path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if self.path.exists():
+                break
+            time.sleep(0.05)
+        env = dict(os.environ, SSH_AUTH_SOCK=str(self.path))
+        env.pop("SSH_ASKPASS", None)
+        env.pop("DISPLAY", None)
+        for name, flags in adds:
+            subprocess.run(["ssh-add", "-q", *flags, keys[name]], env=env, check=True, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def stop(self):
+        self.proc.terminate()
+        self.proc.wait(5)
+        self.path.unlink(missing_ok=True)
+
+
 def user_keys():
     keys = WORK / "userkeys"
     names = {"ed": ("ed25519", None, ""), "ecdsa521": ("ecdsa", "521", "hunter2"), "rsa": ("rsa", "3072", ""),
@@ -179,6 +211,23 @@ def main():
             print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
         else:
             print(f"ok   {name}")
+    for name, adds, extra in AGENT_CASES:
+        server = Server(extra)
+        agent = Agent(keys, adds)
+        try:
+            got = run_client(["login", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--agent", str(agent.path)])
+        finally:
+            agent.stop()
+            server.stop()
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     if a.record:
         REPLAYS.mkdir(exist_ok=True)
         for cipher in CIPHERS:
@@ -196,7 +245,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

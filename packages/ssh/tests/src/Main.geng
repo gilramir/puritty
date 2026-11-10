@@ -7,7 +7,7 @@ module Main exposing (main)
     ssh-tests fuzz FILE [FROM] COUNT
     ssh-tests known-hosts FILE
     ssh-tests config FILE
-    ssh-tests login HOST PORT --user NAME [--identity FILE]... [--passphrase P] [--password P] [--responses A,B] [--rekey]
+    ssh-tests login HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--passphrase P] [--password P] [--responses A,B] [--rekey]
 
 `connect` makes the exchange with the server, asks for the `ssh-userauth`
 service, and asks to authenticate with `none`, whose refusal says the keys
@@ -37,6 +37,7 @@ import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
 import Os.Random
+import Ssh.Agent as Agent
 import Ssh.Auth as Auth
 import Ssh.Config as Config
 import Ssh.KnownHosts as KnownHosts
@@ -948,7 +949,8 @@ type alias Session =
     , fs : File.Permission
     , transport : Transport
     , auth : Maybe Auth.Auth
-    , identities : Array { identity : Auth.Identity, file : Bytes }
+    , identities : Array { identity : Auth.Identity, file : Maybe Bytes }
+    , agent : Maybe Net.Socket
     , exchanges : Int
     , done : Bool
     }
@@ -974,15 +976,23 @@ login r target =
                                 (\t ->
                                     when SshCrypto.keyFileInfo t.text is
                                         Just info ->
-                                            [ { identity = { id = t.i, publicKey = info.publicKey, keyType = KnownHosts.keyTypeOf info.publicKey }, file = t.text } ]
+                                            [ { identity = { id = t.i, publicKey = info.publicKey, keyType = KnownHosts.keyTypeOf info.publicKey }, file = Just t.text } ]
 
                                         Nothing ->
                                             []
                                 )
                 in
-                Os.Random.bytes 32
+                agentKeys r
                     |> Task.andThen
-                        (\seed ->
+                        (\fromAgent ->
+                            Os.Random.bytes 32 |> Task.map (\seed -> { seed = seed, agent = fromAgent })
+                        )
+                    |> Task.andThen
+                        (\ready ->
+                            let
+                                seed =
+                                    ready.seed
+                            in
                             Net.connect r.net target
                                 |> Task.andThen
                                     (\socket ->
@@ -996,7 +1006,8 @@ login r target =
                                             , fs = r.fs
                                             , transport = started.transport
                                             , auth = Nothing
-                                            , identities = identities
+                                            , identities = identities ++ ready.agent.identities
+                                            , agent = ready.agent.socket
                                             , exchanges = 0
                                             , done = False
                                             }
@@ -1176,16 +1187,23 @@ onRequest request session =
                     say ("the server would take key " ++ String.fromInt need.id ++ "; signing with " ++ need.algorithm)
                         |> Task.andThen
                             (\_ ->
-                                SshCrypto.loadKey found.value.file (Bytes.fromString (option "--passphrase" session.options |> Maybe.withDefault ""))
-                                    |> Task.andThen
-                                        (\key ->
-                                            SshCrypto.sign key need.algorithm need.data
-                                                |> Task.andThen (\signature -> SshCrypto.forget key |> Task.map (\_ -> signature))
-                                                |> Task.onError (\p -> SshCrypto.forget key |> Task.andThen (\_ -> Task.fail p))
-                                        )
-                                    |> Task.map (\signature -> Auth.signed need.id signature auth)
-                                    |> Task.onError (\_ -> say "the key would not load" |> Task.map (\_ -> Auth.unsigned need.id auth))
-                                    |> Task.andThen continue
+                                when { file = found.value.file, agent = session.agent } is
+                                    { file = Nothing, agent = Just socket } ->
+                                        agentCall socket (Agent.signRequest { publicKey = found.value.identity.publicKey, data = need.data, algorithm = need.algorithm })
+                                            |> Task.map
+                                                (\message ->
+                                                    when Agent.signature message is
+                                                        Ok signature ->
+                                                            Auth.signed need.id signature auth
+
+                                                        Err _ ->
+                                                            Auth.unsigned need.id auth
+                                                )
+                                            |> Task.andThen continue
+
+                                    _ ->
+                                        signWithFile need auth (Maybe.withDefault Bytes.empty found.value.file) session
+                                            |> Task.andThen continue
                             )
 
         { request = Auth.NeedPassword _, auth = Just auth } ->
@@ -1194,3 +1212,74 @@ onRequest request session =
         { request = Auth.NeedResponses need, auth = Just auth } ->
             say ("prompts: " ++ String.join " | " (Array.map .text need.prompts))
                 |> Task.andThen (\_ -> continue (Auth.responses (option "--responses" session.options |> Maybe.map (String.split ",")) auth))
+
+
+signWithFile : { id : Int, algorithm : String, data : Bytes } -> Auth.Auth -> Bytes -> Session -> Task Os.Error.Error Auth.Step
+signWithFile need auth file session =
+    SshCrypto.loadKey file (Bytes.fromString (option "--passphrase" session.options |> Maybe.withDefault ""))
+        |> Task.andThen
+            (\key ->
+                SshCrypto.sign key need.algorithm need.data
+                    |> Task.andThen (\signature -> SshCrypto.forget key |> Task.map (\_ -> signature))
+                    |> Task.onError (\p -> SshCrypto.forget key |> Task.andThen (\_ -> Task.fail p))
+            )
+        |> Task.map (\signature -> Auth.signed need.id signature auth)
+        |> Task.onError (\_ -> say "the key would not load" |> Task.map (\_ -> Auth.unsigned need.id auth))
+
+
+{-| With `--agent PATH`, the agent's keys, numbered from 100, and its
+connection, kept open for its signatures. -}
+agentKeys : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Os.Error.Error { identities : Array { identity : Auth.Identity, file : Maybe Bytes }, socket : Maybe Net.Socket }
+agentKeys r =
+    when option "--agent" r.args is
+        Nothing ->
+            Task.succeed { identities = [], socket = Nothing }
+
+        Just path ->
+            Net.connectLocal r.net (Path.fromString path)
+                |> Task.andThen
+                    (\socket ->
+                        agentCall socket Agent.requestIdentities
+                            |> Task.andThen
+                                (\message ->
+                                    when Agent.identities message is
+                                        Ok keys ->
+                                            say ("the agent holds " ++ String.fromInt (Array.length keys) ++ " keys")
+                                                |> Task.map
+                                                    (\_ ->
+                                                        { identities =
+                                                            Array.indexedMap
+                                                                (\i k -> { identity = { id = 100 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing })
+                                                                keys
+                                                        , socket = Just socket
+                                                        }
+                                                    )
+
+                                        Err why ->
+                                            say ("the agent: " ++ why) |> Task.map (\_ -> { identities = [], socket = Just socket })
+                                )
+                    )
+
+
+{-| A request to the agent, and its whole answer. -}
+agentCall : Net.Socket -> Bytes -> Task Os.Error.Error Bytes
+agentCall socket request =
+    Net.write request socket |> Task.andThen (\_ -> agentRead socket Bytes.empty)
+
+
+agentRead : Net.Socket -> Bytes -> Task Os.Error.Error Bytes
+agentRead socket got =
+    when Agent.unframe got is
+        Just whole ->
+            Task.succeed whole.message
+
+        Nothing ->
+            Net.read socket
+                |> Task.andThen
+                    (\more ->
+                        if Bytes.isEmpty more then
+                            Task.succeed Bytes.empty
+
+                        else
+                            agentRead socket (Bytes.flatten [ got, more ])
+                    )
