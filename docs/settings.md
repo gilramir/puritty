@@ -912,9 +912,9 @@ survey is `ssh-client.md`, its questions in SC12.
 
 `client = "built-in"` in a host's table (`[hosts."name"]`) connects with
 puritty's own ssh client (`ssh-client.md` SC18) instead of OpenSSH's `ssh`
-on the terminal; `client = "openssh"`, or none, keeps `ssh`. It is a
+on the terminal; `client = "openssh"` keeps `ssh`, and none takes the
+platform's default: the built-in client on Windows (Gilbert,
+2026-11-10), OpenSSH's on Linux. It is a
 setting like the others: read with its line reported when it is neither,
 on the Hosts page as **Client**, written back by the host's form, and in
-`Schema.example`. Every host is OpenSSH's until the built-in client is
-Windows' default, after step 9 of `ssh-client.md` SC11 (its SC12
-questions 5 and 6); on Linux OpenSSH stays the default.
+`Schema.example`.

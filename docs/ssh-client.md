@@ -1175,8 +1175,16 @@ sshd on nene listening on the LAN, with keys of the test's own:
 Each run leaves beelink1 as it was: no process left, the files removed,
 the service Disabled, no key in the agent's store.
 
-**Not yet, of step 9:** the built-in client as Windows' default (SC12
-question 6 makes it so once step 9 passes, and its gate includes
-Gilbert's own session to an EUC-KR host, which only he can run);
+**The default on Windows** (2026-11-10): Gilbert made the built-in
+client Windows' default before his own EUC-KR session, which SC12
+question 6 had waited for. `Platform.defaultClient` is `"built-in"` on
+Windows and `"openssh"` on Linux (question 5); `client = "openssh"` keeps
+a host on `ssh.exe`, and a host with a jump host stays OpenSSH's. Quick
+connect (`user@host:port` in the host list) and `puritty ssh TARGET` make
+a host with no `client`, so they take the default too. On beelink1 a host
+with no `client` line logged in through Pageant, which `ssh.exe` does not
+use, and exited with the command's status.
+
+**Not yet, of step 9:** Gilbert's own session to an EUC-KR host;
 passwords kept in Windows' Credential Manager; the jump host, the strip
 and the changed-key dialog of SC18.
