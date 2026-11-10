@@ -704,3 +704,31 @@ code for a process started with a redirect.
 
 **Left open:** step 6, the replay corpus on Windows over ssh; an ssh
 session to another machine and Hangul typed by hand are Gilbert's to try.
+
+## WS22 · Step 6 built: the replay corpus on Windows (2026-11-10)
+
+`harness/replay.py --windows beelink1` runs the terminal core's side of
+the replay corpus on Windows and holds it to the same pins as Linux:
+**325 of 325 cases pass**, each fed whole and fed a byte a read, 650 runs
+in 37 s from nene. With the pixel gate's `--windows` (WS18), WS12's step 6
+is done.
+
+**How.** `harness/dump/build-windows.sh` cross-builds `core-dump.exe` from
+`harness/dump`'s manifest as it stands; it needs nothing of
+`packages/win32`. `replay.py` writes each case's bytes and a `runs.tsv` of
+the runs into `.harness-work/replay/windows`, copies them with the program
+and `harness/dump/run.ps1` to `geng-probe\replay`, runs every case in one
+ssh call, and brings the dumps back. `run.ps1` starts each run with .NET's
+`Process` and copies its stdout as bytes, because PowerShell 5.1's `>`
+re-encodes a native program's output. A run that fails, or takes more than
+60 s, is written to `failures.txt` with why, and the gate reports it as a
+crash. ghostty's side is not run (its pins are Linux's), and `--update` is
+refused.
+
+**Measured.** The dumps are byte-identical to Linux's, LF line ends
+included: Geng's console output on Windows writes no CR. The gate can
+fail: with `alt-1047`'s pin edited, both runs reported the line that
+differed. The Linux run is unchanged (325 of 325).
+
+**What WS12 has left:** nothing. Gilbert's own tries remain: an ssh session to
+another machine, Hangul typed by hand, and daily use.

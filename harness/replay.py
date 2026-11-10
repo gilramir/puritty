@@ -32,10 +32,21 @@ usage:
     harness/replay.py --update --side ghostty
                                       seed expected.txt from ghostty, for a
                                       new case the core does not pass yet
+    harness/replay.py --windows beelink1
+                                      the core's side on Windows
+
+With `--windows HOST` the core's side runs on a Windows machine instead
+(docs/windows.md WS12 step 6, WS22): harness/dump/core-dump.exe
+(harness/dump/build-windows.sh), the cases' bytes and harness/dump/run.ps1
+are copied to `geng-probe/replay` in the home directory there over ssh,
+every run of every case is made in one ssh call, and the dumps come back to
+be held to the same expected.txt. ghostty is not run (its pins are Linux's
+and say nothing of Windows), and nothing is updated.
 """
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +56,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS = ROOT / "corpus" / "replay"
 GHOSTTY = ROOT / "harness" / "oracle" / "ghostty-dump"
 CORE = ROOT / "harness" / "dump" / "core-dump"
+CORE_EXE = ROOT / "harness" / "dump" / "core-dump.exe"
+WORK = ROOT / ".harness-work" / "replay"
+REMOTE = "geng-probe/replay"
 
 ESCAPES = {
     "e": b"\x1b", "r": b"\r", "n": b"\n", "t": b"\t", "b": b"\b",
@@ -94,12 +108,17 @@ def parse_resizing(text):
     return cols, rows, bytes(out), resizes
 
 
-def run_side(exe, cols, rows, path, chunk=None, resizes=()):
+def side_args(exe, chunk, resizes):
     extra = [] if chunk is None else [str(chunk)]
     if resizes:
         if exe == CORE and chunk is None:
             extra = ["0"]
         extra.append(",".join(f"{a}:{c}x{r}" for a, c, r in resizes))
+    return extra
+
+
+def run_side(exe, cols, rows, path, chunk=None, resizes=()):
+    extra = side_args(exe, chunk, resizes)
     p = subprocess.run(
         ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G",
          "-p", "MemorySwapMax=0", "--", "timeout", "60",
@@ -108,6 +127,50 @@ def run_side(exe, cols, rows, path, chunk=None, resizes=()):
     if p.returncode != 0:
         return None, p.stderr.decode(errors="replace").strip()
     return p.stdout.decode("utf-8", errors="replace"), None
+
+
+def run_windows(host, runs):
+    """Every core run on `host` in one call: `runs` maps a name to the
+    case's size, bytes, chunk and resizes; the answer maps each name to
+    (dump, None) or (None, why)."""
+    stage = WORK / "windows"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    lines, bins = [], {}
+    for name, (cols, rows, data, chunk, resizes) in runs.items():
+        case = name.split(".")[0]
+        if case not in bins:
+            bins[case] = stage / f"{case}.bin"
+            bins[case].write_bytes(data)
+        lines.append("\t".join([f"{name}.txt", str(cols), str(rows), f"{case}.bin",
+                                 *side_args(CORE, chunk, resizes)]))
+    (stage / "runs.tsv").write_text("\n".join(lines) + "\n")
+    ssh = ["ssh", "-o", "BatchMode=yes", host]
+    subprocess.run(ssh + [f"powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path {REMOTE} | Out-Null;"
+                          f" Remove-Item {REMOTE}\\* -ErrorAction SilentlyContinue\""], check=True)
+    subprocess.run(["scp", "-q", str(CORE_EXE), str(ROOT / "harness" / "dump" / "run.ps1"),
+                    *map(str, stage.glob("*")), f"{host}:{REMOTE}/"], check=True)
+    p = subprocess.run(ssh + [f"powershell -NoProfile -ExecutionPolicy Bypass -File {REMOTE}\\run.ps1"],
+                       capture_output=True, text=True, timeout=3600)
+    if p.returncode != 0:
+        raise RuntimeError((p.stdout + p.stderr).strip())
+    back = stage / "back"
+    back.mkdir()
+    subprocess.run(["scp", "-q", f"{host}:{REMOTE}/*.txt", str(back)], check=True)
+    failures = {}
+    for line in (back / "failures.txt").read_text(errors="replace").splitlines():
+        out, _, why = line.partition("\t")
+        failures[out] = why
+    answers = {}
+    for name in runs:
+        f = back / f"{name}.txt"
+        if f"{name}.txt" in failures:
+            answers[name] = (None, failures[f"{name}.txt"])
+        elif not f.exists():
+            answers[name] = (None, "no dump came back")
+        else:
+            answers[name] = (f.read_bytes().decode("utf-8", errors="replace"), None)
+    return answers
 
 
 def first_difference(a, b):
@@ -124,15 +187,40 @@ def main():
     ap.add_argument("--side", choices=["both", "core", "ghostty"], default="both")
     ap.add_argument("--update", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--windows", metavar="HOST", default="")
     args = ap.parse_args()
 
     sides = ["core", "ghostty"] if args.side == "both" else [args.side]
-    for side, exe in (("core", CORE), ("ghostty", GHOSTTY)):
-        if side in sides and not exe.exists():
-            sys.exit(f"{exe} is not built: run {exe.parent}/build.sh")
+    if args.windows:
+        if args.update or args.side == "ghostty":
+            sys.exit("replay.py: --windows runs the core's side only, and updates nothing")
+        sides = ["core"]
+        if not CORE_EXE.exists():
+            sys.exit(f"{CORE_EXE} is not built: run {CORE_EXE.parent}/build-windows.sh")
+    else:
+        for side, exe in (("core", CORE), ("ghostty", GHOSTTY)):
+            if side in sides and not exe.exists():
+                sys.exit(f"{exe} is not built: run {exe.parent}/build.sh")
 
     cases = sorted(d for d in CORPUS.iterdir()
                    if d.is_dir() and args.filter in d.name)
+    remote = None
+    if args.windows:
+        runs = {}
+        for case in cases:
+            try:
+                cols, rows, data, resizes = parse_resizing((case / "case.txt").read_text())
+            except ValueError:
+                continue
+            runs[case.name] = (cols, rows, data, None, resizes)
+            if (case / "expected.txt").exists():
+                runs[case.name + ".bytewise"] = (cols, rows, data, 1, resizes)
+        remote = run_windows(args.windows, runs)
+
+    def core(case, cols, rows, path, chunk=None, resizes=()):
+        if remote is not None:
+            return remote[case.name + (".bytewise" if chunk == 1 else "")]
+        return run_side(CORE, cols, rows, path, chunk, resizes)
     failed = 0
     with tempfile.TemporaryDirectory() as tmp:
         for case in cases:
@@ -152,15 +240,17 @@ def main():
             if "core" in sides and not args.update and want_core is not None:
                 # The same bytes a read of one byte each: every state the
                 # parser can be cut in is left and picked up again.
-                out, err = run_side(CORE, cols, rows, path, 1, resizes)
+                out, err = core(case, cols, rows, path, 1, resizes)
                 if out is None:
                     notes.append(f"core, a byte a read, crashed: {err}")
                 elif out != want_core:
                     notes.append("core, a byte a read: "
                                  + first_difference(want_core, out))
             for side in sides:
-                out, err = run_side(CORE if side == "core" else GHOSTTY,
-                                    cols, rows, path, resizes=resizes)
+                if side == "core":
+                    out, err = core(case, cols, rows, path, resizes=resizes)
+                else:
+                    out, err = run_side(GHOSTTY, cols, rows, path, resizes=resizes)
                 if out is None:
                     notes.append(f"{side} crashed: {err}")
                     continue
