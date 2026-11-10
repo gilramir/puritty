@@ -649,7 +649,11 @@ offers Reconnect, which starts a new session under the same screen
 Each ends with its gate passing, and the gates before it still passing.
 
 1. **`Backend` in `Main`**, with only the pty behind it. *Gate:* every
-   existing gate, unchanged.
+   existing gate, unchanged. **Done 2026-11-10:** `app/src/Backend.geng`
+   holds what the loop asks of the remote end (read, write some, wait to
+   write, resize, kill, wait for its exit), and `Backend.pty` makes one of
+   a program on its pseudo terminal; `Main` knows nothing else. Every
+   gate passed unchanged, on Linux and on beelink1.
 2. **`Os.Net` and secure random bytes** in geng-lang (Linux and Windows).
    *Gate:* corpus cases against a local listener: connect, refused, timeout,
    a name that does not resolve, a read that loses a race keeping its bytes,
@@ -681,6 +685,9 @@ Each ends with its gate passing, and the gates before it still passing.
     port forwarding, SFTP.
 
 ## SC12 · Questions for Gilbert, with leanings
+
+**Decided 2026-11-10: every leaning below is taken.** Question 11 was
+answered on its own (SC2.1). The work follows SC11 in order.
 
 1. **Who speaks SSH** (SC5): the protocol in Geng over C primitives (A),
    everything in Geng (B), libssh or libssh2 (C), OpenSSH over pipes (D),

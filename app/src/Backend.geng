@@ -1,0 +1,48 @@
+module Backend exposing (Backend, pty)
+
+{-| What a window's terminal talks to (`docs/ssh-client.md` SC11 step 1):
+the bytes the remote end writes, the bytes it is sent, its size, and its
+end. Today a program on a pseudo terminal is the only one; the built-in ssh
+client's session will be another, so the loop in `Main` knows neither.
+-}
+
+import Bytes exposing (Bytes)
+import Task exposing (Task)
+import Os.Error exposing (Error)
+import Os.File as File
+import Os.Process as Process
+
+
+{-| `read` answers what came, an empty `Bytes` once the remote end is done;
+`writeSome` takes what it can and answers how much; `writable` waits until
+it can take more, and the loop races it beside `read` (V48). `kill` ends the
+remote end; `waitForExit` answers its exit status, negative for none. -}
+type alias Backend =
+    { read : Task Error Bytes
+    , writeSome : Bytes -> Task Error Int
+    , writable : Task Error {}
+    , resize : { columns : Int, rows : Int } -> Task Error {}
+    , kill : Task String {}
+    , waitForExit : Task String Int
+    }
+
+
+{-| A program on its pseudo terminal, or `Nothing` when it was started
+without one. -}
+pty : Process.Child -> Maybe Backend
+pty child =
+    Process.terminal child
+        |> Maybe.map
+            (\terminal ->
+                let
+                    fd =
+                        Process.terminalHandle terminal
+                in
+                { read = File.read fd
+                , writeSome = \bytes -> File.writeSome bytes fd
+                , writable = File.writable fd
+                , resize = \size -> Process.resize terminal size
+                , kill = Process.kill child
+                , waitForExit = Process.waitForExit child
+                }
+            )

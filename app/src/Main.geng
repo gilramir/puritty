@@ -41,6 +41,7 @@ import Argparse.Parser
 import Argparse.PrettyPrinter as PP
 import Argparse.Program
 import Bitwise
+import Backend exposing (Backend)
 import Bytes exposing (Bytes)
 import Config exposing (Config)
 import Hosts
@@ -504,7 +505,14 @@ begin cp vars given problems locale config cell =
                                     in
                                     spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                                         |> Task.mapError Os.Error.toString
-                                        |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = w.events, at = -1 } problems opener)
+                                        |> Task.andThen
+                                            (\child ->
+                                                when Backend.pty child is
+                                                    Nothing ->
+                                                        Task.fail "the program has no terminal"
+
+                                                    Just remote ->
+                                                        run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell remote { given = given, locale = locale, events = w.events, at = -1 } problems opener)
                                 )
 
 
@@ -533,20 +541,14 @@ the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Process.Child -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
-run imeLog shotPath charset config cell child settings problems opener =
-    when Process.terminal child is
-        Nothing ->
-            Task.fail "the program has no terminal"
-
-        Just terminal ->
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
+run imeLog shotPath charset config cell remote settings problems opener =
             -- the system menu's items, where the platform has one (ST26)
             Window.systemMenu (Array.map .label (menuItems config))
                 |> Task.andThen (\_ -> now)
                 |> Task.andThen
                     (\t0 ->
-                        loop terminal
-                            (Process.terminalHandle terminal)
+                        loop remote
                             { config = config
                             , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
                             , term =
@@ -603,21 +605,21 @@ run imeLog shotPath charset config cell child settings problems opener =
                             }
                             |> Task.mapError Os.Error.toString
                     )
-                |> Task.andThen (\m -> finish child m)
+                |> Task.andThen (\m -> finish remote m)
 
 
 {-| The end: the program's exit status when it ended, 0 when the window
 was closed, after asking the program to end. -}
-finish : Process.Child -> Model -> Task String {}
-finish child m =
+finish : Backend -> Model -> Task String {}
+finish remote m =
     if m.lost then
-        Process.kill child |> Task.andThen (\_ -> Task.fail "the window is lost")
+        remote.kill |> Task.andThen (\_ -> Task.fail "the window is lost")
 
     else if m.closed then
-        Process.kill child |> Task.andThen (\_ -> Os.Env.exitWithCode 0)
+        remote.kill |> Task.andThen (\_ -> Os.Env.exitWithCode 0)
 
     else
-        Process.waitForExit child
+        remote.waitForExit
             |> Task.andThen
                 (\code ->
                     Os.Env.exitWithCode
@@ -713,8 +715,8 @@ sendRaw bytes m =
 
 
 {-| The queue written as far as the pty takes it. -}
-flush : File.Handle -> (taken m : Model) -> Task Error Model
-flush fd m =
+flush : Backend -> (taken m : Model) -> Task Error Model
+flush remote m =
     if Outbox.isEmpty m.out then
         Task.succeed m
 
@@ -723,12 +725,12 @@ flush fd m =
             next =
                 Outbox.offer m.out
         in
-        File.writeSome next.bytes fd
+        remote.writeSome next.bytes
             |> Task.map (\n -> { m | out = Outbox.written n next.outbox })
 
 
-loop : Process.Terminal -> File.Handle -> (taken m00 : Model) -> Task Error Model
-loop terminal fd m00 =
+loop : Backend -> (taken m00 : Model) -> Task Error Model
+loop remote m00 =
     let
         -- every motion from X only while the program asks for any motion
         -- (mode 1003, docs/phase3-select.md §4)
@@ -743,8 +745,8 @@ loop terminal fd m00 =
     )
         |> Task.andThen pointerShape
         |> Task.andThen clipboardRequests
-        |> Task.andThen (flush fd)
-        |> Task.andThen (\m0 -> race terminal fd m0)
+        |> Task.andThen (flush remote)
+        |> Task.andThen (\m0 -> race remote m0)
 
 
 {-| The pointer's shape (docs/phase3-select.md §21): the arrow while the
@@ -771,8 +773,8 @@ pointerShape m =
             |> Task.map (\_ -> { m | arrowPointer = arrow })
 
 
-race : Process.Terminal -> File.Handle -> (taken m0 : Model) -> Task Error Model
-race terminal fd m0 =
+race : Backend -> (taken m0 : Model) -> Task Error Model
+race remote m0 =
     now
         |> Task.andThen
             (\ms0 ->
@@ -799,7 +801,7 @@ race terminal fd m0 =
                             []
 
                         else
-                            [ File.writable fd |> Task.map (\_ -> Writable) ]
+                            [ remote.writable |> Task.map (\_ -> Writable) ]
 
                     following =
                         when m.settings.events is
@@ -809,7 +811,7 @@ race terminal fd m0 =
                             Just events ->
                                 [ Source.next events |> Task.map SettingsChanged ]
                 in
-                Task.race (File.read fd |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following)
+                Task.race (remote.read |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following)
                     |> Task.andThen
                         (\turn ->
                             now
@@ -821,7 +823,7 @@ race terminal fd m0 =
                                                     Task.succeed m
 
                                                 else
-                                                    feed fd chunk ms m |> Task.andThen (\next -> step terminal fd ms next)
+                                                    feed remote chunk ms m |> Task.andThen (\next -> step remote ms next)
 
                                             Events up ->
                                                 if not up then
@@ -829,25 +831,25 @@ race terminal fd m0 =
 
                                                 else
                                                     Window.take
-                                                        |> Task.andThen (\evs -> handle terminal fd ms evs m)
-                                                        |> Task.andThen (\next -> step terminal fd ms next)
+                                                        |> Task.andThen (\evs -> handle remote ms evs m)
+                                                        |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (blink ms m) |> Task.andThen (\next -> step terminal fd ms next)
+                                                reloadIfDue ms (blink ms m) |> Task.andThen (\next -> step remote ms next)
 
                                             Writable ->
-                                                step terminal fd ms m
+                                                step remote ms m
 
                                             SettingsChanged change ->
-                                                step terminal fd ms (noticed ms change m)
+                                                step remote ms (noticed ms change m)
                                     )
                         )
             )
 
 
 {-| A frame if one is due, then the loop again, unless the window is gone. -}
-step : Process.Terminal -> File.Handle -> Int -> (taken m : Model) -> Task Error Model
-step terminal fd ms m =
+step : Backend -> Int -> (taken m : Model) -> Task Error Model
+step remote ms m =
     if m.closed || m.lost then
         Task.succeed m
 
@@ -859,10 +861,10 @@ step terminal fd ms m =
         if at >= 0 && ms >= at then
             draw ms m
                 |> Task.andThen shoot
-                |> Task.andThen (\next -> if next.lost then Task.succeed next else loop terminal fd next)
+                |> Task.andThen (\next -> if next.lost then Task.succeed next else loop remote next)
 
         else
-            loop terminal fd m
+            loop remote m
 
 
 {-| A change in the settings directory: one to the settings file, or
@@ -1277,8 +1279,8 @@ replyCap =
 
 {-| A read fed to the core and its replies queued, while fewer than
 `replyCap` bytes wait. -}
-feed : File.Handle -> Bytes -> Int -> (taken m : Model) -> Task Error Model
-feed fd chunk0 ms m =
+feed : Backend -> Bytes -> Int -> (taken m : Model) -> Task Error Model
+feed remote chunk0 ms m =
     let
         -- an EUC-KR or CP949 pane's bytes in UTF-8 before the core (V49)
         decoded =
@@ -1347,14 +1349,14 @@ feed fd chunk0 ms m =
 {-| The window's events: a key sent to the program, a new size given to the
 core and the terminal, the focus kept for the cursor and reported under
 mode 1004, a close. -}
-handle : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> (taken m : Model) -> Task Error Model
-handle terminal fd ms evs m =
+handle : Backend -> Int -> Array Window.Event -> (taken m : Model) -> Task Error Model
+handle remote ms evs m =
     when Array.first evs is
         Nothing ->
             Task.succeed m
 
         Just ev ->
-            handleOne terminal fd ms (Array.dropFirst 1 evs) ev { m | shiftHeld = shiftAfter ev m.shiftHeld }
+            handleOne remote ms (Array.dropFirst 1 evs) ev { m | shiftHeld = shiftAfter ev m.shiftHeld }
 
 
 {-| Whether Shift is held after an event, for the pointer's shape (§21):
@@ -1380,23 +1382,23 @@ shiftAfter ev held =
             held
 
 
-handleOne : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> Window.Event -> (taken m : Model) -> Task Error Model
-handleOne terminal fd ms rest ev m =
+handleOne : Backend -> Int -> Array Window.Event -> Window.Event -> (taken m : Model) -> Task Error Model
+handleOne remote ms rest ev m =
             when ev is
                 Window.Key k ->
                   if m.menu /= Nothing && k.action /= 0 then
                     -- the menu takes the keys while it is open
                     when m.menu is
                         Just menu ->
-                            menuKey k.sym menu m |> Task.andThen (\next -> handle terminal fd ms rest next)
+                            menuKey k.sym menu m |> Task.andThen (\next -> handle remote ms rest next)
 
                         Nothing ->
-                            handle terminal fd ms rest m
+                            handle remote ms rest m
 
                   else if isSettingsKey k then
                     -- Ctrl+Comma: the settings window (docs/settings.md ST9),
                     -- which raises one already open
-                    openSettings m |> Task.andThen (\next -> handle terminal fd ms rest next)
+                    openSettings m |> Task.andThen (\next -> handle remote ms rest next)
 
                   else
                     when zoomOf m k is
@@ -1405,20 +1407,20 @@ handleOne terminal fd ms rest ev m =
                                 |> Task.andThen
                                     (\_ ->
                                         -- every cell is drawn again at the new size
-                                        handle terminal fd ms rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
+                                        handle remote ms rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
                                     )
 
                         Nothing ->
                             if isPasteKey k /= Nothing then
                                 -- Shift+Insert and Ctrl+Shift+V, the
                                 -- terminal's before the program's
-                                owned terminal fd ms rest { m | toPaste = isPasteKey k }
+                                owned remote ms rest { m | toPaste = isPasteKey k }
 
                             else if isCopyKey k then
                                 -- Ctrl+Shift+C: the selection to CLIPBOARD
                                 -- (docs/user/copy-and-paste.md), the key
                                 -- puritty's with or without one
-                                owned terminal fd ms rest
+                                owned remote ms rest
                                     (when m.selection is
                                         Just s ->
                                             { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
@@ -1430,14 +1432,14 @@ handleOne terminal fd ms rest ev m =
                             else
                                 when scrollKeyOf m k is
                                     Just back ->
-                                        handle terminal fd ms rest { m | back = back, urgent = True }
+                                        handle remote ms rest { m | back = back, urgent = True }
 
                                     Nothing ->
-                                        key terminal fd ms rest k m
+                                        key remote ms rest k m
 
                 Window.Resized size ->
-                    Process.resize terminal { columns = size.cols, rows = size.rows }
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0, selection = Nothing })
+                    remote.resize { columns = size.cols, rows = size.rows }
+                        |> Task.andThen (\_ -> handle remote ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0, selection = Nothing })
 
                 Window.Focus on ->
                     let
@@ -1452,18 +1454,18 @@ handleOne terminal fd ms rest ev m =
                             else
                                 Bytes.empty
                     in
-                    handle terminal fd ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
+                    handle remote ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
 
                 Window.Close ->
                     Task.succeed { m | closed = True }
 
                 Window.MenuChosen c ->
-                    menuChosen c m |> Task.andThen (\next -> handle terminal fd ms rest next)
+                    menuChosen c m |> Task.andThen (\next -> handle remote ms rest next)
 
                 Window.Commit text ->
                     -- the key path: the text as typed, never as a paste (V46)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
-                        |> Task.andThen (\_ -> handle terminal fd ms rest (send text { m | urgent = True, back = 0 }))
+                        |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
 
                 Window.Preedit p ->
                     let
@@ -1482,27 +1484,27 @@ handleOne terminal fd ms rest ev m =
                                 ++ Array.dropFirst (p.first + p.length) old.feedback
                     in
                     imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
+                        |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
 
                 Window.ImeReady ->
                     imeLine m.imeLog "ime ready"
-                        |> Task.andThen (\_ -> handle terminal fd ms rest m)
+                        |> Task.andThen (\_ -> handle remote ms rest m)
 
                 Window.PreeditDone ->
                     imeLine m.imeLog "done"
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
+                        |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
                   if p.action == 0 && m.menu /= Nothing then
                     when m.menu is
                         Just menu ->
-                            menuPress p menu m |> Task.andThen (\next -> handle terminal fd ms rest next)
+                            menuPress p menu m |> Task.andThen (\next -> handle remote ms rest next)
 
                         Nothing ->
-                            handle terminal fd ms rest m
+                            handle remote ms rest m
 
                   else if isMenuClick p then
-                    openMenu p m |> Task.andThen (\next -> handle terminal fd ms rest next)
+                    openMenu p m |> Task.andThen (\next -> handle remote ms rest next)
 
                   else
                     if isZoomStep p then
@@ -1517,23 +1519,23 @@ handleOne terminal fd ms rest ev m =
                                 clamp 4 96 (m.points + steps.net)
                         in
                         if points == m.points then
-                            handle terminal fd ms steps.rest m
+                            handle remote ms steps.rest m
 
                         else
                             Window.zoom points
                                 |> Task.andThen
                                     (\_ ->
-                                        handle terminal fd ms steps.rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
+                                        handle remote ms steps.rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
                                     )
 
                     else
-                        owned terminal fd ms rest (pointer ms p m)
+                        owned remote ms rest (pointer ms p m)
 
                 Window.Pasted more ->
                     Window.pasted
                         |> Task.andThen
                             (\text ->
-                                handle terminal fd ms rest
+                                handle remote ms rest
                                     (when m.clipRead is
                                         Just r ->
                                             clipReadIn more text r m
@@ -1546,7 +1548,7 @@ handleOne terminal fd ms rest ev m =
                 Window.SelectionLost which ->
                     -- another program's selection now: the highlight goes,
                     -- as xterm takes it away
-                    handle terminal fd ms rest
+                    handle remote ms rest
                         (if which == Window.Primary then
                             { m | selection = Nothing, urgent = True }
 
@@ -1557,21 +1559,21 @@ handleOne terminal fd ms rest ev m =
 
 {-| The events after one that made a selection the window's, or asked
 for a paste: the window told first. -}
-owned : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> (taken m : Model) -> Task Error Model
-owned terminal fd ms rest m =
+owned : Backend -> Int -> Array Window.Event -> (taken m : Model) -> Task Error Model
+owned remote ms rest m =
     when m.toOwn is
         Just own ->
             Window.select own.which (Bytes.fromString own.text)
-                |> Task.andThen (\_ -> owned terminal fd ms rest { m | toOwn = Nothing })
+                |> Task.andThen (\_ -> owned remote ms rest { m | toOwn = Nothing })
 
         Nothing ->
             when m.toPaste is
                 Just which ->
                     Window.paste which
-                        |> Task.andThen (\_ -> handle terminal fd ms rest { m | toPaste = Nothing })
+                        |> Task.andThen (\_ -> handle remote ms rest { m | toPaste = Nothing })
 
                 Nothing ->
-                    handle terminal fd ms rest m
+                    handle remote ms rest m
 
 
 {-| The OSC 52 requests the core made (docs/phase3-select.md §16): a write
@@ -2120,8 +2122,8 @@ lowestHeld held i =
 
 
 {-| A key sent to the program, the cursor's blink begun again. -}
-key : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
-key terminal fd ms rest k m =
+key : Backend -> Int -> Array Window.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+key remote ms rest k m =
     let
         bytes =
             Keys.encode m.term k
@@ -2136,7 +2138,7 @@ key terminal fd ms rest k m =
         focus =
             { focused = m.focus.focused, blinkOn = True }
     in
-    handle terminal fd ms rest
+    handle remote ms rest
         (send bytes
             { m
                 | urgent = True
