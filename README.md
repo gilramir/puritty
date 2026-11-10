@@ -54,7 +54,8 @@ Remote X11 is a main path in puritty, not an afterthought.
   the characters you see, not doubled.
 - **Thai** is shaped, and **Han characters** are drawn in the regional forms
   for your language: set `language = "ja"` (or `ko`, `zh-CN`, ...) and the
-  fallback fonts follow it.
+  fallback fonts follow it. Left out, it is your locale's on Linux, and on
+  Windows the first language in Settings' Language & region.
 - **EUC-KR and CP949 are built in.** If you log in to hosts that still run
   `ko_KR.euckr`, set `charset = "euc-kr"` and puritty converts in both
   directions. You don't need `luit` or a wrapper script.
@@ -124,7 +125,8 @@ columns = 120
 rows = 36
 
 [font]
-family = "Fira Code"        # as fontconfig names it
+family = "Fira Code"        # as fontconfig names it; DejaVu Sans Mono
+                            # when left out, Cascadia Mono on Windows
 size = 11                   # points
 language = "ko"             # which regional forms fallback fonts use
 

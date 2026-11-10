@@ -1,4 +1,4 @@
-module Platform exposing (settingsDirectory, programs)
+module Platform exposing (settingsDirectory, programs, font, Locale, locale)
 
 {-| What puritty does differently on Windows and on Linux, other than its
 window (`docs/windows.md` WS10, V55): this module is `app/windows`'s, and
@@ -9,6 +9,8 @@ are looked for without it.
 -}
 
 import Dict exposing (Dict)
+import Locale
+import Task exposing (Task)
 
 
 variable : String -> Dict String String -> Maybe String
@@ -37,3 +39,66 @@ PowerShell, then `%ComSpec%`. -}
 programs : Dict String String -> Array String
 programs vars =
     [ "pwsh.exe", "powershell.exe", Maybe.withDefault "cmd.exe" (variable "ComSpec" vars) ]
+
+
+{-| The font drawn when the settings name none: Cascadia Mono, Windows
+Terminal's, which Windows 11 has (WS21). Where it is missing, Consolas
+and then Courier New stand in, as `packages/win32` looks for them. -}
+font : String
+font =
+    "Cascadia Mono"
+
+
+{-| What the locale says: the language fallback fonts are asked for (V25;
+empty for none), and the character set of a local program's bytes. -}
+type alias Locale =
+    { language : String
+    , charset : String
+    }
+
+
+{-| The locale, from Windows, which sets no `LANG` (WS21): the language
+is the user's first (`Locale.language`) as fontconfig names one (`ko-KR`
+is `ko`, `zh-Hant-TW` is `zh-tw`). The charset is UTF-8 whatever the
+locale, since a pseudo console speaks nothing else; a remote program's
+other one is the settings' to name. -}
+locale : Dict String String -> Task x Locale
+locale _ =
+    Locale.language
+        |> Task.map (\name -> { language = languageOf name, charset = "utf-8" })
+
+
+{-| A Windows locale name's language: `zh` keeps its region, and Chinese
+named by script alone is the region that writes it. -}
+languageOf : String -> String
+languageOf name =
+    let
+        parts =
+            String.split "-" (String.toLower name)
+    in
+    when parts is
+        [] ->
+            ""
+
+        [ "zh", "hans" ] ->
+            "zh-cn"
+
+        [ "zh", "hant" ] ->
+            "zh-tw"
+
+        [ "zh" ] ->
+            "zh-cn"
+
+        _ ->
+            let
+                lang =
+                    Maybe.withDefault "" (Array.first parts)
+            in
+            if lang == "zh" then
+                "zh-" ++ Maybe.withDefault "cn" (Array.last parts)
+
+            else if String.count lang == 2 || String.count lang == 3 then
+                lang
+
+            else
+                ""

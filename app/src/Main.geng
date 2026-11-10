@@ -249,12 +249,18 @@ settings fs vars given =
 
 start : Process.Permission -> Dict String String -> Config -> Task String {}
 start cp vars config =
+    Platform.locale vars
+        |> Task.andThen (\locale -> startIn cp vars locale config)
+
+
+startIn : Process.Permission -> Dict String String -> Platform.Locale -> Config -> Task String {}
+startIn cp vars locale config =
     Window.open
         { cols = config.columns
         , rows = config.rows
         , font = config.font
         , points = config.points
-        , lang = Maybe.withDefault (Config.languageOf vars) config.language
+        , lang = Maybe.withDefault locale.language config.language
         , glyphCap = config.glyphCacheMb * 1024 * 1024
         , title = config.title
         }
@@ -280,7 +286,7 @@ start cp vars config =
                                 Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
 
                             charset =
-                                Charset.fromName (Maybe.withDefault (Config.charsetOf vars) config.charset)
+                                Charset.fromName (Maybe.withDefault locale.charset config.charset)
                         in
                         spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                             |> Task.mapError Os.Error.toString

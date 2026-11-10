@@ -636,3 +636,71 @@ gate (13 of 13) and the pixel gate (36 of 36).
   are Gilbert's to try.
 - Step 6, the replay corpus on Windows over ssh, is what WS12 has left; the
   pixel gate already runs there (WS18).
+
+## WS21 · The default font and the language from Windows (2026-11-10)
+
+Gilbert's answers to WS20's two open choices: Windows has a default font of
+its own, and the language is asked of Windows rather than read from
+`LANG`.
+
+**The font.** `Platform.font`, beside each manifest, is the family drawn
+when the settings name none, and `Config.defaults` takes it: `DejaVu Sans
+Mono` on Linux, as before, and `Cascadia Mono` on Windows, Windows
+Terminal's own, which Windows 11 has. Where it is missing (Windows 10 before
+Windows Terminal), `packages/win32`'s stand-ins, Consolas then Courier New,
+are drawn, as they were for any family Windows lacks. Seen on beelink1:
+puritty opened with no settings file and drew PowerShell in Cascadia Mono.
+
+**The locale.** `Platform.locale` answers the language fallback fonts are
+asked for (V25) and the charset of a local program's bytes, and `Main`
+takes both from it when the settings name neither. On Linux it is what
+`Config` did, moved: `LC_ALL`, `LC_CTYPE`, `LANG`. On Windows it is a new
+module of `packages/win32`, `Locale.language` (not in `Window`, which
+stays X11's twin, V55).
+
+*Which Windows setting.* The first try read the regional format
+(`GetUserDefaultLocaleName`), and beelink1 answered `en-US`, though
+Gilbert set it up for Korean and sees Notepad's menus in Korean. Read from
+his desktop session, beelink1 keeps three settings apart:
+
+| setting | beelink1 | read by |
+|---|---|---|
+| language list (Settings, Language & region) | `ko`, `en-US`, `th`; Korean IME on `ko` | packaged programs (Notepad) |
+| display language | `en-US` (`WindowsOverride`) | Windows itself, older programs |
+| regional format, system locale | `en-US`; ANSI code page 1252 | `GetUserDefaultLocaleName`, `GetACP` |
+
+Which forms of Han a fallback font draws is a question about the
+language the user reads, which is the list's, not about dates and numbers,
+which is the regional format's. `Locale.language` answers the head of the
+list, `HKCU\Control Panel\International\User Profile\Languages` (the list
+Settings writes; the documented reader is WinRT's
+`GlobalizationPreferences.Languages`, which a C program reaches only through
+COM), and the regional format only when the list is missing. The display
+language override is not read: `GetUserPreferredUILanguages` answers it,
+and on beelink1 that is `en-US`. `packages/win32` now links `advapi32`
+for the registry. Measured on beelink1 by a probe printing what `Platform`
+answers: `ko`, charset `utf-8`, font `Cascadia Mono`.
+
+The name becomes fontconfig's language as `cjk-and-thai.md` names them,
+checked over these names: `ko-KR` → `ko`, `ja-JP` → `ja`, `zh-CN`,
+`zh-Hans`, `zh` → `zh-cn`, `zh-TW`, `zh-Hant`, `zh-Hant-TW` → `zh-tw`,
+`zh-HK` → `zh-hk`, `zh-SG` → `zh-sg`, `sr-Latn-RS` → `sr`, `haw-US` →
+`haw`, `en-US` → `en`; the invariant `x-IV` and an empty name → none.
+
+*The charset* is UTF-8 on Windows whatever the locale: the pseudo console
+gives and takes nothing else, so the code page (949 on a Korean system
+locale) says nothing about a local program's bytes. An EUC-KR host reached
+over `ssh` is the settings' `charset`, as on Linux.
+
+**Gates.** Linux unchanged: pointer 51 of 51, IME 14 of 14 with the app
+from `app/linux`; Windows events 13 of 13 with `core-events.exe` rebuilt on
+the new `packages/win32`.
+
+*A note on `app.ps1`'s log*: "the foreground is another window; stopped"
+and an empty "puritty exit" after a case that ends with `exit` and Return
+are not a failure. puritty has closed by the time the driver releases
+Return, and the release checks the foreground; PowerShell gives no exit
+code for a process started with a redirect.
+
+**Left open:** step 6, the replay corpus on Windows over ssh; an ssh
+session to another machine and Hangul typed by hand are Gilbert's to try.

@@ -1736,3 +1736,36 @@ geng_cancel puritty_win32_pasted(geng_wait *wait) {
     geng_succeed(wait, geng_slot_P(b));
     return (geng_cancel) {0};
 }
+
+/* THE LOCALE */
+
+/* The user's first language as Windows names it (`ko`, `en-US`,
+ * `zh-Hant-TW`), UTF-8 (WS21): the head of the language list Settings
+ * keeps (Time & language, Language & region), which packaged programs
+ * follow; else the regional format's; empty when Windows gives neither. */
+geng_cancel puritty_win32_language(geng_wait *wait) {
+    wchar_t list[1024], name[LOCALE_NAME_MAX_LENGTH];
+    DWORD size = sizeof list - sizeof *list;
+    const wchar_t *first = NULL;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\International\\User Profile", L"Languages",
+                     RRF_RT_REG_MULTI_SZ, NULL, list, &size) == ERROR_SUCCESS && list[0]) {
+        list[sizeof list / sizeof *list - 1] = 0;
+        first = list;
+    } else if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH) > 0)
+        first = name;
+    char utf8[4 * LOCALE_NAME_MAX_LENGTH];
+    int n = 0;
+    if (first) {
+        n = WideCharToMultiByte(CP_UTF8, 0, first, -1, utf8, (int) sizeof utf8, NULL, NULL);
+        n = n > 0 ? n - 1 : 0;
+    }
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + (size_t) n, GENG_HEADER_BYTES(sizeof *b + (size_t) n));
+    b->length = n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, utf8, (size_t) n);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}

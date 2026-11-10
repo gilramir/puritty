@@ -1,4 +1,4 @@
-module Config exposing (Config, defaults, decode, languageOf, charsetOf)
+module Config exposing (Config, defaults, decode)
 
 {-| puritty's settings (`docs/renderer.md` §R10), read from
 `$XDG_CONFIG_HOME/puritty/config.toml`, or `~/.config/puritty/config.toml`,
@@ -12,10 +12,12 @@ that a misspelt one is not a setting silently left at its default:
     title = "puritty"
 
     [font]
-    family = "DejaVu Sans Mono"   # as fontconfig names it
+    family = "DejaVu Sans Mono"   # as fontconfig names it; on Windows
+                                  # "Cascadia Mono" (`Platform.font`)
     size = 11                     # points
     language = "ja"               # what fallback fonts are asked for (V25);
                                   # the locale's when left out
+                                  # (`Platform.locale`)
     glyph_cache_mb = 8            # the X server's glyph set (V37), 4 or more
 
     [colours]
@@ -57,7 +59,7 @@ that a misspelt one is not a setting silently left at its default:
 -}
 
 import Bitwise
-import Dict exposing (Dict)
+import Platform
 import Toml.Decode as Decode exposing (Decoder)
 import Toml.Table
 
@@ -91,7 +93,7 @@ defaults =
     { columns = 80
     , rows = 24
     , title = "puritty"
-    , font = "DejaVu Sans Mono"
+    , font = Platform.font
     , points = 11
     , language = Nothing
     , glyphCacheMb = 8
@@ -302,40 +304,6 @@ charsetName =
             )
 
 
-{-| The remote character set a local program uses, from the locale's
-codeset (`ko_KR.euckr`, `ko_KR.EUC-KR`, `ko_KR.CP949`, `ko_KR.UHC`):
-`euc-kr`, `cp949`, else `utf-8` (`cjk-and-thai.md` §10.3 rule 1). -}
-charsetOf : Dict String String -> String
-charsetOf vars =
-    let
-        locale =
-            [ "LC_ALL", "LC_CTYPE", "LANG" ]
-                |> Array.mapAndKeepJust (\name -> Dict.get name vars)
-                |> Array.findFirst (\v -> v /= "")
-                |> Maybe.map .value
-                |> Maybe.withDefault ""
-
-        codeset =
-            String.split "." locale
-                |> Array.get 1
-                |> Maybe.withDefault ""
-                |> String.split "@"
-                |> Array.first
-                |> Maybe.withDefault ""
-                |> String.toLower
-                |> String.replace "-" ""
-                |> String.replace "_" ""
-    in
-    if codeset == "euckr" then
-        "euc-kr"
-
-    else if codeset == "cp949" || codeset == "uhc" then
-        "cp949"
-
-    else
-        "utf-8"
-
-
 {-| A table of the file, or the defaults when it is left out. -}
 section : String -> a -> Decoder a -> Decoder a
 section name fallback inner =
@@ -442,48 +410,3 @@ onlyKeys allowed =
                     Nothing ->
                         Decode.succeed {}
             )
-
-
-{-| The language fallback fonts are asked for when the file names none
-(V25): the locale's, from `LC_ALL`, `LC_CTYPE` or `LANG` in that order,
-as fontconfig names a language (`ja`, `ko`, `zh-tw`); none for `C` and
-`POSIX`. -}
-languageOf : Dict String String -> String
-languageOf vars =
-    let
-        locale =
-            [ "LC_ALL", "LC_CTYPE", "LANG" ]
-                |> Array.mapAndKeepJust (\name -> Dict.get name vars)
-                |> Array.findFirst (\v -> v /= "")
-                |> Maybe.map .value
-                |> Maybe.withDefault ""
-
-        base =
-            locale
-                |> String.split "."
-                |> Array.first
-                |> Maybe.withDefault ""
-                |> String.split "@"
-                |> Array.first
-                |> Maybe.withDefault ""
-
-        parts =
-            String.split "_" base
-    in
-    when parts is
-        [ lang, region ] ->
-            if lang == "zh" then
-                "zh-" ++ String.toLower region
-
-            else
-                String.toLower lang
-
-        [ lang ] ->
-            if lang == "C" || lang == "POSIX" then
-                ""
-
-            else
-                String.toLower lang
-
-        _ ->
-            ""

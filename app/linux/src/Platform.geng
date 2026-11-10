@@ -1,4 +1,4 @@
-module Platform exposing (settingsDirectory, programs)
+module Platform exposing (settingsDirectory, programs, font, Locale, locale)
 
 {-| What puritty does differently on Linux and on Windows, other than its
 window (`docs/windows.md` WS10, V55): this module is `app/linux`'s, and
@@ -6,6 +6,7 @@ window (`docs/windows.md` WS10, V55): this module is `app/linux`'s, and
 -}
 
 import Dict exposing (Dict)
+import Task exposing (Task)
 
 
 {-| The directory of the settings file: `$XDG_CONFIG_HOME/puritty`, or
@@ -38,3 +39,102 @@ programs vars =
 
         Nothing ->
             [ "/bin/sh" ]
+
+
+{-| The font drawn when the settings name none. -}
+font : String
+font =
+    "DejaVu Sans Mono"
+
+
+{-| What the locale says: the language fallback fonts are asked for (V25;
+empty for none), and the character set of a local program's bytes. -}
+type alias Locale =
+    { language : String
+    , charset : String
+    }
+
+
+{-| The locale, from `LC_ALL`, `LC_CTYPE` or `LANG`, the first one set. -}
+locale : Dict String String -> Task x Locale
+locale vars =
+    Task.succeed { language = languageOf vars, charset = charsetOf vars }
+
+
+{-| The remote character set a local program uses, from the locale's
+codeset (`ko_KR.euckr`, `ko_KR.EUC-KR`, `ko_KR.CP949`, `ko_KR.UHC`):
+`euc-kr`, `cp949`, else `utf-8` (`cjk-and-thai.md` §10.3 rule 1). -}
+charsetOf : Dict String String -> String
+charsetOf vars =
+    let
+        posix =
+            [ "LC_ALL", "LC_CTYPE", "LANG" ]
+                |> Array.mapAndKeepJust (\name -> Dict.get name vars)
+                |> Array.findFirst (\v -> v /= "")
+                |> Maybe.map .value
+                |> Maybe.withDefault ""
+
+        codeset =
+            String.split "." posix
+                |> Array.get 1
+                |> Maybe.withDefault ""
+                |> String.split "@"
+                |> Array.first
+                |> Maybe.withDefault ""
+                |> String.toLower
+                |> String.replace "-" ""
+                |> String.replace "_" ""
+    in
+    if codeset == "euckr" then
+        "euc-kr"
+
+    else if codeset == "cp949" || codeset == "uhc" then
+        "cp949"
+
+    else
+        "utf-8"
+
+
+{-| The language fallback fonts are asked for when the file names none
+(V25): the locale's, from `LC_ALL`, `LC_CTYPE` or `LANG` in that order,
+as fontconfig names a language (`ja`, `ko`, `zh-tw`); none for `C` and
+`POSIX`. -}
+languageOf : Dict String String -> String
+languageOf vars =
+    let
+        posix =
+            [ "LC_ALL", "LC_CTYPE", "LANG" ]
+                |> Array.mapAndKeepJust (\name -> Dict.get name vars)
+                |> Array.findFirst (\v -> v /= "")
+                |> Maybe.map .value
+                |> Maybe.withDefault ""
+
+        base =
+            posix
+                |> String.split "."
+                |> Array.first
+                |> Maybe.withDefault ""
+                |> String.split "@"
+                |> Array.first
+                |> Maybe.withDefault ""
+
+        parts =
+            String.split "_" base
+    in
+    when parts is
+        [ lang, region ] ->
+            if lang == "zh" then
+                "zh-" ++ String.toLower region
+
+            else
+                String.toLower lang
+
+        [ lang ] ->
+            if lang == "C" || lang == "POSIX" then
+                ""
+
+            else
+                String.toLower lang
+
+        _ ->
+            ""
