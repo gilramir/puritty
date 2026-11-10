@@ -134,6 +134,20 @@ type alias Model =
       -- how Ctrl+Comma starts the settings window (docs/settings.md ST9):
       -- this program's own file, with `settings`, not tied to this one
     , settingsWindow : Maybe { cp : Process.Permission, program : String, args : Array String }
+      -- the menu Ctrl+right-click opens, drawn over the screen (ST26), or
+      -- the items of the one the platform shows, and of its system menu
+    , menu : Maybe Menu
+    , shownItems : Array { label : String, args : Array String }
+    }
+
+
+{-| A menu over the screen: its items, each what this program is started
+again with, where its box is, and the item marked. -}
+type alias Menu =
+    { items : Array { label : String, args : Array String }
+    , row : Int
+    , col : Int
+    , selected : Int
     }
 
 
@@ -526,7 +540,9 @@ run imeLog shotPath charset config cell child settings problems opener =
             Task.fail "the program has no terminal"
 
         Just terminal ->
-            now
+            -- the system menu's items, where the platform has one (ST26)
+            Window.systemMenu (Array.map .label (menuItems config))
+                |> Task.andThen (\_ -> now)
                 |> Task.andThen
                     (\t0 ->
                         loop terminal
@@ -582,6 +598,8 @@ run imeLog shotPath charset config cell child settings problems opener =
                             , shotPath = shotPath
                             , troubles = problems
                             , settingsWindow = opener
+                            , menu = Nothing
+                            , shownItems = []
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -1000,6 +1018,22 @@ applySettings new m =
                 , urgent = True
             }
     in
+    (if new.hosts /= old.hosts then
+        Window.systemMenu (Array.map .label (menuItems new))
+
+     else
+        Task.succeed {}
+    )
+        |> Task.andThen (\_ -> refontOr new old language applied)
+
+
+{-| The font opened again, or sized again, when the settings ask (ST4). -}
+refontOr : Config -> Config -> (Config -> String) -> (taken applied : Model) -> Task Error Model
+refontOr new old language applied =
+    let
+        refont =
+            new.font /= old.font || language new /= language old || new.glyphCacheMb /= old.glyphCacheMb
+    in
     if refont then
         Window.setFont { font = new.font, lang = language new, points = new.points, glyphCap = new.glyphCacheMb * 1024 * 1024 }
             |> Task.andThen
@@ -1032,15 +1066,185 @@ isSettingsKey k =
 on standard error. -}
 openSettings : (taken m : Model) -> Task x Model
 openSettings m =
+    spawnSelf [ "settings" ] m
+
+
+{-| This program started again with `args`, and `--config` when this
+window was given one, not tied to this window (ST9, ST26); a failure said
+on standard error. -}
+spawnSelf : Array String -> (taken m : Model) -> Task x Model
+spawnSelf args m =
     when m.settingsWindow is
         Just w ->
-            Process.spawn w.cp w.program w.args (Process.defaultSpawnOptions Ignored)
+            Process.spawn w.cp w.program (args ++ Array.dropFirst 1 w.args) (Process.defaultSpawnOptions Ignored)
                 |> Task.map (\_ -> {})
-                |> Task.onError (\e -> Console.writeErr ("puritty: the settings window: " ++ Os.Error.toString e ++ "\n"))
+                |> Task.onError (\e -> Console.writeErr ("puritty: " ++ String.join " " args ++ ": " ++ Os.Error.toString e ++ "\n"))
                 |> Task.map (\_ -> m)
 
         Nothing ->
-            Console.writeErr "puritty: the settings window: this program's own file is not known\n" |> Task.map (\_ -> m)
+            Console.writeErr "puritty: this program's own file is not known, so no window can be started\n" |> Task.map (\_ -> m)
+
+
+-- THE MENU (docs/settings.md ST9, ST26)
+
+
+{-| Ctrl and the right button: the menu. -}
+isMenuClick : Window.PointerEvent -> Bool
+isMenuClick p =
+    p.action == 0 && p.button == 2 && Bitwise.and p.mods 15 == 2
+
+
+{-| The menu opened at a cell: the settings window, the host list, a
+window of its own, then each host of the settings. -}
+menuAt : Int -> Int -> Model -> Menu
+menuAt row col m =
+    { items = menuItems m.config
+    , row = row
+    , col = col
+    , selected = 0
+    }
+
+
+{-| The menu's items: each what this program is started again with. -}
+menuItems : Config -> Array { label : String, args : Array String }
+menuItems config =
+    [ { label = "Settings…", args = [ "settings" ] }
+    , { label = "Hosts…", args = [ "hosts" ] }
+    , { label = "New window", args = [ "shell" ] }
+    ]
+        ++ Array.map (\h -> { label = "Connect to " ++ h.name, args = [ "--host", h.name ] }) config.hosts
+
+
+{-| The menu at the pointer: the platform's own when it shows one
+(Windows), else drawn over the screen. -}
+openMenu : Window.PointerEvent -> (taken m : Model) -> Task x Model
+openMenu p m =
+    let
+        items =
+            menuItems m.config
+    in
+    Window.menu { x = p.x, y = p.y, items = Array.map .label items }
+        |> Task.map
+            (\shown ->
+                if shown then
+                    { m | shownItems = items }
+
+                else
+                    { m | menu = Just (menuAt (p.y // max 1 p.cellHeight) (p.x // max 1 p.cellWidth) m), urgent = True }
+            )
+
+
+{-| An item chosen in a menu the platform showed: the pop-up's (0) or the
+system menu's (1), whose items are the menu's always. -}
+menuChosen : { menu : Int, index : Int } -> (taken m : Model) -> Task x Model
+menuChosen c m =
+    let
+        items =
+            if c.menu == 1 then menuItems m.config else m.shownItems
+    in
+    when Array.get c.index items is
+        Just item ->
+            spawnSelf item.args m
+
+        Nothing ->
+            Task.succeed m
+
+
+{-| The menu's box: where it is drawn, kept on the screen. -}
+menuBox : Menu -> Int -> Int -> { row : Int, col : Int, width : Int, height : Int }
+menuBox menu cols rows =
+    let
+        width =
+            Array.foldl (\i w -> max w (String.count i.label)) 0 menu.items + 6
+
+        height =
+            Array.length menu.items + 2
+    in
+    { row = max 0 (min menu.row (rows - height))
+    , col = max 0 (min menu.col (cols - width))
+    , width = min width cols
+    , height = min height rows
+    }
+
+
+{-| The menu as the text painted over the screen: a box, the marked item
+pointed at. -}
+menuPaints : Menu -> Int -> Int -> Array { row : Int, col : Int, text : String }
+menuPaints menu cols rows =
+    let
+        box =
+            menuBox menu cols rows
+
+        inner =
+            box.width - 2
+
+        line i item =
+            { row = box.row + 1 + i
+            , col = box.col
+            , text =
+                "│"
+                    ++ String.padRight inner ' ' ((if i == menu.selected then " ▸ " else "   ") ++ item.label)
+                    ++ "│"
+            }
+    in
+    [ { row = box.row, col = box.col, text = "┌" ++ String.repeat inner "─" ++ "┐" } ]
+        ++ Array.indexedMap line menu.items
+        ++ [ { row = box.row + box.height - 1, col = box.col, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
+
+
+{-| A key while the menu is open: Up and Down move the mark, Enter starts
+what it marks, Esc closes it; any other key closes it too. -}
+menuKey : Int -> Menu -> (taken m : Model) -> Task x Model
+menuKey sym menu m =
+    let
+        count =
+            Array.length menu.items
+    in
+    if sym == 0xFF52 then
+        Task.succeed { m | menu = Just { menu | selected = modBy count (menu.selected - 1 + count) }, urgent = True }
+
+    else if sym == 0xFF54 then
+        Task.succeed { m | menu = Just { menu | selected = modBy count (menu.selected + 1) }, urgent = True }
+
+    else if sym == 0xFF0D || sym == 0xFF8D then
+        when Array.get menu.selected menu.items is
+            Just item ->
+                spawnSelf item.args { m | menu = Nothing, urgent = True }
+
+            Nothing ->
+                Task.succeed { m | menu = Nothing, urgent = True }
+
+    else
+        Task.succeed { m | menu = Nothing, urgent = True }
+
+
+{-| A press while the menu is open: on an item, what it says is started;
+anywhere else the menu closes. -}
+menuPress : Window.PointerEvent -> Menu -> (taken m : Model) -> Task x Model
+menuPress p menu m =
+    let
+        box =
+            menuBox menu m.term.cols m.term.rows
+
+        cell =
+            { row = p.y // max 1 p.cellHeight, col = p.x // max 1 p.cellWidth }
+
+        i =
+            cell.row - box.row - 1
+
+        inside =
+            cell.col > box.col && cell.col < box.col + box.width - 1 && i >= 0 && i < Array.length menu.items
+    in
+    if inside && p.button == 1 then
+        when Array.get i menu.items is
+            Just item ->
+                spawnSelf item.args { m | menu = Nothing, urgent = True }
+
+            Nothing ->
+                Task.succeed { m | menu = Nothing, urgent = True }
+
+    else
+        Task.succeed { m | menu = Nothing, urgent = True }
 
 
 {-| The frame just drawn, written to `PURITTY_SHOT`'s file when it is set. -}
@@ -1180,7 +1384,16 @@ handleOne : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> Wind
 handleOne terminal fd ms rest ev m =
             when ev is
                 Window.Key k ->
-                  if isSettingsKey k then
+                  if m.menu /= Nothing && k.action /= 0 then
+                    -- the menu takes the keys while it is open
+                    when m.menu is
+                        Just menu ->
+                            menuKey k.sym menu m |> Task.andThen (\next -> handle terminal fd ms rest next)
+
+                        Nothing ->
+                            handle terminal fd ms rest m
+
+                  else if isSettingsKey k then
                     -- Ctrl+Comma: the settings window (docs/settings.md ST9),
                     -- which raises one already open
                     openSettings m |> Task.andThen (\next -> handle terminal fd ms rest next)
@@ -1244,6 +1457,9 @@ handleOne terminal fd ms rest ev m =
                 Window.Close ->
                     Task.succeed { m | closed = True }
 
+                Window.MenuChosen c ->
+                    menuChosen c m |> Task.andThen (\next -> handle terminal fd ms rest next)
+
                 Window.Commit text ->
                     -- the key path: the text as typed, never as a paste (V46)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
@@ -1277,6 +1493,18 @@ handleOne terminal fd ms rest ev m =
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
+                  if p.action == 0 && m.menu /= Nothing then
+                    when m.menu is
+                        Just menu ->
+                            menuPress p menu m |> Task.andThen (\next -> handle terminal fd ms rest next)
+
+                        Nothing ->
+                            handle terminal fd ms rest m
+
+                  else if isMenuClick p then
+                    openMenu p m |> Task.andThen (\next -> handle terminal fd ms rest next)
+
+                  else
                     if isZoomStep p then
                         -- Ctrl and the wheel: puritty's always, a point a
                         -- step, the steps that came together one zoom
@@ -2043,11 +2271,17 @@ draw ms m =
             highlightOf m
 
         f =
-            if back > 0 then
-                View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
+            when m.menu is
+                Just menu ->
+                    -- the menu painted over a copy of the screen (ST26)
+                    View.frameBack m.look m.focus 0 (Vt.viewPainted (menuPaints menu m.term.cols m.term.rows) m.term) highlight m.term m.shadow
 
-            else
-                View.frameWith m.look m.focus preedit highlight m.term m.shadow
+                Nothing ->
+                    if back > 0 then
+                        View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
+
+                    else
+                        View.frameWith m.look m.focus preedit highlight m.term m.shadow
 
         spot =
             View.preeditSpot preedit m.term

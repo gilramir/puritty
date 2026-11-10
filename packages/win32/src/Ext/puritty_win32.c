@@ -684,6 +684,19 @@ static volatile LONG clip_owned;
 
 #define WM_APP_SPOT (WM_APP + 1)
 #define WM_APP_POINTER (WM_APP + 2)
+#define WM_APP_MENU (WM_APP + 3)
+#define WM_APP_SYSMENU (WM_APP + 4)
+
+/* THE MENUS (docs/settings.md ST9, ST26): Windows' own. The program's
+ * thread hands the items over, a line each ("-" a separator), and the
+ * window's thread, which owns the window, shows them; the item chosen
+ * comes back as an event (12: which menu, 0 the pop-up and 1 the system
+ * menu, and the item). */
+static CRITICAL_SECTION menu_lock;
+static wchar_t *menu_items, *system_items;
+static int system_count;
+#define SYSTEM_FIRST 0x1000
+
 
 /* A record queued, and the post sent when the queue was empty, which wakes
  * Geng's loop. A motion takes the place of one at the queue's end. */
@@ -702,6 +715,29 @@ static void record_as(const uint8_t *r, int n, int motion) {
 }
 
 static void record(const uint8_t *r, int n) { record_as(r, n, 0); }
+
+static void chosen(int which, int index) {
+    uint8_t r[4] = {12, (uint8_t) which, (uint8_t) (index >> 8), (uint8_t) index};
+    record(r, 4);
+}
+
+/* A menu of the items, a line each, "-" a separator, its commands from
+ * `first` in steps of `step`. */
+static void fill_menu(HMENU m, const wchar_t *items, UINT first, UINT step) {
+    UINT id = first;
+    for (const wchar_t *p = items; p && *p;) {
+        const wchar_t *end = wcschr(p, L'\n');
+        size_t n = end ? (size_t) (end - p) : wcslen(p);
+        wchar_t *item = malloc((n + 1) * sizeof *item);
+        memcpy(item, p, n * sizeof *item);
+        item[n] = 0;
+        if (wcscmp(item, L"-") == 0) AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+        else AppendMenuW(m, MF_STRING, id, item);
+        id += step;
+        free(item);
+        p = end ? end + 1 : p + n;
+    }
+}
 
 /* KEYS (WS5) */
 
@@ -1359,6 +1395,47 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         spot_y = (int) lp;
         place_ime(h);
         return 0;
+    case WM_APP_MENU: {
+        /* the pop-up at the pointer, modal on this thread, which owns the
+         * window; its item an event, or nothing when it was let go */
+        EnterCriticalSection(&menu_lock);
+        HMENU menu = CreatePopupMenu();
+        fill_menu(menu, menu_items, 1, 1);
+        LeaveCriticalSection(&menu_lock);
+        POINT at = {(LONG) (short) LOWORD(lp), (LONG) (short) HIWORD(lp)};
+        ClientToScreen(h, &at);
+        SetForegroundWindow(h);
+        UINT cmd = (UINT) TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, 0, h, NULL);
+        PostMessageW(h, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+        if (cmd > 0) chosen(0, (int) cmd - 1);
+        return 0;
+    }
+    case WM_APP_SYSMENU: {
+        /* the system menu given back as Windows has it, and the items
+         * after a separator; their commands in steps of 16, whose low
+         * bits Windows keeps for itself */
+        GetSystemMenu(h, TRUE);
+        HMENU menu = GetSystemMenu(h, FALSE);
+        EnterCriticalSection(&menu_lock);
+        if (system_items && *system_items) {
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            fill_menu(menu, system_items, SYSTEM_FIRST, 16);
+        }
+        LeaveCriticalSection(&menu_lock);
+        return 0;
+    }
+    case WM_SYSCOMMAND: {
+        UINT id = (UINT) (wp & 0xFFF0);
+        EnterCriticalSection(&menu_lock);
+        int count = system_count;
+        LeaveCriticalSection(&menu_lock);
+        if (id >= SYSTEM_FIRST && id < SYSTEM_FIRST + 16 * (UINT) count) {
+            chosen(1, (int) ((id - SYSTEM_FIRST) / 16));
+            return 0;
+        }
+        break;
+    }
     case WM_CLOSE: {
         uint8_t rec[1] = {4};
         record(rec, 1);
@@ -1461,6 +1538,7 @@ geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     InitializeCriticalSection(&paint);
     InitializeCriticalSection(&queue_lock);
+    InitializeCriticalSection(&menu_lock);
     const char *forced = getenv("PURITTY_DPI");
     int dpi = forced && atoi(forced) > 0 ? atoi(forced) : (int) GetDpiForSystem();
     pt_verbose = getenv("PURITTY_STATS") != NULL;
@@ -1857,5 +1935,43 @@ geng_cancel puritty_win32_language(geng_wait *wait) {
     b->block = NULL;
     if (n) memcpy(b->data, utf8, (size_t) n);
     geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* MENUS: the items handed over as UTF-8 lines and shown by the window's
+ * thread (docs/settings.md ST26). */
+static wchar_t *menu_text(void *items_bytes, int *count) {
+    char *items = string_of(items_bytes);
+    wchar_t *w = wide(items);
+    free(items);
+    int n = 1;
+    for (wchar_t *p = w; *p; p++)
+        if (*p == L'\n') n++;
+    *count = *w ? n : 0;
+    return w;
+}
+
+geng_cancel puritty_win32_menu(void *items_bytes, int32_t x, int32_t y, geng_wait *wait) {
+    int count;
+    wchar_t *w = menu_text(items_bytes, &count);
+    EnterCriticalSection(&menu_lock);
+    free(menu_items);
+    menu_items = w;
+    LeaveCriticalSection(&menu_lock);
+    PostMessageW(win, WM_APP_MENU, 0, MAKELPARAM((WORD) (short) x, (WORD) (short) y));
+    geng_succeed(wait, geng_slot_I4(1));
+    return (geng_cancel) {0};
+}
+
+geng_cancel puritty_win32_system_menu(void *items_bytes, geng_wait *wait) {
+    int count;
+    wchar_t *w = menu_text(items_bytes, &count);
+    EnterCriticalSection(&menu_lock);
+    free(system_items);
+    system_items = w;
+    system_count = count;
+    LeaveCriticalSection(&menu_lock);
+    PostMessageW(win, WM_APP_SYSMENU, 0, 0);
+    geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }

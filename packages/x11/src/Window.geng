@@ -1,6 +1,6 @@
 module Window exposing
     ( Settings, Cell, open
-    , setFont, fonts, raise, draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
+    , setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
     , events, take, Event(..), PointerEvent
     )
 
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, setFont, fonts, raise, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
 
 -}
 
@@ -261,6 +261,21 @@ raise title =
 raiseExtern : Bytes -> Task x Int
 
 
+{-| A pop-up menu the platform shows itself (`docs/settings.md` ST26):
+X11 has none to show, so this answers False, and the program draws its
+own over the screen. -}
+menu : { x : Int, y : Int, items : Array String } -> Task x Bool
+menu _ =
+    Task.succeed False
+
+
+{-| Items for the window manager's menu of the window: X11 gives a program
+none, so this does nothing (`settings-ui.md` §1). -}
+systemMenu : Array String -> Task x {}
+systemMenu _ =
+    Task.succeed {}
+
+
 {-| The pointer over the window: the cursor theme's I-beam, over text, or
 its arrow, while the program takes the mouse (docs/phase3-select.md §21). -}
 setPointer : Pointer -> Task x {}
@@ -327,6 +342,7 @@ type Event
     | Pointer PointerEvent
     | SelectionLost Selection
     | Pasted Bool
+    | MenuChosen { menu : Int, index : Int }
 
 
 {-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
@@ -446,6 +462,9 @@ decode b at acc =
 
             11 ->
                 decode b (at + 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
+
+            12 ->
+                decode b (at + 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)
 
             10 ->
                 decode b

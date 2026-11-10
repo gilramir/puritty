@@ -70,6 +70,10 @@ CASES = [
     ("start-hosts", 'start = "hosts"', [], ("puritty hosts", [])),
     # from the settings window, a session opens a window of its own and the
     # settings window stays
+    # the menu (ST26): Ctrl+right-click in a terminal, the fourth item, the
+    # first host, started in a window of its own
+    ("menu-connects", None, ["--title", "term", "--", "sh", "-c", "exec sleep 600"],
+     ("term", ["ctrl+button3", "Down", "Down", "Down", "Return"])),
     ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 7 + ["Right", "Down", "Down", "Return"])),
 ]
 
@@ -111,8 +115,12 @@ def run_case(env0, name, start, args, keys=None):
                              text=True, timeout=10).stdout.split()[0]
         subprocess.run([XDO, "windowfocus", "--sync", win], env=env, check=True)
         for k in presses:
-            subprocess.run([XDO, "key", k], env=env, check=True)
-            time.sleep(0.1)
+            if k == "ctrl+button3":
+                subprocess.run([XDO, "mousemove", "--window", win, "100", "60"], env=env, check=True)
+                subprocess.run([XDO, "keydown", "ctrl", "click", "3", "keyup", "ctrl"], env=env, check=True)
+            else:
+                subprocess.run([XDO, "key", k], env=env, check=True)
+            time.sleep(0.15)
         time.sleep(1.8)
         seen = windows(env)
     title = reload.title_of(env)
@@ -129,7 +137,7 @@ def run_case(env0, name, start, args, keys=None):
     time.sleep(0.3)
     ssh = said.read_text().splitlines() if said.exists() else None
     colour = "none"
-    if args[:1] == ["settings"]:
+    if args[:1] == ["settings"] or name == "menu-connects":
         # the settings window and the session it starts both write
         # PURITTY_SHOT's file, so which picture is there is a race
         colour = "not pictured"

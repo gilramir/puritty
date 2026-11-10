@@ -829,3 +829,48 @@ which picture is there was a race, which a run lost.
 `host = ""`; the window read its own file back, a host with no address is
 left out, and the form lost its host under the typing. Where to connect
 is now its own kind (`Address`), which does not take empty text.
+
+## ST26 · Step 6 completed: the menus (2026-11-10)
+
+**Ctrl+right-click** in a terminal opens a menu at the pointer: Settings…,
+Hosts…, New window, then Connect to each host of the settings. Each item
+starts this program again (`settings`, `hosts`, `shell`, `--host NAME`,
+and `--config` when the window was given one), not tied to the window, as
+Ctrl+Comma does (`spawnSelf`). Ctrl with the right button is puritty's
+whatever mouse mode the program asked for.
+
+**On Windows the menu is Windows' own** (`Window.menu`, `TrackPopupMenu`):
+the program's thread hands the items to the window's thread, which owns
+the window and shows the menu, and the item chosen comes back as an event,
+`MenuChosen { menu = 0, index }`. **The system menu** (the title bar's
+icon, Alt+Space) has the same items after Windows' own and a separator
+(`Window.systemMenu`, as PuTTY puts its sessions there), given when the
+window starts and again when a settings reload changes the hosts; one
+chosen is `MenuChosen { menu = 1, index }`. Its commands go in steps of 16
+from 0x1000, since Windows keeps a `WM_SYSCOMMAND`'s low four bits.
+
+**On Linux puritty draws it**, as ST9 leaned and Gilbert took (ST14): `Vt.viewPainted`
+paints the menu's box (box-drawing borders, a `▸` at the marked item; plain
+text, since a cell's style is the term's) over a copy of the screen, which
+`View.frameBack` draws; the term is only read, and when the menu closes the
+next frame's diff draws the cells it covered again. Up and Down move the
+mark, Enter starts it, Esc or any other key closes it; a left click on an
+item starts it, a press anywhere else closes it. X11 gives a program no
+system menu, so `Window.systemMenu` does nothing there and `Window.menu`
+answers that it shows none.
+
+**Held by:** the core's tests, 79 of 79, with `viewPainted` and `paint`
+(text over a row's cells, the term left as it was, past a row's text, wide
+characters two cells, a wide character cut at either edge mended); the
+hosts gate, **12 of 12**, with `menu-connects` (Ctrl+right-click, the
+fourth item, and the stand-in ssh started for the first host in a window of
+its own); on Xvfb the menu was pictured at the pointer, the mark moved by
+Down, and Esc gave the screen back cell for cell. **On Windows**, in
+Gilbert's session with the events gate's driver: Ctrl+right-click showed
+Windows' pop-up with the four items, and Down three times and Enter started
+`puritty.exe shell`; Alt+Space showed the system menu with the items after
+Close, and Up twice and Enter started `puritty.exe shell` again.
+
+**Held as before:** `app/tests` 77 of 77, settings 16 of 16, reload 15 of
+15, pointer 51 of 51, IME 14 of 14, pixels 36 of 36 on Linux and on
+Windows, replay 325 of 325, events 13 of 13.

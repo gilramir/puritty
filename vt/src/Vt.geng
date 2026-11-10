@@ -2,7 +2,7 @@ module Vt exposing
     ( Term, Config, new, feed, takeReplies, resize
     , dump, historyBound, historyReached, recutHolds, scrollbackBytesFor
     , defaultPageRows, keyOptions, mouseModes
-    , View, scrollbackRows, rowsPushed, viewAt, promptJump
+    , View, scrollbackRows, rowsPushed, viewAt, viewPainted, paint, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
     , Clip, takeClipboard, withPalette, setPalette, setScrollbackBytes
     )
@@ -148,6 +148,114 @@ viewAt back0 t =
     in
     -- a ring has a row past its screen's, which a view never uses
     { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
+
+
+{-| The screen as a view (`viewAt 0`), with text painted over its cells
+at a row and a column each: what an embedder draws over the terminal and
+takes away again, as puritty's menu (`docs/settings.md` ST26), while the
+term itself is only read. The text is plain, in the default style, a
+character's cells by its width; a wide character cut at either edge of
+what is painted is a space. -}
+viewPainted : Array { row : Int, col : Int, text : String } -> Term -> View
+viewPainted paints t =
+    let
+        read =
+            paintedRows paints t
+    in
+    { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
+
+
+{-| The text `viewPainted` paints, painted into the term's own screen
+instead: for a test to read with `dump`, which reads a term. -}
+paint : Array { row : Int, col : Int, text : String } -> (taken t : Term) -> Term
+paint paints t =
+    let
+        read =
+            paintedRows paints t
+
+        rows =
+            t.rows
+    in
+    { t | screen = writeRows read.rows 0 0 rows t.screen }
+
+
+paintedRows : Array { row : Int, col : Int, text : String } -> Term -> { rows : Array Row, clusters : Clusters }
+paintedRows paints t =
+    let
+        read =
+            rowsBetween 0 t.rows t
+    in
+    { rows =
+        Array.indexedMap
+            (\y r -> Array.foldl (\p acc -> if p.row == y then { acc | cells = paintCells p.col p.text acc.cells } else acc) r paints)
+            read.rows
+    , clusters = read.clusters
+    }
+
+
+{-| A row's cells with text written from a column, as plain cells. -}
+paintCells : Int -> String -> Array Int64 -> Array Int64
+paintCells col text cells0 =
+    let
+        widthOf cp =
+            if cp < 0x20 then
+                0
+
+            else if cp < 0x80 then
+                1
+
+            else
+                Width.width cp
+
+        points =
+            String.toArray text |> Array.map Char.toCode |> Array.keepIf (\cp -> widthOf cp > 0)
+
+        span =
+            Array.foldl (\cp n -> n + widthOf cp) 0 points
+
+        padded =
+            if Array.length cells0 < col + span + 1 then
+                cells0 ++ Array.repeat (col + span + 1 - Array.length cells0) 0
+
+            else
+                cells0
+
+        -- a wide character the text begins on the tail of, or ends on the
+        -- head of, loses its other half: a space
+        mended =
+            padded
+                |> mendAt (col - 1) wideHead
+                |> mendAt (col + span) wideTail
+
+        written =
+            Array.foldl
+                (\cp acc ->
+                    if widthOf cp == 2 then
+                        { x = acc.x + 2
+                        , cells = acc.cells |> Array.set acc.x (Int64.fromInt (Bitwise.or wideHead cp)) |> Array.set (acc.x + 1) (Int64.fromInt wideTail)
+                        }
+
+                    else
+                        { x = acc.x + 1, cells = Array.set acc.x (Int64.fromInt cp) acc.cells }
+                )
+                { x = col, cells = mended }
+                points
+    in
+    written.cells
+
+
+mendAt : Int -> Int -> Array Int64 -> Array Int64
+mendAt i half cells =
+    when Array.get i cells is
+        Just c ->
+            if cellWide c == half then
+                Array.set i 32 cells
+
+            else
+                cells
+
+        Nothing ->
+            cells
 
 
 {-| `count` rows of the main screen and its scrollback from logical row `first`

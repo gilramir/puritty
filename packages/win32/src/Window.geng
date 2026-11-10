@@ -1,6 +1,6 @@
 module Window exposing
     ( Settings, Cell, open
-    , setFont, fonts, raise, draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
+    , setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
     , events, take, Event(..), PointerEvent
     )
 
@@ -20,7 +20,7 @@ the loop (WS4). Keys, the pointer and the IME's records are X11's, read as
 Linux reads them (WS5-WS7, WS19). The selections are step 5's (WS12), and
 until then [`select`](#select) and [`paste`](#paste) change nothing.
 
-@docs Settings, Cell, open, setFont, fonts, raise, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
 
 -}
 
@@ -259,6 +259,31 @@ raise title =
 raiseExtern : Bytes -> Task x Int
 
 
+{-| Windows' own pop-up menu of these items at a point of the window, in
+pixels (`docs/settings.md` ST26): "-" is a separator. The item chosen comes
+as `MenuChosen { menu = 0, index }`, nothing when it is let go. Answers
+whether the platform shows it; on Windows it does. -}
+menu : { x : Int, y : Int, items : Array String } -> Task x Bool
+menu r =
+    menuExtern (Bytes.fromString (String.join "\n" r.items)) r.x r.y |> Task.map (\shown -> shown /= 0)
+
+
+@extern(c, "puritty_win32_menu")
+menuExtern : Bytes -> Int -> Int -> Task x Int
+
+
+{-| These items after the system menu's own (the title bar's icon,
+Alt+Space), as PuTTY puts its sessions there; one chosen comes as
+`MenuChosen { menu = 1, index }`. Asked again, the items are replaced. -}
+systemMenu : Array String -> Task x {}
+systemMenu items =
+    systemMenuExtern (Bytes.fromString (String.join "\n" items)) |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_system_menu")
+systemMenuExtern : Bytes -> Task x Int
+
+
 {-| The pointer over the window: the cursor theme's I-beam, over text, or
 its arrow, while the program takes the mouse (docs/phase3-select.md §21). -}
 setPointer : Pointer -> Task x {}
@@ -327,6 +352,7 @@ type Event
     | Pointer PointerEvent
     | SelectionLost Selection
     | Pasted Bool
+    | MenuChosen { menu : Int, index : Int }
 
 
 {-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
@@ -446,6 +472,9 @@ decode b at acc =
 
             11 ->
                 decode b (at + 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
+
+            12 ->
+                decode b (at + 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)
 
             10 ->
                 decode b

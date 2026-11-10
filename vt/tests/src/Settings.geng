@@ -2,7 +2,8 @@ module Settings exposing (suite)
 
 {-| What puritty changes in a running terminal when its settings are read
 again (puritty `docs/settings.md` ST4): the named colours, over the
-defaults, and the scrollback's bound in bytes.
+defaults, and the scrollback's bound in bytes; and what it paints over the
+screen and takes away, its menu (ST26).
 -}
 
 import Expect
@@ -99,4 +100,35 @@ suite =
                     Expect.equal { kept = True, grew = True }
                         { kept = before > 0 && before < 100, grew = Vt.scrollbackRows grown > before + 90 }
           }
+            , { name = "viewPainted paints text over the screen's cells"
+          , test =
+                \_ ->
+                    Expect.equal [ "0 |abXYZfgh|", "1 |ijkl|" ]
+                        (painted [ { row = 0, col = 2, text = "XYZ" } ] (feed "abcdefgh\r\nijkl" (term 8 2)))
+          }
+        , { name = "viewPainted leaves the term as it was"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "abcdefgh" (term 8 2)
+
+                        v =
+                            Vt.viewPainted [ { row = 0, col = 2, text = "XYZ" } ] t
+                    in
+                    Expect.equal [ "0 |abcdefgh|" ] (Support.lines t |> Array.keepIf (String.startsWith "0 |"))
+          }
+        , { name = "viewPainted paints past a row's text, and wide characters two cells"
+          , test = \_ -> Expect.equal [ "0 |ab  한글|" ] (painted [ { row = 0, col = 4, text = "한글" } ] (feed "ab" (term 10 1)))
+          }
+        , { name = "viewPainted mends a wide character it cuts at either edge"
+          , test = \_ -> Expect.equal [ "0 | xy |" ] (painted [ { row = 0, col = 1, text = "xy" } ] (feed "한글" (term 6 1)))
+          }
         ]
+
+
+{-| The rows of a view's screen, as `Support.lines` reads a term's. -}
+painted : Array { row : Int, col : Int, text : String } -> (taken t : Vt.Term) -> Array String
+painted paints t =
+    Support.lines (Vt.paint paints t)
+        |> Array.keepIf (\l -> String.startsWith "0 |" l || String.startsWith "1 |" l)
