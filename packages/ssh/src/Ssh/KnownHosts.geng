@@ -1,0 +1,306 @@
+module Ssh.KnownHosts exposing
+    ( Entry
+    , Marker(..)
+    , Names(..)
+    , Verdict(..)
+    , check
+    , keyTypeOf
+    , keyTypesFor
+    , line
+    , lookupName
+    , matching
+    , orderHostKeys
+    , parse
+    )
+
+{-| OpenSSH's `known_hosts` (sshd(8), "SSH_KNOWN_HOSTS FILE FORMAT";
+puritty `docs/ssh-client.md` SC2, SC11 step 5): which keys a host is known
+by, whether the key a server shows is one of them, and the line that
+records a new one.
+
+A host on port 22 is looked up by its name, and on any other port as
+`[name]:port`. A line's names are patterns (`*`, `?`, and `!` for one that
+must not match, compared without regard to case) or one hashed name,
+`|1|salt|HMAC-SHA1(salt, name)`, which Debian and Ubuntu write by default.
+`@revoked` marks a key no host may use; `@cert-authority` lines are for
+certificates, which this client does not take yet, and are left out of
+every answer.
+-}
+
+import Bytes exposing (Bytes)
+import Ssh.Base64 as Base64
+import Ssh.Wire as Wire
+import SshCrypto
+
+
+type Marker
+    = Plain
+    | Revoked
+    | CertAuthority
+
+
+type Names
+    = Patterns (Array String)
+    | Hashed { salt : Bytes, hash : Bytes }
+
+
+{-| A line: its number from 1, its marker, its names, its key's type as the
+line says it, and the key's blob. -}
+type alias Entry =
+    { lineNumber : Int, marker : Marker, names : Names, keyType : String, key : Bytes }
+
+
+{-| Every line that is an entry, and why each other line that is not a
+comment or blank is not one. -}
+parse : String -> { entries : Array Entry, problems : Array { lineNumber : Int, problem : String } }
+parse text =
+    String.lines text
+        |> Array.indexedMap (\i l -> { lineNumber = i + 1, text = String.trim l })
+        |> Array.foldl
+            (\l acc ->
+                if String.isEmpty l.text || String.startsWith "#" l.text then
+                    acc
+
+                else
+                    when parseLine l.lineNumber l.text is
+                        Ok entry ->
+                            { acc | entries = Array.pushLast entry acc.entries }
+
+                        Err problem ->
+                            { acc | problems = Array.pushLast { lineNumber = l.lineNumber, problem = problem } acc.problems }
+            )
+            { entries = [], problems = [] }
+
+
+parseLine : Int -> String -> Result String Entry
+parseLine lineNumber text =
+    let
+        words =
+            String.words text
+
+        marked =
+            when Array.first words is
+                Just "@revoked" ->
+                    { marker = Revoked, rest = Array.dropFirst 1 words }
+
+                Just "@cert-authority" ->
+                    { marker = CertAuthority, rest = Array.dropFirst 1 words }
+
+                _ ->
+                    { marker = Plain, rest = words }
+    in
+    when Array.takeFirst 3 marked.rest is
+        [ hosts, keyType, encoded ] ->
+            when { names = namesOf hosts, key = Base64.decode encoded } is
+                { names = Err why } ->
+                    Err why
+
+                { key = Nothing } ->
+                    Err "its key is not base64"
+
+                { names = Ok names, key = Just key } ->
+                    if keyTypeOf key /= keyType then
+                        Err ("its key is a " ++ keyTypeOf key ++ " key, not " ++ keyType)
+
+                    else
+                        Ok { lineNumber = lineNumber, marker = marked.marker, names = names, keyType = keyType, key = key }
+
+        _ ->
+            Err "it is not names, a key type and a key"
+
+
+namesOf : String -> Result String Names
+namesOf hosts =
+    if String.startsWith "|1|" hosts then
+        when String.split "|" hosts is
+            [ "", "1", salt, hash ] ->
+                when { salt = Base64.decode salt, hash = Base64.decode hash } is
+                    { salt = Just s, hash = Just h } ->
+                        if Bytes.length s == 20 && Bytes.length h == 20 then
+                            Ok (Hashed { salt = s, hash = h })
+
+                        else
+                            Err "a hashed name whose salt or hash is not 20 bytes"
+
+                    _ ->
+                        Err "a hashed name that is not base64"
+
+            _ ->
+                Err "a hashed name that is not |1|salt|hash"
+
+    else
+        Ok (Patterns (String.split "," hosts))
+
+
+{-| The name a host and port are looked up by: the host's own on port 22,
+`[host]:port` on any other. -}
+lookupName : { host : String, port : Int } -> String
+lookupName target =
+    if target.port == 22 then
+        String.toLower target.host
+
+    else
+        "[" ++ String.toLower target.host ++ "]:" ++ String.fromInt target.port
+
+
+{-| The type a key blob names first, `ssh-ed25519`, `ecdsa-sha2-nistp256`,
+`ssh-rsa` and so on; empty for one that does not read. -}
+keyTypeOf : Bytes -> String
+keyTypeOf blob =
+    Wire.reader blob |> Wire.name |> Result.map .value |> Result.withDefault ""
+
+
+{-| Whether a line's names take the lookup name. -}
+matches : String -> Entry -> Bool
+matches name entry =
+    when entry.names is
+        Hashed h ->
+            SshCrypto.equal (SshCrypto.hmac SshCrypto.HmacSha1 h.salt (Bytes.fromString name)) h.hash
+
+        Patterns patterns ->
+            let
+                negated =
+                    Array.keepIf (\p -> String.startsWith "!" p) patterns
+
+                positive =
+                    Array.keepIf (\p -> not (String.startsWith "!" p)) patterns
+            in
+            Array.any (\p -> glob (String.toLower p) name) positive
+                && not (Array.any (\p -> glob (String.toLower (String.dropFirst 1 p)) name) negated)
+
+
+{-| The lines that name the host, `@cert-authority` ones left out, in the
+file's order. -}
+matching : String -> Array Entry -> Array Entry
+matching name entries =
+    Array.keepIf (\e -> e.marker /= CertAuthority && matches name e) entries
+
+
+{-| `*` for any run of characters, `?` for one, and the rest as they are. -}
+glob : String -> String -> Bool
+glob pattern name =
+    globFrom (String.toArray pattern) (String.toArray name)
+
+
+globFrom : Array Char -> Array Char -> Bool
+globFrom pattern name =
+    when Array.popFirst pattern is
+        Nothing ->
+            Array.isEmpty name
+
+        Just p ->
+            if p.first == '*' then
+                globFrom p.rest name
+                    || (when Array.popFirst name is
+                            Just n ->
+                                globFrom pattern n.rest
+
+                            Nothing ->
+                                False
+                       )
+
+            else
+                when Array.popFirst name is
+                    Just n ->
+                        (p.first == '?' || p.first == n.first) && globFrom p.rest n.rest
+
+                    Nothing ->
+                        False
+
+
+{-| What the file says of the key a server showed:
+
+  - `Known`: a line for the host has this key.
+  - `Unknown`: no line for the host has a key of this type; `otherTypes`
+    are the types it is known by, if any.
+  - `Changed`: lines for the host have another key of this type, the
+    warning OpenSSH shouts.
+  - `KeyRevoked`: a `@revoked` line has this key, whatever its names.
+
+-}
+type Verdict
+    = Known
+    | Unknown { otherTypes : Array String }
+    | Changed { lineNumbers : Array Int }
+    | KeyRevoked
+
+
+check : String -> Bytes -> Array Entry -> Verdict
+check name key entries =
+    let
+        keyType =
+            keyTypeOf key
+
+        revoked =
+            Array.any (\e -> e.marker == Revoked && SshCrypto.equal e.key key) entries
+
+        forHost =
+            matching name entries |> Array.keepIf (\e -> e.marker == Plain)
+
+        sameType =
+            Array.keepIf (\e -> e.keyType == keyType) forHost
+    in
+    if revoked then
+        KeyRevoked
+
+    else if Array.any (\e -> SshCrypto.equal e.key key) sameType then
+        Known
+
+    else if not (Array.isEmpty sameType) then
+        Changed { lineNumbers = Array.map .lineNumber sameType }
+
+    else
+        Unknown { otherTypes = keyTypesFor name entries }
+
+
+{-| The key types the host is known by, each once, in the file's order. -}
+keyTypesFor : String -> Array Entry -> Array String
+keyTypesFor name entries =
+    matching name entries
+        |> Array.keepIf (\e -> e.marker == Plain)
+        |> Array.foldl
+            (\e acc ->
+                if Array.member e.keyType acc then
+                    acc
+
+                else
+                    Array.pushLast e.keyType acc
+            )
+            []
+
+
+{-| Host key algorithms reordered so that those whose key type the host is
+known by come first, each group in the order given, as OpenSSH does
+(`order_hostkeyalgs`): a server with several keys then signs with one the
+file can check. An `ssh-rsa` key is the type of `rsa-sha2-512` and
+`rsa-sha2-256`. -}
+orderHostKeys : Array String -> Array String -> Array String
+orderHostKeys knownTypes algorithms =
+    let
+        typeOf algorithm =
+            if String.startsWith "rsa-sha2-" algorithm then
+                "ssh-rsa"
+
+            else
+                algorithm
+
+        known =
+            Array.keepIf (\a -> Array.member (typeOf a) knownTypes) algorithms
+    in
+    known ++ Array.keepIf (\a -> not (Array.member a known)) algorithms
+
+
+{-| The line that records a host's key, ending in a newline: by its name,
+or hashed with this 20-byte salt (`|1|salt|hash`). -}
+line : { name : String, salt : Maybe Bytes } -> Bytes -> String
+line target key =
+    let
+        names =
+            when target.salt is
+                Just salt ->
+                    "|1|" ++ Base64.encode salt ++ "|" ++ Base64.encode (SshCrypto.hmac SshCrypto.HmacSha1 salt (Bytes.fromString target.name))
+
+                Nothing ->
+                    target.name
+    in
+    names ++ " " ++ keyTypeOf key ++ " " ++ Base64.encode key ++ "\n"

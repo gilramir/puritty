@@ -1,0 +1,127 @@
+module Ssh.Base64 exposing (decode, encode)
+
+{-| Base64 (RFC 4648 §4), as `known_hosts`, a public key line and a key
+file write keys: padded, no line breaks. `decode` refuses anything else.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+
+
+alphabet : String
+alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+{-| A character's six bits, or -1. -}
+valueOf : Int -> Int
+valueOf c =
+    if c >= 65 && c <= 90 then
+        c - 65
+
+    else if c >= 97 && c <= 122 then
+        c - 71
+
+    else if c >= 48 && c <= 57 then
+        c + 4
+
+    else if c == 43 then
+        62
+
+    else if c == 47 then
+        63
+
+    else
+        -1
+
+
+decode : String -> Maybe Bytes
+decode text =
+    let
+        codes =
+            Array.map Char.toCode (String.toArray text)
+
+        n =
+            Array.length codes
+
+        padding =
+            if n >= 2 && Array.get (n - 2) codes == Just 61 then
+                2
+
+            else if n >= 1 && Array.get (n - 1) codes == Just 61 then
+                1
+
+            else
+                0
+
+        values =
+            Array.map valueOf (Array.takeFirst (n - padding) codes)
+    in
+    if modBy 4 n /= 0 || Array.any (\v -> v < 0) values then
+        Nothing
+
+    else
+        let
+            groups =
+                Array.range 0 (n // 4 - 1)
+
+            byteAt i =
+                Array.get i values |> Maybe.withDefault 0
+
+            bytes =
+                groups
+                    |> Array.mapAndFlatten
+                        (\g ->
+                            let
+                                word =
+                                    Bitwise.or (Bitwise.shiftLeftBy 18 (byteAt (4 * g)))
+                                        (Bitwise.or (Bitwise.shiftLeftBy 12 (byteAt (4 * g + 1)))
+                                            (Bitwise.or (Bitwise.shiftLeftBy 6 (byteAt (4 * g + 2))) (byteAt (4 * g + 3)))
+                                        )
+                            in
+                            [ Bitwise.and 255 (Bitwise.shiftRightZfBy 16 word), Bitwise.and 255 (Bitwise.shiftRightZfBy 8 word), Bitwise.and 255 word ]
+                        )
+                    |> Array.takeFirst (3 * (n // 4) - padding)
+        in
+        Just (Bytes.fromUInt8s (Array.map UInt8.fromIntWrap bytes))
+
+
+encode : Bytes -> String
+encode b =
+    let
+        n =
+            Bytes.length b
+
+        at i =
+            Bytes.get i b |> Maybe.map UInt8.toInt |> Maybe.withDefault 0
+
+        char v =
+            String.slice v (v + 1) alphabet
+    in
+    Array.range 0 ((n + 2) // 3 - 1)
+        |> Array.map
+            (\g ->
+                let
+                    word =
+                        Bitwise.or (Bitwise.shiftLeftBy 16 (at (3 * g))) (Bitwise.or (Bitwise.shiftLeftBy 8 (at (3 * g + 1))) (at (3 * g + 2)))
+
+                    left =
+                        n - 3 * g
+                in
+                char (Bitwise.and 63 (Bitwise.shiftRightZfBy 18 word))
+                    ++ char (Bitwise.and 63 (Bitwise.shiftRightZfBy 12 word))
+                    ++ (if left >= 2 then
+                            char (Bitwise.and 63 (Bitwise.shiftRightZfBy 6 word))
+
+                        else
+                            "="
+                       )
+                    ++ (if left >= 3 then
+                            char (Bitwise.and 63 word)
+
+                        else
+                            "="
+                       )
+            )
+        |> String.join ""

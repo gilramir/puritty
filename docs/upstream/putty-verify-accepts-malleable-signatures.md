@@ -18,6 +18,15 @@ Neither lets a signature be made without the key: each turns one valid
 signature into another valid one (malleability). A protocol that treats a
 signature's bytes as unique (as SSH does not) could be misled.
 
+## Security
+
+Low. Neither lets anyone sign without the key; each lets someone holding a
+valid signature make a second, different valid one. SSH signs the exchange
+hash, which neither side treats as unique by its signature's bytes, so an
+SSH session is not affected. A use of PuTTY's code that does treat a
+signature's bytes as an identifier (deduplicating signed messages, say)
+could be misled.
+
 ## Reproduction
 
 The Wycheproof cases above, through `ssh_key_verify` with the SSH blobs

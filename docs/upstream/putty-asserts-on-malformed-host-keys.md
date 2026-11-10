@@ -24,10 +24,30 @@ not tried against PuTTY's programs, and not known whether its release
 builds keep `assert`). The same blobs reach the same code from a key file
 or an agent.
 
+## Security
+
+PuTTY keeps its assertions in every build (`defs.h` refuses `NDEBUG` with
+an `#error`; `cmake/setup.cmake` strips `-DNDEBUG` from release flags), so
+each of these is a clean abort, not a write out of bounds: `mp_set_bit`'s
+assertion is what stops it clearing a bit past the end of `y`'s words. The
+effect is a denial of service of the program that parses the blob:
+
+- **A client**, by the server it connects to, or by anyone in the network
+  path, since the host key is decoded before it is checked against the
+  known hosts. Such an attacker can end the connection anyway; what changes
+  is that the client crashes instead of reporting an error.
+- **Pageant**, by any local program that may talk to it, if a request that
+  carries a public key blob reaches `ssh_key_new_pub` (inferred from the
+  code, not tried). Pageant ending ends every session that relies on it.
+
+Not a disclosure or a forgery. A build of this code with assertions off,
+which PuTTY forbids but another project carrying its `crypto/` might do,
+would turn the first into a one-bit write past a heap block.
+
 ## Reproduction
 
     ssh_key *k = ssh_key_new_pub(&ssh_ecdsa_ed25519,
-        PTRLEN_LITERAL("\0\0\0\x0bssh-ed25519\0\0\0\x04abcd"));
+        PTRLEN_LITERAL("\0\0\0\x0bssh-ed25519\0\0\0\x04" "abcd"));
 
 aborts in `mp_set_bit`. An `ssh-rsa` blob with `n = 2^1024` (an `mpint`
 of `0x01` and 128 zero bytes) and any signature of 128 bytes aborts in

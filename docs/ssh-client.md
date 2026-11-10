@@ -674,6 +674,7 @@ Each ends with its gate passing, and the gates before it still passing.
    **Done 2026-11-10:** SC14.
 5. **known_hosts and `~/.ssh/config`.** *Gate:* the `ssh -G` table; known_hosts
    cases (hashed, `[host]:port`, revoked, changed).
+   **Done 2026-11-10:** SC15.
 6. **User authentication**: key files (OpenSSH format, `bcrypt_pbkdf` on a
    thread), the agent (Linux's socket for the gate, then Windows' pipe and
    Pageant), password, keyboard-interactive. *Gate:* sshd with each method
@@ -894,3 +895,57 @@ replays), `scripted.py`'s 18, and 15,000 fuzzed replays.
 **Not yet:** keepalives (`keepalive@openssh.com`, step 7's); a time limit
 on an exchange or on the version line (the caller's clock); and a
 client-begun exchange against a real server after authentication (step 6).
+
+## SC15 · known_hosts and ssh_config as built (2026-11-10)
+
+SC11's step 5, in `packages/ssh`, both pure: the caller reads the files.
+
+**`Ssh.KnownHosts`** parses a `known_hosts` file (each line that is not
+an entry is reported with why), finds the lines for a host (by its name on
+port 22, `[name]:port` otherwise; patterns with `*`, `?` and `!`, without
+regard to case; hashed `|1|salt|hash` names by HMAC-SHA1), judges a key
+(`Known`; `Unknown` with the types the host is known by; `Changed` with the
+lines; `KeyRevoked` for a key on a `@revoked` line, whatever its names),
+writes the line for a new key, plain or hashed, and orders the host key
+algorithms so that those whose type the host is known by come first, as
+OpenSSH's `order_hostkeyalgs` does. That last is what SC2.1's RHEL8 finding
+needs: a host known by its ECDSA key is asked for ECDSA first.
+`@cert-authority` lines are left out until certificates are taken.
+`tests/make-known-hosts.py` makes a file of every kind of line with keys
+from `ssh-keygen` and hashed lines from `ssh-keygen -H`, and holds the lines
+found for 16 names to what `ssh-keygen -F` finds: 34 cases with the
+verdicts and orders, all passing. One expectation of mine was wrong, not
+the code: a host known by an Ed25519 key through `*.example.com` shows a
+*changed* key when another Ed25519 key comes, not an unknown one.
+
+**`Ssh.Config`** parses `ssh_config` lines (any case, `=` or space, double
+quotes, a `#` after a space ending the line) and resolves a host as `ssh
+-G` does, for the keywords SC7 lists. `ssh -G` is the oracle
+(`tests/make-config.py`, 30 cases, all passing), and it corrected five
+things I had from the documentation and SC7:
+
+- **`Host` patterns are case-sensitive and comma is not a separator**:
+  `Host build` does not take a host typed `BUILD`, and `Host alpha,beta`
+  is one pattern that takes neither. `Match host` and `Match originalhost`
+  are the other way: lists split at commas, case not regarded.
+- **`SetEnv`'s first line wins whole**; it does not add up as `SendEnv`
+  and `IdentityFile` do.
+- **`RemoteCommand`'s tokens are expanded** (`echo %h` printed as the host
+  name), as `UserKnownHostsFile`'s are; `IdentityFile`'s are printed as
+  written.
+- **`IdentityAgent none` is printed**.
+
+Measured as SC7 said: `Match host` sees a `HostName` set by an earlier
+line; a later `User` is not seen by an earlier `Match user`; `Match final`
+blocks apply on a second pass, adding only what the first left unset; an
+`Include` inside a `Host` block that does not match is not read, and what
+an included file's own `Host` lines do ends with the file. A relative
+`Include` is under `~/.ssh`, which no case tests, so as not to write there.
+`Match exec` and `Match localnetwork` are not judged: the block is left out
+and a problem says so.
+
+**Not yet:** the `config.toml` host entry applied as a `Host` block before
+the file's (question 9) and the system file after it, which come with the
+window (steps 8 and 9); `CanonicalizeHostname`; the algorithm lists'
+`+`, `-` and `^`; recording the cases on beelink1 with Windows' OpenSSH,
+whose paths differ.

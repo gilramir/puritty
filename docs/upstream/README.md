@@ -1,7 +1,8 @@
 # Upstream reports
 
 Defects found in the terminals puritty is held to, and in the libraries it
-uses (PuTTY's cryptography, which ssh-crypto carries), written up so that what was found and why puritty differs is kept. **Ghostty's are not filed**
+uses (PuTTY's cryptography, which ssh-crypto carries; **Gilbert files
+PuTTY's**, 2026-11-10), written up so that what was found and why puritty differs is kept. **Ghostty's are not filed**
 (Gilbert, 2026-10-30): its reports go through an "Issue Triage" discussion
 under an AI policy that makes filing more trouble than it is worth, so a
 report here is for our own knowledge. Each still says where the code is,
@@ -15,8 +16,8 @@ fuzzer leaves out an input with one.
 
 | report | repository | found | filed |
 |---|---|---|---|
-| [A short Ed25519 key or an even RSA modulus in a public key blob fails an assertion](putty-asserts-on-malformed-host-keys.md) | PuTTY | 2026-11-10, `ssh-client.md` SC14 | not yet; Gilbert decides |
-| [Signature verification accepts an unreduced RSA signature and an Ed25519 point with x = 0 and the sign bit set](putty-verify-accepts-malleable-signatures.md) | PuTTY | 2026-11-10, `ssh-client.md` SC13 | not yet; Gilbert decides |
+| [A short Ed25519 key or an even RSA modulus in a public key blob fails an assertion](putty-asserts-on-malformed-host-keys.md) | PuTTY | 2026-11-10, `ssh-client.md` SC14 | not yet; Gilbert files it |
+| [Signature verification accepts an unreduced RSA signature and an Ed25519 point with x = 0 and the sign bit set](putty-verify-accepts-malleable-signatures.md) | PuTTY | 2026-11-10, `ssh-client.md` SC13 | not yet; Gilbert files it |
 | [Reflow joins a line to the next when the line's last row is blank](ghostty-reflow-joins-a-blank-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC14 | not to be filed |
 | [DEL in the ground state is printed as a character](ghostty-del-is-printed.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC16 | not to be filed |
 | [Widening without a reflow keeps a row's wrapped flag or not by its page's capacity](ghostty-widen-keeps-wrap-by-capacity.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC17 | not to be filed |
