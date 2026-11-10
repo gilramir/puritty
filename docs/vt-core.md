@@ -4210,3 +4210,7 @@ function does not compile it by its neighbours (geng-lang
 −7.0%, `vte-scrolling_fullscreen` −5.6%. What a hand edit of the region's
 path could win, a trained build wins without one, and the edit risks the
 swings above. Not pursued by hand.
+
+**Release builds only** (Gilbert, 2026-11-09): `app/release.sh` trains the
+profile and builds with it; `app/build.sh`, the development build, takes no
+profile.

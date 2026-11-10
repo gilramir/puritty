@@ -183,6 +183,14 @@ devbox shell
 app/build.sh        # writes app/puritty
 ```
 
+`app/release.sh` builds the same program for a release: it trains a
+profile of the terminal core on the benchmark inputs first and compiles
+with it, which makes the core 5% to 25% faster
+([`docs/vt-core.md`](docs/vt-core.md) §VC54, §VC56). It needs the
+benchmark inputs in `.harness-work/perf/inputs` (`harness/perf.py
+--inputs DIR`) and takes a few minutes more; day-to-day builds use
+`app/build.sh`.
+
 It runs on Linux under X11, locally or over `ssh -X`.
 
 ---
