@@ -4265,3 +4265,11 @@ question of that section), so it held the counts from before packing:
 `gitlog` 2,862 M where the committed code counts 1,899 M. The record now
 holds this build's counts, written after checking the binary measured is
 the one built from this tree.
+
+**After §VC57** (2026-11-09): two binary searches, `Width.find` and
+`Resize.promptIn`, took their midpoint as `(lo + hi) // 2`, which wraps
+past `Int`; both are `lo + (hi - lo) // 2`, their bounds stated (`0 <= lo`,
+`hi` inside the array), so each read at `mid` is proved too. `wrapsAt`
+reads with `Array.getProven`, its callers `lineTop` and `lineBottom`
+testing the index they pass. `geng checks` against the list: 0 new, 4 gone
+(224 entries); every test passes and `perf.py` is within the record.
