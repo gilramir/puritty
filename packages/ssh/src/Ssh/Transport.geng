@@ -1,0 +1,1097 @@
+module Ssh.Transport exposing
+    ( Algorithms
+    , Config
+    , Event(..)
+    , Step
+    , Transport
+    , defaultConfig
+    , disconnect
+    , isReady
+    , receive
+    , rekey
+    , send
+    , start
+    )
+
+{-| SSH's transport layer, the client's side (RFC 4253, and OpenSSH's
+`PROTOCOL` for strict KEX and the packet ciphers; puritty
+`docs/ssh-client.md` SC2, SC11 step 4): the version exchange, the binary
+packets, curve25519-sha256 key exchange (RFC 8731), the host key's
+signature, the keys, re-exchange, and `ext-info-c` (RFC 8308).
+
+It does no I/O and reads no clock. [`start`](#start), [`receive`](#receive)
+and [`send`](#send) each answer a [`Step`](#Step): the transport after, the
+bytes to write to the connection, and what happened. Its random bytes come
+from a generator seeded once ([`Ssh.Random`](Ssh.Random)), so the same seed
+and the same bytes received give the same bytes written: a recorded
+session replays.
+
+The host key is reported, signature checked, as [`HostKey`](#Event); whether
+it is the right key for the host (`known_hosts`) is the caller's to decide
+before it sends anything that matters, such as a password.
+-}
+
+import Bytes exposing (Bytes)
+import Ssh.Random as Random exposing (Random)
+import Ssh.Wire as Wire exposing (Reader)
+import SshCrypto exposing (Cipher(..))
+import UInt8
+
+
+{-| What the client offers, each list in its order of preference.
+`rekeyBytes`: a new exchange once this many bytes have gone either way
+under one set of keys.
+-}
+type alias Config =
+    { version : String
+    , kex : Array String
+    , hostKeys : Array String
+    , ciphers : Array String
+    , rekeyBytes : Int
+    }
+
+
+{-| `SSH-2.0-puritty_0.1`; curve25519-sha256 (and libssh's name for it);
+the host keys and ciphers SC2.1 decided; a new exchange each GiB.
+-}
+defaultConfig : Config
+defaultConfig =
+    { version = "SSH-2.0-puritty_0.1"
+    , kex = [ "curve25519-sha256", "curve25519-sha256@libssh.org" ]
+    , hostKeys = SshCrypto.signatureAlgorithms
+    , ciphers = [ "chacha20-poly1305@openssh.com", "aes256-gcm@openssh.com", "aes128-gcm@openssh.com" ]
+    , rekeyBytes = 1073741824
+    }
+
+
+{-| What an exchange settled on. -}
+type alias Algorithms =
+    { kex : String, hostKey : String, toServer : String, toClient : String }
+
+
+{-| What a step brought:
+
+  - `Banner`: a line the server sent before its version, as RFC 4253 §4.2
+    allows.
+  - `ServerVersion`: the server's version line.
+  - `HostKey`: the server's host key, the exchange's signature by it
+    checked. Each exchange reports it; a key that differs from the first
+    exchange's is a failure, not an event.
+  - `KeysChanged`: an exchange is done and its keys are in use; the first
+    one means the transport is ready for [`send`](#send).
+  - `ExtInfo`: RFC 8308's extensions, such as `server-sig-algs`.
+  - `Received`: a packet for the layers above (a service, user
+    authentication, a channel), its payload whole.
+  - `Closed`: the server said it is disconnecting, its reason code and
+    description.
+  - `Failed`: the server broke the protocol, or nothing it offers is
+    acceptable; the transport has written its own DISCONNECT and takes
+    nothing more.
+
+-}
+type Event
+    = Banner String
+    | ServerVersion String
+    | HostKey { algorithm : String, key : Bytes }
+    | KeysChanged Algorithms
+    | ExtInfo (Array { name : String, value : Bytes })
+    | Received Bytes
+    | Closed { code : Int, description : String }
+    | Failed String
+
+
+type alias Step =
+    { transport : Transport, out : Bytes, events : Array Event }
+
+
+type Transport
+    = Transport State
+
+
+type alias Keys =
+    { cipher : Cipher, key : Bytes, iv : Bytes }
+
+
+type Phase
+    = AwaitingVersion
+    | Running
+    | Dead
+
+
+{-| An exchange in progress: our KEXINIT's payload, theirs once it came,
+our private value once ECDH_INIT went, and the keys to take when their
+NEWKEYS comes. `oursSeq`: our KEXINIT's sequence number, which an
+UNIMPLEMENTED refusing it names. `ignoreNext`: their first key exchange packet follows a
+guess that was wrong (RFC 4253 §7). -}
+type alias Kex =
+    { ours : Bytes
+    , oursSeq : Int
+    , theirs : Maybe Bytes
+    , secret : Maybe Bytes
+    , chosen : Maybe Algorithms
+    , ignoreNext : Bool
+    , incoming : Maybe Keys
+    }
+
+
+type alias State =
+    { config : Config
+    , phase : Phase
+    , random : Random
+    , buffer : Bytes
+    , clientVersion : String
+    , serverVersion : String
+    , prelude : Int
+    , seqIn : Int
+    , seqOut : Int
+    , countIn : Int
+    , countOut : Int
+    , keysIn : Maybe Keys
+    , keysOut : Maybe Keys
+    , kex : Maybe Kex
+    , sessionId : Maybe Bytes
+    , hostKey : Maybe Bytes
+    , strict : Bool
+    , ready : Bool
+    , queued : Array Bytes
+    , sinceKeys : Int
+    , out : Array Bytes
+    , events : Array Event
+    }
+
+
+-- MESSAGE NUMBERS (RFC 4250 §4.1)
+
+
+msgDisconnect : Int
+msgDisconnect =
+    1
+
+
+msgIgnore : Int
+msgIgnore =
+    2
+
+
+msgUnimplemented : Int
+msgUnimplemented =
+    3
+
+
+msgDebug : Int
+msgDebug =
+    4
+
+
+msgExtInfo : Int
+msgExtInfo =
+    7
+
+
+msgKexinit : Int
+msgKexinit =
+    20
+
+
+msgNewkeys : Int
+msgNewkeys =
+    21
+
+
+msgEcdhInit : Int
+msgEcdhInit =
+    30
+
+
+msgEcdhReply : Int
+msgEcdhReply =
+    31
+
+
+{-| The longest packet taken, as OpenSSH's (`PACKET_MAX_SIZE`). -}
+maxPacket : Int
+maxPacket =
+    262144
+
+
+strictClient : String
+strictClient =
+    "kex-strict-c-v00@openssh.com"
+
+
+strictServer : String
+strictServer =
+    "kex-strict-s-v00@openssh.com"
+
+
+-- THE API
+
+
+{-| A transport, from what it offers and a seed of 32 or more bytes from
+`Os.Random.bytes`. Its first bytes are its version line and its KEXINIT.
+-}
+start : Config -> Bytes -> Step
+start config seed =
+    let
+        st =
+            { config = config
+            , phase = AwaitingVersion
+            , random = Random.seeded seed
+            , buffer = Bytes.empty
+            , clientVersion = config.version
+            , serverVersion = ""
+            , prelude = 0
+            , seqIn = 0
+            , seqOut = 0
+            , countIn = 0
+            , countOut = 0
+            , keysIn = Nothing
+            , keysOut = Nothing
+            , kex = Nothing
+            , sessionId = Nothing
+            , hostKey = Nothing
+            , strict = False
+            , ready = False
+            , queued = []
+            , sinceKeys = 0
+            , out = [ Bytes.fromString (config.version ++ "\u{000D}\n") ]
+            , events = []
+            }
+    in
+    finish (beginKex st)
+
+
+{-| What the connection gave, taken: as many whole packets as there are.
+-}
+receive : Bytes -> Transport -> Step
+receive bytes (Transport st) =
+    if st.phase == Dead then
+        finish st
+
+    else
+        finish (rekeyIfDue (consume { st | buffer = Bytes.flatten [ st.buffer, bytes ] }))
+
+
+{-| A payload for the server, from the layers above, sent now or, while an
+exchange is in progress, once it is done (RFC 4253 §7.1). Nothing is sent
+before the first exchange is done or after the transport has ended.
+-}
+send : Bytes -> Transport -> Step
+send payload (Transport st) =
+    if st.phase == Dead then
+        finish st
+
+    else if st.kex /= Nothing || not st.ready then
+        finish { st | queued = Array.pushLast payload st.queued }
+
+    else
+        finish (rekeyIfDue (sendPacket payload st))
+
+
+{-| A new key exchange, now, unless one is in progress. -}
+rekey : Transport -> Step
+rekey (Transport st) =
+    if st.phase == Dead || st.kex /= Nothing then
+        finish st
+
+    else
+        finish (beginKex st)
+
+
+{-| End the transport, telling the server why (RFC 4253 §11.1's codes:
+11 is "by application"). -}
+disconnect : Int -> String -> Transport -> Step
+disconnect code description (Transport st) =
+    if st.phase == Dead then
+        finish st
+
+    else
+        finish (sendDisconnect code description st)
+
+
+{-| Whether the first exchange is done and the transport not ended. -}
+isReady : Transport -> Bool
+isReady (Transport st) =
+    st.ready && st.phase /= Dead
+
+
+finish : State -> Step
+finish st =
+    { transport = Transport { st | out = [], events = [] }
+    , out = Bytes.flatten st.out
+    , events = st.events
+    }
+
+
+emit : Event -> State -> State
+emit event st =
+    { st | events = Array.pushLast event st.events }
+
+
+fail : String -> State -> State
+fail reason st =
+    if st.phase == Dead then
+        st
+
+    else
+        emit (Failed reason) (sendDisconnect 2 reason st)
+
+
+sendDisconnect : Int -> String -> State -> State
+sendDisconnect code description st =
+    let
+        sent =
+            sendPacket
+                (Bytes.flatten [ Wire.writeByte msgDisconnect, Wire.writeUint32 code, Wire.writeText description, Wire.writeText "" ])
+                st
+    in
+    { sent | phase = Dead }
+
+
+-- RECEIVING
+
+
+{-| Every whole line or packet the buffer holds, taken in turn. -}
+consume : State -> State
+consume st =
+    when st.phase is
+        Dead ->
+            st
+
+        AwaitingVersion ->
+            when versionLine st.buffer is
+                Nothing ->
+                    if Bytes.length st.buffer > 8192 then
+                        fail "no version line in the first 8 KiB" st
+
+                    else
+                        st
+
+                Just found ->
+                    consume (takeLine found.line { st | buffer = found.rest })
+
+        Running ->
+            when nextPacket st is
+                NeedMore ->
+                    st
+
+                Broken reason ->
+                    fail reason st
+
+                Whole packet ->
+                    let
+                        seq =
+                            st.seqIn
+
+                        advanced =
+                            { st
+                                | buffer = packet.rest
+                                , seqIn = wrapAdd st.seqIn
+                                , countIn =
+                                    if st.keysIn == Nothing then
+                                        st.countIn
+
+                                    else
+                                        st.countIn + 1
+                                , sinceKeys = st.sinceKeys + packet.size
+                            }
+                    in
+                    consume (dispatch seq packet.payload advanced)
+
+
+{-| A line up to its LF, without its CR. -}
+versionLine : Bytes -> Maybe { line : String, rest : Bytes }
+versionLine buffer =
+    let
+        lf =
+            Array.findFirst (\i -> Bytes.get i buffer |> Maybe.map UInt8.toInt |> (==) (Just 10)) (Array.range 0 (min 8191 (Bytes.length buffer - 1)))
+    in
+    lf
+        |> Maybe.map
+            (\found ->
+                let
+                    raw =
+                        Bytes.toStringLossy (Bytes.slice 0 found.value buffer)
+                in
+                { line =
+                    if String.endsWith "\u{000D}" raw then
+                        String.dropLast 1 raw
+
+                    else
+                        raw
+                , rest = Bytes.slice (found.value + 1) (Bytes.length buffer) buffer
+                }
+            )
+
+
+takeLine : String -> State -> State
+takeLine line st =
+    if String.startsWith "SSH-" line then
+        if String.startsWith "SSH-2.0-" line || String.startsWith "SSH-1.99-" line then
+            emit (ServerVersion line) { st | serverVersion = line, phase = Running }
+
+        else
+            fail ("the server speaks another version of SSH: " ++ line) st
+
+    else if st.prelude >= 1024 then
+        fail "more than 1024 lines before the version" st
+
+    else
+        emit (Banner line) { st | prelude = st.prelude + 1 }
+
+
+type Packet
+    = NeedMore
+    | Broken String
+    | Whole { payload : Bytes, rest : Bytes, size : Int }
+
+
+{-| The next packet in the buffer, in the clear before the first keys and
+sealed after. -}
+nextPacket : State -> Packet
+nextPacket st =
+    if Bytes.length st.buffer < 4 then
+        NeedMore
+
+    else
+        when st.keysIn is
+            Nothing ->
+                let
+                    length =
+                        Wire.wrapInt (Bytes.slice 0 4 st.buffer)
+                in
+                if length < 12 || length > maxPacket || modBy 8 (length + 4) /= 0 then
+                    Broken ("a packet length of " ++ String.fromInt length)
+
+                else if Bytes.length st.buffer < 4 + length then
+                    NeedMore
+
+                else
+                    unpad (Bytes.slice 0 (4 + length) st.buffer) (Bytes.slice (4 + length) (Bytes.length st.buffer) st.buffer)
+
+            Just inKeys ->
+                when SshCrypto.openLength { cipher = inKeys.cipher, key = inKeys.key, sequence = st.seqIn } (Bytes.slice 0 4 st.buffer) is
+                    Nothing ->
+                        Broken "a packet length that does not read"
+
+                    Just length ->
+                        let
+                            whole =
+                                4 + length + SshCrypto.tagLength inKeys.cipher
+                        in
+                        if length < 8 || length > maxPacket || modBy (SshCrypto.blockSize inKeys.cipher) length /= 0 then
+                            Broken ("a packet length of " ++ String.fromInt length)
+
+                        else if Bytes.length st.buffer < whole then
+                            NeedMore
+
+                        else
+                            when SshCrypto.open { cipher = inKeys.cipher, key = inKeys.key, iv = inKeys.iv, sequence = st.seqIn, count = st.countIn } (Bytes.slice 0 whole st.buffer) is
+                                Nothing ->
+                                    Broken "a packet whose MAC does not hold"
+
+                                Just plain ->
+                                    unpad plain (Bytes.slice whole (Bytes.length st.buffer) st.buffer)
+
+
+{-| A packet in the clear, its length field first: its payload. -}
+unpad : Bytes -> Bytes -> Packet
+unpad plain rest =
+    let
+        length =
+            Bytes.length plain - 4
+
+        padding =
+            Bytes.get 4 plain |> Maybe.map UInt8.toInt |> Maybe.withDefault 0
+
+        payloadLength =
+            length - 1 - padding
+    in
+    if padding < 4 || payloadLength < 1 then
+        Broken "a packet whose padding does not fit"
+
+    else
+        Whole { payload = Bytes.slice 5 (5 + payloadLength) plain, rest = rest, size = Bytes.length plain }
+
+
+wrapAdd : Int -> Int
+wrapAdd n =
+    if n == 2147483647 then
+        -2147483648
+
+    else
+        n + 1
+
+
+messageNumber : Bytes -> Int
+messageNumber payload =
+    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+
+
+{-| A packet taken: the transport's own messages here, the rest for the
+layers above. -}
+dispatch : Int -> Bytes -> State -> State
+dispatch seq payload st =
+    let
+        n =
+            messageNumber payload
+
+        kexMessage =
+            n >= 20 && n <= 49
+    in
+    if st.phase == Dead then
+        st
+
+    else if Maybe.map .ignoreNext st.kex == Just True && n >= 30 && n <= 49 then
+        { st | kex = Maybe.map (\k -> { k | ignoreNext = False }) st.kex }
+
+    else if st.strict && not st.ready && not kexMessage then
+        -- strict KEX: nothing but the exchange's own until it is done
+        fail ("message " ++ String.fromInt n ++ " during the first exchange under strict KEX") st
+
+    else if n == msgDisconnect then
+        let
+            parsed =
+                Wire.reader payload
+                    |> skip 1
+                    |> Result.andThen Wire.uint32
+                    |> Result.andThen (\c -> Wire.name c.next |> Result.map (\d -> { code = c.value, description = d.value }))
+        in
+        when parsed is
+            Ok closed ->
+                emit (Closed closed) { st | phase = Dead }
+
+            Err _ ->
+                emit (Closed { code = 0, description = "" }) { st | phase = Dead }
+
+    else if n == msgIgnore || n == msgDebug then
+        st
+
+    else if n == msgUnimplemented then
+        unimplemented payload st
+
+    else if n == msgKexinit then
+        theirKexinit seq payload st
+
+    else if n == msgEcdhReply then
+        ecdhReply payload st
+
+    else if n == msgNewkeys then
+        theirNewkeys st
+
+    else if n == msgExtInfo then
+        extInfo payload st
+
+    else if kexMessage then
+        fail ("an unexpected key exchange message, " ++ String.fromInt n) st
+
+    else
+        emit (Received payload) st
+
+
+{-| The server does not take a packet of ours. Only our KEXINIT matters
+here: an exchange it refused would never end, and every packet after it
+would wait for it (OpenSSH 9.6 refuses a client's new exchange before
+authentication, `ssh-client.md` SC14). -}
+unimplemented : Bytes -> State -> State
+unimplemented payload st =
+    let
+        refused =
+            Wire.reader payload |> skip 1 |> Result.map (\r -> Wire.wrapInt (Wire.end r))
+    in
+    when st.kex is
+        Just k ->
+            if k.theirs == Nothing && refused == Ok k.oursSeq then
+                fail "the server does not take a new key exchange now" st
+
+            else
+                st
+
+        Nothing ->
+            st
+
+
+skip : Int -> Reader -> Result String Reader
+skip n r =
+    Wire.take n r |> Result.map .next
+
+
+-- KEY EXCHANGE
+
+
+{-| Our KEXINIT sent, and an exchange begun. -}
+beginKex : State -> State
+beginKex st =
+    let
+        cookie =
+            Random.bytes 16 st.random
+
+        extras =
+            if st.sessionId == Nothing then
+                -- the first exchange only (RFC 8308 §2.1; OpenSSH's PROTOCOL)
+                [ "ext-info-c", strictClient ]
+
+            else
+                []
+
+        payload =
+            Bytes.flatten
+                [ Wire.writeByte msgKexinit
+                , cookie.value
+                , Wire.writeNameList (st.config.kex ++ extras)
+                , Wire.writeNameList st.config.hostKeys
+                , Wire.writeNameList st.config.ciphers
+                , Wire.writeNameList st.config.ciphers
+                , Wire.writeNameList macs
+                , Wire.writeNameList macs
+                , Wire.writeNameList [ "none" ]
+                , Wire.writeNameList [ "none" ]
+                , Wire.writeNameList []
+                , Wire.writeNameList []
+                , Wire.writeBool False
+                , Wire.writeUint32 0
+                ]
+    in
+    sendPacket payload
+        { st
+            | random = cookie.random
+            , kex = Just { ours = payload, oursSeq = st.seqOut, theirs = Nothing, secret = Nothing, chosen = Nothing, ignoreNext = False, incoming = Nothing }
+        }
+
+
+{-| The MACs offered, which an AEAD cipher does not use: every cipher here
+is one, so they are never chosen, but a server may want the list to name
+one it has. -}
+macs : Array String
+macs =
+    [ "hmac-sha2-256-etm@openssh.com", "hmac-sha2-256" ]
+
+
+type alias Kexinit =
+    { kex : Array String
+    , hostKeys : Array String
+    , toServer : Array String
+    , toClient : Array String
+    , compressionToServer : Array String
+    , compressionToClient : Array String
+    , follows : Bool
+    }
+
+
+parseKexinit : Bytes -> Result String Kexinit
+parseKexinit payload =
+    Wire.reader payload
+        |> skip 17
+        |> Result.andThen Wire.nameList
+        |> Result.andThen
+            (\kex ->
+                Wire.nameList kex.next
+                    |> Result.andThen
+                        (\hostKeys ->
+                            Wire.nameList hostKeys.next
+                                |> Result.andThen
+                                    (\c2s ->
+                                        Wire.nameList c2s.next
+                                            |> Result.andThen
+                                                (\s2c ->
+                                                    Wire.nameList s2c.next
+                                                        |> Result.andThen (\macC2s -> Wire.nameList macC2s.next)
+                                                        |> Result.andThen (\macS2c -> Wire.nameList macS2c.next)
+                                                        |> Result.andThen
+                                                            (\compC2s ->
+                                                                Wire.nameList compC2s.next
+                                                                    |> Result.andThen
+                                                                        (\compS2c ->
+                                                                            Wire.nameList compS2c.next
+                                                                                |> Result.andThen (\langC2s -> Wire.nameList langC2s.next)
+                                                                                |> Result.andThen (\langS2c -> Wire.boolean langS2c.next)
+                                                                                |> Result.andThen
+                                                                                    (\follows ->
+                                                                                        Wire.uint32 follows.next
+                                                                                            |> Result.map
+                                                                                                (\_ ->
+                                                                                                    { kex = kex.value
+                                                                                                    , hostKeys = hostKeys.value
+                                                                                                    , toServer = c2s.value
+                                                                                                    , toClient = s2c.value
+                                                                                                    , compressionToServer = compC2s.value
+                                                                                                    , compressionToClient = compS2c.value
+                                                                                                    , follows = follows.value
+                                                                                                    }
+                                                                                                )
+                                                                                    )
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )
+
+
+{-| The first of ours the server also has (RFC 4253 §7.1). -}
+firstShared : Array String -> Array String -> Maybe String
+firstShared ours theirs =
+    Array.findFirst (\a -> Array.member a theirs) ours |> Maybe.map .value
+
+
+theirKexinit : Int -> Bytes -> State -> State
+theirKexinit seq payload st0 =
+    let
+        -- an exchange the server began: ours goes now
+        st =
+            if st0.kex == Nothing then
+                beginKex st0
+
+            else
+                st0
+    in
+    when { kex = st.kex, parsed = parseKexinit payload } is
+        { kex = Nothing } ->
+            fail "no exchange" st
+
+        { parsed = Err why } ->
+            fail ("a KEXINIT that does not read: " ++ why) st
+
+        { kex = Just kex, parsed = Ok theirs } ->
+            if kex.theirs /= Nothing then
+                fail "a second KEXINIT in one exchange" st
+
+            else
+                let
+                    strict =
+                        if st.sessionId == Nothing then
+                            Array.member strictServer theirs.kex
+
+                        else
+                            st.strict
+
+                    chosen =
+                        { kex = firstShared st.config.kex theirs.kex
+                        , hostKey = firstShared st.config.hostKeys theirs.hostKeys
+                        , toServer = firstShared st.config.ciphers theirs.toServer
+                        , toClient = firstShared st.config.ciphers theirs.toClient
+                        }
+
+                    compression =
+                        Array.member "none" theirs.compressionToServer && Array.member "none" theirs.compressionToClient
+                in
+                if strict && st.sessionId == Nothing && seq /= 0 then
+                    fail "strict KEX: the server's KEXINIT was not its first packet" st
+
+                else
+                    when chosen is
+                        { kex = Just k, hostKey = Just h, toServer = Just c2s, toClient = Just s2c } ->
+                            if not compression then
+                                fail "the server will not go without compression" st
+
+                            else
+                                let
+                                    algorithms =
+                                        { kex = k, hostKey = h, toServer = c2s, toClient = s2c }
+
+                                    secret =
+                                        Random.bytes 32 st.random
+
+                                    public =
+                                        SshCrypto.x25519Public secret.value |> Maybe.withDefault Bytes.empty
+
+                                    wrongGuess =
+                                        theirs.follows
+                                            && (Array.first theirs.kex /= Just k || Array.first theirs.hostKeys /= Just h)
+                                in
+                                sendPacket (Bytes.flatten [ Wire.writeByte msgEcdhInit, Wire.writeString public ])
+                                    { st
+                                        | random = secret.random
+                                        , strict = strict
+                                        , kex =
+                                            Just
+                                                { kex
+                                                    | theirs = Just payload
+                                                    , secret = Just secret.value
+                                                    , chosen = Just algorithms
+                                                    , ignoreNext = wrongGuess
+                                                }
+                                    }
+
+                        { kex = Nothing } ->
+                            fail ("no key exchange both sides have; the server offers " ++ String.join "," theirs.kex) st
+
+                        { hostKey = Nothing } ->
+                            fail ("no host key algorithm both sides have; the server offers " ++ String.join "," theirs.hostKeys) st
+
+                        _ ->
+                            fail ("no cipher both sides have; the server offers " ++ String.join "," theirs.toServer) st
+
+
+ecdhReply : Bytes -> State -> State
+ecdhReply payload st =
+    let
+        parsed =
+            Wire.reader payload
+                |> skip 1
+                |> Result.andThen Wire.string
+                |> Result.andThen
+                    (\hostKey ->
+                        Wire.string hostKey.next
+                            |> Result.andThen
+                                (\theirPublic ->
+                                    Wire.string theirPublic.next
+                                        |> Result.map (\signature -> { hostKey = hostKey.value, theirPublic = theirPublic.value, signature = signature.value })
+                                )
+                    )
+    in
+    when { kex = st.kex, parsed = parsed } is
+        { parsed = Err why } ->
+            fail ("a KEX_ECDH_REPLY that does not read: " ++ why) st
+
+        { kex = Just { ours = ours, oursSeq = oursSeq, theirs = Just theirs, secret = Just secret, chosen = Just chosen }, parsed = Ok reply } ->
+            when SshCrypto.x25519Shared secret reply.theirPublic is
+                Nothing ->
+                    fail "the server's X25519 value gives no shared secret" st
+
+                Just shared ->
+                    let
+                        ourPublic =
+                            SshCrypto.x25519Public secret |> Maybe.withDefault Bytes.empty
+
+                        exchangeHash =
+                            SshCrypto.hash SshCrypto.Sha256
+                                (Bytes.flatten
+                                    [ Wire.writeText st.clientVersion
+                                    , Wire.writeText st.serverVersion
+                                    , Wire.writeString ours
+                                    , Wire.writeString theirs
+                                    , Wire.writeString reply.hostKey
+                                    , Wire.writeString ourPublic
+                                    , Wire.writeString reply.theirPublic
+                                    , shared
+                                    ]
+                                )
+
+                        signed =
+                            SshCrypto.verify { algorithm = chosen.hostKey, publicKey = reply.hostKey, signature = reply.signature, data = exchangeHash }
+
+                        sessionId =
+                            Maybe.withDefault exchangeHash st.sessionId
+
+                        keysFor letters cipherName =
+                            keys shared exchangeHash sessionId letters cipherName
+                    in
+                    if not signed then
+                        fail ("the server's " ++ chosen.hostKey ++ " signature of the exchange does not hold") st
+
+                    else if st.hostKey /= Nothing && st.hostKey /= Just reply.hostKey then
+                        fail "the server's host key changed in a new exchange" st
+
+                    else
+                        when { out = keysFor { iv = "A", key = "C" } chosen.toServer, inward = keysFor { iv = "B", key = "D" } chosen.toClient } is
+                            { out = Just outgoing, inward = Just incoming } ->
+                                let
+                                    sent =
+                                        sendPacket (Wire.writeByte msgNewkeys)
+                                            (emit (HostKey { algorithm = chosen.hostKey, key = reply.hostKey })
+                                                { st
+                                                    | sessionId = Just sessionId
+                                                    , hostKey = Just reply.hostKey
+                                                    , kex = Just { ours = ours, oursSeq = oursSeq, theirs = Just theirs, secret = Nothing, chosen = Just chosen, ignoreNext = False, incoming = Just incoming }
+                                                }
+                                            )
+                                in
+                                { sent
+                                    | keysOut = Just outgoing
+                                    , countOut = 0
+                                    , seqOut =
+                                        if sent.strict then
+                                            0
+
+                                        else
+                                            sent.seqOut
+                                }
+
+                            _ ->
+                                fail "a cipher with no keys" st
+
+        _ ->
+            fail "a KEX_ECDH_REPLY out of turn" st
+
+
+{-| A cipher's keys (RFC 4253 §7.2): `HASH(K || H || letter || session_id)`,
+extended by `HASH(K || H || K1 || ...)` to the length the cipher takes. -}
+keys : Bytes -> Bytes -> Bytes -> { iv : String, key : String } -> String -> Maybe Keys
+keys shared exchangeHash sessionId letters cipherName =
+    let
+        derive letter n =
+            let
+                first =
+                    SshCrypto.hash SshCrypto.Sha256 (Bytes.flatten [ shared, exchangeHash, Bytes.fromString letter, sessionId ])
+            in
+            Bytes.slice 0 n (extend first n)
+
+        extend acc n =
+            if Bytes.length acc >= n then
+                acc
+
+            else
+                extend (Bytes.flatten [ acc, SshCrypto.hash SshCrypto.Sha256 (Bytes.flatten [ shared, exchangeHash, acc ]) ]) n
+
+        make cipher keyLength ivLength =
+            Just
+                { cipher = cipher
+                , key = derive letters.key keyLength
+                , iv =
+                    if ivLength == 0 then
+                        Bytes.empty
+
+                    else
+                        derive letters.iv ivLength
+                }
+    in
+    when cipherName is
+        "chacha20-poly1305@openssh.com" ->
+            make ChaCha20Poly1305 64 0
+
+        "aes256-gcm@openssh.com" ->
+            make Aes256Gcm 32 12
+
+        "aes128-gcm@openssh.com" ->
+            make Aes128Gcm 16 12
+
+        _ ->
+            Nothing
+
+
+theirNewkeys : State -> State
+theirNewkeys st =
+    when Maybe.andThen .incoming st.kex is
+        Nothing ->
+            fail "a NEWKEYS out of turn" st
+
+        Just incoming ->
+            let
+                chosen =
+                    Maybe.andThen .chosen st.kex
+
+                done =
+                    { st
+                        | keysIn = Just incoming
+                        , countIn = 0
+                        , seqIn =
+                            if st.strict then
+                                0
+
+                            else
+                                st.seqIn
+                        , kex = Nothing
+                        , ready = True
+                        , sinceKeys = 0
+                        , queued = []
+                    }
+
+                told =
+                    when chosen is
+                        Just algorithms ->
+                            emit (KeysChanged algorithms) done
+
+                        Nothing ->
+                            done
+            in
+            Array.foldl sendPacket told st.queued
+
+
+extInfo : Bytes -> State -> State
+extInfo payload st =
+    let
+        pairs r count acc =
+            if count == 0 then
+                Ok acc
+
+            else
+                Wire.name r
+                    |> Result.andThen
+                        (\extension ->
+                            Wire.string extension.next
+                                |> Result.andThen (\value -> pairs value.next (count - 1) (Array.pushLast { name = extension.value, value = value.value } acc))
+                        )
+
+        parsed =
+            Wire.reader payload
+                |> skip 1
+                |> Result.andThen Wire.uint32
+                |> Result.andThen (\n -> pairs n.next n.value [])
+    in
+    when parsed is
+        Ok extensions ->
+            emit (ExtInfo extensions) st
+
+        Err why ->
+            fail ("an EXT_INFO that does not read: " ++ why) st
+
+
+-- SENDING
+
+
+{-| A payload framed, padded and, once there are keys, sealed. -}
+sendPacket : Bytes -> State -> State
+sendPacket payload st =
+    let
+        block =
+            when st.keysOut is
+                Nothing ->
+                    8
+
+                Just k ->
+                    SshCrypto.blockSize k.cipher
+
+        -- before keys the length field is in the block; an AEAD cipher's is
+        -- not (OpenSSH's PROTOCOL)
+        counted =
+            if st.keysOut == Nothing then
+                4 + 1 + Bytes.length payload
+
+            else
+                1 + Bytes.length payload
+
+        paddingLength =
+            4 + modBy block (block - modBy block (counted + 4))
+
+        padding =
+            Random.bytes paddingLength st.random
+
+        plain =
+            Bytes.flatten
+                [ Wire.writeUint32 (1 + Bytes.length payload + paddingLength)
+                , Wire.writeByte paddingLength
+                , payload
+                , padding.value
+                ]
+
+        wire =
+            when st.keysOut is
+                Nothing ->
+                    plain
+
+                Just k ->
+                    SshCrypto.seal { cipher = k.cipher, key = k.key, iv = k.iv, sequence = st.seqOut, count = st.countOut } plain
+                        |> Maybe.withDefault Bytes.empty
+    in
+    { st
+        | random = padding.random
+        , out = Array.pushLast wire st.out
+        , seqOut = wrapAdd st.seqOut
+        , countOut =
+            if st.keysOut == Nothing then
+                st.countOut
+
+            else
+                st.countOut + 1
+        , sinceKeys = st.sinceKeys + Bytes.length plain
+    }
+
+
+rekeyIfDue : State -> State
+rekeyIfDue st =
+    if st.ready && st.kex == Nothing && (st.sinceKeys >= st.config.rekeyBytes || st.countOut >= 1073741824 || st.countIn >= 1073741824) then
+        beginKex st
+
+    else
+        st

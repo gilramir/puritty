@@ -1,0 +1,83 @@
+module Ssh.Random exposing (Random, bytes, seeded)
+
+{-| The random bytes a session needs (puritty `docs/ssh-client.md` SC11
+step 4): its key exchange's private value, each KEXINIT's cookie and each
+packet's padding, from HMAC_DRBG with SHA-256 (NIST SP 800-90A §10.1.2),
+seeded once from the system's generator (`Os.Random.bytes`).
+
+So the session is a pure function of what it is given: the same seed and
+the same bytes from the server give the same bytes to it, which is what
+lets a recorded session be replayed.
+-}
+
+import Bytes exposing (Bytes)
+import SshCrypto
+import UInt8
+
+
+type Random
+    = Random { key : Bytes, value : Bytes }
+
+
+{-| A generator from a seed, which should be 32 or more bytes from
+`Os.Random.bytes`. -}
+seeded : Bytes -> Random
+seeded seed =
+    update seed (Random { key = filled 0, value = filled 1 })
+
+
+{-| 32 bytes of one value. -}
+filled : Int -> Bytes
+filled n =
+    Bytes.fromUInt8s (Array.repeat 32 (UInt8.fromIntWrap n))
+
+
+hmac : Bytes -> Bytes -> Bytes
+hmac key data =
+    SshCrypto.hmac SshCrypto.HmacSha256 key data
+
+
+update : Bytes -> Random -> Random
+update data (Random r) =
+    let
+        k1 =
+            hmac r.key (Bytes.flatten [ r.value, Bytes.fromUInt8s [ UInt8.fromIntWrap 0 ], data ])
+
+        v1 =
+            hmac k1 r.value
+    in
+    if Bytes.isEmpty data then
+        Random { key = k1, value = v1 }
+
+    else
+        let
+            k2 =
+                hmac k1 (Bytes.flatten [ v1, Bytes.fromUInt8s [ UInt8.fromIntWrap 1 ], data ])
+        in
+        Random { key = k2, value = hmac k2 v1 }
+
+
+{-| `n` bytes, and the generator after them. -}
+bytes : Int -> Random -> { value : Bytes, random : Random }
+bytes n (Random r) =
+    let
+        blocks =
+            generate n r.key r.value []
+
+        out =
+            Bytes.slice 0 n (Bytes.flatten blocks.taken)
+    in
+    { value = out, random = update Bytes.empty (Random { key = r.key, value = blocks.value }) }
+
+
+generate : Int -> Bytes -> Bytes -> Array Bytes -> { taken : Array Bytes, value : Bytes }
+generate n key value taken =
+    if 32 * Array.length taken >= n then
+        { taken = taken, value = value }
+
+    else
+        let
+            next =
+                hmac key value
+        in
+        generate n key next (Array.pushLast next taken)

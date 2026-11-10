@@ -7,12 +7,18 @@ status 1 when any fails.
 
     ssh-crypto-tests [VECTORS]
     ssh-crypto-tests --bench
+    ssh-crypto-tests --fuzz [COUNT]
+
+`--fuzz` hands every function COUNT inputs of random lengths and bytes,
+and blobs built of the right fields with wrong lengths, and ends; a crash
+is what it looks for (PuTTY asserts on some inputs its callers check).
 
 `--bench` seals 2,048 packets of 32,756 bytes with each packet cipher,
 and says how fast.
 
 -}
 
+import Bitwise
 import Bytes exposing (Bytes)
 import Console
 import Dict exposing (Dict)
@@ -40,6 +46,9 @@ main =
                 in
                 if Array.member "--bench" r.env.args then
                     bench
+
+                else if Array.member "--fuzz" r.env.args then
+                    fuzz (Array.findLast (\a -> String.toInt a /= Nothing) r.env.args |> Maybe.andThen (\a -> String.toInt a.value) |> Maybe.withDefault 10000)
 
                 else
                     File.readFile r.perm (Path.fromString path)
@@ -110,7 +119,14 @@ report tallies =
                 tallies
     in
     Console.write text
-        |> Task.andThen (\_ -> if failed > 0 then Os.Env.exitWithCode 1 else Task.succeed {})
+        |> Task.andThen
+            (\_ ->
+                if failed > 0 then
+                    Os.Env.exitWithCode 1
+
+                else
+                    Task.succeed {}
+            )
 
 
 type alias Fields =
@@ -451,3 +467,138 @@ taken less than 24 days apart is right. -}
 millis : Time.Posix -> Int
 millis t =
     Int64.toIntWrap (Time.posixToMillis t)
+
+
+-- FUZZ
+
+
+fuzz : Int -> Task x {}
+fuzz count =
+    let
+        totals =
+            Array.foldl
+                (\i t ->
+                    let
+                        one =
+                            fuzzOne i
+                    in
+                    { accepted = t.accepted + one.accepted, touched = Bitwise.and 1073741823 (t.touched + one.touched) }
+                )
+                { accepted = 0, touched = 0 }
+                (Array.range 1 count)
+    in
+    Console.write
+        ("fuzz: "
+            ++ String.fromInt count
+            ++ " rounds, "
+            ++ String.fromInt totals.accepted
+            ++ " random signatures or packets taken as good (answers' checksum "
+            ++ String.fromInt totals.touched
+            ++ ")\n"
+        )
+
+
+{-| Round `i`'s inputs, from a generator of its own: how many signatures
+verified and packets opened, which for random bytes should be none. Every
+function is called; a crash is the failure. -}
+fuzzOne : Int -> { accepted : Int, touched : Int }
+fuzzOne i =
+    let
+        pick k bound =
+            modBy (max 1 bound) (Bitwise.and 2147483647 ((i * 1103515245 + k * 12345 + i * k * 1597334677) // 7))
+
+        random k n =
+            Bytes.fromUInt8s (Array.map (\j -> UInt8.fromIntWrap (pick (k * 1000 + j) 256)) (Array.range 1 n))
+
+        -- a length near one that matters
+        near k centre =
+            max 0 (centre - 3 + pick k 7)
+
+        str b =
+            Bytes.flatten [ u32 (Bytes.length b), b ]
+
+        u32 n =
+            Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0, 0, Bitwise.and 255 (n // 256), Bitwise.and 255 n ])
+
+        algorithm =
+            Array.get (pick 1 4) SshCrypto.signatureAlgorithms |> Maybe.withDefault "ssh-ed25519"
+
+        name =
+            if pick 2 4 == 0 then
+                random 3 (pick 4 20)
+
+            else
+                Bytes.fromString
+                    (if String.startsWith "rsa" algorithm then
+                        "ssh-rsa"
+
+                     else
+                        algorithm
+                    )
+
+        publicKey =
+            when pick 5 4 is
+                0 ->
+                    random 6 (pick 7 300)
+
+                1 ->
+                    Bytes.flatten [ str name, str (random 8 (near 9 32)) ]
+
+                2 ->
+                    Bytes.flatten [ str name, str (Bytes.fromString "nistp256"), str (random 10 (near 11 65)) ]
+
+                _ ->
+                    Bytes.flatten [ str name, str (random 12 (pick 13 9)), str (random 14 (near 15 257)) ]
+
+        signature =
+            when pick 16 3 is
+                0 ->
+                    random 17 (pick 18 300)
+
+                1 ->
+                    Bytes.flatten [ str (Bytes.fromString algorithm), str (random 19 (near 20 64)) ]
+
+                _ ->
+                    Bytes.flatten [ str (Bytes.fromString algorithm), str (Bytes.flatten [ str (random 21 (near 22 32)), str (random 23 (near 24 32)) ]) ]
+
+        verified =
+            SshCrypto.verify { algorithm = algorithm, publicKey = publicKey, signature = signature, data = random 25 (pick 26 100) }
+
+        shared =
+            SshCrypto.x25519Shared (random 27 (near 28 32)) (random 29 (near 30 32))
+
+        cipher =
+            cipherOf (pick 31 3)
+
+        opened =
+            SshCrypto.open { cipher = cipher, key = random 32 (near 33 32), iv = random 34 (near 35 12), sequence = pick 36 1000, count = pick 37 1000 } (random 38 (pick 39 200))
+
+        sealed =
+            SshCrypto.seal { cipher = cipher, key = random 40 (near 41 32), iv = random 42 (near 43 12), sequence = pick 44 1000, count = pick 45 1000 } (random 46 (pick 47 200))
+
+        length =
+            SshCrypto.openLength { cipher = cipher, key = random 48 (near 49 64), sequence = pick 50 1000 } (random 51 (near 52 4))
+
+        counter =
+            SshCrypto.aesCtr { key = random 53 (near 54 32), iv = random 55 (near 56 16) } (random 57 (pick 58 70))
+
+        kdf =
+            SshCrypto.bcryptPbkdf { passphrase = random 59 (pick 60 20), salt = random 61 (pick 62 20), rounds = pick 63 3 - 1, length = pick 64 80 - 2 }
+
+        taken b =
+            if b then
+                1
+
+            else
+                0
+    in
+    -- what must never take random bytes, and every answer's length, so
+    -- that no call is one the optimizer may leave out
+    { accepted = taken verified + taken (opened /= Nothing)
+    , touched =
+        taken (shared /= Nothing)
+            + (Maybe.map Bytes.length sealed |> Maybe.withDefault 0)
+            + (Maybe.withDefault 0 length)
+            + (Maybe.map Bytes.length counter |> Maybe.withDefault 0)
+            + (Maybe.map Bytes.length kdf |> Maybe.withDefault 0)
+    }

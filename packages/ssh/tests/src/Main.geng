@@ -1,0 +1,548 @@
+module Main exposing (main)
+
+{-| The transport's test client (puritty `docs/ssh-client.md` SC11 step 4).
+
+    ssh-tests connect HOST PORT [--cipher NAME] [--hostkey NAME] [--rekey] [--seed HEX] [--record FILE]
+    ssh-tests replay FILE
+    ssh-tests fuzz FILE [FROM] COUNT
+
+`connect` makes the exchange with the server, asks for the `ssh-userauth`
+service, and asks to authenticate with `none`, whose refusal says the keys
+work both ways; then disconnects. With `--rekey` it makes a second
+exchange before asking. Each thing that happens is a line. `--cipher` and
+`--hostkey` offer only that one; `--seed` fixes the random bytes;
+`--record` writes the seed, every read and every write to FILE.
+
+`replay` runs a recorded session again with no connection: the same seed
+and the same reads must give the same writes and the same lines.
+
+`fuzz` replays a recorded session COUNT times, each time with the server's
+bytes changed: one to four bytes set to others, a run cut out, or the reads
+split at other places. It counts how each run ended: as the recording did,
+with a failure the transport reported, or waiting for more. A crash ends
+the program, which is the failure this looks for; so is a run that says
+something after it has failed.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.Error
+import Os.File as File
+import Os.Net as Net
+import Os.Path as Path
+import Os.Random
+import Ssh.Transport as Transport exposing (Event(..), Transport)
+import Ssh.Wire as Wire
+import Task exposing (Task)
+import UInt8
+
+
+main : Task Never {}
+main =
+    Task.map3 (\env fs net -> { args = env.args, fs = fs, net = net }) Os.Env.getEnvironment File.initialize Net.initialize
+        |> Task.andThen
+            (\r ->
+                when afterWord "connect" r.args is
+                    [ host, port ] ->
+                        connect r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
+
+                    _ ->
+                        when afterWord "replay" r.args is
+                            [ file ] ->
+                                replay r.fs file
+
+                            _ ->
+                                when afterWord "fuzz" r.args is
+                                    [ file, count ] ->
+                                        fuzz r.fs file 1 (String.toInt count |> Maybe.withDefault 1000)
+
+                                    [ file, from, count ] ->
+                                        fuzz r.fs file (String.toInt from |> Maybe.withDefault 1) (String.toInt count |> Maybe.withDefault 1000)
+
+                                    _ ->
+                                        Console.write "usage: ssh-tests connect HOST PORT [...] | replay FILE | fuzz FILE COUNT\n"
+                                            |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
+            )
+
+
+{-| The words after `word` up to the first option. -}
+afterWord : String -> Array String -> Array String
+afterWord word args =
+    when Array.findFirst (\a -> a == word) args is
+        Just found ->
+            Array.dropFirst (found.index + 1) args
+                |> takeWhile (\a -> not (String.startsWith "--" a))
+
+        Nothing ->
+            []
+
+
+takeWhile : (a -> Bool) -> Array a -> Array a
+takeWhile keep items =
+    when Array.findFirst (\a -> not (keep a)) items is
+        Just found ->
+            Array.takeFirst found.index items
+
+        Nothing ->
+            items
+
+
+option : String -> Array String -> Maybe String
+option name args =
+    Array.findFirst (\a -> a == name) args
+        |> Maybe.andThen (\found -> Array.get (found.index + 1) args)
+
+
+-- THE DRIVER, the same for a connection and a replay
+
+
+type Stage
+    = FirstKeys
+    | ServiceAccept
+    | SecondKeys
+    | AuthFailure
+    | Done
+
+
+type alias Driver =
+    { stage : Stage
+    , transport : Transport
+    , lines : Array String
+    , out : Array Bytes
+    , rekey : Bool
+    }
+
+
+applyStep : Transport.Step -> Driver -> Driver
+applyStep step driver =
+    Array.foldl react { driver | transport = step.transport, out = Array.pushLast step.out driver.out } step.events
+
+
+react : Event -> Driver -> Driver
+react event driver =
+    let
+        line s d =
+            { d | lines = Array.pushLast s d.lines }
+    in
+    when event is
+        Banner text ->
+            line ("banner: " ++ text) driver
+
+        ServerVersion _ ->
+            line "server version received" driver
+
+        HostKey key ->
+            line ("host key: " ++ key.algorithm ++ ", signature good") driver
+
+        KeysChanged algorithms ->
+            let
+                said =
+                    line ("keys: " ++ algorithms.kex ++ " " ++ algorithms.hostKey ++ " " ++ algorithms.toServer ++ " " ++ algorithms.toClient) driver
+            in
+            when driver.stage is
+                FirstKeys ->
+                    applyStep (Transport.send (Bytes.flatten [ Wire.writeByte 5, Wire.writeText "ssh-userauth" ]) said.transport) { said | stage = ServiceAccept }
+
+                SecondKeys ->
+                    applyStep (authNone said.transport) { said | stage = AuthFailure }
+
+                _ ->
+                    said
+
+        ExtInfo extensions ->
+            line ("ext-info: " ++ String.join "," (Array.map .name extensions)) driver
+
+        Received payload ->
+            let
+                n =
+                    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+            in
+            if n == 6 && driver.stage == ServiceAccept then
+                if driver.rekey then
+                    applyStep (Transport.rekey driver.transport) (line "service accepted; a second exchange" { driver | stage = SecondKeys })
+
+                else
+                    applyStep (authNone driver.transport) (line "service accepted" { driver | stage = AuthFailure })
+
+            else if n == 51 && driver.stage == AuthFailure then
+                let
+                    methods =
+                        Wire.reader payload
+                            |> Wire.take 1
+                            |> Result.andThen (\r -> Wire.nameList r.next)
+                            |> Result.map (\m -> String.join "," m.value)
+                            |> Result.withDefault "?"
+                in
+                applyStep (Transport.disconnect 11 "done" driver.transport) (line ("authentication refused; methods: " ++ methods) { driver | stage = Done })
+
+            else
+                line ("received message " ++ String.fromInt n) driver
+
+        Closed closed ->
+            line ("closed by the server: " ++ String.fromInt closed.code ++ " " ++ closed.description) { driver | stage = Done }
+
+        Failed reason ->
+            line ("failed: " ++ reason) { driver | stage = Done }
+
+
+authNone : Transport -> Transport.Step
+authNone transport =
+    Transport.send (Bytes.flatten [ Wire.writeByte 50, Wire.writeText "nobody", Wire.writeText "ssh-connection", Wire.writeText "none" ]) transport
+
+
+{-| A driver whose transport has just started. -}
+begin : Bool -> Transport.Config -> Bytes -> Driver
+begin rekey config seed =
+    let
+        started =
+            Transport.start config seed
+    in
+    applyStep started { stage = FirstKeys, transport = started.transport, lines = [], out = [], rekey = rekey }
+
+
+{-| The lines said so far written, and the bytes to send, taken. -}
+drain : Driver -> { driver : Driver, out : Bytes, lines : String }
+drain driver =
+    { driver = { driver | lines = [], out = [] }
+    , out = Bytes.flatten driver.out
+    , lines = String.join "" (Array.map (\l -> l ++ "\n") driver.lines)
+    }
+
+
+-- A CONNECTION
+
+
+connect : { args : Array String, fs : File.Permission, net : Net.Permission } -> { host : String, port : Int } -> Task Never {}
+connect r target =
+    let
+        only name all =
+            when option name r.args is
+                Just one ->
+                    [ one ]
+
+                Nothing ->
+                    all
+
+        defaults =
+            Transport.defaultConfig
+
+        config =
+            { defaults | ciphers = only "--cipher" defaults.ciphers, hostKeys = only "--hostkey" defaults.hostKeys }
+
+        seedTask =
+            when option "--seed" r.args is
+                Just hex ->
+                    Task.succeed (fromHex hex)
+
+                Nothing ->
+                    Os.Random.bytes 32
+    in
+    seedTask
+        |> Task.andThen
+            (\seed ->
+                Net.connect r.net target
+                    |> Task.andThen
+                        (\socket ->
+                            converse socket (begin (Array.member "--rekey" r.args) config seed) { rekey = Array.member "--rekey" r.args, seed = seed, reads = [], writes = [] }
+                        )
+                    |> Task.andThen
+                        (\record ->
+                            when option "--record" r.args is
+                                Just file ->
+                                    File.writeFile r.fs (Bytes.fromString (recording record)) (Path.fromString file)
+
+                                Nothing ->
+                                    Task.succeed {}
+                        )
+            )
+        |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+
+
+type alias Record =
+    { rekey : Bool, seed : Bytes, reads : Array Bytes, writes : Array Bytes }
+
+
+converse : Net.Socket -> Driver -> Record -> Task Os.Error.Error Record
+converse socket driver record =
+    let
+        drained =
+            drain driver
+
+        written =
+            { record | writes = Array.pushLast drained.out record.writes }
+    in
+    Console.write drained.lines
+        |> Task.andThen
+            (\_ ->
+                if Bytes.isEmpty drained.out then
+                    Task.succeed {}
+
+                else
+                    Net.write drained.out socket
+            )
+        |> Task.andThen
+            (\_ ->
+                if drained.driver.stage == Done then
+                    Net.close socket |> Task.map (\_ -> written)
+
+                else
+                    Net.read socket
+                        |> Task.andThen
+                            (\chunk ->
+                                if Bytes.isEmpty chunk then
+                                    Console.write "the connection closed\n" |> Task.andThen (\_ -> Net.close socket) |> Task.map (\_ -> written)
+
+                                else
+                                    converse socket (applyStep (Transport.receive chunk drained.driver.transport) drained.driver) { written | reads = Array.pushLast chunk written.reads }
+                            )
+            )
+
+
+recording : Record -> String
+recording record =
+    String.join ""
+        [ (if record.rekey then
+            "rekey\n"
+
+           else
+            ""
+          )
+        , "seed " ++ toHex record.seed ++ "\n"
+        , String.join "" (Array.map (\b -> "in " ++ toHex b ++ "\n") record.reads)
+        , "out " ++ toHex (Bytes.flatten record.writes) ++ "\n"
+        ]
+
+
+-- A REPLAY
+
+
+replay : File.Permission -> String -> Task Never {}
+replay fs file =
+    File.readFile fs (Path.fromString file)
+        |> Task.andThen
+            (\text ->
+                let
+                    lines =
+                        String.lines (Bytes.toStringLossy text)
+
+                    field word =
+                        Array.keepIf (\l -> String.startsWith (word ++ " ") l) lines
+                            |> Array.map (\l -> fromHex (String.dropFirst (String.count word + 1) l))
+
+                    seed =
+                        field "seed" |> Array.first |> Maybe.withDefault Bytes.empty
+
+                    wanted =
+                        field "out" |> Array.first |> Maybe.withDefault Bytes.empty
+
+                    config =
+                        configOf seed
+
+                    started =
+                        begin (Array.member "rekey" lines) config seed
+
+                    ended =
+                        Array.foldl (\chunk d -> applyStep (Transport.receive chunk d.transport) d) started (field "in")
+
+                    got =
+                        Bytes.flatten ended.out
+                in
+                Console.write (String.join "" (Array.map (\l -> l ++ "\n") ended.lines))
+                    |> Task.andThen
+                        (\_ ->
+                            if got == wanted then
+                                Console.write ("replay: the same " ++ String.fromInt (Bytes.length got) ++ " bytes written\n")
+
+                            else
+                                Console.write ("replay: DIFFERENT, " ++ String.fromInt (Bytes.length got) ++ " bytes written against " ++ String.fromInt (Bytes.length wanted) ++ "\n")
+                                    |> Task.andThen (\_ -> Os.Env.exitWithCode 1)
+                        )
+            )
+        |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+
+
+{-| A replay's config: the default, as a recording is made with no
+`--cipher` or `--hostkey`. -}
+configOf : Bytes -> Transport.Config
+configOf _ =
+    Transport.defaultConfig
+
+
+-- HEX
+
+
+toHex : Bytes -> String
+toHex b =
+    Bytes.toHexString { padding = False } b
+
+
+fromHex : String -> Bytes
+fromHex s =
+    let
+        digit c =
+            let
+                n =
+                    Char.toCode c
+            in
+            if n >= 48 && n <= 57 then
+                n - 48
+
+            else if n >= 97 && n <= 102 then
+                n - 87
+
+            else if n >= 65 && n <= 70 then
+                n - 55
+
+            else
+                0
+
+        chars =
+            String.toArray s
+    in
+    Array.range 0 (Array.length chars // 2 - 1)
+        |> Array.map
+            (\i ->
+                UInt8.fromIntWrap
+                    (16 * (Array.get (2 * i) chars |> Maybe.map digit |> Maybe.withDefault 0)
+                        + (Array.get (2 * i + 1) chars |> Maybe.map digit |> Maybe.withDefault 0)
+                    )
+            )
+        |> Bytes.fromUInt8s
+
+
+-- FUZZ
+
+
+type alias Fuzzed =
+    { same : Int, failed : Int, waiting : Int, wrong : Int }
+
+
+fuzz : File.Permission -> String -> Int -> Int -> Task Never {}
+fuzz fs file from count =
+    File.readFile fs (Path.fromString file)
+        |> Task.andThen
+            (\text ->
+                let
+                    lines =
+                        String.lines (Bytes.toStringLossy text)
+
+                    field word =
+                        Array.keepIf (\l -> String.startsWith (word ++ " ") l) lines
+                            |> Array.map (\l -> fromHex (String.dropFirst (String.count word + 1) l))
+
+                    seed =
+                        field "seed" |> Array.first |> Maybe.withDefault Bytes.empty
+
+                    reads =
+                        Bytes.flatten (field "in")
+
+                    rekey =
+                        Array.member "rekey" lines
+
+                    tally =
+                        Array.foldl (\i t -> fuzzOne rekey seed reads i t) { same = 0, failed = 0, waiting = 0, wrong = 0 } (Array.range from count)
+                in
+                Console.write
+                    ("fuzz: "
+                        ++ String.fromInt count
+                        ++ " runs: "
+                        ++ String.fromInt tally.same
+                        ++ " as recorded, "
+                        ++ String.fromInt tally.failed
+                        ++ " failed, "
+                        ++ String.fromInt tally.waiting
+                        ++ " waiting, "
+                        ++ String.fromInt tally.wrong
+                        ++ " said something after failing\n"
+                    )
+                    |> Task.andThen
+                        (\_ ->
+                            if tally.wrong > 0 then
+                                Os.Env.exitWithCode 1
+
+                            else
+                                Task.succeed {}
+                        )
+            )
+        |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+
+
+{-| A run with the reads changed by run `i`'s own pseudo-random choices. -}
+fuzzOne : Bool -> Bytes -> Bytes -> Int -> Fuzzed -> Fuzzed
+fuzzOne rekey seed reads i tally =
+    let
+        n =
+            Bytes.length reads
+
+        -- a small generator of its own, so each run is the same every time
+        pick k bound =
+            modBy (max 1 bound) (Bitwise.and 2147483647 ((i * 1103515245 + k * 12345 + i * k * 1597334677) // 7))
+
+        changed =
+            when modBy 3 i is
+                0 ->
+                    -- one to four bytes set to others
+                    Array.foldl
+                        (\k b ->
+                            let
+                                at =
+                                    pick k n
+                            in
+                            Bytes.flatten [ Bytes.slice 0 at b, Wire.bytesOf [ pick (k + 7) 256 ], Bytes.slice (at + 1) n b ]
+                        )
+                        reads
+                        (Array.range 1 (1 + pick 99 4))
+
+                1 ->
+                    -- a run of bytes cut out
+                    let
+                        at =
+                            pick 1 n
+                    in
+                    Bytes.flatten [ Bytes.slice 0 at reads, Bytes.slice (at + 1 + pick 2 64) n reads ]
+
+                _ ->
+                    reads
+
+        -- the reads in pieces of 1 to 300 bytes
+        pieces =
+            split (\k -> 1 + pick (k + 31) 300) changed 0 []
+
+        started =
+            begin rekey Transport.defaultConfig seed
+
+        ended =
+            Array.foldl (\chunk d -> applyStep (Transport.receive chunk d.transport) d) started pieces
+
+        failedAt =
+            Array.findFirst (\l -> String.startsWith "failed: " l) ended.lines
+    in
+    when failedAt is
+        Just found ->
+            if found.index == Array.length ended.lines - 1 then
+                { tally | failed = tally.failed + 1 }
+
+            else
+                { tally | wrong = tally.wrong + 1 }
+
+        Nothing ->
+            if ended.stage == Done then
+                { tally | same = tally.same + 1 }
+
+            else
+                { tally | waiting = tally.waiting + 1 }
+
+
+split : (Int -> Int) -> Bytes -> Int -> Array Bytes -> Array Bytes
+split size b k acc =
+    if Bytes.isEmpty b then
+        acc
+
+    else
+        let
+            n =
+                size k
+        in
+        split size (Bytes.slice n (Bytes.length b) b) (k + 1) (Array.pushLast (Bytes.slice 0 n b) acc)

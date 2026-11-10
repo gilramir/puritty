@@ -223,13 +223,56 @@ static int malleable(const ssh_keyalg *alg, ptrlen pub, ptrlen sig) {
     return 0;
 }
 
+/* Whether the public key and signature blobs are each exactly the shape
+ * their algorithm's are, nothing missing and nothing after. PuTTY's own
+ * decoding is not to be reached with any other: an `ssh-ed25519` key
+ * shorter than 32 bytes trips an assertion in `eddsa_decode` (found by
+ * the transport's fuzzer, `ssh-client.md` SC14), an even RSA modulus one
+ * in `mp_modpow`, and an ECDSA point may be
+ * the identity or compressed, which no OpenSSH host key is. */
+static int well_formed(const ssh_keyalg *alg, ptrlen pub, ptrlen sig) {
+    BinarySource ps[1], ss[1];
+    BinarySource_BARE_INIT_PL(ps, pub);
+    BinarySource_BARE_INIT_PL(ss, sig);
+    ptrlen key_type = get_string(ps), sig_type = get_string(ss);
+    if (alg == &ssh_ecdsa_ed25519) {
+        ptrlen a = get_string(ps), rs = get_string(ss);
+        return !get_err(ps) && !get_err(ss) && !get_avail(ps) && !get_avail(ss) &&
+               ptrlen_eq_string(key_type, "ssh-ed25519") && ptrlen_eq_string(sig_type, "ssh-ed25519") &&
+               a.len == 32 && rs.len == 64;
+    }
+    if (alg == &ssh_ecdsa_nistp256) {
+        ptrlen curve = get_string(ps), point = get_string(ps), inner = get_string(ss);
+        if (get_err(ps) || get_err(ss) || get_avail(ps) || get_avail(ss)) return 0;
+        if (!ptrlen_eq_string(key_type, "ecdsa-sha2-nistp256") || !ptrlen_eq_string(sig_type, "ecdsa-sha2-nistp256") ||
+            !ptrlen_eq_string(curve, "nistp256") || point.len != 65 || ((const uint8_t *) point.ptr)[0] != 4)
+            return 0;
+        BinarySource is[1];
+        BinarySource_BARE_INIT_PL(is, inner);
+        ptrlen r = get_string(is), s_ = get_string(is);
+        return !get_err(is) && !get_avail(is) && r.len >= 1 && r.len <= 33 && s_.len >= 1 && s_.len <= 33;
+    }
+    if (alg == &ssh_rsa_sha256 || alg == &ssh_rsa_sha512) {
+        ptrlen e = get_string(ps), n = get_string(ps), s_ = get_string(ss);
+        if (get_err(ps) || get_err(ss) || get_avail(ps) || get_avail(ss)) return 0;
+        /* 1024 to 16384 bits, as OpenSSH takes (SSH_RSA_MINIMUM_MODULUS_SIZE
+         * and OPENSSL_RSA_MAX_MODULUS_BITS) */
+        return ptrlen_eq_string(key_type, "ssh-rsa") && ptrlen_eq_string(sig_type, alg->ssh_id) &&
+               e.len >= 1 && e.len <= 8 && n.len >= 128 && n.len <= 2049 && s_.len >= 1 && s_.len <= n.len &&
+               /* an even modulus is no RSA key, and trips mp_modpow's
+                * assertion (found by ssh-crypto's fuzzer) */
+               (((const uint8_t *) n.ptr)[n.len - 1] & 1);
+    }
+    return 0;
+}
+
 /* 1 when `signature` (the SSH signature blob) is `algorithm`'s signature
  * of `data` by the key `publicKey` (the SSH public key blob), 0 when it is
  * not or either blob is not one, -1 for an algorithm not known here. */
 int32_t ssh_crypto_verify(void *algorithm, void *publicKey, void *signature, void *data) {
     const ssh_keyalg *alg = keyalg_of(pl(algorithm));
     if (alg == NULL) return -1;
-    if (malleable(alg, pl(publicKey), pl(signature))) return 0;
+    if (!well_formed(alg, pl(publicKey), pl(signature)) || malleable(alg, pl(publicKey), pl(signature))) return 0;
     ssh_key *k = ssh_key_new_pub(alg, pl(publicKey));
     if (k == NULL) return 0;
     bool ok = ssh_key_verify(k, pl(signature), pl(data));
@@ -285,13 +328,14 @@ static void unkey(keyed *k) {
     ssh_cipher_free(k->cipher);
 }
 
-/* The tag's length, and the block the packet's length after its length
- * field must be a multiple of. */
+/* The tag's length, and the block the packet after its length field must be
+ * a multiple of: the cipher's, but never less than RFC 4253 §6's 8, which
+ * ChaCha20-Poly1305 (a stream cipher, block 1 to PuTTY) is padded to. */
 int32_t ssh_crypto_tagLength(int32_t which) { return cipher_of(which) ? 16 : 0; }
 
 int32_t ssh_crypto_blockSize(int32_t which) {
     const ssh_cipheralg *alg = cipher_of(which);
-    return alg == NULL ? 0 : alg->blksize;
+    return alg == NULL ? 0 : alg->blksize < 8 ? 8 : alg->blksize;
 }
 
 /* A packet sealed: `packet` is its length field, its padding length, its

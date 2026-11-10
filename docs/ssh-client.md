@@ -671,6 +671,7 @@ Each ends with its gate passing, and the gates before it still passing.
    host-key verification, strict KEX, ext-info, rekey. *Gate:* the local
    sshd for each algorithm; the first replays; the scripted server's bad
    packets; the parser fuzzed for a set time.
+   **Done 2026-11-10:** SC14.
 5. **known_hosts and `~/.ssh/config`.** *Gate:* the `ssh -G` table; known_hosts
    cases (hashed, `[host]:port`, revoked, changed).
 6. **User authentication**: key files (OpenSSH format, `bcrypt_pbkdf` on a
@@ -816,3 +817,80 @@ CLMUL at three times that. Either is far above what a connection carries.
 On nene, decrypting ChaCha20-Poly1305 would add about a fifth to the CPU
 the core spends parsing a `cat` of a large file (108 to 124 MB/s,
 `geng-plan.md` §1.3); AES-GCM about a fourteenth.
+
+## SC14 · The transport as built (2026-11-10)
+
+`packages/ssh` is SC11's step 4: `Ssh.Transport`, the client's side of
+RFC 4253, in Geng with no I/O and no clock, over `Ssh.Wire` (SSH's data
+types, every length checked before anything is taken) and `Ssh.Random`
+(HMAC_DRBG with SHA-256, NIST SP 800-90A §10.1.2, seeded once with 32
+bytes of `Os.Random`).
+
+**Its shape.** `start`, `receive`, `send`, `rekey` and `disconnect` each
+answer a step: the transport after, the bytes to write, and events
+(`Banner`, `ServerVersion`, `HostKey`, `KeysChanged`, `ExtInfo`,
+`Received`, `Closed`, `Failed`). Everything random comes from the seeded
+generator, so a seed and the server's bytes decide every byte written:
+`ssh-tests --record` writes a session and `replay` runs it again with no
+server. The host key is reported with its signature checked; whether it is
+the host's (`known_hosts`) is step 5's, and the layers above must not send
+a secret before it is settled.
+
+**What it does.** The version line (up to 1,024 lines before it, as RFC
+4253 §4.2 allows, each shown); packets to OpenSSH's 256 KiB; KEXINIT with
+`ext-info-c` and `kex-strict-c-v00@openssh.com` on the first exchange;
+curve25519-sha256 and its libssh name; the exchange hash and keys of RFC
+4253 §7.2; the host key's signature by `SshCrypto.verify`; NEWKEYS each
+way; strict KEX, its first-packet rule, nothing but the exchange's messages
+until it is done, and the sequence numbers reset at every NEWKEYS, as
+draft-miller-sshm-strict-kex says ("for each subsequent KEX"); a server's
+wrong `first_kex_packet_follows` guess dropped; a new exchange either side
+begins, the layers' packets held until it is done; a host key that
+changes between exchanges refused; a new exchange each GiB, or at 2^30
+packets under one key; `EXT_INFO` reported; DISCONNECT both ways.
+
+**Measured against OpenSSH 9.6p1** (`tests/sshd.py`, an sshd of the test's
+own on 127.0.0.1 with host keys of each type): each of the three ciphers
+with each of the four host key algorithms, twelve exchanges, each followed
+by `ssh-userauth` accepted and a `none` authentication refused, which
+needs both directions' keys; the defaults; refusals that name what the
+server offers when no cipher, host key or kex is shared. **OpenSSH does not
+take a client's new exchange before authentication**: it answers the
+KEXINIT with UNIMPLEMENTED (`dispatch_protocol_error: type 20`). The
+transport turns that into a failure instead of waiting forever; a
+client-begun exchange against sshd waits for step 6. Against **Windows 11's
+own sshd** (OpenSSH_for_Windows 9.5p2, LibreSSL, beelink1), the Windows
+build made all twelve exchanges.
+
+**The scripted server** (`tests/scripted.py`, Python's `cryptography`)
+does what sshd does not, one thing a case: banner lines; an SSH-1 version;
+no line in 8 KiB; a length of 2^31; padding of 3; a KEXINIT cut short; an
+IGNORE before the KEXINIT with strict KEX (refused) and without it (taken);
+a wrong guess; a signature over the wrong hash; an all-zero X25519 value;
+NEWKEYS early; two KEXINITs; a MAC that does not hold; a new exchange it
+begins (taken), and one that changes its host key (refused); DISCONNECT. 18
+cases. The first version of that server reset sequence numbers only at the
+first NEWKEYS, and the client's failure there led to the draft's text.
+
+**Replays and fuzzing.** Three recorded sessions, one a cipher, replay to
+the same bytes on Linux and Windows. `ssh-tests fuzz` replays them with the
+server's bytes changed (bytes replaced, a run cut out, reads split
+elsewhere), 5,000 runs each in the gate: about a third end as recorded,
+two thirds with a failure the transport names, a few wait for bytes that
+never come, and none crashes or speaks after failing. Its first run found
+a crash in PuTTY: an `ssh-ed25519` key shorter than 32 bytes fails an
+assertion in `eddsa_decode`. `ssh-crypto-tests --fuzz`, written then, found
+a second, an even RSA modulus in `mp_modpow`. `ssh_crypto.c` now checks
+every key and signature blob's shape before PuTTY sees it (`well_formed`),
+and 200,000 rounds of that fuzzer since crash nothing and verify no random
+signature or packet. Both are reproduced against PuTTY's code alone, and
+`docs/upstream/putty-asserts-on-malformed-host-keys.md` keeps the report,
+not filed.
+
+**The gate:** `packages/ssh/tests/gate.sh`, 79 s on nene: ssh-crypto's
+2,421 vectors and 20,000 fuzz rounds, `sshd.py`'s 21 cases (three of them
+replays), `scripted.py`'s 18, and 15,000 fuzzed replays.
+
+**Not yet:** keepalives (`keepalive@openssh.com`, step 7's); a time limit
+on an exchange or on the version line (the caller's clock); and a
+client-begun exchange against a real server after authentication (step 6).

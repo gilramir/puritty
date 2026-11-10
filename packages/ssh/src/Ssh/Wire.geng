@@ -1,0 +1,183 @@
+module Ssh.Wire exposing
+    ( Reader
+    , boolean
+    , byte
+    , bytesOf
+    , end
+    , name
+    , nameList
+    , reader
+    , remaining
+    , string
+    , take
+    , uint32
+    , wrapInt
+    , writeBool
+    , writeByte
+    , writeNameList
+    , writeString
+    , writeText
+    , writeUint32
+    )
+
+{-| SSH's data types (RFC 4251 §5) read from and written to bytes
+(puritty `docs/ssh-client.md` SC11 step 4).
+
+A read takes a `Reader`, the bytes and where it is, and answers the value
+and the reader past it, or why it cannot: every length is checked against
+what is there before anything is taken. A `uint32` of 2^31 or more is
+refused where it is a length, since a Geng `Int` holds 32 bits signed and
+no packet here is that long; `wrapInt` reads it as a sequence number is
+kept, wrapped.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+
+
+{-| Bytes and where reading has got to. -}
+type alias Reader =
+    { bytes : Bytes, at : Int }
+
+
+reader : Bytes -> Reader
+reader b =
+    { bytes = b, at = 0 }
+
+
+remaining : Reader -> Int
+remaining r =
+    Bytes.length r.bytes - r.at
+
+
+{-| What is left, unread. -}
+end : Reader -> Bytes
+end r =
+    Bytes.slice r.at (Bytes.length r.bytes) r.bytes
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i b =
+    Bytes.get i b |> Maybe.map UInt8.toInt |> Maybe.withDefault 0
+
+
+byte : Reader -> Result String { value : Int, next : Reader }
+byte r =
+    if remaining r < 1 then
+        Err "a byte past the end"
+
+    else
+        Ok { value = byteAt r.at r.bytes, next = { r | at = r.at + 1 } }
+
+
+boolean : Reader -> Result String { value : Bool, next : Reader }
+boolean r =
+    byte r |> Result.map (\b -> { value = b.value /= 0, next = b.next })
+
+
+{-| A `uint32` that must be below 2^31. -}
+uint32 : Reader -> Result String { value : Int, next : Reader }
+uint32 r =
+    if remaining r < 4 then
+        Err "a uint32 past the end"
+
+    else if byteAt r.at r.bytes >= 128 then
+        Err "a uint32 of 2^31 or more"
+
+    else
+        Ok { value = wrapInt (Bytes.slice r.at (r.at + 4) r.bytes), next = { r | at = r.at + 4 } }
+
+
+{-| Four bytes, big-endian, as an `Int`, wrapped to 32 bits signed. -}
+wrapInt : Bytes -> Int
+wrapInt b =
+    Bitwise.or
+        (Bitwise.shiftLeftBy 24 (byteAt 0 b))
+        (Bitwise.or (Bitwise.shiftLeftBy 16 (byteAt 1 b)) (Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt 2 b)) (byteAt 3 b)))
+
+
+take : Int -> Reader -> Result String { value : Bytes, next : Reader }
+take n r =
+    if n < 0 || remaining r < n then
+        Err "a field past the end"
+
+    else
+        Ok { value = Bytes.slice r.at (r.at + n) r.bytes, next = { r | at = r.at + n } }
+
+
+{-| A `string`: its length, then that many bytes. -}
+string : Reader -> Result String { value : Bytes, next : Reader }
+string r =
+    uint32 r |> Result.andThen (\n -> take n.value n.next)
+
+
+{-| A `string` that is text: as UTF-8, with anything that is not repaired. -}
+name : Reader -> Result String { value : String, next : Reader }
+name r =
+    string r |> Result.map (\s -> { value = Bytes.toStringLossy s.value, next = s.next })
+
+
+{-| A `name-list`: names separated by commas. An empty one is no names. -}
+nameList : Reader -> Result String { value : Array String, next : Reader }
+nameList r =
+    name r
+        |> Result.map
+            (\s ->
+                { value =
+                    if String.isEmpty s.value then
+                        []
+
+                    else
+                        String.split "," s.value
+                , next = s.next
+                }
+            )
+
+
+bytesOf : Array Int -> Bytes
+bytesOf ns =
+    Bytes.fromUInt8s (Array.map UInt8.fromIntWrap ns)
+
+
+writeByte : Int -> Bytes
+writeByte n =
+    bytesOf [ n ]
+
+
+writeBool : Bool -> Bytes
+writeBool b =
+    writeByte
+        (if b then
+            1
+
+         else
+            0
+        )
+
+
+{-| An `Int` as a `uint32`, its 32 bits as they are: a negative one is the
+`uint32` of the same bits. -}
+writeUint32 : Int -> Bytes
+writeUint32 n =
+    bytesOf
+        [ Bitwise.and 255 (Bitwise.shiftRightZfBy 24 n)
+        , Bitwise.and 255 (Bitwise.shiftRightZfBy 16 n)
+        , Bitwise.and 255 (Bitwise.shiftRightZfBy 8 n)
+        , Bitwise.and 255 n
+        ]
+
+
+writeString : Bytes -> Bytes
+writeString b =
+    Bytes.flatten [ writeUint32 (Bytes.length b), b ]
+
+
+writeText : String -> Bytes
+writeText s =
+    writeString (Bytes.fromString s)
+
+
+writeNameList : Array String -> Bytes
+writeNameList names =
+    writeText (String.join "," names)
