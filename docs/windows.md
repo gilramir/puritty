@@ -468,3 +468,115 @@ highlight and the cursor, painted by `WM_PAINT`.
 `app/puritty.exe`. Started on beelink1, it opens its window and ends:
 `spawn /bin/sh: The system cannot find the file specified`, the Linux
 default program, which V54 replaces in step 5.
+
+## WS19 · Step 4 built: keys, the pointer and the IME, and the events gate (2026-11-10)
+
+WS5, WS6 and WS7, built in `packages/win32`. **Every record is X11's, read
+so that Windows' keys and pointer reach Geng as Linux's do**, and
+`app/src` takes them unchanged.
+
+**Keys.** The window thread takes a key message from its loop before it is
+dispatched. Its code is X's keycode for the same key: the scan code (and
+Windows' extended bit) through a table generated from Ghostty's
+`keycodes.zig` (`packages/win32/gen-keycodes.py`, 155 keys), so
+`Keys.encode`'s `evdevKey (keycode - 8)` reads it as it reads Linux's. Its
+keysym is X's: a table for the keys X names by their function (Return,
+Tab and `ISO_Left_Tab` with Shift, the arrows, F1–F24, the modifiers, the
+keypad's `KP_` keysyms, told from the keys between by the extended bit),
+the character's own for the rest, and a dead key's `dead_` keysym. Its
+text follows X's too: a table key's is what xkbcommon gives its keysym
+(Return `\r`, Delete `\x7f`, the keypad's characters, nothing for
+Shift+Tab); another key's is its character at its level (Shift, Caps Lock,
+AltGr) when Ctrl or Alt is held, as X's keysym ignores them (Ctrl+C is
+`c`), and otherwise what `WM_CHAR` made of it, so a dead key composes as
+Windows composes it (`` ` `` then `a` is `à`, `` ` `` then `b` is
+`` `b ``). Its modifiers are the state before the key, as X's event
+carries them: Shift's own press says no Shift, its release says Shift.
+**AltGr** is the right Alt on a layout that has it; Windows sends a left
+Ctrl with it, at its time, which is no key and not Ctrl, so AltGr+Q on
+US-International is `ä` with no modifier, as X's `ISO_Level3_Shift` is
+none of Ghostty's. Shift and Caps Lock are consumed when they change the
+key's text (asked of the layout with `ToUnicodeEx`'s flag 4, which leaves a
+waiting dead key waiting), Shift and Num Lock always on the keypad, as
+XKB's key types consume them. A key the IME takes
+(`VK_PROCESSKEY`) is the IME's, and a release whose press was not recorded
+is not recorded. A character typed as itself (`VK_PACKET`, as the emoji
+panel types) is a press with code 0 and its text, the two halves of one
+outside the BMP joined. Alt+F4 and Alt+Space are Windows' (close, the
+window's menu); every other Alt key is the program's, and the menu bar
+never takes the keyboard.
+
+**The pointer.** X's buttons (left 1, right 2, middle 3, the side
+buttons 8 and 9), the window capturing the pointer while one is held, so a
+drag past the edge goes on with negative or larger positions. A wheel step
+is 120 of its delta, smaller deltas summed and a turn the other way
+starting the sum again; up 4, down 5, left 6, right 7. A motion is
+recorded only while a button is held, unless `motion` asks for all of
+them; one where the pointer did not move (Windows sends them as a window
+opens under it, or with a button) is not; and a motion not yet taken is
+replaced by the next, as X11's are. The I-beam and the arrow are set at
+once when `setPointer` changes them.
+
+**The IME** is IMM32 (V56). The window says the IME's composition window
+is not to be shown and answers `WM_IME_STARTCOMPOSITION` itself, so the
+preedit is puritty's to draw; each composition string replaces the whole
+preedit (first 0, the old length), with its caret and its attributes as
+feedback (the clause being converted reversed, 1; the rest underlined, 2);
+a result string is a commit; a commit that leaves nothing composing, or a
+composition ended, records an empty preedit and then done. `ImeReady` is
+recorded as the window opens: every window has an input context. `spot`
+is sent to the window thread, which owns the context, and places the
+composition window at the cell and the candidates below it
+(`CFS_EXCLUDE`, the cell left uncovered): measured, the Hanja candidates
+opened 27 pixels in and 57 down from the client's corner, the bottom-left
+of cell (3, 2) at 9×19 cells.
+
+**The events gate**, `harness/events.py`. `harness/events/core-events.exe`
+opens `Window` and writes every event it takes as a line;
+`harness/events/drive.exe` finds its window, makes it the foreground, puts
+the pointer off it and types F24, which marks where the case begins, and
+does the case's actions with `SendInput`: keys with their scan codes,
+characters, the pointer moved and its buttons and wheel, the keyboard
+layout (each case begins on US; Korean and US-International are Gilbert's
+own), a check of the pointer's shape, and a picture of the screen around
+the window. It sends an input only while the window has the foreground,
+and a press only while the pointer is over it; otherwise it stops, and
+every key it pressed is released whatever happens. `harness/events/run.ps1`
+runs every case in Gilbert's desktop session (`harness/windows/`), and the
+logs come back to be held to `corpus/events/NAME.txt`. 13 cases: keys
+(the basic keys, Ctrl and Alt and the sides and puritty's own keys and a
+repeat, the keypad, dead keys and AltGr, characters typed as themselves),
+the pointer (each button, a drag past the edge, the wheel's steps, Shift
+and Ctrl, every motion, the two shapes), and the Korean IME (the Linux IME
+gate's five Hangul cases, and Hanja chosen from the candidates). All 13
+pass, and passed five runs in a row.
+
+**What differs from Linux**, measured:
+
+- *The Korean IME's preedit.* Windows' gives the caret before the
+  syllable being composed (0) and its attribute as input (underlined, 2);
+  ibus and fcitx5 give the caret after it (1) and reversed (1). puritty
+  draws its cursor at the caret, so on Windows the cursor sits on the
+  syllable, which is how Windows' own programs show a Korean composition.
+  The records keep what each IME says.
+- *Hanja.* Windows' Korean IME sends no preedit while a candidate is being
+  chosen, only the commit of the one chosen.
+- *A focus change commits.* The composition is committed when the window
+  loses the focus (seen when a screenshot's task took it), as the IME
+  does it.
+- *The keypad.* `SendInput` of `VK_NUMPAD1` is `KP_1` and `1` whatever Num
+  Lock says, where a keyboard with Num Lock off sends `KP_End`; the pins
+  were taken with Caps Lock and Num Lock off on beelink1, and the driver
+  refuses to run a case with either on, since it would change their
+  modifiers.
+- *XKB's key types* are not on Windows; `consumed` comes from asking the
+  layout. What it gives was compared with the types read from the X
+  keymap, not with X11's records: letters consume Shift and Caps Lock,
+  digits and punctuation Shift, the space nothing, the keypad Shift and Num
+  Lock, and Tab Shift (a table entry: Shift does not change Tab's text on
+  Windows). The events gate is Windows' alone; running its cases on Xvfb
+  with xdotool would hold the two to each other.
+
+**By hand, with Gilbert:** typing Hangul into puritty with a keyboard, as
+a check of what `SendInput` showed; how the preedit looks, once the app
+runs (step 5); the pointer's shape and the wheel on a touchpad.

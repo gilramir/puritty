@@ -1,0 +1,278 @@
+module Main exposing (main)
+
+{-| core-events: the events gate's program (`docs/windows.md` WS19).
+
+Opens `Window` and writes every event it takes to LOG, a line each, until
+the window is asked to close; `harness/events.py` drives it with
+`SendInput` and holds the log to its pin. MODE is words joined by commas:
+`all` asks for every motion of the pointer (mode 1003's), `arrow` sets the
+arrow pointer. The IME's spot is the cell (3, 2).
+
+usage: core-events LOG [MODE]
+
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Os.Env
+import Os.File
+import Os.Path
+import Task exposing (Task)
+import Window
+
+
+{-| `n` in hexadecimal, at least `width` digits. -}
+hexDigits : Int -> Int -> String
+hexDigits width n =
+    let
+        go k i acc =
+            if i <= 0 && k == 0 then
+                acc
+
+            else
+                go (k // 16) (i - 1) (String.fromArray [ Maybe.withDefault '0' (String.toArray "0123456789abcdef" |> Array.get (modBy 16 k)) ] ++ acc)
+    in
+    go n width ""
+
+
+{-| A text, quoted, its control characters escaped. -}
+quoted : Bytes -> String
+quoted b =
+    let
+        esc c =
+            let
+                cp =
+                    Char.toCode c
+            in
+            if cp < 0x20 || cp == 0x7F then
+                "\\x" ++ hexDigits 2 cp
+
+            else if c == '"' || c == '\\' then
+                "\\" ++ String.fromArray [ c ]
+
+            else
+                String.fromArray [ c ]
+    in
+    "\"" ++ String.join "" (Array.map esc (String.toArray (Bytes.toStringLossy b))) ++ "\""
+
+
+action : Int -> String
+action a =
+    when a is
+        0 ->
+            "release"
+
+        1 ->
+            "press"
+
+        _ ->
+            "repeat"
+
+
+line : Window.Event -> String
+line ev =
+    when ev is
+        Window.Key k ->
+            "key "
+                ++ action k.action
+                ++ " code "
+                ++ String.fromInt k.keycode
+                ++ " mods "
+                ++ String.fromInt k.mods
+                ++ " consumed "
+                ++ String.fromInt k.consumed
+                ++ " unshifted U+"
+                ++ hexDigits 4 k.unshifted
+                ++ " sym 0x"
+                ++ hexDigits 4 k.sym
+                ++ " text "
+                ++ quoted k.text
+
+        Window.Resized s ->
+            "resized " ++ String.fromInt s.cols ++ "x" ++ String.fromInt s.rows
+
+        Window.Focus on ->
+            if on then
+                "focus in"
+
+            else
+                "focus out"
+
+        Window.Close ->
+            "close"
+
+        Window.Commit text ->
+            "commit " ++ quoted text
+
+        Window.Preedit p ->
+            "preedit caret "
+                ++ String.fromInt p.caret
+                ++ " first "
+                ++ String.fromInt p.first
+                ++ " length "
+                ++ String.fromInt p.length
+                ++ " text "
+                ++ quoted p.text
+                ++ " feedback"
+                ++ String.join "" (Array.map (\f -> " " ++ String.fromInt f) p.feedback)
+
+        Window.PreeditDone ->
+            "done"
+
+        Window.ImeReady ->
+            "ime ready"
+
+        Window.Pointer p ->
+            "pointer "
+                ++ (when p.action is
+                        0 ->
+                            "press"
+
+                        1 ->
+                            "release"
+
+                        _ ->
+                            "motion"
+                   )
+                ++ " button "
+                ++ String.fromInt p.button
+                ++ " mods "
+                ++ String.fromInt p.mods
+                ++ " at "
+                ++ String.fromInt p.x
+                ++ ","
+                ++ String.fromInt p.y
+                ++ " window "
+                ++ String.fromInt p.width
+                ++ "x"
+                ++ String.fromInt p.height
+                ++ " cell "
+                ++ String.fromInt p.cellWidth
+                ++ "x"
+                ++ String.fromInt p.cellHeight
+
+        Window.SelectionLost _ ->
+            "selection lost"
+
+        Window.Pasted more ->
+            "pasted"
+
+
+isClose : Window.Event -> Bool
+isClose ev =
+    when ev is
+        Window.Close ->
+            True
+
+        _ ->
+            False
+
+
+isImeReady : Window.Event -> Bool
+isImeReady ev =
+    when ev is
+        Window.ImeReady ->
+            True
+
+        _ ->
+            False
+
+
+failWith : String -> Task x {}
+failWith why =
+    Console.write ("core-events: " ++ why ++ "\n")
+        |> Task.andThen (\_ -> Os.Env.exitWithCode 1)
+
+
+{-| Takes events until the window is asked to close, or is gone. -}
+loop : Os.File.Permission -> Os.Path.Path -> Task x {}
+loop perm log =
+    Window.events
+        |> Task.andThen
+            (\ok ->
+                if not ok then
+                    Task.succeed {}
+
+                else
+                    Window.take
+                        |> Task.andThen
+                            (\evs ->
+                                let
+                                    text =
+                                        String.join "" (Array.map (\e -> line e ++ "\n") evs)
+
+                                    closed =
+                                        Array.any isClose evs
+
+                                    spot =
+                                        if Array.any isImeReady evs then
+                                            Window.spot { x = 3, y = 2 }
+
+                                        else
+                                            Task.succeed {}
+                                in
+                                spot
+                                    |> Task.andThen (\_ -> Os.File.appendFile perm (Bytes.fromString text) log)
+                                    |> Task.onError (\_ -> Task.succeed {})
+                                    |> Task.andThen
+                                        (\_ ->
+                                            if closed then
+                                                Task.succeed {}
+
+                                            else
+                                                loop perm log
+                                        )
+                            )
+            )
+
+
+main : Task Never {}
+main =
+    Task.map2 (\e perm -> { args = e.args, raw = e.argsAsBytes, perm = perm }) Os.Env.getEnvironment Os.File.initialize
+        |> Task.andThen
+            (\s ->
+                when Array.get 0 s.raw is
+                    Nothing ->
+                        failWith "usage: core-events LOG [MODE]"
+
+                    Just logBytes ->
+                        let
+                            log =
+                                Os.Path.fromBytes logBytes
+
+                            mode =
+                                String.split "," (Maybe.withDefault "" (Array.get 1 s.args))
+                        in
+                        Os.File.writeFile s.perm Bytes.empty log
+                            |> Task.onError (\_ -> Task.succeed {})
+                            |> Task.andThen
+                                (\_ ->
+                                    Window.open
+                                        { cols = 40
+                                        , rows = 12
+                                        , font = "Cascadia Mono"
+                                        , points = 12
+                                        , lang = ""
+                                        , glyphCap = 8 * 1024 * 1024
+                                        , title = "puritty-events"
+                                        }
+                                )
+                            |> Task.andThen
+                                (\opened ->
+                                    when opened is
+                                        Err why ->
+                                            failWith ("cannot open the window: " ++ why)
+
+                                        Ok _ ->
+                                            Window.motion (Array.member "all" mode)
+                                                |> Task.andThen
+                                                    (\_ ->
+                                                        if Array.member "arrow" mode then
+                                                            Window.setPointer Window.ArrowPointer
+
+                                                        else
+                                                            Task.succeed {}
+                                                    )
+                                                |> Task.andThen (\_ -> loop s.perm log)
+                                )
+            )

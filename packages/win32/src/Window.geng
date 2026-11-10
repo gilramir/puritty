@@ -16,10 +16,9 @@ and the window shows it.
 
 The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came: the window's own thread queues them and wakes
-the loop (WS4). This step has the size, the focus and a request to close;
-keys, the pointer and the IME are step 4's (WS12), and until then
-[`setPointer`](#setPointer), [`motion`](#motion), [`spot`](#spot),
-[`select`](#select) and [`paste`](#paste) change nothing.
+the loop (WS4). Keys, the pointer and the IME's records are X11's, read as
+Linux reads them (WS5-WS7, WS19). The selections are step 5's (WS12), and
+until then [`select`](#select) and [`paste`](#paste) change nothing.
 
 @docs Settings, Cell, open, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
 
@@ -106,9 +105,8 @@ shot path =
 shotExtern : Bytes -> Task x Int
 
 
-{-| Tells the IME where its candidate window belongs: a cell, whose
-baseline the IME's composition window is placed at (WS6). Nothing is sent
-while it does not move, or when there is no IME. -}
+{-| Tells the IME where its windows belong: a cell, below which its
+candidates open (WS6). Nothing is sent while it does not move. -}
 spot : { x : Int, y : Int } -> Task x {}
 spot at =
     spotExtern at.x at.y |> Task.map (\_ -> {})
@@ -118,9 +116,9 @@ spot at =
 spotExtern : Int -> Int -> Task x Int
 
 
-{-| Whether X sends every motion of the pointer over the window, or only
-those while a button is held (`docs/phase3-select.md` §4): every one while
-the program asks for any motion (mode 1003). -}
+{-| Whether every motion of the pointer over the window is an event, or
+only those while a button is held (`docs/phase3-select.md` §4): every one
+while the program asks for any motion (mode 1003). -}
 motion : Bool -> Task x {}
 motion all =
     motionExtern
@@ -244,7 +242,7 @@ titleExtern : Bytes -> Task x Int
 
 
 {-| Waits for events: answers `True` once there are some, or `False` once
-the connection has failed. It takes none, so a race that cancels it after
+the window is gone. It takes none, so a race that cancels it after
 it answered loses nothing; [`take`](#take) takes them. -}
 events : Task x Bool
 events =
