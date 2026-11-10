@@ -529,3 +529,45 @@ and a file that is not TOML refused with its line.
 One edge of gren-toml was seen and needs no change: a file whose last
 line has no newline gains one when a table is added after it, and keeps it
 when the table is removed. A file written by an editor ends its last line.
+
+## ST19 · Step 5a built: the settings window's model and screen (2026-11-10)
+
+Step 5 is built in three parts: **5a**, what the window shows and what
+each key does, pure and tested without a window; **5b**, `puritty
+settings`, the program around it (its window, the font list of ST8, the
+file written and followed); **5c**, the mouse beyond a click.
+
+**`app/src/SettingsWindow.geng`** is the model, its update and its view.
+The view writes the screen as a full-screen program writes one (every row
+by its position, SGR for the styles, the cursor shown only where something
+is typed), which the program will feed to a `Vt.Term` of its own and draw
+(ST7). The layout is `settings-ui.md` §3's: the search on the top row and
+Modified only at its right, the pages on the left with a count beside each
+(changed settings, or a search's matches), each setting in three rows (a
+marker when it differs from its default, its label, its value, a reset
+mark; its description, with "New windows take it." for V59's; a space),
+and the focused setting's key and the keys' hints at the foot.
+
+Keys: Tab and Shift+Tab between the search, the pages and the settings;
+Up, Down, Page Up, Page Down, Home, End; Enter turns an on-off setting,
+goes round a choice (the system's among an optional one's), or begins
+typing the rest; Delete or Backspace resets; Ctrl+Z undoes; Ctrl+M is
+Modified only; Ctrl+F, or typing in the list, searches; Esc stops typing
+(putting back what was there), clears the search, or closes. What is
+typed is written each time it is a value the setting takes, so the
+terminals follow it as it is typed (ST6); one that is not is shown as the
+problem at the foot and not written. An input method's commit is typed as
+keys are; text is fitted to the window by cell width, as the core counts
+it (`Vt.Width`, now exposed by `vt`).
+
+`Schema` gains `toText` and `fromText`, a setting's value as the window
+edits it (a palette as colours joined by commas, a command as words
+quoted where they hold a space) and back, with the file's checks.
+
+**Held by** `app/tests`, 45 of 45: the settings window's 15 feed keys,
+text and clicks to the model and hold the screen, as `Vt.dump` reads it,
+and the effects asked for: the first screen, moving, a number typed and
+written while valid, one refused, undo, Esc putting back, on and off with
+its marker, a reset, a search across pages with its counts, a choice
+going round, Modified only empty, Esc closing, Hangul committed and drawn
+two cells a character, a page clicked, a narrow window.

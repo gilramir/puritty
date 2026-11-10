@@ -9,6 +9,8 @@ import Config
 import Expect exposing (Expectation)
 import Node
 import Schema
+import Screen
+import SettingsWindow
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Toml
@@ -22,7 +24,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing ]
+                    , suites = [ schema, writing, window ]
                     }
             )
 
@@ -324,5 +326,178 @@ writing =
                             )
                             Schema.settings
                         )
+          }
+        ]
+
+
+opened : SettingsWindow.Model
+opened =
+    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24 }
+
+
+press : Int -> SettingsWindow.Input
+press sym =
+    SettingsWindow.Key { sym = sym, mods = 0, text = "" }
+
+
+typeIn : String -> Array SettingsWindow.Input
+typeIn text =
+    Array.map (\c -> SettingsWindow.Key { sym = Char.toCode c, mods = 0, text = String.fromChar c }) (String.toArray text)
+
+
+ctrl : Char -> SettingsWindow.Input
+ctrl c =
+    SettingsWindow.Key { sym = Char.toCode c, mods = 2, text = "" }
+
+
+k =
+    { enter = press 0xFF0D, escape = press 0xFF1B, tab = press 0xFF09, down = press 0xFF54, up = press 0xFF52, backspace = press 0xFF08, delete = press 0xFFFF, left = press 0xFF51 }
+
+
+{-| Effects as text: `font.size = 114`, `close`. -}
+said : Array SettingsWindow.Effect -> Array String
+said effects =
+    Array.map
+        (\e ->
+            when e is
+                SettingsWindow.Write w ->
+                    Schema.keyName w.setting ++ " = " ++ (when w.value is
+                        Schema.Unset ->
+                            "(unset)"
+
+                        v ->
+                            Schema.toText v
+                    )
+
+                SettingsWindow.Close ->
+                    "close"
+        )
+        effects
+
+
+after : Array SettingsWindow.Input -> { screen : Array String, said : Array String, model : SettingsWindow.Model }
+after inputs =
+    let
+        r =
+            Screen.feedInputs inputs opened
+    in
+    { screen = Screen.screenOf r.model, said = said r.effects, model = r.model }
+
+
+lastRow : Array String -> String
+lastRow rows =
+    Maybe.withDefault "" (Array.last rows)
+
+
+window : U.Suite
+window =
+    run "SettingsWindow"
+        [ { name = "the first screen: the search, the pages, Appearance's settings, the focused key"
+          , test =
+                \_ ->
+                    let
+                        rows =
+                            Screen.screenOf opened
+                    in
+                    Expect.equal
+                        { top = "Search:                                                                            Modified only [ ]"
+                        , first = "Appearance            │   Font                        DejaVu Sans Mono"
+                        , colour = "Advanced              │   Foreground                  #c5c8c6 ██"
+                        , foot = "font.family · Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close"
+                        , count = 24
+                        }
+                        { top = Maybe.withDefault "" (Array.get 0 rows)
+                        , first = Maybe.withDefault "" (Array.get 2 rows)
+                        , colour = Maybe.withDefault "" (Array.get 8 rows)
+                        , foot = lastRow rows
+                        , count = Array.length rows
+                        }
+          }
+        , { name = "Down moves to the next setting"
+          , test = \_ -> Expect.equal True (String.startsWith "font.size · " (lastRow (after [ k.down ]).screen))
+          }
+        , { name = "a number typed is written while it is one the setting takes"
+          , test =
+                \_ ->
+                    -- 114, then 11 on the way back, which the setting takes too;
+                    -- 1 is too small and is not written
+                    Expect.equal [ "font.size = 114", "font.size = 11", "font.size = 13" ]
+                        (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ k.backspace, k.backspace ] ++ typeIn "3" ++ [ k.enter ])).said
+          }
+        , { name = "a number the setting does not take is shown as a problem and not written"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ k.down, k.enter, k.backspace ] ++ typeIn "")
+                    in
+                    Expect.equal { said = [], foot = "1 is not from 4 to 200" } { said = r.said, foot = lastRow r.screen }
+          }
+        , { name = "Ctrl+Z undoes a change typed"
+          , test =
+                \_ ->
+                    Expect.equal [ "font.size = 114", "font.size = 11", "font.size = 13", "font.size = 11" ]
+                        (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ k.backspace, k.backspace ] ++ typeIn "3" ++ [ k.enter, ctrl 'z' ])).said
+          }
+        , { name = "Esc while typing puts back what was there"
+          , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ k.escape ])).said
+          }
+        , { name = "Enter turns a setting on or off, and it is marked as changed"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ k.down, k.down, k.down, k.down, k.enter ]
+                    in
+                    Expect.equal { said = [ "colours.bold_is_bright = true" ], marked = True }
+                        { said = r.said, marked = Array.any (\row -> String.contains "● Bold is bright" row && String.contains "[x] on  ⟲" row) r.screen }
+          }
+        , { name = "Delete resets a setting to its default"
+          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ k.down, k.down, k.down, k.down, k.enter, k.delete ]).said
+          }
+        , { name = "a search lists the matches of every page, and the pages count them"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ ctrl 'f' ] ++ typeIn "euc")
+                    in
+                    Expect.equal
+                        { search = "Search: euc", first = "Appearance            │   Character set               the system's", count = "Text & language    (1)│", rest = "                      │" }
+                        { search = String.takeFirst 11 (Maybe.withDefault "" (Array.get 0 r.screen))
+                        , first = Maybe.withDefault "" (Array.get 2 r.screen)
+                        , count = Maybe.withDefault "" (Array.get 4 r.screen)
+                        , rest = Maybe.withDefault "" (Array.get 12 r.screen)
+                        }
+          }
+        , { name = "Enter goes round a choice, the system's among them for an optional one"
+          , test =
+                \_ ->
+                    Expect.equal [ "terminal.charset = utf-8", "terminal.charset = euc-kr", "terminal.charset = cp949", "terminal.charset = (unset)" ]
+                        (after ([ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter, k.enter, k.enter, k.enter ])).said
+          }
+        , { name = "Modified only, with nothing changed, says so"
+          , test = \_ -> Expect.equal True (Array.any (String.contains "Nothing here differs from its default.") (after [ ctrl 'm' ]).screen)
+          }
+        , { name = "Esc with nothing to stop closes the window"
+          , test = \_ -> Expect.equal [ "close" ] (after [ k.escape ]).said
+          }
+        , { name = "text an input method commits is typed, and drawn two cells a character"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ ctrl 'f', SettingsWindow.Typed "title", k.down, k.enter, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, SettingsWindow.Typed "한글", k.enter ]
+                    in
+                    Expect.equal { said = True, shown = [ "Appearance            │ ● Title                       한글  ⟲" ] }
+                        { said = Array.member "window.title = 한글" r.said
+                        , shown = Array.keepIf (String.contains "Title") r.screen
+                        }
+          }
+        , { name = "a click on a page shows it"
+          , test = \_ -> Expect.equal True (String.contains "Columns" (Maybe.withDefault "" (Array.get 2 (after [ SettingsWindow.Click { col = 3, row = 3 } ]).screen)))
+          }
+        , { name = "a narrow window still draws every row"
+          , test = \_ -> Expect.equal 24 (Array.length (after [ SettingsWindow.Resized { cols = 40, rows = 24 } ]).screen)
           }
         ]

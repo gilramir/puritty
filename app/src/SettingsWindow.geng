@@ -1,0 +1,1048 @@
+module SettingsWindow exposing
+    ( Model, Input(..), Effect(..)
+    , init, update, view, fileRead
+    )
+
+{-| The settings window's model and its screen (`docs/settings.md` ST7,
+`settings-ui.md` §3), pure: what `puritty settings` shows, and what a key,
+a click or the file read again does to it. The screen is written as a
+full-screen text program writes one, and the program feeds it to a
+terminal core of its own and draws that (ST7), so that this is tested
+without a window (`app/tests`).
+
+    Search: font_                                   Modified only [ ]
+    ──────────────────────┬──────────────────────────────────────────
+    Appearance         (2)│ ● Font size        13 pt               ⟲
+    Window                │     In points.
+    Text & language       │   Foreground       #c5c8c6 ███
+    ...                   │     The colour of text with no colour...
+    ──────────────────────┴──────────────────────────────────────────
+    font.size · Enter change · Del reset · Ctrl+Z undo · Esc close
+
+Keys: Tab and Shift+Tab move between the search, the pages and the
+settings; Up and Down move in each; Enter changes the setting (on and off,
+and a choice, change at once; the rest are typed, and written while what
+is typed is a value the setting takes); Esc stops typing, clears the
+search, or closes; Delete or Backspace resets a setting to its default;
+Ctrl+Z undoes; Ctrl+M shows only the settings that differ from their
+defaults; Ctrl+F goes to the search.
+
+@docs Model, Input, Effect, init, update, view, fileRead
+
+-}
+
+import Bitwise
+import Config exposing (Config)
+import Schema exposing (Kind(..), Setting, Value(..))
+import Vt.Width
+
+
+type Focus
+    = OnSearch
+    | OnPages
+    | OnRows
+
+
+{-| What is being typed into a setting: its text as characters, where the
+caret is among them, the value it had when typing began, and why what is
+there is not a value it takes, if it is not. -}
+type alias Typing =
+    { chars : Array Char
+    , caret : Int
+    , before : Value
+    , problem : Maybe String
+    }
+
+
+type alias Model =
+    { config : Config
+    , path : String
+    , reports : Array String
+    , cols : Int
+    , rows : Int
+    , focus : Focus
+    , page : Int
+    , row : Int
+    , scroll : Int
+    , search : Array Char
+    , modifiedOnly : Bool
+    , typing : Maybe Typing
+    , undo : Array { key : Array String, value : Value }
+    , message : String
+    }
+
+
+{-| What the window is told. `Key`'s `sym` is X's keysym, as both
+platforms' `Window` give it, and `mods` its bits: Shift 1, Ctrl 2, Alt 4.
+`Typed` is text an input method committed or a paste. -}
+type Input
+    = Key { sym : Int, mods : Int, text : String }
+    | Typed String
+    | Click { col : Int, row : Int }
+    | Resized { cols : Int, rows : Int }
+
+
+{-| What the window asks of the program: a setting written to the file, or
+the window closed. -}
+type Effect
+    = Write { setting : Setting, value : Value }
+    | Close
+
+
+init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int } -> Model
+init r =
+    { config = r.config
+    , path = r.path
+    , reports = r.reports
+    , cols = r.cols
+    , rows = r.rows
+    , focus = OnRows
+    , page = 0
+    , row = 0
+    , scroll = 0
+    , search = []
+    , modifiedOnly = False
+    , typing = Nothing
+    , undo = []
+    , message =
+        when Array.first r.reports is
+            Just first ->
+                first ++ (if Array.length r.reports > 1 then " (and " ++ String.fromInt (Array.length r.reports - 1) ++ " more)" else "")
+
+            Nothing ->
+                ""
+    }
+
+
+{-| The file read again after a change from elsewhere (an edit by hand):
+its settings shown, what is being typed kept. -}
+fileRead : { config : Config, reports : Array String } -> Model -> Model
+fileRead r m =
+    { m | config = r.config, reports = r.reports }
+
+
+
+-- WHAT IS SHOWN
+
+
+modified : Config -> Setting -> Bool
+modified config s =
+    s.get config /= s.get Config.defaults
+
+
+matches : String -> Setting -> Bool
+matches query s =
+    let
+        q =
+            String.toLower query
+
+        within t =
+            String.contains q (String.toLower t)
+    in
+    within s.label || within s.description || within (Schema.keyName s) || Array.any within s.words
+
+
+{-| The settings listed: the page's, or with a search every page's that
+match, in the pages' order; only the modified ones under Modified only. -}
+listed : Model -> Array Setting
+listed m =
+    let
+        query =
+            String.fromArray m.search
+
+        base =
+            if query == "" then
+                Array.keepIf (\s -> Array.get m.page Schema.pages == Just s.page) Schema.settings
+
+            else
+                Array.foldl (\p acc -> acc ++ Array.keepIf (\s -> s.page == p && matches query s) Schema.settings) [] Schema.pages
+    in
+    if m.modifiedOnly then
+        Array.keepIf (modified m.config) base
+
+    else
+        base
+
+
+focused : Model -> Maybe Setting
+focused m =
+    Array.get m.row (listed m)
+
+
+{-| How many settings a page has to show: the search's matches when there
+is one, else the ones changed. -}
+pageCount : Model -> Schema.Page -> Int
+pageCount m p =
+    let
+        query =
+            String.fromArray m.search
+
+        on =
+            Array.keepIf (\s -> s.page == p) Schema.settings
+    in
+    if query /= "" then
+        Array.length (Array.keepIf (matches query) on)
+
+    else
+        Array.length (Array.keepIf (modified m.config) on)
+
+
+
+-- UPDATE
+
+
+update : Input -> Model -> { model : Model, effects : Array Effect }
+update input m =
+    when input is
+        Resized r ->
+            done (keepInView { m | cols = r.cols, rows = r.rows })
+
+        Typed text ->
+            when m.typing is
+                Just t ->
+                    typed (insert text t) m
+
+                Nothing ->
+                    if m.focus == OnSearch then
+                        done (searched (m.search ++ String.toArray text) m)
+
+                    else
+                        done m
+
+        Click c ->
+            click c m
+
+        Key k ->
+            if Bitwise.and k.mods 2 /= 0 then
+                control k m
+
+            else
+                when m.typing is
+                    Just t ->
+                        typingKey k t m
+
+                    Nothing ->
+                        when m.focus is
+                            OnSearch ->
+                                searchKey k m
+
+                            OnPages ->
+                                pagesKey k m
+
+                            OnRows ->
+                                rowsKey k m
+
+
+done : Model -> { model : Model, effects : Array Effect }
+done m =
+    { model = m, effects = [] }
+
+
+sym =
+    { enter = 0xFF0D
+    , keypadEnter = 0xFF8D
+    , escape = 0xFF1B
+    , tab = 0xFF09
+    , backTab = 0xFE20
+    , backspace = 0xFF08
+    , delete = 0xFFFF
+    , left = 0xFF51
+    , up = 0xFF52
+    , right = 0xFF53
+    , down = 0xFF54
+    , home = 0xFF50
+    , end = 0xFF57
+    , pageUp = 0xFF55
+    , pageDown = 0xFF56
+    , space = 0x20
+    }
+
+
+isEnter : Int -> Bool
+isEnter s =
+    s == sym.enter || s == sym.keypadEnter
+
+
+{-| Tab and Shift+Tab: the search, the pages, the settings, round. -}
+moveFocus : { sym : Int, mods : Int, text : String } -> Model -> Maybe Model
+moveFocus k m =
+    let
+        back =
+            k.sym == sym.backTab || Bitwise.and k.mods 1 /= 0
+    in
+    if k.sym == sym.tab || k.sym == sym.backTab then
+        Just
+            { m
+                | focus =
+                    when m.focus is
+                        OnSearch ->
+                            if back then OnRows else OnPages
+
+                        OnPages ->
+                            if back then OnSearch else OnRows
+
+                        OnRows ->
+                            if back then OnPages else OnSearch
+            }
+
+    else
+        Nothing
+
+
+control : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+control k m =
+    -- Ctrl with a letter: its keysym is the letter's, in either case
+    let
+        letter =
+            if k.sym >= 0x41 && k.sym <= 0x5A then k.sym + 32 else k.sym
+    in
+    if letter == 0x7A then
+        undo { m | typing = Nothing }
+
+    else if letter == 0x6D then
+        done (keepInView { m | modifiedOnly = not m.modifiedOnly, row = 0, message = if m.modifiedOnly then "" else "Only the settings that differ from their defaults" })
+
+    else if letter == 0x66 then
+        done { m | focus = OnSearch, typing = Nothing }
+
+    else
+        done m
+
+
+searchKey : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+searchKey k m =
+    when moveFocus k m is
+        Just moved ->
+            done moved
+
+        Nothing ->
+            if k.sym == sym.escape then
+                if Array.isEmpty m.search then
+                    { model = m, effects = [ Close ] }
+
+                else
+                    done (searched [] m)
+
+            else if k.sym == sym.backspace then
+                done (searched (Array.slice 0 -1 m.search) m)
+
+            else if k.sym == sym.down || isEnter k.sym then
+                done { m | focus = OnRows }
+
+            else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
+                done (searched (m.search ++ String.toArray k.text) m)
+
+            else
+                done m
+
+
+searched : Array Char -> Model -> Model
+searched query m =
+    keepInView { m | search = query, row = 0, scroll = 0 }
+
+
+pagesKey : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+pagesKey k m =
+    when moveFocus k m is
+        Just moved ->
+            done moved
+
+        Nothing ->
+            if k.sym == sym.up then
+                done (keepInView { m | page = max 0 (m.page - 1), row = 0, scroll = 0 })
+
+            else if k.sym == sym.down then
+                done (keepInView { m | page = min (Array.length Schema.pages - 1) (m.page + 1), row = 0, scroll = 0 })
+
+            else if k.sym == sym.right || isEnter k.sym then
+                done { m | focus = OnRows }
+
+            else if k.sym == sym.escape then
+                { model = m, effects = [ Close ] }
+
+            else
+                done m
+
+
+rowsKey : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+rowsKey k m =
+    let
+        count =
+            Array.length (listed m)
+    in
+    when moveFocus k m is
+        Just moved ->
+            done moved
+
+        Nothing ->
+            if k.sym == sym.up then
+                done (keepInView { m | row = max 0 (m.row - 1) })
+
+            else if k.sym == sym.down then
+                done (keepInView { m | row = min (count - 1) (m.row + 1) })
+
+            else if k.sym == sym.pageUp then
+                done (keepInView { m | row = max 0 (m.row - bodyRows m // 3) })
+
+            else if k.sym == sym.pageDown then
+                done (keepInView { m | row = max 0 (min (count - 1) (m.row + bodyRows m // 3)) })
+
+            else if k.sym == sym.home then
+                done (keepInView { m | row = 0 })
+
+            else if k.sym == sym.end then
+                done (keepInView { m | row = max 0 (count - 1) })
+
+            else if k.sym == sym.left then
+                done { m | focus = OnPages }
+
+            else if k.sym == sym.escape then
+                if Array.isEmpty m.search then
+                    { model = m, effects = [ Close ] }
+
+                else
+                    done (searched [] m)
+
+            else if isEnter k.sym || k.sym == sym.space then
+                when focused m is
+                    Just s ->
+                        change s m
+
+                    Nothing ->
+                        done m
+
+            else if k.sym == sym.delete || k.sym == sym.backspace then
+                when focused m is
+                    Just s ->
+                        set s (s.get Config.defaults) { m | message = Schema.keyName s ++ " is its default again" }
+
+                    Nothing ->
+                        done m
+
+            else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
+                -- typing from the list searches, as a settings editor's does
+                done (searched (m.search ++ String.toArray k.text) { m | focus = OnSearch })
+
+            else
+                done m
+
+
+printable : String -> Bool
+printable text =
+    String.all (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F) text
+
+
+{-| Enter on a setting: on and off, and a choice, change at once; the rest
+begin typing. -}
+change : Setting -> Model -> { model : Model, effects : Array Effect }
+change s m =
+    let
+        now =
+            s.get m.config
+    in
+    when s.kind is
+        OnOff ->
+            set s (Flag (now /= Flag True)) m
+
+        OneOf names ->
+            let
+                choices =
+                    (if s.optional then [ Unset ] else []) ++ Array.map Text names
+
+                at =
+                    Array.findFirst (\c -> c == now) choices |> Maybe.map .index |> Maybe.withDefault -1
+
+                next =
+                    Maybe.withDefault now (Array.get (modBy (Array.length choices) (at + 1)) choices)
+            in
+            set s next m
+
+        _ ->
+            let
+                chars =
+                    String.toArray (Schema.toText now)
+            in
+            done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing }, message = "" }
+
+
+{-| A setting given a value: the model's at once, the file's by the
+program, and undone by Ctrl+Z. Nothing when it has it already. -}
+set : Setting -> Value -> Model -> { model : Model, effects : Array Effect }
+set s v m =
+    let
+        before =
+            s.get m.config
+    in
+    if v == before then
+        done m
+
+    else
+        { model = { m | config = s.set v m.config, undo = Array.pushLast { key = s.key, value = before } m.undo }
+        , effects = [ Write { setting = s, value = v } ]
+        }
+
+
+undo : Model -> { model : Model, effects : Array Effect }
+undo m =
+    when Array.popLast m.undo is
+        Just { last, initial } ->
+            when Schema.find last.key is
+                Just s ->
+                    { model = { m | config = s.set last.value m.config, undo = initial, message = Schema.keyName s ++ " is back as it was" }
+                    , effects = [ Write { setting = s, value = last.value } ]
+                    }
+
+                Nothing ->
+                    done { m | undo = initial }
+
+        Nothing ->
+            done { m | message = "Nothing to undo" }
+
+
+typingKey : { sym : Int, mods : Int, text : String } -> Typing -> Model -> { model : Model, effects : Array Effect }
+typingKey k t m =
+    if k.sym == sym.escape then
+        -- what was there before typing began, back
+        when focused m is
+            Just s ->
+                let
+                    back =
+                        s.get m.config /= t.before
+                in
+                { model = { m | config = s.set t.before m.config, typing = Nothing, message = "" }
+                , effects = if back then [ Write { setting = s, value = t.before } ] else []
+                }
+
+            Nothing ->
+                done { m | typing = Nothing }
+
+    else if isEnter k.sym || k.sym == sym.tab then
+        when t.problem is
+            Just why ->
+                done { m | message = why }
+
+            Nothing ->
+                when focused m is
+                    Just s ->
+                        let
+                            now =
+                                s.get m.config
+                        in
+                        done
+                            { m
+                                | typing = Nothing
+                                , message = ""
+                                , undo = if now /= t.before then Array.pushLast { key = s.key, value = t.before } m.undo else m.undo
+                            }
+
+                    Nothing ->
+                        done { m | typing = Nothing }
+
+    else if k.sym == sym.left then
+        done { m | typing = Just { t | caret = max 0 (t.caret - 1) } }
+
+    else if k.sym == sym.right then
+        done { m | typing = Just { t | caret = min (Array.length t.chars) (t.caret + 1) } }
+
+    else if k.sym == sym.home then
+        done { m | typing = Just { t | caret = 0 } }
+
+    else if k.sym == sym.end then
+        done { m | typing = Just { t | caret = Array.length t.chars } }
+
+    else if k.sym == sym.backspace then
+        if t.caret == 0 then
+            done m
+
+        else
+            typed { t | chars = Array.slice 0 (t.caret - 1) t.chars ++ Array.slice t.caret (Array.length t.chars) t.chars, caret = t.caret - 1 } m
+
+    else if k.sym == sym.delete then
+        typed { t | chars = Array.slice 0 t.caret t.chars ++ Array.slice (t.caret + 1) (Array.length t.chars) t.chars } m
+
+    else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
+        typed (insert k.text t) m
+
+    else
+        done m
+
+
+insert : String -> Typing -> Typing
+insert text t =
+    let
+        new =
+            String.toArray text
+    in
+    { t | chars = Array.slice 0 t.caret t.chars ++ new ++ Array.slice t.caret (Array.length t.chars) t.chars, caret = t.caret + Array.length new }
+
+
+{-| What is typed, written while it is a value the setting takes, so that
+the terminals show it as it is typed (ST6); its problem kept otherwise. -}
+typed : Typing -> Model -> { model : Model, effects : Array Effect }
+typed t m =
+    when focused m is
+        Just s ->
+            when Schema.fromText s (String.fromArray t.chars) is
+                Ok v ->
+                    let
+                        writes =
+                            if v /= s.get m.config then [ Write { setting = s, value = v } ] else []
+                    in
+                    { model = { m | config = s.set v m.config, typing = Just { t | problem = Nothing }, message = "" }, effects = writes }
+
+                Err why ->
+                    done { m | typing = Just { t | problem = Just why }, message = why }
+
+        Nothing ->
+            done { m | typing = Nothing }
+
+
+click : { col : Int, row : Int } -> Model -> { model : Model, effects : Array Effect }
+click c m =
+    if c.row == 0 then
+        if c.col >= m.cols - modifiedOnlyWidth then
+            control { sym = 0x6D, mods = 2, text = "" } m
+
+        else
+            done { m | focus = OnSearch, typing = Nothing }
+
+    else if c.row >= 2 && c.row < 2 + bodyRows m then
+        if c.col < pagesWidth then
+            let
+                p =
+                    c.row - 2
+            in
+            if p < Array.length Schema.pages then
+                done (keepInView { m | focus = OnPages, page = p, row = 0, scroll = 0, search = [], typing = Nothing })
+
+            else
+                done m
+
+        else
+            let
+                i =
+                    (c.row - 2 + m.scroll) // linesPerRow
+            in
+            if i < Array.length (listed m) then
+                done (keepInView { m | focus = OnRows, row = i, typing = Nothing })
+
+            else
+                done m
+
+    else
+        done m
+
+
+
+-- LAYOUT
+
+
+pagesWidth : Int
+pagesWidth =
+    22
+
+
+modifiedOnlyWidth : Int
+modifiedOnlyWidth =
+    18
+
+
+linesPerRow : Int
+linesPerRow =
+    3
+
+
+{-| The rows between the two rules. -}
+bodyRows : Model -> Int
+bodyRows m =
+    max 1 (m.rows - 4)
+
+
+{-| The scroll moved so that the focused setting's lines are in view. -}
+keepInView : Model -> Model
+keepInView m =
+    let
+        count =
+            Array.length (listed m)
+
+        row =
+            max 0 (min (count - 1) m.row)
+
+        top =
+            row * linesPerRow
+
+        bottom =
+            top + linesPerRow - 1
+
+        scroll =
+            if top < m.scroll then
+                top
+
+            else if bottom >= m.scroll + bodyRows m then
+                bottom - bodyRows m + 1
+
+            else
+                m.scroll
+    in
+    { m | row = row, scroll = max 0 scroll }
+
+
+
+-- THE SCREEN
+
+
+{-| A run of text in one style: SGR parameters, `""` for the plain. -}
+type alias Run =
+    { style : String
+    , text : String
+    }
+
+
+{-| The screen as a full-screen program writes it: every row written
+whole, then the cursor where something is being typed, or hidden. -}
+view : Model -> String
+view m =
+    let
+        rows =
+            screen m
+
+        written =
+            Array.indexedMap
+                (\i runs ->
+                    "\u{001B}[" ++ String.fromInt (i + 1) ++ ";1H\u{001B}[0m\u{001B}[2K"
+                        ++ String.join "" (Array.map (\r -> "\u{001B}[0" ++ (if r.style == "" then "" else ";" ++ r.style) ++ "m" ++ r.text) (fitRuns m.cols runs))
+                        ++ "\u{001B}[0m"
+                )
+                rows
+    in
+    "\u{001B}[?25l" ++ String.join "" written ++ cursor m
+
+
+cursor : Model -> String
+cursor m =
+    let
+        at r c =
+            "\u{001B}[" ++ String.fromInt (r + 1) ++ ";" ++ String.fromInt (c + 1) ++ "H\u{001B}[?25h"
+    in
+    when m.typing is
+        Just t ->
+            let
+                line =
+                    2 + m.row * linesPerRow - m.scroll
+            in
+            at line (pagesWidth + 1 + valueColumn + 1 + cells (Array.slice 0 t.caret t.chars))
+
+        Nothing ->
+            if m.focus == OnSearch then
+                at 0 (String.count searchLabel + cells m.search)
+
+            else
+                ""
+
+
+searchLabel : String
+searchLabel =
+    "Search: "
+
+
+{-| The column a value begins at, from the settings' side. -}
+valueColumn : Int
+valueColumn =
+    30
+
+
+screen : Model -> Array (Array Run)
+screen m =
+    let
+        width =
+            m.cols - pagesWidth - 1
+
+        body =
+            bodyRows m
+
+        settingsLines =
+            Array.indexedMap (\i s -> rowLines m width i s) (listed m)
+                |> Array.foldl (\ls acc -> acc ++ ls) []
+
+        shownSettings =
+            Array.slice m.scroll (m.scroll + body) settingsLines
+
+        empty =
+            if Array.isEmpty (listed m) then
+                [ [ { style = "2", text = " " ++ (if m.modifiedOnly then "Nothing here differs from its default." else "No setting matches.") } ] ]
+
+            else
+                []
+
+        right =
+            if Array.isEmpty (listed m) then empty else shownSettings
+    in
+    [ header m, [ { style = "2", text = String.repeat pagesWidth "─" ++ "┬" ++ String.repeat (max 0 width) "─" } ] ]
+        ++ Array.map
+            (\i ->
+                pageLine m i
+                    ++ [ { style = "2", text = "│" } ]
+                    ++ Maybe.withDefault [] (Array.get i right)
+            )
+            (Array.range 0 (body - 1))
+        ++ [ [ { style = "2", text = String.repeat pagesWidth "─" ++ "┴" ++ String.repeat (max 0 width) "─" } ], footer m ]
+
+
+header : Model -> Array Run
+header m =
+    let
+        box =
+            if m.modifiedOnly then "[x]" else "[ ]"
+
+        query =
+            String.fromArray m.search
+
+        left =
+            [ { style = if m.focus == OnSearch then "1" else "", text = searchLabel }, { style = "", text = query } ]
+
+        used =
+            String.count searchLabel + cells m.search
+
+        right =
+            "Modified only " ++ box
+    in
+    left ++ [ { style = "", text = String.repeat (max 1 (m.cols - used - String.count right)) " " }, { style = if m.modifiedOnly then "33" else "2", text = right } ]
+
+
+pageLine : Model -> Int -> Array Run
+pageLine m i =
+    when Array.get i Schema.pages is
+        Just p ->
+            let
+                name =
+                    Schema.pageName p
+
+                n =
+                    pageCount m p
+
+                count =
+                    if n > 0 then "(" ++ String.fromInt n ++ ")" else ""
+
+                current =
+                    i == m.page && Array.isEmpty m.search
+
+                style =
+                    if current && m.focus == OnPages then
+                        "7"
+
+                    else if current then
+                        "1"
+
+                    else if not (Array.isEmpty m.search) && n == 0 then
+                        "2"
+
+                    else
+                        ""
+            in
+            [ { style = style, text = padTo (pagesWidth - String.count count) name ++ count } ]
+
+        Nothing ->
+            [ { style = "", text = String.repeat pagesWidth " " } ]
+
+
+{-| A setting's three lines: its label and value, its description, and a
+space. -}
+rowLines : Model -> Int -> Int -> Setting -> Array (Array Run)
+rowLines m width i s =
+    let
+        here =
+            i == m.row && m.focus == OnRows
+
+        isModified =
+            modified m.config s
+
+        marker =
+            if isModified then { style = "33", text = " ● " } else { style = "", text = "   " }
+
+        labelStyle =
+            if here && m.typing == Nothing then "7" else if here then "1" else ""
+
+        valueRuns =
+            if here then
+                when m.typing is
+                    Just t ->
+                        [ { style = "4", text = String.fromArray t.chars ++ " " } ]
+                            ++ (when t.problem is
+                                    Just _ ->
+                                        [ { style = "31", text = " ✗" } ]
+
+                                    Nothing ->
+                                        []
+                               )
+
+                    Nothing ->
+                        shown s (s.get m.config)
+
+            else
+                shown s (s.get m.config)
+
+        reset =
+            if isModified then [ { style = "2", text = "  ⟲" } ] else []
+
+        description =
+            s.description ++ (if s.applies == Schema.NewWindows then " New windows take it." else "")
+    in
+    [ [ marker, { style = labelStyle, text = padTo (valueColumn - 3) s.label }, { style = "", text = " " } ] ++ valueRuns ++ reset
+    , [ { style = "2", text = "     " ++ description } ]
+    , []
+    ]
+
+
+{-| A value as the window shows it. -}
+shown : Setting -> Value -> Array Run
+shown s v =
+    when v is
+        Whole n ->
+            [ { style = "", text = String.fromInt n ++ (when s.kind is
+                    WholeIn r ->
+                        " " ++ r.unit
+
+                    _ ->
+                        ""
+                ) } ]
+
+        Text t ->
+            when s.kind is
+                OneOf _ ->
+                    [ { style = "", text = "‹ " ++ t ++ " ›" } ]
+
+                _ ->
+                    [ { style = "", text = t } ]
+
+        Flag b ->
+            [ { style = "", text = if b then "[x] on" else "[ ] off" } ]
+
+        Colour n ->
+            [ { style = "", text = Schema.hex n ++ " " }, swatch n ]
+
+        Colours p ->
+            if Array.isEmpty p then
+                [ { style = "2", text = "the defaults" } ]
+
+            else
+                Array.map swatch p ++ [ { style = "2", text = " " ++ String.fromInt (Array.length p) ++ " of 16" } ]
+
+        Words w ->
+            if Array.isEmpty w then
+                [ { style = "2", text = "the system's shell" } ]
+
+            else
+                [ { style = "", text = Schema.toText v } ]
+
+        Unset ->
+            [ { style = "2", text = "the system's" } ]
+
+
+swatch : Int -> Run
+swatch n =
+    { style = "38;2;" ++ String.fromInt (modBy 256 (n // 65536)) ++ ";" ++ String.fromInt (modBy 256 (n // 256)) ++ ";" ++ String.fromInt (modBy 256 n)
+    , text = "██"
+    }
+
+
+footer : Model -> Array Run
+footer m =
+    let
+        hints =
+            when m.typing is
+                Just _ ->
+                    "Enter keep · Esc as it was"
+
+                Nothing ->
+                    when m.focus is
+                        OnSearch ->
+                            "Type to search · Down to the settings · Esc clear"
+
+                        OnPages ->
+                            "Up and Down choose a page · Tab move · Esc close"
+
+                        OnRows ->
+                            "Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close"
+    in
+    if m.message /= "" then
+        [ { style = if (m.typing |> Maybe.andThen .problem) /= Nothing then "31" else "33", text = m.message } ]
+
+    else
+        [ { style = "2", text = (when focused m is
+                Just s ->
+                    if m.focus == OnRows then Schema.keyName s ++ " · " else ""
+
+                Nothing ->
+                    ""
+            ) ++ hints } ]
+
+
+
+-- CELLS
+
+
+{-| How many cells characters take, as the terminal core counts them. -}
+cells : Array Char -> Int
+cells chars =
+    Array.foldl (\c n -> n + charCells c) 0 chars
+
+
+charCells : Char -> Int
+charCells c =
+    let
+        cp =
+            Char.toCode c
+    in
+    if cp < 0x20 then
+        0
+
+    else if cp < 0x80 then
+        1
+
+    else
+        Vt.Width.width cp
+
+
+{-| Text padded with spaces, or cut, to so many cells. -}
+padTo : Int -> String -> String
+padTo n text =
+    let
+        cut =
+            take n (String.toArray text)
+    in
+    String.fromArray cut ++ String.repeat (max 0 (n - cells cut)) " "
+
+
+take : Int -> Array Char -> Array Char
+take n chars =
+    (Array.foldl
+        (\c acc ->
+            let
+                w =
+                    charCells c
+            in
+            if acc.full || acc.used + w > n then
+                { acc | full = True }
+
+            else
+                { acc | used = acc.used + w, kept = Array.pushLast c acc.kept }
+        )
+        { used = 0, kept = [], full = False }
+        chars
+    ).kept
+
+
+{-| Runs cut to a row's width. -}
+fitRuns : Int -> Array Run -> Array Run
+fitRuns width runs =
+    (Array.foldl
+        (\r acc ->
+            let
+                chars =
+                    take (width - acc.used) (String.toArray r.text)
+            in
+            { used = acc.used + cells chars, kept = Array.pushLast { r | text = String.fromArray chars } acc.kept }
+        )
+        { used = 0, kept = [] }
+        runs
+    ).kept

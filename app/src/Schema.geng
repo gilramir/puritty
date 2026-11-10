@@ -3,6 +3,7 @@ module Schema exposing
     , settings, find, keyName, pages, pageName
     , decode, Decoded
     , write
+    , toText, fromText, hex
     , example
     )
 
@@ -17,7 +18,7 @@ From the table come the decoder, which is lenient (`decode`), the settings
 window's rows and its search (step 5), and the example below, which a test
 holds to it.
 
-@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, write, example
+@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, write, toText, fromText, hex, example
 
 -}
 
@@ -775,6 +776,144 @@ distance a b =
         a
         |> Array.last
         |> Maybe.withDefault 0
+
+
+
+-- AS TEXT
+
+
+{-| A setting's value as the settings window edits it: a number as its
+digits, a colour as `#rrggbb`, a palette as its colours joined by commas,
+a command as its words, quoted where one holds a space; unset as nothing. -}
+toText : Value -> String
+toText v =
+    when v is
+        Whole n ->
+            String.fromInt n
+
+        Text t ->
+            t
+
+        Flag b ->
+            if b then "true" else "false"
+
+        Colour n ->
+            hex n
+
+        Colours p ->
+            String.join ", " (Array.map hex p)
+
+        Words w ->
+            String.join " " (Array.map (\word -> if String.contains " " word || word == "" then "\"" ++ word ++ "\"" else word) w)
+
+        Unset ->
+            ""
+
+
+{-| What the settings window's text gives a setting, or why it does not
+take it: the file's checks, on text (`read`). An optional setting left
+empty is unset. -}
+fromText : Setting -> String -> Result String Value
+fromText s text0 =
+    let
+        text =
+            String.trim text0
+    in
+    if s.optional && text == "" then
+        Ok Unset
+
+    else
+        when s.kind is
+            WholeIn r ->
+                when String.toInt text is
+                    Just n ->
+                        if n < r.low || n > r.high then
+                            Err (String.fromInt n ++ " is not from " ++ String.fromInt r.low ++ " to " ++ String.fromInt r.high)
+
+                        else
+                            Ok (Whole n)
+
+                    Nothing ->
+                        Err "not a whole number"
+
+            AnyText ->
+                Ok (Text text0)
+
+            FontFamily ->
+                if text == "" then Err "no font named" else Ok (Text text)
+
+            OnOff ->
+                if text == "true" then
+                    Ok (Flag True)
+
+                else if text == "false" then
+                    Ok (Flag False)
+
+                else
+                    Err "not true or false"
+
+            OneColour ->
+                colour text |> Result.map Colour
+
+            ColourList r ->
+                let
+                    parts =
+                        if text == "" then [] else Array.map String.trim (String.split "," text)
+                in
+                if Array.length parts > r.most then
+                    Err (String.fromInt (Array.length parts) ++ " colours, where the palette has " ++ String.fromInt r.most)
+
+                else
+                    Array.foldl (\part acc -> Result.map2 Array.pushLast (colour part) acc) (Ok []) parts
+                        |> Result.map Colours
+
+            OneOf names ->
+                if Array.member text names then
+                    Ok (Text text)
+
+                else
+                    Err ("\"" ++ text ++ "\" is not " ++ alternatives names)
+
+            Command ->
+                words text |> Result.map Words
+
+
+{-| A command's words: split at spaces, a quoted word kept whole. -}
+words : String -> Result String (Array String)
+words text =
+    let
+        step c acc =
+            if acc.quoted then
+                if c == '"' then
+                    { acc | quoted = False, any = True }
+
+                else
+                    { acc | word = acc.word ++ String.fromChar c }
+
+            else if c == '"' then
+                { acc | quoted = True, any = True }
+
+            else if c == ' ' then
+                if acc.any || acc.word /= "" then
+                    { acc | done = Array.pushLast acc.word acc.done, word = "", any = False }
+
+                else
+                    acc
+
+            else
+                { acc | word = acc.word ++ String.fromChar c }
+
+        end =
+            String.foldl step { done = [], word = "", quoted = False, any = False } text
+    in
+    if end.quoted then
+        Err "a quote not closed"
+
+    else if end.any || end.word /= "" then
+        Ok (Array.pushLast end.word end.done)
+
+    else
+        Ok end.done
 
 
 
