@@ -124,6 +124,25 @@ than silently ignored, and puritty goes on with the rest: the report is
 on standard error, at the top of a new window, and on the title until the
 file is fixed.
 
+Hosts are kept in the same file, and `puritty --host NAME` connects to one
+with OpenSSH, in the host's own colours and font:
+
+```toml
+[hosts."build-box"]
+host = "build.example.com"
+user = "gilbert"
+jump = "bastion"                 # another host, or user@host:port
+command = "tmux new -A -s main"
+
+[hosts."build-box".colours]
+background = "#2a1010"
+```
+
+`puritty ssh user@host:port` connects without saving a host, and a name
+the file doesn't have is passed to `ssh`, so your `~/.ssh/config` aliases
+work as they are. `start = "host:build-box"` at the top of the file makes
+plain `puritty` connect there; `puritty shell` still opens a local shell.
+
 `puritty settings` opens a window to change them without editing the file:
 search, a page of settings at a time, each change written to the file and
 taken by every open window as you make it, Ctrl+Z to undo. It edits the

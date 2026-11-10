@@ -43,6 +43,7 @@ import Argparse.Program
 import Bitwise
 import Bytes exposing (Bytes)
 import Config exposing (Config)
+import Hosts
 import Schema
 import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSettings, settingsFile, watchSettings, overridden)
@@ -169,10 +170,18 @@ now =
 
 
 type Command
-    = Run { config : Maybe Path.Path, title : Maybe String, program : Array String }
+    = Run { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String }
 
 
-cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String } Command
+{-| What the first word asked for (`docs/settings.md` ST11, V64): nothing
+(the settings' `start`), a local shell, or a quick connect. -}
+type Mode
+    = Plain
+    | Shell
+    | Ssh String
+
+
+cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String, host : Maybe String } Command
 cli =
     { word = ""
     , arguments =
@@ -181,13 +190,14 @@ cli =
             , help = "The program to run, and its arguments; $SHELL (on Windows PowerShell) when none is given"
             }
     , flags =
-        Argparse.Parser.initFlags (\config title -> { config = config, title = title })
+        Argparse.Parser.initFlags (\config title host -> { config = config, title = title, host = host })
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/puritty/config.toml (on Windows %APPDATA%\\puritty\\config.toml)"
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "title") Argparse.Parser.stringParser "The window's title while the program has set none"
+            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "host") Argparse.Parser.stringParser "A host of the settings, connected to with ssh; a name they do not have is ssh's own (an alias of ~/.ssh/config)"
     , commonDescription = Nothing
     , summary = "Runs a program on a terminal in an X window:"
     , example = PP.words "puritty --title notes -- vim -O a.txt b.txt"
-    , builder = \program flags -> Run { config = flags.config, title = flags.title, program = program }
+    , builder = \program flags -> Run { config = flags.config, title = flags.title, host = flags.host, program = program }
     }
 
 
@@ -199,11 +209,26 @@ main =
                 -- `puritty settings`: the settings window, a process of its
                 -- own (docs/settings.md ST2, V57); `puritty -- settings`
                 -- runs a program of that name
-                if Array.first env.args == Just "settings" then
-                    settingsMain { env | args = Array.dropFirst 1 env.args }
+                when Array.first env.args is
+                    Just "settings" ->
+                        settingsMain { env | args = Array.dropFirst 1 env.args }
 
-                else
-                    terminalMain env
+                    -- `puritty shell`: a local shell, whatever `start` says
+                    Just "shell" ->
+                        terminalMain Shell { env | args = Array.dropFirst 1 env.args }
+
+                    -- `puritty ssh user@host:port`: quick connect
+                    Just "ssh" ->
+                        when Array.get 1 env.args is
+                            Just target ->
+                                terminalMain (Ssh target) { env | args = Array.dropFirst 2 env.args }
+
+                            Nothing ->
+                                Console.writeErr "puritty ssh: give where to connect, as user@host:port\n"
+                                    |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
+
+                    _ ->
+                        terminalMain Plain env
             )
 
 
@@ -240,8 +265,8 @@ settingsCli =
     }
 
 
-terminalMain : Os.Env.Environment -> Task Never {}
-terminalMain env =
+terminalMain : Mode -> Os.Env.Environment -> Task Never {}
+terminalMain mode env =
                 Argparse.Program.runRootWithContext env
                     { name = "puritty"
                     , version = "0.1.0"
@@ -270,12 +295,65 @@ terminalMain env =
 
                                                     Unread why ->
                                                         { config = overridden given Config.defaults, problems = [ why ++ "; the defaults are used" ] }
+
+                                            chosen =
+                                                choose mode asked got.config
                                         in
-                                        Array.foldl (\p t -> t |> Task.andThen (\_ -> Console.writeErr ("puritty: " ++ p ++ "\n"))) (Task.succeed {}) got.problems
-                                            |> Task.andThen (\_ -> start ctx.cp ctx.vars given got.problems got.config)
+                                        when chosen.config is
+                                            Err why ->
+                                                Task.fail why
+
+                                            Ok config ->
+                                                Array.foldl (\p t -> t |> Task.andThen (\_ -> Console.writeErr ("puritty: " ++ p ++ "\n"))) (Task.succeed {}) (got.problems ++ chosen.problems)
+                                                    |> Task.andThen (\_ -> start ctx.cp ctx.vars given (got.problems ++ chosen.problems) config)
                                     )
                                 |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
                     }
+
+
+{-| What the window runs (`docs/settings.md` ST11, V64): a program on the
+command line, else what the first word or `--host` asked, else what
+`start` says. A host's session takes its look and title (`Hosts.session`),
+under `--title` when one is given. -}
+choose : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> Config -> { config : Result String Config, problems : Array String }
+choose mode asked config =
+    let
+        titled c =
+            { c | title = Maybe.withDefault c.title asked.title }
+
+        to h =
+            { config = Ok (titled (Hosts.session config h)), problems = [] }
+    in
+    if not (Array.isEmpty asked.program) then
+        { config = Ok config, problems = [] }
+
+    else
+        when mode is
+            Shell ->
+                { config = Ok config, problems = [] }
+
+            Ssh target ->
+                when Hosts.quick target is
+                    Just h ->
+                        to h
+
+                    Nothing ->
+                        { config = Err ("\"" ++ target ++ "\" is not where to connect, as user@host:port"), problems = [] }
+
+            Plain ->
+                when asked.host is
+                    Just name ->
+                        to (Hosts.named name config)
+
+                    Nothing ->
+                        if String.startsWith "host:" config.start then
+                            to (Hosts.named (String.dropFirst 5 config.start) config)
+
+                        else if config.start == "hosts" then
+                            { config = Ok config, problems = [ "start = \"hosts\": the host list is not built yet (docs/settings.md ST12 step 7); a shell is opened" ] }
+
+                        else
+                            { config = Ok config, problems = [] }
 
 
 start : Process.Permission -> Dict String String -> Given -> Array String -> Config -> Task String {}

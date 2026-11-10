@@ -1,0 +1,148 @@
+module Hosts exposing (named, quick, session, sshCommand)
+
+{-| Starting an ssh session from a host (`docs/settings.md` ST10, V61-V64):
+the command OpenSSH is run with, and the settings the session's window
+takes. Until the built-in client (Windows), a session is OpenSSH's `ssh`
+on the terminal as any program, which asks its own questions (the host's
+key, a password) in it.
+-}
+
+import Config exposing (Config, Host)
+
+
+{-| The host of this name: the settings' own, or else one of that name
+with nothing but the name, which `ssh` resolves itself, as an alias of
+`~/.ssh/config` (V63) or a host's name. -}
+named : String -> Config -> Host
+named name config =
+    Array.findFirst (\h -> h.name == name) config.hosts
+        |> Maybe.map .value
+        |> Maybe.withDefault (Config.host name name)
+
+
+{-| A host from what quick connect is given, `user@host:port`, the user
+and the port each left out as one likes; named as given. -}
+quick : String -> Maybe Host
+quick target =
+    let
+        at =
+            String.lastIndexOf "@" target
+
+        user =
+            Maybe.map (\i -> String.takeFirst i target) at
+
+        rest =
+            Maybe.map (\i -> String.dropFirst (i + 1) target) at |> Maybe.withDefault target
+
+        -- a port after the last colon, unless the host is an IPv6
+        -- address, which holds colons of its own and is written [::1]:22
+        portAt =
+            if String.startsWith "[" rest then
+                String.lastIndexOf "]:" rest |> Maybe.map (\i -> i + 1)
+
+            else
+                String.lastIndexOf ":" rest
+
+        address =
+            Maybe.map (\i -> String.takeFirst i rest) portAt |> Maybe.withDefault rest
+
+        port =
+            Maybe.andThen (\i -> String.toInt (String.dropFirst (i + 1) rest)) portAt
+
+        bare =
+            if String.startsWith "[" address && String.endsWith "]" address then
+                String.slice 1 -1 address
+
+            else
+                address
+
+        h =
+            Config.host target bare
+    in
+    if bare == "" || user == Just "" || (portAt /= Nothing && port == Nothing) then
+        Nothing
+
+    else
+        Just { h | user = user, port = port }
+
+
+{-| The command that connects to a host with OpenSSH: its port, user, key
+and jump host as `ssh` takes them, and a command run there on a terminal
+(`-t`) when it has one. A jump that names another of the settings' hosts
+is written as that host's `user@host:port`. -}
+sshCommand : Config -> Host -> Array String
+sshCommand config h =
+    let
+        jumpTo =
+            Maybe.map
+                (\j ->
+                    when Array.findFirst (\o -> o.name == j) config.hosts is
+                        Just found ->
+                            spec found.value
+
+                        Nothing ->
+                            j
+                )
+                h.jump
+    in
+    [ "ssh" ]
+        ++ option "-p" (Maybe.map String.fromInt h.port)
+        ++ option "-l" h.user
+        ++ option "-i" h.identity
+        ++ option "-J" jumpTo
+        ++ (if h.command /= Nothing then [ "-t" ] else [])
+        ++ [ h.host ]
+        ++ (when h.command is
+                Just c ->
+                    [ c ]
+
+                Nothing ->
+                    []
+           )
+
+
+option : String -> Maybe String -> Array String
+option flag value =
+    when value is
+        Just v ->
+            [ flag, v ]
+
+        Nothing ->
+            []
+
+
+{-| A host as `-J` takes it: `user@host:port`. -}
+spec : Host -> String
+spec h =
+    (when h.user is
+        Just u ->
+            u ++ "@"
+
+        Nothing ->
+            ""
+    )
+        ++ h.host
+        ++ (when h.port is
+                Just p ->
+                    ":" ++ String.fromInt p
+
+                Nothing ->
+                    ""
+           )
+
+
+{-| The settings a session's window takes: the host's colours, font and
+size, charset and title over the settings', and the ssh command as its
+program (V62). Its title is the host's name when it gives none. -}
+session : Config -> Host -> Config
+session config h =
+    { config
+        | command = sshCommand config h
+        , title = Maybe.withDefault h.name h.title
+        , foreground = Maybe.withDefault config.foreground h.foreground
+        , background = Maybe.withDefault config.background h.background
+        , palette = Maybe.withDefault config.palette h.palette
+        , font = Maybe.withDefault config.font h.font
+        , points = Maybe.withDefault config.points h.points
+        , charset = if h.charset /= Nothing then h.charset else config.charset
+    }

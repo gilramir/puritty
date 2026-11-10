@@ -58,6 +58,7 @@ type Kind
     | OneOf (Array String)
     | FontFamily
     | Command
+    | Launch
 
 
 {-| A setting's value, of its kind: `Unset` only for an optional one. -}
@@ -347,6 +348,19 @@ settings =
             Words w -> { c | command = w }
             _ -> c
       }
+    , { key = [ "start" ]
+      , kind = Launch
+      , optional = False
+      , label = "What puritty opens"
+      , description = "What `puritty` with nothing after it opens: \"shell\", a local shell; \"hosts\", the host list; \"host:NAME\", that host."
+      , words = [ "start", "launch", "open", "ssh", "hosts", "shell" ]
+      , page = Program
+      , applies = NewWindows
+      , get = \c -> Text c.start
+      , set = \v c -> when v is
+            Text t -> { c | start = t }
+            _ -> c
+      }
     , { key = [ "terminal", "charset" ]
       , kind = OneOf [ "utf-8", "euc-kr", "cp949" ]
       , optional = True
@@ -403,6 +417,17 @@ settings =
             _ -> c
       }
     ]
+
+
+{-| Whether a key is a setting's. -}
+isSetting : Array String -> Bool
+isSetting key =
+    when find key is
+        Just _ ->
+            True
+
+        Nothing ->
+            False
 
 
 {-| The setting at a key, `["font", "size"]`. -}
@@ -482,7 +507,18 @@ type alias At =
 
 top : At -> String -> Toml.Table.Value -> Decoded -> Decoded
 top at section value acc =
-    if Array.member section sections then
+    if section == "hosts" then
+        when value is
+            Toml.Table.TableValue inner ->
+                Dict.foldl (\name v a -> hostAt at name v a) acc (Toml.Table.entries inner)
+
+            _ ->
+                report (at.line [ section ]) "hosts is a table of hosts, each written [hosts.\"name\"]" acc
+
+    else if isSetting [ section ] then
+        one at [ section ] value acc
+
+    else if Array.member section sections then
         when value is
             Toml.Table.TableValue inner ->
                 Dict.foldl (\name v a -> one at [ section, name ] v a) acc (Toml.Table.entries inner)
@@ -492,7 +528,7 @@ top at section value acc =
 
     else
         report (at.line [ section ])
-            ("[" ++ section ++ "] is not a table of settings" ++ suggest section (Array.map (\k -> "[" ++ k ++ "]") sections))
+            ("[" ++ section ++ "] is not a table of settings" ++ suggest section (Array.map (\k -> "[" ++ k ++ "]") (Array.pushLast "hosts" sections)))
             acc
 
 
@@ -515,6 +551,174 @@ one at key value acc =
 
                 Err why ->
                     report (at.line key) (name ++ ": " ++ why ++ "; " ++ shown s (s.get Config.defaults) ++ " is used") acc
+
+
+{-| A host's table: its keys read as settings are, each reported at its
+line when it is not one a host takes or has a value it does not; a host
+with no `host` is reported and left out. -}
+hostAt : At -> String -> Toml.Table.Value -> Decoded -> Decoded
+hostAt at name value acc =
+    let
+        here =
+            [ "hosts", name ]
+
+        named =
+            "hosts." ++ hostName name
+    in
+    when value is
+        Toml.Table.TableValue table ->
+            let
+                gathered =
+                    Dict.foldl (\key v r -> hostKey at here named key v r)
+                        { host = Config.host name "", reports = [] }
+                        (Toml.Table.entries table)
+
+                withReports =
+                    { acc | reports = acc.reports ++ gathered.reports }
+            in
+            if gathered.host.host == "" then
+                report (at.line here) (named ++ " has no host = \"…\", where to connect; it is left out") withReports
+
+            else
+                let
+                    config =
+                        withReports.config
+                in
+                { withReports | config = { config | hosts = Array.pushLast gathered.host config.hosts } }
+
+        _ ->
+            report (at.line here) (named ++ " is a table, written [" ++ named ++ "]") acc
+
+
+hostName : String -> String
+hostName name =
+    if String.all (\c -> Char.isAlphaNum c || c == '-' || c == '_') name && name /= "" then
+        name
+
+    else
+        "\"" ++ name ++ "\""
+
+
+hostKeys : Array String
+hostKeys =
+    [ "host", "user", "port", "identity", "jump", "command", "charset", "title", "colours", "font" ]
+
+
+hostKey : At -> Array String -> String -> String -> Toml.Table.Value -> { host : Config.Host, reports : Array Report } -> { host : Config.Host, reports : Array Report }
+hostKey at here named key value r =
+    let
+        path =
+            here ++ [ key ]
+
+        bad why =
+            { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ ": " ++ why ++ "; it is left out" } r.reports }
+
+        h =
+            r.host
+
+        text f =
+            when string value is
+                Ok t ->
+                    { r | host = f t }
+
+                Err why ->
+                    bad why
+    in
+    if key == "host" then
+        text (\t -> { h | host = t })
+
+    else if key == "user" then
+        text (\t -> { h | user = Just t })
+
+    else if key == "identity" then
+        text (\t -> { h | identity = Just t })
+
+    else if key == "jump" then
+        text (\t -> { h | jump = Just t })
+
+    else if key == "command" then
+        text (\t -> { h | command = Just t })
+
+    else if key == "title" then
+        text (\t -> { h | title = Just t })
+
+    else if key == "charset" then
+        when read (\_ -> Err "") (OneOf [ "utf-8", "euc-kr", "cp949" ]) value is
+            Ok (Text t) ->
+                { r | host = { h | charset = Just t } }
+
+            Ok _ ->
+                r
+
+            Err why ->
+                bad why
+
+    else if key == "port" then
+        when read (\_ -> at.integer path) (WholeIn { low = 1, high = 65535, unit = "" }) value is
+            Ok (Whole n) ->
+                { r | host = { h | port = Just n } }
+
+            Ok _ ->
+                r
+
+            Err why ->
+                bad why
+
+    else if key == "colours" || key == "font" then
+        when value is
+            Toml.Table.TableValue inner ->
+                Dict.foldl (\k v acc -> hostLook at path (named ++ "." ++ key) key k v acc) r (Toml.Table.entries inner)
+
+            _ ->
+                bad ("a table, written [" ++ named ++ "." ++ key ++ "]")
+
+    else
+        { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ " is not a host's setting" ++ suggest key hostKeys } r.reports }
+
+
+{-| A host's look over the settings': its colours and its font. -}
+hostLook : At -> Array String -> String -> String -> String -> Toml.Table.Value -> { host : Config.Host, reports : Array Report } -> { host : Config.Host, reports : Array Report }
+hostLook at here named table key value r =
+    let
+        path =
+            here ++ [ key ]
+
+        h =
+            r.host
+
+        bad why =
+            { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ ": " ++ why ++ "; it is left out" } r.reports }
+
+        allowed =
+            if table == "colours" then [ "foreground", "background", "palette" ] else [ "family", "size" ]
+    in
+    if not (Array.member key allowed) then
+        { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ " is not a host's setting" ++ suggest key allowed } r.reports }
+
+    else
+        when find [ table, key ] is
+            Just s ->
+                when read (\_ -> at.integer path) s.kind value is
+                    Ok (Colour n) ->
+                        { r | host = if key == "foreground" then { h | foreground = Just n } else { h | background = Just n } }
+
+                    Ok (Colours p) ->
+                        { r | host = { h | palette = Just p } }
+
+                    Ok (Text t) ->
+                        { r | host = { h | font = Just t } }
+
+                    Ok (Whole n) ->
+                        { r | host = { h | points = Just n } }
+
+                    Ok _ ->
+                        r
+
+                    Err why ->
+                        bad why
+
+            Nothing ->
+                r
 
 
 report : Int -> String -> Decoded -> Decoded
@@ -589,6 +793,9 @@ read integerHere kind value =
 
                 _ ->
                     Err "not a list of strings, the program and its arguments"
+
+        Launch ->
+            string value |> Result.andThen launch |> Result.map Text
 
 
 integer : ({} -> Result String Int) -> Toml.Table.Value -> Result String Int
@@ -877,6 +1084,22 @@ fromText s text0 =
             Command ->
                 words text |> Result.map Words
 
+            Launch ->
+                launch text |> Result.map Text
+
+
+{-| What `start` takes: `shell`, `hosts`, or `host:` and a host's name. -}
+launch : String -> Result String String
+launch text =
+    if text == "shell" || text == "hosts" then
+        Ok text
+
+    else if String.startsWith "host:" text && String.count text > 5 then
+        Ok text
+
+    else
+        Err ("\"" ++ text ++ "\" is not \"shell\", \"hosts\" or \"host:\" and a host's name")
+
 
 {-| A command's words: split at spaces, a quoted word kept whole. -}
 words : String -> Result String (Array String)
@@ -1032,6 +1255,9 @@ nothing reported, and it names every setting. -}
 example : String
 example =
     """
+    start = "shell"               # what `puritty` opens: "shell", "hosts" (the
+                                  # host list), or "host:NAME"
+
     [window]
     columns = 80
     rows = 24
@@ -1083,4 +1309,20 @@ example =
     [clipboard]
     osc52_read = "deny"           # or "allow": whether a program may read the
                                   # clipboard with OSC 52 (the same guide)
+
+    [hosts."build-box"]           # a host, started with `puritty --host build-box`
+    host = "build.example.com"
+    user = "gilbert"              # left out: ssh's own choice, as for each below
+    port = 2222
+    identity = "~/.ssh/id_ed25519"
+    jump = "bastion.example.com"  # another host's name, or user@host:port
+    command = "tmux new -A -s main"
+    charset = "euc-kr"
+    title = "build"
+
+    [hosts."build-box".colours]   # this host's look, over the settings'
+    background = "#2a1010"
+
+    [hosts."build-box".font]
+    size = 13
     """

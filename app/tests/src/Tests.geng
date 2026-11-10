@@ -7,6 +7,7 @@ gren-unit-node: the settings' table and its lenient decoder. Run with
 
 import Config
 import Expect exposing (Expectation)
+import Hosts
 import Node
 import Schema
 import Screen
@@ -24,7 +25,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing, window ]
+                    , suites = [ schema, writing, window, hosts ]
                     }
             )
 
@@ -83,6 +84,10 @@ schema =
                                             [ table, name ] ->
                                                 not (String.contains ("[" ++ table ++ "]") Schema.example && String.contains ("\n" ++ name ++ " = ") Schema.example)
 
+                                            [ name ] ->
+                                                -- a key outside any table comes first
+                                                not (String.startsWith (name ++ " = ") Schema.example)
+
                                             _ ->
                                                 True
                                     )
@@ -109,6 +114,37 @@ schema =
                             Array.map Schema.keyName Schema.settings
                     in
                     Expect.equal (Array.length names) (Array.length (Array.foldl (\n acc -> if Array.member n acc then acc else Array.pushLast n acc) [] names))
+          }
+        , { name = "the example's host is read whole"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build" } ]
+                        (decoded Schema.example).hosts
+          }
+        , { name = "a host with no host is reported and left out"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "1: hosts.box has no host = \"…\", where to connect; it is left out" ], hosts = 0 }
+                        { reports = reported "[hosts.box]\nuser = \"me\"\n", hosts = Array.length (decoded "[hosts.box]\nuser = \"me\"\n").hosts }
+          }
+        , { name = "a host's misspelt key is reported, with the nearest"
+          , test = \_ -> Expect.equal [ "3: hosts.box.usr is not a host's setting; did you mean user?" ] (reported "[hosts.box]\nhost = \"h\"\nusr = \"me\"\n")
+          }
+        , { name = "a host's port out of range is reported and left out"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "3: hosts.box.port: 70000 is not from 1 to 65535; it is left out" ], port = [ Nothing ] }
+                        { reports = reported "[hosts.box]\nhost = \"h\"\nport = 70000\n", port = Array.map .port (decoded "[hosts.box]\nhost = \"h\"\nport = 70000\n").hosts }
+          }
+        , { name = "a host's name may hold a space"
+          , test = \_ -> Expect.equal [ "my box" ] (Array.map .name (decoded "[hosts.\"my box\"]\nhost = \"h\"\n").hosts)
+          }
+        , { name = "start takes shell, hosts or host:NAME"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "1: start: \"ssh\" is not \"shell\", \"hosts\" or \"host:\" and a host's name; \"shell\" is used" ], start = "host:box" }
+                        { reports = reported "start = \"ssh\"\n", start = (decoded "start = \"host:box\"\n").start }
           }
         , { name = "a misspelt key is reported at its line, with the nearest setting"
           , test = \_ -> Expect.equal [ "3: font.sise is not a setting; did you mean font.size?" ] (reported "[font]\nfamily = \"x\"\nsise = 12\n")
@@ -237,6 +273,9 @@ another s =
 
         Schema.Command ->
             Schema.Words [ "vim", "-O", "a b.txt" ]
+
+        Schema.Launch ->
+            Schema.Text "hosts"
 
 
 writing : U.Suite
@@ -515,5 +554,53 @@ window =
           }
         , { name = "a narrow window still draws every row"
           , test = \_ -> Expect.equal 24 (Array.length (after [ SettingsWindow.Resized { cols = 40, rows = 24 } ]).screen)
+          }
+        ]
+
+
+hosts : U.Suite
+hosts =
+    let
+        config =
+            decoded Schema.example
+
+        box =
+            Hosts.named "build-box" config
+    in
+    run "Hosts"
+        [ { name = "a host's command is OpenSSH's, with its port, user, key, jump and command"
+          , test = \_ -> Expect.equal [ "ssh", "-p", "2222", "-l", "gilbert", "-i", "~/.ssh/id_ed25519", "-J", "bastion.example.com", "-t", "build.example.com", "tmux new -A -s main" ] (Hosts.sshCommand config box)
+          }
+        , { name = "a jump that names another host is that host's user@host:port"
+          , test =
+                \_ ->
+                    let
+                        c =
+                            decoded "[hosts.bastion]\nhost = \"b.example.com\"\nuser = \"me\"\nport = 2200\n\n[hosts.inner]\nhost = \"10.0.0.5\"\njump = \"bastion\"\n"
+                    in
+                    Expect.equal [ "ssh", "-J", "me@b.example.com:2200", "10.0.0.5" ] (Hosts.sshCommand c (Hosts.named "inner" c))
+          }
+        , { name = "a name the settings do not have is ssh's to resolve, as an alias"
+          , test = \_ -> Expect.equal [ "ssh", "work" ] (Hosts.sshCommand config (Hosts.named "work" config))
+          }
+        , { name = "quick connect reads user@host:port, each part left out as one likes"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just [ "ssh", "-p", "22", "-l", "me", "h.example.com" ], Just [ "ssh", "h" ], Just [ "ssh", "-l", "me", "h" ], Just [ "ssh", "-p", "2222", "::1" ], Nothing, Nothing ]
+                        (Array.map (\t -> Hosts.quick t |> Maybe.map (Hosts.sshCommand config)) [ "me@h.example.com:22", "h", "me@h", "[::1]:2222", "me@", "h:port" ])
+          }
+        , { name = "a session takes the host's look, charset and title, and its name when it gives no title"
+          , test =
+                \_ ->
+                    let
+                        c =
+                            Hosts.session config box
+
+                        plain =
+                            Hosts.session config (Hosts.named "work" config)
+                    in
+                    Expect.equal { background = 0x2A1010, points = 13, charset = Just "euc-kr", title = "build", plainTitle = "work", foreground = config.foreground }
+                        { background = c.background, points = c.points, charset = c.charset, title = c.title, plainTitle = plain.title, foreground = c.foreground }
           }
         ]

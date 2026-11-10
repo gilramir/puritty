@@ -319,6 +319,7 @@ built, as the Windows steps did.
    Windows system menu, raising one already open. *Ctrl+Comma and raising
    built (ST22).*
 7. **Hosts** (ST10, ST11): the entries, `~/.ssh/config`'s, `--host`,
+   *(entries, `--host`, `ssh`, `shell` and `start` built, ST23)*
    quick connect, the Hosts page, `start` (V64) and the list that
    becomes the session (V65).
 8. **Key sounds** (`feature-plan.md` §3), the first setting added through
@@ -689,3 +690,51 @@ of 13.
 **Left of step 6:** the Ctrl+right-click menu (Windows' own on Windows,
 drawn by puritty on Linux) and the Windows system menu's items, which come
 with the hosts (step 7) since they list them.
+
+## ST23 · Step 7a built: hosts, and connecting to one (2026-11-10)
+
+**In the file.** `[hosts."name"]` tables (V61): `host` (where to connect;
+a host without one is reported and left out), `user`, `port` (1 to
+65535), `identity`, `jump`, `command`, `charset`, `title`, and two tables
+of its look, `[hosts."name".colours]` (`foreground`, `background`,
+`palette`) and `[hosts."name".font]` (`family`, `size`) (V62). Each key is
+read as a setting is, a bad one reported at its line with the nearest
+name. `start` (V64) is the one setting outside any table, so it comes
+first in a file: `"shell"`, `"hosts"` or `"host:NAME"`. `Schema.example`
+shows a host and `start`, and its test holds them.
+
+**Connecting** (`app/src/Hosts.geng`): a session is OpenSSH's `ssh` on the
+terminal as any program (WS9): `-p`, `-l`, `-i` and `-J` from the host, a
+jump that names another host written as its `user@host:port`, and `-t`
+with the command when there is one. Its window takes the host's colours,
+font, size, charset and title over the settings', and the host's name as
+its title when it gives none. A name the settings do not have is `ssh
+NAME`, for ssh to resolve, so an alias of `~/.ssh/config` connects with no
+entry (V63).
+
+**The command line** (V64): `puritty --host NAME`; `puritty ssh
+user@host:port`, quick connect, the user and the port left out as one
+likes and an IPv6 address written `[::1]:22`; `puritty shell`, a local
+shell whatever `start` says; and plain `puritty`, what `start` says. A
+program after `--` wins over all of them, and `--title` over a host's
+title. `start = "hosts"` opens a shell, with a notice that the host list
+is step 7b's, until it is built.
+
+**Held by** `app/tests`, 59 of 59 (hosts read whole, one without a host,
+a misspelt host key, a port out of range, a name with a space, `start`'s
+values, the ssh command, a jump through another host, an alias, quick
+connect's forms, a session's settings), and **the hosts gate**,
+`harness/hosts.py`, 8 of 8: a stand-in `ssh` first on PATH writes what it
+was given, and each case holds that, the window's title and its
+background: `--host` with its jump and command, an alias, `--title` over
+the host's, quick connect, `start = "host:…"`, `start = "shell"`, `shell`
+over `start`, and a program over `--host`. **On Windows**, `puritty.exe
+--host self` (localhost) ran `C:\WINDOWS\System32\OpenSSH\ssh.exe`,
+which asked its host-key question in the window, on the host's background.
+
+**On Windows the session's title is lost** as the settings' is (ST15,
+ST16): conhost titles `ssh.exe` with its path. ST16's question decides
+it.
+
+Held as before: settings 12 of 12, reload 15 of 15, pointer 51 of 51, IME
+14 of 14.
