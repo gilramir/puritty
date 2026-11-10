@@ -269,3 +269,26 @@ another monitor, if he has one.
 4. **One app, two manifests** (WS10), or a Geng feature for dependencies by
    platform first. *Leaning: two manifests now.*
 5. **The IME** (WS6): IMM32 first, TSF when needed. *Leaning: IMM32.*
+
+## WS14 · Step 1 built: the text libraries for Windows (2026-11-09)
+
+`packages/win32/build-text-libs.sh` builds FreeType 2.14.3 and HarfBuzz
+13.2.1 for Windows, static, from the sources geng-lang's nixpkgs pin has,
+into `vendor/win-text` with `pkg-config` files, in 27 s:
+
+- FreeType's core, its bitmap, glyph, emboldening, box and variation
+  calls, and the modules OpenType and TrueType faces need (TrueType, CFF,
+  SFNT with its colour tables, the auto-hinter, the smooth renderer), with
+  FreeType's own copy of zlib: no libpng, bzip2 or Brotli.
+- HarfBuzz's one source file, compiled by the toolchain's `g++` with
+  threads off; its object needs nothing but the C library and libgcc, so a
+  Geng program's C link takes it.
+
+`bench/windows/probe-text.c` linked against them by `clang` alone, as a Geng
+build links (`-static`), is one 2.2 MB `.exe` that needs no DLL but
+Windows' own, and on beelink1 drew the picture above byte for byte as the
+build against nixpkgs' FreeType DLLs did.
+
+Note for a Windows build: the toolchain's `pkg-config` wrapper reads
+`PKG_CONFIG_PATH`, not its target-suffixed variable, when run outside a
+Nix build, so a build sets both, as geng-lang's `run.py` does.
