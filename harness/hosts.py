@@ -63,13 +63,14 @@ CASES = [
     ("start-shell", None, []),
     ("shell-over-start", 'start = "host:bastion"', ["shell"]),
     ("program-over-host", None, ["--host", "build-box", "--", "sh", "-c", "exec sleep 600"]),
-    # the host list (V65): Enter on the first host makes the same window
+    # the host list (V65): quick connect and New host come first; Enter on
+    # the first host makes the same window
     # its session, so there is one window, with the host's title and colours
-    ("host-list", None, ["hosts"], ("puritty hosts", ["Down", "Return"])),
+    ("host-list", None, ["hosts"], ("puritty hosts", ["Down", "Down", "Return"])),
     ("start-hosts", 'start = "hosts"', [], ("puritty hosts", [])),
     # from the settings window, a session opens a window of its own and the
     # settings window stays
-    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 7 + ["Right", "Down", "Return"])),
+    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 7 + ["Right", "Down", "Down", "Return"])),
 ]
 
 
@@ -128,7 +129,11 @@ def run_case(env0, name, start, args, keys=None):
     time.sleep(0.3)
     ssh = said.read_text().splitlines() if said.exists() else None
     colour = "none"
-    if pic:
+    if args[:1] == ["settings"]:
+        # the settings window and the session it starts both write
+        # PURITTY_SHOT's file, so which picture is there is a race
+        colour = "not pictured"
+    elif pic:
         row = pic[len(pic) * 3 // 4]
         x = (len(row) // 3) * 3 // 4
         colour = "#" + row[x * 3:x * 3 + 3].hex()

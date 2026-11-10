@@ -322,8 +322,8 @@ built, as the Windows steps did.
    *(entries, `--host`, `ssh`, `shell` and `start` built, ST23)*
    quick connect, the Hosts page, `start` (V64) and the list that
    becomes the session (V65).
-8. **Key sounds** (`feature-plan.md` §3), the first setting added through
-   the schema.
+8. **Key sounds** (`feature-plan.md` §3). *Gilbert, 2026-11-10: low
+   priority, moved to the very end, after the built-in ssh client.*
 
 Then the built-in ssh client's survey, which starts from ST10's entries.
 
@@ -782,3 +782,50 @@ Held as before: settings 12 of 12, reload 15 of 15, pointer 51 of 51, IME
 **Left of step 7:** changing hosts in the window (a new host, its fields,
 a rename, a removal), and the menus that list them (ST9: the
 Ctrl+right-click menu, Windows' system menu).
+
+## ST25 · Step 7b, second part: hosts changed in the window (2026-11-10)
+
+*Gilbert, 2026-11-10:* the rest of the plan in this order: changing hosts
+in the window, the menus, the mouse; then the built-in ssh client's
+survey (begun alongside, `ssh-client.md`); key sounds last of all.
+
+**A host's fields are settings.** `Schema.hostFields name` makes each
+field of a host a `Setting` whose key is its path in the file
+(`["hosts", "box", "user"]`, `["hosts", "box", "colours", "background"]`)
+and which reads and writes that host among the settings' hosts, so the
+window's rows, typing, live writes, reset and undo serve a host's form as
+they serve the settings: where it connects (which may not be empty), the
+user, the port, the key, the jump, the command, the charset, the title,
+its colours, palette, font and size. Unset takes a key out, and a table of
+the host's left empty with it (ST18's rule).
+
+**The host list** has a New host row after quick connect. On a host:
+Enter connects, Right opens its form, Delete removes it (its table and
+those under it, and the comment over its header, which gren-toml counts
+as the header's), Ctrl+D copies it as `name-2`; Right on one of
+`~/.ssh/config`'s saves it as a host of the settings first. In a form, the
+first row is the host's name, and a new one typed renames it on Enter, the
+tables under it with it (`Toml.Edit.renameTable`); Left or Esc goes back to
+the list. Ctrl+Z undoes a field as a setting, and a host made, removed,
+renamed or copied by putting back the hosts as they were. The window
+writes them as `PutHost` (each field set or taken out, so what the file
+already says is not touched), `DeleteHost` and `RenameHost`.
+
+**Held by** `app/tests`, 77 of 77 (a host made and its form opened, a
+field changed, a field unset and where it connects kept, a host removed
+and put back, renamed, copied, an alias saved, an address not written
+empty; and in the file: a field set and unset giving the file back with
+its comments, a colour making its table and unsetting taking it out, a
+rename taking the tables under it, a removal leaving the others, every
+host of the example written whole and read back as it was), and the
+settings gate, **16 of 16**, with a new host given its address and user,
+one removed, one renamed with its colours' table and comment, one copied.
+The hosts gate's keys step past the new row (11 of 11), and its
+`settings-connects` case no longer pictures the session: the settings
+window and the session it starts both write `PURITTY_SHOT`'s file, so
+which picture is there was a race, which a run lost.
+
+**Found on the way:** typing where a host connects down to nothing wrote
+`host = ""`; the window read its own file back, a host with no address is
+left out, and the form lost its host under the typing. Where to connect
+is now its own kind (`Address`), which does not take empty text.

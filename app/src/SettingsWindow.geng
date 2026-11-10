@@ -69,14 +69,23 @@ type alias Model =
     , search : Array Char
     , modifiedOnly : Bool
     , typing : Maybe Typing
-    , undo : Array { key : Array String, value : Value }
+    , undo : Array Undo
     , message : String
     , fonts : Array String
       -- the hosts of ~/.ssh/config, listed with the file's (V63), and
       -- whether the window is the host list, which a session replaces (V65)
     , aliases : Array String
     , launcher : Bool
+      -- the host whose form is shown on the Hosts page (ST25)
+    , form : Maybe String
     }
+
+
+{-| What Ctrl+Z puts back: a setting's value, or the hosts as they were
+before one was added, removed or renamed. -}
+type Undo
+    = Was { setting : Setting, value : Value }
+    | HostsWere (Array Config.Host)
 
 
 {-| What the window is told. `Key`'s `sym` is X's keysym, as both
@@ -96,6 +105,9 @@ type Effect
     | Close
     | ConnectHost String
     | ConnectQuick String
+    | PutHost Config.Host
+    | DeleteHost String
+    | RenameHost { from : String, to : String }
 
 
 init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, launcher : Bool } -> Model
@@ -116,6 +128,7 @@ init r =
     , fonts = r.fonts
     , aliases = r.aliases
     , launcher = r.launcher
+    , form = Nothing
     , message =
         when Array.first r.reports is
             Just first ->
@@ -170,7 +183,16 @@ listed m =
             String.fromArray m.search
     in
     if onHosts m then
-        []
+        when m.form is
+            Just name ->
+                if Array.any (\h -> h.name == name) m.config.hosts then
+                    Array.pushFirst (Schema.nameSetting name) (Schema.hostFields name)
+
+                else
+                    []
+
+            Nothing ->
+                []
 
     else
         listedSettings m query
@@ -230,7 +252,7 @@ onHosts m =
 
 {-| The hosts listed: the file's, then ~/.ssh/config's that the file does
 not name, each with where it goes and where it is from. -}
-hostRows : Model -> Array { name : String, detail : String, from : String }
+hostRows : Model -> Array { name : String, detail : String, from : String, own : Bool }
 hostRows m =
     let
         own =
@@ -239,6 +261,7 @@ hostRows m =
                     { name = h.name
                     , detail = Maybe.withDefault "" (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ Maybe.withDefault "" (Maybe.map (\p -> ":" ++ String.fromInt p) h.port)
                     , from = (if h.jump /= Nothing then "through " ++ Maybe.withDefault "" h.jump ++ " · " else "") ++ "from the settings"
+                    , own = True
                     }
                 )
                 m.config.hosts
@@ -246,17 +269,58 @@ hostRows m =
         theirs =
             m.aliases
                 |> Array.keepIf (\a -> not (Array.any (\h -> h.name == a) m.config.hosts))
-                |> Array.map (\a -> { name = a, detail = "as ~/.ssh/config has it", from = "from ~/.ssh/config" })
+                |> Array.map (\a -> { name = a, detail = "as ~/.ssh/config has it", from = "from ~/.ssh/config", own = False })
     in
     own ++ theirs
 
 
+{-| The host list: the Hosts page with no host's form open. -}
+inList : Model -> Bool
+inList m =
+    onHosts m && m.form == Nothing
+
+
+{-| The host on a row of the list (quick connect and New host come first). -}
+hostAt : Model -> Int -> Maybe { name : String, detail : String, from : String, own : Bool }
+hostAt m row =
+    Array.get (row - 2) (hostRows m)
+
+
+{-| A host of the settings, by name. -}
+hostNamed : Model -> String -> Maybe Config.Host
+hostNamed m name =
+    Array.findFirst (\h -> h.name == name) m.config.hosts |> Maybe.map .value
+
+
+{-| The hosts changed: the model's at once, the file's by the effects, and
+undone together by Ctrl+Z. -}
+hostsChanged : Array Config.Host -> Array Effect -> String -> Model -> { model : Model, effects : Array Effect }
+hostsChanged hosts effects message m =
+    let
+        config =
+            m.config
+    in
+    { model = keepInView { m | config = { config | hosts = hosts }, undo = Array.pushLast (HostsWere config.hosts) m.undo, message = message }
+    , effects = effects
+    }
+
+
+{-| A name for a copy of a host that no host has: `name-2`, `name-3`... -}
+copyName : Model -> String -> String
+copyName m name =
+    Array.range 2 1000
+        |> Array.map (\n -> name ++ "-" ++ String.fromInt n)
+        |> Array.findFirst (\n -> hostNamed m n == Nothing)
+        |> Maybe.map .value
+        |> Maybe.withDefault (name ++ "-copy")
+
+
 {-| How many rows the settings' side has: the settings listed, or quick
-connect and the hosts. -}
+connect, New host and the hosts. -}
 rowCount : Model -> Int
 rowCount m =
-    if onHosts m then
-        1 + Array.length (hostRows m)
+    if inList m then
+        2 + Array.length (hostRows m)
 
     else
         Array.length (listed m)
@@ -380,6 +444,34 @@ control k m =
     else if letter == 0x66 then
         done { m | focus = OnSearch, typing = Nothing }
 
+    else if letter == 0x64 && onHosts m then
+        -- Ctrl+D: a copy of the host listed, or of the form's
+        let
+            name =
+                when m.form is
+                    Just n ->
+                        Just n
+
+                    Nothing ->
+                        hostAt m m.row |> Maybe.andThen (\h -> if h.own then Just h.name else Nothing)
+        in
+        when Maybe.andThen (hostNamed m) name is
+            Just h ->
+                let
+                    copy =
+                        { h | name = copyName m h.name }
+
+                    made =
+                        hostsChanged (m.config.hosts ++ [ copy ]) [ PutHost copy ] (copy.name ++ " is a copy of " ++ h.name) { m | typing = Nothing }
+
+                    r =
+                        made.model
+                in
+                { made | model = keepInView { r | form = Just copy.name, row = 0, scroll = 0 } }
+
+            Nothing ->
+                done m
+
     else
         done m
 
@@ -478,17 +570,64 @@ rowsKey k m =
                 else
                     done (searched [] m)
 
-            else if (isEnter k.sym || k.sym == sym.space) && onHosts m then
-                if m.row == 0 then
+            else if (isEnter k.sym || k.sym == sym.space) && inList m then
+                if m.row <= 1 then
+                    -- quick connect, or a new host's name
                     done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = "" }
 
                 else
-                    when Array.get (m.row - 1) (hostRows m) is
+                    when hostAt m m.row is
                         Just h ->
                             { model = { m | message = "Connecting to " ++ h.name }, effects = [ ConnectHost h.name ] }
 
                         Nothing ->
                             done m
+
+            else if k.sym == sym.right && inList m then
+                -- a host's form; one of ~/.ssh/config's is saved as a host first
+                when hostAt m m.row is
+                    Just h ->
+                        if h.own then
+                            done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = "" })
+
+                        else
+                            let
+                                saved =
+                                    hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (h.name ++ " is a host of the settings now") m
+
+                                after =
+                                    saved.model
+                            in
+                            { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
+
+                    Nothing ->
+                        done m
+
+            else if (k.sym == sym.left || k.sym == sym.escape) && onHosts m && m.form /= Nothing then
+                -- back to the list, on the host the form was of
+                let
+                    name =
+                        Maybe.withDefault "" m.form
+
+                    back =
+                        { m | form = Nothing, message = "" }
+
+                    row =
+                        Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault 0
+                in
+                done (keepInView { back | row = row })
+
+            else if (k.sym == sym.delete || k.sym == sym.backspace) && inList m then
+                when hostAt m m.row is
+                    Just h ->
+                        if h.own then
+                            hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (h.name ++ " is removed · Ctrl+Z puts it back") m
+
+                        else
+                            done { m | message = h.name ++ " is ~/.ssh/config's; it is changed there" }
+
+                    Nothing ->
+                        done m
 
             else if isEnter k.sym || k.sym == sym.space then
                 when focused m is
@@ -501,7 +640,14 @@ rowsKey k m =
             else if k.sym == sym.delete || k.sym == sym.backspace then
                 when focused m is
                     Just s ->
-                        set s (s.get Config.defaults) { m | message = Schema.keyName s ++ " is its default again" }
+                        if s.kind == Schema.HostName then
+                            done { m | message = "To remove the host, go back to the list and press Delete there" }
+
+                        else if not s.optional && s.page == Schema.HostsPage then
+                            done { m | message = "A host must say where to connect" }
+
+                        else
+                            set s (if s.page == Schema.HostsPage then Unset else s.get Config.defaults) { m | message = Schema.keyName s ++ " is its default again" }
 
                     Nothing ->
                         done m
@@ -564,7 +710,7 @@ set s v m =
         done m
 
     else
-        { model = { m | config = s.set v m.config, undo = Array.pushLast { key = s.key, value = before } m.undo }
+        { model = { m | config = s.set v m.config, undo = Array.pushLast (Was { setting = s, value = before }) m.undo }
         , effects = [ Write { setting = s, value = v } ]
         }
 
@@ -573,14 +719,29 @@ undo : Model -> { model : Model, effects : Array Effect }
 undo m =
     when Array.popLast m.undo is
         Just { last, initial } ->
-            when Schema.find last.key is
-                Just s ->
-                    { model = { m | config = s.set last.value m.config, undo = initial, message = Schema.keyName s ++ " is back as it was" }
-                    , effects = [ Write { setting = s, value = last.value } ]
+            when last is
+                Was w ->
+                    { model = { m | config = w.setting.set w.value m.config, undo = initial, message = Schema.keyName w.setting ++ " is back as it was" }
+                    , effects = [ Write { setting = w.setting, value = w.value } ]
                     }
 
-                Nothing ->
-                    done { m | undo = initial }
+                HostsWere before ->
+                    let
+                        now =
+                            m.config.hosts
+
+                        -- each host as it was written back, and each host
+                        -- added since taken out
+                        effects =
+                            Array.mapAndKeepJust (\h -> if Array.member h now then Nothing else Just (PutHost h)) before
+                                ++ Array.mapAndKeepJust (\h -> if Array.any (\b -> b.name == h.name) before then Nothing else Just (DeleteHost h.name)) now
+
+                        config =
+                            m.config
+                    in
+                    { model = keepInView { m | config = { config | hosts = before }, undo = initial, form = Nothing, message = "The hosts are back as they were" }
+                    , effects = effects
+                    }
 
         Nothing ->
             done { m | message = "Nothing to undo" }
@@ -588,8 +749,39 @@ undo m =
 
 typingKey : { sym : Int, mods : Int, text : String } -> Typing -> Model -> { model : Model, effects : Array Effect }
 typingKey k t m =
-    if onHosts m then
+    if inList m && m.row == 1 then
+        newHostKey k t m
+
+    else if inList m then
         quickKey k t m
+
+    else if (isEnter k.sym || k.sym == sym.tab) && isHostName m then
+        -- a host renamed on Enter, its table and those under it
+        let
+            from =
+                Maybe.withDefault "" m.form
+
+            to =
+                String.trim (String.fromArray t.chars)
+        in
+        if to == from then
+            done { m | typing = Nothing, message = "" }
+
+        else if to == "" then
+            done { m | message = "a host needs a name" }
+
+        else if hostNamed m to /= Nothing then
+            done { m | message = "There is a host called " ++ to ++ " already" }
+
+        else
+            let
+                renamed =
+                    hostsChanged (Array.map (\h -> if h.name == from then { h | name = to } else h) m.config.hosts) [ RenameHost { from = from, to = to } ] (from ++ " is " ++ to ++ " now") { m | typing = Nothing }
+
+                r =
+                    renamed.model
+            in
+            { renamed | model = { r | form = Just to } }
 
     else if k.sym == sym.escape then
         -- what was there before typing began, back
@@ -646,7 +838,7 @@ typingKey k t m =
                             { m
                                 | typing = Nothing
                                 , message = ""
-                                , undo = if now /= t.before then Array.pushLast { key = s.key, value = t.before } m.undo else m.undo
+                                , undo = if now /= t.before then Array.pushLast (Was { setting = s, value = t.before }) m.undo else m.undo
                             }
 
                     Nothing ->
@@ -679,6 +871,35 @@ typingKey k t m =
 
     else
         done m
+
+
+{-| A new host's name typed: on Enter the host is made, where to connect
+taken to be its name, and its form opened. -}
+newHostKey : { sym : Int, mods : Int, text : String } -> Typing -> Model -> { model : Model, effects : Array Effect }
+newHostKey k t m =
+    let
+        name =
+            String.trim (String.fromArray t.chars)
+    in
+    if isEnter k.sym then
+        if name == "" then
+            done { m | message = "a host needs a name" }
+
+        else if hostNamed m name /= Nothing then
+            done { m | message = "There is a host called " ++ name ++ " already" }
+
+        else
+            let
+                made =
+                    hostsChanged (m.config.hosts ++ [ Config.host name name ]) [ PutHost (Config.host name name) ] (name ++ " is made: say where it connects") { m | typing = Nothing }
+
+                r =
+                    made.model
+            in
+            { made | model = keepInView { r | form = Just name, row = 1, scroll = 0 } }
+
+    else
+        quickKey k t m
 
 
 {-| Quick connect typed: `user@host:port`, connected to on Enter. -}
@@ -735,7 +956,7 @@ insert text t =
 the terminals show it as it is typed (ST6); its problem kept otherwise. -}
 typed : Typing -> Model -> { model : Model, effects : Array Effect }
 typed t m =
-    if onHosts m then
+    if inList m then
         done { m | typing = Just t }
 
     else
@@ -746,7 +967,7 @@ typedSetting : Typing -> Model -> { model : Model, effects : Array Effect }
 typedSetting t m =
     when focused m is
         Just s ->
-          if s.kind == FontFamily then
+          if s.kind == FontFamily || s.kind == Schema.HostName then
             -- the suggestions follow the name; it is written when chosen
             done { m | typing = Just { t | pick = -1, problem = Nothing } }
 
@@ -801,6 +1022,17 @@ click c m =
     else
         done m
 
+
+
+{-| Whether a host's name is being typed. -}
+isHostName : Model -> Bool
+isHostName m =
+    when focused m is
+        Just s ->
+            s.kind == Schema.HostName
+
+        Nothing ->
+            False
 
 
 {-| Whether a font is being typed. -}
@@ -954,7 +1186,7 @@ screen m =
             bodyRows m
 
         settingsLines =
-            if onHosts m then
+            if inList m then
                 hostLines m
 
             else
@@ -1149,7 +1381,11 @@ hostLines m =
               ]
                 ++ (when m.typing is
                         Just t ->
-                            [ { style = "4", text = String.fromArray t.chars ++ " " } ]
+                            if here 0 then
+                                [ { style = "4", text = String.fromArray t.chars ++ " " } ]
+
+                            else
+                                [ { style = "2", text = "user@host:port" } ]
 
                         Nothing ->
                             [ { style = "2", text = "user@host:port" } ]
@@ -1158,13 +1394,33 @@ hostLines m =
             , []
             ]
 
+        newHost =
+            [ [ { style = "", text = "   " }
+              , { style = if here 1 && m.typing == Nothing then "7" else if here 1 then "1" else "", text = padTo (valueColumn - 3) "New host…" }
+              , { style = "", text = " " }
+              ]
+                ++ (if here 1 then
+                        when m.typing is
+                            Just t ->
+                                [ { style = "4", text = String.fromArray t.chars ++ " " } ]
+
+                            Nothing ->
+                                []
+
+                    else
+                        []
+                   )
+            , [ { style = "2", text = "     A host of the settings, named as you type." } ]
+            , []
+            ]
+
         each i h =
-            [ [ { style = "", text = "   " }, { style = if here (i + 1) then "7" else "", text = padTo (valueColumn - 3) h.name }, { style = "", text = " " ++ h.detail } ]
+            [ [ { style = "", text = "   " }, { style = if here (i + 2) then "7" else "", text = padTo (valueColumn - 3) h.name }, { style = "", text = " " ++ h.detail } ]
             , [ { style = "2", text = "     " ++ h.from } ]
             , []
             ]
     in
-    quick ++ (Array.indexedMap each (hostRows m) |> Array.foldl (\ls acc -> acc ++ ls) [])
+    quick ++ newHost ++ (Array.indexedMap each (hostRows m) |> Array.foldl (\ls acc -> acc ++ ls) [])
 
 
 {-| A value as the window shows it. -}
@@ -1240,8 +1496,11 @@ footer m =
                             "Up and Down choose a page · Tab move · Esc close"
 
                         OnRows ->
-                            if onHosts m then
-                                (if m.launcher then "Enter connects here" else "Enter connects in a new window") ++ " · Tab move · Esc close"
+                            if inList m then
+                                (if m.launcher then "Enter connects here" else "Enter connects in a new window") ++ " · → change · Del remove · Ctrl+D copy · Esc close"
+
+                            else if onHosts m then
+                                "Enter change · Del unset · ← the hosts · Ctrl+D copy · Ctrl+Z undo"
 
                             else
                                 "Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close"

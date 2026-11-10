@@ -30,6 +30,7 @@ import SettingsSource exposing (Given, Read(..))
 import SettingsWindow
 import Source exposing (Source)
 import Task exposing (Task)
+import Toml
 import Vt
 import Vt.View as View
 import Window
@@ -391,23 +392,39 @@ effect e s =
                     Task.succeed s
 
         SettingsWindow.Write w ->
-            when s.store is
-                Nothing ->
-                    Task.succeed { s | window = SettingsWindow.told "There is no settings file to write to" s.window }
+            writeWith (Schema.write w.setting w.value) s
 
-                Just store ->
-                    SettingsFile.change (Schema.write w.setting w.value) store
-                        |> Task.map Ok
-                        |> Task.onError (\why -> Task.succeed (Err why))
-                        |> Task.andThen
-                            (\written ->
-                                when written is
-                                    Ok st ->
-                                        Task.succeed { s | store = Just st }
+        SettingsWindow.PutHost h ->
+            writeWith (Schema.writeHost h) s
 
-                                    Err why ->
-                                        Task.succeed { s | window = SettingsWindow.told ("Not written: " ++ why) s.window }
-                            )
+        SettingsWindow.DeleteHost name ->
+            writeWith (Schema.deleteHost name) s
+
+        SettingsWindow.RenameHost r ->
+            writeWith (Schema.renameHost r.from r.to) s
+
+
+{-| The file changed by an edit (`SettingsFile.change`); a failure shown at
+the window's foot. -}
+writeWith : (Toml.Document -> Toml.Document) -> (taken s : State) -> Task String State
+writeWith edit s =
+    when s.store is
+        Nothing ->
+            Task.succeed { s | window = SettingsWindow.told "There is no settings file to write to" s.window }
+
+        Just store ->
+            SettingsFile.change edit store
+                |> Task.map Ok
+                |> Task.onError (\why -> Task.succeed (Err why))
+                |> Task.andThen
+                    (\written ->
+                        when written is
+                            Ok st ->
+                                Task.succeed { s | store = Just st }
+
+                            Err why ->
+                                Task.succeed { s | window = SettingsWindow.told ("Not written: " ++ why) s.window }
+                    )
 
 
 {-| A session: the host list becomes it (V65); the settings window starts

@@ -3,6 +3,7 @@ module Schema exposing
     , settings, find, keyName, pages, pageName
     , decode, Decoded
     , write
+    , hostFields, nameSetting, writeHost, deleteHost, renameHost
     , toText, fromText, hex
     , example
     )
@@ -18,7 +19,7 @@ From the table come the decoder, which is lenient (`decode`), the settings
 window's rows and its search (step 5), and the example below, which a test
 holds to it.
 
-@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, write, toText, fromText, hex, example
+@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, write, hostFields, nameSetting, writeHost, deleteHost, renameHost, toText, fromText, hex, example
 
 -}
 
@@ -59,6 +60,8 @@ type Kind
     | FontFamily
     | Command
     | Launch
+    | HostName
+    | Address
 
 
 {-| A setting's value, of its kind: `Unset` only for an optional one. -}
@@ -81,6 +84,7 @@ type Page
     | Clipboard
     | Program
     | Advanced
+    | HostsPage
 
 
 {-| Whether a running window takes a change, or only a window opened after
@@ -125,6 +129,9 @@ pageName page =
 
         Advanced ->
             "Advanced"
+
+        HostsPage ->
+            "Hosts"
 
 
 {-| A key as the file and the reports write it, `font.size`. -}
@@ -797,6 +804,12 @@ read integerHere kind value =
         Launch ->
             string value |> Result.andThen launch |> Result.map Text
 
+        HostName ->
+            string value |> Result.map Text
+
+        Address ->
+            string value |> Result.andThen (\t -> if t == "" then Err "where to connect is empty" else Ok (Text t))
+
 
 integer : ({} -> Result String Int) -> Toml.Table.Value -> Result String Int
 integer here value =
@@ -986,6 +999,136 @@ distance a b =
 
 
 
+-- A HOST'S FIELDS
+
+
+{-| A host's name, as the first row of its form: typed, it renames the
+host (`renameHost`), which the settings window does on Enter. -}
+nameSetting : String -> Setting
+nameSetting name =
+    { key = [ "hosts", name ]
+    , kind = HostName
+    , optional = False
+    , label = "Name"
+    , description = "What the host is called here, in the list and on the command line (puritty --host NAME)."
+    , words = []
+    , page = HostsPage
+    , applies = AtOnce
+    , get = \_ -> Text name
+    , set = \_ c -> c
+    }
+
+
+{-| A host's fields as settings, so that the settings window edits them as
+it edits the rest (`docs/settings.md` ST25): each reads and writes its part
+of the host of that name among the settings' hosts, and its key is its
+path in the file, `["hosts", name, "user"]`. All but `host` may be unset,
+which takes the key out of the file. -}
+hostFields : String -> Array Setting
+hostFields name =
+    let
+        field path kind optional label description get put =
+            { key = [ "hosts", name ] ++ path
+            , kind = kind
+            , optional = optional
+            , label = label
+            , description = description
+            , words = []
+            , page = HostsPage
+            , applies = NewWindows
+            , get =
+                \c ->
+                    when Array.findFirst (\h -> h.name == name) c.hosts is
+                        Just found ->
+                            get found.value
+
+                        Nothing ->
+                            Unset
+            , set =
+                \v c ->
+                    let
+                        here =
+                            Array.findFirst (\h -> h.name == name) c.hosts |> Maybe.map .value |> Maybe.withDefault (Config.host name name)
+
+                        changed =
+                            put v here
+                    in
+                    { c | hosts = Array.keepIf (\h -> h.name /= name) c.hosts |> Array.pushLast changed }
+            }
+
+        text t =
+            Maybe.withDefault Unset (Maybe.map Text t)
+
+        textOf v =
+            when v is
+                Text t ->
+                    Just t
+
+                _ ->
+                    Nothing
+
+        wholeOf v =
+            when v is
+                Whole n ->
+                    Just n
+
+                _ ->
+                    Nothing
+
+        colourOf v =
+            when v is
+                Colour n ->
+                    Just n
+
+                _ ->
+                    Nothing
+    in
+    [ field [ "host" ] Address False "Host" "Where to connect: a name or an address." (\h -> Text h.host) (\v h -> { h | host = Maybe.withDefault h.host (textOf v) })
+    , field [ "user" ] AnyText True "User" "Who to log in as; ssh's own choice when unset." (\h -> text h.user) (\v h -> { h | user = textOf v })
+    , field [ "port" ] (WholeIn { low = 1, high = 65535, unit = "" }) True "Port" "22, ssh's own, when unset." (\h -> Maybe.withDefault Unset (Maybe.map Whole h.port)) (\v h -> { h | port = wholeOf v })
+    , field [ "identity" ] AnyText True "Key" "The file of the private key to log in with; ssh's own choice when unset." (\h -> text h.identity) (\v h -> { h | identity = textOf v })
+    , field [ "jump" ] AnyText True "Through" "Another host's name, or user@host:port, to connect through." (\h -> text h.jump) (\v h -> { h | jump = textOf v })
+    , field [ "command" ] AnyText True "Command" "Run there, on a terminal, instead of the login shell." (\h -> text h.command) (\v h -> { h | command = textOf v })
+    , field [ "charset" ] (OneOf [ "utf-8", "euc-kr", "cp949" ]) True "Character set" "The host's; the settings' when unset." (\h -> text h.charset) (\v h -> { h | charset = textOf v })
+    , field [ "title" ] AnyText True "Title" "The window's title; the host's name when unset." (\h -> text h.title) (\v h -> { h | title = textOf v })
+    , field [ "colours", "foreground" ] OneColour True "Foreground" "The colour of text, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Colour h.foreground)) (\v h -> { h | foreground = colourOf v })
+    , field [ "colours", "background" ] OneColour True "Background" "The colour behind text, over the settings'; a red one for production is the usual." (\h -> Maybe.withDefault Unset (Maybe.map Colour h.background)) (\v h -> { h | background = colourOf v })
+    , field [ "colours", "palette" ] (ColourList { most = 16 }) True "Palette" "The 16 named colours, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Colours h.palette)) (\v h -> { h | palette = when v is
+                Colours p -> Just p
+                _ -> Nothing })
+    , field [ "font", "family" ] FontFamily True "Font" "The font, over the settings'." (\h -> text h.font) (\v h -> { h | font = textOf v })
+    , field [ "font", "size" ] (WholeIn { low = 4, high = 200, unit = "pt" }) True "Font size" "In points, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Whole h.points)) (\v h -> { h | points = wholeOf v })
+    ]
+
+
+{-| A host written whole into the file: each field set, or taken out when
+the host leaves it unset, so that what is already there as the host has it
+is not touched (`Toml.Edit.set` leaves a value the file means alone). -}
+writeHost : Config.Host -> Toml.Document -> Toml.Document
+writeHost h doc =
+    let
+        defaults =
+            Config.defaults
+
+        config =
+            { defaults | hosts = [ h ] }
+    in
+    Array.foldl (\f d -> write f (f.get config) d) doc (hostFields h.name)
+
+
+{-| A host taken out of the file: its table and the tables under it. -}
+deleteHost : String -> Toml.Document -> Toml.Document
+deleteHost name doc =
+    Toml.Edit.removeTable [ "hosts", name ] doc
+
+
+{-| A host renamed in the file: its table and the tables under it. -}
+renameHost : String -> String -> Toml.Document -> Toml.Document
+renameHost from to doc =
+    Toml.Edit.renameTable [ "hosts", from ] to doc
+
+
+
 -- AS TEXT
 
 
@@ -1086,6 +1229,12 @@ fromText s text0 =
 
             Launch ->
                 launch text |> Result.map Text
+
+            HostName ->
+                if text == "" then Err "a host needs a name" else Ok (Text text)
+
+            Address ->
+                if text == "" then Err "where to connect: a name or an address" else Ok (Text text)
 
 
 {-| What `start` takes: `shell`, `hosts`, or `host:` and a host's name. -}

@@ -41,6 +41,11 @@ DISPLAY = ":86"
 
 DOWN, ENTER, BACKSPACE = "Down", "Return", "BackSpace"
 
+# from the first setting to the Hosts page's first row
+TO_HOSTS = ["Tab", "Tab"] + ["Down"] * 7 + ["Right"]
+
+HOSTS = '# my hosts\n[hosts.box]   # the build box\nhost = "b.example.com"\nuser = "me"\n\n[hosts.box.colours]\nbackground = "#2a1010"\n'
+
 # name, the file before (None: none), the keys, and what else is done
 CASES = [
     ("size-typed", None, [DOWN, ENTER, BACKSPACE, BACKSPACE, ("type", "14"), ENTER]),
@@ -56,6 +61,13 @@ CASES = [
     # off by Enter; had the window not read it, Enter would turn it on
     ("hand-edit", "[font]\nsize = 13\n", [("hand", "[font]\nsize = 13\n\n[colours]\nbold_is_bright = true\n"),
                                           DOWN, DOWN, DOWN, DOWN, ENTER]),
+    # hosts (ST25): the Hosts page is the last; a new host and its fields,
+    # a host removed, one renamed with the table under it, one copied
+    ("host-new", None, TO_HOSTS + [DOWN, ENTER, ("type", "lab"), ENTER, ENTER] + [BACKSPACE] * 3
+                       + [("type", "lab.example.com"), ENTER, DOWN, ENTER, ("type", "me"), ENTER]),
+    ("host-removed", HOSTS, TO_HOSTS + [DOWN, DOWN, "Delete"]),
+    ("host-renamed", HOSTS, TO_HOSTS + [DOWN, DOWN, "Right", "Up", ENTER] + [BACKSPACE] * 3 + [("type", "lab"), ENTER]),
+    ("host-copied", HOSTS, TO_HOSTS + [DOWN, DOWN, "ctrl+d"]),
     ("terminal-follows", None, [DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]
 

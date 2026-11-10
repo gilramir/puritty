@@ -246,6 +246,39 @@ written text changes =
             "not TOML"
 
 
+{-| A file after an edit of its document. -}
+edited : String -> (Toml.Document -> Toml.Document) -> String
+edited text f =
+    when Toml.parse text is
+        Ok doc ->
+            Toml.toString (f doc)
+
+        Err _ ->
+            "not TOML"
+
+
+{-| A file after a host's fields are written in turn, as the settings
+window writes them (`Schema.write` of `Schema.hostFields`). -}
+writtenHost : String -> Array { key : Array String, value : Schema.Value } -> String
+writtenHost text changes =
+    Array.foldl
+        (\c t ->
+            when Array.get 1 c.key is
+                Just name ->
+                    when Array.findFirst (\f -> f.key == c.key) (Schema.hostFields name) is
+                        Just found ->
+                            edited t (Schema.write found.value c.value)
+
+                        Nothing ->
+                            t
+
+                Nothing ->
+                    t
+        )
+        text
+        changes
+
+
 {-| A value of a setting's kind other than its default. -}
 another : Schema.Setting -> Schema.Value
 another s =
@@ -276,6 +309,12 @@ another s =
 
         Schema.Launch ->
             Schema.Text "hosts"
+
+        Schema.HostName ->
+            Schema.Text "another"
+
+        Schema.Address ->
+            Schema.Text "h.example.com"
 
 
 writing : U.Suite
@@ -331,6 +370,53 @@ writing =
                 \_ ->
                     Expect.equal "[font]\nsize = 14\n"
                         (written "[font]\nsize = 14\nlanguage = \"ja\"\n" [ { key = [ "font", "language" ], value = Schema.Unset } ])
+          }
+        , { name = "a host's field set and unset gives the file back, its comments kept"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "# my hosts\n[hosts.box]   # the build box\nhost = \"b\"\n"
+
+                        set v =
+                            { key = [ "hosts", "box", "user" ], value = v }
+                    in
+                    Expect.equal { set = "# my hosts\n[hosts.box]   # the build box\nhost = \"b\"\nuser = \"me\"\n", back = file }
+                        { set = writtenHost file [ set (Schema.Text "me") ], back = writtenHost file [ set (Schema.Text "me"), set Schema.Unset ] }
+          }
+        , { name = "a host's colour makes its table, and unset takes the table out"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "[hosts.box]\nhost = \"b\"\n"
+
+                        bg v =
+                            { key = [ "hosts", "box", "colours", "background" ], value = v }
+                    in
+                    Expect.equal { set = "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colours]\nbackground = \"#2a1010\"\n", back = file }
+                        { set = writtenHost file [ bg (Schema.Colour 0x2A1010) ], back = writtenHost file [ bg (Schema.Colour 0x2A1010), bg Schema.Unset ] }
+          }
+        , { name = "a host renamed takes the tables under it along"
+          , test =
+                \_ ->
+                    Expect.equal "[hosts.lab]\nhost = \"b\"\n\n[hosts.lab.colours]\nbackground = \"#2a1010\"\n"
+                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colours]\nbackground = \"#2a1010\"\n" (Schema.renameHost "box" "lab"))
+          }
+        , { name = "a host removed takes the tables under it, and the others stay"
+          , test =
+                \_ ->
+                    Expect.equal "[hosts.other]\nhost = \"o\"\n"
+                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colours]\nbackground = \"#2a1010\"\n\n[hosts.other]\nhost = \"o\"\n" (Schema.deleteHost "box"))
+          }
+        , { name = "a host written whole is read back as it was"
+          , test =
+                \_ ->
+                    let
+                        h =
+                            (decoded Schema.example).hosts
+                    in
+                    Expect.equal h (decoded (Array.foldl (\x d -> edited d (Schema.writeHost x)) "" h)).hosts
           }
         , { name = "every setting written to an empty file is read back as written"
           , test =
@@ -416,6 +502,15 @@ said effects =
 
                 SettingsWindow.ConnectQuick target ->
                     "connect to " ++ target
+
+                SettingsWindow.PutHost h ->
+                    "put " ++ h.name
+
+                SettingsWindow.DeleteHost name ->
+                    "delete " ++ name
+
+                SettingsWindow.RenameHost r ->
+                    "rename " ++ r.from ++ " to " ++ r.to
         )
         effects
 
@@ -585,15 +680,16 @@ window =
                     in
                     Expect.equal
                         [ "Quick connect               user@host:port"
+                        , "New host…"
                         , "build-box                   gilbert@build.example.com:2222"
                         , "through bastion.example.com · from the settings"
                         , "work                        as ~/.ssh/config has it"
                         , "from ~/.ssh/config"
                         ]
-                        (Array.mapAndKeepJust (\r -> String.split "│" r |> Array.get 1 |> Maybe.map String.trim) rows |> Array.keepIf (\r -> r /= "" && not (String.startsWith "Connect without" r)) |> Array.takeFirst 5)
+                        (Array.mapAndKeepJust (\r -> String.split "│" r |> Array.get 1 |> Maybe.map String.trim) rows |> Array.keepIf (\r -> r /= "" && not (String.startsWith "Connect without" r) && not (String.startsWith "A host of the settings" r)) |> Array.takeFirst 6)
           }
         , { name = "Enter on a host connects to it"
-          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ k.down, k.enter ]).said
+          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ k.down, k.down, k.enter ]).said
           }
         , { name = "quick connect connects to what is typed"
           , test = \_ -> Expect.equal [ "connect to me@h.example.com:22" ] (onHostsPage False ([ k.enter ] ++ typeIn "me@h.example.com:22" ++ [ k.enter ])).said
@@ -606,6 +702,57 @@ window =
                             onHostsPage False ([ k.enter ] ++ typeIn "me@" ++ [ k.enter ])
                     in
                     Expect.equal { said = [], foot = "\"me@\" is not where to connect, as user@host:port" } { said = r.said, foot = lastRow r.screen }
+          }
+        , { name = "a new host is made from its name, and its form opened"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False ([ k.down, k.enter ] ++ typeIn "lab" ++ [ k.enter ])
+                    in
+                    Expect.equal { said = [ "put lab" ], name = True, host = True }
+                        { said = r.said
+                        , name = Array.any (String.contains "Name                        lab") r.screen
+                        , host = Array.any (String.contains "Host                        lab") r.screen
+                        }
+          }
+        , { name = "a host's field is changed in its form, as a setting is"
+          , test = \_ -> Expect.equal [ "put lab", "hosts.lab.user = m", "hosts.lab.user = me" ] (onHostsPage False ([ k.down, k.enter ] ++ typeIn "lab" ++ [ k.enter, k.down, k.enter ] ++ typeIn "me" ++ [ k.enter ])).said
+          }
+        , { name = "a host's field is unset by Delete; where it connects is not"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False [ k.down, k.down, press 0xFF53, k.delete, k.down, k.delete ]
+                    in
+                    Expect.equal { said = [ "hosts.build-box.user = (unset)" ], first = "A host must say where to connect" }
+                        { said = r.said, first = (onHostsPage False [ k.down, k.down, press 0xFF53, k.delete ]) |> .screen |> lastRow }
+          }
+        , { name = "a host is removed by Delete in the list, and Ctrl+Z puts it back"
+          , test = \_ -> Expect.equal [ "delete build-box", "put build-box" ] (onHostsPage False [ k.down, k.down, k.delete, ctrl 'z' ]).said
+          }
+        , { name = "a host is renamed from its form's first row"
+          , test =
+                \_ ->
+                    Expect.equal [ "rename build-box to box2" ]
+                        (onHostsPage False ([ k.down, k.down, press 0xFF53, k.up, k.enter ] ++ Array.repeat 9 k.backspace ++ typeIn "box2" ++ [ k.enter ])).said
+          }
+        , { name = "where a host connects is not written empty"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False ([ k.down, k.down, press 0xFF53, k.enter ] ++ Array.repeat 20 k.backspace)
+                    in
+                    Expect.equal { said = [ "hosts.build-box.host = build.example.co", "hosts.build-box.host = build.example.c" ], foot = "where to connect: a name or an address" }
+                        { said = Array.takeFirst 2 r.said, foot = lastRow r.screen }
+          }
+        , { name = "Ctrl+D copies a host under a name of its own"
+          , test = \_ -> Expect.equal [ "put build-box-2" ] (onHostsPage False [ k.down, k.down, ctrl 'd' ]).said
+          }
+        , { name = "one of ~/.ssh/config's hosts is saved as a host to change it"
+          , test = \_ -> Expect.equal [ "put work" ] (onHostsPage False [ k.down, k.down, k.down, press 0xFF53 ]).said
           }
         , { name = "the host list opens on the Hosts page, and connects there"
           , test = \_ -> Expect.equal True (String.startsWith "Enter connects here" (lastRow (onHostsPage True []).screen))
