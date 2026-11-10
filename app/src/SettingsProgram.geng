@@ -29,7 +29,9 @@ import SettingsFile exposing (Store)
 import SettingsSource exposing (Given, Read(..))
 import SettingsWindow
 import Source exposing (Source)
+import Int64
 import Task exposing (Task)
+import Time
 import Toml
 import Vt
 import Vt.View as View
@@ -54,6 +56,8 @@ type alias State =
     , opener : Maybe Opener
     , launcher : Bool
     , outcome : Maybe Config.Host
+      -- the last left press, to count a double click (ST27)
+    , lastPress : { at : Int, row : Int, col : Int, count : Int }
     }
 
 
@@ -214,6 +218,7 @@ first r given read cell w shotPath =
     , opener = r.opener
     , launcher = r.launcher
     , outcome = Nothing
+    , lastPress = { at = -1000, row = -1, col = -1, count = 0 }
     }
 
 
@@ -352,7 +357,29 @@ one ev s =
 
         Window.Pointer p ->
             if p.action == 0 && p.button == 1 && p.cellWidth > 0 && p.cellHeight > 0 then
-                input (SettingsWindow.Click { col = p.x // p.cellWidth, row = p.y // p.cellHeight }) s
+                -- a second press within 400 ms on the same cell is a double
+                -- click (ST27)
+                Time.monotonic
+                    |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
+                    |> Task.andThen
+                        (\ms ->
+                            let
+                                cell =
+                                    { col = p.x // p.cellWidth, row = p.y // p.cellHeight }
+
+                                last =
+                                    s.lastPress
+
+                                count =
+                                    if ms - last.at <= 400 && last.row == cell.row && last.col == cell.col then last.count + 1 else 1
+                            in
+                            input (SettingsWindow.Click { col = cell.col, row = cell.row, count = count })
+                                { s | lastPress = { at = ms, row = cell.row, col = cell.col, count = count } }
+                        )
+
+            else if p.action == 0 && (p.button == 4 || p.button == 5) then
+                -- the wheel: a step up or down
+                input (SettingsWindow.Scroll (if p.button == 4 then -1 else 1)) s
 
             else
                 Task.succeed s

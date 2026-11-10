@@ -874,3 +874,36 @@ Close, and Up twice and Enter started `puritty.exe shell` again.
 **Held as before:** `app/tests` 77 of 77, settings 16 of 16, reload 15 of
 15, pointer 51 of 51, IME 14 of 14, pixels 36 of 36 on Linux and on
 Windows, replay 325 of 325, events 13 of 13.
+
+## ST27 · Step 5c completed: the mouse in the settings window (2026-11-10)
+
+What the keys do, the mouse does where it points, through the keys' own
+paths, so the two cannot drift: a click on a setting's value is Enter on
+it (on and off and a choice change, the rest begin typing); a click on
+the reset mark is Delete; a click on a label moves to the setting, and a
+double click there is Enter; on the host list a click moves to a host and
+a double click connects, and one click on quick connect or New host
+begins typing; a click on a page shows it, on the search row begins a
+search, on Modified only turns it over. A click while something is typed
+keeps it first as Enter does, or puts back what was there as Esc does
+when it is not a value. The wheel scrolls the list three rows a step. The
+program counts a double click: a second press within 400 ms on the same
+cell.
+
+The marker and the reset mark now show where a reset does something: in
+a host's form on a field that is set and may be unset, not on its name or
+where it connects.
+
+**Held by** `app/tests`, 85 of 85 (a click on a value, on the reset mark,
+on a label, a click away keeping what is typed and Ctrl+Z undoing it, a
+click away putting back what is not a value, a double and a single click
+on a host, the wheel); the settings gate, **19 of 19**, with a click on a
+value, on the reset mark, and on a page and a value typed after; the hosts
+gate, **13 of 13**, with a double click on a host in the settings window
+opening its session. **On Windows**, in Gilbert's session: a click on Bold
+is bright's value wrote `bold_is_bright = true`. Held as before: reload 15
+of 15, pointer 51 of 51, IME 14 of 14.
+
+**What is left of the plan:** key sounds (step 8), last of all (ST25), and
+Gilbert's answer to ST16, the title on Windows. The built-in ssh client's
+survey is `ssh-client.md`, its questions in SC12.

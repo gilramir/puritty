@@ -149,8 +149,12 @@ local shell.
 
 `puritty settings` opens a window to change them without editing the file:
 search, a page of settings at a time, each change written to the file and
-taken by every open window as you make it, Ctrl+Z to undo. It edits the
-file in place and keeps your comments.
+taken by every open window as you make it, Ctrl+Z to undo, with the keys
+or the mouse. It edits the file in place and keeps your comments, and its
+Hosts page adds, changes, copies, renames and removes hosts. Ctrl+Comma
+opens it from any window, and Ctrl+right-click opens a menu of it, the
+host list, a new window and your hosts (on Windows the same items are in
+the window's system menu).
 
 ```toml
 [window]

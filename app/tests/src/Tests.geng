@@ -542,6 +542,19 @@ onHostsPage launcher inputs =
     { screen = Screen.screenOf r.model, said = said r.effects, model = r.model }
 
 
+{-| A left click at a row and a column, so many times. -}
+click : Int -> Int -> Int -> SettingsWindow.Input
+click row col count =
+    SettingsWindow.Click { row = row, col = col, count = count }
+
+
+{-| The column a setting's value begins at: after the pages (22), the line
+between (1), the marker and the label (30) and a space. -}
+valueAt : Int
+valueAt =
+    22 + 1 + 30 + 1
+
+
 lastRow : Array String -> String
 lastRow rows =
     Maybe.withDefault "" (Array.last rows)
@@ -653,7 +666,7 @@ window =
                         }
           }
         , { name = "a click on a page shows it"
-          , test = \_ -> Expect.equal True (String.contains "Columns" (Maybe.withDefault "" (Array.get 2 (after [ SettingsWindow.Click { col = 3, row = 3 } ]).screen)))
+          , test = \_ -> Expect.equal True (String.contains "Columns" (Maybe.withDefault "" (Array.get 2 (after [ SettingsWindow.Click { col = 3, row = 3, count = 1 } ]).screen)))
           }
         , { name = "a font typed is offered the system's that hold its name"
           , test =
@@ -756,6 +769,42 @@ window =
           }
         , { name = "the host list opens on the Hosts page, and connects there"
           , test = \_ -> Expect.equal True (String.startsWith "Enter connects here" (lastRow (onHostsPage True []).screen))
+          }
+        , { name = "a click on a value changes it, as Enter does"
+          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true" ] (after [ click 14 (valueAt + 1) 1 ]).said
+          }
+        , { name = "a click on the reset mark resets"
+          , test =
+                \_ ->
+                    -- "[x] on" is six cells, and the mark two after it
+                    Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ click 14 (valueAt + 1) 1, click 14 (valueAt + 6 + 2) 1 ]).said
+          }
+        , { name = "a click on a label only moves to it"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ click 14 26 1 ]
+                    in
+                    Expect.equal { said = [], foot = True } { said = r.said, foot = String.startsWith "colours.bold_is_bright · " (lastRow r.screen) }
+          }
+        , { name = "a click away keeps what is typed, as Enter does, and Ctrl+Z undoes it"
+          , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ click 14 26 1, ctrl 'z' ])).said
+          }
+        , { name = "a click away puts back what is typed when it is not a value"
+          , test = \_ -> Expect.equal [] (after [ k.down, k.enter, k.backspace, click 14 26 1 ]).said
+          }
+        , { name = "a double click on a host connects to it"
+          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ click 8 30 2 ]).said
+          }
+        , { name = "a single click on a host only moves to it"
+          , test = \_ -> Expect.equal [] (onHostsPage False [ click 8 30 1 ]).said
+          }
+        , { name = "the wheel scrolls the settings by a setting a step"
+          , test =
+                \_ ->
+                    -- a window of 12 rows shows two settings and a half
+                    Expect.equal True (String.contains "Font size" (Maybe.withDefault "" (Array.get 2 (after [ SettingsWindow.Resized { cols = 100, rows = 12 }, SettingsWindow.Scroll 1 ]).screen)))
           }
         , { name = "a narrow window still draws every row"
           , test = \_ -> Expect.equal 24 (Array.length (after [ SettingsWindow.Resized { cols = 40, rows = 24 } ]).screen)

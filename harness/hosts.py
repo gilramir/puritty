@@ -74,6 +74,9 @@ CASES = [
     # first host, started in a window of its own
     ("menu-connects", None, ["--title", "term", "--", "sh", "-c", "exec sleep 600"],
      ("term", ["ctrl+button3", "Down", "Down", "Down", "Return"])),
+    # a double click on a host in the settings window (ST27): the Hosts page
+    # clicked, then the first host's row twice
+    ("double-click-host", None, ["settings"], ("puritty settings", ["click 9 3 1", "click 8 30 2"])),
     ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 7 + ["Right", "Down", "Down", "Return"])),
 ]
 
@@ -115,7 +118,11 @@ def run_case(env0, name, start, args, keys=None):
                              text=True, timeout=10).stdout.split()[0]
         subprocess.run([XDO, "windowfocus", "--sync", win], env=env, check=True)
         for k in presses:
-            if k == "ctrl+button3":
+            if k.startswith("click "):
+                _, row, col, count = k.split()
+                subprocess.run([XDO, "mousemove", "--window", win, str(int(col) * 9 + 4), str(int(row) * 17 + 8)], env=env, check=True)
+                subprocess.run([XDO, "click", "--repeat", count, "--delay", "80", "1"], env=env, check=True)
+            elif k == "ctrl+button3":
                 subprocess.run([XDO, "mousemove", "--window", win, "100", "60"], env=env, check=True)
                 subprocess.run([XDO, "keydown", "ctrl", "click", "3", "keyup", "ctrl"], env=env, check=True)
             else:

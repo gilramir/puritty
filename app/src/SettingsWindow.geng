@@ -94,7 +94,8 @@ platforms' `Window` give it, and `mods` its bits: Shift 1, Ctrl 2, Alt 4.
 type Input
     = Key { sym : Int, mods : Int, text : String }
     | Typed String
-    | Click { col : Int, row : Int }
+    | Click { col : Int, row : Int, count : Int }
+    | Scroll Int
     | Resized { cols : Int, rows : Int }
 
 
@@ -350,6 +351,13 @@ update input m =
 
         Click c ->
             click c m
+
+        Scroll steps ->
+            let
+                most =
+                    max 0 (rowCount m * linesPerRow - bodyRows m)
+            in
+            done { m | scroll = max 0 (min most (m.scroll + 3 * steps)) }
 
         Key k ->
             if Bitwise.and k.mods 2 /= 0 then
@@ -987,14 +995,47 @@ typedSetting t m =
             done { m | typing = Nothing }
 
 
-click : { col : Int, row : Int } -> Model -> { model : Model, effects : Array Effect }
+{-| A left click (`docs/settings.md` ST27), the program counting a double
+one: something being typed is kept first as Enter keeps it, or put back as
+Esc does when it is not a value; then the click does what the keys do
+there. -}
+click : { col : Int, row : Int, count : Int } -> Model -> { model : Model, effects : Array Effect }
 click c m =
+    when m.typing is
+        Just t ->
+            let
+                kept =
+                    typingKey { sym = sym.enter, mods = 0, text = "" } t m
+
+                finished =
+                    when kept.model.typing is
+                        Just t2 ->
+                            let
+                                back =
+                                    typingKey { sym = sym.escape, mods = 0, text = "" } t2 kept.model
+                            in
+                            { model = back.model, effects = kept.effects ++ back.effects }
+
+                        Nothing ->
+                            kept
+
+                after =
+                    clickOn c { finished.model | typing = Nothing }
+            in
+            { model = after.model, effects = finished.effects ++ after.effects }
+
+        Nothing ->
+            clickOn c m
+
+
+clickOn : { col : Int, row : Int, count : Int } -> Model -> { model : Model, effects : Array Effect }
+clickOn c m =
     if c.row == 0 then
         if c.col >= m.cols - modifiedOnlyWidth then
             control { sym = 0x6D, mods = 2, text = "" } m
 
         else
-            done { m | focus = OnSearch, typing = Nothing }
+            done { m | focus = OnSearch }
 
     else if c.row >= 2 && c.row < 2 + bodyRows m then
         if c.col < pagesWidth then
@@ -1003,25 +1044,90 @@ click c m =
                     c.row - 2
             in
             if p <= hostsPage then
-                done (keepInView { m | focus = OnPages, page = p, row = 0, scroll = 0, search = [], typing = Nothing })
+                done (keepInView { m | focus = OnPages, page = p, row = 0, scroll = 0, search = [], form = Nothing })
 
             else
                 done m
 
         else
             let
+                line =
+                    c.row - 2 + m.scroll
+
                 i =
-                    (c.row - 2 + m.scroll) // linesPerRow
+                    line // linesPerRow
+
+                there =
+                    { m | focus = OnRows, row = i }
+
+                enter =
+                    rowsKey { sym = sym.enter, mods = 0, text = "" } there
+
+                -- the value begins after the marker and the label, and the
+                -- reset mark two cells after the value
+                x =
+                    c.col - pagesWidth - 1
+
+                valueAt =
+                    valueColumn + 1
+
+                valueWidth =
+                    when focused there is
+                        Just s ->
+                            Array.foldl (\r n -> n + cells (String.toArray r.text)) 0 (shown s (s.get there.config))
+
+                        Nothing ->
+                            0
+
+                onReset =
+                    modifiedAt there && x >= valueAt + valueWidth + 1 && x <= valueAt + valueWidth + 3
             in
-            if i < rowCount m then
-                done (keepInView { m | focus = OnRows, row = i, typing = Nothing })
+            if i >= rowCount m then
+                done m
+
+            else if inList m then
+                -- a host connects on a double click; quick connect and New
+                -- host begin typing on one
+                if c.count >= 2 then enter else done (keepInView there)
+
+            else if modBy linesPerRow line == 0 && onReset then
+                rowsKey { sym = sym.delete, mods = 0, text = "" } there
+
+            else if modBy linesPerRow line == 0 && x >= valueAt then
+                enter
+
+            else if c.count >= 2 then
+                enter
 
             else
-                done m
+                done (keepInView there)
 
     else
         done m
 
+
+{-| Whether the focused setting differs from its default, so that its row
+shows the reset mark. -}
+modifiedAt : Model -> Bool
+modifiedAt m =
+    when focused m is
+        Just s ->
+            changed m.config s
+
+        Nothing ->
+            False
+
+
+{-| Whether a setting's row shows it changed, the marker and the reset
+mark: a setting that differs from its default, or a host's field that is
+set and may be unset (not its name, not where it connects). -}
+changed : Config -> Setting -> Bool
+changed config s =
+    if s.page == Schema.HostsPage then
+        s.optional && s.get config /= Unset
+
+    else
+        modified config s
 
 
 {-| Whether a host's name is being typed. -}
@@ -1328,7 +1434,7 @@ rowLines m width i s =
             i == m.row && m.focus == OnRows
 
         isModified =
-            modified m.config s
+            changed m.config s
 
         marker =
             if isModified then { style = "33", text = " ● " } else { style = "", text = "   " }

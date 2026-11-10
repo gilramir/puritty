@@ -68,6 +68,12 @@ CASES = [
     ("host-removed", HOSTS, TO_HOSTS + [DOWN, DOWN, "Delete"]),
     ("host-renamed", HOSTS, TO_HOSTS + [DOWN, DOWN, "Right", "Up", ENTER] + [BACKSPACE] * 3 + [("type", "lab"), ENTER]),
     ("host-copied", HOSTS, TO_HOSTS + [DOWN, DOWN, "ctrl+d"]),
+    # the mouse (ST27): a click on a value changes it, one on the reset
+    # mark resets it, a click on a page shows it; at the gate's font a cell
+    # is 9 by 17 pixels, and a value begins at column 54
+    ("click-value", None, [("click", 14, 55, 1)]),
+    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 14, 62, 1)]),
+    ("click-page-and-value", None, [("click", 3, 3, 1), ("click", 2, 55, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
     ("terminal-follows", None, [DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]
 
@@ -109,6 +115,10 @@ def run_case(env0, xdo, name, before, keys):
         for key in keys:
             if isinstance(key, tuple) and key[0] == "type":
                 subprocess.run([xdo, "type", "--delay", "40", key[1]], env=env, check=True)
+            elif isinstance(key, tuple) and key[0] == "click":
+                _, row, col, n = key
+                subprocess.run([xdo, "mousemove", "--window", win, str(col * 9 + 4), str(row * 17 + 8)], env=env, check=True)
+                subprocess.run([xdo, "click", "--repeat", str(n), "--delay", "80", "1"], env=env, check=True)
             elif isinstance(key, tuple) and key[0] == "hand":
                 path.write_text(key[1])
                 time.sleep(0.5)
