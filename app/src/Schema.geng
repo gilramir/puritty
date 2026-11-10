@@ -1,0 +1,878 @@
+module Schema exposing
+    ( Setting, Kind(..), Value(..), Page(..), Applies(..), Report
+    , settings, find, keyName, pages, pageName
+    , decode, Decoded
+    , example
+    )
+
+{-| Every setting puritty has, in one table (`docs/settings.md` ST5,
+`settings-ui.md` §2): its key in `config.toml`, what kind of value it
+takes, its label, description and search words, the page of the settings
+window it is on, and whether a running window takes it. `Config.defaults`
+holds the defaults; each setting reads and writes its part of a `Config`
+through `Value`.
+
+From the table come the decoder, which is lenient (`decode`), the settings
+window's rows and its search (step 5), and the example below, which a test
+holds to it.
+
+@docs Setting, Kind, Value, Page, Applies, Report, settings, find, keyName, pages, pageName, decode, Decoded, example
+
+-}
+
+import Config exposing (Config)
+import Dict exposing (Dict)
+import Toml
+import Toml.Ast as Ast
+import Toml.Table
+import Toml.Decode
+
+
+{-| One setting. `key` is its path in the file, `["font", "size"]`;
+`optional` when it may be left unset, which is not its default but the
+locale's or the platform's choice (`font.language`, `terminal.charset`). -}
+type alias Setting =
+    { key : Array String
+    , kind : Kind
+    , optional : Bool
+    , label : String
+    , description : String
+    , words : Array String
+    , page : Page
+    , applies : Applies
+    , get : Config -> Value
+    , set : Value -> Config -> Config
+    }
+
+
+{-| What a setting takes. -}
+type Kind
+    = WholeIn { low : Int, high : Int, unit : String }
+    | AnyText
+    | OnOff
+    | OneColour
+    | ColourList { most : Int }
+    | OneOf (Array String)
+    | FontFamily
+    | Command
+
+
+{-| A setting's value, of its kind: `Unset` only for an optional one. -}
+type Value
+    = Whole Int
+    | Text String
+    | Flag Bool
+    | Colour Int
+    | Colours (Array Int)
+    | Words (Array String)
+    | Unset
+
+
+{-| The settings window's pages (`settings-ui.md` §3). -}
+type Page
+    = Appearance
+    | WindowPage
+    | TextAndLanguage
+    | MouseAndSelection
+    | Clipboard
+    | Program
+    | Advanced
+
+
+{-| Whether a running window takes a change, or only a window opened after
+it (V59). -}
+type Applies
+    = AtOnce
+    | NewWindows
+
+
+{-| Something wrong in the file, at a line (1 for the file as a whole). -}
+type alias Report =
+    { line : Int
+    , message : String
+    }
+
+
+pages : Array Page
+pages =
+    [ Appearance, WindowPage, TextAndLanguage, MouseAndSelection, Clipboard, Program, Advanced ]
+
+
+pageName : Page -> String
+pageName page =
+    when page is
+        Appearance ->
+            "Appearance"
+
+        WindowPage ->
+            "Window"
+
+        TextAndLanguage ->
+            "Text & language"
+
+        MouseAndSelection ->
+            "Mouse & selection"
+
+        Clipboard ->
+            "Clipboard"
+
+        Program ->
+            "Program"
+
+        Advanced ->
+            "Advanced"
+
+
+{-| A key as the file and the reports write it, `font.size`. -}
+keyName : Setting -> String
+keyName s =
+    String.join "." s.key
+
+
+
+-- THE TABLE
+
+
+settings : Array Setting
+settings =
+    [ { key = [ "window", "columns" ]
+      , kind = WholeIn { low = 2, high = 1000, unit = "cells" }
+      , optional = False
+      , label = "Columns"
+      , description = "The window's width in cells when it opens."
+      , words = [ "width", "size", "cols" ]
+      , page = WindowPage
+      , applies = NewWindows
+      , get = \c -> Whole c.columns
+      , set = \v c -> when v is
+            Whole n -> { c | columns = n }
+            _ -> c
+      }
+    , { key = [ "window", "rows" ]
+      , kind = WholeIn { low = 1, high = 1000, unit = "cells" }
+      , optional = False
+      , label = "Rows"
+      , description = "The window's height in cells when it opens."
+      , words = [ "height", "size", "lines" ]
+      , page = WindowPage
+      , applies = NewWindows
+      , get = \c -> Whole c.rows
+      , set = \v c -> when v is
+            Whole n -> { c | rows = n }
+            _ -> c
+      }
+    , { key = [ "window", "title" ]
+      , kind = AnyText
+      , optional = False
+      , label = "Title"
+      , description = "The window's title while the program has set none."
+      , words = [ "name", "caption" ]
+      , page = WindowPage
+      , applies = AtOnce
+      , get = \c -> Text c.title
+      , set = \v c -> when v is
+            Text t -> { c | title = t }
+            _ -> c
+      }
+    , { key = [ "font", "family" ]
+      , kind = FontFamily
+      , optional = False
+      , label = "Font"
+      , description = "The font, as the system names its family."
+      , words = [ "typeface", "family", "font name" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Text c.font
+      , set = \v c -> when v is
+            Text t -> { c | font = t }
+            _ -> c
+      }
+    , { key = [ "font", "size" ]
+      , kind = WholeIn { low = 4, high = 200, unit = "pt" }
+      , optional = False
+      , label = "Font size"
+      , description = "In points."
+      , words = [ "text size", "zoom", "points" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Whole c.points
+      , set = \v c -> when v is
+            Whole n -> { c | points = n }
+            _ -> c
+      }
+    , { key = [ "font", "language" ]
+      , kind = AnyText
+      , optional = True
+      , label = "Fallback language"
+      , description = "The language fallback fonts are chosen for, which decides the forms of Han (ja, ko, zh-cn, zh-tw); the system's when unset."
+      , words = [ "cjk", "han", "kanji", "hanja", "chinese", "japanese", "korean", "locale" ]
+      , page = TextAndLanguage
+      , applies = AtOnce
+      , get = \c -> Maybe.withDefault Unset (Maybe.map Text c.language)
+      , set = \v c -> when v is
+            Text t -> { c | language = Just t }
+            Unset -> { c | language = Nothing }
+            _ -> c
+      }
+    , { key = [ "font", "glyph_cache_mb" ]
+      , kind = WholeIn { low = 4, high = 1024, unit = "MB" }
+      , optional = False
+      , label = "Glyph cache"
+      , description = "The glyphs kept before they are made again."
+      , words = [ "memory", "cache" ]
+      , page = Advanced
+      , applies = AtOnce
+      , get = \c -> Whole c.glyphCacheMb
+      , set = \v c -> when v is
+            Whole n -> { c | glyphCacheMb = n }
+            _ -> c
+      }
+    , { key = [ "colours", "foreground" ]
+      , kind = OneColour
+      , optional = False
+      , label = "Foreground"
+      , description = "The colour of text with no colour of its own."
+      , words = [ "text colour", "color", "fg" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Colour c.foreground
+      , set = \v c -> when v is
+            Colour n -> { c | foreground = n }
+            _ -> c
+      }
+    , { key = [ "colours", "background" ]
+      , kind = OneColour
+      , optional = False
+      , label = "Background"
+      , description = "The colour behind text with no colour of its own."
+      , words = [ "color", "bg" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Colour c.background
+      , set = \v c -> when v is
+            Colour n -> { c | background = n }
+            _ -> c
+      }
+    , { key = [ "colours", "bold_is_bright" ]
+      , kind = OnOff
+      , optional = False
+      , label = "Bold is bright"
+      , description = "Bold text in one of the first eight colours is drawn in its bright one."
+      , words = [ "bold", "bright", "color" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Flag c.boldIsBright
+      , set = \v c -> when v is
+            Flag b -> { c | boldIsBright = b }
+            _ -> c
+      }
+    , { key = [ "colours", "palette" ]
+      , kind = ColourList { most = 16 }
+      , optional = False
+      , label = "Palette"
+      , description = "The 16 named colours, from 0, as many as given; the defaults for the rest."
+      , words = [ "ansi", "colors", "theme", "scheme" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Colours c.palette
+      , set = \v c -> when v is
+            Colours p -> { c | palette = p }
+            _ -> c
+      }
+    , { key = [ "cursor", "blink_ms" ]
+      , kind = WholeIn { low = 0, high = 10000, unit = "ms" }
+      , optional = False
+      , label = "Cursor blink"
+      , description = "Half of a blink, when a program asks the cursor to blink; 0 does not blink."
+      , words = [ "blinking", "caret" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Whole c.blinkMs
+      , set = \v c -> when v is
+            Whole n -> { c | blinkMs = n }
+            _ -> c
+      }
+    , { key = [ "frames", "every_ms" ]
+      , kind = WholeIn { low = 1, high = 1000, unit = "ms" }
+      , optional = False
+      , label = "Frame interval"
+      , description = "Output is drawn at most this often."
+      , words = [ "refresh", "fps", "redraw" ]
+      , page = Advanced
+      , applies = AtOnce
+      , get = \c -> Whole c.frameMs
+      , set = \v c -> when v is
+            Whole n -> { c | frameMs = n }
+            _ -> c
+      }
+    , { key = [ "frames", "sync_timeout_ms" ]
+      , kind = WholeIn { low = 0, high = 10000, unit = "ms" }
+      , optional = False
+      , label = "Synchronized output timeout"
+      , description = "How long a program may hold a frame back (mode 2026)."
+      , words = [ "sync", "2026" ]
+      , page = Advanced
+      , applies = AtOnce
+      , get = \c -> Whole c.syncTimeoutMs
+      , set = \v c -> when v is
+            Whole n -> { c | syncTimeoutMs = n }
+            _ -> c
+      }
+    , { key = [ "scrollback", "lines" ]
+      , kind = WholeIn { low = 0, high = 10000000, unit = "lines" }
+      , optional = False
+      , label = "Scrollback"
+      , description = "Room for this many full lines of history; 0 keeps none."
+      , words = [ "history", "buffer", "lines" ]
+      , page = Advanced
+      , applies = AtOnce
+      , get = \c -> Whole c.scrollbackLines
+      , set = \v c -> when v is
+            Whole n -> { c | scrollbackLines = n }
+            _ -> c
+      }
+    , { key = [ "program", "command" ]
+      , kind = Command
+      , optional = False
+      , label = "Command"
+      , description = "The program run, and its arguments; the system's shell when empty."
+      , words = [ "shell", "program", "run", "start" ]
+      , page = Program
+      , applies = NewWindows
+      , get = \c -> Words c.command
+      , set = \v c -> when v is
+            Words w -> { c | command = w }
+            _ -> c
+      }
+    , { key = [ "terminal", "charset" ]
+      , kind = OneOf [ "utf-8", "euc-kr", "cp949" ]
+      , optional = True
+      , label = "Character set"
+      , description = "What the program reads and writes; the locale's when unset."
+      , words = [ "encoding", "euc-kr", "cp949", "korean", "utf-8" ]
+      , page = TextAndLanguage
+      , applies = AtOnce
+      , get = \c -> Maybe.withDefault Unset (Maybe.map Text c.charset)
+      , set = \v c -> when v is
+            Text t -> { c | charset = Just t }
+            Unset -> { c | charset = Nothing }
+            _ -> c
+      }
+    , { key = [ "selection", "word_boundaries" ]
+      , kind = AnyText
+      , optional = False
+      , label = "Word boundaries"
+      , description = "The characters that end a word for a double click."
+      , words = [ "double click", "select", "word" ]
+      , page = MouseAndSelection
+      , applies = AtOnce
+      , get = \c -> Text c.wordBoundaries
+      , set = \v c -> when v is
+            Text t -> { c | wordBoundaries = t }
+            _ -> c
+      }
+    , { key = [ "mouse", "paste_button" ]
+      , kind = OneOf [ "middle", "right" ]
+      , optional = False
+      , label = "Paste button"
+      , description = "The mouse button that pastes the selection."
+      , words = [ "paste", "click", "button" ]
+      , page = MouseAndSelection
+      , applies = AtOnce
+      , get = \c -> Text (if c.pasteButton == 2 then "right" else "middle")
+      , set = \v c -> when v is
+            Text "right" -> { c | pasteButton = 2 }
+            Text "middle" -> { c | pasteButton = 3 }
+            _ -> c
+      }
+    , { key = [ "clipboard", "osc52_read" ]
+      , kind = OneOf [ "deny", "allow" ]
+      , optional = False
+      , label = "Programs may read the clipboard"
+      , description = "Whether a program may read the clipboard with OSC 52."
+      , words = [ "osc 52", "clipboard", "security" ]
+      , page = Clipboard
+      , applies = AtOnce
+      , get = \c -> Text (if c.osc52Read then "allow" else "deny")
+      , set = \v c -> when v is
+            Text "allow" -> { c | osc52Read = True }
+            Text "deny" -> { c | osc52Read = False }
+            _ -> c
+      }
+    ]
+
+
+{-| The setting at a key, `["font", "size"]`. -}
+find : Array String -> Maybe Setting
+find key =
+    Array.findFirst (\s -> s.key == key) settings |> Maybe.map .value
+
+
+sections : Array String
+sections =
+    Array.foldl
+        (\s acc ->
+            when Array.first s.key is
+                Just section ->
+                    if Array.member section acc then acc else Array.pushLast section acc
+
+                Nothing ->
+                    acc
+        )
+        []
+        settings
+
+
+
+-- DECODING
+
+
+{-| What a file gives: the settings, each left out or refused its
+default, and what was wrong, in the order of the file. -}
+type alias Decoded =
+    { config : Config
+    , reports : Array Report
+    }
+
+
+{-| The settings a file gives, leniently (`settings-ui.md` §5): a key that
+is not a setting, or a value a setting does not take, is reported with its
+line and left at its default, and the rest are read. A file that is not
+TOML at all is `Err`, with where it stops being TOML: nothing in it is
+read. -}
+decode : String -> Result Report Decoded
+decode text =
+    when Toml.parse text is
+        Err e ->
+            Err { line = e.row, message = Toml.errorToString e }
+
+        Ok doc ->
+            when Toml.Table.fromDocument doc is
+                Err e ->
+                    Err { line = Maybe.withDefault 1 (Dict.get e.path (linesOf doc)), message = Toml.Table.errorToString e }
+
+                Ok table ->
+                    let
+                        lines =
+                            linesOf doc
+
+                        at =
+                            { line = \path -> Maybe.withDefault 1 (Dict.get (String.join "." path) lines)
+                            , integer = \path -> Toml.Decode.fromDocument (Toml.Decode.at path Toml.Decode.int) doc |> Result.mapError (\_ -> "too large a number")
+                            }
+
+                        found =
+                            Dict.foldl (\section value acc -> top at section value acc)
+                                { config = Config.defaults, reports = [] }
+                                (Toml.Table.entries table)
+                    in
+                    Ok { found | reports = Array.sortBy .line found.reports }
+
+
+{-| Where in the file: the line of a key, and the integer at it, which
+gren-toml reads to an `Int` only through its decoders. -}
+type alias At =
+    { line : Array String -> Int
+    , integer : Array String -> Result String Int
+    }
+
+
+top : At -> String -> Toml.Table.Value -> Decoded -> Decoded
+top at section value acc =
+    if Array.member section sections then
+        when value is
+            Toml.Table.TableValue inner ->
+                Dict.foldl (\name v a -> one at [ section, name ] v a) acc (Toml.Table.entries inner)
+
+            _ ->
+                report (at.line [ section ]) (section ++ " is a table of settings, written [" ++ section ++ "]") acc
+
+    else
+        report (at.line [ section ])
+            ("[" ++ section ++ "] is not a table of settings" ++ suggest section (Array.map (\k -> "[" ++ k ++ "]") sections))
+            acc
+
+
+one : At -> Array String -> Toml.Table.Value -> Decoded -> Decoded
+one at key value acc =
+    let
+        name =
+            String.join "." key
+    in
+    when find key is
+        Nothing ->
+            report (at.line key)
+                (name ++ " is not a setting" ++ suggest name (Array.map keyName settings))
+                acc
+
+        Just s ->
+            when read (\_ -> at.integer key) s.kind value is
+                Ok v ->
+                    { acc | config = s.set v acc.config }
+
+                Err why ->
+                    report (at.line key) (name ++ ": " ++ why ++ "; " ++ shown s (s.get Config.defaults) ++ " is used") acc
+
+
+report : Int -> String -> Decoded -> Decoded
+report line message acc =
+    { acc | reports = Array.pushLast { line = line, message = message } acc.reports }
+
+
+{-| A value of the file as a setting of `kind` takes it, or why not. -}
+read : ({} -> Result String Int) -> Kind -> Toml.Table.Value -> Result String Value
+read integerHere kind value =
+    when kind is
+        WholeIn r ->
+            integer integerHere value
+                |> Result.andThen
+                    (\n ->
+                        if n < r.low || n > r.high then
+                            Err (String.fromInt n ++ " is not from " ++ String.fromInt r.low ++ " to " ++ String.fromInt r.high)
+
+                        else
+                            Ok (Whole n)
+                    )
+
+        AnyText ->
+            string value |> Result.map Text
+
+        FontFamily ->
+            string value |> Result.map Text
+
+        OnOff ->
+            when value is
+                Toml.Table.BooleanValue b ->
+                    Ok (Flag b)
+
+                _ ->
+                    Err "not true or false"
+
+        OneColour ->
+            string value |> Result.andThen colour |> Result.map Colour
+
+        ColourList r ->
+            when value is
+                Toml.Table.ArrayValue items ->
+                    if Array.length items > r.most then
+                        Err (String.fromInt (Array.length items) ++ " colours, where the palette has " ++ String.fromInt r.most)
+
+                    else
+                        Array.foldl
+                            (\item acc -> Result.map2 Array.pushLast (string item |> Result.andThen colour) acc)
+                            (Ok [])
+                            items
+                            |> Result.map Colours
+
+                _ ->
+                    Err "not a list of colours"
+
+        OneOf names ->
+            string value
+                |> Result.andThen
+                    (\t ->
+                        if Array.member t names then
+                            Ok (Text t)
+
+                        else
+                            Err ("\"" ++ t ++ "\" is not " ++ alternatives names)
+                    )
+
+        Command ->
+            when value is
+                Toml.Table.ArrayValue items ->
+                    Array.foldl (\item acc -> Result.map2 Array.pushLast (string item) acc) (Ok []) items
+                        |> Result.map Words
+
+                _ ->
+                    Err "not a list of strings, the program and its arguments"
+
+
+integer : ({} -> Result String Int) -> Toml.Table.Value -> Result String Int
+integer here value =
+    when value is
+        Toml.Table.IntegerValue _ ->
+            here {}
+
+        _ ->
+            Err "not a whole number"
+
+
+string : Toml.Table.Value -> Result String String
+string value =
+    when value is
+        Toml.Table.StringValue t ->
+            Ok t
+
+        _ ->
+            Err "not a string"
+
+
+{-| A colour as `#rrggbb`. -}
+colour : String -> Result String Int
+colour text =
+    let
+        digits =
+            String.dropFirst 1 text
+
+        value =
+            String.foldl (\c acc -> Maybe.andThen (\v -> Maybe.map (\d -> v * 16 + d) (hexDigit c)) acc) (Just 0) digits
+    in
+    when value is
+        Just v ->
+            if String.startsWith "#" text && String.count digits == 6 then
+                Ok v
+
+            else
+                Err ("\"" ++ text ++ "\" is not a colour as #rrggbb")
+
+        Nothing ->
+            Err ("\"" ++ text ++ "\" is not a colour as #rrggbb")
+
+
+hexDigit : Char -> Maybe Int
+hexDigit c =
+    let
+        code =
+            Char.toCode c
+    in
+    if code >= 48 && code <= 57 then
+        Just (code - 48)
+
+    else if code >= 97 && code <= 102 then
+        Just (code - 87)
+
+    else if code >= 65 && code <= 70 then
+        Just (code - 55)
+
+    else
+        Nothing
+
+
+alternatives : Array String -> String
+alternatives names =
+    let
+        quoted =
+            Array.map (\n -> "\"" ++ n ++ "\"") names
+    in
+    when Array.popLast quoted is
+        Just { last, initial } ->
+            if Array.isEmpty initial then
+                last
+
+            else
+                String.join ", " initial ++ " or " ++ last
+
+        Nothing ->
+            "anything"
+
+
+{-| A value as the file writes it, for a report. -}
+shown : Setting -> Value -> String
+shown s v =
+    when v is
+        Whole n ->
+            String.fromInt n
+
+        Text t ->
+            "\"" ++ t ++ "\""
+
+        Flag b ->
+            if b then "true" else "false"
+
+        Colour n ->
+            "\"" ++ hex n ++ "\""
+
+        Colours p ->
+            "[" ++ String.join ", " (Array.map (\n -> "\"" ++ hex n ++ "\"") p) ++ "]"
+
+        Words w ->
+            "[" ++ String.join ", " (Array.map (\t -> "\"" ++ t ++ "\"") w) ++ "]"
+
+        Unset ->
+            if s.optional then "the system's choice" else "nothing"
+
+
+hex : Int -> String
+hex n =
+    let
+        digit d =
+            String.fromChar (Maybe.withDefault '0' (String.toArray "0123456789abcdef" |> Array.get d))
+
+        two b =
+            digit (b // 16) ++ digit (modBy 16 b)
+    in
+    "#" ++ two (modBy 256 (n // 65536)) ++ two (modBy 256 (n // 256)) ++ two (modBy 256 n)
+
+
+{-| "; did you mean X?" for the nearest of `known` within two edits, or
+nothing. -}
+suggest : String -> Array String -> String
+suggest name known =
+    let
+        best =
+            Array.foldl
+                (\k acc ->
+                    let
+                        d =
+                            distance name (if String.startsWith "[" k then String.slice 1 -1 k else k)
+                    in
+                    if d <= 2 && (acc.distance < 0 || d < acc.distance) then
+                        { distance = d, key = k }
+
+                    else
+                        acc
+                )
+                { distance = -1, key = "" }
+                known
+    in
+    if best.distance < 0 then
+        ""
+
+    else
+        "; did you mean " ++ best.key ++ "?"
+
+
+{-| Levenshtein's distance between two strings. -}
+distance : String -> String -> Int
+distance a b =
+    let
+        bs =
+            String.toArray b
+
+        first =
+            Array.range 0 (Array.length bs)
+    in
+    String.foldl
+        (\ca row ->
+            let
+                start =
+                    Maybe.withDefault 0 (Array.first row) + 1
+            in
+            Array.indexedFoldl
+                (\j cb acc ->
+                    let
+                        above =
+                            Maybe.withDefault 0 (Array.get (j + 1) row)
+
+                        diagonal =
+                            Maybe.withDefault 0 (Array.get j row)
+
+                        left =
+                            Maybe.withDefault 0 (Array.last acc)
+
+                        cost =
+                            if ca == cb then 0 else 1
+                    in
+                    Array.pushLast (min (min (above + 1) (left + 1)) (diagonal + cost)) acc
+                )
+                [ start ]
+                bs
+        )
+        first
+        a
+        |> Array.last
+        |> Maybe.withDefault 0
+
+
+
+-- LINES
+
+
+{-| The line each key and each table header is on, by its path joined
+with dots: gren-toml keeps no positions, so they are counted from the
+document's expressions, each a line but for a value that runs on. -}
+linesOf : Toml.Document -> Dict String Int
+linesOf doc =
+    (Array.foldl
+        (\e acc ->
+            let
+                next =
+                    acc.line + Array.length (String.split "\n" (Toml.toString { hasBom = False, expressions = [ e ] })) - 1
+            in
+            when e.content is
+                Ast.Pair p ->
+                    { acc | line = next, found = Dict.set (String.join "." (acc.table ++ keyPath p.keyval.key)) acc.line acc.found }
+
+                Ast.Header h ->
+                    let
+                        path =
+                            keyPath h.header.key
+                    in
+                    { acc | line = next, table = path, found = Dict.set (String.join "." path) acc.line acc.found }
+
+                Ast.Empty _ ->
+                    { acc | line = next }
+        )
+        { line = 1, table = [], found = Dict.empty }
+        doc.expressions
+    ).found
+
+
+keyPath : Ast.Key -> Array String
+keyPath key =
+    Array.pushFirst key.first.value (Array.map (\part -> part.key.value) key.rest)
+
+
+
+-- THE EXAMPLE
+
+
+{-| Every setting with an example value and what it means, as `README.md`
+and `Config` show the file. A test holds it to the table: it decodes with
+nothing reported, and it names every setting. -}
+example : String
+example =
+    """
+    [window]
+    columns = 80
+    rows = 24
+    title = "puritty"
+
+    [font]
+    family = "DejaVu Sans Mono"   # as the system names it; on Windows
+                                  # "Cascadia Mono" (`Platform.font`)
+    size = 11                     # points
+    language = "ja"               # what fallback fonts are asked for (V25);
+                                  # the locale's when left out
+    glyph_cache_mb = 8            # the glyphs kept (V37), 4 or more
+
+    [colours]
+    foreground = "#c5c8c6"
+    background = "#1d1f21"
+    bold_is_bright = false
+    palette = ["#1d1f21", "#cc6666"]
+                                  # the 16 named colours from 0, as many as
+                                  # given; libghostty-vt's for the rest
+
+    [cursor]
+    blink_ms = 500                # the half of a blink; 0 does not blink
+
+    [frames]
+    every_ms = 16                 # output is drawn at most this often (V31)
+    sync_timeout_ms = 150         # how long mode 2026 may hold a frame back
+
+    [scrollback]
+    lines = 25000                 # in bytes, as many as so many full lines take
+
+    [program]
+    command = ["htop"]            # what runs; $SHELL when left out
+                                  # (on Windows PowerShell, `Platform`)
+
+    [terminal]
+    charset = "euc-kr"            # or "utf-8", "cp949": the program's; the
+                                  # locale's when left out
+
+    [selection]
+    word_boundaries = " \\t'\\"│`|:;,()[]{}<>$"
+                                  # the characters that end a word for a
+                                  # double click (docs/user/copy-and-paste.md)
+
+    [mouse]
+    paste_button = "middle"       # or "right": the button that pastes the
+                                  # selection (docs/user/copy-and-paste.md)
+
+    [clipboard]
+    osc52_read = "deny"           # or "allow": whether a program may read the
+                                  # clipboard with OSC 52 (the same guide)
+    """

@@ -43,6 +43,7 @@ import Argparse.Program
 import Bitwise
 import Bytes exposing (Bytes)
 import Config exposing (Config)
+import Schema
 import Outbox exposing (Outbox)
 import Console
 import Dict exposing (Dict)
@@ -124,7 +125,18 @@ type alias Model =
       -- with PURITTY_SHOT set, the file each frame's picture is written to,
       -- for the reload gate (harness/reload.py)
     , shotPath : Maybe String
+      -- what was wrong in the settings file when it was last read, the
+      -- first of it shown in the title (docs/settings.md ST17)
+    , troubles : Array String
     }
+
+
+{-| What reading the settings file gave: the settings, with what was wrong
+in the file, each report's setting left at its default; or nothing read,
+and why (a file that is not TOML, or that cannot be read). -}
+type Read
+    = Gave { config : Config, problems : Array String }
+    | Unread String
 
 
 {-| What the command line gave: the settings file, if any (one it names
@@ -234,7 +246,20 @@ main =
                                     }
                             in
                             readSettings given
-                                |> Task.andThen (\config -> start ctx.cp ctx.vars given config)
+                                |> Task.andThen
+                                    (\read ->
+                                        let
+                                            got =
+                                                when read is
+                                                    Gave r ->
+                                                        r
+
+                                                    Unread why ->
+                                                        { config = overridden given Config.defaults, problems = [ why ++ "; the defaults are used" ] }
+                                        in
+                                        Array.foldl (\p t -> t |> Task.andThen (\_ -> Console.writeErr ("puritty: " ++ p ++ "\n"))) (Task.succeed {}) got.problems
+                                            |> Task.andThen (\_ -> start ctx.cp ctx.vars given got.problems got.config)
+                                    )
                                 |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
                     }
             )
@@ -253,13 +278,14 @@ settingsFile vars named =
             Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) (Platform.settingsDirectory vars)
 
 
-{-| The settings: the file's, or the defaults when the user has none, with
-the command line's title and program over them. -}
-readSettings : Given -> Task String Config
+{-| The settings: the file's, leniently (`Schema.decode`), or the defaults
+when the user has none, with the command line's title and program over
+them. Only a file the command line names and that cannot be read fails. -}
+readSettings : Given -> Task String Read
 readSettings given =
-    (when given.file is
+    when given.file is
         Nothing ->
-            Task.succeed Config.defaults
+            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
 
         Just f ->
             let
@@ -267,37 +293,38 @@ readSettings given =
                     Path.toString f.path
             in
             File.readFile given.fs f.path
-                |> Task.map Just
+                |> Task.map
+                    (\bytes ->
+                        when Schema.decode (Bytes.toStringLossy bytes) is
+                            Ok decoded ->
+                                Gave
+                                    { config = overridden given decoded.config
+                                    , problems = Array.map (\r -> path ++ " line " ++ String.fromInt r.line ++ ": " ++ r.message) decoded.reports
+                                    }
+
+                            Err r ->
+                                Unread (path ++ " line " ++ String.fromInt r.line ++ " is not TOML: " ++ r.message)
+                    )
                 |> Task.onError
                     (\err ->
                         if err.kind == Os.Error.NotFound && not f.required then
-                            Task.succeed Nothing
+                            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
+
+                        else if f.required then
+                            Task.fail (Os.Error.toString err)
 
                         else
-                            Task.fail (Os.Error.toString err)
+                            Task.succeed (Unread (Os.Error.toString err))
                     )
-                |> Task.andThen
-                    (\read ->
-                        when read is
-                            Nothing ->
-                                Task.succeed Config.defaults
 
-                            Just bytes ->
-                                when Config.decode (Bytes.toStringLossy bytes) is
-                                    Ok config ->
-                                        Task.succeed config
 
-                                    Err why ->
-                                        Task.fail (path ++ ": " ++ why)
-                    )
-    )
-        |> Task.map
-            (\config ->
-                { config
-                    | title = Maybe.withDefault config.title given.title
-                    , command = if Array.isEmpty given.program then config.command else given.program
-                }
-            )
+{-| The command line's title and program over the settings'. -}
+overridden : Given -> Config -> Config
+overridden given config =
+    { config
+        | title = Maybe.withDefault config.title given.title
+        , command = if Array.isEmpty given.program then config.command else given.program
+    }
 
 
 {-| The settings file's directory watched, into a source of its own: the
@@ -339,14 +366,14 @@ watchSettings given =
                 |> Task.onError (\_ -> Task.succeed Nothing)
 
 
-start : Process.Permission -> Dict String String -> Given -> Config -> Task String {}
-start cp vars given config =
+start : Process.Permission -> Dict String String -> Given -> Array String -> Config -> Task String {}
+start cp vars given problems config =
     Platform.locale vars
-        |> Task.andThen (\locale -> startIn cp vars given locale config)
+        |> Task.andThen (\locale -> startIn cp vars given problems locale config)
 
 
-startIn : Process.Permission -> Dict String String -> Given -> Platform.Locale -> Config -> Task String {}
-startIn cp vars given locale config =
+startIn : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Task String {}
+startIn cp vars given problems locale config =
     Window.open
         { cols = config.columns
         , rows = config.rows
@@ -385,7 +412,7 @@ startIn cp vars given locale config =
                                 (\events ->
                                     spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                                         |> Task.mapError Os.Error.toString
-                                        |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = events, at = -1 })
+                                        |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = events, at = -1 } problems)
                                 )
             )
 
@@ -415,8 +442,8 @@ the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Process.Child -> Settings -> Task String {}
-run imeLog shotPath charset config cell child settings =
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Process.Child -> Settings -> Array String -> Task String {}
+run imeLog shotPath charset config cell child settings problems =
     when Process.terminal child is
         Nothing ->
             Task.fail "the program has no terminal"
@@ -440,6 +467,9 @@ run imeLog shotPath charset config cell child settings =
                                     , cellHeight = cell.height
                                     }
                                     |> Vt.withPalette config.palette
+                                    -- what was wrong in the settings, before the
+                                    -- program's first output (settings-ui.md §5)
+                                    |> Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems)))
                             , shadow = View.shadow config.columns config.rows
                             , focus = View.focused
                             , last = t0
@@ -473,6 +503,7 @@ run imeLog shotPath charset config cell child settings =
                             , clipRead = Nothing
                             , settings = settings
                             , shotPath = shotPath
+                            , troubles = problems
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -795,18 +826,38 @@ reloadIfDue ms m =
 
     else
         readSettings s.given
-            |> Task.map Ok
-            |> Task.onError (\why -> Task.succeed (Err why))
+            |> Task.onError (\why -> Task.succeed (Unread why))
             |> Task.andThen
                 (\read ->
+                    let
+                        quiet =
+                            { m | settings = { s | at = -1 } }
+                    in
                     when read is
-                        Ok config ->
-                            applySettings config { m | settings = { s | at = -1 } }
+                        Gave r ->
+                            say r.problems
+                                |> Task.andThen (\_ -> applySettings r.config { quiet | troubles = r.problems, urgent = True })
 
-                        Err why ->
-                            Console.writeErr ("puritty: " ++ why ++ "\n")
-                                |> Task.map (\_ -> { m | settings = { s | at = -1 } })
+                        Unread why ->
+                            let
+                                problems =
+                                    [ why ++ "; the settings in force are kept" ]
+                            in
+                            say problems |> Task.map (\_ -> { quiet | troubles = problems, urgent = True })
                 )
+
+
+{-| Each problem with the settings on standard error. -}
+say : Array String -> Task x {}
+say problems =
+    Array.foldl (\p t -> t |> Task.andThen (\_ -> Console.writeErr ("puritty: " ++ p ++ "\n"))) (Task.succeed {}) problems
+
+
+{-| A problem with the settings as the terminal shows it before the
+program's output: a line in yellow. -}
+notice : String -> String
+notice problem =
+    "\u{001B}[33mpuritty: " ++ problem ++ "\u{001B}[0m\r\n"
 
 
 {-| New settings applied to the running window (docs/settings.md ST4):
@@ -1906,6 +1957,21 @@ draw ms m =
 
                     else
                         ""
+                   )
+                ++ (when Array.first m.troubles is
+                        Just first ->
+                            " [settings: "
+                                ++ first
+                                ++ (if Array.length m.troubles > 1 then
+                                        " (and " ++ String.fromInt (Array.length m.troubles - 1) ++ " more)"
+
+                                    else
+                                        ""
+                                   )
+                                ++ "]"
+
+                        Nothing ->
+                            ""
                    )
     in
     Window.draw f.list

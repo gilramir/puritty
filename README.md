@@ -115,9 +115,14 @@ puritty --config ~/work.toml    # another settings file
 ### Settings
 
 puritty reads `~/.config/puritty/config.toml` (on Windows
-`%APPDATA%\puritty\config.toml`). Every key is optional. A key
-puritty doesn't know is reported rather than silently ignored, so a typo
-doesn't leave you wondering why nothing changed.
+`%APPDATA%\puritty\config.toml`). Every key is optional, and a change
+to the file is applied to every open window at once, except the window's
+size and the program, which new windows take. A key puritty doesn't know,
+or a value a setting doesn't take, is reported with its line and the
+nearest setting's name (`font.sise`: did you mean `font.size`?) rather
+than silently ignored, and puritty goes on with the rest: the report is
+on standard error, at the top of a new window, and on the title until the
+file is fixed.
 
 ```toml
 [window]

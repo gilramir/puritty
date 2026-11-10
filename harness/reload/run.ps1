@@ -80,7 +80,9 @@ foreach ($line in [IO.File]::ReadAllLines((Join-Path $PSScriptRoot "cases.tsv"))
     Stop-Puritty $p
 
     if ($fresh -eq "fresh") {
-        if ($afterText -ne $null) { [IO.File]::WriteAllText($cfg, $afterText) }
+        $freshFile = Join-Path $PSScriptRoot "$name.fresh.toml"
+        if (Test-Path $freshFile) { Copy-Item -Force $freshFile $cfg }
+        elseif ($afterText -ne $null) { [IO.File]::WriteAllText($cfg, $afterText) }
         $p = Start-Puritty $case (Join-Path $case "fresh-stderr.txt")
         if (Test-Path $shot) { Copy-Item $shot (Join-Path $out "$name.fresh.ppm") }
         Stop-Puritty $p

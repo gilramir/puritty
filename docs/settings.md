@@ -310,6 +310,7 @@ built, as the Windows steps did.
    on Xvfb, and on beelink1 by `--windows`. *Built (ST15).*
 3. **The schema and the lenient decoder** (ST5), the notice in the
    terminal for a bad key, the documented example from the table.
+   *Built (ST17).*
 4. **Writing** (ST6), with its round-trip tests.
 5. **The settings window** (ST7, ST8): every page of today's settings,
    search, modified only, reset, Undo; `harness/settings.py`.
@@ -431,3 +432,57 @@ core's counts and times within their record (`perf.py`).
    systems, `[window] keep_title = false` by default, which a host's
    overrides (ST10) can set, since a host's name is the title one wants
    for an ssh session.
+
+## ST17 · Step 3 built: one table of the settings, read leniently (2026-11-10)
+
+**`app/src/Schema.geng`** holds every setting once (ST5): its key, its
+kind (a whole number in a range with its unit, text, on or off, a colour,
+a list of colours, one of a set, a font family, a command), whether it may
+be left unset (`font.language`, `terminal.charset`), its label,
+description and search words, its page, whether it applies at once or to
+new windows, and how it reads and writes its part of a `Config` through
+one `Value` type, so that the decoder, and the settings window after it,
+walk one list. `Config` keeps the record and its defaults.
+
+**The decoder is lenient** (`settings-ui.md` §5): a key that is not a
+setting, a table that is not one of settings, or a value a setting does
+not take is a report with its line, and the setting is left at its
+default while the rest are read. A near miss within two edits is named:
+`font.sise is not a setting; did you mean font.size?`, `[fonts] is not a
+table of settings; did you mean [font]?`, `font.size: 2 is not from 4 to
+200; 11 is used`. gren-toml keeps no positions, by design, so a key's line
+is counted from the document's expressions, each a line but for a value
+that runs on; its integers are read through its own decoder (`at`,
+`int`), the only way it gives an `Int`. gren-toml needed no change.
+
+A file that is not TOML at all is not read: at a start the defaults are
+used, at a reload the settings in force are kept, and either way the
+report says so. A file the command line names that cannot be read still
+ends puritty, as a command line that names nothing usable should.
+
+**Where a report shows.** On standard error, always. At a start, as
+`settings-ui.md` §5 has it, as lines in yellow at the top of the window,
+before the program's first output. At a reload a line written into the
+terminal would land in the middle of a full-screen program, so it is
+shown in the title instead, `[settings: config.toml line 6: font.sise is
+not a setting; did you mean font.size? (and 1 more)]`, as puritty already
+shows `[N characters sent as ?]`; the title keeps it until a read is
+clean, a start's reports too.
+
+**The example is the table's.** `Schema.example` is the documented file,
+every key with what it means; a test holds it to the table (it decodes
+with nothing reported, it names every setting in its table, its values
+are read).
+
+**Held by:** `app/tests` (gren-unit-node on node, `app/linux`'s
+`Platform`), 19 of 19: the defaults, the example, a misspelt key and
+table with their nearest, a key with nothing near, values out of bounds,
+of the wrong kind, a bad colour, a choice not offered, a palette too
+long, a line after a value that runs on, reports in the file's order, a
+file that is not TOML, an optional setting left out, and each setting
+reading back what it set. The reload gate's cases for this: a file not
+TOML keeps the settings in force; a bad value is what a fresh start with
+the key left out gives; the title carries a report and loses it once the
+file is fixed. **15 of 15 on Linux, 14 of 14 on Windows**; pointer 51 of
+51 and IME 14 of 14 hold. The start notice was looked at once: two lines
+in yellow above the program's first line.

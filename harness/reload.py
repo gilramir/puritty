@@ -91,8 +91,17 @@ def cases(windows):
         # on Windows the stand-in (Cascadia Mono, the default), at a start
         # as at a reload: what a fresh start gives, changed or not
         ("font-missing", BASE, BASE + '\n[font]\nfamily = "No Such Font Anywhere"\n', "rename", "pixels-or-same"),
-        ("not-decoded", BASE + '\n[colours]\nbackground = "#003040"\n', BASE + "\n[colours]\nbackground = 12\n",
+        # a file that is not TOML changes nothing; a value a setting does not
+        # take is its default, as a fresh start with the key left out gives
+        # (a fresh start with the bad key shows the notice, docs/settings.md ST17)
+        ("not-toml", BASE + '\n[colours]\nbackground = "#003040"\n', BASE + "\n[colours]\nbackground = = 1\n",
          "in place", "kept"),
+        ("bad-value", BASE + '\n[colours]\nbackground = "#003040"\nforeground = "#ffffff"\n',
+         BASE + '\n[colours]\nbackground = 12\nforeground = "#ffffff"\n', "in place", "pixels",
+         BASE + '\n[colours]\nforeground = "#ffffff"\n'),
+        # what is wrong is on the title until a read is clean
+        ("title-trouble", BASE, BASE + "\n[font]\nsise = 12\n", "rename", "title-trouble"),
+        ("title-clean", BASE + "\n[font]\nsise = 12\n", BASE, "rename", "title-clean"),
         ("removed", BASE.replace("blink_ms = 0", 'blink_ms = 0\n\n[colours]\nbackground = "#003040"'), None,
          "remove", "defaults"),
     ] + ([] if windows else [
@@ -147,6 +156,10 @@ def judge(held, first, got, fresh, title, said, home):
     if held == "title":
         want = TITLE + "-again"
         return None if title == want else f"title {title!r}, want {want!r}"
+    if held == "title-trouble":
+        return None if title and " [settings: " in title and "sise" in title else f"title {title!r}, with no [settings: ...]"
+    if held == "title-clean":
+        return None if title is not None and "[settings:" not in title else f"title {title!r}, still with [settings: ...]"
     if held == "kept":
         if got != first:
             return "the picture changed, where the settings in force should have been kept"
@@ -204,7 +217,7 @@ def title_of(env):
     return m.group(1) if m else None
 
 
-def run_linux(env0, name, before, after, how, held):
+def run_linux(env0, name, before, after, how, held, fresh_text=None):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     config = home / "config" / "puritty"
@@ -223,7 +236,9 @@ def run_linux(env0, name, before, after, how, held):
     said = (home / "running-stderr.txt").read_text()
     fresh = None
     if held in ("pixels", "pixels-or-same", "defaults"):
-        if after is not None:
+        if fresh_text is not None:
+            path.write_text(fresh_text)
+        elif after is not None:
             path.write_text(after)
         shot.unlink(missing_ok=True)
         p = start(env, home, "fresh")
@@ -241,10 +256,12 @@ def run_windows(host, chosen):
     stage.mkdir(parents=True)
     (stage / "screen.txt").write_bytes(SCREEN.encode())
     lines = []
-    for name, before, after, how, held in chosen:
+    for name, before, after, how, held, *rest in chosen:
         (stage / f"{name}.before.toml").write_text(before, newline="\n")
         if after is not None:
             (stage / f"{name}.after.toml").write_text(after, newline="\n")
+        if rest:
+            (stage / f"{name}.fresh.toml").write_text(rest[0], newline="\n")
         fresh = "fresh" if held in ("pixels", "pixels-or-same", "defaults") else "none"
         lines.append("\t".join([name, how, fresh]))
     (stage / "cases.tsv").write_text("\n".join(lines) + "\n")
@@ -260,7 +277,7 @@ def run_windows(host, chosen):
     back.mkdir()
     subprocess.run(["scp", "-q", f"{host}:{REMOTE}/out/*", str(back)], check=True)
     out = {}
-    for name, before, after, how, held in chosen:
+    for name, before, after, how, held, *rest in chosen:
         home = WORK / name
         shutil.rmtree(home, ignore_errors=True)
         home.mkdir(parents=True)

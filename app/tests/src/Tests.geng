@@ -1,0 +1,166 @@
+module Tests exposing (main)
+
+{-| The application's unit tests (`docs/settings.md` ST17), with
+gren-unit-node: the settings' table and its lenient decoder. Run with
+`./run.sh`. `Platform` is `app/linux`'s.
+-}
+
+import Config
+import Expect exposing (Expectation)
+import Node
+import Schema
+import Task exposing (Task)
+import Test.Runner.UnitNode as U
+
+
+main : Task Never {}
+main =
+    Node.getEnvironment
+        |> Task.andThen
+            (\env ->
+                U.run env
+                    { name = "puritty-app"
+                    , version = "0.1.0"
+                    , suites = [ schema ]
+                    }
+            )
+
+
+run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
+run name tests =
+    U.suite
+        { name = name
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map (\c -> U.test c.name (\fix -> Task.succeed (c.test fix))) tests
+        }
+
+
+{-| What a file's reports say, as `line: message`, or why it is not TOML. -}
+reported : String -> Array String
+reported text =
+    when Schema.decode text is
+        Ok d ->
+            Array.map (\r -> String.fromInt r.line ++ ": " ++ r.message) d.reports
+
+        Err r ->
+            [ "not TOML at " ++ String.fromInt r.line ]
+
+
+decoded : String -> Config.Config
+decoded text =
+    when Schema.decode text is
+        Ok d ->
+            d.config
+
+        Err _ ->
+            Config.defaults
+
+
+schema : U.Suite
+schema =
+    run "Schema"
+        [ { name = "an empty file is the defaults"
+          , test = \_ -> Expect.equal { config = Config.defaults, reports = [] } (Result.withDefault { config = Config.defaults, reports = [ { line = 0, message = "not TOML" } ] } (Schema.decode ""))
+          }
+        , { name = "the example decodes with nothing reported"
+          , test = \_ -> Expect.equal [] (reported Schema.example)
+          }
+        , { name = "the example names every setting, in its table"
+          , test =
+                \_ ->
+                    let
+                        missing =
+                            Schema.settings
+                                |> Array.keepIf
+                                    (\s ->
+                                        when s.key is
+                                            [ table, name ] ->
+                                                not (String.contains ("[" ++ table ++ "]") Schema.example && String.contains ("\n" ++ name ++ " = ") Schema.example)
+
+                                            _ ->
+                                                True
+                                    )
+                                |> Array.map Schema.keyName
+                    in
+                    Expect.equal [] missing
+          }
+        , { name = "the example's values are read"
+          , test =
+                \_ ->
+                    let
+                        c =
+                            decoded Schema.example
+                    in
+                    Expect.equal
+                        { palette = [ 0x1D1F21, 0xCC6666 ], command = [ "htop" ], charset = Just "euc-kr", language = Just "ja", pasteButton = 3, osc52Read = False, title = "puritty" }
+                        { palette = c.palette, command = c.command, charset = c.charset, language = c.language, pasteButton = c.pasteButton, osc52Read = c.osc52Read, title = c.title }
+          }
+        , { name = "every key is in one table and no two settings share one"
+          , test =
+                \_ ->
+                    let
+                        names =
+                            Array.map Schema.keyName Schema.settings
+                    in
+                    Expect.equal (Array.length names) (Array.length (Array.foldl (\n acc -> if Array.member n acc then acc else Array.pushLast n acc) [] names))
+          }
+        , { name = "a misspelt key is reported at its line, with the nearest setting"
+          , test = \_ -> Expect.equal [ "3: font.sise is not a setting; did you mean font.size?" ] (reported "[font]\nfamily = \"x\"\nsise = 12\n")
+          }
+        , { name = "the rest of the file is read past a misspelt key"
+          , test = \_ -> Expect.equal "x" (decoded "[font]\nfamily = \"x\"\nsise = 12\n").font
+          }
+        , { name = "a key with nothing near it is reported without a guess"
+          , test = \_ -> Expect.equal [ "2: font.weight_of_glyphs is not a setting" ] (reported "[font]\nweight_of_glyphs = 1\n")
+          }
+        , { name = "a misspelt table is reported at its header, with the nearest"
+          , test = \_ -> Expect.equal [ "1: [fonts] is not a table of settings; did you mean [font]?" ] (reported "[fonts]\nsize = 12\n")
+          }
+        , { name = "a value out of bounds is reported, and the default used"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "2: font.size: 2 is not from 4 to 200; 11 is used" ], points = 11 }
+                        { reports = reported "[font]\nsize = 2\n", points = (decoded "[font]\nsize = 2\n").points }
+          }
+        , { name = "a value of the wrong kind is reported"
+          , test = \_ -> Expect.equal [ "2: colours.background: not a string; \"#1d1f21\" is used" ] (reported "[colours]\nbackground = 12\n")
+          }
+        , { name = "a colour that is not #rrggbb is reported"
+          , test = \_ -> Expect.equal [ "2: colours.foreground: \"#fff\" is not a colour as #rrggbb; \"#c5c8c6\" is used" ] (reported "[colours]\nforeground = \"#fff\"\n")
+          }
+        , { name = "a choice not among a setting's is reported with them"
+          , test = \_ -> Expect.equal [ "2: mouse.paste_button: \"left\" is not \"middle\" or \"right\"; \"middle\" is used" ] (reported "[mouse]\npaste_button = \"left\"\n")
+          }
+        , { name = "a palette longer than 16 is reported"
+          , test =
+                \_ ->
+                    Expect.equal [ "2: colours.palette: 17 colours, where the palette has 16; [] is used" ]
+                        (reported ("[colours]\npalette = [" ++ String.join ", " (Array.repeat 17 "\"#000000\"") ++ "]\n"))
+          }
+        , { name = "a line after a value that runs on is counted"
+          , test = \_ -> Expect.equal [ "6: colours.forground is not a setting; did you mean colours.foreground?" ] (reported "[colours]\npalette = [\n  \"#000000\",\n  \"#111111\",\n]\nforground = \"#ffffff\"\n")
+          }
+        , { name = "several reports come in the order of the file"
+          , test = \_ -> Expect.equal [ "2: window.colums is not a setting; did you mean window.columns?", "4: font.size: 300 is not from 4 to 200; 11 is used" ] (reported "[window]\ncolums = 80\n[font]\nsize = 300\n")
+          }
+        , { name = "a file that is not TOML is refused, with its line"
+          , test = \_ -> Expect.equal [ "not TOML at 2" ] (reported "[font]\nsize = = 3\n")
+          }
+        , { name = "an optional setting left out is unset"
+          , test = \_ -> Expect.equal Nothing (decoded "[font]\nsize = 12\n").charset
+          }
+        , { name = "each setting reads back what it was set to"
+          , test =
+                \_ ->
+                    let
+                        wrong =
+                            Schema.settings
+                                |> Array.keepIf (\s -> s.get (s.set (s.get Config.defaults) Config.defaults) /= s.get Config.defaults)
+                                |> Array.map Schema.keyName
+                    in
+                    Expect.equal [] wrong
+          }
+        ]
