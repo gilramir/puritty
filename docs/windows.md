@@ -219,12 +219,25 @@ manifests one, and can wait until a second program needs it.
 ## WS11 · What can be tested from here
 
 Without Gilbert: building, copying and running anything; a window in his
-session and its screenshot; the clipboard, set and read by PowerShell; keys
-and the IME through `SendInput` from a program in his session, which reaches
-the IME as a typed key does (to be measured: whether the Korean IME
-composes keys sent that way). With him: typing Hangul into puritty by hand
-once, as a check of what `SendInput` showed; how it feels; the scaled
-display at 150% and a move to another monitor, if he has one.
+session and its screenshot; the clipboard, set and read by PowerShell; and
+keys and the IME through `SendInput` from a program in his session.
+
+**Measured** (`bench/windows/probe-ime.c`): keys sent with `SendInput` reach
+the Korean IME as typed keys do. The 한/영 key (`VK_HANGUL`) turns Hangul on;
+then `g`, `k`, `s` arrive as `VK_PROCESSKEY` (0xE5) with the preedit ㅎ
+(U+314E), 하 (U+D558), 한 (U+D55C) in `WM_IME_COMPOSITION`'s `GCS_COMPSTR`,
+and a space commits 한 (`GCS_RESULTSTR`, then `WM_CHAR` U+D55C) and is
+typed. Setting Hangul mode with `ImmSetConversionStatus` alone did not
+compose: the keys arrived as Latin letters. A program started by the task
+scheduler cannot take the foreground by asking; joining the foreground
+thread's input for the moment it raises its window (`AttachThreadInput`)
+lets it, and sends that thread nothing. The probe sends a key only while
+its own window is the foreground, and stops otherwise, so that nothing it
+types reaches another program.
+
+With Gilbert: typing Hangul into puritty by hand once, as a check of what
+`SendInput` showed; how it feels; the scaled display at 150% and a move to
+another monitor, if he has one.
 
 ## WS12 · The steps, in order
 
