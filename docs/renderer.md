@@ -282,6 +282,10 @@ not an A/B of one build against another.
 **The package** (V36), `packages/x11`: `X11.geng`, the API, and
 `src/Ext/puritty_x11.c`, the probe's C taken over and the probe's own
 package (`probes/geng/x11/pkg`) removed. The x11 probe builds on it.
+*Since `docs/windows.md` WS18 (2026-11-10) the module is `Window` and the
+drawing this file describes is `packages/text`'s (`puritty_text.c`), which
+`packages/x11` and `packages/win32` both draw with; the X11 C keeps the
+window, the events and XRender's side of each draw.*
 
 - `X11.open` takes a `Settings` record (cells, the font as fontconfig names
   it and its points, the fallback language, the glyph cap, the title) and

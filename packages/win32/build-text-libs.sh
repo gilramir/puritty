@@ -9,12 +9,23 @@
 #   PKG_CONFIG_PATH_x86_64_w64_mingw32=$PWD/vendor/win-text/lib/pkgconfig ...
 #
 # FreeType is its core and the modules OpenType and TrueType faces need,
-# with its own copy of zlib and no libpng, bzip2 or Brotli: libpng serves
-# bitmap emoji fonts (CBDT), and Windows' emoji font draws from its colour
-# table (COLR), which FreeType draws itself. HarfBuzz is its one source file,
+# with its own copy of zlib and with libpng, but no bzip2 or Brotli. Windows'
+# emoji font draws from its colour table (COLR), which FreeType draws itself;
+# libpng is for a bitmap emoji font (CBDT) such as Noto Color Emoji, which a
+# user may install and the pixel gate draws with (docs/windows.md WS18), and
+# it is built static with a zlib of its own, so puritty stays one .exe.
+# HarfBuzz is its one source file,
 # threads off (puritty shapes on its window thread alone), compiled by the
 # toolchain's g++, whose C++ headers find mcfgthread where clang's do not;
 # the object needs only the C library.
+#
+# FreeType's autohinter uses HarfBuzz (FT_CONFIG_OPTION_USE_HARFBUZZ), as
+# nixpkgs' FreeType on Linux does by loading it at run time: it styles the
+# glyphs a font reaches only through its substitutions (Fira Code's
+# ligatures, Thai's and Devanagari's forms) by their script, and without it
+# those glyphs are hinted otherwise and the pixel gate's pictures differ
+# from Linux's (docs/windows.md WS18). The two libraries need each other,
+# so freetype2.pc links HarfBuzz after FreeType.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -26,10 +37,32 @@ work=$out/build
 rm -rf "$work"
 mkdir -p "$work" "$out/lib/pkgconfig" "$out/include"
 src() { nix build --no-link --print-out-paths "github:NixOS/nixpkgs/$rev#$1.src"; }
-mkdir -p "$work/freetype" "$work/harfbuzz"
+mkdir -p "$work/freetype" "$work/harfbuzz" "$work/zlib" "$work/libpng"
 tar xf "$(src freetype)" -C "$work/freetype" --strip-components=1
 tar xf "$(src harfbuzz)" -C "$work/harfbuzz" --strip-components=1
+tar xf "$(src zlib)" -C "$work/zlib" --strip-components=1
+tar xf "$(src libpng)" -C "$work/libpng" --strip-components=1
 mcf=$(nix-store -qR "$(readlink -f "$(dirname "$(command -v x86_64-w64-mingw32-gcc)")/..")" | grep 'mcfgthread.*-dev$' | head -1)
+
+# zlib and libpng, for FreeType's PNG glyphs
+z=$work/zlib
+zobjs=()
+for f in adler32 compress crc32 deflate gzclose gzlib gzread gzwrite infback inffast inflate inftrees trees uncompr zutil; do
+    x86_64-w64-mingw32-clang -O2 -I"$z" -c "$z/$f.c" -o "$work/z-$f.o"
+    zobjs+=("$work/z-$f.o")
+done
+rm -f "$out/lib/libz.a"
+x86_64-w64-mingw32-ar rcs "$out/lib/libz.a" "${zobjs[@]}"
+png=$work/libpng
+cp "$png/scripts/pnglibconf.h.prebuilt" "$png/pnglibconf.h"
+pobjs=()
+for f in png pngerror pngget pngmem pngpread pngread pngrio pngrtran pngrutil pngset pngtrans pngwio pngwrite pngwtran pngwutil; do
+    x86_64-w64-mingw32-clang -O2 -DPNG_ARM_NEON_OPT=0 -DPNG_INTEL_SSE_OPT=0 -DPNG_POWERPC_VSX_OPT=0 -DPNG_LOONGARCH_LSX_OPT=0 \
+        -I"$png" -I"$z" -c "$png/$f.c" -o "$work/png-$f.o"
+    pobjs+=("$work/png-$f.o")
+done
+rm -f "$out/lib/libpng.a"
+x86_64-w64-mingw32-ar rcs "$out/lib/libpng.a" "${pobjs[@]}"
 
 # FreeType
 ft=$work/freetype
@@ -48,7 +81,8 @@ files=(base/ftsystem.c base/ftinit.c base/ftdebug.c base/ftbase.c base/ftbitmap.
 objs=()
 for f in "${files[@]}"; do
     o=$work/ft-$(basename "$f" .c).o
-    x86_64-w64-mingw32-clang -O2 -DFT2_BUILD_LIBRARY '-DFT_CONFIG_MODULES_H=<ftmodule-puritty.h>' -I"$ft" -I"$ft/include" -c "$ft/src/$f" -o "$o"
+    x86_64-w64-mingw32-clang -O2 -DFT2_BUILD_LIBRARY '-DFT_CONFIG_MODULES_H=<ftmodule-puritty.h>' -DFT_CONFIG_OPTION_USE_HARFBUZZ -DFT_CONFIG_OPTION_USE_PNG \
+        -I"$ft" -I"$ft/include" -I"$work/harfbuzz/src" -I"$png" -I"$z" -c "$ft/src/$f" -o "$o"
     objs+=("$o")
 done
 rm -f "$out/lib/libfreetype.a"
@@ -72,10 +106,10 @@ hbv=$(sed -n "s/^ *version: *'\([0-9.]*\)'.*/\1/p" "$hb/meson.build" | head -1)
 cat > "$out/lib/pkgconfig/freetype2.pc" <<PC
 prefix=$out
 Name: FreeType 2
-Description: FreeType $ftv for Windows, static, OpenType and TrueType only (puritty)
+Description: FreeType $ftv for Windows, static, OpenType and TrueType only, with PNG glyphs (puritty)
 Version: $ftv
 Cflags: -I\${prefix}/include/freetype2
-Libs: -L\${prefix}/lib -lfreetype
+Libs: -L\${prefix}/lib -lfreetype -lharfbuzz -lpng -lz
 PC
 cat > "$out/lib/pkgconfig/harfbuzz.pc" <<PC
 prefix=$out

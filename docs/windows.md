@@ -369,3 +369,102 @@ with a case for each in its corpus.
 
 Puritty built from `app/linux`, the pixel gate (36 of 36) and the unit
 tests (68) pass.
+
+## WS18 · Step 3 built: `packages/text`, `packages/win32`, and the pixel gate on Windows (2026-11-10)
+
+V52, built. **The pixel gate's 36 cases draw on Windows exactly as on
+Linux**: `harness/pixels.py --windows beelink1` draws every case with
+`packages/win32` on beelink1 and holds its picture to the Linux pin, and all
+36 are the same, pixel for pixel.
+
+**`packages/text`** (`puritty-text`) is the X11 C's drawing, moved: the
+display list's decoding, the faces, HarfBuzz's shaping, FreeType's
+rasterising, colour glyphs, box drawing and ink. Its header
+(`src/Ext/include/puritty_text.h`) says what it gives a platform (`pt_open`,
+`pt_frame`, `pt_zoom`, the ink) and what a platform gives it: a fill, a
+glyph kept under an id, the placed glyphs drawn, a colour picture, a target
+of so many cells, a scroll, and the file of a font or a fallback face. Its C
+reaches the platforms' C through a Geng feature made for it: a package's
+`src/Ext/include` is on every C file's include path (geng-lang Dnene38).
+`packages/x11` keeps the window, the events and the selections, and draws
+the renderer's calls with XRender as it did: the Linux gate passed 36 of 36
+with the drawing moved.
+
+**`packages/win32`** draws into memory. The target is a bitmap of 32-bit
+pixels the size of the cells; a fill sets pixels, a scroll moves rows, and
+a glyph is blended in its colour with pixman's arithmetic for OVER through
+an A8 mask, so that it is XRender's pixel; a colour glyph is premultiplied
+ARGB drawn OVER. The window's `WM_PAINT` copies the bitmap with
+`SetDIBitsToDevice` and fills the margins. Fonts are found by family among
+the files the registry names (`HKLM`, `HKCU`), or among the files of the
+directories `PURITTY_FONT_DIRS` names; each face of a collection and each
+named instance of a variable font is a face to choose, and a variant the
+family lacks is the closest one (bold italic is the bold, italic the
+regular, which the renderer slants). A fallback face comes from a list of
+families tried in order, `tag:Family` first when the language is `tag`
+(`PURITTY_FALLBACK`, else Windows' own: Cascadia Mono, Consolas, Malgun
+Gothic, Yu Gothic, Microsoft YaHei, Leelawadee UI, Nirmala UI, Segoe UI
+Emoji and more), and Hangul is asked for in Korean, as fontconfig's
+language coverage does.
+
+**Where the build departs from WS4.** The frame is drawn on the program's
+thread, not handed to the window thread: drawing into memory needs no
+window, so `draw` answers its ink at once as X11's does, FreeType and
+HarfBuzz still run on one thread, and the window thread only paints, under
+a lock the draw holds too. Events are queued as WS4 says; this step has
+the size, the focus and a request to close, and the rows step 4 fills
+(`setPointer`, `motion`, `spot`, `select`, `paste`) change nothing yet.
+
+**The gate on Windows.** The window draws from memory, so the ssh session
+serves and no desktop is needed. `harness/pixels/build-windows.sh` builds
+`core-pixels.exe` (a console program, so its exit and stderr reach ssh);
+`pixels.py --windows` copies it, the cases and the gate's font files, runs
+them all in one `harness/pixels/run.ps1`, and brings the pictures back.
+`PURITTY_FALLBACK` there is fontconfig's order on those fonts: DejaVu Sans
+Mono, the language's Noto Sans Mono CJK, DejaVu Sans, Noto Sans Mono CJK
+JP, Noto Color Emoji, Noto Sans Thai, Noto Sans Devanagari. Every case
+chose the same files and indexes as on Linux. Windows will not make a window
+as narrow as the five smallest cases' screens (90 pixels; its least is 137),
+so a picture larger than its pin is held to it cut to the pin's size.
+
+**What the comparison found**, in the order it was found:
+
+- *HarfBuzz's assertions.* Windows' HarfBuzz is built with them, and the
+  first frame stopped: `hb_buffer_add` asks for the buffer's content type to
+  be set first, which the renderer never did. Linux's HarfBuzz has no
+  assertions and shaped anyway. The renderer sets it.
+- *FreeType's autohinter and HarfBuzz.* 18 of 36 matched at first. Fira
+  Code's ligatures, Thai and Devanagari differed in the glyphs a font
+  reaches only through its substitutions. nixpkgs' FreeType on Linux loads
+  HarfBuzz at run time, and its autohinter uses it to give those glyphs
+  their script's style; the Windows build did not. It is built with
+  `FT_CONFIG_OPTION_USE_HARFBUZZ` now, linked to the static HarfBuzz. 33 of
+  36, with the window-width cut.
+- *A variant's closest face.* The Windows finder gave a family with no bold
+  italic its regular for bold italic, where fontconfig gives the bold; the
+  renderer then took the regular face for italic of itself and drew Fira
+  Code's italic upright. 35 of 36.
+- *PNG glyphs.* Noto Color Emoji's glyphs are PNG (CBDT), and the Windows
+  FreeType had no libpng (WS3 left it out, since Windows' own emoji font is
+  COLR). It is built with a static libpng and zlib now
+  (`packages/win32/build-text-libs.sh`), so a user's bitmap emoji font draws
+  too, and puritty is still one `.exe`. 36 of 36.
+
+**A colour face may be COLR.** The renderer took only a face of bitmap
+strikes for a colour face, so Windows' Segoe UI Emoji, colour layers over
+outlines, would have drawn emoji in one colour. A scalable face with colour
+is a colour face now, sized to the cell's height and reduced into the
+cluster's box as a strike is; FreeType draws its layers into a BGRA bitmap
+(measured in WS2's text probe). The Linux gate has no such face and is
+unchanged.
+
+**On the screen.** `core-pixels.exe` run in Gilbert's desktop session with
+`PURITTY_LINGER` (the window kept up after the shot) showed the `mixed`
+case in its window at 150%: kana, Han from Noto Sans Mono CJK, the
+highlight and the cursor, painted by `WM_PAINT`.
+
+**The application** has its Windows manifest, `app/windows/geng.toml`
+(`subsystem = "gui"`, `packages/win32`), and `app/build-windows.sh` builds
+`app/puritty.exe`. Started on beelink1, it opens its window and ends:
+`spawn /bin/sh: The system cannot find the file specified`, the Linux
+default program, which V54 replaces in step 5.

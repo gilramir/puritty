@@ -1,0 +1,452 @@
+module Window exposing
+    ( Settings, Cell, open
+    , draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
+    , events, take, Event(..), PointerEvent
+    )
+
+{-| puritty's window on Windows (`docs/windows.md` WS3, WS4, V52): the twin
+of `packages/x11`'s `Window`, with its functions and types, so that the
+application's `src` imports `Window` and does not know which (V55).
+
+One window a process (`geng-plan.md` Q6): [`open`](#open) makes it, and
+every other call is about it. A frame is drawn by handing
+[`draw`](#draw) the display list `Vt.View.frame` makes; `packages/text`
+executes it into a bitmap in memory, shaping and rasterising as X11's does,
+and the window shows it.
+
+The loop waits on [`events`](#events) in its race, and after the race
+[`take`](#take)s what came: the window's own thread queues them and wakes
+the loop (WS4). This step has the size, the focus and a request to close;
+keys, the pointer and the IME are step 4's (WS12), and until then
+[`setPointer`](#setPointer), [`motion`](#motion), [`spot`](#spot),
+[`select`](#select) and [`paste`](#paste) change nothing.
+
+@docs Settings, Cell, open, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Task exposing (Task)
+import UInt8
+
+
+{-| What the window is opened with: its size in cells, the primary font as
+its family names it and its size in points, the language fallback fonts
+are asked for (V25; empty for none), the bytes of glyphs kept before they
+are begun again (V37), and the title. -}
+type alias Settings =
+    { cols : Int
+    , rows : Int
+    , font : String
+    , points : Int
+    , lang : String
+    , glyphCap : Int
+    , title : String
+    }
+
+
+{-| A cell's size in pixels. -}
+type alias Cell =
+    { width : Int
+    , height : Int
+    }
+
+
+{-| Opens the window, and answers its cell, or why it could not: no such
+font, or no window. -}
+open : Settings -> Task x (Result String Cell)
+open s =
+    openExtern s.cols s.rows s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap (Bytes.fromString s.title)
+        |> Task.map
+            (\code ->
+                if code == -1 then
+                    Err ("no font for " ++ s.font)
+
+                else if code < 0 then
+                    Err "Windows made no window"
+
+                else
+                    Ok { width = code // 65536, height = modBy 65536 code }
+            )
+
+
+@extern(c, "puritty_win32_open")
+openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Task x Int
+
+
+{-| Executes one frame's display list, and answers the ink of the cells it
+drew, for `Vt.View.inked` (V40): which edges of its cell each glyph's
+pixels crossed. Answers `Nothing` once the window is gone. -}
+draw : Bytes -> Task x (Maybe Bytes)
+draw list =
+    drawExtern list
+        |> Task.map
+            (\answer ->
+                if Bytes.get 0 answer == Just (UInt8.fromInt 0) then
+                    Just (Bytes.slice 1 (Bytes.length answer) answer)
+
+                else
+                    Nothing
+            )
+
+
+@extern(c, "puritty_win32_draw")
+drawExtern : Bytes -> Task x Bytes
+
+
+{-| Writes the window as it is on the screen, as a PPM, to a file: the
+pixel gate's picture (V38). Answers `False` if it could not. -}
+shot : String -> Task x Bool
+shot path =
+    shotExtern (Bytes.fromString path) |> Task.map (\code -> code == 0)
+
+
+@extern(c, "puritty_win32_shot")
+shotExtern : Bytes -> Task x Int
+
+
+{-| Tells the IME where its candidate window belongs: a cell, whose
+baseline the IME's composition window is placed at (WS6). Nothing is sent
+while it does not move, or when there is no IME. -}
+spot : { x : Int, y : Int } -> Task x {}
+spot at =
+    spotExtern at.x at.y |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_spot")
+spotExtern : Int -> Int -> Task x Int
+
+
+{-| Whether X sends every motion of the pointer over the window, or only
+those while a button is held (`docs/phase3-select.md` §4): every one while
+the program asks for any motion (mode 1003). -}
+motion : Bool -> Task x {}
+motion all =
+    motionExtern
+        (if all then
+            1
+
+         else
+            0
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_motion")
+motionExtern : Int -> Task x Int
+
+
+{-| The two selections (`docs/phase3-select.md` §5): on Windows the
+clipboard is Windows' and PRIMARY is kept within puritty (V53). -}
+type Selection
+    = Primary
+    | Clipboard
+
+
+{-| The pointer's two shapes over the window. -}
+type Pointer
+    = TextPointer
+    | ArrowPointer
+
+
+{-| The window owns a selection with this text (V53; step 5's, WS12). -}
+select : Selection -> Bytes -> Task x {}
+select which text =
+    selectExtern
+        (when which is
+            Primary ->
+                0
+
+            Clipboard ->
+                1
+        )
+        text
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_select")
+selectExtern : Int -> Bytes -> Task x Int
+
+
+{-| A paste of a selection asked of its owner (`docs/phase3-select.md` §15):
+`Pasted` events follow as its text comes, which `pasted` takes; the C never
+waits for it. False when another paste is under way and this one is not
+made. -}
+paste : Selection -> Task x Bool
+paste which =
+    pasteExtern
+        (when which is
+            Primary ->
+                0
+
+            Clipboard ->
+                1
+        )
+        |> Task.map (\r -> r == 1)
+
+
+@extern(c, "puritty_win32_paste")
+pasteExtern : Int -> Task x Int
+
+
+{-| The paste's text since it was last taken, UTF-8. -}
+pasted : Task x Bytes
+pasted =
+    pastedExtern
+
+
+@extern(c, "puritty_win32_pasted")
+pastedExtern : Task x Bytes
+
+
+{-| The font at a new size in points (V50): every face sized again, the
+window kept at its size in pixels, so a `Resized` follows with the cells
+that now fit it; answers the new cell. The size is the screen's
+resolution's, as `open`'s: the system's (`PURITTY_DPI` sets it
+outright). -}
+zoom : Int -> Task x Cell
+zoom points =
+    zoomExtern points |> Task.map (\code -> { width = code // 65536, height = modBy 65536 code })
+
+
+@extern(c, "puritty_win32_zoom")
+zoomExtern : Int -> Task x Int
+
+
+{-| The pointer over the window: the cursor theme's I-beam, over text, or
+its arrow, while the program takes the mouse (docs/phase3-select.md §21). -}
+setPointer : Pointer -> Task x {}
+setPointer p =
+    pointerExtern
+        (when p is
+            TextPointer ->
+                0
+
+            ArrowPointer ->
+                1
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_pointer")
+pointerExtern : Int -> Task x Int
+
+
+{-| Sets the window's title. -}
+setTitle : String -> Task x {}
+setTitle title =
+    titleExtern (Bytes.fromString title) |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_title")
+titleExtern : Bytes -> Task x Int
+
+
+{-| Waits for events: answers `True` once there are some, or `False` once
+the connection has failed. It takes none, so a race that cancels it after
+it answered loses nothing; [`take`](#take) takes them. -}
+events : Task x Bool
+events =
+    eventsExtern |> Task.map (\code -> code > 0)
+
+
+@extern(c, "puritty_win32_events")
+eventsExtern : Task x Int
+
+
+{-| What happened to the window. An IME's commit, preedit and its end come
+in the order the IME sent them (V46): a commit is text for the program, a
+preedit replaces `length` characters from `first` of what is being
+composed with `text`, its feedback a value each, and the caret is a
+character count. `ImeReady` says keys go through an IME from now on.
+
+A key is what Ghostty's key encoder takes
+(V47): its action (release 0, press 1, repeat 2), its key code (WS5: the
+scan code), its
+modifiers as Ghostty's bits (shift 1, ctrl 2, alt 4, super 8, caps lock 16,
+num lock 32, and 64 to 512 for a right-hand shift, ctrl, alt or super),
+the modifiers its text consumed, its unshifted code point, its keysym and
+its text: X11's keysym for the same key, so that the encoder reads
+Windows' keys as Linux's, and the text Windows made (WS5); what it sends
+the program is Geng's to decide. -}
+type Event
+    = Key { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }
+    | Resized { cols : Int, rows : Int }
+    | Focus Bool
+    | Close
+    | Commit Bytes
+    | Preedit { caret : Int, first : Int, length : Int, text : Bytes, feedback : Array Int }
+    | PreeditDone
+    | ImeReady
+    | Pointer PointerEvent
+    | SelectionLost Selection
+    | Pasted Bool
+
+
+{-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
+`action` 0 press, 1 release, 2 motion; `button` as Ghostty numbers them
+(0 none, 1 left, 2 right, 3 middle, 4-7 the wheel's steps, 8-11 the
+rest), and a wheel step is a press with no release; `mods` as a key's; the
+position in pixels from the window's top left, negative or past its edge
+while a held button drags outside it; and the window's size and the cell's
+in pixels, as they were when it came. -}
+type alias PointerEvent =
+    { action : Int
+    , button : Int
+    , mods : Int
+    , x : Int
+    , y : Int
+    , width : Int
+    , height : Int
+    , cellWidth : Int
+    , cellHeight : Int
+    }
+
+
+{-| The events since the last take. -}
+take : Task x (Array Event)
+take =
+    takeExtern |> Task.map (\b -> decode b 0 [])
+
+
+@extern(c, "puritty_win32_take")
+takeExtern : Task x Bytes
+
+
+decode : Bytes -> Int -> Array Event -> Array Event
+decode b at acc =
+    let
+        byte i =
+            Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) b))
+
+        u16 i =
+            Bitwise.or (Bitwise.shiftLeftBy 8 (byte i)) (byte (i + 1))
+    in
+    if at >= Bytes.length b then
+        acc
+
+    else
+        when byte 0 is
+            1 ->
+                let
+                    n =
+                        byte 15
+
+                    u32 i =
+                        Bitwise.or (Bitwise.shiftLeftBy 16 (u16 i)) (u16 (i + 2))
+                in
+                decode b
+                    (at + 16 + n)
+                    (Array.pushLast
+                        (Key
+                            { action = byte 1
+                            , keycode = byte 2
+                            , mods = u16 3
+                            , consumed = u16 5
+                            , unshifted = u32 7
+                            , sym = u32 11
+                            , text = Bytes.slice (at + 16) (at + 16 + n) b
+                            }
+                        )
+                        acc
+                    )
+
+            2 ->
+                decode b (at + 5) (Array.pushLast (Resized { cols = u16 1, rows = u16 3 }) acc)
+
+            3 ->
+                decode b (at + 2) (Array.pushLast (Focus (byte 1 == 1)) acc)
+
+            4 ->
+                decode b (at + 1) (Array.pushLast Close acc)
+
+            5 ->
+                let
+                    n =
+                        u16 1
+                in
+                decode b (at + 3 + n) (Array.pushLast (Commit (Bytes.slice (at + 3) (at + 3 + n) b)) acc)
+
+            6 ->
+                let
+                    n =
+                        u16 7
+
+                    f =
+                        at + 9 + n
+
+                    nf =
+                        Bitwise.or (Bitwise.shiftLeftBy 8 (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get f b)))) (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (f + 1) b)))
+                in
+                decode b
+                    (f + 2 + nf)
+                    (Array.pushLast
+                        (Preedit
+                            { caret = u16 1
+                            , first = u16 3
+                            , length = u16 5
+                            , text = Bytes.slice (at + 9) (at + 9 + n) b
+                            , feedback = Array.initialize nf (f + 2) (\i -> Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get i b)))
+                            }
+                        )
+                        acc
+                    )
+
+            7 ->
+                decode b (at + 1) (Array.pushLast PreeditDone acc)
+
+            8 ->
+                decode b (at + 1) (Array.pushLast ImeReady acc)
+
+            11 ->
+                decode b (at + 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
+
+            10 ->
+                decode b
+                    (at + 2)
+                    (Array.pushLast
+                        (SelectionLost
+                            (if byte 1 == 1 then
+                                Clipboard
+
+                             else
+                                Primary
+                            )
+                        )
+                        acc
+                    )
+
+            9 ->
+                let
+                    signed i =
+                        let
+                            v =
+                                u16 i
+                        in
+                        if v >= 0x8000 then
+                            v - 0x10000
+
+                        else
+                            v
+                in
+                decode b
+                    (at + 17)
+                    (Array.pushLast
+                        (Pointer
+                            { action = byte 1
+                            , button = byte 2
+                            , mods = u16 3
+                            , x = signed 5
+                            , y = signed 7
+                            , width = u16 9
+                            , height = u16 11
+                            , cellWidth = u16 13
+                            , cellHeight = u16 15
+                            }
+                        )
+                        acc
+                    )
+
+            _ ->
+                acc

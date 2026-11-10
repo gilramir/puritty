@@ -28,12 +28,29 @@ in frames is also drawn in one, and the two pictures must be the same:
 what a later frame draws over, the cells whose ink reached into it among
 them, it must draw again (V40).
 
+With `--windows HOST` the cases are drawn on a Windows machine instead
+(docs/windows.md WS12, V52) by harness/pixels/core-pixels.exe
+(harness/pixels/build-windows.sh), packages/win32's window: the program,
+the cases and the gate's font files are copied to `geng-probe/pixels` in
+the home directory there over ssh, every case is drawn in one run of
+harness/pixels/run.ps1, and the pictures come back to be held to the same
+pins. fontconfig is not there: PURITTY_FONT_DIRS names the fonts' copy,
+and PURITTY_FALLBACK the order MONOSPACE and REGIONS give fontconfig, with
+DejaVu Sans, which fontconfig takes next for what DejaVu Sans Mono lacks,
+then the scripts' own faces. The window draws from memory, so no desktop
+is needed: the ssh session's own window station serves. Windows will not
+make a window as narrow as the smallest cases' screens, so a picture wider
+or taller than its pin is held to it cut to the pin's size, the rest being
+margin.
+
 usage (from puritty's devbox, after harness/pixels/build.sh):
     harness/pixels.py              every case
     harness/pixels.py -f thai      cases whose name contains "thai"
     harness/pixels.py --update     write the pins; look at each before
                                    committing it
     harness/pixels.py --faces      say which font files each case drew with
+    harness/pixels.py --windows beelink1
+                                   draw them on Windows
 
 A case that differs leaves NAME.got.png and NAME.diff.png (the differing
 pixels red, the rest dimmed) in .harness-work/pixels/, and NAME.once.png
@@ -59,6 +76,8 @@ CASES = ROOT / "corpus" / "pixels" / "cases"
 PINS = ROOT / "corpus" / "pixels"
 WORK = ROOT / ".harness-work" / "pixels"
 DRIVER = ROOT / "harness" / "pixels" / "core-pixels"
+DRIVER_EXE = ROOT / "harness" / "pixels" / "core-pixels.exe"
+REMOTE = "geng-probe/pixels"
 
 NIXPKGS = "github:NixOS/nixpkgs/c80073788adf88abfdc443465311f00e7a231600"
 # The fonts the gate sees. noto-fonts is every Noto family, some 1.5 GB;
@@ -260,38 +279,116 @@ def draw(case, display, conf, out, faces, whole=False):
     return s, [line.split(": ", 1)[1] for line in p.stderr.splitlines() if line.startswith("face ")]
 
 
+def windows_fallback():
+    """PURITTY_FALLBACK for the gate's fonts on Windows: fontconfig's order."""
+    tagged = [f"{lang}:Noto Sans Mono CJK {region}" for lang, region in REGIONS.items()]
+    rest = ["DejaVu Sans", "Noto Sans Thai", "Noto Sans Devanagari"]
+    return ";".join([MONOSPACE[0], *tagged, rest[0], *MONOSPACE[1:], *rest[1:]])
+
+
+def draw_windows(cases, host, faces):
+    """Every case drawn on `host`, and in one as well when it has frames:
+    for each name, its settings, its picture, the one drawn whole (or None)
+    and the faces it drew with."""
+    stage = WORK / "windows"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    lines, settings = [], {}
+    for case in cases:
+        s, data, breaks = parse_case(case.read_text())
+        settings[case.stem] = s
+        (stage / f"{case.stem}.bin").write_bytes(data)
+        runs = [(case.stem, ",".join(map(str, breaks)))]
+        if breaks:
+            runs.append((case.stem + ".once", ""))
+        for out, b in runs:
+            lines.append("\t".join([case.stem + ".bin", out + ".ppm", str(s["cols"]), str(s["rows"]), s["font"],
+                                    str(s["points"]), s["lang"], b, s["focus"]]))
+    (stage / "runs.tsv").write_text("\n".join(lines) + "\n")
+    ssh = ["ssh", "-o", "BatchMode=yes", host]
+    have = subprocess.run(ssh + [f"powershell -NoProfile -Command \"if (Test-Path {REMOTE}\\fonts\\DejaVuSansMono.ttf) {{ 'yes' }}\""],
+                          capture_output=True, text=True).stdout.strip()
+    subprocess.run(ssh + [f"powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path {REMOTE}\\fonts | Out-Null;"
+                          f" Remove-Item {REMOTE}\\*.ppm,{REMOTE}\\*.bin -ErrorAction SilentlyContinue\""], check=True)
+    if have != "yes":
+        files = [str(f) for d in font_dirs() for f in Path(d).rglob("*") if f.suffix in (".ttf", ".otf", ".ttc")]
+        subprocess.run(["scp", "-q", *files, f"{host}:{REMOTE}/fonts/"], check=True)
+    subprocess.run(["scp", "-q", str(DRIVER_EXE), str(ROOT / "harness" / "pixels" / "run.ps1"), *map(str, stage.glob("*")),
+                    f"{host}:{REMOTE}/"], check=True)
+    p = subprocess.run(ssh + [f"powershell -NoProfile -ExecutionPolicy Bypass -File {REMOTE}\\run.ps1"
+                              f" -Fallback \"{windows_fallback()}\"" + (" -Faces" if faces else "")],
+                       capture_output=True, text=True, timeout=1800)
+    if p.returncode != 0:
+        raise RuntimeError((p.stdout + p.stderr).strip())
+    subprocess.run(["scp", "-q", f"{host}:{REMOTE}/*.ppm", f"{host}:{REMOTE}/faces.txt", str(stage)], check=True)
+    used = {}
+    for line in (stage / "faces.txt").read_text(encoding="utf-8", errors="replace").splitlines():
+        name, _, face = line.partition("\t")
+        if face.startswith("face "):
+            used.setdefault(name, []).append(face.split(": ", 1)[1])
+    out = {}
+    for case in cases:
+        name = case.stem
+        got = stage / f"{name}.ppm"
+        once = stage / f"{name}.once.ppm"
+        out[name] = (settings[name], got.read_bytes() if got.exists() else None,
+                     once.read_bytes() if once.exists() else None, used.get(name, []))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="The pixel gate.")
     ap.add_argument("-f", "--filter", default="")
     ap.add_argument("--update", action="store_true")
     ap.add_argument("--faces", action="store_true")
+    ap.add_argument("--windows", metavar="HOST", default="")
     a = ap.parse_args()
-    if not DRIVER.exists():
-        sys.exit("pixels.py: build harness/pixels/core-pixels first (harness/pixels/build.sh)")
-    if shutil.which("Xvfb") is None:
-        sys.exit("pixels.py: no Xvfb; run from puritty's devbox")
-    conf = write_fonts_conf()
     cases = sorted(c for c in CASES.glob("*.txt") if a.filter in c.stem)
-    xvfb, display = start_xvfb()
+    if a.windows:
+        if not DRIVER_EXE.exists():
+            sys.exit("pixels.py: build harness/pixels/core-pixels.exe first (harness/pixels/build-windows.sh)")
+        if a.update:
+            sys.exit("pixels.py: the pins are Linux's; --update does not take Windows' pictures")
+        WORK.mkdir(parents=True, exist_ok=True)
+        drawn = draw_windows(cases, a.windows, a.faces)
+        xvfb = None
+    else:
+        if not DRIVER.exists():
+            sys.exit("pixels.py: build harness/pixels/core-pixels first (harness/pixels/build.sh)")
+        if shutil.which("Xvfb") is None:
+            sys.exit("pixels.py: no Xvfb; run from puritty's devbox")
+        conf = write_fonts_conf()
+        xvfb, display = start_xvfb()
     passed, failed = 0, []
     try:
         for case in cases:
             name = case.stem
             got_ppm = WORK / f"{name}.ppm"
-            try:
-                s, used = draw(case, display, conf, got_ppm, a.faces)
-            except Exception as e:  # noqa: BLE001
-                failed.append(name)
-                print(f"FAIL {name}: {e}")
-                continue
-            if a.faces:
-                print(f"{name}: {'; '.join(Path(u).name for u in used)}")
-            w, h, got = read_ppm(got_ppm.read_bytes())
-            got_ppm.unlink()
-            if parse_case(case.read_text())[2]:
-                draw(case, display, conf, got_ppm, False, whole=True)
-                _, _, once = read_ppm(got_ppm.read_bytes())
+            if a.windows:
+                s, got_bytes, once_bytes, used = drawn[name]
+                if got_bytes is None:
+                    failed.append(name)
+                    print(f"FAIL {name}: no picture came back")
+                    continue
+            else:
+                try:
+                    s, used = draw(case, display, conf, got_ppm, a.faces)
+                except Exception as e:  # noqa: BLE001
+                    failed.append(name)
+                    print(f"FAIL {name}: {e}")
+                    continue
+                got_bytes = got_ppm.read_bytes()
                 got_ppm.unlink()
+            if a.faces:
+                print(f"{name}: {'; '.join(Path(u.replace(chr(92), '/')).name for u in used)}")
+            w, h, got = read_ppm(got_bytes)
+            if parse_case(case.read_text())[2]:
+                if a.windows:
+                    _, _, once = read_ppm(once_bytes) if once_bytes else (0, 0, b"")
+                else:
+                    draw(case, display, conf, got_ppm, False, whole=True)
+                    _, _, once = read_ppm(got_ppm.read_bytes())
+                    got_ppm.unlink()
                 if once != got:
                     n, cells, pic = differences(w, h, got, once, s["cols"], s["rows"])
                     write_png(WORK / f"{name}.got.png", w, h, got)
@@ -313,6 +410,9 @@ def main():
                 print(f"FAIL {name}: no pin (its picture is in {WORK / (name + '.got.png')})")
                 continue
             pw, ph, want = read_png(pin)
+            if a.windows and w >= pw and h >= ph and (w, h) != (pw, ph):
+                got = b"".join(got[y * w * 3:(y * w + pw) * 3] for y in range(ph))
+                w, h = pw, ph
             if (pw, ph) != (w, h):
                 failed.append(name)
                 write_png(WORK / f"{name}.got.png", w, h, got)
@@ -328,8 +428,9 @@ def main():
             shown = ", ".join(f"{x},{y}" for x, y in cells[:8]) + (" ..." if len(cells) > 8 else "")
             print(f"FAIL {name}: {n} pixels differ, in {len(cells)} cells (col,row: {shown})")
     finally:
-        xvfb.kill()
-        xvfb.wait()
+        if xvfb:
+            xvfb.kill()
+            xvfb.wait()
     print(f"{'wrote' if a.update else 'passed'} {passed} of {len(cases)}")
     sys.exit(1 if failed else 0)
 
