@@ -249,7 +249,7 @@ clearSpan y left right fill s0 =
 
 {-| ICH between the margins: the cells from `x` to `right` move right, those
 past `right` lost. -}
-insertMargined : Int -> (x : Int where 0 <= x && x <= 1000) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
+insertMargined : (o : Int where 0 <= o && o + s0.stride <= Builder.length s0.cells) -> (x : Int where 0 <= x && x <= 1000) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 insertMargined o x count right erase s0 =
     let
         s =
@@ -273,7 +273,7 @@ insertMargined o x count right erase s0 =
 
 {-| DCH between the margins: the cells past the deleted ones, to `right`,
 move left, and the erase cell comes in at `right`. -}
-deleteMargined : Int -> (x : Int where 0 <= x && x <= 1000) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
+deleteMargined : (o : Int where 0 <= o && o + s0.stride <= Builder.length s0.cells) -> (x : Int where 0 <= x && x <= 1000) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s0 : Screen) -> (r : Screen where r.rows == s0.rows && r.cols == s0.cols && r.hist == s0.hist && r.size == s0.size)
 deleteMargined o x count right erase s0 =
     let
         s =
@@ -297,7 +297,7 @@ deleteMargined o x count right erase s0 =
 
 {-| The row at `o` with every cell explicit: those past its extent made
 empty and its extent the row's width, its wrapped flag kept. -}
-widen : Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+widen : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 widen o s =
     let
         m =
@@ -311,7 +311,7 @@ makes it but only that far. A span between the margins reads its row only to
 the column past the right margin, so it widens that far and not to the row's
 width: a scroll inside narrow margins costs the margins' width a row, not the
 screen's (§VC11's timeout). -}
-widenTo : Int -> Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+widenTo : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 widenTo o x s =
     let
         m =
@@ -329,16 +329,16 @@ widenTo o x s =
 
 {-| The row at `o`'s extent brought back to its last cell that is not
 empty. -}
-trim : Int -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+trim : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 trim o s =
     let
         m =
             metaAt o s
     in
-    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt (lastFilled o (metaExtent m) s.cells))) s.cells }
+    { s | cells = Builder.set (o + s.cols) (Bitwise.or (Bitwise.and rowFlags m) (Int64.fromInt (lastFilled o (clamp 0 s.cols (metaExtent m)) s.cells))) s.cells }
 
 
-lastFilled : Int -> Int -> Builder Int64 -> Int
+lastFilled : (o : Int where 0 <= o) -> (e : Int) -> (cells : Builder Int64 where o + e <= Builder.length cells) -> Int
 lastFilled o e cells =
     if e <= 0 then
         0
@@ -355,7 +355,7 @@ lastFilled o e cells =
 loses its content, both halves narrow and in their style, and when the
 margins reach the row's end or the first two columns, a spacer head at its
 end is a narrow cell. -}
-shifted : Int -> (cols : Int where 1 <= cols && cols <= 1000) -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+shifted : (o : Int where 0 <= o) -> (cols : Int where 1 <= cols && cols <= 1000) -> Int -> Int -> (taken cells : Builder Int64 where o + cols < Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 shifted o cols left right cells =
     let
         last =
@@ -372,7 +372,7 @@ shifted o cols left right cells =
 
 
 {-| `cutAt`, the halves keeping their style and protection. -}
-cutKeeping : Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+cutKeeping : (o : Int where 0 <= o) -> (cols : Int where 1 <= cols) -> Int -> (taken cells : Builder Int64 where o + cols < Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 cutKeeping o cols c cells =
     if c <= 0 || c >= cols then
         cells
@@ -394,7 +394,7 @@ cutKeeping o cols c cells =
 
 {-| A wide character that a boundary before column `c` cuts in two, both
 halves made `fill`, the erase cell, as Ghostty clears them (§VC18). -}
-cutAt : Int64 -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+cutAt : Int64 -> (o : Int where 0 <= o) -> (cols : Int where 1 <= cols) -> Int -> (taken cells : Builder Int64 where o + cols < Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 cutAt fill o cols c cells =
     if c <= 0 || c >= cols then
         cells

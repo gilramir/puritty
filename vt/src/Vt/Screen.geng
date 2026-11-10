@@ -127,17 +127,20 @@ rowOffset s y =
     phys s y * s.stride
 
 
-metaAt : Int -> Screen -> Int64
+metaAt : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (s : Screen) -> Int64
 metaAt o s =
     Maybe.withDefault 0 (Builder.get (o + s.cols) s.cells)
 
 
-extentAt : Int -> Screen -> Int
+{-| The row's extent, at most its width: a row's meta slot never holds a
+wider one, and the clamp says so to the compiler, so that a read below the
+extent is a read inside the row (§VC57). -}
+extentAt : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (s : Screen) -> (r : Int where 0 <= r && r <= s.cols)
 extentAt o s =
-    metaExtent (metaAt o s)
+    clamp 0 s.cols (metaExtent (metaAt o s))
 
 
-cellAt : Int -> Int -> Screen -> Int64
+cellAt : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (x : Int where 0 <= x && x < s.cols) -> (s : Screen) -> Int64
 cellAt o x s =
     if x < extentAt o s then
         Maybe.withDefault 0 (Builder.get (o + x) s.cells)
@@ -148,7 +151,7 @@ cellAt o x s =
 
 {-| `cellAt` for the paths that are seldom taken: a function of its own so
 that `cellAt` keeps the few callers clang inlines it into (§VC10's lesson). -}
-peekCell : Int -> Int -> Screen -> Int64
+peekCell : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (x : Int where 0 <= x && x < s.cols) -> (s : Screen) -> Int64
 peekCell o x s =
     if x < extentAt o s then
         Maybe.withDefault 0 (Builder.get (o + x) s.cells)
@@ -169,7 +172,7 @@ reachAt o ext x cells =
 
 
 {-| The row at `o`'s extent made at least `x`, its wrapped flag kept. -}
-extendTo : Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+extendTo : (o : Int where 0 <= o) -> (cols : Int where 0 <= cols) -> Int -> (taken cells : Builder Int64 where o + cols < Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 extendTo o cols x cells =
     let
         m =

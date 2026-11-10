@@ -4214,3 +4214,54 @@ swings above. Not pursued by hand.
 **Release builds only** (Gilbert, 2026-11-09): `app/release.sh` trains the
 profile and builds with it; `app/build.sh`, the development build, takes no
 profile.
+
+## VC57. Every cell read the compiler can see, proved (2026-11-09)
+
+The sixth round of the checks report (geng-lang `m4-proof-report.md`
+§PR16), the first made with `geng checks`. geng-lang gave
+`Array.Builder.get` a contract (a `Just` exactly when an index of 0 or more
+is inside the builder) and taught its checker two things it needed
+(Dnene35). Here, row offsets are refined through 46 signatures: a row
+offset is `0 <= o && o + s.stride <= Builder.length s.cells`, as
+`rowOffset` promises, and a column below `s.cols`. With them each read of a
+screen cell through `Builder.get` has a `Nothing` the compiler shows never
+runs, and the reads are the same code as before.
+
+Four changes to code, each measured:
+
+- `extentAt` clamps a row's extent to its width, `clamp 0 s.cols`: the
+  meta slot never holds a wider one, and now the compiler knows it.
+  Instructions the same on every input.
+- `splitWhole o x x`, an insert at column 0, read its last cell at
+  `o - 1`; on the buffer's first row that is -1, which `Builder.get`
+  counts from the end. It now reads nothing for an empty run.
+- `eraseChars`' end and `wordRight`'s step compare before they add, so
+  that a count past the row's width cannot wrap the sum.
+- `Dump.ringRow` maps over its row with `Array.indexedMap`, whose callback
+  is given an index in range, where `Array.range` gave none.
+
+| `vt` | before | after |
+|---|---:|---:|
+| fallbacks never run | 14 | 41 |
+| fallbacks can run | 178 | 151 |
+| checks hold | 1,218 | 1,597 |
+| open | 13 | 24 |
+
+`perf.py` against the build before: instructions within 0.2% on every
+input, cycles within run-to-run noise. 68 unit tests, 325 replay cases, 345
+view cases and the selection cases pass.
+
+The open checks that grew are sums the contract now asks about and nothing
+bounds yet: the renderer's previous frame, read at `y * cols + x` (its
+`Shadow` has no rule tying its cells to `rows * cols`), `withPen`'s style
+cache and `scanY`. They are the next round's. The report's list of what
+can run and what is open is kept in `corpus/checks/baseline.tsv` (228
+entries): `geng checks Main --baseline ../corpus/checks/baseline.tsv`, run
+in `app/`, fails on an entry not in it.
+
+**A correction to §VC55.** Its perf record was written from a `core-bench`
+built in a tree with §VC55's packing change set aside (for the clamp
+question of that section), so it held the counts from before packing:
+`gitlog` 2,862 M where the committed code counts 1,899 M. The record now
+holds this build's counts, written after checking the binary measured is
+the one built from this tree.

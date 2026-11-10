@@ -61,25 +61,25 @@ ringRows y stop t acc =
         ringRows (y + 1) stop t (Array.pushLast (ringRow (rowOffset t.screen y) t) acc)
 
 
-ringRow : Int -> Term -> DumpRow
+ringRow : (o : Int where 0 <= o && o + t.screen.stride <= Builder.length t.screen.cells) -> (t : Term) -> DumpRow
 ringRow o t =
     let
         m =
             metaAt o t.screen
 
         ext =
-            metaExtent m
+            clamp 0 t.screen.cols (metaExtent m)
     in
     { cells =
-        Array.map
-            (\x ->
+        Array.indexedMap
+            (\x _ ->
                 let
                     c =
                         Maybe.withDefault 0 (Builder.get (o + x) t.screen.cells)
                 in
                 { points = cellPoints c t.clusters, wide = cellWide c, style = cellStyle c }
             )
-            (Array.range 0 (ext - 1))
+            (Array.repeat ext {})
     , wrapped = Bitwise.and wrappedBit m /= 0
     , prompt = metaPrompt m
     }
@@ -233,7 +233,7 @@ styleText a =
 
 {-| The sum so far in bits 0–15, and bit 16 while the cell counted next is
 the rectangle's first, the one blank the DEC checksum does not leave out. -}
-checksumRows : (t : Term) -> Int -> Int -> (y : Int where 0 - t.screen.hist <= y) -> (bottom : Int where bottom < t.rows) -> Int -> Int
+checksumRows : (t : Term) -> (left : Int where 0 <= left) -> (right : Int where right < t.screen.cols) -> (y : Int where 0 - t.screen.hist <= y) -> (bottom : Int where bottom < t.rows) -> Int -> Int
 checksumRows t left right y bottom acc =
     if y > bottom then
         acc
@@ -242,7 +242,7 @@ checksumRows t left right y bottom acc =
         checksumRows t left right (y + 1) bottom (Bitwise.and 0xFFFF (checksumCells t (rowOffset t.screen y) left right acc))
 
 
-checksumCells : Term -> Int -> Int -> Int -> Int -> Int
+checksumCells : (t : Term) -> (o : Int where 0 <= o && o + t.screen.stride <= Builder.length t.screen.cells) -> (x : Int where 0 <= x) -> (right : Int where right < t.screen.cols) -> Int -> Int
 checksumCells t o x right acc =
     if x > right then
         acc

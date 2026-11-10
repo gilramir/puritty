@@ -537,7 +537,7 @@ hashRows s y rows cols acc =
 
 {-| A hash of the row at `o`: its cells to its extent, and the extent. A
 blank row's is 7. -}
-rowHash : Screen -> Int -> Int -> Int
+rowHash : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> Int -> Int
 rowHash s o cols =
     let
         ext =
@@ -546,7 +546,7 @@ rowHash s o cols =
     Bitwise.xor ext (hashCells s o 0 ext 7)
 
 
-hashCells : Screen -> Int -> Int -> Int -> Int -> Int
+hashCells : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (x : Int where 0 <= x) -> (ext : Int where ext <= s.cols) -> Int -> Int
 hashCells s o x ext h =
     if x >= ext then
         h
@@ -654,12 +654,12 @@ in what was drawn there. A shaper chooses a glyph by its neighbours (a
 ligature, a Devanagari conjunct, Fira Code's arrows) and shapes only the
 cells a run gives it, so a cell is drawn with its whole word (see
 [`spread`](#spread)). -}
-inWord : Screen -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Bool
+inWord : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> Int -> (x : Int where 0 <= x) -> Builder Int64 -> Bool
 inWord s o ext y cols x cells =
     hasGlyph (cellOf s o ext x) || hasGlyph (Maybe.withDefault unknown (Builder.get (y * cols + x) cells))
 
 
-wordLeft : Screen -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+wordLeft : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> Int -> Int -> Builder Int64 -> Int
 wordLeft s o ext y cols x cells =
     if x > 0 && inWord s o ext y cols (x - 1) cells then
         wordLeft s o ext y cols (x - 1) cells
@@ -669,9 +669,9 @@ wordLeft s o ext y cols x cells =
 
 
 {-| Past the last cell of the word at `x`. -}
-wordRight : Screen -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Int
+wordRight : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> (cols : Int where 1 <= cols) -> (x : Int where 0 <= x) -> Builder Int64 -> Int
 wordRight s o ext y cols x cells =
-    if x + 1 < cols && inWord s o ext y cols (x + 1) cells then
+    if x < cols - 1 && inWord s o ext y cols (x + 1) cells then
         wordRight s o ext y cols (x + 1) cells
 
     else
@@ -876,7 +876,7 @@ vInto vbit ink cols row x =
 cell's word; every cell whose ink reaches into a cell drawn; every cell
 the old ink of a cell drawn reached, which still shows it; and so on, the
 cells forgotten in the shadow so that the diff draws them. -}
-spread : (s : Screen) -> Cursor -> (rows : Int where rows <= s.rows) -> Int -> (taken sh : Shadow) -> Shadow
+spread : (s : Screen) -> Cursor -> (rows : Int where rows <= s.rows) -> (cols : Int where 1 <= cols) -> (taken sh : Shadow) -> Shadow
 spread s cursor rows cols sh =
     { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [] }) }
 
@@ -899,7 +899,7 @@ collect s cursor y rows cols w =
         collect s cursor (y + 1) rows cols (collectRow s cursor o (extentAt o s) y 0 cols w)
 
 
-collectRow : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> (taken w : Work) -> Work
+collectRow : (s : Screen) -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> Int -> Int -> (taken w : Work) -> Work
 collectRow s cursor o ext y x cols w =
     if x >= cols then
         w
@@ -911,7 +911,7 @@ collectRow s cursor o ext y x cols w =
         collectRow s cursor o ext y (x + 1) cols w
 
 
-differs : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int -> Builder Int64 -> Bool
+differs : (s : Screen) -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> Int -> (x : Int where 0 <= x) -> Builder Int64 -> Bool
 differs s cursor o ext y cols x cells =
     drawnAs s cursor o ext (y * cols) x /= Maybe.withDefault unknown (Builder.get (y * cols + x) cells)
 
@@ -961,7 +961,7 @@ hasAll mask bits =
 
 {-| The queue, a cell at a time: the cell forgotten, and with it its word
 and the cells its ink and its neighbours' ink tie it to, each queued. -}
-spreadWork : Screen -> Int -> Int -> Bool -> Builder Int -> (taken w : Work) -> Builder Int64
+spreadWork : Screen -> Int -> (cols : Int where 1 <= cols) -> Bool -> Builder Int -> (taken w : Work) -> Builder Int64
 spreadWork s rows cols inked0 ink w =
     when Array.last w.work is
         Nothing ->
@@ -979,8 +979,10 @@ spreadWork s rows cols inked0 ink w =
 
             else
                 let
+                    -- `modBy` by a width of at least 1 is 0 or more; the
+                    -- `max` says so to the compiler (§VC57)
                     x =
-                        modBy cols j
+                        max 0 (modBy cols j)
 
                     o =
                         rowOffset s y
@@ -1080,7 +1082,7 @@ diffRows s clusters cursor y rows cols sh list =
 
 
 {-| The cell the core holds at column `x` of the row at `o`. -}
-cellOf : Screen -> Int -> Int -> Int -> Int64
+cellOf : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> (x : Int where 0 <= x) -> Int64
 cellOf s o ext x =
     if x < ext then
         Maybe.withDefault 0 (Builder.get (o + x) s.cells)
@@ -1091,7 +1093,7 @@ cellOf s o ext x =
 
 {-| The cell drawn at column `x` of row `row` (the row's first index): the
 preedit's where its overlay lies, else the core's. -}
-cellAt : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int64
+cellAt : (s : Screen) -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> (x : Int where 0 <= x) -> Int64
 cellAt s cursor o ext row x =
     let
         i =
@@ -1115,7 +1117,7 @@ preCellPoints cursor i =
 
 {-| Row `y` from column `x`: each changed run written to the list and the
 shadow. -}
-diffRow : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> (x0 : Int where 0 <= x0) -> (cols : Int where cols <= 1000) -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
+diffRow : (s : Screen) -> Clusters -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> (x0 : Int where 0 <= x0) -> (cols : Int where cols <= 1000) -> (taken sh : Shadow) -> (taken list : Builder UInt8) -> { shadow : Shadow, list : Builder UInt8 }
 diffRow s clusters cursor o ext y x0 cols sh list =
     if x0 >= cols then
         { shadow = sh, list = list }
@@ -1181,7 +1183,7 @@ clearInk i end ink =
 
 {-| Past the last changed cell of a run that starts before `x`; `last` is
 the last changed cell seen. -}
-runEnd : Screen -> Cursor -> Int -> Int -> Int -> (x : Int where 0 <= x) -> (last : Int where 0 <= last && last < x) -> (cols : Int where cols <= 1000) -> Builder Int64 -> (r : Int where last < r)
+runEnd : (s : Screen) -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> (x : Int where 0 <= x) -> (last : Int where 0 <= last && last < x) -> (cols : Int where cols <= 1000) -> Builder Int64 -> (r : Int where last < r)
 runEnd s cursor o ext y x last cols cells =
     if x >= cols || x - last > 1 then
         last + 1
@@ -1195,7 +1197,7 @@ runEnd s cursor o ext y x last cols cells =
 
 {-| The cells of a run, written to the list and the shadow; each style id
 the first time this frame (`stamp`) is added to `styleIds`. -}
-writeRun : Screen -> Clusters -> Cursor -> Int -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (taken stamps : Builder Int) -> (taken styleIds : Builder Int) -> (taken list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
+writeRun : (s : Screen) -> Clusters -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> (x : Int where 0 <= x) -> Int -> Int -> (taken cells : Builder Int64) -> (taken stamps : Builder Int) -> (taken styleIds : Builder Int) -> (taken list : Builder UInt8) -> { cells : Builder Int64, stamps : Builder Int, styleIds : Builder Int, list : Builder UInt8 }
 writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
     if x >= end then
         { cells = cells, stamps = stamps, styleIds = styleIds, list = list }
@@ -1327,7 +1329,7 @@ isCursor cursor i =
 
 {-| The cell as the shadow keeps it once it is drawn: the core's, marked
 with the cursor's shape where the cursor is. -}
-drawnAs : Screen -> Cursor -> Int -> Int -> Int -> Int -> Int64
+drawnAs : (s : Screen) -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> Int -> (x : Int where 0 <= x) -> Int64
 drawnAs s cursor o ext row x =
     let
         c =

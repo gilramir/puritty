@@ -169,7 +169,7 @@ writeAscii bytes i end pen x row =
 {-| A run of printable ASCII written from column `x` to `xEnd` of the row at
 `o`, `first` the byte at `i`. A wide character the run's ends cut in half is
 made empty. -}
-asciiRow : Bytes -> Int -> Int -> Int64 -> Int64 -> Int -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+asciiRow : Bytes -> Int -> Int -> Int64 -> Int64 -> (cols : Int where 1 <= cols) -> (o : Int where 0 <= o) -> (x : Int where 0 <= x && x < cols) -> (xEnd : Int where xEnd <= cols) -> Int -> (taken cells : Builder Int64 where o + cols < Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 asciiRow bytes i end pen erase cols o x xEnd first cells =
     let
         m =
@@ -192,7 +192,7 @@ asciiRow bytes i end pen erase cols o x xEnd first cells =
 margins (1), or across the row (2). A function of its own, so that the
 checker holds each branch to its result's refinement and does not merge
 the screens' fields. -}
-insertFor : Int -> Int -> (x : Int where 0 <= x && x < s.cols) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+insertFor : Int -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (x : Int where 0 <= x && x < s.cols) -> (count : Int where 0 <= count && count <= 65535) -> (right : Int where 0 <= right && right <= 1000) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 insertFor inserting o x count right erase s =
     if inserting == 0 then
         s
@@ -454,7 +454,7 @@ type alias Run =
     { cells : Builder Int64, x : Int, next : Int, last : Int }
 
 
-decodeRun : Bytes -> Int -> (i : Int where 0 <= i) -> Int64 -> Int -> (cols : Int where cols <= 1000) -> (x : Int) -> Int -> (taken row : Builder Int64) -> (r : Run where Builder.length r.cells == Builder.length row && i <= r.next && x <= r.x)
+decodeRun : Bytes -> Int -> (i : Int where 0 <= i) -> Int64 -> Int -> (cols : Int where cols <= 1000) -> (x : Int) -> Int -> (taken row : Builder Int64) -> (r : Run where Builder.length r.cells == Builder.length row && i <= r.next && x <= r.x && (r.x <= cols || r.x == x))
 decodeRun bytes n i pen o cols x last row =
     if i >= n || x >= cols then
         { cells = row, x = x, next = i, last = last }

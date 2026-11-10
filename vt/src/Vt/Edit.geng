@@ -56,14 +56,20 @@ import Vt.Sgr exposing (..)
 {-| Before columns `x` to `xEnd` of the row at `o` are written, a wide
 character whose other half lies outside them loses that half too, which
 becomes `fill`, the erase cell, as Ghostty's `blankCell` (§VC17). -}
-splitWide : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+splitWide : Int64 -> (o : Int where 0 <= o) -> (x : Int where 0 <= x) -> (xEnd : Int) -> Int -> (taken cells : Builder Int64 where o + x < Builder.length cells && o + xEnd <= Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 splitWide fill o x xEnd ext cells =
     let
         firstCell =
             Maybe.withDefault 0 (Builder.get (o + x) cells)
 
+        -- no cell before an empty run at the row's start: a read at -1
+        -- would count back from the builder's end (§VC57)
         lastCell =
-            Maybe.withDefault 0 (Builder.get (o + xEnd - 1) cells)
+            if xEnd > 0 then
+                Maybe.withDefault 0 (Builder.get (o + xEnd - 1) cells)
+
+            else
+                0
 
         -- a cell at or past the extent is empty whatever the builder holds
         -- there, which a row cleared by its extent alone leaves behind
@@ -87,14 +93,20 @@ halves whatever is erased after, a protected one too (§VC18). A function of
 its own: written into `splitWide`, which clang inlines into the writer of
 ASCII runs, where the half inside is written over anyway, it made `gitlog`
 and `ls` 5% slower. -}
-splitWhole : Int64 -> Int -> Int -> Int -> Int -> (taken cells : Builder Int64) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
+splitWhole : Int64 -> (o : Int where 0 <= o) -> (x : Int where 0 <= x) -> (xEnd : Int) -> Int -> (taken cells : Builder Int64 where o + x < Builder.length cells && o + xEnd <= Builder.length cells) -> (r : Builder Int64 where Builder.length r == Builder.length cells)
 splitWhole fill o x xEnd ext cells =
     let
         firstCell =
             Maybe.withDefault 0 (Builder.get (o + x) cells)
 
+        -- no cell before an empty run at the row's start: a read at -1
+        -- would count back from the builder's end (§VC57)
         lastCell =
-            Maybe.withDefault 0 (Builder.get (o + xEnd - 1) cells)
+            if xEnd > 0 then
+                Maybe.withDefault 0 (Builder.get (o + xEnd - 1) cells)
+
+            else
+                0
 
         left =
             if cellWide firstCell == wideTail && x > 0 && x < ext then
@@ -144,7 +156,7 @@ unheadAbove y s =
 
 {-| `count` empty cells in `erase` inserted at column `x` of the row at
 `o`, the cells from `x` on moving right and those past the row's end lost. -}
-insertCells : Int -> (x : Int where 0 <= x && x <= s.cols) -> (count : Int where 0 <= count && count <= 65535) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
+insertCells : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (x : Int where 0 <= x && x <= s.cols) -> (count : Int where 0 <= count && count <= 65535) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
 insertCells o x count erase s =
     let
         ext =
@@ -260,7 +272,11 @@ eraseChars count t =
     -- ECH leaves the row not wrapping, as in Ghostty (§VC16)
     let
         end =
-            min t.cols (t.x + max 1 count)
+            if count >= t.cols - t.x then
+                t.cols
+
+            else
+                t.x + max 1 count
 
         -- a wide character at the end is erased whole, as in Ghostty,
         -- which matters when it is protected (§VC18)
@@ -277,7 +293,7 @@ eraseChars count t =
 {-| Ghostty's `cursorResetWrap`, which ECH, EL and DCH begin with: the
 cursor's row made not to wrap, and when it did, a spacer head at its end
 made a cell of the erase colour (§VC18). -}
-resetWrap : (taken t : Term) -> Term
+resetWrap : (taken t : Term) -> (r : Term where r.cols == t.cols)
 resetWrap t =
     if rowWrapped t.y t.screen then
         let
@@ -303,7 +319,7 @@ starts with a wide character, the spacer head that ends the row above is
 made a cell of the erase colour, whatever is erased after. The row above's
 wrap stands in for Ghostty's `wrap_continuation`, and above the screen's
 top it is the scrollback's newest row, while the ring holds it (§VC18). -}
-splitAbove : Int -> (taken t : Term) -> Term
+splitAbove : Int -> (taken t : Term) -> (r : Term where r.cols == t.cols)
 splitAbove x t =
     if x <= 1 && (t.y > 0 || t.screen.hist > 0) && rowWrapped (t.y - 1) t.screen && wideAt 0 t == wideHead then
         let
@@ -324,14 +340,14 @@ splitAbove x t =
 
 
 {-| The wide bits of the cursor's row's cell `x`. -}
-wideAt : Int -> Term -> Int
+wideAt : (x : Int where 0 <= x && x < t.screen.cols) -> (t : Term) -> Int
 wideAt x t =
     cellWide (peekCell (rowOffset t.screen t.y) x t.screen)
 
 
 {-| Columns `from` to `to` of the cursor's row made empty, in the erase
 cell. -}
-eraseSpan : Bool -> Int -> Int -> (taken t : Term) -> Term
+eraseSpan : Bool -> (from : Int where 0 <= from && from <= t.cols) -> (to : Int where to <= t.cols) -> (taken t : Term) -> Term
 eraseSpan guarded from to t =
     let
         s =
@@ -508,14 +524,14 @@ atPrompt y s =
         if metaPrompt m /= 0 then
             True
 
-        else if rowHasText o (metaExtent m) 0 s then
+        else if rowHasText o (clamp 0 s.cols (metaExtent m)) 0 s then
             False
 
         else
             atPrompt (y - 1) s
 
 
-rowHasText : Int -> Int -> Int -> Screen -> Bool
+rowHasText : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> (x : Int where 0 <= x) -> (s : Screen) -> Bool
 rowHasText o ext x s =
     if x >= ext then
         False
@@ -621,7 +637,7 @@ filledRows s y =
         y + 1
 
 
-rowEmpty : Screen -> Int -> Int -> Bool
+rowEmpty : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (x : Int where 0 <= x) -> Bool
 rowEmpty s o x =
     if x >= s.cols then
         True
