@@ -179,6 +179,7 @@ type Mode
     = Plain
     | Shell
     | Ssh String
+    | HostList
 
 
 cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String, host : Maybe String } Command
@@ -217,6 +218,10 @@ main =
                     Just "shell" ->
                         terminalMain Shell { env | args = Array.dropFirst 1 env.args }
 
+                    -- `puritty hosts`: the host list, which a session replaces
+                    Just "hosts" ->
+                        terminalMain HostList { env | args = Array.dropFirst 1 env.args }
+
                     -- `puritty ssh user@host:port`: quick connect
                     Just "ssh" ->
                         when Array.get 1 env.args is
@@ -239,10 +244,24 @@ settingsMain env =
         , version = "0.1.0"
         , command = settingsCli
         , init =
-            \_ -> Task.map2 (\fs vars -> { fs = fs, vars = vars }) File.initialize Os.Env.getEnvironmentVariables
+            \_ ->
+                Task.map3 (\cp fs more -> { cp = cp, fs = fs, vars = more.vars, self = more.self })
+                    Process.initialize
+                    File.initialize
+                    (Task.map2 (\vars self -> { vars = vars, self = self })
+                        Os.Env.getEnvironmentVariables
+                        (Os.Env.executable |> Task.map Just |> Task.onError (\_ -> Task.succeed Nothing))
+                    )
         , onCommand =
             \_ ctx (Settings asked) ->
-                SettingsProgram.run { fs = ctx.fs, vars = ctx.vars, config = asked }
+                SettingsProgram.run
+                    { fs = ctx.fs
+                    , vars = ctx.vars
+                    , config = asked
+                    , launcher = False
+                    , opener = Maybe.map (\self -> { cp = ctx.cp, program = Path.toString self, config = Maybe.map Path.toString asked }) ctx.self
+                    }
+                    |> Task.map (\_ -> {})
                     |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty settings: " ++ why, value = 2 })
         }
 
@@ -298,7 +317,16 @@ terminalMain mode env =
 
                                             chosen =
                                                 choose mode asked got.config
+
+                                            listing =
+                                                Array.isEmpty asked.program
+                                                    && asked.host == Nothing
+                                                    && (mode == HostList || (mode == Plain && got.config.start == "hosts"))
                                         in
+                                        if listing then
+                                            hostList ctx.cp ctx.fs ctx.vars given asked got
+
+                                        else
                                         when chosen.config is
                                             Err why ->
                                                 Task.fail why
@@ -349,11 +377,44 @@ choose mode asked config =
                         if String.startsWith "host:" config.start then
                             to (Hosts.named (String.dropFirst 5 config.start) config)
 
-                        else if config.start == "hosts" then
-                            { config = Ok config, problems = [ "start = \"hosts\": the host list is not built yet (docs/settings.md ST12 step 7); a shell is opened" ] }
-
                         else
                             { config = Ok config, problems = [] }
+
+            HostList ->
+                { config = Ok config, problems = [] }
+
+
+{-| The host list (V64, V65): the settings window on its Hosts page, whose
+Connect makes the same window the host's session, its font the host's. -}
+hostList : Process.Permission -> File.Permission -> Dict String String -> Given -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> { config : Config, problems : Array String } -> Task String {}
+hostList cp fs vars given asked got =
+    SettingsProgram.run { fs = fs, vars = vars, config = asked.config, launcher = True, opener = Nothing }
+        |> Task.andThen
+            (\outcome ->
+                when outcome is
+                    SettingsProgram.Closed ->
+                        Task.succeed {}
+
+                    SettingsProgram.Session h ->
+                        let
+                            config =
+                                (\c -> { c | title = Maybe.withDefault c.title asked.title }) (Hosts.session got.config h)
+                        in
+                        Platform.locale vars
+                            |> Task.andThen
+                                (\locale ->
+                                    Window.setFont { font = config.font, lang = Maybe.withDefault locale.language config.language, points = config.points, glyphCap = config.glyphCacheMb * 1024 * 1024 }
+                                        |> Task.andThen
+                                            (\done ->
+                                                when done is
+                                                    Ok cell ->
+                                                        begin cp vars given got.problems locale config cell
+
+                                                    Err why ->
+                                                        Task.fail ("cannot open the host's font: " ++ why)
+                                            )
+                                )
+            )
 
 
 start : Process.Permission -> Dict String String -> Given -> Array String -> Config -> Task String {}
@@ -380,6 +441,14 @@ startIn cp vars given problems locale config =
                         Task.fail ("cannot open the window: " ++ why)
 
                     Ok cell ->
+                        begin cp vars given problems locale config cell
+            )
+
+
+{-| A session in the window, open with this cell: the program started on a
+terminal of its size, and the loop. -}
+begin : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Window.Cell -> Task String {}
+begin cp vars given problems locale config cell =
                         let
                             -- the command, or the platform's programs, the
                             -- first of them that starts
@@ -423,7 +492,6 @@ startIn cp vars given problems locale config =
                                         |> Task.mapError Os.Error.toString
                                         |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = w.events, at = -1 } problems opener)
                                 )
-            )
 
 
 {-| The first of the commands that starts: one that is not found gives way

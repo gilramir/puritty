@@ -1,4 +1,4 @@
-module SettingsProgram exposing (run)
+module SettingsProgram exposing (run, Outcome(..), Opener)
 
 {-| `puritty settings` (`docs/settings.md` ST2, ST7): the settings window,
 a process of its own (V57). `SettingsWindow` is what it shows and does;
@@ -14,7 +14,10 @@ an edit by hand shows in the window.
 -}
 
 import Bytes exposing (Bytes)
-import Config
+import Config exposing (Config)
+import Hosts
+import Os.Process as Process
+import SshConfig
 import Dict exposing (Dict)
 import Os.Directory as Directory
 import Os.Error
@@ -45,7 +48,29 @@ type alias State =
       -- with PURITTY_SHOT set, the file each frame's picture is written to,
       -- for the settings gate (harness/settings.py)
     , shotPath : Maybe String
+      -- how a session is started in a new window, and, for the host list,
+      -- the host it becomes (V65)
+    , opener : Maybe Opener
+    , launcher : Bool
+    , outcome : Maybe Config.Host
     }
+
+
+{-| How the window starts a session in a window of its own: this
+program's file, with `--host` or `ssh`, and `--config` when it was given
+one. -}
+type alias Opener =
+    { cp : Process.Permission
+    , program : String
+    , config : Maybe String
+    }
+
+
+{-| How the window ended: closed, or, as the host list, connected to a
+host, whose session the same window becomes (V65). -}
+type Outcome
+    = Closed
+    | Session Config.Host
 
 
 size : { cols : Int, rows : Int }
@@ -53,18 +78,28 @@ size =
     { cols = 100, rows = 30 }
 
 
-run : { fs : File.Permission, vars : Dict String String, config : Maybe Path.Path } -> Task String {}
+type alias Asked =
+    { fs : File.Permission
+    , vars : Dict String String
+    , config : Maybe Path.Path
+    , launcher : Bool
+    , opener : Maybe Opener
+    }
+
+
+run : Asked -> Task String Outcome
 run r =
     let
         given =
             { file = SettingsSource.settingsFile r.vars r.config, fs = r.fs, title = Nothing, program = [] }
     in
-    -- one settings window: a second raises the first and ends (ST8)
-    Window.raise title
+    -- one settings window: a second raises the first and ends (ST8);
+    -- each host list is a session to be, so there may be several
+    (if r.launcher then Task.succeed False else Window.raise title)
         |> Task.andThen
             (\already ->
                 if already then
-                    Task.succeed {}
+                    Task.succeed Closed
 
                 else
                     openWindow r given
@@ -76,7 +111,7 @@ title =
     "puritty settings"
 
 
-openWindow : { fs : File.Permission, vars : Dict String String, config : Maybe Path.Path } -> Given -> Task String {}
+openWindow : Asked -> Given -> Task String Outcome
 openWindow r given =
     Platform.locale r.vars
         |> Task.andThen
@@ -91,7 +126,7 @@ openWindow r given =
                                 , points = Config.defaults.points
                                 , lang = locale.language
                                 , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
-                                , title = title
+                                , title = if r.launcher then "puritty hosts" else title
                                 }
                                 |> Task.andThen
                                     (\opened ->
@@ -100,16 +135,40 @@ openWindow r given =
                                                 Task.fail ("cannot open the window: " ++ why)
 
                                             Ok cell ->
-                                                Task.map2 (\events fonts -> { events = events, fonts = fonts }) (SettingsSource.watchSettings given) Window.fonts
-                                                    |> Task.andThen (\w -> loop (first given read cell w.events w.fonts (Dict.get "PURITTY_SHOT" r.vars)))
-                                                    |> Task.map (\_ -> {})
+                                                Task.map3 (\events fonts aliases -> { events = events, fonts = fonts, aliases = aliases })
+                                                    (SettingsSource.watchSettings given)
+                                                    Window.fonts
+                                                    (sshAliases r)
+                                                    |> Task.andThen (\w -> loop (first r given read cell w (Dict.get "PURITTY_SHOT" r.vars)))
+                                                    |> Task.map
+                                                        (\s ->
+                                                            when s.outcome is
+                                                                Just h ->
+                                                                    Session h
+
+                                                                Nothing ->
+                                                                    Closed
+                                                        )
                                     )
                         )
             )
 
 
-first : Given -> Read -> Window.Cell -> Maybe (Source Directory.Change) -> Array String -> Maybe String -> State
-first given read cell events fonts shotPath =
+{-| The hosts `~/.ssh/config` names, or none when it cannot be read. -}
+sshAliases : Asked -> Task x (Array String)
+sshAliases r =
+    when Platform.sshConfig r.vars is
+        Just path ->
+            File.readFile r.fs (Path.fromString path)
+                |> Task.map (\b -> SshConfig.aliases (Bytes.toStringLossy b))
+                |> Task.onError (\_ -> Task.succeed [])
+
+        Nothing ->
+            Task.succeed []
+
+
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String } -> Maybe String -> State
+first r given read cell w shotPath =
     let
         got =
             when read is
@@ -129,7 +188,9 @@ first given read cell events fonts shotPath =
             , reports = got.problems
             , cols = size.cols
             , rows = size.rows
-            , fonts = fonts
+            , fonts = w.fonts
+            , aliases = w.aliases
+            , launcher = r.launcher
             }
     , term =
         Vt.new
@@ -145,10 +206,13 @@ first given read cell events fonts shotPath =
     , preedit = { points = [], feedback = [], caret = 0 }
     , store = Maybe.map (\f -> SettingsFile.store given.fs f.path) given.file
     , given = given
-    , events = events
+    , events = w.events
     , closed = False
     , lost = False
     , shotPath = shotPath
+    , opener = r.opener
+    , launcher = r.launcher
+    , outcome = Nothing
     }
 
 
@@ -315,6 +379,17 @@ effect e s =
         SettingsWindow.Close ->
             Task.succeed { s | closed = True }
 
+        SettingsWindow.ConnectHost name ->
+            connect (Hosts.named name s.window.config) [ "--host", name ] s
+
+        SettingsWindow.ConnectQuick target ->
+            when Hosts.quick target is
+                Just h ->
+                    connect h [ "ssh", target ] s
+
+                Nothing ->
+                    Task.succeed s
+
         SettingsWindow.Write w ->
             when s.store is
                 Nothing ->
@@ -333,6 +408,33 @@ effect e s =
                                     Err why ->
                                         Task.succeed { s | window = SettingsWindow.told ("Not written: " ++ why) s.window }
                             )
+
+
+{-| A session: the host list becomes it (V65); the settings window starts
+it in a window of its own, this program again with `args`. -}
+connect : Config.Host -> Array String -> (taken s : State) -> Task String State
+connect h args s =
+    if s.launcher then
+        Task.succeed { s | outcome = Just h, closed = True }
+
+    else
+        when s.opener is
+            Just o ->
+                Process.spawn o.cp o.program (args ++ Maybe.withDefault [] (Maybe.map (\c -> [ "--config", c ]) o.config)) (Process.defaultSpawnOptions Process.Ignored)
+                    |> Task.map (\_ -> Nothing)
+                    |> Task.onError (\e -> Task.succeed (Just (Os.Error.toString e)))
+                    |> Task.map
+                        (\failed ->
+                            when failed is
+                                Just why ->
+                                    { s | window = SettingsWindow.told ("Not started: " ++ why) s.window }
+
+                                Nothing ->
+                                    s
+                        )
+
+            Nothing ->
+                Task.succeed { s | window = SettingsWindow.told "This program's own file is not known, so no window can be started" s.window }
 
 
 {-| The file changed: read again, and its settings shown. The window's own

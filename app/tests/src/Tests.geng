@@ -371,7 +371,7 @@ writing =
 
 opened : SettingsWindow.Model
 opened =
-    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ] }
+    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], aliases = [], launcher = False }
 
 
 press : Int -> SettingsWindow.Input
@@ -410,6 +410,12 @@ said effects =
 
                 SettingsWindow.Close ->
                     "close"
+
+                SettingsWindow.ConnectHost name ->
+                    "connect " ++ name
+
+                SettingsWindow.ConnectQuick target ->
+                    "connect to " ++ target
         )
         effects
 
@@ -419,6 +425,24 @@ after inputs =
     let
         r =
             Screen.feedInputs inputs opened
+    in
+    { screen = Screen.screenOf r.model, said = said r.effects, model = r.model }
+
+
+{-| The window with the example's host and an alias of ~/.ssh/config, on
+the Hosts page (the host list opens there; the settings window is taken
+there by its pages), after these inputs. -}
+onHostsPage : Bool -> Array SettingsWindow.Input -> { screen : Array String, said : Array String, model : SettingsWindow.Model }
+onHostsPage launcher inputs =
+    let
+        start =
+            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], launcher = launcher }
+
+        toPage =
+            if launcher then [] else [ k.tab, k.tab ] ++ Array.repeat 7 k.down ++ [ press 0xFF53 ]
+
+        r =
+            Screen.feedInputs (toPage ++ inputs) start
     in
     { screen = Screen.screenOf r.model, said = said r.effects, model = r.model }
 
@@ -551,6 +575,40 @@ window =
           }
         , { name = "a font's name typed with nothing chosen is taken as typed"
           , test = \_ -> Expect.equal [ "font.family = Some Font" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "Some Font" ++ [ k.enter ])).said
+          }
+        , { name = "the Hosts page lists quick connect, the file's hosts and ~/.ssh/config's"
+          , test =
+                \_ ->
+                    let
+                        rows =
+                            (onHostsPage False []).screen
+                    in
+                    Expect.equal
+                        [ "Quick connect               user@host:port"
+                        , "build-box                   gilbert@build.example.com:2222"
+                        , "through bastion.example.com · from the settings"
+                        , "work                        as ~/.ssh/config has it"
+                        , "from ~/.ssh/config"
+                        ]
+                        (Array.mapAndKeepJust (\r -> String.split "│" r |> Array.get 1 |> Maybe.map String.trim) rows |> Array.keepIf (\r -> r /= "" && not (String.startsWith "Connect without" r)) |> Array.takeFirst 5)
+          }
+        , { name = "Enter on a host connects to it"
+          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ k.down, k.enter ]).said
+          }
+        , { name = "quick connect connects to what is typed"
+          , test = \_ -> Expect.equal [ "connect to me@h.example.com:22" ] (onHostsPage False ([ k.enter ] ++ typeIn "me@h.example.com:22" ++ [ k.enter ])).said
+          }
+        , { name = "quick connect refuses what is not user@host:port"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False ([ k.enter ] ++ typeIn "me@" ++ [ k.enter ])
+                    in
+                    Expect.equal { said = [], foot = "\"me@\" is not where to connect, as user@host:port" } { said = r.said, foot = lastRow r.screen }
+          }
+        , { name = "the host list opens on the Hosts page, and connects there"
+          , test = \_ -> Expect.equal True (String.startsWith "Enter connects here" (lastRow (onHostsPage True []).screen))
           }
         , { name = "a narrow window still draws every row"
           , test = \_ -> Expect.equal 24 (Array.length (after [ SettingsWindow.Resized { cols = 40, rows = 24 } ]).screen)

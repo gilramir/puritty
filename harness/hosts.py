@@ -52,7 +52,8 @@ host = "b.example.com"
 user = "me"
 """
 
-# name, the settings (with `start` replaced when given), the command line
+# name, the settings (with `start` replaced when given), the command line,
+# and keys pressed in the window titled so, when the case has some
 CASES = [
     ("host", None, ["--host", "build-box"]),
     ("host-alias", None, ["--host", "work"]),
@@ -62,10 +63,32 @@ CASES = [
     ("start-shell", None, []),
     ("shell-over-start", 'start = "host:bastion"', ["shell"]),
     ("program-over-host", None, ["--host", "build-box", "--", "sh", "-c", "exec sleep 600"]),
+    # the host list (V65): Enter on the first host makes the same window
+    # its session, so there is one window, with the host's title and colours
+    ("host-list", None, ["hosts"], ("puritty hosts", ["Down", "Return"])),
+    ("start-hosts", 'start = "hosts"', [], ("puritty hosts", [])),
+    # from the settings window, a session opens a window of its own and the
+    # settings window stays
+    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 7 + ["Right", "Down", "Return"])),
 ]
 
 
-def run_case(env0, name, start, args):
+def xdotool():
+    """The IME gate's xdotool, as harness/pointer.py builds it."""
+    out = subprocess.run(["nix", "build", "--impure", "--no-link", "--print-out-paths", "-f",
+                          str(ROOT / "harness/ime/imes.nix"), "xdotool"], capture_output=True, text=True, check=True)
+    return [l for l in out.stdout.split() if not l.endswith("-man")][0] + "/bin/xdotool"
+
+
+XDO = None
+
+
+def windows(env):
+    out = subprocess.run(["xwininfo", "-root", "-tree"], env=env, capture_output=True, text=True).stdout
+    return sorted(l.split('"')[1] for l in out.splitlines() if '("puritty"' in l)
+
+
+def run_case(env0, name, start, args, keys=None):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     (home / "config" / "puritty").mkdir(parents=True)
@@ -80,6 +103,17 @@ def run_case(env0, name, start, args):
                PATH=f"{bin_dir}:{env0['PATH']}", PURITTY_SHOT=str(home / "shot.ppm"))
     p = subprocess.Popen([str(APP), *args], env=env, stdout=subprocess.DEVNULL, stderr=open(home / "stderr.txt", "w"))
     time.sleep(1.8)
+    seen = None
+    if keys is not None:
+        window, presses = keys
+        win = subprocess.run([XDO, "search", "--sync", "--name", f"^{window}$"], env=env, capture_output=True,
+                             text=True, timeout=10).stdout.split()[0]
+        subprocess.run([XDO, "windowfocus", "--sync", win], env=env, check=True)
+        for k in presses:
+            subprocess.run([XDO, "key", k], env=env, check=True)
+            time.sleep(0.1)
+        time.sleep(1.8)
+        seen = windows(env)
     title = reload.title_of(env)
     pic = reload.read_ppm(home / "shot.ppm")
     p.terminate()
@@ -88,6 +122,10 @@ def run_case(env0, name, start, args):
     except subprocess.TimeoutExpired:
         p.kill()
         p.wait()
+    # a session the settings window started is its own process: closed so
+    for w in subprocess.run([XDO, "search", "--class", "puritty"], env=env, capture_output=True, text=True).stdout.split():
+        subprocess.run([XDO, "windowclose", w], env=env, capture_output=True)
+    time.sleep(0.3)
     ssh = said.read_text().splitlines() if said.exists() else None
     colour = "none"
     if pic:
@@ -96,7 +134,8 @@ def run_case(env0, name, start, args):
         colour = "#" + row[x * 3:x * 3 + 3].hex()
     return (f"ssh: {ssh if ssh is not None else 'not run'}\n"
             f"title: {title}\n"
-            f"background: {colour}\n")
+            f"background: {colour}\n"
+            + (f"windows: {seen}\n" if seen is not None else ""))
 
 
 def main():
@@ -105,6 +144,8 @@ def main():
     a = ap.parse_args()
     if not APP.exists():
         sys.exit("hosts.py: build app/puritty first (app/build.sh)")
+    global XDO
+    XDO = xdotool()
     conf = pixels.write_fonts_conf()
     env = dict(os.environ, DISPLAY=DISPLAY, FONTCONFIG_FILE=str(conf), PURITTY_NO_XIM="1", PURITTY_DPI="96",
                LANG="C.UTF-8")
@@ -114,8 +155,8 @@ def main():
     time.sleep(0.5)
     fails = 0
     try:
-        for name, start, args in CASES:
-            got = run_case(env, name, start, args)
+        for name, start, args, *keys in CASES:
+            got = run_case(env, name, start, args, keys[0] if keys else None)
             pin = PINS / f"{name}.txt"
             if a.update:
                 PINS.mkdir(parents=True, exist_ok=True)

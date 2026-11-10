@@ -140,8 +140,12 @@ background = "#2a1010"
 
 `puritty ssh user@host:port` connects without saving a host, and a name
 the file doesn't have is passed to `ssh`, so your `~/.ssh/config` aliases
-work as they are. `start = "host:build-box"` at the top of the file makes
-plain `puritty` connect there; `puritty shell` still opens a local shell.
+work as they are. `puritty hosts` opens a list of your hosts (and those in
+`~/.ssh/config`) with a quick-connect field; choosing one turns that window
+into the session, as PuTTY's dialog does. `start = "hosts"` at the top of
+the file makes plain `puritty` open that list, and `start =
+"host:build-box"` connect straight there; `puritty shell` still opens a
+local shell.
 
 `puritty settings` opens a window to change them without editing the file:
 search, a page of settings at a time, each change written to the file and

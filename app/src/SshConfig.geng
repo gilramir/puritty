@@ -1,0 +1,37 @@
+module SshConfig exposing (aliases)
+
+{-| The hosts `~/.ssh/config` names (`docs/settings.md` ST10, V63), for
+the Hosts page to list beside the settings' own: each name on a `Host`
+line that is not a pattern (`*`, `?`, `!`), once, in the file's order.
+`Include` is not followed and `Match` is not read: a full parser comes
+with the built-in client (`synthesis.md` §10.2), which needs one; until
+then `ssh NAME` reads the file itself, so a host listed here connects as
+OpenSSH would. -}
+
+
+aliases : String -> Array String
+aliases text =
+    String.lines text
+        |> Array.foldl
+            (\line acc ->
+                let
+                    words =
+                        String.words (String.trim (String.replace "=" " " line))
+                in
+                when Array.popFirst words is
+                    Just { first, rest } ->
+                        if String.toLower first == "host" then
+                            Array.foldl
+                                (\w a ->
+                                    if String.any (\c -> c == '*' || c == '?' || c == '!') w || Array.member w a then a else Array.pushLast w a
+                                )
+                                acc
+                                rest
+
+                        else
+                            acc
+
+                    Nothing ->
+                        acc
+            )
+            []

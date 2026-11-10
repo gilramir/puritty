@@ -738,3 +738,47 @@ it.
 
 Held as before: settings 12 of 12, reload 15 of 15, pointer 51 of 51, IME
 14 of 14.
+
+## ST24 · Step 7b, first part: the Hosts page, and the host list (2026-11-10)
+
+**The Hosts page**, after the settings' pages: quick connect first
+(`user@host:port`, typed, connected to on Enter, refused with why when it
+is not one), then the file's hosts, each with `user@host:port` and its
+jump, then the hosts `~/.ssh/config` names that the file does not, marked
+as its (`SshConfig.aliases`: the names of `Host` lines that are not
+patterns; `Include` and `Match` are not read, and `ssh NAME` reads the
+file itself, V63). `Platform.sshConfig` is where that file is:
+`~/.ssh/config`, or `%USERPROFILE%\.ssh\config`. Enter connects. The
+file's hosts are listed in their names' order, not the file's: gren-toml's
+table is a `Dict`.
+
+**What Connect does** (V65): in the settings window, opened from a
+terminal (Ctrl+Comma) or by `puritty settings`, it starts the session in a
+window of its own, this program again with `--host NAME` or `ssh TARGET`,
+and the settings window stays. As **the host list**, `puritty hosts` or
+`start = "hosts"`, it opens on the Hosts page, titled "puritty hosts", and
+Connect makes the same window the session: `SettingsProgram.run` answers
+`Session host`, and `Main` sets the window's font to the host's
+(`Window.setFont`) and runs the terminal in it (`begin`, the half of
+`startIn` after the window is open). There may be several host lists at
+once, each a session to be; there is one settings window.
+
+**Held by** `app/tests`, 64 of 64 (the page's rows and where each host is
+from, Enter on a host, quick connect taken and refused, the host list
+opening on it), and the hosts gate, **11 of 11**, with `host-list` (Down
+and Enter in `puritty hosts`: the stand-in ssh is given the first host's
+arguments and there is one window, titled as the host), `start-hosts`, and
+`settings-connects` (a second window, the session, and the settings window
+still there). **On Windows**, in Gilbert's session: `puritty.exe hosts`,
+Down and Enter, and the same window showed `ssh.exe`'s host-key question
+for beelink1 itself on the host's background. The driver's F24, which it
+types to mark where a case begins, reached that question too, and ssh
+ended a few seconds later; without the driver a session to the same host
+was still waiting at its question after 15 s.
+
+Held as before: settings 12 of 12, reload 15 of 15, pointer 51 of 51, IME
+14 of 14.
+
+**Left of step 7:** changing hosts in the window (a new host, its fields,
+a rename, a removal), and the menus that list them (ST9: the
+Ctrl+right-click menu, Windows' system menu).
