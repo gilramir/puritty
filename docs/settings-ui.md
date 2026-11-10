@@ -12,6 +12,9 @@ A proposal for how puritty's settings are changed without editing
 - The form was left open: a view inside puritty's window, or a dialog
   outside it.
 
+How it is built, and the hosts it will start ssh sessions from, is
+[`settings.md`](settings.md) (2026-11-10).
+
 The survey's models are VS Code's settings editor (search, a "modified"
 marker, reset per setting, one schema for the UI and the file) and Windows
 Terminal (a UI over a hand-editable file, inheritance from Defaults).
