@@ -1,0 +1,28 @@
+module SshAgents exposing (agents)
+
+{-| The ssh agents the built-in client tries on Linux (`docs/ssh-client.md`
+SC19), apart from `Platform` so that the application's tests, which run on
+node, need no native package. `app/windows` has its own.
+-}
+
+import Dict exposing (Dict)
+import Ssh.Session as Session
+import Task exposing (Task)
+
+
+{-| The ssh agents to try (`docs/ssh-client.md` SC19): `SSH_AUTH_SOCK`'s
+socket, where it names one. -}
+agents : Dict String String -> Task x (Array Session.AgentPath)
+agents vars =
+    Task.succeed
+        (when Dict.get "SSH_AUTH_SOCK" vars is
+            Just path ->
+                if path == "" then
+                    []
+
+                else
+                    [ Session.LocalSocket path ]
+
+            Nothing ->
+                []
+        )

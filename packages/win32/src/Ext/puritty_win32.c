@@ -1975,3 +1975,48 @@ geng_cancel puritty_win32_system_menu(void *items_bytes, geng_wait *wait) {
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
+
+
+/* PAGEANT'S PIPE (puritty docs/ssh-client.md SC19) */
+
+#define SECURITY_WIN32
+#include <dpapi.h>
+#include <security.h>
+
+/* What Pageant's pipe is named from (PuTTY's agent_named_pipe_name and
+ * capi_obfuscate_string): the user's name, the principal's before its @ or
+ * else the logon name; then 0 and "Pageant" with its NUL, padded with
+ * zeros to CryptProtectMemory's block and protected by it across processes,
+ * whose SHA-256 the Geng side takes. The answer is the name's length as a
+ * byte, the name, then the protected bytes. */
+geng_cancel puritty_win32_pageantParts(geng_wait *wait) {
+    char user[512];
+    ULONG n = sizeof user;
+    int got = GetUserNameExA(NameUserPrincipal, user, &n);
+    if (got) {
+        char *at = strchr(user, '@');
+        if (at) *at = 0;
+    } else {
+        DWORD m = sizeof user;
+        got = GetUserNameA(user, &m);
+    }
+    if (!got) user[0] = 0;
+    size_t ulen = strlen(user);
+    if (ulen > 255) ulen = 255;
+    unsigned char data[CRYPTPROTECTMEMORY_BLOCK_SIZE];
+    memset(data, 0, sizeof data);
+    memcpy(data, "Pageant", 8);
+    CryptProtectMemory(data, sizeof data, CRYPTPROTECTMEMORY_CROSS_PROCESS);
+    size_t total = 1 + ulen + sizeof data;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + total, GENG_HEADER_BYTES(sizeof *b + total));
+    b->length = (int32_t) total;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    b->data[0] = (uint8_t) ulen;
+    memcpy(b->data + 1, user, ulen);
+    memcpy(b->data + 1 + ulen, data, sizeof data);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}

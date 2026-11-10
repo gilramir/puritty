@@ -8,7 +8,7 @@ module Main exposing (main)
     ssh-tests known-hosts FILE
     ssh-tests config FILE
     ssh-tests login HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--passphrase P] [--password P] [--responses A,B] [--rekey]
-    ssh-tests session HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--known-hosts FILE] [--strict ask|yes|accept-new|no]
+    ssh-tests session HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--agent-pipe PIPE] [--known-hosts FILE] [--strict ask|yes|accept-new|no]
         [--trust | --trust-once] [--passphrase P] [--password P] [--responses A,B] [--exec CMD] [--pty COLS,ROWS] [--stdin TEXT]
         [--exec CMD | --shell] [--pty COLS,ROWS] [--not-utf8] [--env NAME=VALUE] [--stdin TEXT] [--resize COLS,ROWS] [--stdin2 TEXT] [--stdin-bytes N] [--eof] [--hex] [--keepalive]
 
@@ -1478,7 +1478,9 @@ sessionMode r target =
             , user = option "--user" r.args |> Maybe.withDefault "nobody"
             , identityFiles = many "--identity"
             , identitiesOnly = False
-            , agent = option "--agent" r.args
+            , agents =
+                (option "--agent" r.args |> Maybe.map (\a -> [ Session.LocalSocket a ]) |> Maybe.withDefault [])
+                    ++ (option "--agent-pipe" r.args |> Maybe.map (\a -> [ Session.Pipe a ]) |> Maybe.withDefault [])
             , knownHostsFiles = many "--known-hosts"
             , strictHostKeyChecking = option "--strict" r.args |> Maybe.withDefault "ask"
             , hostKeyAlias = Nothing

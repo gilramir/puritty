@@ -1,0 +1,56 @@
+module SshAgents exposing (agents)
+
+{-| The ssh agents the built-in client tries on Windows (`docs/ssh-client.md`
+SC19), apart from `Platform` so that the application's tests, which run on
+node, need no native package. `app/linux` has its own.
+-}
+
+import Bytes
+import Dict exposing (Dict)
+import Locale
+import Platform
+import Ssh.Session as Session
+import SshCrypto
+import Task exposing (Task)
+import UInt8
+
+
+{-| The ssh agents to try, in turn (`docs/ssh-client.md` SC19): the one
+`SSH_AUTH_SOCK` names, where it is set, else Windows' OpenSSH agent's pipe
+and then Pageant's, whose name is PuTTY's (`agent_named_pipe_name`):
+`\\.\pipe\pageant.USER.HASH`, HASH the SHA-256 in hex of "Pageant"
+padded and protected by `CryptProtectMemory` across this user's
+processes, as an SSH `string`. -}
+agents : Dict String String -> Task x (Array Session.AgentPath)
+agents vars =
+    when Platform.variable "SSH_AUTH_SOCK" vars is
+        Just path ->
+            Task.succeed
+                [ if String.startsWith "\\\\.\\pipe\\" path then
+                    Session.Pipe path
+
+                  else
+                    Session.LocalSocket path
+                ]
+
+        Nothing ->
+            Locale.pageantParts
+                |> Task.map
+                    (\parts ->
+                        let
+                            length =
+                                Bytes.length parts.protected
+
+                            asString =
+                                Bytes.flatten
+                                    [ Bytes.fromUInt8s (Array.map UInt8.fromIntWrap [ 0, 0, length // 256, modBy 256 length ])
+                                    , parts.protected
+                                    ]
+
+                            hash =
+                                Bytes.toHexString { padding = False } (SshCrypto.hash SshCrypto.Sha256 asString)
+                        in
+                        [ Session.Pipe "\\\\.\\pipe\\openssh-ssh-agent"
+                        , Session.Pipe ("\\\\.\\pipe\\pageant." ++ parts.user ++ "." ++ String.toLower hash)
+                        ]
+                    )

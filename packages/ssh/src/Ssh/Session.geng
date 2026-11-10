@@ -1,5 +1,6 @@
 module Ssh.Session exposing
-    ( Answer(..)
+    ( AgentPath(..)
+    , Answer(..)
     , Ask(..)
     , Input(..)
     , Notice(..)
@@ -50,7 +51,7 @@ type alias Permissions =
 
 {-| What the session is, mostly as `~/.ssh/config` resolved it
 (`Ssh.Config`): where, who, the key files to offer (each path absolute),
-the agent's socket, the `known_hosts` files (the first is the one a new
+the agents to try, the `known_hosts` files (the first is the one a new
 key is written to), how strictly a key is held (`ask`, `yes`,
 `accept-new`, `no`), the name keys are looked up by when it is not the
 host's, the terminal and command, and the keepalives (`ServerAliveInterval`
@@ -62,7 +63,7 @@ type alias Options =
     , user : String
     , identityFiles : Array String
     , identitiesOnly : Bool
-    , agent : Maybe String
+    , agents : Array AgentPath
     , knownHostsFiles : Array String
     , strictHostKeyChecking : String
     , hostKeyAlias : Maybe String
@@ -70,6 +71,15 @@ type alias Options =
     , keepaliveSeconds : Int
     , keepaliveCountMax : Int
     }
+
+
+{-| Where an agent listens: a Unix-domain socket (`SSH_AUTH_SOCK` on
+Linux), or a named pipe (Windows' OpenSSH agent's
+`\\.\pipe\openssh-ssh-agent`, Pageant's). The first of the options'
+that answers is used. -}
+type AgentPath
+    = LocalSocket String
+    | Pipe String
 
 
 {-| What the user is asked. -}
@@ -146,7 +156,7 @@ type alias State =
     { options : Options
     , permissions : Permissions
     , socket : Net.Socket
-    , agent : Maybe Net.Socket
+    , agent : Maybe AgentLink
     , notices : Source Notice
     , transport : Transport.Transport
     , auth : Maybe Auth.Auth
@@ -219,7 +229,7 @@ run permissions options notices inputs =
                                                                         { options = options
                                                                         , permissions = permissions
                                                                         , socket = socket
-                                                                        , agent = agent.socket
+                                                                        , agent = agent.link
                                                                         , notices = notices
                                                                         , transport = started.transport
                                                                         , auth = Nothing
@@ -283,64 +293,80 @@ identitiesOf permissions options =
         |> Task.map Array.flatten
 
 
-{-| The agent's keys, numbered from 1000, unless the files' keys are the
-only ones to offer (`IdentitiesOnly`), when only those of its keys that a
-file names are. -}
-agentOf : Permissions -> Options -> Array Identity -> Task x { socket : Maybe Net.Socket, identities : Array Identity }
+{-| A connection to an agent: a request sent, and its whole answer. -}
+type alias AgentLink =
+    { call : Bytes -> Task Os.Error.Error Bytes }
+
+
+{-| The agent's keys, numbered from 1000, from the first of the agents
+that answers, unless the files' keys are the only ones to offer
+(`IdentitiesOnly`), when only those of its keys that a file names are. -}
+agentOf : Permissions -> Options -> Array Identity -> Task x { link : Maybe AgentLink, identities : Array Identity }
 agentOf permissions options files =
-    when options.agent is
+    when Array.popFirst options.agents is
         Nothing ->
-            Task.succeed { socket = Nothing, identities = [] }
+            Task.succeed { link = Nothing, identities = [] }
 
-        Just path ->
-            Net.connectLocal permissions.net (Path.fromString path)
+        Just candidate ->
+            linkTo permissions candidate.first
                 |> Task.andThen
-                    (\socket ->
-                        agentCall socket Agent.requestIdentities
-                            |> Task.map
+                    (\link ->
+                        link.call Agent.requestIdentities
+                            |> Task.andThen
                                 (\message ->
-                                    let
-                                        keys =
-                                            Agent.identities message |> Result.withDefault []
+                                    when Agent.identities message is
+                                        Ok keys ->
+                                            let
+                                                fromFiles =
+                                                    Array.map (\f -> f.identity.publicKey) files
 
-                                        fromFiles =
-                                            Array.map (\f -> f.identity.publicKey) files
+                                                offered =
+                                                    if options.identitiesOnly then
+                                                        Array.keepIf (\k -> Array.member k.publicKey fromFiles) keys
 
-                                        offered =
-                                            if options.identitiesOnly then
-                                                Array.keepIf (\k -> Array.member k.publicKey fromFiles) keys
+                                                    else
+                                                        Array.keepIf (\k -> not (Array.member k.publicKey fromFiles)) keys
+                                            in
+                                            Task.succeed
+                                                { link = Just link
+                                                , identities =
+                                                    Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) offered
+                                                }
 
-                                            else
-                                                Array.keepIf (\k -> not (Array.member k.publicKey fromFiles)) keys
-                                    in
-                                    { socket = Just socket
-                                    , identities = Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) offered
-                                    }
+                                        Err why ->
+                                            Task.fail { kind = Os.Error.Other, operation = "agent", path = Nothing, detail = why }
                                 )
                     )
-                |> Task.onError (\_ -> Task.succeed { socket = Nothing, identities = [] })
+                |> Task.onError (\_ -> agentOf permissions { options | agents = candidate.rest } files)
 
 
-agentCall : Net.Socket -> Bytes -> Task Os.Error.Error Bytes
-agentCall socket request =
-    Net.write request socket |> Task.andThen (\_ -> agentRead socket Bytes.empty)
+linkTo : Permissions -> AgentPath -> Task Os.Error.Error AgentLink
+linkTo permissions path =
+    when path is
+        LocalSocket socketPath ->
+            Net.connectLocal permissions.net (Path.fromString socketPath)
+                |> Task.map (\socket -> { call = \request -> Net.write request socket |> Task.andThen (\_ -> agentRead (Net.read socket) Bytes.empty) })
+
+        Pipe pipePath ->
+            File.open permissions.fs (File.ForReadAndWrite File.ExpectExisting) (Path.fromString pipePath)
+                |> Task.map (\handle -> { call = \request -> File.write request handle |> Task.andThen (\_ -> agentRead (File.read handle) Bytes.empty) })
 
 
-agentRead : Net.Socket -> Bytes -> Task Os.Error.Error Bytes
-agentRead socket got =
+agentRead : Task Os.Error.Error Bytes -> Bytes -> Task Os.Error.Error Bytes
+agentRead readMore got =
     when Agent.unframe got is
         Just whole ->
             Task.succeed whole.message
 
         Nothing ->
-            Net.read socket
+            readMore
                 |> Task.andThen
                     (\more ->
                         if Bytes.isEmpty more then
                             Task.succeed Bytes.empty
 
                         else
-                            agentRead socket (Bytes.flatten [ got, more ])
+                            agentRead readMore (Bytes.flatten [ got, more ])
                     )
 
 
@@ -657,8 +683,8 @@ onRequest request st =
 
                 Just { file = Nothing } ->
                     when st.agent is
-                        Just socket ->
-                            agentCall socket (Agent.signRequest { publicKey = (identityOf need.id st).publicKey, data = need.data, algorithm = need.algorithm })
+                        Just link ->
+                            link.call (Agent.signRequest { publicKey = (identityOf need.id st).publicKey, data = need.data, algorithm = need.algorithm })
                                 |> Task.map
                                     (\message ->
                                         when Agent.signature message is
@@ -837,14 +863,14 @@ isJust m =
 {-| A host's options as OpenSSH would resolve them (SC7, SC15): the
 user's `~/.ssh/config` and what it includes, with the puritty host entry's
 user, port and key before the file's lines, as `ssh -l -p -i` put theirs
-(SC12 question 9). `home` and `localUser` stand for `~` and `%u`; `agent`
-is `SSH_AUTH_SOCK`'s value, where there is one. The settings' problems
+(SC12 question 9). `home` and `localUser` stand for `~` and `%u`; `agents`
+are the platform's, tried in turn unless `IdentityAgent` names one. The settings' problems
 (a line that does not read, a `Match` this client cannot judge) come back
 beside the options.
 -}
 optionsFor :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, command : Maybe String, home : String, localUser : String, agent : Maybe String, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
     -> Task x { options : Options, problems : Array String }
 optionsFor permissions given =
     let
@@ -916,19 +942,23 @@ optionsFor permissions given =
                                         _ ->
                                             "ask"
 
-                                agentPath =
+                                agentPaths =
                                     when Dict.get "identityagent" settings.values |> Maybe.andThen Array.first is
                                         Just "none" ->
-                                            Nothing
+                                            []
 
                                         Just "SSH_AUTH_SOCK" ->
-                                            given.agent
+                                            given.agents
 
                                         Just path ->
-                                            Just (expand path)
+                                            if String.startsWith "\\\\.\\pipe\\" path || String.startsWith "//./pipe/" path then
+                                                [ Pipe path ]
+
+                                            else
+                                                [ LocalSocket (expand path) ]
 
                                         Nothing ->
-                                            given.agent
+                                            given.agents
 
                                 remoteCommand =
                                     when given.command is
@@ -944,7 +974,7 @@ optionsFor permissions given =
                                 , user = one "user" given.localUser
                                 , identityFiles = Array.map expand (all "identityfile")
                                 , identitiesOnly = String.toLower (one "identitiesonly" "no") == "yes"
-                                , agent = agentPath
+                                , agents = agentPaths
                                 , knownHostsFiles = all "userknownhostsfile"
                                 , strictHostKeyChecking = strict
                                 , hostKeyAlias = Dict.get "hostkeyalias" settings.values |> Maybe.andThen Array.first

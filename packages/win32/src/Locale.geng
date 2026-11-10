@@ -1,14 +1,15 @@
-module Locale exposing (language)
+module Locale exposing (language, pageantParts)
 
 {-| The user's language as Windows keeps it (`docs/windows.md` WS21):
 Windows sets no `LANG` or `LC_*`, so a program asks it.
 
-@docs language
+@docs language, pageantParts
 
 -}
 
 import Bytes exposing (Bytes)
 import Task exposing (Task)
+import UInt8
 
 
 {-| The user's first language, as Windows names one: a language, perhaps
@@ -25,3 +26,25 @@ language =
 
 @extern(c, "puritty_win32_language")
 languageExtern : Task x Bytes
+
+
+{-| What Pageant's pipe is named from (`docs/ssh-client.md` SC19): the
+user's name as PuTTY takes it, and "Pageant" padded and protected by
+`CryptProtectMemory` across this user's processes. The pipe is
+`\\.\pipe\pageant.USER.HASH`, HASH the SHA-256, in hex, of the
+protected bytes as an SSH `string`. -}
+pageantParts : Task x { user : String, protected : Bytes }
+pageantParts =
+    pageantPartsExtern
+        |> Task.map
+            (\b ->
+                let
+                    n =
+                        Bytes.get 0 b |> Maybe.map UInt8.toInt |> Maybe.withDefault 0
+                in
+                { user = Bytes.toStringLossy (Bytes.slice 1 (1 + n) b), protected = Bytes.slice (1 + n) (Bytes.length b) b }
+            )
+
+
+@extern(c, "puritty_win32_pageantParts")
+pageantPartsExtern : Task x Bytes

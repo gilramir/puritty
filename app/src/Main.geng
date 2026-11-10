@@ -55,6 +55,7 @@ import Int64
 import Keys
 import Os.Env
 import Platform
+import SshAgents
 import Os.Directory as Directory
 import Os.Error exposing (Error)
 import Os.File as File
@@ -561,6 +562,9 @@ sshBackend vars config charset host =
                     localUser =
                         Dict.get "USER" vars |> Maybe.withDefault (Dict.get "USERNAME" vars |> Maybe.withDefault "")
                 in
+                SshAgents.agents vars
+                    |> Task.andThen
+                        (\agents ->
                 Session.optionsFor permissions
                     { host = host.host
                     , user = host.user
@@ -569,13 +573,14 @@ sshBackend vars config charset host =
                     , command = host.command
                     , home = home
                     , localUser = localUser
-                    , agent = Dict.get "SSH_AUTH_SOCK" vars
+                    , agents = agents
                     , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 }
                     }
                     |> Task.andThen
                         (\resolved ->
                             Backend.ssh permissions resolved.options
                                 |> Task.map (\remote -> { remote = remote, problems = Array.map (\p -> "~/.ssh/config: " ++ p) resolved.problems })
+                        )
                         )
             )
 

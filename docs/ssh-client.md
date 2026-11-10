@@ -1130,3 +1130,53 @@ is the marker for now); the changed-key dialog (a changed key is refused
 outright, which is stricter); a jump host (the built-in client does not
 take `jump` yet; such a host stays OpenSSH's); the session's exit status
 when it is killed by a signal, which is 255 as `ssh`'s.
+
+## SC19 · The agents on Windows (2026-11-10)
+
+SC11's step 9, its agent part. Gilbert allowed turning on beelink1's
+OpenSSH agent service and running Pageant (2026-11-10).
+
+**An agent is a socket or a pipe.** `Ssh.Session.AgentPath` is
+`LocalSocket` (Linux's `SSH_AUTH_SOCK`, through `Os.Net.connectLocal`) or
+`Pipe` (a Windows named pipe, opened with `Os.File.open` for reading and
+writing, which Windows' `os` reads on a thread of its own and writes in
+place). The options carry a list, tried in turn until one lists its keys;
+`IdentityAgent none` empties it, `IdentityAgent SSH_AUTH_SOCK` keeps the
+platform's, and a path names one. Each platform's list is `SshAgents`'s
+(kept apart from `Platform` so the application's tests, on node, need no
+native package): on Linux `SSH_AUTH_SOCK`; on Windows the one
+`SSH_AUTH_SOCK` names if it is set, else **Windows' OpenSSH agent**,
+`\\.\pipe\openssh-ssh-agent`, then **Pageant**.
+
+**Pageant's pipe** is named as PuTTY names it (`agent_named_pipe_name`,
+`capi_obfuscate_string`): `\\.\pipe\pageant.USER.HASH`, USER the
+user principal's name before its `@` (else the logon name), HASH the
+SHA-256 in hex of "Pageant", NUL-padded to `CryptProtectMemory`'s block
+and protected by it with `CRYPTPROTECTMEMORY_CROSS_PROCESS`, as an SSH
+`string`. The C (`Locale.pageantParts` in `packages/win32`, linking
+`crypt32` and `secur32`) answers the name and the protected bytes;
+`SshCrypto` hashes them.
+
+**Measured on beelink1** (`harness/windows/agents/`), against the test
+sshd on nene listening on the LAN, with keys of the test's own:
+
+- **OpenSSH's agent**: the service started, a test key added with
+  `ssh-add`, and `ssh-tests.exe session ... --agent-pipe
+  \\.\pipe\openssh-ssh-agent` logged in with the agent's key alone and
+  ran `exit 7`. Then `ssh-add -D` (Windows' agent keeps keys in the
+  registry until then), the service stopped and set back to Disabled.
+- **Pageant** (0.85's `pageant.exe` from PuTTY's site, its signature
+  valid, Simon Tatham's), run with the test key as a PPK: `puritty.exe
+  --host test` (client built-in, its `%APPDATA%` and `HOME` the test's
+  own) found the pipe by the name above, `pageant.yosup.9cf31a…`, logged
+  in with Pageant's key while OpenSSH's agent was stopped, and exited 7,
+  the command's status.
+
+Each run leaves beelink1 as it was: no process left, the files removed,
+the service Disabled, no key in the agent's store.
+
+**Not yet, of step 9:** the built-in client as Windows' default (SC12
+question 6 makes it so once step 9 passes, and its gate includes
+Gilbert's own session to an EUC-KR host, which only he can run);
+passwords kept in Windows' Credential Manager; the jump host, the strip
+and the changed-key dialog of SC18.
