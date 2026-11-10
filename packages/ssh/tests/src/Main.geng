@@ -7,6 +7,7 @@ module Main exposing (main)
     ssh-tests fuzz FILE [FROM] COUNT
     ssh-tests known-hosts FILE
     ssh-tests config FILE
+    ssh-tests login HOST PORT --user NAME [--identity FILE]... [--passphrase P] [--password P] [--responses A,B] [--rekey]
 
 `connect` makes the exchange with the server, asks for the `ssh-userauth`
 service, and asks to authenticate with `none`, whose refusal says the keys
@@ -36,10 +37,12 @@ import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
 import Os.Random
+import Ssh.Auth as Auth
 import Ssh.Config as Config
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
+import SshCrypto
 import Task exposing (Task)
 import UInt8
 
@@ -75,7 +78,12 @@ configOrMore r =
             configCases r.fs file
 
         _ ->
-            fuzzOrUsage r
+            when afterWord "login" r.args is
+                [ host, port ] ->
+                    login r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
+
+                _ ->
+                    fuzzOrUsage r
 
 
 fuzzOrUsage : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
@@ -927,3 +935,262 @@ globChars pattern name =
 
                     Nothing ->
                         False
+
+
+-- LOGIN
+
+
+{-| A connection that logs in (step 6): every transport and authentication
+event a line, every request answered from the options. -}
+type alias Session =
+    { socket : Net.Socket
+    , options : Array String
+    , fs : File.Permission
+    , transport : Transport
+    , auth : Maybe Auth.Auth
+    , identities : Array { identity : Auth.Identity, file : Bytes }
+    , exchanges : Int
+    , done : Bool
+    }
+
+
+login : { args : Array String, fs : File.Permission, net : Net.Permission } -> { host : String, port : Int } -> Task Never {}
+login r target =
+    let
+        files =
+            Array.indexedMap (\i a -> { index = i, arg = a }) r.args
+                |> Array.keepIf (\a -> a.arg == "--identity")
+                |> Array.mapAndFlatten (\a -> Array.get (a.index + 1) r.args |> Maybe.map (\f -> [ f ]) |> Maybe.withDefault [])
+    in
+    files
+        |> Array.map (\f -> File.readFile r.fs (Path.fromString f))
+        |> Task.sequence
+        |> Task.andThen
+            (\texts ->
+                let
+                    identities =
+                        Array.indexedMap (\i text -> { i = i, text = text }) texts
+                            |> Array.mapAndFlatten
+                                (\t ->
+                                    when SshCrypto.keyFileInfo t.text is
+                                        Just info ->
+                                            [ { identity = { id = t.i, publicKey = info.publicKey, keyType = KnownHosts.keyTypeOf info.publicKey }, file = t.text } ]
+
+                                        Nothing ->
+                                            []
+                                )
+                in
+                Os.Random.bytes 32
+                    |> Task.andThen
+                        (\seed ->
+                            Net.connect r.net target
+                                |> Task.andThen
+                                    (\socket ->
+                                        let
+                                            started =
+                                                Transport.start Transport.defaultConfig seed
+                                        in
+                                        onTransport started
+                                            { socket = socket
+                                            , options = r.args
+                                            , fs = r.fs
+                                            , transport = started.transport
+                                            , auth = Nothing
+                                            , identities = identities
+                                            , exchanges = 0
+                                            , done = False
+                                            }
+                                            |> Task.andThen readOn
+                                    )
+                        )
+            )
+        |> Task.onError (\e -> say ("failed: " ++ Os.Error.toString e) |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+
+
+say : String -> Task x {}
+say line =
+    Console.write (line ++ "\n")
+
+
+readOn : Session -> Task Os.Error.Error {}
+readOn session =
+    if session.done then
+        Net.close session.socket
+
+    else
+        Net.read session.socket
+            |> Task.andThen
+                (\chunk ->
+                    if Bytes.isEmpty chunk then
+                        say "the connection closed" |> Task.andThen (\_ -> Net.close session.socket)
+
+                    else
+                        onTransport (Transport.receive chunk session.transport) session |> Task.andThen readOn
+                )
+
+
+onTransport : Transport.Step -> Session -> Task Os.Error.Error Session
+onTransport step session0 =
+    (if Bytes.isEmpty step.out then
+        Task.succeed {}
+
+     else
+        Net.write step.out session0.socket
+    )
+        |> Task.andThen
+            (\_ ->
+                Array.foldl
+                    (\event acc -> acc |> Task.andThen (\session -> onEvent event session))
+                    (Task.succeed { session0 | transport = step.transport })
+                    step.events
+            )
+
+
+onEvent : Event -> Session -> Task Os.Error.Error Session
+onEvent event session =
+    when event is
+        HostKey key ->
+            say ("host key: " ++ key.algorithm) |> Task.map (\_ -> session)
+
+        KeysChanged algorithms ->
+            let
+                counted =
+                    { session | exchanges = session.exchanges + 1 }
+            in
+            if counted.exchanges == 1 then
+                say ("keys: " ++ algorithms.toServer)
+                    |> Task.andThen
+                        (\_ ->
+                            let
+                                config =
+                                    { user = option "--user" session.options |> Maybe.withDefault "nobody"
+                                    , identities = Array.map .identity session.identities
+                                    , methods = [ "publickey", "keyboard-interactive", "password" ]
+                                    , serverSigAlgs = []
+                                    , passwordTries = 2
+                                    }
+                            in
+                            onAuth (Auth.begin config (Transport.sessionId counted.transport |> Maybe.withDefault Bytes.empty)) counted
+                        )
+
+            else
+                say "a new exchange after authentication: done"
+                    |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "done" counted.transport) { counted | done = True })
+
+        ExtInfo extensions ->
+            let
+                algorithms =
+                    Array.findFirst (\x -> x.name == "server-sig-algs") extensions
+                        |> Maybe.map (\x -> String.split "," (Bytes.toStringLossy x.value.value))
+                        |> Maybe.withDefault []
+            in
+            Task.succeed { session | auth = Maybe.map (Auth.withServerSigAlgs algorithms) session.auth }
+
+        Received payload ->
+            when session.auth is
+                Just auth ->
+                    if Auth.isAuthMessage payload then
+                        onAuth (Auth.received payload auth) session
+
+                    else
+                        say "received another message" |> Task.map (\_ -> session)
+
+                Nothing ->
+                    Task.succeed session
+
+        Closed closed ->
+            say ("closed by the server: " ++ closed.description) |> Task.map (\_ -> { session | done = True })
+
+        Failed reason ->
+            say ("failed: " ++ reason) |> Task.map (\_ -> { session | done = True })
+
+        _ ->
+            Task.succeed session
+
+
+onAuth : Auth.Step -> Session -> Task Os.Error.Error Session
+onAuth step session0 =
+    let
+        withAuth =
+            { session0 | auth = Just step.auth }
+
+        sent =
+            Array.foldl
+                (\payload acc -> acc |> Task.andThen (\session -> onTransport (Transport.send payload session.transport) session))
+                (Task.succeed withAuth)
+                step.send
+
+        told =
+            Array.foldl (\e acc -> acc |> Task.andThen (\session -> onAuthEvent e session)) sent step.events
+    in
+    Array.foldl (\request acc -> acc |> Task.andThen (\session -> onRequest request session)) told step.requests
+
+
+onAuthEvent : Auth.Event -> Session -> Task Os.Error.Error Session
+onAuthEvent event session =
+    when event is
+        Auth.Banner text ->
+            say ("banner: " ++ String.trim text) |> Task.map (\_ -> session)
+
+        Auth.Refused refused ->
+            say ("refused: " ++ refused.method ++ "; the server allows " ++ String.join "," refused.allowed) |> Task.map (\_ -> session)
+
+        Auth.PartialSuccess partial ->
+            say ("partial success; the server wants " ++ String.join "," partial.allowed) |> Task.map (\_ -> session)
+
+        Auth.PasswordChange prompt ->
+            say ("the server wants a new password: " ++ prompt) |> Task.map (\_ -> session)
+
+        Auth.Authenticated ->
+            say "authenticated"
+                |> Task.andThen
+                    (\_ ->
+                        if Array.member "--rekey" session.options then
+                            onTransport (Transport.rekey session.transport) session
+
+                        else
+                            onTransport (Transport.disconnect 11 "done" session.transport) { session | done = True }
+                    )
+
+        Auth.Exhausted exhausted ->
+            say ("nothing left to try; the server allows " ++ String.join "," exhausted.allowed)
+                |> Task.andThen (\_ -> onTransport (Transport.disconnect 14 "no more methods" session.transport) { session | done = True })
+
+
+onRequest : Auth.Request -> Session -> Task Os.Error.Error Session
+onRequest request session =
+    let
+        continue step =
+            onAuth step session
+    in
+    when { request = request, auth = session.auth } is
+        { auth = Nothing } ->
+            Task.succeed session
+
+        { request = Auth.NeedSignature need, auth = Just auth } ->
+            when Array.findFirst (\i -> i.identity.id == need.id) session.identities is
+                Nothing ->
+                    continue (Auth.unsigned need.id auth)
+
+                Just found ->
+                    say ("the server would take key " ++ String.fromInt need.id ++ "; signing with " ++ need.algorithm)
+                        |> Task.andThen
+                            (\_ ->
+                                SshCrypto.loadKey found.value.file (Bytes.fromString (option "--passphrase" session.options |> Maybe.withDefault ""))
+                                    |> Task.andThen
+                                        (\key ->
+                                            SshCrypto.sign key need.algorithm need.data
+                                                |> Task.andThen (\signature -> SshCrypto.forget key |> Task.map (\_ -> signature))
+                                                |> Task.onError (\p -> SshCrypto.forget key |> Task.andThen (\_ -> Task.fail p))
+                                        )
+                                    |> Task.map (\signature -> Auth.signed need.id signature auth)
+                                    |> Task.onError (\_ -> say "the key would not load" |> Task.map (\_ -> Auth.unsigned need.id auth))
+                                    |> Task.andThen continue
+                            )
+
+        { request = Auth.NeedPassword _, auth = Just auth } ->
+            continue (Auth.withPassword (option "--password" session.options) auth)
+
+        { request = Auth.NeedResponses need, auth = Just auth } ->
+            say ("prompts: " ++ String.join " | " (Array.map .text need.prompts))
+                |> Task.andThen (\_ -> continue (Auth.responses (option "--responses" session.options |> Maybe.map (String.split ",")) auth))

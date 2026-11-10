@@ -679,6 +679,10 @@ Each ends with its gate passing, and the gates before it still passing.
    thread), the agent (Linux's socket for the gate, then Windows' pipe and
    Pageant), password, keyboard-interactive. *Gate:* sshd with each method
    and with `MaxAuthTries 2`; a wrong passphrase.
+   **Key files, password and keyboard-interactive done 2026-11-10:** SC16.
+   The agent is not yet: Linux's socket needs a Unix-domain connection in
+   geng-lang's `Os.Net`, Windows' pipe an `Os.File` open of a named pipe,
+   and Pageant its pipe's name.
 7. **Connection**: session channel, `pty-req` with modes and `IUTF8`, `env`
    and `SetEnv`, shell or command, `window-change`, exit status,
    keepalives. *Gate:* the EUC-KR case; a resize seen by `stty size`; `exit
@@ -949,3 +953,52 @@ the file's (question 9) and the system file after it, which come with the
 window (steps 8 and 9); `CanonicalizeHostname`; the algorithm lists'
 `+`, `-` and `^`; recording the cases on beelink1 with Windows' OpenSSH,
 whose paths differ.
+
+## SC16 · User authentication as built (2026-11-10)
+
+SC11's step 6, without the agent.
+
+**Keys stay in C** (SC12 question 7). `SshCrypto.keyFileInfo` reads an
+OpenSSH key file's public half without its passphrase; `loadKey` reads the
+file in C, runs `bcrypt_pbkdf` and AES-256-CTR on a thread of its own,
+checks the two check words, and has PuTTY make its key of the private part
+(`ssh_key_new_priv_openssh`), clearing every copy of the decrypted bytes
+and of the passphrase it was handed; Geng holds a handle. `sign` signs on
+a thread, as the server's algorithm asks (`rsa-sha2-512` or `-256` for an
+RSA key); `forget` frees the key and PuTTY clears its numbers, after any
+signature in flight. A cancelled signature still hands its work back, so
+the key is freed and cleared on the program's thread. Ed25519, ECDSA
+P-256, P-384 and P-521 and RSA; FIDO keys and PEM files not yet.
+`ssh-crypto-tests`' 14 `keyload` vectors (`ssh-keygen` files of each type,
+with a passphrase and without) hold the public key to the `.pub` file,
+sign and verify, refuse a wrong passphrase and a forgotten key: on Linux and
+Windows 11.
+
+**`Ssh.Auth`** is RFC 4252 and 4256's client, as pure as the transport:
+the `ssh-userauth` service, `none`, then the methods the server allows in
+the client's order. It asks the caller for a signature, a password or
+answers to prompts, and the caller may refuse each. A key is offered first
+without a signature, and signed only after the server's PK_OK, so a key
+with a passphrase is unlocked only when it would be taken; an RSA key signs
+with `rsa-sha2-512` unless `server-sig-algs` offers only `-256`. It reports
+the banner, each refusal with the methods left, partial success, a
+password-change request (which it does not answer: the method is given
+up), success, and running out.
+
+**Against OpenSSH 9.6** (`tests/sshd.py`, `ssh-tests login`), OpenSSH
+checked the client's Ed25519, ECDSA P-521 (behind a passphrase), RSA
+`rsa-sha2-512` and, with `PubkeyAcceptedAlgorithms rsa-sha2-256`,
+`rsa-sha2-256` signatures; an unknown key before a known one; a wrong
+passphrase (the key is given up, and nothing is left); `MaxAuthTries 2`
+(the server closes with "Too many authentication failures"); no key; and
+a new exchange begun by the client **after** authentication, which
+OpenSSH takes (SC14: before, it does not). Against **Windows 11's sshd**
+from nene, the test client logged in with an Ed25519 key and made a new
+exchange. **The scripted server** plays what a server without root cannot
+check: a password, a wrong one twice, a banner, two prompts, two rounds
+of keyboard-interactive, partial success, and a password-change request.
+Gate: 9 login cases in `sshd.py`, 7 in `scripted.py`.
+
+**Not yet:** the agent (above); `publickey-hostbound-v00@openssh.com`;
+which keys to offer from `~/.ssh/config` (`IdentityFile`, `IdentitiesOnly`),
+which is the window's (step 8).

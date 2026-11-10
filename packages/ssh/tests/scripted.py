@@ -241,15 +241,84 @@ class Server:
         if case in ("server-rekeys", "hostkey-changes"):
             self.exchange(c, client_version, False)
         c.send(bytes([6]) + string(b"ssh-userauth"))
+        if case in LOGIN_CASES:
+            userauth(c, case)
+            c.read()
+            return
         auth = c.read()
         assert auth[0] == 50, auth
         c.send(bytes([51]) + namelist(["publickey"]) + bytes([0]))
         c.read()
 
 
+def userauth(c, case):
+    """The server's side of user authentication, as `case` plays it."""
+    def failure(methods, partial=False):
+        c.send(bytes([51]) + namelist(methods) + bytes([1 if partial else 0]))
+
+    def info(prompts, name=b"", instruction=b""):
+        c.send(bytes([60]) + string(name) + string(instruction) + string(b"") + struct.pack(">I", len(prompts))
+               + b"".join(string(p) + bytes([e]) for p, e in prompts))
+
+    def request():
+        m = c.read()
+        if m[0] == 61:
+            n = struct.unpack(">I", m[1:5])[0]
+            return ("responses", read_strings(m[5:], n)[0])
+        fields, i = read_strings(m[1:], 3)
+        return (fields[2].decode(), m[1 + i:])
+
+    if case == "login-banner":
+        c.send(bytes([53]) + string(b"Authorized use only.\r\n") + string(b""))
+    kind, rest = request()
+    assert kind == "none", kind
+    methods = {"login-kbd-two-prompts": ["keyboard-interactive"], "login-kbd-rounds": ["keyboard-interactive"],
+               "login-partial": ["password"]}.get(case, ["password"])
+    failure(methods)
+    while True:
+        kind, rest = request()
+        if kind == "password":
+            password = read_strings(rest[1:], 1)[0][0]
+            if case == "login-passwd-change":
+                c.send(bytes([60]) + string(b"Your password has expired.") + string(b""))
+            elif password != b"secret":
+                failure(methods)
+            elif case == "login-partial":
+                methods = ["keyboard-interactive"]
+                failure(methods, partial=True)
+            else:
+                c.send(bytes([52]))
+                return
+        elif kind == "keyboard-interactive":
+            if case == "login-kbd-rounds":
+                info([])
+                kind, rest = request()
+                assert kind == "responses" and rest == [], (kind, rest)
+            info([(b"Password: ", 0), (b"Code: ", 1)] if case != "login-kbd-rounds" else [(b"Token: ", 0)],
+                 name=b"login", instruction=b"two things")
+            kind, answers = request()
+            assert kind == "responses", kind
+            if answers in ([b"a", b"b"], [b"t"]):
+                c.send(bytes([52]))
+                return
+            failure(methods)
+        else:
+            failure(methods)
+
+
+LOGIN_CASES = {
+    "login-password": ["--password", "secret"],
+    "login-password-wrong": ["--password", "wrong"],
+    "login-banner": ["--password", "secret"],
+    "login-kbd-two-prompts": ["--responses", "a,b"],
+    "login-kbd-rounds": ["--responses", "t"],
+    "login-partial": ["--password", "secret", "--responses", "a,b"],
+    "login-passwd-change": ["--password", "secret"],
+}
+
 CASES = ["ok", "banner", "ssh1", "no-version", "huge-length", "short-padding", "garbled-kexinit", "ignore-first",
          "ignore-first-not-strict", "wrong-guess", "bad-signature", "zero-public", "newkeys-early", "second-kexinit",
-         "bad-mac", "server-rekeys", "hostkey-changes", "disconnect"]
+         "bad-mac", "server-rekeys", "hostkey-changes", "disconnect"] + list(LOGIN_CASES)
 
 
 def run_case(case):
@@ -272,7 +341,11 @@ def run_case(case):
 
     t = threading.Thread(target=serve, daemon=True)
     t.start()
-    out = subprocess.run([str(CLIENT), "connect", "127.0.0.1", str(port)], capture_output=True, text=True, timeout=30)
+    if case in LOGIN_CASES:
+        args = ["login", "127.0.0.1", str(port), "--user", "me", *LOGIN_CASES[case]]
+    else:
+        args = ["connect", "127.0.0.1", str(port)]
+    out = subprocess.run([str(CLIENT), *args], capture_output=True, text=True, timeout=30)
     t.join(5)
     listener.close()
     got = out.stdout + (f"[exit {out.returncode}]\n" if out.returncode else "")

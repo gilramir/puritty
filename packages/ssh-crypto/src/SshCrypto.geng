@@ -1,17 +1,24 @@
 module SshCrypto exposing
     ( Cipher(..)
     , Hash(..)
+    , Key
+    , KeyProblem(..)
     , Keyed
     , Mac(..)
     , aesCtr
     , bcryptPbkdf
     , blockSize
     , equal
+    , forget
     , hash
     , hmac
+    , keyFileInfo
+    , loadKey
     , open
     , openLength
+    , publicKeyOf
     , seal
+    , sign
     , signatureAlgorithms
     , tagLength
     , verify
@@ -29,11 +36,14 @@ Nothing here draws random bytes: a private value is the caller's, from
 packet cipher is keyed again for each packet from the sequence number and
 how many packets the keys have sealed or opened.
 
-@docs Hash, hash, Mac, hmac, equal, x25519Public, x25519Shared, signatureAlgorithms, verify, Cipher, Keyed, tagLength, blockSize, seal, openLength, open, aesCtr, bcryptPbkdf
+@docs Key, KeyProblem, keyFileInfo, loadKey, publicKeyOf, sign, forget, Hash, hash, Mac, hmac, equal, x25519Public, x25519Shared, signatureAlgorithms, verify, Cipher, Keyed, tagLength, blockSize, seal, openLength, open, aesCtr, bcryptPbkdf
 
 -}
 
 import Bytes exposing (Bytes)
+import Extern
+import Task exposing (Task)
+import UInt8
 
 
 {-| A hash: SHA-1 (for a hashed `known_hosts` name only), SHA-256,
@@ -260,6 +270,106 @@ nonEmpty b =
         Just b
 
 
+-- PRIVATE KEYS
+
+
+{-| A private key, read from an OpenSSH key file and held in C, never in
+Geng's memory, until [`forget`](#forget) clears it (`ssh-client.md` SC12
+question 7).
+-}
+type Key
+    = Key Extern.Handle
+
+
+{-| Why a key could not be read or used. -}
+type KeyProblem
+    = NotAKeyFile
+    | WrongPassphrase
+    | UnsupportedEncryption
+    | UnsupportedKey
+    | Malformed
+    | Forgotten
+    | OutOfMemory
+
+
+problemOf : Int -> KeyProblem
+problemOf code =
+    when code is
+        1 ->
+            NotAKeyFile
+
+        2 ->
+            WrongPassphrase
+
+        3 ->
+            UnsupportedEncryption
+
+        4 ->
+            UnsupportedKey
+
+        5 ->
+            Malformed
+
+        6 ->
+            Forgotten
+
+        _ ->
+            OutOfMemory
+
+
+{-| What an OpenSSH key file (`-----BEGIN OPENSSH PRIVATE KEY-----`) says
+without its passphrase: whether it has one, and its public key blob.
+`Nothing` for a file that is not one, or holds a key of a type this client
+does not sign with (Ed25519, ECDSA and RSA it does; FIDO keys not yet).
+-}
+keyFileInfo : Bytes -> Maybe { encrypted : Bool, publicKey : Bytes }
+keyFileInfo text =
+    let
+        info =
+            keyFileInfoExtern text
+    in
+    if Bytes.isEmpty info then
+        Nothing
+
+    else
+        Just { encrypted = Bytes.get 0 info /= Just (UInt8.fromIntWrap 0), publicKey = Bytes.slice 1 (Bytes.length info) info }
+
+
+{-| The private key of an OpenSSH key file, decrypted with the passphrase
+(not used for a file that has none). `bcrypt_pbkdf` runs on a thread of
+its own: a file's 16 rounds take about 0.1 s, and the program runs
+meanwhile.
+-}
+loadKey : Bytes -> Bytes -> Task KeyProblem Key
+loadKey text passphrase =
+    loadKeyExtern text passphrase
+        |> Task.map Key
+        |> Task.mapError problemOf
+
+
+{-| The key's public blob. -}
+publicKeyOf : Key -> Task KeyProblem Bytes
+publicKeyOf (Key handle) =
+    keyPublicBlobExtern handle |> Task.mapError problemOf
+
+
+{-| A signature of the data by the key, as SSH's signature blob, made on a
+thread: `algorithm` is what the server takes, `rsa-sha2-512` or
+`rsa-sha2-256` for an RSA key, the key's own type for the others.
+-}
+sign : Key -> String -> Bytes -> Task KeyProblem Bytes
+sign (Key handle) algorithm data =
+    signExtern handle (Bytes.fromString algorithm) data |> Task.mapError problemOf
+
+
+{-| The key freed and its numbers cleared, once no signature needs it.
+Forgetting a key twice is not an error.
+-}
+forget : Key -> Task x {}
+forget (Key handle) =
+    forgetKeyExtern handle
+
+
 -- EXTERNS
 
 
@@ -313,3 +423,23 @@ aesCtrExtern : Bytes -> Bytes -> Bytes -> Bytes
 
 @externPure(c, "ssh_crypto_bcryptPbkdf")
 bcryptPbkdfExtern : Bytes -> Bytes -> Int -> Int -> Bytes
+
+
+@externPure(c, "ssh_crypto_keyFileInfo")
+keyFileInfoExtern : Bytes -> Bytes
+
+
+@extern(c, "ssh_crypto_loadKey")
+loadKeyExtern : Bytes -> Bytes -> Task Int Extern.Handle
+
+
+@extern(c, "ssh_crypto_keyPublicBlob")
+keyPublicBlobExtern : Extern.Handle -> Task Int Bytes
+
+
+@extern(c, "ssh_crypto_sign")
+signExtern : Extern.Handle -> Bytes -> Bytes -> Task Int Bytes
+
+
+@extern(c, "ssh_crypto_forgetKey")
+forgetKeyExtern : Extern.Handle -> Task x {}

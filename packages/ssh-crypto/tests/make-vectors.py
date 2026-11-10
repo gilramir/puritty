@@ -296,6 +296,20 @@ for keytype, rounds in [("ed25519", 16), ("ecdsa", 4), ("rsa", 1)]:
     encrypted = body[i + 4:i + 4 + n]
     emit("keyfile", passphrase=b"hunter2", salt=salt, rounds=file_rounds, encrypted=encrypted, pub=pub)
 
+# PRIVATE KEYS: ssh-keygen's files, each type this client signs with, with a
+# passphrase and without; the test loads each, holds its public key to the
+# .pub file's, signs, and checks the signature with `verify`.
+
+for keytype, bits, sigalgs in [("ed25519", None, ["ssh-ed25519"]), ("ecdsa", "256", ["ecdsa-sha2-nistp256"]),
+                               ("ecdsa", "384", ["ecdsa-sha2-nistp384"]), ("ecdsa", "521", ["ecdsa-sha2-nistp521"]),
+                               ("rsa", "2048", ["rsa-sha2-256", "rsa-sha2-512"]), ("rsa", "3072", ["rsa-sha2-512"])]:
+    for passphrase in [b"", b"correct horse"]:
+        key = work / f"user_{keytype}_{bits}_{len(passphrase)}"
+        subprocess.run(["ssh-keygen", "-q", "-t", keytype, *(["-b", bits] if bits else []), "-a", "4", "-N", passphrase.decode(), "-f", str(key)], check=True)
+        pub = base64.b64decode((Path(str(key) + ".pub")).read_text().split()[1])
+        for sigalg in sigalgs:
+            emit("keyload", file=key.read_bytes(), passphrase=passphrase, pub=pub, encrypted=1 if passphrase else 0, alg=sigalg.encode())
+
 subprocess.run(["rm", "-rf", str(work)], check=True)
 
 (HERE / "vectors.txt").write_text(

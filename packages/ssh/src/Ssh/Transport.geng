@@ -10,6 +10,7 @@ module Ssh.Transport exposing
     , receive
     , rekey
     , send
+    , sessionId
     , start
     )
 
@@ -313,6 +314,17 @@ disconnect code description (Transport st) =
 isReady : Transport -> Bool
 isReady (Transport st) =
     st.ready && st.phase /= Dead
+
+
+{-| The session's id, the first exchange's hash, once it is done; what a
+user authentication signature covers. -}
+sessionId : Transport -> Maybe Bytes
+sessionId (Transport st) =
+    if st.ready then
+        st.sessionId
+
+    else
+        Nothing
 
 
 finish : State -> Step
@@ -871,11 +883,11 @@ ecdhReply payload st =
                         signed =
                             SshCrypto.verify { algorithm = chosen.hostKey, publicKey = reply.hostKey, signature = reply.signature, data = exchangeHash }
 
-                        sessionId =
+                        session =
                             Maybe.withDefault exchangeHash st.sessionId
 
                         keysFor letters cipherName =
-                            keys shared exchangeHash sessionId letters cipherName
+                            keys shared exchangeHash session letters cipherName
                     in
                     if not signed then
                         fail ("the server's " ++ chosen.hostKey ++ " signature of the exchange does not hold") st
@@ -891,7 +903,7 @@ ecdhReply payload st =
                                         sendPacket (Wire.writeByte msgNewkeys)
                                             (emit (HostKey { algorithm = chosen.hostKey, key = reply.hostKey })
                                                 { st
-                                                    | sessionId = Just sessionId
+                                                    | sessionId = Just session
                                                     , hostKey = Just reply.hostKey
                                                     , kex = Just { ours = ours, oursSeq = oursSeq, theirs = Just theirs, secret = Nothing, chosen = Just chosen, ignoreNext = False, incoming = Just incoming }
                                                 }
@@ -918,12 +930,12 @@ ecdhReply payload st =
 {-| A cipher's keys (RFC 4253 §7.2): `HASH(K || H || letter || session_id)`,
 extended by `HASH(K || H || K1 || ...)` to the length the cipher takes. -}
 keys : Bytes -> Bytes -> Bytes -> { iv : String, key : String } -> String -> Maybe Keys
-keys shared exchangeHash sessionId letters cipherName =
+keys shared exchangeHash session letters cipherName =
     let
         derive letter n =
             let
                 first =
-                    SshCrypto.hash SshCrypto.Sha256 (Bytes.flatten [ shared, exchangeHash, Bytes.fromString letter, sessionId ])
+                    SshCrypto.hash SshCrypto.Sha256 (Bytes.flatten [ shared, exchangeHash, Bytes.fromString letter, session ])
             in
             Bytes.slice 0 n (extend first n)
 

@@ -1,0 +1,563 @@
+module Ssh.Auth exposing
+    ( Auth
+    , Config
+    , Event(..)
+    , Identity
+    , Request(..)
+    , Step
+    , begin
+    , isAuthMessage
+    , received
+    , responses
+    , signed
+    , unsigned
+    , withPassword
+    , withServerSigAlgs
+    )
+
+{-| SSH user authentication, the client's side (RFC 4252, and RFC 4256 for
+keyboard-interactive; puritty `docs/ssh-client.md` SC11 step 6): the
+`ssh-userauth` service, then `none`, then each method the server allows,
+in the client's order, until one succeeds or none is left.
+
+Like the transport, it does no I/O. Each step answers the payloads to send
+through the transport, what it needs from the caller, and what happened.
+What it needs is a signature by a key ([`signed`](#signed)), a password
+([`withPassword`](#withPassword)) or answers to the server's prompts
+([`responses`](#responses)); the caller may refuse each, and the method is
+then given up. A key is first offered without a signature, so a key with a
+passphrase is unlocked only when the server has said it would take it.
+-}
+
+import Bytes exposing (Bytes)
+import Ssh.Wire as Wire
+import UInt8
+
+
+{-| A key the client may offer: an id the caller knows it by, its public
+blob, and its type (`ssh-ed25519`, `ecdsa-sha2-nistp256`, `ssh-rsa`, ...).
+-}
+type alias Identity =
+    { id : Int, publicKey : Bytes, keyType : String }
+
+
+{-| Who to log in as, the keys to offer, the methods to try in order (of
+`publickey`, `keyboard-interactive`, `password`), and the signature
+algorithms the server said it takes (`server-sig-algs`, RFC 8308), which
+choose an RSA key's.
+-}
+type alias Config =
+    { user : String
+    , identities : Array Identity
+    , methods : Array String
+    , serverSigAlgs : Array String
+    , passwordTries : Int
+    }
+
+
+{-| What the caller is asked for. -}
+type Request
+    = NeedSignature { id : Int, algorithm : String, data : Bytes }
+    | NeedPassword { prompt : String }
+    | NeedResponses { name : String, instruction : String, prompts : Array { text : String, echo : Bool } }
+
+
+{-| What happened:
+
+  - `Banner`: the server's banner (RFC 4252 §5.4), to be shown framed as
+    the server's, its control characters taken out.
+  - `Refused`: a method or key was refused; the methods the server still
+    allows.
+  - `PartialSuccess`: a method succeeded and the server wants another.
+  - `PasswordChange`: the server wants a new password, which this client
+    does not set; the password method is given up.
+  - `Authenticated`.
+  - `Exhausted`: nothing left to try; the methods the server allowed last.
+
+-}
+type Event
+    = Banner String
+    | Refused { method : String, allowed : Array String }
+    | PartialSuccess { allowed : Array String }
+    | PasswordChange String
+    | Authenticated
+    | Exhausted { allowed : Array String }
+
+
+type alias Step =
+    { auth : Auth, send : Array Bytes, requests : Array Request, events : Array Event }
+
+
+type Auth
+    = Auth State
+
+
+type Attempt
+    = AwaitingService
+    | TryingNone
+    | Querying Identity
+    | Signing { identity : Identity, algorithm : String }
+    | SentSignature Identity
+    | AwaitingPassword
+    | SentPassword
+    | KeyboardInteractive
+    | AwaitingResponses
+    | Done
+
+
+type alias State =
+    { config : Config
+    , sessionId : Bytes
+    , attempt : Attempt
+    , allowed : Array String
+    , triedKeys : Array Int
+    , passwords : Int
+    , keyboardTried : Bool
+    , send : Array Bytes
+    , requests : Array Request
+    , events : Array Event
+    }
+
+
+msgServiceRequest : Int
+msgServiceRequest =
+    5
+
+
+msgServiceAccept : Int
+msgServiceAccept =
+    6
+
+
+msgRequest : Int
+msgRequest =
+    50
+
+
+msgFailure : Int
+msgFailure =
+    51
+
+
+msgSuccess : Int
+msgSuccess =
+    52
+
+
+msgBanner : Int
+msgBanner =
+    53
+
+
+{-| PK_OK, PASSWD_CHANGEREQ and INFO_REQUEST share this number; the method
+in progress says which (RFC 4252 §7, §8; RFC 4256 §3.2). -}
+msgSixty : Int
+msgSixty =
+    60
+
+
+msgInfoResponse : Int
+msgInfoResponse =
+    61
+
+
+{-| Whether a payload is user authentication's: the service's accept and
+messages 50 to 79. -}
+isAuthMessage : Bytes -> Bool
+isAuthMessage payload =
+    let
+        n =
+            Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+    in
+    n == msgServiceAccept || (n >= 50 && n <= 79)
+
+
+{-| Authentication begun, once the transport's first exchange is done: the
+service asked for. `sessionId` is the transport's, which a signature
+covers. -}
+begin : Config -> Bytes -> Step
+begin config sessionId =
+    finish
+        { config = config
+        , sessionId = sessionId
+        , attempt = AwaitingService
+        , allowed = []
+        , triedKeys = []
+        , passwords = 0
+        , keyboardTried = False
+        , send = [ Bytes.flatten [ Wire.writeByte msgServiceRequest, Wire.writeText "ssh-userauth" ] ]
+        , requests = []
+        , events = []
+        }
+
+
+finish : State -> Step
+finish st =
+    { auth = Auth { st | send = [], requests = [], events = [] }, send = st.send, requests = st.requests, events = st.events }
+
+
+emit : Event -> State -> State
+emit e st =
+    { st | events = Array.pushLast e st.events }
+
+
+queue : Bytes -> State -> State
+queue payload st =
+    { st | send = Array.pushLast payload st.send }
+
+
+ask : Request -> State -> State
+ask r st =
+    { st | requests = Array.pushLast r st.requests }
+
+
+{-| The start of every request: user, service, method. -}
+requestHead : State -> String -> Bytes
+requestHead st method =
+    Bytes.flatten [ Wire.writeByte msgRequest, Wire.writeText st.config.user, Wire.writeText "ssh-connection", Wire.writeText method ]
+
+
+{-| A payload from the server that [`isAuthMessage`](#isAuthMessage). -}
+received : Bytes -> Auth -> Step
+received payload (Auth st) =
+    let
+        n =
+            Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+
+        body =
+            Wire.reader payload |> Wire.take 1 |> Result.map .next
+    in
+    if st.attempt == Done then
+        finish st
+
+    else if n == msgServiceAccept && st.attempt == AwaitingService then
+        finish (queue (requestHead st "none") { st | attempt = TryingNone })
+
+    else if n == msgBanner then
+        when body |> Result.andThen Wire.name is
+            Ok banner ->
+                finish (emit (Banner banner.value) st)
+
+            Err _ ->
+                finish st
+
+    else if n == msgSuccess then
+        finish (emit Authenticated { st | attempt = Done })
+
+    else if n == msgFailure then
+        when body |> Result.andThen Wire.nameList |> Result.andThen (\l -> Wire.boolean l.next |> Result.map (\p -> { allowed = l.value, partial = p.value })) is
+            Ok failure ->
+                finish (failed failure st)
+
+            Err _ ->
+                finish (next { st | allowed = [] })
+
+    else if n == msgSixty then
+        finish (sixty payload st)
+
+    else
+        finish st
+
+
+{-| A FAILURE: what was being tried is given up, and the next tried. -}
+failed : { allowed : Array String, partial : Bool } -> State -> State
+failed failure st =
+    let
+        method =
+            when st.attempt is
+                Querying _ ->
+                    "publickey"
+
+                SentSignature _ ->
+                    "publickey"
+
+                SentPassword ->
+                    "password"
+
+                KeyboardInteractive ->
+                    "keyboard-interactive"
+
+                _ ->
+                    "none"
+
+        told =
+            if failure.partial then
+                emit (PartialSuccess { allowed = failure.allowed }) st
+
+            else if method == "none" then
+                st
+
+            else
+                emit (Refused { method = method, allowed = failure.allowed }) st
+
+        marked =
+            when st.attempt is
+                Querying identity ->
+                    { told | triedKeys = Array.pushLast identity.id told.triedKeys }
+
+                SentSignature identity ->
+                    { told | triedKeys = Array.pushLast identity.id told.triedKeys }
+
+                KeyboardInteractive ->
+                    { told | keyboardTried = True }
+
+                _ ->
+                    told
+    in
+    next { marked | allowed = failure.allowed }
+
+
+{-| The next method or key to try, in the client's order, of those the
+server allows. -}
+next : State -> State
+next st =
+    let
+        allows m =
+            Array.member m st.allowed
+
+        untriedKey =
+            Array.findFirst (\i -> not (Array.member i.id st.triedKeys)) st.config.identities |> Maybe.map .value
+
+        candidates =
+            Array.keepIf allows st.config.methods
+
+        choose methods =
+            when Array.popFirst methods is
+                Nothing ->
+                    emit (Exhausted { allowed = st.allowed }) { st | attempt = Done }
+
+                Just m ->
+                    when m.first is
+                        "publickey" ->
+                            when untriedKey is
+                                Just identity ->
+                                    queue (query st identity) { st | attempt = Querying identity }
+
+                                Nothing ->
+                                    choose m.rest
+
+                        "keyboard-interactive" ->
+                            if st.keyboardTried then
+                                choose m.rest
+
+                            else
+                                queue (Bytes.flatten [ requestHead st "keyboard-interactive", Wire.writeText "", Wire.writeText "" ])
+                                    { st | attempt = KeyboardInteractive, keyboardTried = True }
+
+                        "password" ->
+                            if st.passwords >= st.config.passwordTries then
+                                choose m.rest
+
+                            else
+                                ask (NeedPassword { prompt = st.config.user ++ "'s password" }) { st | attempt = AwaitingPassword }
+
+                        _ ->
+                            choose m.rest
+    in
+    choose candidates
+
+
+{-| The signature algorithm for a key: its own type, or for an RSA key
+`rsa-sha2-512` unless the server says it takes only `rsa-sha2-256`. -}
+algorithmFor : State -> Identity -> String
+algorithmFor st identity =
+    if identity.keyType == "ssh-rsa" then
+        if not (Array.isEmpty st.config.serverSigAlgs) && not (Array.member "rsa-sha2-512" st.config.serverSigAlgs) && Array.member "rsa-sha2-256" st.config.serverSigAlgs then
+            "rsa-sha2-256"
+
+        else
+            "rsa-sha2-512"
+
+    else
+        identity.keyType
+
+
+{-| A key offered without a signature (RFC 4252 §7). -}
+query : State -> Identity -> Bytes
+query st identity =
+    Bytes.flatten [ requestHead st "publickey", Wire.writeBool False, Wire.writeText (algorithmFor st identity), Wire.writeString identity.publicKey ]
+
+
+{-| What a key signs: the session id, then the request with its signature
+flag set (RFC 4252 §7). -}
+toSign : State -> Identity -> String -> Bytes
+toSign st identity algorithm =
+    Bytes.flatten
+        [ Wire.writeString st.sessionId
+        , requestHead st "publickey"
+        , Wire.writeBool True
+        , Wire.writeText algorithm
+        , Wire.writeString identity.publicKey
+        ]
+
+
+sixty : Bytes -> State -> State
+sixty payload st =
+    let
+        body =
+            Wire.reader payload |> Wire.take 1 |> Result.map .next
+    in
+    when st.attempt is
+        Querying identity ->
+            -- PK_OK: the server would take this key; it is signed now
+            let
+                algorithm =
+                    algorithmFor st identity
+            in
+            ask (NeedSignature { id = identity.id, algorithm = algorithm, data = toSign st identity algorithm })
+                { st | attempt = Signing { identity = identity, algorithm = algorithm } }
+
+        SentPassword ->
+            -- PASSWD_CHANGEREQ, which this client does not answer
+            let
+                prompt =
+                    body |> Result.andThen Wire.name |> Result.map .value |> Result.withDefault ""
+            in
+            next (emit (PasswordChange prompt) { st | passwords = st.config.passwordTries })
+
+        KeyboardInteractive ->
+            -- INFO_REQUEST
+            when infoRequest body is
+                Ok request ->
+                    if Array.isEmpty request.prompts then
+                        queue (Bytes.flatten [ Wire.writeByte msgInfoResponse, Wire.writeUint32 0 ]) st
+
+                    else
+                        ask (NeedResponses request) { st | attempt = AwaitingResponses }
+
+                Err _ ->
+                    next st
+
+        _ ->
+            st
+
+
+infoRequest : Result String Wire.Reader -> Result String { name : String, instruction : String, prompts : Array { text : String, echo : Bool } }
+infoRequest body =
+    let
+        prompts r count acc =
+            if count <= 0 then
+                Ok acc
+
+            else
+                Wire.name r
+                    |> Result.andThen
+                        (\text ->
+                            Wire.boolean text.next
+                                |> Result.andThen (\echo -> prompts echo.next (count - 1) (Array.pushLast { text = text.value, echo = echo.value } acc))
+                        )
+    in
+    body
+        |> Result.andThen Wire.name
+        |> Result.andThen
+            (\name ->
+                Wire.name name.next
+                    |> Result.andThen
+                        (\instruction ->
+                            Wire.name instruction.next
+                                |> Result.andThen (\language -> Wire.uint32 language.next)
+                                |> Result.andThen
+                                    (\count ->
+                                        if count.value > 64 then
+                                            Err "more than 64 prompts"
+
+                                        else
+                                            prompts count.next count.value []
+                                    )
+                                |> Result.map (\ps -> { name = name.value, instruction = instruction.value, prompts = ps })
+                        )
+            )
+
+
+{-| The signature asked for, from the caller: the request is sent with it.
+-}
+signed : Int -> Bytes -> Auth -> Step
+signed id signature (Auth st) =
+    when st.attempt is
+        Signing s ->
+            if s.identity.id == id then
+                finish
+                    (queue
+                        (Bytes.flatten
+                            [ requestHead st "publickey"
+                            , Wire.writeBool True
+                            , Wire.writeText s.algorithm
+                            , Wire.writeString s.identity.publicKey
+                            , Wire.writeString signature
+                            ]
+                        )
+                        { st | attempt = SentSignature s.identity }
+                    )
+
+            else
+                finish st
+
+        _ ->
+            finish st
+
+
+{-| The caller could not or would not sign (a passphrase not given, a key
+that would not load): the key is given up. -}
+unsigned : Int -> Auth -> Step
+unsigned id (Auth st) =
+    when st.attempt is
+        Signing s ->
+            if s.identity.id == id then
+                finish (next { st | triedKeys = Array.pushLast id st.triedKeys })
+
+            else
+                finish st
+
+        _ ->
+            finish st
+
+
+{-| The password asked for, or `Nothing` to give the method up. -}
+withPassword : Maybe String -> Auth -> Step
+withPassword password (Auth st) =
+    if st.attempt /= AwaitingPassword then
+        finish st
+
+    else
+        when password is
+            Just p ->
+                finish
+                    (queue (Bytes.flatten [ requestHead st "password", Wire.writeBool False, Wire.writeText p ])
+                        { st | attempt = SentPassword, passwords = st.passwords + 1 }
+                    )
+
+            Nothing ->
+                finish (next { st | passwords = st.config.passwordTries })
+
+
+{-| The answers to the server's prompts, in their order, or `Nothing` to
+give the method up. -}
+responses : Maybe (Array String) -> Auth -> Step
+responses answers (Auth st) =
+    if st.attempt /= AwaitingResponses then
+        finish st
+
+    else
+        when answers is
+            Just given ->
+                finish
+                    (queue
+                        (Bytes.flatten
+                            ([ Wire.writeByte msgInfoResponse, Wire.writeUint32 (Array.length given) ] ++ Array.map Wire.writeText given)
+                        )
+                        { st | attempt = KeyboardInteractive }
+                    )
+
+            Nothing ->
+                finish (next st)
+
+
+{-| The signature algorithms the server takes, from its `EXT_INFO`, which
+comes after the first exchange and before the service is accepted. -}
+withServerSigAlgs : Array String -> Auth -> Auth
+withServerSigAlgs algorithms (Auth st) =
+    let
+        config =
+            st.config
+    in
+    Auth { st | config = { config | serverSigAlgs = algorithms } }

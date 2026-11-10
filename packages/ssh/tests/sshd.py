@@ -18,6 +18,7 @@ usage (after tests/build.sh):
 """
 
 import argparse
+import getpass
 import os
 import shutil
 import socket
@@ -54,6 +55,34 @@ CASES = [(f"{c.split('@')[0]}-{h}", ["--cipher", c, "--hostkey", h], []) for c i
 
 SEED = "00" * 31 + "01"
 
+# user authentication (step 6): name, client options with {KEY} for a user
+# key's file, sshd config lines. The authorized keys are ed, ecdsa521 and
+# rsa; `other` is a key the server does not know.
+LOGIN_CASES = [
+    ("login-ed25519", ["--identity", "{ed}"], []),
+    ("login-ecdsa521-passphrase", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"], []),
+    ("login-rsa", ["--identity", "{rsa}"], []),
+    ("login-rsa-sha256-only", ["--identity", "{rsa}"], ["PubkeyAcceptedAlgorithms rsa-sha2-256"]),
+    ("login-unknown-then-known", ["--identity", "{other}", "--identity", "{ed}"], []),
+    ("login-wrong-passphrase", ["--identity", "{ecdsa521}", "--passphrase", "wrong"], []),
+    ("login-max-tries", ["--identity", "{other}", "--identity", "{other2}", "--identity", "{other3}", "--identity", "{ed}"], ["MaxAuthTries 2"]),
+    ("login-no-key", [], []),
+    ("login-rekey", ["--identity", "{ed}", "--rekey"], []),
+]
+
+
+def user_keys():
+    keys = WORK / "userkeys"
+    names = {"ed": ("ed25519", None, ""), "ecdsa521": ("ecdsa", "521", "hunter2"), "rsa": ("rsa", "3072", ""),
+             "other": ("ed25519", None, ""), "other2": ("ed25519", None, ""), "other3": ("ed25519", None, "")}
+    if not (keys / "other3").exists():
+        shutil.rmtree(keys, ignore_errors=True)
+        keys.mkdir(parents=True)
+        for name, (t, bits, passphrase) in names.items():
+            subprocess.run(["ssh-keygen", "-q", "-t", t, *(["-b", bits] if bits else []), "-a", "4", "-N", passphrase, "-f", str(keys / name)], check=True)
+        (keys / "authorized_keys").write_text("".join((keys / f"{n}.pub").read_text() for n in ["ed", "ecdsa521", "rsa"]))
+    return {name: str(keys / name) for name in names}, keys / "authorized_keys"
+
 
 def free_port():
     with socket.socket() as s:
@@ -74,6 +103,7 @@ def host_keys():
 class Server:
     def __init__(self, extra):
         self.port = free_port()
+        self.authorized = user_keys()[1]
         keys = host_keys()
         WORK.mkdir(parents=True, exist_ok=True)
         cfg = WORK / f"sshd_config.{self.port}"
@@ -81,7 +111,7 @@ class Server:
             f"Port {self.port}", "ListenAddress 127.0.0.1",
             *(f"HostKey {keys / f'ssh_host_{t}_key'}" for t in ["ed25519", "ecdsa", "rsa"]),
             f"PidFile {WORK / f'sshd.{self.port}.pid'}", "UsePAM no", "StrictModes no",
-            "AuthenticationMethods publickey", "AuthorizedKeysFile none", "LogLevel DEBUG1",
+            "AuthenticationMethods publickey", f"AuthorizedKeysFile {self.authorized}", "LogLevel DEBUG1",
             *extra, ""]))
         self.log = open(WORK / f"sshd.{self.port}.log", "w")
         self.proc = subprocess.Popen([SSHD, "-D", "-e", "-f", str(cfg)], stdout=self.log, stderr=subprocess.STDOUT)
@@ -132,6 +162,23 @@ def main():
             print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
         else:
             print(f"ok   {name}")
+    keys = user_keys()[0]
+    for name, options, extra in LOGIN_CASES:
+        server = Server(extra)
+        try:
+            got = run_client(["login", "127.0.0.1", str(server.port), "--user", getpass.getuser(),
+                              *(o.format(**keys) for o in options)])
+        finally:
+            server.stop()
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     if a.record:
         REPLAYS.mkdir(exist_ok=True)
         for cipher in CIPHERS:
@@ -149,7 +196,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

@@ -52,7 +52,14 @@ main =
 
                 else
                     File.readFile r.perm (Path.fromString path)
-                        |> Task.andThen (\bytes -> report (run (Bytes.toStringLossy bytes)))
+                        |> Task.andThen
+                            (\bytes ->
+                                let
+                                    text =
+                                        Bytes.toStringLossy bytes
+                                in
+                                keyTests text |> Task.andThen (\keys -> report (Dict.set "keyload" keys (run text)))
+                            )
                         |> Task.onError (\e -> Console.write ("cannot read " ++ path ++ ": " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 2))
             )
 
@@ -66,7 +73,7 @@ run text =
     String.lines text
         |> Array.foldl
             (\line tallies ->
-                if String.isEmpty line || String.startsWith "#" line then
+                if String.isEmpty line || String.startsWith "#" line || String.startsWith "keyload " line then
                     tallies
 
                 else
@@ -602,3 +609,129 @@ fuzzOne i =
             + (Maybe.map Bytes.length counter |> Maybe.withDefault 0)
             + (Maybe.map Bytes.length kdf |> Maybe.withDefault 0)
     }
+
+
+-- PRIVATE KEYS
+
+
+{-| Each `keyload` vector: the file's public key and whether it is
+encrypted read without the passphrase; the key loaded, its public key the
+same; a signature by it that `verify` takes, where `verify` knows the
+algorithm, and that names the algorithm, where it does not; the wrong
+passphrase refused; and the key forgotten, after which it signs nothing. -}
+keyTests : String -> Task x Tally
+keyTests text =
+    String.lines text
+        |> Array.keepIf (\l -> String.startsWith "keyload " l)
+        |> Array.foldl
+            (\line acc ->
+                acc
+                    |> Task.andThen
+                        (\tally ->
+                            keyTest (fields line)
+                                |> Task.map
+                                    (\problem ->
+                                        when problem is
+                                            Nothing ->
+                                                { tally | pass = tally.pass + 1 }
+
+                                            Just why ->
+                                                { tally | fail = tally.fail + 1, failures = Array.pushLast (why ++ ": " ++ String.takeFirst 120 line) tally.failures }
+                                    )
+                        )
+            )
+            (Task.succeed { pass = 0, fail = 0, failures = [] })
+
+
+keyTest : Fields -> Task x (Maybe String)
+keyTest f =
+    let
+        file =
+            hex f "file"
+
+        passphrase =
+            hex f "passphrase"
+
+        pub =
+            hex f "pub"
+
+        algorithm =
+            Bytes.toStringLossy (hex f "alg")
+
+        data =
+            Bytes.fromString "the data a userauth request signs"
+
+        infoHolds =
+            SshCrypto.keyFileInfo file == Just { encrypted = int f "encrypted" == 1, publicKey = pub }
+
+        wrong =
+            if int f "encrypted" == 1 then
+                SshCrypto.loadKey file (Bytes.fromString "not the passphrase")
+                    |> Task.map (\_ -> Just "a wrong passphrase was taken")
+                    |> Task.onError
+                        (\p ->
+                            Task.succeed
+                                (if p == SshCrypto.WrongPassphrase then
+                                    Nothing
+
+                                 else
+                                    Just "a wrong passphrase gave another problem"
+                                )
+                        )
+
+            else
+                Task.succeed Nothing
+    in
+    if not infoHolds then
+        Task.succeed (Just "keyFileInfo")
+
+    else
+        SshCrypto.loadKey file passphrase
+            |> Task.andThen
+                (\key ->
+                    SshCrypto.publicKeyOf key
+                        |> Task.andThen
+                            (\blob ->
+                                SshCrypto.sign key algorithm data
+                                    |> Task.andThen
+                                        (\signature ->
+                                            SshCrypto.forget key
+                                                |> Task.andThen (\_ -> SshCrypto.sign key algorithm data |> Task.map (\_ -> False) |> Task.onError (\p -> Task.succeed (p == SshCrypto.Forgotten)))
+                                                |> Task.map
+                                                    (\forgotten ->
+                                                        let
+                                                            named =
+                                                                Bytes.slice 4 (4 + String.count algorithm) signature == Bytes.fromString algorithm
+
+                                                            verified =
+                                                                if Array.member algorithm SshCrypto.signatureAlgorithms then
+                                                                    SshCrypto.verify { algorithm = algorithm, publicKey = pub, signature = signature, data = data }
+
+                                                                else
+                                                                    True
+                                                        in
+                                                        if blob /= pub then
+                                                            Just "the loaded key's public key differs"
+
+                                                        else if not named || not verified then
+                                                            Just "the signature does not verify"
+
+                                                        else if not forgotten then
+                                                            Just "a forgotten key signed"
+
+                                                        else
+                                                            Nothing
+                                                    )
+                                        )
+                            )
+                )
+            |> Task.onError (\_ -> Task.succeed (Just "the key did not load, sign or forget"))
+            |> Task.andThen
+                (\problem ->
+                    when problem is
+                        Just _ ->
+                            Task.succeed problem
+
+                        Nothing ->
+                            wrong
+                )
