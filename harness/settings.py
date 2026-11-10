@@ -49,6 +49,8 @@ CASES = [
     ("comments-kept", "# mine\n[window]\ncolumns = 100 # wide\n", [DOWN, DOWN, DOWN, DOWN, ENTER]),
     ("undo", None, [DOWN, DOWN, DOWN, DOWN, ENTER, "ctrl+z"]),
     ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, ENTER]),
+    # a font chosen from the system's, offered as its name is typed
+    ("font-chosen", None, [ENTER] + [BACKSPACE] * 16 + [("type", "fira"), DOWN, ENTER]),
     ("typed-not-taken", None, [DOWN, ENTER, BACKSPACE, BACKSPACE, ("type", "2"), ENTER, "Escape"]),
     # the window reads an edit by hand: bold, turned on by hand, is turned
     # off by Enter; had the window not read it, Enter would turn it on

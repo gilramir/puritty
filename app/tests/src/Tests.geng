@@ -332,7 +332,7 @@ writing =
 
 opened : SettingsWindow.Model
 opened =
-    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24 }
+    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ] }
 
 
 press : Int -> SettingsWindow.Input
@@ -496,6 +496,22 @@ window =
           }
         , { name = "a click on a page shows it"
           , test = \_ -> Expect.equal True (String.contains "Columns" (Maybe.withDefault "" (Array.get 2 (after [ SettingsWindow.Click { col = 3, row = 3 } ]).screen)))
+          }
+        , { name = "a font typed is offered the system's that hold its name"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira")
+                    in
+                    Expect.equal { offered = [ "Window                │     Fira Code", "Text & language       │     Fira Mono" ], said = [] }
+                        { offered = Array.keepIf (String.contains "     Fira") r.screen, said = r.said }
+          }
+        , { name = "a font is written when it is chosen, not as it is typed"
+          , test = \_ -> Expect.equal [ "font.family = Fira Mono" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ k.down, k.down, k.enter ])).said
+          }
+        , { name = "a font's name typed with nothing chosen is taken as typed"
+          , test = \_ -> Expect.equal [ "font.family = Some Font" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "Some Font" ++ [ k.enter ])).said
           }
         , { name = "a narrow window still draws every row"
           , test = \_ -> Expect.equal 24 (Array.length (after [ SettingsWindow.Resized { cols = 40, rows = 24 } ]).screen)

@@ -118,7 +118,7 @@ static char *narrow(const wchar_t *w) {
 
 typedef struct {
     char *file, *family, *style;
-    int index, colour;
+    int index, colour, mono;
 } Entry;
 
 static Entry *entries;
@@ -144,7 +144,7 @@ static void add_entry(const char *file, int index, FT_Face f) {
         entries = realloc(entries, (size_t) centries * sizeof *entries);
     }
     entries[nentries++] = (Entry) {copy(file), copy(f->family_name ? f->family_name : ""), copy(f->style_name ? f->style_name : ""),
-                                   index, FT_HAS_COLOR(f) ? 1 : 0};
+                                   index, FT_HAS_COLOR(f) ? 1 : 0, FT_IS_FIXED_WIDTH(f) ? 1 : 0};
 }
 
 static void scan_file(const char *path) {
@@ -230,7 +230,9 @@ static void scan_family(const char *family) {
     for (int i = 0; i < nnamed; i++) {
         const char *part = named[i].name;
         while (part) {
-            if (_strnicmp(part, family, n) == 0 && (part[n] == 0 || part[n] == ' ' || part[n] == '&')) {
+            /* "" is every font (`scan_everything`): after an empty prefix
+             * the name's first character is no separator */
+            if (n == 0 || (_strnicmp(part, family, n) == 0 && (part[n] == 0 || part[n] == ' ' || part[n] == '&'))) {
                 scan_file(named[i].path);
                 break;
             }
@@ -419,6 +421,57 @@ char *pt_fallback_file(const uint32_t *cps, int n, int colour, const char *lang,
     if (found < 0) return NULL;
     *index = entries[found].index;
     return copy(entries[found].file);
+}
+
+static int font_order(const void *a, const void *b) {
+    const char *x = *(char *const *) a, *y = *(char *const *) b;
+    for (; *x && *y; x++, y++) {
+        int cx = (*x >= 'A' && *x <= 'Z') ? *x + 32 : *x, cy = (*y >= 'A' && *y <= 'Z') ? *y + 32 : *y;
+        if (cx != cy) return cx - cy;
+    }
+    return (unsigned char) *x - (unsigned char) *y;
+}
+
+/* Families as the window's answer: sorted, a line each, then freed. */
+static geng_bytes *family_lines(char **names, int n) {
+    qsort(names, (size_t) n, sizeof *names, font_order);
+    size_t len = 0;
+    for (int i = 0; i < n; i++) len += strlen(names[i]) + 1;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + len, GENG_HEADER_BYTES(sizeof *b + len));
+    b->length = (int32_t) len;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    size_t at = 0;
+    for (int i = 0; i < n; i++) {
+        size_t m = strlen(names[i]);
+        memcpy(b->data + at, names[i], m);
+        b->data[at + m] = '\n';
+        at += m + 1;
+        free(names[i]);
+    }
+    free(names);
+    return b;
+}
+
+/* The families of the monospace fonts Windows has, for the settings
+ * window (docs/settings.md ST8): every face read (or PURITTY_FONT_DIRS's),
+ * those FreeType says are fixed-width and are not colour, each once. */
+geng_cancel puritty_win32_fonts(geng_wait *wait) {
+    scan_everything();
+    char **names = NULL;
+    int n = 0;
+    for (int i = 0; i < nentries; i++) {
+        if (!entries[i].mono || entries[i].colour || !entries[i].family[0]) continue;
+        int seen = 0;
+        for (int k = 0; k < n && !seen; k++) seen = same(names[k], entries[i].family);
+        if (seen) continue;
+        names = realloc(names, (size_t) (n + 1) * sizeof *names);
+        names[n++] = copy(entries[i].family);
+    }
+    geng_succeed(wait, geng_slot_P(family_lines(names, n)));
+    return (geng_cancel) {0};
 }
 
 /* THE TARGET */

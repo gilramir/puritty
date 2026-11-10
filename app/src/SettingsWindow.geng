@@ -51,6 +51,7 @@ type alias Typing =
     , caret : Int
     , before : Value
     , problem : Maybe String
+    , pick : Int
     }
 
 
@@ -69,6 +70,7 @@ type alias Model =
     , typing : Maybe Typing
     , undo : Array { key : Array String, value : Value }
     , message : String
+    , fonts : Array String
     }
 
 
@@ -89,7 +91,7 @@ type Effect
     | Close
 
 
-init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int } -> Model
+init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String } -> Model
 init r =
     { config = r.config
     , path = r.path
@@ -104,6 +106,7 @@ init r =
     , modifiedOnly = False
     , typing = Nothing
     , undo = []
+    , fonts = r.fonts
     , message =
         when Array.first r.reports is
             Just first ->
@@ -469,7 +472,7 @@ change s m =
                 chars =
                     String.toArray (Schema.toText now)
             in
-            done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing }, message = "" }
+            done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing, pick = -1 }, message = "" }
 
 
 {-| A setting given a value: the model's at once, the file's by the
@@ -522,6 +525,30 @@ typingKey k t m =
 
             Nothing ->
                 done { m | typing = Nothing }
+
+    else if (isEnter k.sym || k.sym == sym.tab) && isFamily m then
+        -- a font is written when it is chosen, not as its name is typed
+        when focused m is
+            Just s ->
+                let
+                    name =
+                        Maybe.withDefault (String.trim (String.fromArray t.chars)) (Array.get t.pick (suggestions m t))
+                in
+                if name == "" then
+                    done { m | message = "no font named" }
+
+                else
+                    set s (Text name) { m | typing = Nothing, message = "" }
+
+            Nothing ->
+                done { m | typing = Nothing }
+
+    else if (k.sym == sym.up || k.sym == sym.down) && isFamily m then
+        let
+            count =
+                Array.length (suggestions m t)
+        in
+        done { m | typing = Just { t | pick = if k.sym == sym.down then min (count - 1) (t.pick + 1) else max -1 (t.pick - 1) } }
 
     else if isEnter k.sym || k.sym == sym.tab then
         when t.problem is
@@ -589,6 +616,11 @@ typed : Typing -> Model -> { model : Model, effects : Array Effect }
 typed t m =
     when focused m is
         Just s ->
+          if s.kind == FontFamily then
+            -- the suggestions follow the name; it is written when chosen
+            done { m | typing = Just { t | pick = -1, problem = Nothing } }
+
+          else
             when Schema.fromText s (String.fromArray t.chars) is
                 Ok v ->
                     let
@@ -638,6 +670,30 @@ click c m =
 
     else
         done m
+
+
+
+{-| Whether a font is being typed. -}
+isFamily : Model -> Bool
+isFamily m =
+    when focused m is
+        Just s ->
+            s.kind == FontFamily
+
+        Nothing ->
+            False
+
+
+{-| The system's fonts whose names hold what is typed, the first eight. -}
+suggestions : Model -> Typing -> Array String
+suggestions m t =
+    let
+        q =
+            String.toLower (String.trim (String.fromArray t.chars))
+    in
+    m.fonts
+        |> Array.keepIf (\f -> q == "" || String.contains q (String.toLower f))
+        |> Array.takeFirst 8
 
 
 
@@ -771,8 +827,34 @@ screen m =
             Array.indexedMap (\i s -> rowLines m width i s) (listed m)
                 |> Array.foldl (\ls acc -> acc ++ ls) []
 
+        withSuggestions =
+            when m.typing is
+                Just t ->
+                    if isFamily m then
+                        let
+                            at =
+                                m.row * linesPerRow + 1
+
+                            offered =
+                                suggestions m t
+
+                            lines =
+                                if Array.isEmpty offered then
+                                    [ [ { style = "2", text = "     No font of the system's has that name." } ] ]
+
+                                else
+                                    Array.indexedMap (\i f -> [ { style = if i == t.pick then "7" else "36", text = "     " ++ f } ]) offered
+                        in
+                        Array.slice 0 at settingsLines ++ lines ++ Array.dropFirst (at + Array.length lines) settingsLines
+
+                    else
+                        settingsLines
+
+                Nothing ->
+                    settingsLines
+
         shownSettings =
-            Array.slice m.scroll (m.scroll + body) settingsLines
+            Array.slice m.scroll (m.scroll + body) withSuggestions
 
         empty =
             if Array.isEmpty (listed m) then
@@ -958,7 +1040,11 @@ footer m =
         hints =
             when m.typing is
                 Just _ ->
-                    "Enter keep · Esc as it was"
+                    if isFamily m then
+                        "Type to narrow · Up and Down choose · Enter take it · Esc as it was"
+
+                    else
+                        "Enter keep · Esc as it was"
 
                 Nothing ->
                     when m.focus is

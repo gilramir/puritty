@@ -81,16 +81,16 @@ run r =
                                                 Task.fail ("cannot open the window: " ++ why)
 
                                             Ok cell ->
-                                                SettingsSource.watchSettings given
-                                                    |> Task.andThen (\events -> loop (first given read cell events (Dict.get "PURITTY_SHOT" r.vars)))
+                                                Task.map2 (\events fonts -> { events = events, fonts = fonts }) (SettingsSource.watchSettings given) Window.fonts
+                                                    |> Task.andThen (\w -> loop (first given read cell w.events w.fonts (Dict.get "PURITTY_SHOT" r.vars)))
                                                     |> Task.map (\_ -> {})
                                     )
                         )
             )
 
 
-first : Given -> Read -> Window.Cell -> Maybe (Source Directory.Change) -> Maybe String -> State
-first given read cell events shotPath =
+first : Given -> Read -> Window.Cell -> Maybe (Source Directory.Change) -> Array String -> Maybe String -> State
+first given read cell events fonts shotPath =
     let
         got =
             when read is
@@ -110,6 +110,7 @@ first given read cell events shotPath =
             , reports = got.problems
             , cols = size.cols
             , rows = size.rows
+            , fonts = fonts
             }
     , term =
         Vt.new

@@ -616,3 +616,37 @@ reload 15 of 15 on Linux and 14 of 14 on Windows.
   driven with keys; `harness/events`' driver can do it, in Gilbert's
   session.
 - *Opening it from a terminal* is step 6.
+
+## ST21 · Step 5c, first part: the system's fonts offered (2026-11-10)
+
+**`Window.fonts`** (ST8) answers the families of the monospace fonts the
+system has, sorted, each once. On X11 it is fontconfig's list of the
+fonts whose spacing is mono, dual (most CJK monospace fonts) or charcell;
+on Windows every face `packages/win32` reads, those FreeType says are
+fixed-width and are not colour.
+
+**While a font is typed** in the settings window, the system's families
+that hold what is typed are offered beneath it, eight at a time; Up and
+Down choose one, Enter takes it, or takes the name typed when none is
+chosen. A font is written when it is taken, not as its name is typed,
+which would have every terminal open a new font at each letter.
+
+**A defect found on the way, in `packages/win32`:** `scan_everything`,
+which reads every font Windows has, asked `scan_family("")`, whose test
+for a name wanted the character after the empty prefix to be a space or
+`&`, so it read none. The fallback's last resort (any face that has a
+character no listed face has) therefore never searched beyond the faces
+already opened. An empty family now reads every font. Measured on
+beelink1: the settings window's first frame 0.82 s after it starts the
+first time, the fonts' files not yet in the system's cache, and 0.22 s
+after (Window.fonts reads every face once).
+
+**Measured on beelink1** in Gilbert's session with the events gate's
+driver: "cas" offers Cascadia Mono; nothing typed offers BatangChe,
+Cascadia Code, Cascadia Mono, Consolas, Courier New, DejaVu Sans Mono,
+DotumChe and Fira Code first.
+
+**Held by:** `app/tests` 48 of 48 (a font offered as typed, written when
+chosen, a name typed taken as typed); the settings gate 10 of 10, with
+`font-chosen` (Fira Code from "fira" on the gate's fonts); pixels 36 of 36
+on Linux and on Windows, events 13 of 13, reload 14 of 14 on Windows.

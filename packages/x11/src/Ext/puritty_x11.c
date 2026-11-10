@@ -167,6 +167,65 @@ char *pt_font_file(const char *font, int variant, int *index) {
     return out;
 }
 
+static int font_order(const void *a, const void *b) {
+    const char *x = *(char *const *) a, *y = *(char *const *) b;
+    for (; *x && *y; x++, y++) {
+        int cx = (*x >= 'A' && *x <= 'Z') ? *x + 32 : *x, cy = (*y >= 'A' && *y <= 'Z') ? *y + 32 : *y;
+        if (cx != cy) return cx - cy;
+    }
+    return (unsigned char) *x - (unsigned char) *y;
+}
+
+/* Families as the window's answer: sorted, a line each, then freed. */
+static geng_bytes *family_lines(char **names, int n) {
+    qsort(names, (size_t) n, sizeof *names, font_order);
+    size_t len = 0;
+    for (int i = 0; i < n; i++) len += strlen(names[i]) + 1;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + len, GENG_HEADER_BYTES(sizeof *b + len));
+    b->length = (int32_t) len;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    size_t at = 0;
+    for (int i = 0; i < n; i++) {
+        size_t m = strlen(names[i]);
+        memcpy(b->data + at, names[i], m);
+        b->data[at + m] = '\n';
+        at += m + 1;
+        free(names[i]);
+    }
+    free(names);
+    return b;
+}
+
+/* The families of the monospace fonts fontconfig has, for the settings
+ * window (docs/settings.md ST8): spacing mono, dual (most CJK monospace
+ * fonts) or charcell, each once. */
+geng_cancel puritty_x11_fonts(geng_wait *wait) {
+    FcPattern *p = FcPatternCreate();
+    FcObjectSet *os = FcObjectSetBuild(FC_FAMILY, FC_SPACING, NULL);
+    FcFontSet *set = FcFontList(NULL, p, os);
+    char **names = NULL;
+    int n = 0;
+    for (int i = 0; set != NULL && i < set->nfont; i++) {
+        int spacing;
+        FcChar8 *family;
+        if (FcPatternGetInteger(set->fonts[i], FC_SPACING, 0, &spacing) != FcResultMatch || spacing < FC_DUAL) continue;
+        if (FcPatternGetString(set->fonts[i], FC_FAMILY, 0, &family) != FcResultMatch) continue;
+        int seen = 0;
+        for (int k = 0; k < n && !seen; k++) seen = strcmp(names[k], (const char *) family) == 0;
+        if (seen) continue;
+        names = realloc(names, (size_t) (n + 1) * sizeof *names);
+        names[n++] = strdup((const char *) family);
+    }
+    if (set != NULL) FcFontSetDestroy(set);
+    FcObjectSetDestroy(os);
+    FcPatternDestroy(p);
+    geng_succeed(wait, geng_slot_P(family_lines(names, n)));
+    return (geng_cancel) {0};
+}
+
 /* Code points that select a form rather than need a glyph of their own. */
 static int ignorable(uint32_t cp) {
     return cp == 0x200D || cp == 0x200C || (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0xE0100 && cp <= 0xE01EF);
