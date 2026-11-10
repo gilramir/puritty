@@ -9,9 +9,10 @@ drawn in an X window.
 The command line is `gren-argparse` with its `os` runner; what it gives
 wins over the settings file.
 
-It reads its settings (`Config`), opens the window (`packages/x11`), and
-starts the program the settings name, or `$SHELL`, on a terminal of the
-window's size. Then each turn races the terminal's read, the window's
+It reads its settings (`Config`), opens the window (`Window`, from
+`packages/x11` or `packages/win32`), and starts the program the settings
+name, or the platform's (`Platform`: `$SHELL` on Linux, PowerShell on
+Windows), on a terminal of the window's size. Then each turn races the terminal's read, the window's
 events and a timer (V23), and draws a frame with `Vt.View` when one is
 due:
 
@@ -43,6 +44,7 @@ import Dict exposing (Dict)
 import Int64
 import Keys
 import Os.Env
+import Platform
 import Os.Error exposing (Error)
 import Os.File as File
 import Os.Path as Path
@@ -153,11 +155,11 @@ cli =
     , arguments =
         Argparse.Parser.zeroOrMoreArgs
             { value = { label = "program", fn = Just, examples = [ "htop", "vim notes.txt" ] }
-            , help = "The program to run, and its arguments; $SHELL when none is given"
+            , help = "The program to run, and its arguments; $SHELL (on Windows PowerShell) when none is given"
             }
     , flags =
         Argparse.Parser.initFlags (\config title -> { config = config, title = title })
-            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/puritty/config.toml"
+            |> Argparse.Parser.flag (Argparse.Parser.LongOnly "config") (Argparse.Parser.pathParser Path.fromString) "The settings file, instead of ~/.config/puritty/config.toml (on Windows %APPDATA%\\puritty\\config.toml)"
             |> Argparse.Parser.flag (Argparse.Parser.LongOnly "title") Argparse.Parser.stringParser "The window's title while the program has set none"
     , commonDescription = Nothing
     , summary = "Runs a program on a terminal in an X window:"
@@ -200,16 +202,7 @@ settings : File.Permission -> Dict String String -> Maybe Path.Path -> Task Stri
 settings fs vars given =
     let
         dir =
-            when Dict.get "XDG_CONFIG_HOME" vars is
-                Just d ->
-                    if d /= "" then
-                        Just d
-
-                    else
-                        Maybe.map (\h -> h ++ "/.config") (Dict.get "HOME" vars)
-
-                Nothing ->
-                    Maybe.map (\h -> h ++ "/.config") (Dict.get "HOME" vars)
+            Platform.settingsDirectory vars
 
         file =
             when given is
@@ -217,7 +210,7 @@ settings fs vars given =
                     Just { path = p, required = True }
 
                 Nothing ->
-                    Maybe.map (\d -> { path = Path.fromString (d ++ "/puritty/config.toml"), required = False }) dir
+                    Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) dir
     in
     when file is
         Nothing ->
@@ -273,12 +266,14 @@ start cp vars config =
 
                     Ok cell ->
                         let
-                            command =
+                            -- the command, or the platform's programs, the
+                            -- first of them that starts
+                            commands =
                                 if Array.isEmpty config.command then
-                                    [ Maybe.withDefault "/bin/sh" (Dict.get "SHELL" vars |> Maybe.andThen (\s -> if s == "" then Nothing else Just s)) ]
+                                    Array.map (\program -> [ program ]) (Platform.programs vars)
 
                                 else
-                                    config.command
+                                    [ config.command ]
 
                             options =
                                 -- the pty's IUTF8 says whether the program's bytes are UTF-8
@@ -287,13 +282,30 @@ start cp vars config =
                             charset =
                                 Charset.fromName (Maybe.withDefault (Config.charsetOf vars) config.charset)
                         in
-                        Process.spawn cp
-                            (Maybe.withDefault "/bin/sh" (Array.first command))
-                            (Array.dropFirst 1 command)
-                            { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                        spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                             |> Task.mapError Os.Error.toString
                             |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) charset config cell child)
             )
+
+
+{-| The first of the commands that starts: one that is not found gives way
+to the next, and the last one's failure is the answer. -}
+spawnFirst : Process.Permission -> Array (Array String) -> Process.SpawnOptions -> Task Os.Error.Error Process.Child
+spawnFirst cp commands options =
+    when Array.popFirst commands is
+        Nothing ->
+            Task.fail { kind = Os.Error.NotFound, operation = "spawn", path = Nothing, detail = "no program to run" }
+
+        Just { first, rest } ->
+            Process.spawn cp (Maybe.withDefault "" (Array.first first)) (Array.dropFirst 1 first) options
+                |> Task.onError
+                    (\err ->
+                        if err.kind == Os.Error.NotFound && not (Array.isEmpty rest) then
+                            spawnFirst cp rest options
+
+                        else
+                            Task.fail err
+                    )
 
 
 {-| `imeLog`: with `PURITTY_IME_LOG` set, each commit and each change to
@@ -366,7 +378,7 @@ was closed, after asking the program to end. -}
 finish : Process.Child -> Model -> Task String {}
 finish child m =
     if m.lost then
-        Process.kill child |> Task.andThen (\_ -> Task.fail "the connection to the X server is lost")
+        Process.kill child |> Task.andThen (\_ -> Task.fail "the window is lost")
 
     else if m.closed then
         Process.kill child |> Task.andThen (\_ -> Os.Env.exitWithCode 0)

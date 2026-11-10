@@ -1,0 +1,40 @@
+module Platform exposing (settingsDirectory, programs)
+
+{-| What puritty does differently on Linux and on Windows, other than its
+window (`docs/windows.md` WS10, V55): this module is `app/linux`'s, and
+`app/windows` has its own with the same functions.
+-}
+
+import Dict exposing (Dict)
+
+
+{-| The directory of the settings file: `$XDG_CONFIG_HOME/puritty`, or
+`~/.config/puritty`. -}
+settingsDirectory : Dict String String -> Maybe String
+settingsDirectory vars =
+    let
+        set name =
+            Dict.get name vars |> Maybe.andThen (\v -> if v == "" then Nothing else Just v)
+    in
+    when set "XDG_CONFIG_HOME" is
+        Just d ->
+            Just (d ++ "/puritty")
+
+        Nothing ->
+            Maybe.map (\h -> h ++ "/.config/puritty") (set "HOME")
+
+
+{-| The program run when the settings and the command line name none, as
+the programs tried in order until one starts: `$SHELL`, else `/bin/sh`. -}
+programs : Dict String String -> Array String
+programs vars =
+    when Dict.get "SHELL" vars is
+        Just s ->
+            if s == "" then
+                [ "/bin/sh" ]
+
+            else
+                [ s ]
+
+        Nothing ->
+            [ "/bin/sh" ]

@@ -580,3 +580,59 @@ pass, and passed five runs in a row.
 **By hand, with Gilbert:** typing Hangul into puritty with a keyboard, as
 a check of what `SendInput` showed; how the preedit looks, once the app
 runs (step 5); the pointer's shape and the wheel on a touchpad.
+
+## WS20 · Step 5 built: puritty on Windows (2026-11-10)
+
+`app/puritty.exe` runs on beelink1: a shell on a pseudo console, its
+settings, and both selections. Seen in Gilbert's desktop session through
+`harness/events/app.ps1`, which starts it, types into it with `drive.exe
+--any` (its window by its class, whatever title the program gives it), and
+takes pictures with the driver's `shot`.
+
+**`Platform`.** What differs other than the window is one module beside
+each manifest, `app/linux/src/Platform.geng` and
+`app/windows/src/Platform.geng` (both manifests now read `["../src",
+"src"]`), with the same two functions, so `app/src` does not ask which
+platform it is on:
+
+- `settingsDirectory`: `$XDG_CONFIG_HOME/puritty` or `~/.config/puritty`
+  on Linux, `%APPDATA%\puritty` on Windows (WS9). Measured: a
+  `config.toml` there gave a 50-column window, its background and its
+  `[program] command`.
+- `programs`: the programs run when the settings and the command line name
+  none, tried in order until one is found (V54): `$SHELL` or `/bin/sh` on
+  Linux; `pwsh.exe`, `powershell.exe`, then `%ComSpec%` on Windows, whose
+  environment variables are looked for in any case (`ComSpec`). beelink1
+  has no PowerShell 7, and puritty ran Windows PowerShell 5.1, its colours
+  and a Hangul `echo` as they should be. `cmd.exe` given on the command
+  line ran, and Windows' `ssh` asked its host-key question through the
+  pseudo console and took the answer.
+
+**The selections** (V53), in `packages/win32`: Ctrl+Shift+C makes the
+window the clipboard's owner with the text as UTF-16, LF written as CRLF as
+Windows' programs end lines; Ctrl+Shift+V reads the clipboard, CRLF read as
+LF as Linux's text is; another program's copy is a `SelectionLost
+Clipboard`, by `WM_CLIPBOARDUPDATE`. PRIMARY is puritty's own: a selection
+is kept in the process, and a middle click or Shift+Insert pastes it. A
+paste is answered at once, but as X11's is (a `Pasted` event, then
+`pasted`), so `Main` is unchanged. Measured: `hello` double-clicked and
+copied was what `Get-Clipboard` printed; `Set-Clipboard -Value 'from
+windows'` then Ctrl+Shift+V pasted it; a middle click pasted `hello`.
+
+**Linux is unchanged:** the pointer gate (51 of 51) and the IME gate (14
+of 14) pass with the app built from `app/linux`, and on Windows the events
+gate (13 of 13) and the pixel gate (36 of 36).
+
+**Left open:**
+
+- *The default font.* `DejaVu Sans Mono` is not a Windows font, so the
+  stand-in, Cascadia Mono, is drawn; a Windows default in `Platform` is a
+  choice for Gilbert.
+- *The language and the charset* come from `LANG` and `LC_*`, which
+  Windows does not set, so fallback fonts are asked for in no language and
+  the charset is UTF-8; Windows' own locale (`GetUserDefaultLocaleName`)
+  would say Korean on beelink1.
+- *An ssh session* to another machine, and Hangul typed by hand in the app,
+  are Gilbert's to try.
+- Step 6, the replay corpus on Windows over ssh, is what WS12 has left; the
+  pixel gate already runs there (WS18).

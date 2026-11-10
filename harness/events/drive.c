@@ -3,7 +3,10 @@
  * foreground, and does a case's actions with SendInput, as a person's keys
  * and mouse would reach it; then asks the window to close.
  *
- *     drive.exe CASE
+ *     drive.exe CASE [--any]
+ *
+ * --any finds a window of puritty's class whatever its title: the app's,
+ * whose title its program sets.
  *
  * Before the case, the pointer is put off the window and F24 is typed,
  * which marks where the case begins in the window's log.
@@ -285,9 +288,11 @@ static int act(char *line) {
 
 int main(int argc, char **argv) {
     if (argc < 2) return 1;
+    /* --any: puritty's window by its class alone, whatever its title */
+    int any = argc > 2 && strcmp(argv[2], "--any") == 0;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     for (int i = 0; i < 100 && !target; i++) {
-        target = FindWindowW(L"puritty", L"puritty-events");
+        target = FindWindowW(L"puritty", any ? NULL : L"puritty-events");
         if (!target) Sleep(100);
     }
     if (!target) {

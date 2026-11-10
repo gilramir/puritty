@@ -1,0 +1,39 @@
+module Platform exposing (settingsDirectory, programs)
+
+{-| What puritty does differently on Windows and on Linux, other than its
+window (`docs/windows.md` WS10, V55): this module is `app/windows`'s, and
+`app/linux` has its own with the same functions.
+
+Windows' environment variables are named in any case (`ComSpec`), so they
+are looked for without it.
+-}
+
+import Dict exposing (Dict)
+
+
+variable : String -> Dict String String -> Maybe String
+variable name vars =
+    Dict.foldl
+        (\k v found ->
+            if found == Nothing && String.toLower k == String.toLower name && v /= "" then
+                Just v
+
+            else
+                found
+        )
+        Nothing
+        vars
+
+
+{-| The directory of the settings file: `%APPDATA%\puritty` (WS9). -}
+settingsDirectory : Dict String String -> Maybe String
+settingsDirectory vars =
+    Maybe.map (\d -> d ++ "\\puritty") (variable "APPDATA" vars)
+
+
+{-| The program run when the settings and the command line name none, as
+the programs tried in order until one starts (V54): PowerShell 7, Windows
+PowerShell, then `%ComSpec%`. -}
+programs : Dict String String -> Array String
+programs vars =
+    [ "pwsh.exe", "powershell.exe", Maybe.withDefault "cmd.exe" (variable "ComSpec" vars) ]

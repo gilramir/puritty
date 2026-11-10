@@ -27,6 +27,12 @@ They are independent. Selecting text does not change the clipboard, and a
 Ctrl+Shift+C does not change the selection. So you can keep something on
 the clipboard for later while you select and middle-click other things.
 
+**On Windows** there is only the clipboard, which every Windows program
+shares. puritty keeps the selection for itself: selecting text still makes
+it what a middle-click or Shift+Insert pastes, in puritty, and other
+programs never see it. Ctrl+Shift+C and Ctrl+Shift+V are Windows'
+clipboard, as Ctrl+C and Ctrl+V are in other programs.
+
 **Why Ctrl+Shift, not Ctrl?** In a terminal, Ctrl+C interrupts the running
 program and Ctrl+V tells the shell to take the next key literally. puritty
 must pass those to the program, so its own copy and paste keys add Shift,

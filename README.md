@@ -104,7 +104,8 @@ A full guide is in [`docs/user/copy-and-paste.md`](docs/user/copy-and-paste.md).
 ## Using it
 
 ```sh
-puritty                         # your $SHELL in a new window
+puritty                         # your $SHELL in a new window (on Windows,
+                                #   PowerShell 7, else Windows PowerShell, else cmd)
 puritty -- htop                 # any program
 puritty --title notes -- vim -O a.txt b.txt
 puritty --config ~/work.toml    # another settings file
@@ -112,7 +113,8 @@ puritty --config ~/work.toml    # another settings file
 
 ### Settings
 
-puritty reads `~/.config/puritty/config.toml`. Every key is optional. A key
+puritty reads `~/.config/puritty/config.toml` (on Windows
+`%APPDATA%\puritty\config.toml`). Every key is optional. A key
 puritty doesn't know is reported rather than silently ignored, so a typo
 doesn't leave you wondering why nothing changed.
 

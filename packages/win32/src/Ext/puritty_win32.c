@@ -29,9 +29,9 @@
  * empty, which wakes Geng's loop for `puritty_win32_events`. The window
  * thread holds no Geng value.
  *
- * Events (WS12 step 4): the size in cells (2), the focus (3), a request
- * to close (4), keys (1, WS5), the pointer (9, WS7) and the IME (5 to 8,
- * WS6), each record as packages/x11's comment says, read so that Windows'
+ * Events (WS12 steps 4 and 5): the size in cells (2), the focus (3), a
+ * request to close (4), keys (1, WS5), the pointer (9, WS7), the IME (5 to
+ * 8, WS6), the clipboard lost (10) and a paste's text come (11, WS8), each record as packages/x11's comment says, read so that Windows'
  * keys and pointer reach Geng as Linux's do:
  *
  *   - a key's code is X's keycode for the same key, from its scan code
@@ -626,6 +626,8 @@ static int last_motion = -1;
 /* Set by the program's thread: every motion or only a held button's, and
  * the arrow or the I-beam. */
 static volatile LONG all_motion, pointer_arrow;
+/* Whether the clipboard is the window's, by its last copy. */
+static volatile LONG clip_owned;
 
 #define WM_APP_SPOT (WM_APP + 1)
 #define WM_APP_POINTER (WM_APP + 2)
@@ -1291,6 +1293,14 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_IME_CHAR:
         return 0;
+    case WM_CLIPBOARDUPDATE:
+        /* another program's clipboard now */
+        if (clip_owned && GetClipboardOwner() != h) {
+            InterlockedExchange(&clip_owned, 0);
+            uint8_t rec[2] = {10, 1};
+            record(rec, 2);
+        }
+        return 0;
     case WM_APP_SPOT:
         spot_x = (int) wp;
         spot_y = (int) lp;
@@ -1329,6 +1339,7 @@ static void *window_thread(void *arg) {
         return NULL;
     }
     ShowWindow(win, SW_SHOWNORMAL);
+    AddClipboardFormatListener(win);
     /* keys go through IMM32's input context, which every window has */
     HIMC c = ImmGetContext(win);
     if (c) {
@@ -1608,28 +1619,120 @@ geng_cancel puritty_win32_spot(int32_t x, int32_t y, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-/* Step 5's (WS12): the selections and the paste answer as if done, and
- * change nothing yet. */
+/* THE SELECTIONS (WS8, V53)
+ *
+ * The clipboard is Windows': a copy owns it with the text as UTF-16, its
+ * lines ended CRLF as Windows' programs end them, and a paste reads it,
+ * CRLF made LF as Linux's text is. PRIMARY is puritty's own (V53): a
+ * selection made is kept here, and a paste of PRIMARY answers it; no other
+ * program takes it, so it is never lost. A paste is answered at once, but
+ * as X11's is: a `Pasted` record (11), and `puritty_win32_pasted` takes the
+ * text, so the application does not know which. Losing the clipboard to
+ * another program is record 10, as X11's SelectionClear. */
+
+static char *primary;
+static size_t primary_len;
+static uint8_t *pbuf;
+static size_t plen;
+
+static int open_clipboard(void) {
+    for (int i = 0; i < 20; i++) {
+        if (OpenClipboard(win)) return 1;
+        Sleep(5);
+    }
+    return 0;
+}
+
+static void own_clipboard(const uint8_t *text, size_t n) {
+    /* LF as CRLF, then UTF-16 */
+    char *crlf = malloc(n * 2 + 1);
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (text[i] == '\n' && (i == 0 || text[i - 1] != '\r')) crlf[k++] = '\r';
+        crlf[k++] = (char) text[i];
+    }
+    crlf[k] = 0;
+    int units = MultiByteToWideChar(CP_UTF8, 0, crlf, (int) k + 1, NULL, 0);
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (size_t) (units > 0 ? units : 1) * sizeof(WCHAR));
+    if (g) {
+        WCHAR *w = GlobalLock(g);
+        if (units <= 0 || !MultiByteToWideChar(CP_UTF8, 0, crlf, (int) k + 1, w, units)) w[0] = 0;
+        GlobalUnlock(g);
+    }
+    free(crlf);
+    if (!g) return;
+    if (!open_clipboard()) {
+        GlobalFree(g);
+        return;
+    }
+    InterlockedExchange(&clip_owned, 1);
+    EmptyClipboard();
+    if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g);
+    CloseClipboard();
+}
+
+/* The clipboard's text as UTF-8, CRLF made LF, into the paste's buffer. */
+static void read_clipboard(void) {
+    plen = 0;
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !open_clipboard()) return;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    const WCHAR *w = h ? GlobalLock(h) : NULL;
+    if (w) {
+        size_t units = GlobalSize(h) / sizeof(WCHAR), n = 0;
+        while (n < units && w[n]) n++;
+        int bytes = n ? WideCharToMultiByte(CP_UTF8, 0, w, (int) n, NULL, 0, NULL, NULL) : 0;
+        free(pbuf);
+        pbuf = malloc((size_t) bytes + 1);
+        if (bytes > 0) WideCharToMultiByte(CP_UTF8, 0, w, (int) n, (char *) pbuf, bytes, NULL, NULL);
+        for (int i = 0; i < bytes; i++)
+            if (!(pbuf[i] == '\r' && i + 1 < bytes && pbuf[i + 1] == '\n')) pbuf[plen++] = pbuf[i];
+        GlobalUnlock(h);
+    }
+    CloseClipboard();
+}
+
+/* The window owns PRIMARY (0) or the clipboard (1) with this text. */
 geng_cancel puritty_win32_select(int32_t which, void *text, geng_wait *wait) {
-    (void) which;
-    (void) text;
+    geng_bytes *t = text;
+    if (which == 0) {
+        free(primary);
+        primary = malloc((size_t) t->length + 1);
+        memcpy(primary, t->data, (size_t) t->length);
+        primary_len = (size_t) t->length;
+    } else if (which == 1 && win) {
+        own_clipboard(t->data, (size_t) t->length);
+    }
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
 
+/* A paste of PRIMARY (0) or the clipboard (1): its text is read now, and
+ * a `Pasted` record says it is there. Always 1: none is ever under way. */
 geng_cancel puritty_win32_paste(int32_t which, geng_wait *wait) {
-    (void) which;
-    geng_succeed(wait, geng_slot_I4(0));
+    if (which == 0) {
+        free(pbuf);
+        pbuf = malloc(primary_len + 1);
+        if (primary_len) memcpy(pbuf, primary, primary_len);
+        plen = primary_len;
+    } else {
+        read_clipboard();
+    }
+    uint8_t r[2] = {11, 0};
+    record(r, 2);
+    geng_succeed(wait, geng_slot_I4(1));
     return (geng_cancel) {0};
 }
 
+/* The paste's text since it was last taken, UTF-8. */
 geng_cancel puritty_win32_pasted(geng_wait *wait) {
-    geng_bytes *b = geng_alloc_atomic(sizeof *b, GENG_HEADER_BYTES(sizeof *b));
-    b->length = 0;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + plen, GENG_HEADER_BYTES(sizeof *b + plen));
+    b->length = (int64_t) plen;
     b->pad = 0;
     b->data = (uint8_t *) (b + 1);
     b->buffer = NULL;
     b->block = NULL;
+    if (plen) memcpy(b->data, pbuf, plen);
+    plen = 0;
     geng_succeed(wait, geng_slot_P(b));
     return (geng_cancel) {0};
 }
