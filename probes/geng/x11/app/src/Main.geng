@@ -55,7 +55,7 @@ import Time
 import UInt8
 import Vt
 import Vt.View as View
-import X11
+import Window
 
 
 type alias Run =
@@ -110,7 +110,7 @@ drawFrame ms r =
             else
                 ms - r.pending
     in
-    X11.draw f.list
+    Window.draw f.list
         |> Task.map
             (\up ->
                 { r
@@ -188,15 +188,15 @@ raceLoop terminal fd r =
                 let
                     waits =
                         if r.stress then
-                            [ X11.events |> Task.map Events
+                            [ Window.events |> Task.map Events
                             , Sleep.sleep 1 |> Task.map (\_ -> Due)
                             ]
 
                         else if r.pending < 0 then
-                            [ X11.events |> Task.map Events ]
+                            [ Window.events |> Task.map Events ]
 
                         else
-                            [ X11.events |> Task.map Events
+                            [ Window.events |> Task.map Events
                             , Sleep.sleep (toFloat (max 0 (r.last + 16 - ms0))) |> Task.map (\_ -> Due)
                             ]
                 in
@@ -237,7 +237,7 @@ raceLoop terminal fd r =
                                                     Task.succeed counted
 
                                                 else
-                                                    X11.take
+                                                    Window.take
                                                         |> Task.andThen (\evs -> handle terminal fd evs { counted | events = counted.events + Array.length evs })
                                                         |> Task.andThen (again terminal fd)
 
@@ -261,7 +261,7 @@ again terminal fd r =
 {-| The window's events: keys sent to the program, a new size given to the
 core and the terminal, the focus kept for the cursor, a close ending the
 loop. A frame follows a key or a resize at once. -}
-handle : Process.Terminal -> File.Handle -> Array X11.Event -> (taken r : Run) -> Task Error Run
+handle : Process.Terminal -> File.Handle -> Array Window.Event -> (taken r : Run) -> Task Error Run
 handle terminal fd evs r =
     when Array.first evs is
         Nothing ->
@@ -273,18 +273,18 @@ handle terminal fd evs r =
                     Array.dropFirst 1 evs
             in
             when ev is
-                X11.Key k ->
+                Window.Key k ->
                     File.write (encodeKey k.sym k.mods k.text) fd
                         |> Task.andThen (\_ -> handle terminal fd rest { r | keyed = True })
 
-                X11.Resized size ->
+                Window.Resized size ->
                     Process.resize terminal { columns = size.cols, rows = size.rows }
                         |> Task.andThen (\_ -> handle terminal fd rest { r | term = Vt.resize size.cols size.rows r.term, keyed = True })
 
-                X11.Focus on ->
+                Window.Focus on ->
                     handle terminal fd rest { r | focus = { focused = on, blinkOn = True }, keyed = True }
 
-                X11.Close ->
+                Window.Close ->
                     Task.succeed { r | closed = True }
 
 
@@ -413,7 +413,7 @@ start cp ballast args =
                 Os.Env.getEnvironmentVariables
                     |> Task.andThen
                         (\vars ->
-                            X11.open
+                            Window.open
                                 { cols = 160
                                 , rows = 50
                                 , font = Maybe.withDefault "DejaVu Sans Mono" (Dict.get "PROBE_FONT" vars)

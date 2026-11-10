@@ -349,3 +349,23 @@ All seven leanings taken.
 - **V56 · The IME on Windows is IMM32** (WS6); TSF if IMM32 falls short.
 - **Questions 6 and 7 are Geng's**: a `[native]` key for system libraries
   and one for the GUI subsystem (geng-lang Dnene36, Dnene37).
+
+## WS17 · Step 2 built: `Window`, and the application's Linux manifest (2026-11-09)
+
+V55, the first half. `packages/x11`'s module is `Window` (`X11.geng` moved
+to `Window.geng`), and the package says it is Linux's (`runtime = "linux"`,
+D1074), so a Windows build refuses it by name. The application's manifest
+is `app/linux/geng.toml`, its source `["../src"]`, with its lock beside it;
+`app/build.sh` builds from there into `app/puritty` as before, so every
+harness that runs `app/puritty` is unchanged. `app/src`, the pixel harness
+and the X11 probe import `Window`. `app/windows/geng.toml` comes with
+`packages/win32` (step 3).
+
+The package saying `linux` found a Geng defect: `Compiler.Runtime.toPlatform`
+had no case for the platforms under `os`, so a package declared for Linux
+reached the compiler's backend as an unknown platform and every build of
+puritty failed to decode it. geng-lang fixed it (its `m4-windows.md` §WN26)
+with a case for each in its corpus.
+
+Puritty built from `app/linux`, the pixel gate (36 of 36) and the unit
+tests (68) pass.

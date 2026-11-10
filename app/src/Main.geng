@@ -56,7 +56,7 @@ import Vt.Mouse as Mouse
 import Vt.Paste as Paste
 import Vt.Base64 as Base64
 import Vt.View as View
-import X11
+import Window
 
 
 type alias Model =
@@ -98,12 +98,12 @@ type alias Model =
       -- to the window when the event's model is done
     , selection : Maybe Selection
     , clicks : { at : Int, count : Int, cell : Vt.Point }
-    , toOwn : Maybe { which : X11.Selection, text : String }
+    , toOwn : Maybe { which : Window.Selection, text : String }
     , wordBoundaries : Array Int
       -- a paste to ask for when the event's model is done, and one under
       -- way: whether it is bracketed, decided by mode 2004 when its first
       -- text comes (docs/phase3-select.md §15)
-    , toPaste : Maybe X11.Selection
+    , toPaste : Maybe Window.Selection
     , pasting : Maybe Bool
       -- OSC 52 (docs/phase3-select.md §16): requests the core made, to be
       -- done by the loop, and a read under way, its text so far
@@ -256,7 +256,7 @@ settings fs vars given =
 
 start : Process.Permission -> Dict String String -> Config -> Task String {}
 start cp vars config =
-    X11.open
+    Window.open
         { cols = config.columns
         , rows = config.rows
         , font = config.font
@@ -299,7 +299,7 @@ start cp vars config =
 {-| `imeLog`: with `PURITTY_IME_LOG` set, each commit and each change to
 the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). -}
-run : Bool -> Charset -> Config -> X11.Cell -> Process.Child -> Task String {}
+run : Bool -> Charset -> Config -> Window.Cell -> Process.Child -> Task String {}
 run imeLog charset config cell child =
     when Process.terminal child is
         Nothing ->
@@ -488,7 +488,7 @@ loop terminal fd m00 =
         Task.succeed m00
 
      else
-        X11.motion all |> Task.map (\_ -> { m00 | allMotion = all })
+        Window.motion all |> Task.map (\_ -> { m00 | allMotion = all })
     )
         |> Task.andThen pointerShape
         |> Task.andThen clipboardRequests
@@ -510,12 +510,12 @@ pointerShape m =
         Task.succeed m
 
     else
-        X11.setPointer
+        Window.setPointer
             (if arrow then
-                X11.ArrowPointer
+                Window.ArrowPointer
 
              else
-                X11.TextPointer
+                Window.TextPointer
             )
             |> Task.map (\_ -> { m | arrowPointer = arrow })
 
@@ -550,7 +550,7 @@ race terminal fd m0 =
                         else
                             [ File.writable fd |> Task.map (\_ -> Writable) ]
                 in
-                Task.race (File.read fd |> Task.map Read) ([ X11.events |> Task.map Events ] ++ timer ++ writing)
+                Task.race (File.read fd |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing)
                     |> Task.andThen
                         (\turn ->
                             now
@@ -569,7 +569,7 @@ race terminal fd m0 =
                                                     Task.succeed { m | lost = True }
 
                                                 else
-                                                    X11.take
+                                                    Window.take
                                                         |> Task.andThen (\evs -> handle terminal fd ms evs m)
                                                         |> Task.andThen (\next -> step terminal fd ms next)
 
@@ -690,7 +690,7 @@ feed fd chunk0 ms m =
 {-| The window's events: a key sent to the program, a new size given to the
 core and the terminal, the focus kept for the cursor and reported under
 mode 1004, a close. -}
-handle : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (taken m : Model) -> Task Error Model
+handle : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> (taken m : Model) -> Task Error Model
 handle terminal fd ms evs m =
     when Array.first evs is
         Nothing ->
@@ -703,33 +703,33 @@ handle terminal fd ms evs m =
 {-| Whether Shift is held after an event, for the pointer's shape (§21):
 a Shift key pressed or released, the Shift bit of a pointer event, and not
 once the focus has gone, since its release goes to another window. -}
-shiftAfter : X11.Event -> Bool -> Bool
+shiftAfter : Window.Event -> Bool -> Bool
 shiftAfter ev held =
     when ev is
-        X11.Key k ->
+        Window.Key k ->
             if k.sym == 0xFFE1 || k.sym == 0xFFE2 then
                 k.action /= 0
 
             else
                 held
 
-        X11.Pointer p ->
+        Window.Pointer p ->
             Bitwise.and p.mods 1 /= 0
 
-        X11.Focus False ->
+        Window.Focus False ->
             False
 
         _ ->
             held
 
 
-handleOne : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> X11.Event -> (taken m : Model) -> Task Error Model
+handleOne : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> Window.Event -> (taken m : Model) -> Task Error Model
 handleOne terminal fd ms rest ev m =
             when ev is
-                X11.Key k ->
+                Window.Key k ->
                     when zoomOf m k is
                         Just points ->
-                            X11.zoom points
+                            Window.zoom points
                                 |> Task.andThen
                                     (\_ ->
                                         -- every cell is drawn again at the new size
@@ -749,7 +749,7 @@ handleOne terminal fd ms rest ev m =
                                 owned terminal fd ms rest
                                     (when m.selection is
                                         Just s ->
-                                            { m | toOwn = Just { which = X11.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
+                                            { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
 
                                         Nothing ->
                                             m
@@ -763,11 +763,11 @@ handleOne terminal fd ms rest ev m =
                                     Nothing ->
                                         key terminal fd ms rest k m
 
-                X11.Resized size ->
+                Window.Resized size ->
                     Process.resize terminal { columns = size.cols, rows = size.rows }
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0, selection = Nothing })
 
-                X11.Focus on ->
+                Window.Focus on ->
                     let
                         report =
                             if Dict.get 1004 m.term.modes == Just True then
@@ -782,15 +782,15 @@ handleOne terminal fd ms rest ev m =
                     in
                     handle terminal fd ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
 
-                X11.Close ->
+                Window.Close ->
                     Task.succeed { m | closed = True }
 
-                X11.Commit text ->
+                Window.Commit text ->
                     -- the key path: the text as typed, never as a paste (V46)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
                         |> Task.andThen (\_ -> handle terminal fd ms rest (send text { m | urgent = True, back = 0 }))
 
-                X11.Preedit p ->
+                Window.Preedit p ->
                     let
                         cps =
                             Array.map Char.toCode (String.toArray (Bytes.toStringLossy p.text))
@@ -809,15 +809,15 @@ handleOne terminal fd ms rest ev m =
                     imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
 
-                X11.ImeReady ->
+                Window.ImeReady ->
                     imeLine m.imeLog "ime ready"
                         |> Task.andThen (\_ -> handle terminal fd ms rest m)
 
-                X11.PreeditDone ->
+                Window.PreeditDone ->
                     imeLine m.imeLog "done"
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
-                X11.Pointer p ->
+                Window.Pointer p ->
                     if isZoomStep p then
                         -- Ctrl and the wheel: puritty's always, a point a
                         -- step, the steps that came together one zoom
@@ -833,7 +833,7 @@ handleOne terminal fd ms rest ev m =
                             handle terminal fd ms steps.rest m
 
                         else
-                            X11.zoom points
+                            Window.zoom points
                                 |> Task.andThen
                                     (\_ ->
                                         handle terminal fd ms steps.rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
@@ -842,8 +842,8 @@ handleOne terminal fd ms rest ev m =
                     else
                         owned terminal fd ms rest (pointer ms p m)
 
-                X11.Pasted more ->
-                    X11.pasted
+                Window.Pasted more ->
+                    Window.pasted
                         |> Task.andThen
                             (\text ->
                                 handle terminal fd ms rest
@@ -856,11 +856,11 @@ handleOne terminal fd ms rest ev m =
                                     )
                             )
 
-                X11.SelectionLost which ->
+                Window.SelectionLost which ->
                     -- another program's selection now: the highlight goes,
                     -- as xterm takes it away
                     handle terminal fd ms rest
-                        (if which == X11.Primary then
+                        (if which == Window.Primary then
                             { m | selection = Nothing, urgent = True }
 
                          else
@@ -870,17 +870,17 @@ handleOne terminal fd ms rest ev m =
 
 {-| The events after one that made a selection the window's, or asked
 for a paste: the window told first. -}
-owned : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> (taken m : Model) -> Task Error Model
+owned : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> (taken m : Model) -> Task Error Model
 owned terminal fd ms rest m =
     when m.toOwn is
         Just own ->
-            X11.select own.which (Bytes.fromString own.text)
+            Window.select own.which (Bytes.fromString own.text)
                 |> Task.andThen (\_ -> owned terminal fd ms rest { m | toOwn = Nothing })
 
         Nothing ->
             when m.toPaste is
                 Just which ->
-                    X11.paste which
+                    Window.paste which
                         |> Task.andThen (\_ -> handle terminal fd ms rest { m | toPaste = Nothing })
 
                 Nothing ->
@@ -906,14 +906,14 @@ clipboardRequests m =
 
                 which =
                     if c.selection == 0 then
-                        X11.Primary
+                        Window.Primary
 
                     else
-                        X11.Clipboard
+                        Window.Clipboard
             in
             when c.text is
                 Just text ->
-                    X11.select which text
+                    Window.select which text
                         |> Task.andThen
                             (\_ ->
                                 clipboardRequests
@@ -927,7 +927,7 @@ clipboardRequests m =
 
                 Nothing ->
                     if rest.config.osc52Read && rest.clipRead == Nothing then
-                        X11.paste which
+                        Window.paste which
                             |> Task.andThen
                                 (\asked ->
                                     clipboardRequests
@@ -1024,7 +1024,7 @@ motion with Shift while a button is held, is puritty's own. The wheel is
 not: Ghostty reports it with Shift too, and nvim pages with Shift and the
 wheel. A motion is reported with the lowest-numbered button held, as
 Ghostty reports it. -}
-pointer : Int -> X11.PointerEvent -> (taken m : Model) -> Model
+pointer : Int -> Window.PointerEvent -> (taken m : Model) -> Model
 pointer ms p m =
     let
         modes =
@@ -1144,7 +1144,7 @@ wheelStep button m =
 a selection, a second and third within 500 ms on the same cell one by
 words and by lines; a motion while it is held moves its head; letting go
 makes it the window's PRIMARY, or takes it away when nothing was dragged. -}
-selecting : Int -> X11.PointerEvent -> Int -> (taken m : Model) -> Model
+selecting : Int -> Window.PointerEvent -> Int -> (taken m : Model) -> Model
 selecting ms p held m =
     let
         at =
@@ -1152,7 +1152,7 @@ selecting ms p held m =
     in
     if p.button == m.config.pasteButton && p.action == 0 then
         -- the paste button (docs/user/copy-and-paste.md), PRIMARY
-        { m | held = held, toPaste = Just X11.Primary }
+        { m | held = held, toPaste = Just Window.Primary }
 
     else if p.button == 1 && p.action == 0 then
         let
@@ -1221,7 +1221,7 @@ selecting ms p held m =
                     { m
                         | held = held
                         , selection = Just { s | made = True, hashes = rowHashes s m.term }
-                        , toOwn = Just { which = X11.Primary, text = text }
+                        , toOwn = Just { which = Window.Primary, text = text }
                     }
 
             Nothing ->
@@ -1264,7 +1264,7 @@ before a b =
 
 {-| The point under the pointer, kept on the screen (a drag past its edge
 does not scroll the view yet). -}
-pointAt : X11.PointerEvent -> Model -> Vt.Point
+pointAt : Window.PointerEvent -> Model -> Vt.Point
 pointAt p m =
     let
         cw =
@@ -1385,12 +1385,12 @@ highlightOf m =
 
 
 {-| A press of the wheel up or down with Ctrl alone: a zoom's step. -}
-isZoomStep : X11.PointerEvent -> Bool
+isZoomStep : Window.PointerEvent -> Bool
 isZoomStep p =
     p.action == 0 && (p.button == 4 || p.button == 5) && Bitwise.and p.mods 15 == 2
 
 
-stepOf : X11.PointerEvent -> Int
+stepOf : Window.PointerEvent -> Int
 stepOf p =
     if p.button == 4 then
         1
@@ -1403,10 +1403,10 @@ stepOf p =
 events after them: a touchpad's stroke sends several, and the window is
 sized once. A motion between them, which X sends as the pointer drifts, is
 passed over. -}
-zoomSteps : Array X11.Event -> Int -> { net : Int, rest : Array X11.Event }
+zoomSteps : Array Window.Event -> Int -> { net : Int, rest : Array Window.Event }
 zoomSteps evs net =
     when Array.first evs is
-        Just (X11.Pointer p) ->
+        Just (Window.Pointer p) ->
             if isZoomStep p then
                 zoomSteps (Array.dropFirst 1 evs) (net + stepOf p)
 
@@ -1433,7 +1433,7 @@ lowestHeld held i =
 
 
 {-| A key sent to the program, the cursor's blink begun again. -}
-key : Process.Terminal -> File.Handle -> Int -> Array X11.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+key : Process.Terminal -> File.Handle -> Int -> Array Window.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
 key terminal fd ms rest k m =
     let
         bytes =
@@ -1468,16 +1468,16 @@ key terminal fd ms rest k m =
 
 {-| The paste keys, pressed (docs/user/copy-and-paste.md): Shift+Insert
 pastes PRIMARY, Ctrl+Shift+V CLIPBOARD. -}
-isPasteKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe X11.Selection
+isPasteKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe Window.Selection
 isPasteKey k =
     if k.action /= 1 then
         Nothing
 
     else if Bitwise.and k.mods 15 == 1 && (k.sym == 0xFF63 || k.sym == 0xFF9E) then
-        Just X11.Primary
+        Just Window.Primary
 
     else if Bitwise.and k.mods 15 == 3 && (k.sym == 0x56 || k.sym == 0x76) then
-        Just X11.Clipboard
+        Just Window.Clipboard
 
     else
         Nothing
@@ -1607,12 +1607,12 @@ draw ms m =
                         ""
                    )
     in
-    X11.draw f.list
-        |> Task.andThen (\up -> X11.spot spot |> Task.map (\_ -> up))
+    Window.draw f.list
+        |> Task.andThen (\up -> Window.spot spot |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 (if title /= m.title then
-                    X11.setTitle title
+                    Window.setTitle title
 
                  else
                     Task.succeed {}
