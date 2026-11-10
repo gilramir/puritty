@@ -10,8 +10,9 @@ Windows (`windows.md` WS12-WS22), and how the same window will start ssh
 sessions, the step before the built-in ssh client (`synthesis.md` §10.2,
 `feature-plan.md` "The Windows product").
 
-It is a plan for Gilbert to review before anything is built (ST14 holds
-the questions). Sections are ST1, ST2, and so on.
+Gilbert reviewed it on 2026-11-10 and took it, with one change: what
+puritty starts with is a setting (ST11, ST14). Sections are ST1, ST2,
+and so on; as each step is built, its section says what was.
 
 ## ST1 · What exists today, measured 2026-11-10
 
@@ -201,8 +202,7 @@ As `settings-ui.md` §1 decided, plus what Windows offers:
 - **Windows' system menu** (Alt+Space or the title bar's icon) gets
   "Settings…" and the hosts, as PuTTY's has "Change Settings…" and "Saved
   Sessions".
-- **`puritty settings`** from a shell, and on Windows a Start-menu
-  shortcut to it (ST11).
+- **`puritty settings`** from a shell or a shortcut (ST11).
 
 ## ST10 · Hosts
 
@@ -236,7 +236,7 @@ background = "#2a1010"
   (`Match`, `Include`, tokens) comes with the built-in client
   (`synthesis.md` §10.2), which needs one anyway.
 
-**Starting a session.** `puritty --host build-box` opens a terminal whose
+**Starting a session.** `puritty --host build-box` (ST11) opens a terminal whose
 program is OpenSSH: `ssh -p 22 -l gilbert -i … -J … -t build.example.com
 'tmux new -A -s main'`, built from the entry, on the pty as any program
 runs today (WS9, WS20: Windows' `ssh.exe` already works on the pseudo
@@ -263,12 +263,41 @@ and where it is from; Enter connects; New, Duplicate, Rename, Delete; a
 host's form is its fields and its overrides, each with the marker and
 reset every row has.
 
-**What starting puritty does on Windows.** Today it opens PowerShell.
-PuTTY users expect its window to start with the session list. Leaning:
-`puritty.exe` keeps opening a shell, and a second Start-menu shortcut,
-"puritty hosts", opens the settings window on the Hosts page, so each
-habit has its entry. Windows' taskbar jump list (right-click on the
-taskbar icon) listing the hosts is a later nicety.
+**What starting puritty does** is a setting (*Gilbert, 2026-11-10*,
+V64), since one machine is mostly an ssh client and another mostly a
+local shell, and `config.toml` is each machine's own:
+
+```toml
+start = "shell"           # the default: a local shell on a pseudo terminal
+start = "hosts"           # the host list; no pseudo terminal until asked
+start = "host:build-box"  # straight into one saved host
+```
+
+The command line always wins over it:
+
+| command | opens |
+|---|---|
+| `puritty` | what `start` says |
+| `puritty -- htop`, `puritty shell` | a local program on a pseudo terminal |
+| `puritty --host build-box` | a saved host |
+| `puritty ssh user@host:port` | a quick connect |
+| `puritty hosts` | the host list |
+| `puritty settings` | the settings window |
+
+A shortcut is `puritty.exe` with arguments, so no second Start-menu entry
+is needed; one is made only for what is not the machine's default. A
+`start` that differs by machine within one shared file
+(`[machines."beelink1"]`) waits until a file is shared.
+
+**The host list becomes the session** when it is how puritty started
+(*Gilbert, 2026-11-10*, V65), as PuTTY's dialog does: Connect turns the
+same window from the list into a terminal running ssh, with the host's
+font and size. It is still one window a process. Opened from a running
+terminal (the Ctrl+right-click menu, the system menu), the list starts
+each session in a new window and stays, since a session is already open.
+
+Windows' taskbar jump list (right-click on the taskbar icon) listing the
+hosts is a later nicety.
 
 ## ST12 · The order to build
 
@@ -287,7 +316,8 @@ built, as the Windows steps did.
 6. **Opening it** (ST9): Ctrl+Comma, the Ctrl+right-click menu, the
    Windows system menu, raising one already open.
 7. **Hosts** (ST10, ST11): the entries, `~/.ssh/config`'s, `--host`,
-   quick connect, the Hosts page, the Start-menu shortcut.
+   quick connect, the Hosts page, `start` (V64) and the list that
+   becomes the session (V65).
 8. **Key sounds** (`feature-plan.md` §3), the first setting added through
    the schema.
 
@@ -301,24 +331,24 @@ To be registered in geng-lang's `docs/open-items.md` as each is built:
 - Nothing else is known to be missing: the settings window is a Geng
   program on the packages puritty already has.
 
-## ST14 · Questions for Gilbert, with leanings
+## ST14 · Gilbert's answers (2026-11-10)
 
-1. **The settings window as its own process** (ST2), which every terminal
-   follows through the file. *Leaning: yes.*
-2. **A change wait in `os`, or polling** (ST3). *Leaning: the change wait,
-   built in geng-lang first.*
-3. **Columns, rows and the program apply to new windows only** (ST4); a
-   running window is not resized by a settings change. *Leaning: yes.*
-4. **The settings window keeps its own look** (ST7), not the user's font
-   and colours. *Leaning: yes.*
-5. **Hosts in `config.toml`** as `[hosts."name"]` tables, not a file of
-   their own (ST10). *Leaning: `config.toml`, since a host's overrides are
-   settings and the window edits one file.*
-6. **A host's overrides in the first version**: look, charset and title.
-   Groups later. *Leaning: yes.*
-7. **`~/.ssh/config`'s hosts listed read-only** and connected as `ssh
-   alias` (ST10). *Leaning: yes.*
-8. **On Windows, `puritty.exe` opens a shell**, and a "puritty hosts"
-   shortcut opens the Hosts page (ST11). *Leaning: yes.*
-9. **The Ctrl+right-click menu**: Windows' own menu on Windows, drawn by
-   puritty on Linux (ST9). *Leaning: yes.*
+Gilbert took the plan, and question 8 became a setting:
+
+- **V57 · The settings window is its own process** (ST2), which every
+  terminal follows through the file.
+- **V58 · A change wait in `os`**, not polling (ST3), built in geng-lang
+  first.
+- **V59 · Columns, rows and the program apply to new windows only** (ST4).
+- **V60 · The settings window keeps its own look** (ST7).
+- **V61 · Hosts are `[hosts."name"]` tables in `config.toml`** (ST10).
+- **V62 · A host's overrides are its look, charset and title** at first;
+  groups later.
+- **V63 · `~/.ssh/config`'s hosts are listed read-only**, connected as
+  `ssh alias` (ST10).
+- **V64 · `start` says what plain `puritty` opens** (`shell`, `hosts`,
+  `host:NAME`), and the command line overrides it (ST11).
+- **V65 · The host list becomes the session** when puritty started on it;
+  from a running terminal it starts new windows (ST11).
+- The Ctrl+right-click menu is Windows' own on Windows and drawn by
+  puritty on Linux (ST9), as leaned.
