@@ -732,3 +732,23 @@ differed. The Linux run is unchanged (325 of 325).
 
 **What WS12 has left:** nothing. Gilbert's own tries remain: an ssh session to
 another machine, Hangul typed by hand, and daily use.
+
+## WS23 · A cell is as wide as a 0, and the settings window's pointer is an arrow (2026-11-10)
+
+**Fira Code on Windows drew every character in a cell twice its width.**
+Gilbert's first use: "each character has extra space around them". A
+cell was the font's widest glyph's advance (`max_advance`). Ubuntu's Fira
+Code (1950 units to the em) has every glyph at 1200 and none wider; the
+Fira Code 6 build on beelink1 (2000 to the em, from its own
+`FiraCode-Regular.ttf`) has 14 glyphs at 2400, so its cell was two
+characters wide. The cell is now the advance of the digit `0`, as most
+terminals take it, and the widest glyph's only for a font with no `0`
+(`packages/text`, `primary_metrics`). The pixels gate's `han-bitmap`
+case (AR PL UMing, whose Latin glyphs are half its Han glyphs' width) had
+pinned the same fault, every Latin letter in a Han-wide cell; its pin is
+now 16 half-width cells, the Han spanning two each. Every other pin is
+unchanged, on Linux and Windows.
+
+**The settings window and the host list show an arrow**, not the
+terminal's I-beam (Gilbert: the settings window's pointer should be a
+pointer), and give the I-beam back when the host list becomes a session.

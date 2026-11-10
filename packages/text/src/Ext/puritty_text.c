@@ -946,10 +946,18 @@ static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end, int pass) {
     return q;
 }
 
-/* The primary font's cell and lines, from its regular face. */
+/* The primary font's cell and lines, from its regular face. The cell is as
+ * wide as the digit 0's advance, as most terminals take it, and not the
+ * font's widest glyph's: a monospace font may hold a few glyphs of two
+ * cells, and Fira Code 6's Windows build (2000 units to the em) has 14 at
+ * 2400 against its 1200, which made every cell twice a character's width.
+ * A font with no 0 takes its widest glyph's. */
 static void primary_metrics(void) {
     FT_Face face = faces[0].ft;
     pt_cw = (int) (face->size->metrics.max_advance >> 6);
+    FT_UInt zero = FT_Get_Char_Index(face, '0');
+    if (zero != 0 && FT_Load_Glyph(face, zero, FT_LOAD_DEFAULT) == 0 && face->glyph->advance.x > 0)
+        pt_cw = (int) (face->glyph->advance.x >> 6);
     pt_ch = (int) (face->size->metrics.height >> 6);
     pt_ascent = (int) (face->size->metrics.ascender >> 6);
     long below = -FT_MulFix(face->underline_position, face->size->metrics.y_scale) >> 6;
