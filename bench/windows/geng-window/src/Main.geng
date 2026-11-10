@@ -1,0 +1,54 @@
+module Main exposing (main)
+
+{-| puritty's Windows survey (`docs/windows.md` WS4): a window on a thread
+of its own, its events handed to Geng's loop through a post. `open` starts
+the window thread; `events` waits until it has queued something; `take`
+answers what it queued, a line an event. The window closes itself after
+three seconds, and the program prints each batch as it comes and ends at
+the close.
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Task exposing (Task)
+
+
+@extern(c, "probe_window_open")
+open : Task x Int
+
+
+@extern(c, "probe_window_events")
+events : Task x Int
+
+
+@extern(c, "probe_window_take")
+take : Task x Bytes
+
+
+main : Task Never {}
+main =
+    open
+        |> Task.andThen (\code -> Console.write ("open " ++ String.fromInt code ++ "\n"))
+        |> Task.andThen (\_ -> loop 1)
+
+
+loop : Int -> Task Never {}
+loop n =
+    events
+        |> Task.andThen (\_ -> take)
+        |> Task.andThen
+            (\bytes ->
+                let
+                    text =
+                        Bytes.toString bytes |> Maybe.withDefault "?"
+                in
+                Console.write ("batch " ++ String.fromInt n ++ ":\n" ++ text)
+                    |> Task.andThen
+                        (\_ ->
+                            if String.contains "close" text || n >= 50 then
+                                Console.write "done\n"
+
+                            else
+                                loop (n + 1)
+                        )
+            )

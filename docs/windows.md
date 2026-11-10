@@ -292,3 +292,34 @@ build against nixpkgs' FreeType DLLs did.
 Note for a Windows build: the toolchain's `pkg-config` wrapper reads
 `PKG_CONFIG_PATH`, not its target-suffixed variable, when run outside a
 Nix build, so a build sets both, as geng-lang's `run.py` does.
+
+## WS15 · The window thread and Geng's loop, proved (2026-11-09)
+
+`bench/windows/geng-window` is a Geng program, built with `geng make
+--platform=windows`, whose own C (`src/Ext/windows/`) does what WS4
+proposes: `open` opens a post and starts a window thread; the thread makes
+a window, runs its message loop and queues a line for each message under a
+lock, sending the post a message each time; `events` answers at once when
+the queue holds something and otherwise keeps its wait for the post's
+`ready`, which runs on the program's thread; `take` answers the queue.
+
+On beelink1, over ssh and in Gilbert's desktop session alike, Geng's loop
+was woken for each event as it came: the window made (on a thread of its
+own), focus in, its size, its close, each a batch of its own, and the
+program ended at the close with status 0. The thread holds no Geng value;
+the wait is kept in an object allocated old (`geng_alloc_old`), which never
+moves, so the C's static and the post's `ready` see one address, and the
+post keeps it alive.
+
+Two things a Windows build of puritty needs that Geng's build does not have:
+
+- **Windows' own libraries.** The window's C calls `gdi32`, `user32` and
+  `imm32`; a package's `[native]` table names `pkg-config` modules (D890),
+  and these have none. The probe passes them in `GENG_LDFLAGS`. A package
+  needs a way to name them: a `.pc` file of its own with only `Libs:
+  -lgdi32 -luser32 -limm32`, or a `[native]` key for system libraries.
+- **The GUI subsystem.** A program for the console subsystem gets a console
+  window when started from the desktop (WS2). `-mwindows` at the link makes
+  it a GUI program; Geng's build has no switch for it, and `GENG_LDFLAGS`
+  would carry it for every program built in that shell. A `[native]` key,
+  or one in the application's manifest, is the likelier home.
