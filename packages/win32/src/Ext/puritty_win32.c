@@ -1560,22 +1560,41 @@ geng_cancel puritty_win32_take(geng_wait *wait) {
 
 /* The font at `points` (V50): the window kept at its size in pixels, and
  * the cells that now fit it reported as a new size. */
+/* The window fitted to a new cell: the cells that now fit it reported as a
+ * new size. */
+static void refit(void) {
+    EnterCriticalSection(&queue_lock);
+    cell_w = pt_cw;
+    cell_h = pt_ch;
+    int w = win_w, h = win_h;
+    LeaveCriticalSection(&queue_lock);
+    win_cols = -1;
+    size_in(w, h);
+    pt_resize(win_cols, win_rows);
+    InvalidateRect(win, NULL, FALSE);
+}
+
 geng_cancel puritty_win32_zoom(int32_t points, geng_wait *wait) {
     EnterCriticalSection(&paint);
     int changed = pt_zoom(points, open_dpi);
     LeaveCriticalSection(&paint);
-    if (changed) {
-        EnterCriticalSection(&queue_lock);
-        cell_w = pt_cw;
-        cell_h = pt_ch;
-        int w = win_w, h = win_h;
-        LeaveCriticalSection(&queue_lock);
-        win_cols = -1;
-        size_in(w, h);
-        pt_resize(win_cols, win_rows);
-        InvalidateRect(win, NULL, FALSE);
-    }
+    if (changed) refit();
     geng_succeed(wait, geng_slot_I4(pt_cw * 65536 + pt_ch));
+    return (geng_cancel) {0};
+}
+
+/* Another font, fallback language, size or glyph cache (docs/settings.md
+ * ST4): answers the new cell, or -1 with the font kept when there is no
+ * such font. */
+geng_cancel puritty_win32_setfont(int32_t points, void *font_bytes, void *lang_bytes, int32_t cap, geng_wait *wait) {
+    char *font = string_of(font_bytes), *lang = string_of(lang_bytes);
+    EnterCriticalSection(&paint);
+    int done = pt_refont(font, lang, points, open_dpi, cap);
+    LeaveCriticalSection(&paint);
+    free(font);
+    free(lang);
+    if (done == 0) refit();
+    geng_succeed(wait, geng_slot_I4(done == 0 ? pt_cw * 65536 + pt_ch : -1));
     return (geng_cancel) {0};
 }
 

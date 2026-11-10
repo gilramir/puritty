@@ -24,6 +24,11 @@ due:
   - a blinking cursor (mode 12) blinks every `cursor.blink_ms` while the
     window has the focus, and shows at once again after a key.
 
+The settings file's directory is watched, and a change to the file is
+read and applied to the running window (`docs/settings.md` ST3, ST4): the
+colours, the font, the scrollback and the rest, all but the window's size
+in cells and the program, which are new windows'.
+
 A resize of the window is given to the core and to the terminal; the
 focus is drawn in the cursor and, under mode 1004, reported to the
 program; the program's title (OSC 0 and 2) is the window's. puritty ends
@@ -45,11 +50,13 @@ import Int64
 import Keys
 import Os.Env
 import Platform
+import Os.Directory as Directory
 import Os.Error exposing (Error)
 import Os.File as File
 import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
 import Process as Sleep
+import Source exposing (Source)
 import Task exposing (Task)
 import Time
 import Vt
@@ -111,7 +118,42 @@ type alias Model =
       -- done by the loop, and a read under way, its text so far
     , clips : Array Vt.Clip
     , clipRead : Maybe { letter : Int, bel : Bool, text : Bytes }
+      -- where the settings came from, and a change to them followed
+      -- (docs/settings.md ST3)
+    , settings : Settings
+      -- with PURITTY_SHOT set, the file each frame's picture is written to,
+      -- for the reload gate (harness/reload.py)
+    , shotPath : Maybe String
     }
+
+
+{-| What the command line gave: the settings file, if any (one it names
+must be there), and the title and program, which win over the file's. -}
+type alias Given =
+    { file : Maybe { path : Path.Path, required : Bool }
+    , fs : File.Permission
+    , title : Maybe String
+    , program : Array String
+    }
+
+
+{-| The settings followed while the window runs (docs/settings.md ST3,
+ST4): what the command line gave, the locale the language and charset fall
+back on, the settings directory's changes while it is watched, and when a
+change seen is to be read (-1 for none waiting). -}
+type alias Settings =
+    { given : Given
+    , locale : Platform.Locale
+    , events : Maybe (Source Directory.Change)
+    , at : Int
+    }
+
+
+{-| How long after a change to the settings file it is read, so that an
+editor's save, often several writes, is read once and whole. -}
+reloadDelayMs : Int
+reloadDelayMs =
+    50
 
 
 {-| A selection: from `anchor` to `head`, in either order, both included.
@@ -138,6 +180,7 @@ type Turn
     | Events Bool
     | Due
     | Writable
+    | SettingsChanged (Maybe Directory.Change)
 
 
 now : Task x Int
@@ -181,38 +224,40 @@ main =
                         \_ ->
                             Task.map3 (\cp fs vars -> { cp = cp, fs = fs, vars = vars }) Process.initialize File.initialize Os.Env.getEnvironmentVariables
                     , onCommand =
-                        \_ ctx (Run given) ->
-                            settings ctx.fs ctx.vars given.config
-                                |> Task.map
-                                    (\config ->
-                                        { config
-                                            | title = Maybe.withDefault config.title given.title
-                                            , command = if Array.isEmpty given.program then config.command else given.program
-                                        }
-                                    )
-                                |> Task.andThen (\config -> start ctx.cp ctx.vars config)
+                        \_ ctx (Run asked) ->
+                            let
+                                given =
+                                    { file = settingsFile ctx.vars asked.config
+                                    , fs = ctx.fs
+                                    , title = asked.title
+                                    , program = asked.program
+                                    }
+                            in
+                            readSettings given
+                                |> Task.andThen (\config -> start ctx.cp ctx.vars given config)
                                 |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
                     }
             )
 
 
 {-| The settings file: the one the command line names, which must be
-there, or the user's, or the defaults when the user has none. -}
-settings : File.Permission -> Dict String String -> Maybe Path.Path -> Task String Config
-settings fs vars given =
-    let
-        dir =
-            Platform.settingsDirectory vars
+there, or the user's, which need not be; none when the platform names no
+place for it. -}
+settingsFile : Dict String String -> Maybe Path.Path -> Maybe { path : Path.Path, required : Bool }
+settingsFile vars named =
+    when named is
+        Just p ->
+            Just { path = p, required = True }
 
-        file =
-            when given is
-                Just p ->
-                    Just { path = p, required = True }
+        Nothing ->
+            Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) (Platform.settingsDirectory vars)
 
-                Nothing ->
-                    Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) dir
-    in
-    when file is
+
+{-| The settings: the file's, or the defaults when the user has none, with
+the command line's title and program over them. -}
+readSettings : Given -> Task String Config
+readSettings given =
+    (when given.file is
         Nothing ->
             Task.succeed Config.defaults
 
@@ -221,7 +266,7 @@ settings fs vars given =
                 path =
                     Path.toString f.path
             in
-            File.readFile fs f.path
+            File.readFile given.fs f.path
                 |> Task.map Just
                 |> Task.onError
                     (\err ->
@@ -245,16 +290,63 @@ settings fs vars given =
                                     Err why ->
                                         Task.fail (path ++ ": " ++ why)
                     )
+    )
+        |> Task.map
+            (\config ->
+                { config
+                    | title = Maybe.withDefault config.title given.title
+                    , command = if Array.isEmpty given.program then config.command else given.program
+                }
+            )
 
 
-start : Process.Permission -> Dict String String -> Config -> Task String {}
-start cp vars config =
+{-| The settings file's directory watched, into a source of its own: the
+user's made first when it is not there, so that a file written into it
+later is seen. Nothing is followed when there is no file, or the directory
+cannot be watched. -}
+watchSettings : Given -> Task x (Maybe (Source Directory.Change))
+watchSettings given =
+    when given.file is
+        Nothing ->
+            Task.succeed Nothing
+
+        Just f ->
+            let
+                dir =
+                    when Path.parent f.path is
+                        Just d ->
+                            if Path.toString d == "" then
+                                Path.fromString "."
+
+                            else
+                                d
+
+                        Nothing ->
+                            Path.fromString "."
+            in
+            Source.new
+                |> Task.andThen
+                    (\events ->
+                        (if f.required then
+                            Task.succeed {}
+
+                         else
+                            Directory.createAll given.fs dir
+                        )
+                            |> Task.andThen (\_ -> Directory.watch given.fs dir events identity)
+                            |> Task.map (\_ -> Just events)
+                    )
+                |> Task.onError (\_ -> Task.succeed Nothing)
+
+
+start : Process.Permission -> Dict String String -> Given -> Config -> Task String {}
+start cp vars given config =
     Platform.locale vars
-        |> Task.andThen (\locale -> startIn cp vars locale config)
+        |> Task.andThen (\locale -> startIn cp vars given locale config)
 
 
-startIn : Process.Permission -> Dict String String -> Platform.Locale -> Config -> Task String {}
-startIn cp vars locale config =
+startIn : Process.Permission -> Dict String String -> Given -> Platform.Locale -> Config -> Task String {}
+startIn cp vars given locale config =
     Window.open
         { cols = config.columns
         , rows = config.rows
@@ -288,9 +380,13 @@ startIn cp vars locale config =
                             charset =
                                 Charset.fromName (Maybe.withDefault locale.charset config.charset)
                         in
-                        spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
-                            |> Task.mapError Os.Error.toString
-                            |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) charset config cell child)
+                        watchSettings given
+                            |> Task.andThen
+                                (\events ->
+                                    spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                                        |> Task.mapError Os.Error.toString
+                                        |> Task.andThen (\child -> run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell child { given = given, locale = locale, events = events, at = -1 })
+                                )
             )
 
 
@@ -316,9 +412,11 @@ spawnFirst cp commands options =
 
 {-| `imeLog`: with `PURITTY_IME_LOG` set, each commit and each change to
 the preedit is written to standard output, for the IME gate
-(`harness/ime.py`, V45). -}
-run : Bool -> Charset -> Config -> Window.Cell -> Process.Child -> Task String {}
-run imeLog charset config cell child =
+(`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
+drawn is written to its file as a picture, for the reload gate
+(`harness/reload.py`). -}
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Process.Child -> Settings -> Task String {}
+run imeLog shotPath charset config cell child settings =
     when Process.terminal child is
         Nothing ->
             Task.fail "the program has no terminal"
@@ -373,6 +471,8 @@ run imeLog charset config cell child =
                             , pasting = Nothing
                             , clips = []
                             , clipRead = Nothing
+                            , settings = settings
+                            , shotPath = shotPath
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -443,14 +543,20 @@ nextAt m =
             else
                 -1
     in
-    if f < 0 then
+    soonest (soonest f b) m.settings.at
+
+
+{-| The sooner of two times, -1 standing for none. -}
+soonest : Int -> Int -> Int
+soonest a b =
+    if a < 0 then
         b
 
     else if b < 0 then
-        f
+        a
 
     else
-        min f b
+        min a b
 
 
 {-| What the program is sent, queued: keys, replies, focus reports, a
@@ -567,8 +673,16 @@ race terminal fd m0 =
 
                         else
                             [ File.writable fd |> Task.map (\_ -> Writable) ]
+
+                    following =
+                        when m.settings.events is
+                            Nothing ->
+                                []
+
+                            Just events ->
+                                [ Source.next events |> Task.map SettingsChanged ]
                 in
-                Task.race (File.read fd |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing)
+                Task.race (File.read fd |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following)
                     |> Task.andThen
                         (\turn ->
                             now
@@ -592,10 +706,13 @@ race terminal fd m0 =
                                                         |> Task.andThen (\next -> step terminal fd ms next)
 
                                             Due ->
-                                                step terminal fd ms (blink ms m)
+                                                reloadIfDue ms (blink ms m) |> Task.andThen (\next -> step terminal fd ms next)
 
                                             Writable ->
                                                 step terminal fd ms m
+
+                                            SettingsChanged change ->
+                                                step terminal fd ms (noticed ms change m)
                                     )
                         )
             )
@@ -613,10 +730,176 @@ step terminal fd ms m =
                 frameAt m
         in
         if at >= 0 && ms >= at then
-            draw ms m |> Task.andThen (\next -> if next.lost then Task.succeed next else loop terminal fd next)
+            draw ms m
+                |> Task.andThen shoot
+                |> Task.andThen (\next -> if next.lost then Task.succeed next else loop terminal fd next)
 
         else
             loop terminal fd m
+
+
+{-| A change in the settings directory: one to the settings file, or
+changes the system dropped, has the file read `reloadDelayMs` later; the
+directory gone stops the following. -}
+noticed : Int -> Maybe Directory.Change -> (taken m : Model) -> Model
+noticed ms change m =
+    let
+        s =
+            m.settings
+
+        ours path =
+            when s.given.file is
+                Just f ->
+                    Path.filename path == Path.filename f.path
+
+                Nothing ->
+                    False
+
+        soon =
+            { s | at = ms + reloadDelayMs }
+
+        none =
+            { s | events = Nothing }
+    in
+    when change is
+        Just (Directory.Added path) ->
+            if ours path then { m | settings = soon } else m
+
+        Just (Directory.Changed path) ->
+            if ours path then { m | settings = soon } else m
+
+        Just (Directory.Removed path) ->
+            if ours path then { m | settings = soon } else m
+
+        Just Directory.Lost ->
+            { m | settings = soon }
+
+        Just Directory.Gone ->
+            { m | settings = none }
+
+        Nothing ->
+            { m | settings = none }
+
+
+{-| The settings read again once a change's delay is up (docs/settings.md
+ST3): applied when they decode, and when they do not, the settings in force
+kept and why written to standard error. -}
+reloadIfDue : Int -> (taken m : Model) -> Task Error Model
+reloadIfDue ms m =
+    let
+        s =
+            m.settings
+    in
+    if s.at < 0 || ms < s.at then
+        Task.succeed m
+
+    else
+        readSettings s.given
+            |> Task.map Ok
+            |> Task.onError (\why -> Task.succeed (Err why))
+            |> Task.andThen
+                (\read ->
+                    when read is
+                        Ok config ->
+                            applySettings config { m | settings = { s | at = -1 } }
+
+                        Err why ->
+                            Console.writeErr ("puritty: " ++ why ++ "\n")
+                                |> Task.map (\_ -> { m | settings = { s | at = -1 } })
+                )
+
+
+{-| New settings applied to the running window (docs/settings.md ST4):
+the font opened again for a new family, language or glyph cache, or sized
+again for a new size; the colours and the palette, the scrollback's bound,
+the charset and the word boundaries changed; every cell drawn again. What
+is read where it is used (the blink, the frames, the paste button, OSC 52,
+the title) is in `config`. The window's size in cells and the program are
+new windows' (V59). A font the system does not have is said on standard
+error, and the one in use kept. -}
+applySettings : Config -> (taken m : Model) -> Task Error Model
+applySettings new m =
+    let
+        old =
+            m.config
+
+        locale =
+            m.settings.locale
+
+        language c =
+            Maybe.withDefault locale.language c.language
+
+        charset =
+            Charset.fromName (Maybe.withDefault locale.charset new.charset)
+
+        term0 =
+            if new.palette /= old.palette then
+                Vt.setPalette new.palette m.term
+
+            else
+                m.term
+
+        term =
+            if new.scrollbackLines /= old.scrollbackLines then
+                Vt.setScrollbackBytes (Vt.scrollbackBytesFor { cols = term0.cols, rows = new.scrollbackLines }) term0
+
+            else
+                term0
+
+        -- read before `term` is moved into the model
+        shape =
+            { back = min m.back (Vt.scrollbackRows term), cols = term.cols, rows = term.rows }
+
+        refont =
+            new.font /= old.font || language new /= language old || new.glyphCacheMb /= old.glyphCacheMb
+
+        applied =
+            { m
+                | config = new
+                , look = { foreground = new.foreground, background = new.background, boldIsBright = new.boldIsBright }
+                , term = term
+                , back = shape.back
+                , charset = charset
+                , decoder =
+                    if charset /= m.charset then
+                        Charset.decoder
+
+                    else
+                        m.decoder
+                , wordBoundaries = Array.map Char.toCode (String.toArray new.wordBoundaries)
+                , shadow = View.shadow shape.cols shape.rows
+                , urgent = True
+            }
+    in
+    if refont then
+        Window.setFont { font = new.font, lang = language new, points = new.points, glyphCap = new.glyphCacheMb * 1024 * 1024 }
+            |> Task.andThen
+                (\done ->
+                    when done is
+                        Ok _ ->
+                            Task.succeed { applied | points = new.points }
+
+                        Err why ->
+                            Console.writeErr ("puritty: " ++ why ++ "; the font in use is kept\n")
+                                |> Task.map (\_ -> { applied | config = { new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb } })
+                )
+
+    else if new.points /= old.points then
+        Window.zoom new.points |> Task.map (\_ -> { applied | points = new.points })
+
+    else
+        Task.succeed applied
+
+
+{-| The frame just drawn, written to `PURITTY_SHOT`'s file when it is set. -}
+shoot : (taken m : Model) -> Task x Model
+shoot m =
+    when m.shotPath is
+        Just path ->
+            Window.shot path |> Task.map (\_ -> m)
+
+        Nothing ->
+            Task.succeed m
 
 
 blink : Int -> (taken m : Model) -> Model

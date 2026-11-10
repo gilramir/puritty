@@ -30,6 +30,11 @@ extern int pt_verbose;
  * (V37). Answers 0, or -1 when there is no such font. */
 int pt_open(const char *font, const char *lang, int points, int dpi, long cap);
 
+/* Another primary font, fallback language, size in points and glyph cache
+ * in place of the open one: every face closed and the glyphs begun again.
+ * -1, with the open font kept, when the platform has no such font. */
+int pt_refont(const char *font, const char *lang, int points, int dpi, long cap);
+
 /* The font at `points` (V50's zoom), or at a new resolution: every face
  * sized again, the glyphs begun again. Answers 1 when the cell may have
  * changed, 0 when nothing did; the platform then makes a target for the

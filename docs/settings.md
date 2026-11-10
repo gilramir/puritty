@@ -305,9 +305,9 @@ Each step ends with its gate passing and this document saying what was
 built, as the Windows steps did.
 
 1. **The change wait in `os`** (geng-lang): inotify and
-   `ReadDirectoryChangesW`, with its own test there.
+   `ReadDirectoryChangesW`, with its own test there. *Built (ST15).*
 2. **Config reload**: ST3 and ST4, with `Window.setFont`; the reload gate
-   on Xvfb, and on beelink1 by `--windows`.
+   on Xvfb, and on beelink1 by `--windows`. *Built (ST15).*
 3. **The schema and the lenient decoder** (ST5), the notice in the
    terminal for a bad key, the documented example from the table.
 4. **Writing** (ST6), with its round-trip tests.
@@ -352,3 +352,82 @@ Gilbert took the plan, and question 8 became a setting:
   from a running terminal it starts new windows (ST11).
 - The Ctrl+right-click menu is Windows' own on Windows and drawn by
   puritty on Linux (ST9), as leaned.
+
+## ST15 · Steps 1 and 2 built: the change wait, and config reload (2026-11-10)
+
+**Step 1, in geng-lang** (Dnene39, `m4-puritty.md` §VA64, geng-lang
+b2c8bf31): `Os.Directory.watch` delivers a directory's changes into a
+`Source`, `Added`, `Removed`, `Changed`, `Lost` and `Gone`, as
+`Os.Signal.listen` delivers signals; inotify on Linux,
+`ReadDirectoryChangesW` on the loop's completion port on Windows. Measured
+on all three: Windows also says a file replaced by a move was `Removed`,
+which Linux does not, and Wine never says the watched directory is `Gone`.
+
+**Step 2, config reload.** Each terminal watches its settings file's
+directory (made first when it is the user's and not there yet, so that a
+file written into it later is seen) and races the watch with its other
+waits. A change to the file, or `Lost`, has it read again 50 ms later, so
+that an editor's save, often several writes, is read once and whole. What
+decodes is applied by difference (ST4):
+
+- the colours and the palette, with every cell drawn again;
+  `Vt.setPalette` sets the named colours over the defaults, so a palette
+  made shorter gives the rest back, where `withPalette` keeps them;
+- a new family, fallback language or glyph cache opens the faces again
+  (`Window.setFont`, `pt_refont` in `packages/text`, the window kept at its
+  size in pixels as a zoom keeps it); a new size alone is a zoom;
+- the scrollback's bound, `Vt.setScrollbackBytes`: the oldest pages over it
+  dropped at once, and a bound of none clearing the scrollback as ED 3
+  does, so that the terminal holds what one made with the bound would;
+- the charset, the word boundaries, and what is read where it is used
+  (the blink, the frames, the paste button, OSC 52, the title).
+
+A file that does not decode, or a family Windows does not have, changes
+nothing and is said on standard error; the notice in the terminal is step
+3's. On Linux fontconfig answers a family it lacks with the closest it
+has, at a start as at a reload, so there it is a change. A removed file is
+the defaults.
+
+**The reload gate**, `harness/reload.py`: each case starts puritty on one
+file, rewrites it under it (in place, as an editor saves, or by a rename,
+as the settings window will), and holds the window's own picture to a
+fresh puritty's with the new file, over the part both cover. The picture
+is `PURITTY_SHOT`, a file the app writes each frame to when it is set, as
+`PURITTY_IME_LOG` serves the IME gate. **12 of 12 on Linux** (Xvfb, the
+pixel gate's fonts) and **11 of 11 on Windows** (`--windows beelink1`, in
+the ssh session's window station): colours in place and by rename, the
+palette set and shortened, bold as bright, the size, the family, the
+language (Korean to Japanese Han), a missing family, a file that does not
+decode, a file removed, and on Linux the title. The core's tests gain a
+`Settings` suite (75 of 75): the palette set and shortened, the scrollback
+cut and emptied, each held to a terminal made with the new setting.
+
+**Held as before:** pixels 36 of 36 on Linux and on Windows, pointer 51 of
+51, IME 14 of 14, replay 325 of 325, events 13 of 13 on Windows, and the
+core's counts and times within their record (`perf.py`).
+
+**Left open:**
+
+- *The window's title on Windows.* The settings' title is the window's
+  while the program has set none, and under a pseudo console the program
+  always has: conhost titles each program with its path as it starts
+  (`C:\WINDOWS\system32\cmd.exe`, measured), as Windows Terminal shows it.
+  So `[window] title` is never seen on Windows, and the title case is
+  Linux's. A question for Gilbert (ST16).
+- *A charset changed between UTF-8 and another* changes puritty's decoder
+  at once, but not the pseudo terminal's `IUTF8` flag, which `Os.Process`
+  sets when the program starts; only a program reading in the kernel's
+  line mode (a plain `cat`, not a shell's line editor) sees the
+  difference, in how a backspace erases. New windows have it right.
+- What is read where it is used (blink, frames, paste button, OSC 52, word
+  boundaries) is not pictured by the gate; it is `m.config` replaced.
+
+## ST16 · A question for Gilbert (2026-11-10)
+
+1. **The title on Windows** (ST15): the pseudo console names every program
+   by its path, so the settings' title never shows. Windows Terminal has a
+   per-profile `suppressApplicationTitle` for this: the profile's title
+   wins over the program's. *Leaning:* the same as a setting on both
+   systems, `[window] keep_title = false` by default, which a host's
+   overrides (ST10) can set, since a host's name is the title one wants
+   for an ssh session.

@@ -4,7 +4,7 @@ module Vt exposing
     , defaultPageRows, keyOptions, mouseModes
     , View, scrollbackRows, rowsPushed, viewAt, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
-    , Clip, takeClipboard, withPalette
+    , Clip, takeClipboard, withPalette, setPalette, setScrollbackBytes
     )
 
 {-| puritty's headless terminal core (`docs/vt-core.md`).
@@ -60,6 +60,7 @@ import Vt.Scroll as Scroll exposing (resizeQuiet, withScroll)
 import Vt.Modes exposing (fresh, modifyOtherKeysKey, privateState)
 import Vt.Print exposing (wrapped)
 import Vt.Parse as Parse
+import Vt.Edit as Edit
 
 
 {-| A terminal (`Vt.Term.Term`). -}
@@ -818,6 +819,40 @@ what OSC 4 answers and what OSC 104 and RIS go back to. -}
 withPalette : Array Int -> (taken t : Term) -> Term
 withPalette colours t =
     { t | named = Array.indexedMap (\i d -> Maybe.withDefault d (Array.get i colours)) t.named }
+
+
+{-| The terminal with its 16 named colours as its embedder's, over
+libghostty-vt's own rather than the ones it has: `withPalette` for a
+palette changed while the terminal runs (puritty's settings reloaded,
+`docs/settings.md` ST4), so that a colour the new palette no longer names
+goes back to its default. Colours a program set with OSC 4 stay its. -}
+setPalette : Array Int -> (taken t : Term) -> Term
+setPalette colours t =
+    { t | named = Array.indexedMap (\i d -> Maybe.withDefault d (Array.get i colours)) namedColours }
+
+
+{-| The most bytes the scrollback's pages may hold, changed while the
+terminal runs (`Config.scrollbackBytes`; puritty's settings reloaded,
+`docs/settings.md` ST4): a smaller limit drops the oldest pages over it at
+once, a larger one keeps what there is and lets it grow, and none at all
+clears the scrollback as ED 3 does, so that the terminal holds what one
+made with the limit would. On the alternate screen ED 3 leaves the main
+screen's rows, so a limit of none then drops its pages and keeps its last
+rows until the main screen is back. -}
+setScrollbackBytes : Int -> (taken t : Term) -> Term
+setScrollbackBytes bytes t =
+    let
+        back =
+            t.back
+
+        limited =
+            { t | back = dropOver { back | limit = max 0 bytes } }
+    in
+    if bytes <= 0 then
+        Edit.clearScrollback limited
+
+    else
+        limited
 
 
 {-| The clipboard requests OSC 52 made since the last take

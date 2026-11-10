@@ -1,6 +1,6 @@
 module Window exposing
     ( Settings, Cell, open
-    , draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
+    , setFont, draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, motion, select, Selection(..), paste, pasted
     , events, take, Event(..), PointerEvent
     )
 
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, draw, shot, setTitle, setPointer, Pointer, spot, zoom, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
 
 -}
 
@@ -212,6 +212,28 @@ zoom points =
 
 @extern(c, "puritty_x11_zoom")
 zoomExtern : Int -> Task x Int
+
+
+{-| Another primary font, fallback language, size in points or glyph cache
+in place of the open one (`docs/settings.md` ST4): every face opened
+again, the window kept at its size in pixels, so a `Resized` follows with
+the cells that now fit it; answers the new cell, or why not, with the font
+kept: no such font. -}
+setFont : { font : String, lang : String, points : Int, glyphCap : Int } -> Task x (Result String Cell)
+setFont s =
+    setFontExtern s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap
+        |> Task.map
+            (\code ->
+                if code < 0 then
+                    Err ("no font for " ++ s.font)
+
+                else
+                    Ok { width = code // 65536, height = modBy 65536 code }
+            )
+
+
+@extern(c, "puritty_x11_setfont")
+setFontExtern : Int -> Bytes -> Bytes -> Int -> Task x Int
 
 
 {-| The pointer over the window: the cursor theme's I-beam, over text, or

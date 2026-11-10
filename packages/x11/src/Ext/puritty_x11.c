@@ -1016,21 +1016,38 @@ geng_cancel puritty_x11_take(geng_wait *wait) {
 /* The font at `points` (V50's zoom): every face sized again, the glyph
  * set begun again, the window kept at its size in pixels and so the cells
  * that fit it reported as a new size. Answers the new cell as `open` does. */
-geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
-    if (pt_zoom(points, dpi0)) {
-        uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
-        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
-        xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(conn, xcb_get_geometry(conn, window), NULL);
-        if (g) {
-            win_cols = -1;
-            size_in(g->width, g->height);
-            free(g);
-        }
-        pt_resize(win_cols, win_rows);
-        spot_x = spot_y = -1;
-        xcb_flush(conn);
+/* The window fitted to a new cell: its size hints, and the cells that now
+ * fit it reported as a new size. */
+static void refit(void) {
+    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+    xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(conn, xcb_get_geometry(conn, window), NULL);
+    if (g) {
+        win_cols = -1;
+        size_in(g->width, g->height);
+        free(g);
     }
+    pt_resize(win_cols, win_rows);
+    spot_x = spot_y = -1;
+    xcb_flush(conn);
+}
+
+geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
+    if (pt_zoom(points, dpi0)) refit();
     geng_succeed(wait, geng_slot_I4(pt_cw * 65536 + pt_ch));
+    return (geng_cancel) {0};
+}
+
+/* Another font, fallback language, size or glyph cache (docs/settings.md
+ * ST4): answers the new cell, or -1 with the font kept when there is no
+ * such font. */
+geng_cancel puritty_x11_setfont(int32_t points, void *font_bytes, void *lang_bytes, int32_t cap, geng_wait *wait) {
+    char *font = string_of(font_bytes), *lang = string_of(lang_bytes);
+    int done = pt_refont(font, lang, points, dpi0, cap);
+    free(font);
+    free(lang);
+    if (done == 0) refit();
+    geng_succeed(wait, geng_slot_I4(done == 0 ? pt_cw * 65536 + pt_ch : -1));
     return (geng_cancel) {0};
 }
 

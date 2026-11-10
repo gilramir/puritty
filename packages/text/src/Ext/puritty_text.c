@@ -1022,6 +1022,59 @@ int pt_zoom(int points, int dpi) {
     return 1;
 }
 
+/* Another primary font, fallback language, size or glyph cache in place of
+ * the open one (docs/settings.md ST4): every face closed, the fallback
+ * faces found again as clusters ask for them, and the glyphs begun again.
+ * Answers -1, with the open font kept, when the platform has no such font. */
+int pt_refont(const char *font, const char *lang, int points, int dpi, long cap) {
+    int index;
+    char *file = pt_font_file(font, 0, &index);
+    if (file == NULL) return -1;
+    free(file);
+    reset_glyphs();
+    for (int f = 0; f < nfaces; f++) {
+        hb_font_destroy(faces[f].hb);
+        FT_Done_Face(faces[f].ft);
+        free(faces[f].file);
+        free(faces[f].uploaded);
+        free(faces[f].advance);
+        free(faces[f].ink);
+        memset(&faces[f], 0, sizeof faces[f]);
+    }
+    nfaces = 0;
+    memset(fcache, 0, sizeof fcache);
+    free(lang_name);
+    lang_name = NULL;
+    language = NULL;
+    if (lang && *lang) {
+        lang_name = copy(lang);
+        language = hb_language_from_string(lang_name, -1);
+    }
+    dpi0 = dpi;
+    points0 = points < 4 ? 4 : points > 200 ? 200 : points;
+    glyph_cap = cap;
+    file = pt_font_file(font, 0, &index);
+    if (file == NULL || load_face(file, index, 1) != 0) {
+        free(file);
+        return -1;
+    }
+    free(file);
+    primary[0] = 0;
+    for (int v = 1; v < 4; v++) {
+        int vi;
+        char *vf = pt_font_file(font, v, &vi);
+        int f = vf ? load_face(vf, vi, 1) : -1;
+        primary[v] = f < 0 ? 0 : f;
+        free(vf);
+    }
+    for (int v = 1; v < 4; v++) {
+        if ((v & 1) && primary[v] != primary[v & ~1]) faces[primary[v]].own |= 1;
+        if ((v & 2) && primary[v] != primary[v & ~2]) faces[primary[v]].own |= 2;
+    }
+    primary_metrics();
+    return 0;
+}
+
 void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     double t0 = ns();
     if (glyph_bytes > glyph_cap) reset_glyphs();
