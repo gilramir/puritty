@@ -1,19 +1,48 @@
-module Text exposing (renderer)
+module Text exposing (interfaceFont, renderer, width)
 
 {-| puritty's text renderer (`docs/windows.md` V52): the C both platforms'
 windows draw with, `src/Ext/puritty_text.c`, whose header
 `src/Ext/include/puritty_text.h` is theirs to include (geng-lang Dnene38).
 A display list (`Vt.View`) is decoded, shaped by HarfBuzz and rasterised by
 FreeType there, and drawn through the few calls a platform gives it: a fill,
-a glyph kept, the glyphs drawn, a scroll. Nothing here is for Geng to call:
-`packages/x11` and `packages/win32` draw with it from their own C.
+a glyph kept, the glyphs drawn, a scroll. The windows draw with it from
+their own C; what Geng asks of it is the interface's font and a text's width
+in it (`docs/settings-gui.md` SG2), for the settings window's layout.
 
-@docs renderer
+@docs renderer, interfaceFont, width
 
 -}
+
+import Bytes exposing (Bytes)
+import Task exposing (Task)
 
 
 {-| What this package is, for its documentation. -}
 renderer : String
 renderer =
     "FreeType and HarfBuzz, drawn through the platform's window"
+
+
+{-| The interface's font, a family as the platform names one (Segoe UI on
+Windows, `sans-serif` on Linux), loaded when text is first drawn in it;
+the terminal's font when the platform has no such family. -}
+interfaceFont : String -> Task x {}
+interfaceFont name =
+    interfaceFontExtern (Bytes.fromString name)
+
+
+{-| A text's width in pixels in the interface font at `size` pixels an em,
+as it is drawn: a pure function, since the interface's font is chosen once
+when the window opens and does not change, and the layout of a settings
+page asks it often. The window must be open and its font named. -}
+width : Int -> String -> Int
+width size text =
+    widthExtern (Bytes.fromString text) size
+
+
+@extern(c, "puritty_text_interfaceFont")
+interfaceFontExtern : Bytes -> Task x {}
+
+
+@externPure(c, "puritty_text_width")
+widthExtern : Bytes -> Int -> Int

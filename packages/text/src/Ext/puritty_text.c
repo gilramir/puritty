@@ -59,6 +59,7 @@ int pt_cols, pt_rows;
 int pt_verbose;
 static int have_target;
 static long glyph_bytes, glyph_cap, resets;
+static void ui_reset(void);
 
 /* A style's record by its id; from 65536 on, the same style selected
  * (docs/phase3-select.md §14): its colours swapped, made when a selected
@@ -292,6 +293,7 @@ static void reset_glyphs(void) {
         faces[f].pictures = NULL;
     }
     memset(box_uploaded, 0, sizeof box_uploaded);
+    ui_reset();
     glyph_bytes = 0;
     resets++;
 }
@@ -1083,6 +1085,289 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
     return 0;
 }
 
+
+/* THE INTERFACE (docs/settings-gui.md SG2): what the settings window draws
+ * besides cells, at pixels: text in the interface font, shaped and
+ * rasterised as the terminal's is, a code point it lacks found by the same
+ * fallback; rounded boxes, their corners glyph masks the renderer makes;
+ * and a clip. A frame of these is drawn in order, each glyph run drawn as
+ * it is placed, so a box drawn after text covers it. */
+
+#define UI_FACES 16
+typedef struct {
+    FT_Face ft;
+    hb_font_t *hb;
+    char *file;
+    int index;
+    int px; /* the pixel size it was last set to */
+} UiFace;
+
+static UiFace ui_faces[UI_FACES];
+static int n_ui_faces;
+static char *ui_font_name;
+static PtRect ui_clip;
+static int ui_clipped;
+
+/* An interface glyph's id: from bit 30, numbered as they are uploaded, a
+ * table from (face, size, glyph) to the id, forgotten with every glyph. */
+#define UI_KEYS 8192
+static struct { uint32_t key, id; } ui_keys[UI_KEYS];
+static uint32_t ui_next = 0x40000000u;
+
+static void ui_reset(void) {
+    memset(ui_keys, 0, sizeof ui_keys);
+    ui_next = 0x40000000u;
+}
+
+void pt_interface_font(const char *name) {
+    free(ui_font_name);
+    ui_font_name = copy(name);
+}
+
+static int ui_load(const char *file, int index) {
+    for (int f = 0; f < n_ui_faces; f++)
+        if (ui_faces[f].index == index && strcmp(ui_faces[f].file, file) == 0) return f;
+    if (n_ui_faces == UI_FACES) return -1;
+    UiFace *U = &ui_faces[n_ui_faces];
+    if (FT_New_Face(library, file, index, &U->ft) != 0) return -1;
+    U->file = copy(file);
+    U->index = index;
+    U->px = 0;
+    FT_Set_Pixel_Sizes(U->ft, 0, 16);
+    U->hb = hb_ft_font_create_referenced(U->ft);
+    return n_ui_faces++;
+}
+
+/* The interface font's first face, loaded the first time it is asked for:
+ * the platform's file for the name the window gave (`pt_interface_font`),
+ * else the terminal's primary face's file. */
+static int ui_primary(void) {
+    if (n_ui_faces > 0) return 0;
+    int index = 0;
+    char *file = ui_font_name ? pt_font_file(ui_font_name, 0, &index) : NULL;
+    int f = -1;
+    if (file) {
+        f = ui_load(file, index);
+        free(file);
+    }
+    if (f < 0 && nfaces > 0) f = ui_load(faces[0].file, faces[0].index);
+    return f;
+}
+
+static void ui_size(int f, int px) {
+    if (ui_faces[f].px != px) {
+        FT_Set_Pixel_Sizes(ui_faces[f].ft, 0, (FT_UInt) px);
+        hb_ft_font_changed(ui_faces[f].hb);
+        ui_faces[f].px = px;
+    }
+}
+
+static int ui_covers(int f, uint32_t cp) {
+    hb_codepoint_t g;
+    return ignorable(cp) || hb_font_get_nominal_glyph(ui_faces[f].hb, cp, &g);
+}
+
+/* The interface face for a code point: the first that has it, else the
+ * platform's fallback for it in the window's language, else the first. */
+#define UI_FCACHE 1024
+static struct { uint32_t cp; int face; } ui_fcache[UI_FCACHE];
+
+static int ui_face_for(uint32_t cp) {
+    for (int f = 0; f < n_ui_faces; f++)
+        if (ui_covers(f, cp)) return f;
+    unsigned h = (cp * 2654435761u) % UI_FCACHE;
+    for (unsigned k = 0; k < UI_FCACHE; k++) {
+        unsigned j = (h + k) % UI_FCACHE;
+        if (ui_fcache[j].cp == cp + 1) return ui_fcache[j].face;
+        if (ui_fcache[j].cp == 0) { h = j; break; }
+    }
+    int face = 0, index = 0;
+    char *file = pt_fallback_file(&cp, 1, 0, lang_name, &index);
+    if (file) {
+        int f = ui_load(file, index);
+        if (f >= 0 && ui_covers(f, cp)) face = f;
+        free(file);
+    }
+    ui_fcache[h].cp = cp + 1;
+    ui_fcache[h].face = face;
+    return face;
+}
+
+static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
+    uint32_t key = ((uint32_t) f << 26) ^ ((uint32_t) px << 18) ^ (g + 1u);
+    unsigned h = (key * 2654435761u) % UI_KEYS;
+    for (unsigned k = 0; k < UI_KEYS; k++) {
+        unsigned j = (h + k) % UI_KEYS;
+        if (ui_keys[j].key == key) {
+            *advance = 0;
+            return ui_keys[j].id;
+        }
+        if (ui_keys[j].key == 0) { h = j; break; }
+    }
+    FT_Face ft = ui_faces[f].ft;
+    if (FT_Load_Glyph(ft, g, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) return 0;
+    FT_Bitmap *b = &ft->glyph->bitmap;
+    int stride = ((int) b->width + 3) & ~3;
+    uint8_t *data = calloc((size_t) (stride * (int) b->rows + 1), 1);
+    for (unsigned r = 0; r < b->rows; r++)
+        for (unsigned c = 0; c < b->width; c++) {
+            uint8_t v = b->buffer[r * (unsigned) b->pitch + c];
+            data[r * (unsigned) stride + c] = b->pixel_mode == FT_PIXEL_MODE_MONO ? ((b->buffer[r * (unsigned) b->pitch + c / 8] >> (7 - c % 8)) & 1) * 255 : v;
+        }
+    uint32_t id = ui_next++;
+    PtGlyph glyph = {.width = (int) b->width, .height = (int) b->rows, .stride = stride, .left = ft->glyph->bitmap_left,
+                     .top = ft->glyph->bitmap_top, .advance = (int) (ft->glyph->advance.x >> 6), .data = data};
+    pt_glyph_add(id, &glyph);
+    glyph_bytes += stride * (long) b->rows;
+    free(data);
+    ui_keys[h].key = key;
+    ui_keys[h].id = id;
+    *advance = glyph.advance;
+    return id;
+}
+
+/* Text laid out in the interface font at `px` pixels an em, its pen from
+ * `x` on the baseline `y`: drawn in `rgb` when `draw`, and its width
+ * answered either way. */
+static int ui_text(const uint8_t *s, int n, int x, int y, int px, uint32_t rgb, int draw) {
+    if (ui_primary() < 0 || px <= 0) return 0;
+    uint32_t cps[1024];
+    int ncp = 0;
+    for (int i = 0; i < n && ncp < 1024;) {
+        uint32_t c = s[i];
+        int k = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        if (k > 1) c &= 0xFF >> (k + 1);
+        for (int j = 1; j < k && i + j < n; j++) c = (c << 6) | (s[i + j] & 0x3F);
+        cps[ncp++] = c;
+        i += k;
+    }
+    int pen = x;
+    for (int a = 0; a < ncp;) {
+        int f = ui_face_for(cps[a]);
+        int b = a + 1;
+        while (b < ncp && (ignorable(cps[b]) || ui_face_for(cps[b]) == f)) b++;
+        ui_size(f, px);
+        hb_buffer_clear_contents(hbuf);
+        hb_buffer_add_utf32(hbuf, cps + a, b - a, 0, b - a);
+        hb_buffer_guess_segment_properties(hbuf);
+        hb_shape(ui_faces[f].hb, hbuf, NULL, 0);
+        unsigned gn;
+        hb_glyph_info_t *gi = hb_buffer_get_glyph_infos(hbuf, &gn);
+        hb_glyph_position_t *gp = hb_buffer_get_glyph_positions(hbuf, &gn);
+        for (unsigned k = 0; k < gn; k++) {
+            if (draw && nplaced < 8192) {
+                int adv;
+                uint32_t id = ui_glyph(f, px, gi[k].codepoint, &adv);
+                if (id) placed[nplaced++] = (PtPlaced) {id, pen + (gp[k].x_offset >> 6), y - (gp[k].y_offset >> 6), rgb, (gp[k].x_advance + 32) >> 6, ui_clipped ? 0 : -1};
+            }
+            pen += (gp[k].x_advance + 32) >> 6;
+        }
+        a = b;
+    }
+    if (draw && nplaced) {
+        if (ui_clipped) clips[0] = ui_clip;
+        pt_glyphs_draw(placed, nplaced, clips);
+        st.glyphs += nplaced;
+        nplaced = 0;
+    }
+    return pen - x;
+}
+
+int pt_measure(const uint8_t *s, int n, int px) { return ui_text(s, n, 0, 0, px, 0, 0); }
+
+/* A fill within the clip. */
+static void ui_fill(uint32_t rgb, int x, int y, int w, int h) {
+    if (ui_clipped) {
+        int x1 = x + w, y1 = y + h;
+        if (x < ui_clip.x) x = ui_clip.x;
+        if (y < ui_clip.y) y = ui_clip.y;
+        if (x1 > ui_clip.x + ui_clip.w) x1 = ui_clip.x + ui_clip.w;
+        if (y1 > ui_clip.y + ui_clip.h) y1 = ui_clip.y + ui_clip.h;
+        w = x1 - x;
+        h = y1 - y;
+    }
+    fill(rgb, x, y, w, h);
+}
+
+/* A rounded corner's mask, radius `r`, which quarter `q` (0 top left, 1
+ * top right, 2 bottom left, 3 bottom right): each pixel's coverage, from
+ * 4 by 4 samples. Uploaded once a radius and quarter. */
+static uint32_t ui_corner(int r, int q) {
+    uint32_t key = 0x80000000u | ((uint32_t) r << 2) | (uint32_t) q;
+    unsigned h = (key * 2654435761u) % UI_KEYS;
+    for (unsigned k = 0; k < UI_KEYS; k++) {
+        unsigned j = (h + k) % UI_KEYS;
+        if (ui_keys[j].key == key) return ui_keys[j].id;
+        if (ui_keys[j].key == 0) { h = j; break; }
+    }
+    int stride = (r + 3) & ~3;
+    uint8_t *data = calloc((size_t) (stride * r + 1), 1);
+    for (int i = 0; i < r; i++)
+        for (int j = 0; j < r; j++) {
+            int in = 0;
+            for (int a = 0; a < 4; a++)
+                for (int b = 0; b < 4; b++) {
+                    /* the sample's distance from the circle's centre */
+                    double px = (q & 1) ? j + (b + 0.5) / 4 : r - (j + (b + 0.5) / 4);
+                    double py = (q & 2) ? i + (a + 0.5) / 4 : r - (i + (a + 0.5) / 4);
+                    if (px * px + py * py <= (double) r * r) in++;
+                }
+            data[i * stride + j] = (uint8_t) (in * 255 / 16);
+        }
+    uint32_t id = ui_next++;
+    PtGlyph glyph = {.width = r, .height = r, .stride = stride, .left = 0, .top = r, .advance = r, .data = data};
+    pt_glyph_add(id, &glyph);
+    free(data);
+    ui_keys[h].key = key;
+    ui_keys[h].id = id;
+    return id;
+}
+
+static void ui_box(int x, int y, int w, int h, int r, uint32_t rgb) {
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    if (r <= 0) {
+        ui_fill(rgb, x, y, w, h);
+        return;
+    }
+    ui_fill(rgb, x + r, y, w - 2 * r, h);
+    ui_fill(rgb, x, y + r, r, h - 2 * r);
+    ui_fill(rgb, x + w - r, y + r, r, h - 2 * r);
+    PtPlaced corners[4] = {
+        {ui_corner(r, 0), x, y + r, rgb, r, ui_clipped ? 0 : -1},
+        {ui_corner(r, 1), x + w - r, y + r, rgb, r, ui_clipped ? 0 : -1},
+        {ui_corner(r, 2), x, y + h, rgb, r, ui_clipped ? 0 : -1},
+        {ui_corner(r, 3), x + w - r, y + h, rgb, r, ui_clipped ? 0 : -1},
+    };
+    if (ui_clipped) clips[0] = ui_clip;
+    pt_glyphs_draw(corners, 4, clips);
+}
+
+/* The interface's records, from `p`: 6 a box (x, y, w, h, radius, rgb),
+ * 7 text (x, baseline y, size, rgb, length, the bytes), 8 a clip (x, y,
+ * w, h; none when w is 0). Answers past the record, or NULL for one that
+ * does not fit. */
+static const uint8_t *ui_record(const uint8_t *p, const uint8_t *end) {
+#define U16(k) ((p[k] << 8) | p[(k) + 1])
+    if (p[0] == 6 && p + 13 <= end) {
+        ui_box(U16(1), U16(3), U16(5), U16(7), p[9], ((uint32_t) p[10] << 16) | ((uint32_t) p[11] << 8) | p[12]);
+        return p + 13;
+    }
+    if (p[0] == 7 && p + 11 <= end) {
+        int n = U16(9);
+        if (p + 11 + n > end) return NULL;
+        ui_text(p + 11, n, (int16_t) U16(1), (int16_t) U16(3), p[5], ((uint32_t) p[6] << 16) | ((uint32_t) p[7] << 8) | p[8], 1);
+        return p + 11 + n;
+    }
+    if (p[0] == 8 && p + 9 <= end) {
+        ui_clip = (PtRect) {U16(1), U16(3), U16(5), U16(7)};
+        ui_clipped = ui_clip.w > 0;
+        return p + 9;
+    }
+    return NULL;
+#undef U16
+}
+
 void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     double t0 = ns();
     if (glyph_bytes > glyph_cap) reset_glyphs();
@@ -1090,6 +1375,7 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     int first = pt_rows, last = -1, sized = 0;
     inklen = 0;
     sel_from = sel_to = -1;
+    ui_clipped = 0;
     while (p < end) {
         if (p[0] == 4 && p + 5 <= end) {
             int c = (p[1] << 8) | p[2], r = (p[3] << 8) | p[4];
@@ -1123,6 +1409,10 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
             p = draw_run(p, end, 0);
             if (y < first) first = y;
             if (y > last) last = y;
+        } else if (p[0] >= 6 && p[0] <= 8) {
+            const uint8_t *next = ui_record(p, end);
+            if (!next) break;
+            p = next;
         } else
             break; /* a record this does not know: the rest of the list is not read */
     }

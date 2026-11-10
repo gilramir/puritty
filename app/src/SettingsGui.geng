@@ -1,0 +1,824 @@
+module SettingsGui exposing (Hit, Size, paint)
+
+{-| The settings window drawn (`docs/settings-gui.md` SG2, SG3): the model
+`SettingsWindow` keeps, as boxes and proportional text for the renderer's
+interface records, and the boxes a click lands in. Pure: a frame is drawn
+whole from the model each time.
+
+The layout keeps the text window's lines: a row of a setting is three
+lines tall and the list starts two lines down, so `SettingsWindow`'s
+scrolling and keeping the focused row in view hold as they were.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import Math
+import Schema exposing (Kind(..), Setting, Value(..))
+import SettingsWindow exposing (Focus(..), Model, Target(..))
+import Text
+import UInt8
+import Words exposing (Lang)
+
+
+{-| The window: its cells, and a cell's size in pixels. -}
+type alias Size =
+    { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int }
+
+
+{-| A box a click lands in, and what it is on. -}
+type alias Hit =
+    { x : Int, y : Int, w : Int, h : Int, target : Target }
+
+
+
+-- THE LOOK
+
+
+type alias Look =
+    { bg : Int
+    , side : Int
+    , line : Int
+    , text : Int
+    , strong : Int
+    , dim : Int
+    , accent : Int
+    , accentText : Int
+    , field : Int
+    , fieldLine : Int
+    , focusRow : Int
+    , pageOn : Int
+    , error : Int
+    }
+
+
+look : Look
+look =
+    { bg = 0x1F1F1F
+    , side = 0x181818
+    , line = 0x2B2B2B
+    , text = 0xCCCCCC
+    , strong = 0xF0F0F0
+    , dim = 0x9D9D9D
+    , accent = 0x0078D4
+    , accentText = 0x4DAAFC
+    , field = 0x313131
+    , fieldLine = 0x3C3C3C
+    , focusRow = 0x2A2D2E
+    , pageOn = 0x37373D
+    , error = 0xF14C4C
+    }
+
+
+
+-- RECORDS
+
+
+bytes : Array Int -> Bytes
+bytes ns =
+    Bytes.fromUInt8s (Array.map UInt8.fromIntWrap ns)
+
+
+u16 : Int -> Array Int
+u16 n =
+    [ Bitwise.and 255 (Bitwise.shiftRightZfBy 8 n), Bitwise.and 255 n ]
+
+
+rgb : Int -> Array Int
+rgb c =
+    [ Bitwise.and 255 (Bitwise.shiftRightZfBy 16 c), Bitwise.and 255 (Bitwise.shiftRightZfBy 8 c), Bitwise.and 255 c ]
+
+
+box : { x : Int, y : Int, w : Int, h : Int, r : Int, color : Int } -> Bytes
+box b =
+    if b.w <= 0 || b.h <= 0 then
+        Bytes.empty
+
+    else
+        bytes ([ 6 ] ++ u16 (max 0 b.x) ++ u16 (max 0 b.y) ++ u16 b.w ++ u16 b.h ++ [ min 255 (max 0 b.r) ] ++ rgb b.color)
+
+
+{-| A box with a border: the border's colour, the inside one pixel in. -}
+framed : { x : Int, y : Int, w : Int, h : Int, r : Int, color : Int, border : Int } -> Bytes
+framed b =
+    Bytes.flatten
+        [ box { x = b.x, y = b.y, w = b.w, h = b.h, r = b.r, color = b.border }
+        , box { x = b.x + 1, y = b.y + 1, w = b.w - 2, h = b.h - 2, r = max 0 (b.r - 1), color = b.color }
+        ]
+
+
+text : { x : Int, y : Int, size : Int, color : Int, text : String } -> Bytes
+text t =
+    let
+        b =
+            Bytes.fromString t.text
+    in
+    if Bytes.isEmpty b then
+        Bytes.empty
+
+    else
+        Bytes.flatten [ bytes ([ 7 ] ++ u16 (Bitwise.and 0xFFFF t.x) ++ u16 (Bitwise.and 0xFFFF t.y) ++ [ t.size ] ++ rgb t.color ++ u16 (Bytes.length b)), b ]
+
+
+clip : { x : Int, y : Int, w : Int, h : Int } -> Bytes
+clip c =
+    bytes ([ 8 ] ++ u16 (max 0 c.x) ++ u16 (max 0 c.y) ++ u16 (max 0 c.w) ++ u16 (max 0 c.h))
+
+
+noClip : Bytes
+noClip =
+    bytes [ 8, 0, 0, 0, 0, 0, 0, 0, 0 ]
+
+
+
+-- THE FRAME
+
+
+type alias Drawn =
+    { list : Array Bytes, hits : Array Hit, spot : { x : Int, y : Int } }
+
+
+draw : Bytes -> Drawn -> Drawn
+draw b d =
+    { d | list = Array.pushLast b d.list }
+
+
+target : { x : Int, y : Int, w : Int, h : Int } -> Target -> Drawn -> Drawn
+target b t d =
+    { d | hits = Array.pushLast { x = b.x, y = b.y, w = b.w, h = b.h, target = t } d.hits }
+
+
+{-| The window's frame: its list, beginning with its size in cells, the
+boxes a click lands in, the last drawn first, and the cell the caret is
+in, where the IME's candidate window belongs. `preedit` is what the IME is
+composing, drawn underlined at the caret. -}
+paint : Lang -> Model -> Size -> String -> { list : Bytes, hits : Array Hit, spot : { x : Int, y : Int } }
+paint lang m size preedit =
+    let
+        w =
+            m.cols * size.cellWidth
+
+        h =
+            m.rows * size.cellHeight
+
+        line =
+            size.cellHeight
+
+        k =
+            toFloat line / 17
+
+        px n =
+            max 1 (Math.round (toFloat n * k))
+
+        body =
+            px 13
+
+        small =
+            px 12
+
+        side =
+            px 210
+
+        x0 =
+            side + px 24
+
+        cw =
+            w - x0 - px 24
+
+        said =
+            Words.words lang
+
+        start =
+            { list = [ bytes ([ 4 ] ++ u16 m.cols ++ u16 m.rows), box { x = 0, y = 0, w = w, h = h, r = 0, color = look.bg } ], hits = [], spot = { x = 0, y = 0 } }
+
+        d =
+            start
+                |> sideBar lang m size side px body
+                |> header lang m size x0 cw px body small preedit
+                |> rows lang m size x0 cw px body small preedit
+                |> footer lang m size px small
+    in
+    { list = Bytes.flatten d.list, hits = Array.reverse d.hits, spot = { x = d.spot.x // max 1 size.cellWidth, y = d.spot.y // max 1 size.cellHeight } }
+
+
+sideBar : Lang -> Model -> Size -> Int -> (Int -> Int) -> Int -> Drawn -> Drawn
+sideBar lang m size side px body d0 =
+    let
+        h =
+            m.rows * size.cellHeight
+
+        itemH =
+            px 32
+
+        top =
+            3 * size.cellHeight
+
+        names =
+            Array.map (\p -> Words.pageName lang p) Schema.pages ++ [ Words.pageName lang Schema.HostsPage ]
+
+        counts =
+            Array.map (\p -> SettingsWindow.pageCount m p) Schema.pages ++ [ Array.length (SettingsWindow.hostRows m) ]
+
+        each i name d =
+            let
+                y =
+                    top + i * itemH
+
+                current =
+                    i == m.page && Array.isEmpty m.search
+
+                n =
+                    Array.get i counts |> Maybe.withDefault 0
+
+                count =
+                    if n > 0 then String.fromInt n else ""
+
+                countWidth =
+                    Text.width body count
+
+                b =
+                    { x = px 8, y = y, w = side - px 16, h = itemH - px 4 }
+            in
+            d
+                |> draw
+                    (if current then
+                        Bytes.flatten
+                            [ box { x = b.x, y = b.y, w = b.w, h = b.h, r = px 5, color = look.pageOn }
+                            , box { x = b.x, y = b.y + px 6, w = px 3, h = b.h - px 12, r = 1, color = if m.focus == OnPages then look.accentText else look.accent }
+                            ]
+
+                     else
+                        Bytes.empty
+                    )
+                |> draw (text { x = b.x + px 14, y = y + itemH // 2 + body // 3, size = body, color = if current then look.strong else look.text, text = name })
+                |> draw (text { x = b.x + b.w - px 10 - countWidth, y = y + itemH // 2 + body // 3, size = body, color = look.dim, text = count })
+                |> target b (OnPage i)
+    in
+    names
+        |> Array.indexedMap (\i name -> { i = i, name = name })
+        |> Array.foldl (\e d -> each e.i e.name d)
+            (d0
+                |> draw (box { x = 0, y = 0, w = side, h = h, r = 0, color = look.side })
+                |> draw (box { x = side, y = 0, w = 1, h = h, r = 0, color = look.line })
+            )
+
+
+header : Lang -> Model -> Size -> Int -> Int -> (Int -> Int) -> Int -> Int -> String -> Drawn -> Drawn
+header lang m size x0 cw px body small preedit d =
+    let
+        said =
+            Words.words lang
+
+        fieldH =
+            px 28
+
+        y =
+            (3 * size.cellHeight - fieldH) // 2
+
+        switchLabel =
+            said.modifiedOnly
+
+        labelWidth =
+            Text.width body switchLabel
+
+        switchW =
+            px 34
+
+        searchW =
+            max (px 120) (min (px 440) (cw - labelWidth - switchW - px 40))
+
+        query =
+            String.fromArray m.search
+
+        focused =
+            m.focus == OnSearch
+
+        searchBox =
+            { x = x0, y = y, w = searchW, h = fieldH }
+
+        switchX =
+            x0 + cw - switchW
+
+        switchBox =
+            { x = switchX - labelWidth - px 10, y = y, w = labelWidth + px 10 + switchW, h = fieldH }
+    in
+    d
+        |> draw (framed { x = searchBox.x, y = searchBox.y, w = searchBox.w, h = searchBox.h, r = px 4, color = look.field, border = if focused then look.accent else look.fieldLine })
+        |> draw (text { x = x0 + px 10, y = y + fieldH // 2 + body // 3, size = body, color = if query == "" && (not focused || preedit == "") then look.dim else look.strong, text = if query == "" && (not focused || preedit == "") then said.search else query })
+        |> (\dd ->
+                if focused then
+                    let
+                        at =
+                            x0 + px 10 + Text.width body query
+
+                        pw =
+                            Text.width body preedit
+
+                        baseline =
+                            y + fieldH // 2 + body // 3
+                    in
+                    { dd | spot = { x = at + pw, y = y } }
+                        |> draw (if preedit == "" then Bytes.empty else Bytes.flatten [ text { x = at, y = baseline, size = body, color = look.strong, text = preedit }, box { x = at, y = baseline + px 3, w = pw, h = 1, r = 0, color = look.strong } ])
+                        |> draw (box { x = at + pw + 1, y = y + px 6, w = 1, h = fieldH - px 12, r = 0, color = look.strong })
+
+                else
+                    dd
+           )
+        |> target searchBox OnSearchField
+        |> draw (text { x = switchBox.x, y = y + fieldH // 2 + body // 3, size = body, color = look.text, text = switchLabel })
+        |> draw (switchOf px switchX (y + (fieldH - px 18) // 2) m.modifiedOnly)
+        |> target switchBox OnModifiedOnly
+
+
+{-| The text, or as much of it as fits in `room` pixels followed by "…". -}
+fit : Int -> Int -> String -> String
+fit size room whole =
+    if Text.width size whole <= room then
+        whole
+
+    else
+        let
+            fits n =
+                Text.width size (String.takeFirst n whole ++ "…") <= room
+
+            search lo hi =
+                if lo >= hi then
+                    lo
+
+                else
+                    let
+                        mid =
+                            (lo + hi + 1) // 2
+                    in
+                    if fits mid then
+                        search mid hi
+
+                    else
+                        search lo (mid - 1)
+        in
+        String.trimRight (String.takeFirst (search 0 (String.count whole)) whole) ++ "…"
+
+
+switchOf : (Int -> Int) -> Int -> Int -> Bool -> Bytes
+switchOf px x y on =
+    let
+        w =
+            px 34
+
+        h =
+            px 18
+
+        knob =
+            h - px 6
+    in
+    Bytes.flatten
+        [ if on then
+            box { x = x, y = y, w = w, h = h, r = h // 2, color = look.accent }
+
+          else
+            framed { x = x, y = y, w = w, h = h, r = h // 2, color = look.field, border = 0x6E6E6E }
+        , box
+            { x =
+                if on then
+                    x + w - knob - px 3
+
+                else
+                    x + px 3
+            , y = y + px 3
+            , w = knob
+            , h = knob
+            , r = knob // 2
+            , color = if on then 0xFFFFFF else 0xB0B0B0
+            }
+        ]
+
+
+{-| The rows: each setting's label, its description under it, its value on
+the right, and a reset button where it differs from its default; or the
+Hosts page's list. Clipped to the list's box. -}
+rows : Lang -> Model -> Size -> Int -> Int -> (Int -> Int) -> Int -> Int -> String -> Drawn -> Drawn
+rows lang m size x0 cw px body small preedit d0 =
+    let
+        said =
+            Words.words lang
+
+        line =
+            size.cellHeight
+
+        top =
+            3 * line
+
+        bottom =
+            (m.rows - 2) * line
+
+        rowH =
+            3 * line
+
+        valueW =
+            min (px 280) (cw // 2)
+
+        resetW =
+            px 30
+
+        vx =
+            x0 + cw - valueW - resetW
+
+        listBox =
+            { x = x0 - px 16, y = top, w = cw + px 32, h = bottom - top }
+
+        rowY i =
+            top + i * rowH - m.scroll * line
+
+        visible i =
+            rowY i + rowH > top && rowY i < bottom
+
+        fieldH =
+            px 28
+
+        empty =
+            if SettingsWindow.rowCount m == 0 then
+                [ text { x = x0, y = top + line, size = body, color = look.dim, text = if m.modifiedOnly then said.nothingModified else said.noMatch } ]
+
+            else
+                []
+
+        each i d =
+            if not (visible i) then
+                d
+
+            else
+                let
+                    y =
+                        rowY i
+
+                    here =
+                        m.focus == OnRows && i == m.row
+
+                    rowBox =
+                        { x = x0 - px 12, y = y + px 2, w = cw + px 24, h = rowH - px 4 }
+
+                    valueBox =
+                        { x = vx, y = y + (rowH - fieldH) // 2, w = valueW, h = fieldH }
+
+                    withRow =
+                        d
+                            |> draw (clip listBox)
+                            |> draw (if here then box { x = rowBox.x, y = rowBox.y, w = rowBox.w, h = rowBox.h, r = px 6, color = look.focusRow } else Bytes.empty)
+                            |> target rowBox (OnRow i)
+                in
+                if SettingsWindow.inList m then
+                    hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit withRow
+
+                else
+                    when Array.get i (SettingsWindow.listed m) is
+                        Just s ->
+                            settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preedit withRow
+
+                        Nothing ->
+                            withRow
+    in
+    Array.range 0 (SettingsWindow.rowCount m - 1)
+        |> Array.foldl each (d0 |> draw (clip listBox))
+        |> (\d -> Array.foldl draw d empty)
+        |> suggestionsOf lang m x0 cw vx valueW fieldH rowY px body
+        |> draw noClip
+
+
+settingRow : Lang -> Model -> Setting -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (Int -> Int) -> Int -> Int -> Bool -> String -> Drawn -> Drawn
+settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preedit d =
+    let
+        said =
+            Words.words lang
+
+        modified =
+            SettingsWindow.changed m.config s
+
+        labelY =
+            y + rowH // 2 - px 3
+
+        descY =
+            labelY + small + px 5
+
+        description =
+            Words.description lang s
+                ++ (if s.applies == Schema.NewWindows then " " ++ said.newWindows else "")
+
+        valueBox =
+            { x = vx, y = y + (rowH - fieldH) // 2, w = valueW, h = fieldH }
+
+        typingHere =
+            if here then m.typing else Nothing
+
+        textClip =
+            { x = x0, y = y, w = vx - x0 - px 16, h = rowH }
+    in
+    d
+        |> draw (if modified then box { x = x0 - px 12, y = y + px 10, w = px 3, h = rowH - px 20, r = 1, color = look.accent } else Bytes.empty)
+        |> draw (clip textClip)
+        |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = fit body textClip.w (Words.label lang s) })
+        |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = fit small textClip.w description })
+        |> draw (clip { x = x0 - px 16, y = 3 * (rowH // 3), w = vx + valueW + resetW - x0 + px 16, h = (m.rows - 5) * (rowH // 3) })
+        |> valueOf lang m s valueBox typingHere preedit px body
+        |> target valueBox (OnValue i)
+        |> (\dd ->
+                if modified then
+                    let
+                        b =
+                            { x = vx + valueW + px 4, y = valueBox.y, w = resetW - px 4, h = fieldH }
+                    in
+                    dd
+                        |> draw (text { x = b.x + px 6, y = b.y + fieldH // 2 + body // 3, size = body, color = look.dim, text = "↺" })
+                        |> target b (OnReset i)
+
+                else
+                    dd
+           )
+
+
+{-| A setting's value as its widget: a switch for on and off; a swatch and
+its hex for a colour; the palette's swatches; a field with the text, a
+choice's with a chevron; while typed, the typed text and a caret. -}
+valueOf : Lang -> Model -> Setting -> { x : Int, y : Int, w : Int, h : Int } -> Maybe SettingsWindow.Typing -> String -> (Int -> Int) -> Int -> Drawn -> Drawn
+valueOf lang m s b typing preedit px body d =
+    let
+        said =
+            Words.words lang
+
+        baseline =
+            b.y + b.h // 2 + body // 3
+
+        fieldWith shownText color chevron =
+            Bytes.flatten
+                [ framed { x = b.x, y = b.y, w = b.w, h = b.h, r = px 4, color = look.field, border = look.fieldLine }
+                , text { x = b.x + px 10, y = baseline, size = body, color = color, text = shownText }
+                , if chevron then text { x = b.x + b.w - px 22, y = baseline, size = body, color = look.dim, text = "▾" } else Bytes.empty
+                ]
+    in
+    when typing is
+        Just t ->
+            typingField b t preedit (if t.problem /= Nothing then look.error else look.accent) px body d
+
+        Nothing ->
+            when s.get m.config is
+                Flag on ->
+                    d
+                        |> draw (switchOf px b.x (b.y + (b.h - px 18) // 2) on)
+                        |> draw (text { x = b.x + px 44, y = baseline, size = body, color = look.text, text = if on then said.on else said.off })
+
+                Colour c ->
+                    d
+                        |> draw (framed { x = b.x, y = b.y + px 4, w = b.h - px 8, h = b.h - px 8, r = px 4, color = c, border = 0x6E6E6E })
+                        |> draw (text { x = b.x + b.h + px 2, y = baseline, size = body, color = look.text, text = Schema.hex c })
+
+                Colours p ->
+                    if Array.isEmpty p then
+                        d |> draw (fieldWith said.defaults look.dim False)
+
+                    else
+                        let
+                            sw =
+                                max (px 8) (min (b.h - px 10) ((b.w - px 4) // max 1 (Array.length p) - px 2))
+                        in
+                        p
+                            |> Array.indexedMap (\i c -> framed { x = b.x + i * (sw + px 2), y = b.y + (b.h - sw) // 2, w = sw, h = sw, r = px 3, color = c, border = 0x6E6E6E })
+                            |> Array.foldl draw d
+
+                Whole n ->
+                    let
+                        unit =
+                            when s.kind is
+                                WholeIn r ->
+                                    if r.unit == "" then "" else " " ++ r.unit
+
+                                _ ->
+                                    ""
+                    in
+                    d |> draw (fieldWith (String.fromInt n ++ unit) look.strong False)
+
+                Text t ->
+                    when s.kind is
+                        OneOf _ ->
+                            d |> draw (fieldWith t look.strong True)
+
+                        FontFamily ->
+                            d |> draw (fieldWith t look.strong True)
+
+                        _ ->
+                            d |> draw (fieldWith t look.strong False)
+
+                Words w ->
+                    if Array.isEmpty w then
+                        d |> draw (fieldWith said.systemShell look.dim False)
+
+                    else
+                        d |> draw (fieldWith (Schema.toText (Words w)) look.strong False)
+
+                Unset ->
+                    d |> draw (fieldWith said.systemDefault look.dim (when s.kind is
+                        OneOf _ ->
+                            True
+
+                        _ ->
+                            False
+                    ))
+
+
+hostRow : Lang -> Model -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (Int -> Int) -> Int -> Int -> Bool -> String -> Drawn -> Drawn
+hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit d =
+    let
+        said =
+            Words.words lang
+
+        labelY =
+            y + rowH // 2 - px 3
+
+        descY =
+            labelY + small + px 5
+
+        valueBox =
+            { x = vx, y = y + (rowH - fieldH) // 2, w = valueW, h = fieldH }
+
+        typingHere =
+            if here then m.typing else Nothing
+
+        field placeholder dd =
+            when typingHere is
+                Just t ->
+                    typingField valueBox t preedit look.accent px body dd
+
+                Nothing ->
+                    dd
+                        |> draw (framed { x = valueBox.x, y = valueBox.y, w = valueBox.w, h = valueBox.h, r = px 4, color = look.field, border = look.fieldLine })
+                        |> draw (text { x = valueBox.x + px 10, y = valueBox.y + fieldH // 2 + body // 3, size = body, color = look.dim, text = placeholder })
+    in
+    if i == 0 then
+        d
+            |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = said.quickConnect })
+            |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = said.quickConnectDescription })
+            |> field said.quickConnectHint
+            |> target valueBox (OnValue i)
+
+    else if i == 1 then
+        d
+            |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = said.newHost })
+            |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = said.newHostDescription })
+            |> (\dd -> if here && m.typing /= Nothing then field "" dd else dd)
+            |> target valueBox (OnValue i)
+
+    else
+        when Array.get (i - 2) (SettingsWindow.hostRows m) is
+            Just h ->
+                d
+                    |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = h.name })
+                    |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = h.from })
+                    |> draw (text { x = vx, y = labelY, size = body, color = look.text, text = h.detail })
+                    |> target { x = vx, y = y, w = valueW, h = rowH } (OnValue i)
+
+            Nothing ->
+                d
+
+
+{-| The fonts offered while a font is typed: a list under its field, the
+one Enter would take marked, drawn over the rows after it. -}
+suggestionsOf : Lang -> Model -> Int -> Int -> Int -> Int -> Int -> (Int -> Int) -> (Int -> Int) -> Int -> Drawn -> Drawn
+suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
+    when m.typing is
+        Just t ->
+            if m.focus == OnRows && SettingsWindow.isFamily m then
+                let
+                    said =
+                        Words.words lang
+
+                    offered =
+                        SettingsWindow.suggestions m t
+
+                    itemH =
+                        px 26
+
+                    shown =
+                        Array.takeFirst 10 offered
+
+                    top =
+                        rowY m.row + (3 * fieldH // 2) + px 22
+
+                    listH =
+                        max 1 (Array.length shown) * itemH + px 8
+
+                    listBox =
+                        { x = vx, y = top, w = valueW, h = listH }
+                in
+                (d
+                    |> draw noClip
+                    |> draw (box { x = listBox.x + px 2, y = listBox.y + px 3, w = listBox.w, h = listBox.h, r = px 6, color = 0x0A0A0A })
+                    |> draw (framed { x = listBox.x, y = listBox.y, w = listBox.w, h = listBox.h, r = px 6, color = 0x252526, border = look.fieldLine })
+                    |> draw
+                        (if Array.isEmpty shown then
+                            text { x = vx + px 10, y = top + px 4 + itemH // 2 + body // 3, size = body, color = look.dim, text = said.noFont }
+
+                         else
+                            Bytes.empty
+                        )
+                )
+                    |> (\dd ->
+                            Array.indexedMap (\i f -> { i = i, f = f }) shown
+                                |> Array.foldl
+                                    (\e acc ->
+                                        let
+                                            b =
+                                                { x = vx + px 4, y = top + px 4 + e.i * itemH, w = valueW - px 8, h = itemH }
+                                        in
+                                        acc
+                                            |> draw (if e.i == t.pick then box { x = b.x, y = b.y, w = b.w, h = b.h, r = px 4, color = look.accent } else Bytes.empty)
+                                            |> draw (text { x = b.x + px 8, y = b.y + itemH // 2 + body // 3, size = body, color = if e.i == t.pick then 0xFFFFFF else look.text, text = e.f })
+                                            |> target b (OnSuggestion e.i)
+                                    )
+                                    dd
+                       )
+
+            else
+                d
+
+        Nothing ->
+            d
+
+
+footer : Lang -> Model -> Size -> (Int -> Int) -> Int -> Drawn -> Drawn
+footer lang m size px small d =
+    let
+        said =
+            Words.words lang
+
+        line =
+            size.cellHeight
+
+        y =
+            (m.rows - 2) * line
+
+        w =
+            m.cols * size.cellWidth
+
+        error =
+            (m.typing |> Maybe.andThen .problem) /= Nothing
+
+        hint =
+            when m.typing is
+                Just _ ->
+                    if SettingsWindow.isFamily m then said.hintFont else said.hintTyping
+
+                Nothing ->
+                    when m.focus is
+                        OnSearch ->
+                            said.hintSearch
+
+                        OnPages ->
+                            said.hintPages
+
+                        OnRows ->
+                            if SettingsWindow.inList m then
+                                if m.launcher then said.hintHostListHere else said.hintHostList
+
+                            else if SettingsWindow.onHosts m then
+                                said.hintHosts
+
+                            else
+                                said.hintRows
+
+        shown =
+            if m.message /= "" then m.message else hint
+    in
+    d
+        |> draw (box { x = 0, y = y, w = w, h = 1, r = 0, color = look.line })
+        |> draw (box { x = 0, y = y + 1, w = w, h = 2 * line - 1, r = 0, color = look.side })
+        |> draw (text { x = px 16, y = y + line + small // 3, size = small, color = if error then look.error else if m.message /= "" then look.accentText else look.dim, text = shown })
+
+
+{-| A field being typed into: the text with what the IME composes at the
+caret, underlined, and the caret after it; the caret's place the IME's
+spot. -}
+typingField : { x : Int, y : Int, w : Int, h : Int } -> SettingsWindow.Typing -> String -> Int -> (Int -> Int) -> Int -> Drawn -> Drawn
+typingField b t preedit border px body d =
+    let
+        before =
+            String.fromArray (Array.takeFirst t.caret t.chars)
+
+        after =
+            String.fromArray (Array.dropFirst t.caret t.chars)
+
+        baseline =
+            b.y + b.h // 2 + body // 3
+
+        x =
+            b.x + px 10
+
+        bw =
+            Text.width body before
+
+        pw =
+            Text.width body preedit
+    in
+    { d | spot = { x = x + bw + pw, y = b.y } }
+        |> draw (framed { x = b.x, y = b.y, w = b.w, h = b.h, r = px 4, color = look.field, border = border })
+        |> draw (clip { x = b.x + 1, y = b.y, w = b.w - 2, h = b.h })
+        |> draw (text { x = x, y = baseline, size = body, color = look.strong, text = before })
+        |> draw (if preedit == "" then Bytes.empty else Bytes.flatten [ text { x = x + bw, y = baseline, size = body, color = look.strong, text = preedit }, box { x = x + bw, y = baseline + px 3, w = pw, h = 1, r = 0, color = look.strong } ])
+        |> draw (text { x = x + bw + pw, y = baseline, size = body, color = look.strong, text = after })
+        |> draw (box { x = x + bw + pw, y = b.y + px 6, w = 1, h = b.h - px 12, r = 0, color = look.strong })

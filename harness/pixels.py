@@ -126,7 +126,10 @@ def write_fonts_conf():
     conf.write_text(
         '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n<fontconfig>\n'
         f"{dirs}  <cachedir>{WORK / 'fc-cache'}</cachedir>\n"
-        f"  <alias><family>monospace</family><prefer>{prefer}</prefer></alias>\n{regions}</fontconfig>\n")
+        f"  <alias><family>monospace</family><prefer>{prefer}</prefer></alias>\n"
+        # the settings window's interface font (docs/settings-gui.md SG2)
+        "  <alias><family>sans-serif</family><prefer><family>DejaVu Sans</family></prefer></alias>\n"
+        f"{regions}</fontconfig>\n")
     return conf
 
 

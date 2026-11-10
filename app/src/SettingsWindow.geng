@@ -1,6 +1,7 @@
 module SettingsWindow exposing
-    ( Model, Input(..), Effect(..)
+    ( Model, Input(..), Effect(..), Target(..), Focus(..), Typing
     , init, update, view, fileRead, told
+    , listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
     )
 
 {-| The settings window's model and its screen (`docs/settings.md` ST7,
@@ -95,8 +96,23 @@ type Input
     = Key { sym : Int, mods : Int, text : String }
     | Typed String
     | Click { col : Int, row : Int, count : Int }
+    | Hit { target : Target, count : Int }
     | Scroll Int
     | Resized { cols : Int, rows : Int }
+
+
+{-| What a click is on, in the drawn window (`docs/settings-gui.md` SG3):
+the search field, the "modified only" switch, a page, a row (its label or
+description), a row's value, a row's reset button, or one of the fonts the
+font picker offers while one is typed. -}
+type Target
+    = OnSearchField
+    | OnModifiedOnly
+    | OnPage Int
+    | OnRow Int
+    | OnValue Int
+    | OnReset Int
+    | OnSuggestion Int
 
 
 {-| What the window asks of the program: a setting written to the file, or
@@ -351,6 +367,9 @@ update input m =
 
         Click c ->
             click c m
+
+        Hit h ->
+            hit h m
 
         Scroll steps ->
             let
@@ -1037,11 +1056,11 @@ clickOn c m =
         else
             done { m | focus = OnSearch }
 
-    else if c.row >= 2 && c.row < 2 + bodyRows m then
+    else if c.row >= 3 && c.row < 3 + bodyRows m then
         if c.col < pagesWidth then
             let
                 p =
-                    c.row - 2
+                    c.row - 3
             in
             if p <= hostsPage then
                 done (keepInView { m | focus = OnPages, page = p, row = 0, scroll = 0, search = [], form = Nothing })
@@ -1052,7 +1071,7 @@ clickOn c m =
         else
             let
                 line =
-                    c.row - 2 + m.scroll
+                    c.row - 3 + m.scroll
 
                 i =
                     line // linesPerRow
@@ -1104,6 +1123,100 @@ clickOn c m =
 
     else
         done m
+
+
+{-| A click on a drawn target, through the paths the keys take. What is
+being typed is kept, as Enter keeps it, unless the click is on the row
+being typed or on a font offered for it. -}
+hit : { target : Target, count : Int } -> Model -> { model : Model, effects : Array Effect }
+hit h m =
+    let
+        typingHere =
+            m.typing /= Nothing && (h.target == OnValue m.row || h.target == OnRow m.row)
+    in
+    when { target = h.target, typing = m.typing } is
+        { target = OnSuggestion i, typing = Just t } ->
+            typingKey { sym = sym.enter, mods = 0, text = "" } { t | pick = i } m
+
+        _ ->
+            if typingHere then
+                done m
+
+            else
+                let
+                    finished =
+                        when m.typing is
+                            Just t ->
+                                let
+                                    kept =
+                                        typingKey { sym = sym.enter, mods = 0, text = "" } t m
+                                in
+                                when kept.model.typing is
+                                    Just t2 ->
+                                        let
+                                            back =
+                                                typingKey { sym = sym.escape, mods = 0, text = "" } t2 kept.model
+                                        in
+                                        { model = back.model, effects = kept.effects ++ back.effects }
+
+                                    Nothing ->
+                                        kept
+
+                            Nothing ->
+                                done m
+
+                    after =
+                        hitOn h finished.model
+                in
+                { model = after.model, effects = finished.effects ++ after.effects }
+
+
+hitOn : { target : Target, count : Int } -> Model -> { model : Model, effects : Array Effect }
+hitOn h m =
+    let
+        enterAt i =
+            rowsKey { sym = sym.enter, mods = 0, text = "" } { m | focus = OnRows, row = i }
+    in
+    when h.target is
+        OnSearchField ->
+            done { m | focus = OnSearch }
+
+        OnModifiedOnly ->
+            control { sym = 0x6D, mods = 2, text = "" } m
+
+        OnPage p ->
+            if p <= hostsPage then
+                done (keepInView { m | focus = OnPages, page = p, row = 0, scroll = 0, search = [], form = Nothing })
+
+            else
+                done m
+
+        OnRow i ->
+            if i >= rowCount m then
+                done m
+
+            else if h.count >= 2 then
+                enterAt i
+
+            else
+                done (keepInView { m | focus = OnRows, row = i })
+
+        OnValue i ->
+            if i >= rowCount m then
+                done m
+
+            else if inList m && h.count < 2 && i >= 2 then
+                -- a host connects on a double click
+                done (keepInView { m | focus = OnRows, row = i })
+
+            else
+                enterAt i
+
+        OnReset i ->
+            rowsKey { sym = sym.delete, mods = 0, text = "" } { m | focus = OnRows, row = i }
+
+        OnSuggestion _ ->
+            done m
 
 
 {-| Whether the focused setting differs from its default, so that its row
@@ -1183,10 +1296,12 @@ linesPerRow =
     3
 
 
-{-| The rows between the two rules. -}
+{-| The rows between the two rules: the window's rows less three above
+(the search, a space, a rule; the drawn window's header is as tall) and
+two below. -}
 bodyRows : Model -> Int
 bodyRows m =
-    max 1 (m.rows - 4)
+    max 1 (m.rows - 5)
 
 
 {-| The scroll moved so that the focused setting's lines are in view. -}
@@ -1259,7 +1374,7 @@ cursor m =
         Just t ->
             let
                 line =
-                    2 + m.row * linesPerRow - m.scroll
+                    3 + m.row * linesPerRow - m.scroll
             in
             at line (pagesWidth + 1 + valueColumn + 1 + cells (Array.slice 0 t.caret t.chars))
 
@@ -1338,7 +1453,7 @@ screen m =
         right =
             if rowCount m == 0 then empty else shownSettings
     in
-    [ header m, [ { style = "2", text = String.repeat pagesWidth "─" ++ "┬" ++ String.repeat (max 0 width) "─" } ] ]
+    [ header m, [], [ { style = "2", text = String.repeat pagesWidth "─" ++ "┬" ++ String.repeat (max 0 width) "─" } ] ]
         ++ Array.map
             (\i ->
                 pageLine m i

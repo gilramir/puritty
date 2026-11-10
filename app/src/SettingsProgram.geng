@@ -27,21 +27,25 @@ import Platform
 import Schema
 import SettingsFile exposing (Store)
 import SettingsSource exposing (Given, Read(..))
+import SettingsGui
 import SettingsWindow
+import Text
+import Words
 import Source exposing (Source)
 import Int64
 import Task exposing (Task)
 import Time
 import Toml
-import Vt
-import Vt.View as View
 import Window
 
 
 type alias State =
     { window : SettingsWindow.Model
-    , term : Vt.Term
-    , shadow : View.Shadow
+      -- a cell's size in pixels, the window's language, and the boxes the
+      -- last frame's clicks land in (docs/settings-gui.md SG3)
+    , cell : { width : Int, height : Int }
+    , lang : Words.Lang
+    , hits : Array SettingsGui.Hit
     , preedit : { points : Array Int, feedback : Array Int, caret : Int }
     , store : Maybe Store
     , given : Given
@@ -98,29 +102,38 @@ run r =
         given =
             { file = SettingsSource.settingsFile r.vars r.config, fs = r.fs, title = Nothing, program = [] }
     in
-    -- one settings window: a second raises the first and ends (ST8);
-    -- each host list is a session to be, so there may be several
-    (if r.launcher then Task.succeed False else Window.raise title)
-        |> Task.andThen
-            (\already ->
-                if already then
-                    Task.succeed Closed
-
-                else
-                    openWindow r given
-            )
-
-
-title : String
-title =
-    "puritty settings"
-
-
-openWindow : Asked -> Given -> Task String Outcome
-openWindow r given =
+    -- the window's language, the system's (docs/settings-gui.md SG4)
     Platform.locale r.vars
         |> Task.andThen
             (\locale ->
+                let
+                    said =
+                        Words.words (Words.langOf locale.language)
+                in
+                -- one settings window: a second raises the first and ends
+                -- (ST8); each host list is a session to be, so there may be
+                -- several
+                (if r.launcher then Task.succeed False else Window.raise said.title)
+                    |> Task.andThen
+                        (\already ->
+                            if already then
+                                Task.succeed Closed
+
+                            else
+                                openWindow r given locale
+                        )
+            )
+
+
+openWindow : Asked -> Given -> Platform.Locale -> Task String Outcome
+openWindow r given locale =
+    let
+        lang =
+            Words.langOf locale.language
+
+        said =
+            Words.words lang
+    in
                 SettingsSource.readSettings given
                     |> Task.andThen
                         (\read ->
@@ -131,7 +144,7 @@ openWindow r given =
                                 , points = Config.defaults.points
                                 , lang = locale.language
                                 , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
-                                , title = if r.launcher then "puritty hosts" else title
+                                , title = if r.launcher then said.hostsTitle else said.title
                                 }
                                 |> Task.andThen
                                     (\opened ->
@@ -147,7 +160,8 @@ openWindow r given =
                                                     -- an arrow over a window of choices, not the
                                                     -- terminal's I-beam (Gilbert, 2026-11-10)
                                                     |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
-                                                    |> Task.andThen (\w -> loop (first r given read cell w (Dict.get "PURITTY_SHOT" r.vars)))
+                                                    |> Task.andThen (\w -> Text.interfaceFont Platform.interfaceFont |> Task.map (\_ -> w))
+                                                    |> Task.andThen (\w -> loop (first r given read cell w (Dict.get "PURITTY_SHOT" r.vars) lang))
                                                     -- and the I-beam back for a session that takes this
                                                     -- window, whose loop begins with one
                                                     |> Task.andThen (\s -> Window.setPointer Window.TextPointer |> Task.map (\_ -> s))
@@ -162,7 +176,6 @@ openWindow r given =
                                                         )
                                     )
                         )
-            )
 
 
 {-| The hosts `~/.ssh/config` names, or none when it cannot be read. -}
@@ -178,8 +191,8 @@ sshAliases r =
             Task.succeed []
 
 
-first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String } -> Maybe String -> State
-first r given read cell w shotPath =
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String } -> Maybe String -> Words.Lang -> State
+first r given read cell w shotPath lang =
     let
         got =
             when read is
@@ -203,17 +216,9 @@ first r given read cell w shotPath =
             , aliases = w.aliases
             , launcher = r.launcher
             }
-    , term =
-        Vt.new
-            { cols = size.cols
-            , rows = size.rows
-            , scrollbackBytes = 0
-            , pageRows = Vt.defaultPageRows
-            , checksums = False
-            , cellWidth = cell.width
-            , cellHeight = cell.height
-            }
-    , shadow = View.shadow size.cols size.rows
+    , cell = { width = cell.width, height = cell.height }
+    , lang = lang
+    , hits = []
     , preedit = { points = [], feedback = [], caret = 0 }
     , store = Maybe.map (\f -> SettingsFile.store given.fs f.path) given.file
     , given = given
@@ -230,7 +235,7 @@ first r given read cell w shotPath =
 
 {-| Draw, then wait for the window or the file, until the window is closed
 or lost. -}
-loop : (taken s0 : State) -> Task String State
+loop : State -> Task String State
 loop s0 =
     draw s0
         |> Task.andThen
@@ -271,29 +276,17 @@ type Turn
     | FileChanged (Maybe Directory.Change)
 
 
-draw : (taken s : State) -> Task x State
+draw : State -> Task x State
 draw s =
     let
-        term =
-            Vt.feed (Bytes.fromString (SettingsWindow.view s.window)) s.term
-
         preedit =
-            { text = String.fromArray (Array.mapAndKeepJust Char.fromCode s.preedit.points)
-            , feedback = s.preedit.feedback
-            , caret = s.preedit.caret
-            }
+            String.fromArray (Array.mapAndKeepJust Char.fromCode s.preedit.points)
 
-        look =
-            { foreground = Config.defaults.foreground, background = Config.defaults.background, boldIsBright = False }
-
-        spot =
-            View.preeditSpot preedit term
-
-        f =
-            View.frameWith look View.focused preedit View.noHighlight term s.shadow
+        frame =
+            SettingsGui.paint s.lang s.window { cols = s.window.cols, rows = s.window.rows, cellWidth = s.cell.width, cellHeight = s.cell.height } preedit
     in
-    Window.draw f.list
-        |> Task.andThen (\up -> Window.spot spot |> Task.map (\_ -> up))
+    Window.draw frame.list
+        |> Task.andThen (\up -> Window.spot frame.spot |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 when s.shotPath is
@@ -303,17 +296,10 @@ draw s =
                     Nothing ->
                         Task.succeed up
             )
-        |> Task.map
-            (\up ->
-                { s
-                    | term = term
-                    , shadow = View.inked (Maybe.withDefault Bytes.empty up) f.shadow
-                    , lost = s.lost || up == Nothing
-                }
-            )
+        |> Task.map (\up -> { s | hits = frame.hits, lost = s.lost || up == Nothing })
 
 
-handle : Array Window.Event -> (taken s : State) -> Task String State
+handle : Array Window.Event -> State -> Task String State
 handle evs s =
     when Array.popFirst evs is
         Nothing ->
@@ -323,7 +309,7 @@ handle evs s =
             one ev s |> Task.andThen (handle rest)
 
 
-one : Window.Event -> (taken s : State) -> Task String State
+one : Window.Event -> State -> Task String State
 one ev s =
     when ev is
         Window.Key k ->
@@ -358,8 +344,7 @@ one ev s =
             Task.succeed { s | preedit = { points = [], feedback = [], caret = 0 } }
 
         Window.Resized r ->
-            input (SettingsWindow.Resized { cols = r.cols, rows = r.rows })
-                { s | term = Vt.resize r.cols r.rows s.term, shadow = View.shadow r.cols r.rows }
+            input (SettingsWindow.Resized { cols = r.cols, rows = r.rows }) s
 
         Window.Pointer p ->
             if p.action == 0 && p.button == 1 && p.cellWidth > 0 && p.cellHeight > 0 then
@@ -378,9 +363,22 @@ one ev s =
 
                                 count =
                                     if ms - last.at <= 400 && last.row == cell.row && last.col == cell.col then last.count + 1 else 1
+
+                                -- the topmost box under the pointer: the last
+                                -- drawn comes first
+                                hit =
+                                    Array.findFirst (\b -> p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h) s.hits
+                                        |> Maybe.map (\found -> found.value.target)
+
+                                pressed =
+                                    { s | lastPress = { at = ms, row = cell.row, col = cell.col, count = count } }
                             in
-                            input (SettingsWindow.Click { col = cell.col, row = cell.row, count = count })
-                                { s | lastPress = { at = ms, row = cell.row, col = cell.col, count = count } }
+                            when hit is
+                                Just t ->
+                                    input (SettingsWindow.Hit { target = t, count = count }) pressed
+
+                                Nothing ->
+                                    Task.succeed pressed
                         )
 
             else if p.action == 0 && (p.button == 4 || p.button == 5) then
@@ -398,7 +396,7 @@ one ev s =
 
 
 {-| An input to the window, and what it asks done. -}
-input : SettingsWindow.Input -> (taken s : State) -> Task String State
+input : SettingsWindow.Input -> State -> Task String State
 input i s =
     let
         r =
@@ -407,7 +405,7 @@ input i s =
     Array.foldl (\e t -> t |> Task.andThen (effect e)) (Task.succeed { s | window = r.model }) r.effects
 
 
-effect : SettingsWindow.Effect -> (taken s : State) -> Task String State
+effect : SettingsWindow.Effect -> State -> Task String State
 effect e s =
     when e is
         SettingsWindow.Close ->
@@ -439,7 +437,7 @@ effect e s =
 
 {-| The file changed by an edit (`SettingsFile.change`); a failure shown at
 the window's foot. -}
-writeWith : (Toml.Document -> Toml.Document) -> (taken s : State) -> Task String State
+writeWith : (Toml.Document -> Toml.Document) -> State -> Task String State
 writeWith edit s =
     when s.store is
         Nothing ->
@@ -462,7 +460,7 @@ writeWith edit s =
 
 {-| A session: the host list becomes it (V65); the settings window starts
 it in a window of its own, this program again with `args`. -}
-connect : Config.Host -> Array String -> (taken s : State) -> Task String State
+connect : Config.Host -> Array String -> State -> Task String State
 connect h args s =
     if s.launcher then
         Task.succeed { s | outcome = Just h, closed = True }
@@ -489,7 +487,7 @@ connect h args s =
 
 {-| The file changed: read again, and its settings shown. The window's own
 writes come back this way too, as what it already shows. -}
-fileChanged : Maybe Directory.Change -> (taken s : State) -> Task String State
+fileChanged : Maybe Directory.Change -> State -> Task String State
 fileChanged change s =
     let
         ours path =

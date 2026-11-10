@@ -62,6 +62,12 @@ const uint8_t *pt_ink(int *length);
 /* Style 0's background, the margins' colour. */
 uint32_t pt_default_bg(void);
 
+/* The interface's font (docs/settings-gui.md SG2), a family as the platform
+ * names one, loaded when text is first drawn in it; and a text's width in
+ * pixels in it at `px` pixels an em, its UTF-8 `s` of `n` bytes. */
+void pt_interface_font(const char *name);
+int pt_measure(const uint8_t *s, int n, int px);
+
 /* The counts, to stderr, after `who` and a colon. */
 void pt_stats(const char *who);
 
