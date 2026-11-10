@@ -329,3 +329,23 @@ Two things a Windows build of puritty needs that Geng's build does not have:
   it a GUI program; Geng's build has no switch for it, and `GENG_LDFLAGS`
   would carry it for every program built in that shell. A `[native]` key,
   or one in the application's manifest, is the likelier home.
+
+## WS16 · Gilbert's answers (2026-11-09)
+
+All seven leanings taken.
+
+- **V52 · Windows draws with FreeType and HarfBuzz into a bitmap** (WS3):
+  the X11 C's text, box drawing and ink, shared by both platforms, the
+  same pixels as Linux.
+- **V53 · PRIMARY is kept within puritty on Windows** (WS8): a selection
+  made is puritty's PRIMARY, and a middle click pastes it; the clipboard
+  is Windows'.
+- **V54 · The program run on Windows** (WS9): PowerShell 7 (`pwsh.exe`) when
+  installed, else Windows PowerShell, else `%COMSPEC%`; the settings can
+  name any other.
+- **V55 · One application, two manifests** (WS10): `app/linux` and
+  `app/windows` over one `app/src`; both platform packages give a module
+  `Window`.
+- **V56 · The IME on Windows is IMM32** (WS6); TSF if IMM32 falls short.
+- **Questions 6 and 7 are Geng's**: a `[native]` key for system libraries
+  and one for the GUI subsystem (geng-lang Dnene36, Dnene37).
