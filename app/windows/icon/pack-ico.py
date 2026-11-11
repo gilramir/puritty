@@ -5,7 +5,7 @@ import struct
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-sizes = [16, 20, 24, 32, 40, 48, 64, 256]
+sizes = [16, 20, 24, 30, 32, 36, 40, 48, 64, 72, 96, 256]
 images = [(s, (here / "png" / f"{s}.png").read_bytes()) for s in sizes]
 out = bytearray(struct.pack("<HHH", 0, 1, len(images)))
 offset = 6 + 16 * len(images)

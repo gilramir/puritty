@@ -8,7 +8,7 @@ const dir = process.argv[2];
 (async () => {
   const b = await chromium.launch();
   const pg = await b.newPage({ deviceScaleFactor: 1 });
-  for (const size of [16, 20, 24, 32, 40, 48, 64, 256]) {
+  for (const size of [16, 20, 24, 30, 32, 36, 40, 48, 64, 72, 96, 256]) {
     const svg = fs.readFileSync(`${dir}/${size <= 24 ? "puritty-small.svg" : "puritty.svg"}`, "utf8");
     await pg.setViewportSize({ width: size, height: size });
     await pg.setContent(`<style>html,body{margin:0;background:transparent}svg{display:block;width:${size}px;height:${size}px}</style>${svg}`);

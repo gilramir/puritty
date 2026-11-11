@@ -800,3 +800,16 @@ The pipeline is unchanged. On beelink1 the title bar shows A at once.
 The taskbar and a shortcut kept showing D. Explorer caches an exe's icon
 by its path, and `ie4uinit -show` did not clear it; the cache clears
 when Explorer restarts, at sign-out or reboot.
+
+**Bigger in the taskbar (2026-11-10).** Gilbert found the computer a
+little small in the taskbar. beelink1 is at 150% (144 DPI), where the
+taskbar draws a 36 px icon. The .ico had no 36 px picture, so Windows
+scaled another, and A's set filled less of the square than the other
+icons there. Two changes:
+
+- The set in `puritty.svg` is drawn 1.12 times larger, edge to edge,
+  with the lambda at 0.9 in its corner.
+- The .ico gains 30, 36, 72 and 96 px pictures (12 sizes in all), so
+  that 125%, 150%, 200% and 300% each have their own.
+
+The small cut is unchanged.
