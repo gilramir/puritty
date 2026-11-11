@@ -1,5 +1,7 @@
 module Tmux.Command exposing
     ( sendBytes
+    , sendKey
+    , typeText
     , size
     , clientFlags
     , continuePane
@@ -36,6 +38,28 @@ sendBytes pane bytes =
                 in
                 "send-keys -t " ++ quote ("%" ++ String.fromInt pane) ++ " -H " ++ pairs part
             )
+
+
+{-| `send-keys -K`: a key by its tmux name (`C-a`, `M-x`, `S-Up`), to the
+client, so that it is looked up in the client's key table as a key typed
+at a terminal is: the prefix and the bindings work, and a key bound to
+nothing goes to the active pane, encoded by tmux for that pane's modes.
+Bytes given with `-t pane -H` reach the pane without any lookup (TM23). -}
+sendKey : String -> String
+sendKey name =
+    "send-keys -K " ++ quote name
+
+
+{-| `send-keys -K -H`: typed text, its UTF-8 bytes in hex, through the
+client's key table as `sendKey`'s keys are: a character after the prefix
+is the binding's key (TM23). -}
+typeText : Bytes -> Array String
+typeText bytes =
+    if Bytes.isEmpty bytes then
+        []
+
+    else
+        [ "send-keys -K -H " ++ pairs (Bytes.toHexString { padding = False } bytes) ]
 
 
 {-| `abcd` as `ab cd`. -}

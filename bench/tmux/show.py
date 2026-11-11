@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -88,6 +88,9 @@ def main():
             return
         if a.scenario == "lines":
             lines(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "prefix":
+            prefix(a, env, tmux, xdo, snap, cli)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -326,6 +329,81 @@ def tabs(a, env, tmux, xdo, snap, cli):
         cli("kill-server")
         time.sleep(1)
     finally:
+        app.terminate()
+        app.wait()
+
+
+PREFIX_CONF = """set -g default-shell /bin/sh
+set -g default-command /bin/sh
+unbind C-b
+set-option -g prefix C-a
+bind-key C-a send-prefix
+bind | split-window -h
+bind - split-window -v
+unbind '"'
+unbind %
+setw -g mode-keys vi
+bind -n C-k send-keys -R \\; send-keys C-l \\; clear-history
+set -g set-clipboard on
+"""
+
+
+def prefix(a, env, tmux, xdo, snap, cli):
+    """Keys go through tmux's key table (docs/tmux.md TM23), with a user's
+    tmux.conf: prefix C-a, `|` and `-` split, vi copy mode, and a root
+    binding on C-k that clears the screen and the history. Each step is
+    read back from tmux."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    panes = lambda: len(q("list-panes").splitlines())
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("type", "--delay", "20", "echo 한글 typed")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print("typed text:", "한글 typed" in q("capture-pane", "-p"))
+        xd("key", "ctrl+a", "bar")
+        time.sleep(0.8)
+        print("C-a |:", panes(), "panes")
+        xd("key", "ctrl+a", "minus")
+        time.sleep(0.8)
+        print("C-a -:", panes(), "panes")
+        xd("key", "ctrl+a", "quotedbl")
+        time.sleep(0.8)
+        print("C-a \" (unbound):", panes(), "panes")
+        snap("prefix-splits")
+        for _ in range(30):
+            xd("type", "--delay", "5", "echo line")
+            xd("key", "Return")
+        time.sleep(0.5)
+        print("history before C-k:", q("display-message", "-p", "#{history_size}"))
+        xd("key", "ctrl+k")
+        time.sleep(0.8)
+        print("history after C-k:", q("display-message", "-p", "#{history_size}"))
+        xd("key", "ctrl+a", "bracketleft")
+        time.sleep(0.6)
+        print("C-a [:", q("display-message", "-p", "#{pane_in_mode} #{pane_mode}"))
+        snap("prefix-copy-mode")
+        xd("key", "q")
+        time.sleep(0.6)
+        print("q:", q("display-message", "-p", "#{pane_in_mode}"))
+        xd("key", "Up")
+        time.sleep(0.4)
+        xd("key", "ctrl+a", "ctrl+a")
+        time.sleep(0.4)
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
         app.terminate()
         app.wait()
 

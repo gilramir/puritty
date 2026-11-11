@@ -5,6 +5,8 @@ module TmuxMode exposing
     , read
     , paint
     , keys
+    , typed
+    , keyName
     , encodeKey
     , activeMode
     , pointer
@@ -924,6 +926,168 @@ keys bytes s =
     else
         -- a key the pane's program gets brings its view to the bottom
         sent (Command.sendBytes s.active bytes) { s | back = if Bytes.isEmpty bytes then s.back else Dict.remove s.active s.back }
+
+
+{-| What a typed key sends: through the client's key table, as a key
+typed at a terminal attached to tmux is, so that the prefix and bindings
+work (TM23): a named key or one with Ctrl or Alt by its tmux name, other
+text as its bytes. `bytes` is what the pane's modes make of the key; a key
+that makes none (a release) sends nothing, and one tmux has no name for (a
+Super chord) still sends them to the pane. -}
+typed : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> (taken s : State) -> { state : State, commands : Array String }
+typed k bytes s =
+    if s.active < 0 || Bytes.isEmpty bytes then
+        { state = s, commands = [] }
+
+    else
+        let
+            mods =
+                Bitwise.and k.mods 15
+
+            commands =
+                when keyName k is
+                    Just name ->
+                        [ Command.sendKey name ]
+
+                    Nothing ->
+                        if Bitwise.and mods 14 == 0 && not (Bytes.isEmpty k.text) then
+                            Command.typeText k.text
+
+                        else
+                            Command.sendBytes s.active bytes
+        in
+        -- a key the pane's program gets brings its view to the bottom
+        sent commands { s | back = Dict.remove s.active s.back }
+
+
+{-| A key's tmux name (tmux(1) KEY BINDINGS): a named key (`Up`, `F5`,
+`BSpace`), or a character with Ctrl or Alt, with `C-`, `M-` and, for a
+named key or a Ctrl letter, `S-`. `Nothing` for plain text, which goes as
+its bytes, and for a chord with Super. -}
+keyName : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe String
+keyName k =
+    let
+        mods =
+            Bitwise.and k.mods 15
+
+        shift =
+            Bitwise.and mods 1 /= 0
+
+        ctrl =
+            Bitwise.and mods 2 /= 0
+
+        alt =
+            Bitwise.and mods 4 /= 0
+
+        lead =
+            (if ctrl then "C-" else "") ++ (if alt then "M-" else "")
+
+        text =
+            Bytes.toStringLossy k.text
+
+        printable str =
+            String.count str == 1 && Maybe.withDefault False (Maybe.map (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F) (Maybe.map .first (String.popFirst str)))
+    in
+    if Bitwise.and mods 8 /= 0 then
+        Nothing
+
+    else
+        when namedKey k.sym is
+            Just "BTab" ->
+                Just (lead ++ "BTab")
+
+            Just name ->
+                Just (lead ++ (if shift then "S-" else "") ++ name)
+
+            Nothing ->
+                if ctrl then
+                    when Char.fromCode k.unshifted is
+                        Just c ->
+                            if k.unshifted > 0x20 && k.unshifted < 0x7F then
+                                Just (lead ++ (if shift && Char.isAlpha c then "S-" else "") ++ String.toLower (String.fromChar c))
+
+                            else if k.unshifted == 0x20 then
+                                Just (lead ++ "Space")
+
+                            else
+                                Nothing
+
+                        Nothing ->
+                            Nothing
+
+                else if alt then
+                    if text == " " then
+                        Just "M-Space"
+
+                    else if printable text then
+                        Just ("M-" ++ text)
+
+                    else
+                        Nothing
+
+                else
+                    Nothing
+
+
+{-| tmux's name for a key by its X keysym, as both platforms' windows give
+it. -}
+namedKey : Int -> Maybe String
+namedKey sym =
+    if sym >= 0xFFBE && sym <= 0xFFC9 then
+        Just ("F" ++ String.fromInt (sym - 0xFFBE + 1))
+
+    else
+        when sym is
+            0xFF52 ->
+                Just "Up"
+
+            0xFF54 ->
+                Just "Down"
+
+            0xFF51 ->
+                Just "Left"
+
+            0xFF53 ->
+                Just "Right"
+
+            0xFF50 ->
+                Just "Home"
+
+            0xFF57 ->
+                Just "End"
+
+            0xFF55 ->
+                Just "PPage"
+
+            0xFF56 ->
+                Just "NPage"
+
+            0xFF63 ->
+                Just "IC"
+
+            0xFFFF ->
+                Just "DC"
+
+            0xFF09 ->
+                Just "Tab"
+
+            0xFE20 ->
+                Just "BTab"
+
+            0xFF0D ->
+                Just "Enter"
+
+            0xFF8D ->
+                Just "KPEnter"
+
+            0xFF1B ->
+                Just "Escape"
+
+            0xFF08 ->
+                Just "BSpace"
+
+            _ ->
+                Nothing
 
 
 {-| `n` more replies to read and drop. -}

@@ -829,3 +829,51 @@ row; at the top, the panes are drawn a row down as in TM18. Only where the
 panes are drawn, where the bar is drawn and clicked, and `move-pane -Y`
 follow it; tmux is told a row less either way. The show.py scenarios now
 click their tabs on the bottom row, and pass.
+
+## TM23 · Typed keys go through tmux's key table (2026-11-11)
+
+*Gilbert, 2026-11-11, using tmux -CC:* with plain `tmux` his prefix,
+`C-a` from his tmux.conf, works; under `-CC` it did nothing, and there was
+no way to control tmux from the keyboard.
+
+**Why.** TM5.9 had keys sent as `send-keys -t pane -H`, which is what
+iTerm2 does: the bytes go into the pane and no key table is looked at, so
+neither the prefix nor a root binding (`bind -n`) ever fires. iTerm2's
+users drive tmux from iTerm2's menus; a tmux user expects their bindings.
+Every gate typed text and Enter, and made panes from a second tmux
+client, so none pressed a binding.
+
+**Now.** tmux 3.8's `send-keys -K` sends keys to the client, which looks
+them up as keys typed at a terminal are (tmux(1), `send-keys`). Measured
+by hand on a control client: `send-keys -K C-a '"'` split the pane;
+`send-keys -K -H 01 22` did not, because `-H 01` is the character 0x01, not
+the key C-a, so a key with Ctrl or Alt has to go by its name. Ten keys
+sent as ten lines in one write, as one line of `;`, and as one command all
+arrived in order.
+
+A typed key (`TmuxMode.typed`) is sent as:
+
+- a named key (arrows, Home, End, PPage, NPage, IC, DC, F1–F12, Tab,
+  BTab, Enter, KPEnter, Escape, BSpace) by its name, with `C-`, `M-` and
+  `S-` for its modifiers (`send-keys -K 'C-Up'`);
+- a character with Ctrl by `C-` and its unshifted character, `S-` for
+  Shift on a letter (`C-a`, `C-S-a`), Ctrl+Space as `C-Space`;
+- a character with Alt by `M-` and the character typed (`M-x`, `M-!`);
+- other text as its UTF-8 bytes through the client (`send-keys -K -H`),
+  which reaches the pane whole (Korean measured) and is a binding's key
+  after the prefix (`|` measured);
+- a chord with Super, which tmux has no name for, as before, the pane's
+  bytes with `-t pane -H`.
+
+A key no binding takes goes to the active pane, encoded by tmux for that
+pane's modes as for any client. Pastes and the mouse still go to the pane
+with `-t pane -H`: a paste is not keys to look up, and puritty draws and
+routes the mouse itself (TM16).
+
+**Checked** in `bench/tmux/show.py --scenario prefix`, with his
+tmux.conf (prefix C-a, `|` and `-` split, `"` unbound, vi copy mode, `bind
+-n C-k` clearing the screen and history), each step read back from tmux:
+typed `echo 한글 typed` arrives; `C-a |` makes 2 panes and `C-a -` 3; `C-a
+"` leaves 3; `C-k` takes the history from 47 lines to 0; `C-a [` enters
+copy mode and `q` leaves it. The build, tabs, select and mouse scenarios
+give what they gave; packages/tmux 26 tests, app 102.
