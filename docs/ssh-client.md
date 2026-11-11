@@ -1274,3 +1274,30 @@ The ssh gate is 62 of 62. `harness/sshwindow.py` has a `jump` case:
 puritty's window, a host entry with `jump = "user@127.0.0.1:PORT"`, the
 remote command's exit status and terminal size through it. That gate is
 9 of 9.
+
+## SC22 · A nicer login: Gilbert's question, for later (2026-11-11)
+
+*Gilbert, 2026-11-11*, with a screenshot of ChromeOS's Terminal: it asks
+for an ssh password in a box over the terminal, "gram@host's password:",
+a field and an eye to show it. Can puritty do that on Windows, a window
+with no title bar, and is puritty really held to one window a process?
+
+Answers, not built:
+
+- **ChromeOS's box is not a window.** It is drawn inside the terminal's
+  window, over its text. puritty can do the same: the renderer's UI
+  records (rounded boxes, text, text in a named font, clipping;
+  `settings-gui.md`) already draw the settings window, so the password
+  question (SC20's bullets) can become a centred box with a field and a
+  show button, drawn over the terminal, with the terminal's line kept
+  as a record of what was asked.
+- **Windows has windows with no title bar** (`WS_POPUP`), so a separate
+  one is possible. An overlay is the better choice: a second window can
+  open behind the first, lose the focus, or land on another screen.
+- **One window a process is puritty's limit, not the systems'.** Win32
+  and X11 both give a process as many windows as it wants. puritty's
+  window packages (`packages/win32`, `packages/x11`) keep one window's
+  state, and the settings window is a second process because of that.
+  Lifting it is work in those packages and in `Main`'s loop. tmux's tabs
+  and floating panes (phase 4) are drawn inside one window and need none
+  of it.
