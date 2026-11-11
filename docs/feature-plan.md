@@ -34,6 +34,7 @@ The survey's "biggest opening" is the work puritty already has planned.
 | **Scrollbar** | Small | With search. |
 | **Key bindings in the config**, including multi-key sequences | Medium | A `[keys]` section and a "Keyboard" page in the settings UI. Before the Windows product, since that needs bindings for ssh actions. |
 | **Multi-line paste warning** | Small | Any time; one setting, on by default. |
+| **Built-in palettes** (Gilbert's request, 2026-11-11): a choice of hardcoded palettes copying popular terminals, such as Ghostty's, Alacritty's, PuTTY's, xterm's, Windows Terminal's Campbell, Tango and Solarized | Small: a table of named palettes, a `palette = "name"` form and a list in the settings window | After tmux control mode is done, by Gilbert's order. |
 | **Selection copied to the clipboard** (Gilbert's request, 2026-11-11), as PuTTY and MobaXterm do | Small | With the Windows product; `windows.md` WS27. An option, on by default on Windows. |
 | **Key sounds** (Gilbert's request, §3) | Small to medium: audio is new | Soon, and the first new setting added through the settings UI. |
 | **Jump between and fold command outputs** | Medium; needs shell integration (OSC 133) | Later. |
