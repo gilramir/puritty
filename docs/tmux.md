@@ -794,3 +794,27 @@ detach gave the shell its terminal back.
 With this, TM13's step 4 is done. Left for later: dragging the line
 between tiled panes, colours for the tab bar and the dividers, and `%exit`
 reasons for a detach, which tmux does not send.
+
+## TM20 · The lines between tiled panes dragged (2026-11-11)
+
+A press on the line right of a tiled pane, outside every pane and box, and
+a drag resize that pane's width, `resize-pane -t %N -x`; on the line below
+it, its height, `-y`; tmux takes the room from the neighbour. A tiled
+pane's size, unlike a floating one's, counts no border. `Drag` has a kind
+now: the box moved, the box resized, the line right, the line below.
+
+**Checked against tmux** (`bench/tmux/show.py --scenario lines`): with the
+window split left and right and the right split again, the line right of
+the left pane dragged 10 left made it 40 wide from 50 and the right column
+59 from 49; the line below the top right pane dragged 3 down made it 17
+high from 14 and the one below 11.
+
+## TM21 · Colours for the tab bar, the lines and the boxes (2026-11-11)
+
+What puritty draws around tmux's panes is written into the canvas in
+colour from the 256 (`drawText`, with autowrap off so nothing moves): the
+tab bar a dark band (250 on 236), its active tab puritty's amber with dark
+bold text (234 on 214); the lines between tiled panes a quiet grey (240);
+a floating pane's box grey (245), and the active pane's box amber (214), so
+the pane the keys go to is seen at once. They are fixed colours for now;
+a light look, or a palette of the user's, may want them from the look.

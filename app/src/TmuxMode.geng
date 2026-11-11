@@ -95,11 +95,13 @@ type alias Sel =
     }
 
 
-{-| A drag of a floating pane's box: from where, the box as it was, and
-what was last sent, so that a motion within a cell sends nothing. -}
+{-| A drag of a floating pane's box, or of the line beside or below a
+tiled pane (TM20): from where, the pane as it was, and what was last sent,
+so that a motion within a cell sends nothing. `kind`: 0 the box moved, 1
+the box resized, 2 the line right of the pane, 3 the line below it. -}
 type alias Drag =
     { pane : Int
-    , move : Bool
+    , kind : Int
     , col : Int
     , row : Int
     , x : Int
@@ -761,6 +763,9 @@ paint s =
                 tabBar =
                     tabsOf cols s
 
+                active =
+                    s.active
+
                 -- where each pane goes, and how far back its view is, read
                 -- before the canvas is written
                 tiledPlaces =
@@ -794,13 +799,13 @@ paint s =
                 -- pane in its box, the bottom one first
                 composed =
                     s.canvas
-                        |> Vt.feed (Bytes.fromString "\u{001B}[H\u{001B}[2J")
+                        |> Vt.feed (Bytes.fromString "\u{001B}[?7l\u{001B}[0m\u{001B}[H\u{001B}[2J")
                         |> Vt.compose s.panes tiledPlaces
                         |> Vt.invert tiledSpans
-                        |> Vt.paint lines
-                        |> (\c -> Array.foldl (\p acc -> acc |> Vt.paint (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
-                        |> Vt.paint [ { row = 0, col = 0, text = tabBar.text } ]
-                        |> Vt.invert tabBar.active
+                        |> drawText lineColour lines
+                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> drawText barColour [ { row = 0, col = 0, text = String.padRight cols ' ' tabBar.text } ]
+                        |> drawText activeTabColour tabBar.active
                         |> Vt.feed (Bytes.fromString cursor)
             in
             { s | canvas = (Vt.takeReplies composed).term }
@@ -1065,6 +1070,25 @@ pointer how p s =
                 under =
                     Array.findFirst (\q -> inside q || onBox q) order |> Maybe.map .value
 
+                -- a press on the line right of or below a tiled pane, outside
+                -- every pane and box: that pane resized (TM20)
+                lineHit =
+                    if p.action == 0 && p.button == 1 && under == Nothing && s.drag == Nothing then
+                        Array.findFirst
+                            (\q -> q.z == Nothing && ((q.x + q.w == col && row >= q.y && row < q.y + q.h) || (q.y + q.h == row && col >= q.x && col < q.x + q.w)))
+                            order
+                            |> Maybe.map
+                                (\found ->
+                                    let
+                                        q =
+                                            found.value
+                                    in
+                                    { pane = q.id, kind = if q.x + q.w == col then 2 else 3, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } }
+                                )
+
+                    else
+                        Nothing
+
                 tabHit =
                     if row < bar && p.action == 0 && p.button == 1 && s.drag == Nothing && s.grab == Nothing then
                         Array.findFirst (\h -> col >= h.from && col <= h.to) (tabsOf (p.width // max 1 p.cellWidth) s).hits |> Maybe.map .value
@@ -1098,45 +1122,50 @@ pointer how p s =
                     plain (sent [ if hit.window < 0 then "new-window" else "select-window -t " ++ Command.quote ("@" ++ String.fromInt hit.window) ] s)
 
                 _ ->
-                    when target is
+                    when lineHit is
+                        Just d ->
+                            plain { state = { s | drag = Just d }, commands = [] }
+
                         Nothing ->
-                            { state = s, commands = [], own = Nothing, paste = False }
+                            when target is
+                                Nothing ->
+                                    { state = s, commands = [], own = Nothing, paste = False }
 
-                        Just q ->
-                            if p.action == 0 && p.button == 1 && onBox q then
-                                -- the top edge moves the box; the others resize it
-                                let
-                                    select =
-                                        selected q.id s
-                                in
-                                plain (sent select { s | drag = Just { pane = q.id, move = row == q.y - 1, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } })
+                                Just q ->
+                                    if p.action == 0 && p.button == 1 && onBox q then
+                                        -- the top edge moves the box; the others resize it
+                                        let
+                                            select =
+                                                selected q.id s
+                                        in
+                                        plain (sent select { s | drag = Just { pane = q.id, kind = if row == q.y - 1 then 0 else 1, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } })
 
-                            else if takesMouse then
-                                let
-                                    select =
-                                        if p.action == 0 then
-                                            selected q.id s
+                                    else if takesMouse then
+                                        let
+                                            select =
+                                                if p.action == 0 then
+                                                    selected q.id s
 
-                                        else
-                                            []
+                                                else
+                                                    []
 
-                                    grabbed =
-                                        if p.action == 0 then
-                                            { s | grab = Just q.id }
+                                            grabbed =
+                                                if p.action == 0 then
+                                                    { s | grab = Just q.id }
 
-                                        else if how.held == 0 then
-                                            { s | grab = Nothing }
+                                                else if how.held == 0 then
+                                                    { s | grab = Nothing }
 
-                                        else
-                                            s
+                                                else
+                                                    s
 
-                                    reported =
-                                        report how.held p q grabbed
-                                in
-                                plain { state = waitingFor (Array.length select) reported.state, commands = select ++ reported.commands }
+                                            reported =
+                                                report how.held p q grabbed
+                                        in
+                                        plain { state = waitingFor (Array.length select) reported.state, commands = select ++ reported.commands }
 
-                            else
-                                selecting how p col row q s
+                                    else
+                                        selecting how p col row q s
 
 
 paneTakesMouse : Maybe Layout.Pane -> State -> Bool
@@ -1317,7 +1346,7 @@ extended boundaries at sel s =
 {-| The tab bar: a tab for each window, ` 1:name `, between `│`s, the
 active one inverse, then ` + `, cut at the window's width; and which
 columns each tab and the `+` cover, `-1` for the `+`. -}
-tabsOf : Int -> State -> { text : String, active : Array { row : Int, from : Int, to : Int }, hits : Array { from : Int, to : Int, window : Int } }
+tabsOf : Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
 tabsOf cols s =
     let
         labels =
@@ -1342,10 +1371,59 @@ tabsOf cols s =
     { text = String.takeFirst cols laid.text
     , active =
         laid.hits
-            |> Array.keepIf (\h -> h.window == s.window && h.window >= 0)
-            |> Array.map (\h -> { row = 0, from = h.from, to = min (cols - 1) h.to })
+            |> Array.keepIf (\h -> h.window == s.window && h.window >= 0 && h.from < cols)
+            |> Array.map (\h -> { row = 0, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
     , hits = laid.hits
     }
+
+
+{-| Text written in the canvas in a colour (TM21): each piece at its row
+and column, with autowrap off (`paint` turns it off), so nothing moves. -}
+drawText : String -> Array { row : Int, col : Int, text : String } -> (taken t : Vt.Term) -> Vt.Term
+drawText colour pieces t =
+    if Array.isEmpty pieces then
+        t
+
+    else
+        Vt.feed
+            (Bytes.fromString
+                (String.join ""
+                    (Array.map
+                        (\p -> "\u{001B}[" ++ String.fromInt (p.row + 1) ++ ";" ++ String.fromInt (p.col + 1) ++ "H" ++ colour ++ p.text ++ "\u{001B}[0m")
+                        pieces
+                    )
+                )
+            )
+            t
+
+
+{-| The colours of what puritty draws around tmux's panes, from the 256
+colours: the lines between tiled panes a quiet grey, a floating pane's box
+grey and the active pane's in puritty's amber, the tab bar a dark band and
+its active tab amber with dark text. -}
+lineColour : String
+lineColour =
+    "\u{001B}[0;38;5;240m"
+
+
+boxColour : String
+boxColour =
+    "\u{001B}[0;38;5;245m"
+
+
+activeColour : String
+activeColour =
+    "\u{001B}[0;38;5;214m"
+
+
+barColour : String
+barColour =
+    "\u{001B}[0;38;5;250;48;5;236m"
+
+
+activeTabColour : String
+activeTabColour =
+    "\u{001B}[0;1;38;5;234;48;5;214m"
 
 
 {-| The keys of the tabs: Ctrl+Shift+T a new window, Ctrl+PgUp and
@@ -1452,7 +1530,14 @@ dragged col row released d s =
             Command.quote ("%" ++ String.fromInt d.pane)
 
         command =
-            if d.move then
+            if d.kind == 2 then
+                -- a tiled pane's width; tmux takes the room from its neighbour
+                "resize-pane -t " ++ target ++ " -x " ++ String.fromInt (max 1 (d.w + dx))
+
+            else if d.kind == 3 then
+                "resize-pane -t " ++ target ++ " -y " ++ String.fromInt (max 1 (d.h + dy))
+
+            else if d.kind == 0 then
                 -- `d.y` is where it is drawn, below the tab bar; tmux's rows
                 -- start under it
                 "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (d.y - bar - 1 + dy)

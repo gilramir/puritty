@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -85,6 +85,9 @@ def main():
             return
         if a.scenario == "safety":
             safety(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "lines":
+            lines(a, env, tmux, xdo, snap, cli)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -364,6 +367,47 @@ def safety(a, env, tmux, xdo, snap, cli):
         snap("detached")
         cli("kill-server")
         time.sleep(0.5)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+def lines(a, env, tmux, xdo, snap, cli):
+    """The lines between tiled panes dragged (docs/tmux.md TM20), read back
+    from tmux: the line right of the left pane, and the line below the top
+    right pane."""
+    cli("new-session", "-d", "-s", "l", "-x", "100", "-y", "29")
+    cli("split-window", "-h", "-t", "%0")
+    cli("split-window", "-v", "-t", "%1")
+    time.sleep(1.0)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *tmux, "-CC", "attach", "-t", "l"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    q = lambda *args: subprocess.run([*tmux, *args], env=env, capture_output=True, text=True).stdout.strip()
+    sizes = lambda: q("list-panes", "-t", "l", "-F", "#{pane_id} #{pane_left},#{pane_top} #{pane_width}x#{pane_height}").replace("\n", " | ")
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        print("before:", sizes())
+        w0 = int(q("display-message", "-p", "-t", "%0", "#{pane_width}"))
+        x0, y0 = at_t(w0, 5)
+        x1, y1 = at_t(w0 - 10, 5)
+        xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) - 30), y0, "mousemove", x1, y1, "mouseup", "1")
+        time.sleep(0.6)
+        print("the vertical line dragged 10 left:", sizes())
+        left = int(q("display-message", "-p", "-t", "%1", "#{pane_left}"))
+        h1 = int(q("display-message", "-p", "-t", "%1", "#{pane_height}"))
+        x0, y0 = at_t(left + 5, h1)
+        x1, y1 = at_t(left + 5, h1 + 3)
+        xd("mousemove", x0, y0, "mousedown", "1", "mousemove", x0, str(int(y0) + 20), "mousemove", x1, y1, "mouseup", "1")
+        time.sleep(0.6)
+        print("the horizontal line dragged 3 down:", sizes())
+        snap("lines-dragged")
+        cli("kill-server")
+        time.sleep(1)
     finally:
         app.terminate()
         app.wait()
