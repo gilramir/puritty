@@ -40,6 +40,7 @@ or when the window is closed, asking the program to end.
 import Argparse.Parser
 import Argparse.PrettyPrinter as PP
 import Argparse.Program
+import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Backend exposing (Backend, Incoming(..))
 import Bytes exposing (Bytes)
@@ -69,6 +70,7 @@ import Ssh.Session as Session
 import Source exposing (Source)
 import Task exposing (Task)
 import Time
+import SettingsGui
 import Text
 import TmuxMode
 import Vt
@@ -160,6 +162,64 @@ type alias Model =
       -- scrollbar's thumb going on (docs/phase3-select.md §23)
     , search : Maybe Search.State
     , barDrag : Bool
+      -- the tabs (docs/tabs.md TB2): the shown one's backend and its tab's
+      -- name and marks; the other tabs, each its session's fields, in slots
+      -- (`Nothing` a free one) a tab is swapped in and out of; the tabs'
+      -- ids in the bar's order, the shown one's among them; the next tab's
+      -- id; how a tab is started; and the window's rows, of which the bar
+      -- takes the last while it shows
+    , remote : Backend
+    , tab : TabInfo
+    , tabs : Builder (Maybe Tab)
+    , order : Array Int
+    , nextTabId : Int
+    , starter : Starter
+    , windowRows : Int
+    }
+
+
+{-| A tab not shown (docs/tabs.md TB2): its backend and its session's own
+fields, which `swapTab` exchanges with the model's when it is shown. -}
+type alias Tab =
+    { info : TabInfo
+    , remote : Backend
+    , term : Vt.Term
+    , charset : Charset
+    , decoder : Charset.Decoder
+    , replaced : Int
+    , out : Outbox
+    , back : Int
+    , selection : Maybe Selection
+    , pasting : Maybe Bool
+    , clips : Array Vt.Clip
+    , clipRead : Maybe { letter : Int, bel : Bool, text : Bytes }
+    , ssh : Maybe SshScreen
+    , tmux : TmuxMode.State
+    , search : Maybe Search.State
+    , syncSince : Int
+    }
+
+
+{-| A tab's own: an id the loop's reads are told apart by, the name the
+user gave it (empty for none), the host it is a session to, the bells its
+terminal had rung when last looked at, and whether it rang or printed
+since. -}
+type alias TabInfo =
+    { id : Int
+    , name : String
+    , host : Maybe Config.Host
+    , bells : Int
+    , bell : Bool
+    , activity : Bool
+    }
+
+
+{-| How a tab is started: a local program at a size, with the character set
+of a local tab; or a session to a host, as the window's first was. -}
+type alias Starter =
+    { local : { columns : Int, rows : Int } -> Task String Backend
+    , ssh : Config.Host -> Task String Backend
+    , charset : Charset
     }
 
 
@@ -211,6 +271,8 @@ type Turn
     | Due
     | Writable
     | SettingsChanged (Maybe Directory.Change)
+    | Behind { id : Int, incoming : Incoming }
+    | BehindWritable Int
 
 
 now : Task x Int
@@ -562,7 +624,35 @@ begin cp vars given problems locale config cell =
                                     )
                                         |> Task.andThen
                                             (\started ->
-                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener
+                                                let
+                                                    -- how a new tab starts (docs/tabs.md TB1): the
+                                                    -- program at the window's size, or another
+                                                    -- session to the host
+                                                    localCharset =
+                                                        Charset.fromName (Maybe.withDefault locale.charset config.charset)
+
+                                                    starter =
+                                                        { local =
+                                                            \size ->
+                                                                spawnFirst cp commands
+                                                                    (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, utf8 = localCharset == Charset.Utf8 })
+                                                                        |> (\o -> { o | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
+                                                                    )
+                                                                    |> Task.mapError Os.Error.toString
+                                                                    |> Task.andThen
+                                                                        (\child ->
+                                                                            when Backend.pty child is
+                                                                                Nothing ->
+                                                                                    Task.fail "the program has no terminal"
+
+                                                                                Just remote ->
+                                                                                    Task.succeed remote
+                                                                        )
+                                                        , ssh = \host -> sshBackend vars config charset host |> Task.map .remote
+                                                        , charset = localCharset
+                                                        }
+                                                in
+                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener
                                             )
                                 )
 
@@ -631,14 +721,14 @@ the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
-run imeLog shotPath charset config cell remote settings problems opener =
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
+run imeLog shotPath charset config cell remote starter settings problems opener =
             -- the system menu's items, where the platform has one (ST26)
             Window.systemMenu (Array.map .label (menuItems config))
                 |> Task.andThen (\_ -> now)
                 |> Task.andThen
                     (\t0 ->
-                        loop remote
+                        barFirst remote
                             { config = config
                             , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
                             , term =
@@ -701,16 +791,37 @@ run imeLog shotPath charset config cell remote settings problems opener =
                             , overlaid = False
                             , search = Nothing
                             , barDrag = False
+                            , remote = remote
+                            , tab = { id = 0, name = "", host = config.remote, bells = 0, bell = False, activity = False }
+                            , tabs = Builder.empty 4
+                            , order = [ 0 ]
+                            , nextTabId = 1
+                            , starter = starter
+                            , windowRows = config.rows
                             }
                             |> Task.mapError Os.Error.toString
                     )
-                |> Task.andThen (\m -> finish remote m)
+                |> Task.andThen (\m -> finish m.remote m)
 
 
 {-| The end: the program's exit status when it ended, 0 when the window
 was closed, after asking the program to end. -}
 finish : Backend -> Model -> Task String {}
 finish remote m =
+    let
+        -- the other tabs' programs ended first (docs/tabs.md TB2)
+        others =
+            remotesOf m
+
+        ending =
+            { lost = m.lost, closed = m.closed, ssh = m.ssh }
+    in
+    Array.foldl (\r done -> done |> Task.andThen (\_ -> r.kill)) (Task.succeed {}) others
+        |> Task.andThen (\_ -> finishShown remote ending)
+
+
+finishShown : Backend -> { lost : Bool, closed : Bool, ssh : Maybe SshScreen } -> Task String {}
+finishShown remote m =
     if m.lost then
         remote.kill |> Task.andThen (\_ -> Task.fail "the window is lost")
 
@@ -875,6 +986,19 @@ flush remote m =
             |> Task.map (\n -> { m | out = Outbox.written n next.outbox })
 
 
+{-| The loop, with the first tab's terminal a row shorter when the bar
+is shown from the start (`[tabs] bar = "always"`). -}
+barFirst : Backend -> (taken m : Model) -> Task Error Model
+barFirst remote m =
+    (if barRows m > 0 then
+        relayout m.term.cols m
+
+     else
+        Task.succeed m
+    )
+        |> Task.andThen (loop remote)
+
+
 loop : Backend -> (taken m00 : Model) -> Task Error Model
 loop remote m00 =
     let
@@ -956,8 +1080,18 @@ race remote m0 =
 
                             Just events ->
                                 [ Source.next events |> Task.map SettingsChanged ]
+
+                    -- the tabs not shown keep reading, and writing what
+                    -- waits for them (docs/tabs.md TB2)
+                    behindTabs =
+                        Array.mapAndFlatten
+                            (\t ->
+                                Array.pushFirst (t.remote.read |> Task.map (\incoming -> Behind { id = t.id, incoming = incoming }))
+                                    (if t.writing then [ t.remote.writable |> Task.map (\_ -> BehindWritable t.id) ] else [])
+                            )
+                            (hiddenOf m)
                 in
-                Task.race (remote.read |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following)
+                Task.race (remote.read |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following ++ behindTabs)
                     |> Task.andThen
                         (\turn ->
                             now
@@ -966,7 +1100,16 @@ race remote m0 =
                                         when turn is
                                             Read (Data chunk) ->
                                                 if Bytes.length chunk == 0 then
-                                                    Task.succeed m
+                                                    -- the shown tab's program ended: the tab
+                                                    -- closes, and the window with the last
+                                                    if tabCount m > 1 then
+                                                        remote.waitForExit
+                                                            |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "wait", path = Nothing, detail = why })
+                                                            |> Task.andThen (\_ -> dropShown m)
+                                                            |> Task.andThen (\next -> step next.remote ms next)
+
+                                                    else
+                                                        Task.succeed m
 
                                                 else
                                                     feed remote chunk ms m |> Task.andThen (\next -> step remote ms next)
@@ -991,6 +1134,12 @@ race remote m0 =
 
                                             SettingsChanged change ->
                                                 step remote ms (noticed ms change m)
+
+                                            Behind b ->
+                                                behind b.id b.incoming ms m |> Task.andThen (\next -> step next.remote ms next)
+
+                                            BehindWritable id ->
+                                                atTab id (\one -> flush one.remote one) m |> Task.andThen (\next -> step next.remote ms next)
                                     )
                         )
             )
@@ -1010,10 +1159,10 @@ step remote ms m =
         if at >= 0 && ms >= at then
             draw ms m
                 |> Task.andThen shoot
-                |> Task.andThen (\next -> if next.lost then Task.succeed next else loop remote next)
+                |> Task.andThen (\next -> if next.lost then Task.succeed next else loop next.remote next)
 
         else
-            loop remote m
+            loop m.remote m
 
 
 {-| A change in the settings directory: one to the settings file, or
@@ -1178,10 +1327,14 @@ applySettings new m =
                     else
                         m.decoder
                 , wordBoundaries = Array.map Char.toCode (String.toArray new.wordBoundaries)
-                , shadow = View.shadow shape.cols shape.rows
+                , shadow = View.shadowIn shape.cols shape.rows m.windowRows
                 , urgent = True
             }
                 |> (\a -> Array.foldl sendRaw a told.replies)
+
+        -- the bar shown or hidden by `[tabs] bar` changes every tab's rows
+        rebar =
+            new.tabsBar /= old.tabsBar
     in
     (if new.hosts /= old.hosts then
         Window.systemMenu (Array.map .label (menuItems new))
@@ -1191,6 +1344,7 @@ applySettings new m =
     )
         |> Task.andThen (\_ -> Text.ligatures new.ligatures)
         |> Task.andThen (\_ -> refontOr new old language applied)
+        |> Task.andThen (\next -> if rebar then relayout next.term.cols next else Task.succeed next)
 
 
 {-| The font opened again, or sized again, when the settings ask (ST4). -}
@@ -2034,6 +2188,15 @@ handleOne remote ms rest ev m =
                     -- which raises one already open
                     openSettings m |> Task.andThen (\next -> handle remote ms rest next)
 
+                  else if tabAction k m /= Nothing then
+                    -- the tabs' keys (docs/tabs.md TB1)
+                    when tabAction k m is
+                        Just action ->
+                            tabDo action m |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                        Nothing ->
+                            handle remote ms rest m
+
                   else
                     when zoomOf m k is
                         Just points ->
@@ -2041,7 +2204,7 @@ handleOne remote ms rest ev m =
                                 |> Task.andThen
                                     (\_ ->
                                         -- every cell is drawn again at the new size
-                                        handle remote ms rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
+                                        handle remote ms rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
                                     )
 
                         Nothing ->
@@ -2103,12 +2266,10 @@ handleOne remote ms rest ev m =
                                             key remote ms rest k m
 
                 Window.Resized size ->
-                    let
-                        told =
-                            TmuxMode.resized { cols = size.cols, rows = size.rows } m.tmux
-                    in
-                    remote.resize { columns = size.cols, rows = size.rows }
-                        |> Task.andThen (\_ -> handle remote ms rest (sendRaw (commandLines told.commands) { m | term = Vt.resize size.cols size.rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing }))
+                    -- every tab at the window's size, less the bar's row
+                    -- while it shows (docs/tabs.md TB2)
+                    relayout size.cols { m | windowRows = size.rows }
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
 
                 Window.Focus on ->
                     let
@@ -2173,7 +2334,11 @@ handleOne remote ms rest ev m =
                         |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
-                  if p.action == 0 && m.menu /= Nothing then
+                  if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
+                    -- a press on the tab bar (docs/tabs.md TB1)
+                    barPress p m |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                  else if p.action == 0 && m.menu /= Nothing then
                     when m.menu is
                         Just menu ->
                             menuPress p menu m |> Task.andThen (\next -> handle remote ms rest next)
@@ -2203,7 +2368,7 @@ handleOne remote ms rest ev m =
                             Window.zoom points
                                 |> Task.andThen
                                     (\_ ->
-                                        handle remote ms steps.rest { m | points = points, shadow = View.shadow m.term.cols m.term.rows, urgent = True }
+                                        handle remote ms steps.rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
                                     )
 
                     else
@@ -3151,6 +3316,10 @@ draw ms m =
             else
                 Nothing
 
+        -- the tab bar, in the window's last row (docs/tabs.md TB1)
+        tabsDrawn =
+            tabBar m
+
         -- the scrollbar and the search bar (docs/phase3-select.md §23)
         bar =
             if barShown m then
@@ -3175,7 +3344,7 @@ draw ms m =
 
         shadow0 =
             if over || m.overlaid then
-                View.shadow m.term.cols m.term.rows
+                View.shadowIn m.term.cols m.term.rows m.windowRows
 
             else
                 m.shadow
@@ -3253,7 +3422,7 @@ draw ms m =
                         else
                             View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw (Bytes.flatten [ f.list, bar, Maybe.withDefault Bytes.empty (Maybe.map .list searchDrawn), Maybe.withDefault Bytes.empty (Maybe.map .list boxDrawn) ])
+    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, Maybe.withDefault Bytes.empty (Maybe.map .list searchDrawn), Maybe.withDefault Bytes.empty (Maybe.map .list boxDrawn) ])
         |> Task.andThen (\up -> Window.spot (Maybe.withDefault (Maybe.withDefault spot (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
@@ -3288,3 +3457,743 @@ draw ms m =
                             }
                         )
             )
+
+
+-- TABS (docs/tabs.md)
+
+
+{-| What a tab key asks. -}
+type TabAction
+    = NewTab
+    | CloseTab
+    | NextTab
+    | PrevTab
+    | MoveRight
+    | MoveLeft
+
+
+{-| The tab keys (docs/tabs.md TB1): Ctrl+Shift+T a new tab, Ctrl+Shift+W
+the shown one closed, Ctrl+PgUp and Ctrl+PgDn the tab before and after,
+Ctrl+Shift+PgUp and Ctrl+Shift+PgDn the shown tab moved. Under tmux control
+mode, Ctrl+Shift+T and Ctrl+PgUp/PgDn are tmux's windows' (TM18), and
+Ctrl+Alt+PgUp/PgDn go between puritty's tabs. With one tab, a key that
+needs another goes on to the program. -}
+tabAction : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Model -> Maybe TabAction
+tabAction k m =
+    let
+        mods =
+            Bitwise.and k.mods 15
+
+        tmuxOn =
+            TmuxMode.isOn m.tmux
+
+        others =
+            tabCount m > 1
+
+        letter c =
+            k.sym == c || k.sym == c + 0x20
+    in
+    if k.action /= 1 then
+        Nothing
+
+    else if mods == 3 && letter 0x54 && not tmuxOn then
+        Just NewTab
+
+    else if mods == 3 && letter 0x57 then
+        Just CloseTab
+
+    else if others && (k.sym == 0xFF55 || k.sym == 0xFF56) && ((mods == 2 && not tmuxOn) || mods == 6) then
+        Just (if k.sym == 0xFF55 then PrevTab else NextTab)
+
+    else if others && (k.sym == 0xFF55 || k.sym == 0xFF56) && mods == 3 then
+        Just (if k.sym == 0xFF55 then MoveLeft else MoveRight)
+
+    else
+        Nothing
+
+
+tabDo : TabAction -> (taken m : Model) -> Task Error Model
+tabDo action m =
+    when action is
+        NewTab ->
+            openTab m
+
+        CloseTab ->
+            closeShown m
+
+        NextTab ->
+            Task.succeed (showTab (neighbourId 1 m) m)
+
+        PrevTab ->
+            Task.succeed (showTab (neighbourId -1 m) m)
+
+        MoveRight ->
+            Task.succeed (moveShown 1 m)
+
+        MoveLeft ->
+            Task.succeed (moveShown -1 m)
+
+
+tabCount : Model -> Int
+tabCount m =
+    Array.length m.order
+
+
+{-| The bar's rows: one while there are two tabs or more, or always
+(`[tabs] bar`). -}
+barRows : Model -> Int
+barRows m =
+    if tabCount m > 1 || m.config.tabsBar == "always" then 1 else 0
+
+
+{-| Where the shown tab is in the bar's order. -}
+shownAt : Model -> Int
+shownAt m =
+    Array.findFirst (\id -> id == m.tab.id) m.order |> Maybe.map .index |> Maybe.withDefault 0
+
+
+{-| The id `by` places along from the shown tab, round past the ends. -}
+neighbourId : Int -> Model -> Int
+neighbourId by m =
+    let
+        n =
+            max 1 (Array.length m.order)
+    in
+    Array.get (modBy n (shownAt m + by)) m.order |> Maybe.withDefault m.tab.id
+
+
+{-| The slot a tab not shown is in. -}
+slotOf : Int -> Model -> Maybe Int
+slotOf id m =
+    slotFrom id 0 m
+
+
+slotFrom : Int -> Int -> Model -> Maybe Int
+slotFrom id i m =
+    if i >= Builder.length m.tabs then
+        Nothing
+
+    else if (Builder.get i m.tabs |> Maybe.andThen identity |> Maybe.map (\t -> t.info.id)) == Just id then
+        Just i
+
+    else
+        slotFrom id (i + 1) m
+
+
+{-| What the loop needs of each tab not shown: its id, its backend, and
+whether its outbox waits. -}
+hiddenOf : Model -> Array { id : Int, remote : Backend, writing : Bool }
+hiddenOf m =
+    hiddenFrom 0 m []
+
+
+hiddenFrom : Int -> Model -> Array { id : Int, remote : Backend, writing : Bool } -> Array { id : Int, remote : Backend, writing : Bool }
+hiddenFrom i m acc =
+    if i >= Builder.length m.tabs then
+        acc
+
+    else
+        hiddenFrom (i + 1)
+            m
+            (when Builder.get i m.tabs |> Maybe.andThen identity is
+                Just t ->
+                    Array.pushLast { id = t.info.id, remote = t.remote, writing = not (Outbox.isEmpty t.out) } acc
+
+                Nothing ->
+                    acc
+            )
+
+
+{-| What the bar needs of each tab not shown. -}
+labelsOf : Int -> Model -> Array { id : Int, label : String, bell : Bool, activity : Bool } -> Array { id : Int, label : String, bell : Bool, activity : Bool }
+labelsOf i m acc =
+    if i >= Builder.length m.tabs then
+        acc
+
+    else
+        labelsOf (i + 1)
+            m
+            (when Builder.get i m.tabs |> Maybe.andThen identity is
+                Just t ->
+                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity } acc
+
+                Nothing ->
+                    acc
+            )
+
+
+remotesOf : Model -> Array Backend
+remotesOf m =
+    Array.map .remote (hiddenOf m)
+
+
+{-| The shown tab's session exchanged for `t`'s: the model shows `t`, and
+the tab it showed is answered. -}
+swapTab : (taken t : Tab) -> (taken m : Model) -> { model : Model, old : Tab }
+swapTab t m =
+    { old =
+        { info = m.tab
+        , remote = m.remote
+        , term = m.term
+        , charset = m.charset
+        , decoder = m.decoder
+        , replaced = m.replaced
+        , out = m.out
+        , back = m.back
+        , selection = m.selection
+        , pasting = m.pasting
+        , clips = m.clips
+        , clipRead = m.clipRead
+        , ssh = m.ssh
+        , tmux = m.tmux
+        , search = m.search
+        , syncSince = m.syncSince
+        }
+    , model =
+        { m
+            | tab = t.info
+            , remote = t.remote
+            , term = t.term
+            , charset = t.charset
+            , decoder = t.decoder
+            , replaced = t.replaced
+            , out = t.out
+            , back = t.back
+            , selection = t.selection
+            , pasting = t.pasting
+            , clips = t.clips
+            , clipRead = t.clipRead
+            , ssh = t.ssh
+            , tmux = t.tmux
+            , search = t.search
+            , syncSince = t.syncSince
+        }
+    }
+
+
+{-| A tab put away by the user: its bells counted as seen, so that only new
+ones mark it. -}
+putAway : (taken t : Tab) -> Tab
+putAway t =
+    let
+        info =
+            t.info
+    in
+    { t | info = { info | bells = t.term.bells, bell = False, activity = False } }
+
+
+{-| A tab just shown: its marks gone, and every cell drawn again. -}
+afterSwitch : (taken m : Model) -> Model
+afterSwitch m =
+    let
+        info =
+            m.tab
+    in
+    { m
+        | tab = { info | bells = m.term.bells, bell = False, activity = False }
+        , shadow = View.shadowIn m.term.cols m.term.rows m.windowRows
+        , urgent = True
+        , menu = Nothing
+    }
+
+
+{-| The tab with this id shown: it comes out of its slot, and the tab shown
+goes into it. -}
+showTab : Int -> (taken m : Model) -> Model
+showTab id m =
+    if id == m.tab.id then
+        m
+
+    else
+        when slotOf id m is
+            Just slot ->
+                let
+                    out =
+                        Builder.swap slot Nothing m.tabs
+                in
+                when out.old |> Maybe.andThen identity is
+                    Just t ->
+                        let
+                            r =
+                                swapTab t { m | tabs = out.builder }
+
+                            next =
+                                r.model
+                        in
+                        afterSwitch { next | tabs = Builder.set slot (Just (putAway r.old)) next.tabs }
+
+                    Nothing ->
+                        { m | tabs = out.builder }
+
+            Nothing ->
+                m
+
+
+{-| The shown tab moved `by` places along the bar, round past the ends. -}
+moveShown : Int -> (taken m : Model) -> Model
+moveShown by m =
+    let
+        at =
+            shownAt m
+
+        n =
+            Array.length m.order
+
+        to =
+            modBy (max 1 n) (at + by)
+
+        without =
+            Array.keepIf (\id -> id /= m.tab.id) m.order
+    in
+    { m | order = Array.slice 0 to without ++ [ m.tab.id ] ++ Array.dropFirst to without, urgent = True }
+
+
+{-| The shown tab gone, its program ended or killed: the tab after it shown,
+or before it at the end; every tab given the window's rows when the bar
+goes. -}
+dropShown : (taken m : Model) -> Task Error Model
+dropShown m =
+    let
+        at =
+            shownAt m
+
+        gone =
+            m.tab.id
+
+        nextId =
+            if at + 1 < Array.length m.order then neighbourId 1 m else neighbourId -1 m
+
+        cols =
+            m.term.cols
+    in
+    when slotOf nextId m is
+        Just slot ->
+            let
+                out =
+                    Builder.swap slot Nothing m.tabs
+            in
+            when out.old |> Maybe.andThen identity is
+                Just t ->
+                    let
+                        next =
+                            (swapTab t { m | tabs = out.builder }).model
+                    in
+                    relayout cols (afterSwitch { next | order = Array.keepIf (\id -> id /= gone) next.order })
+
+                Nothing ->
+                    Task.succeed { m | tabs = out.builder }
+
+        Nothing ->
+            Task.succeed m
+
+
+{-| Ctrl+Shift+W: the shown tab's program ended, and its tab gone; with one
+tab, the window closes. -}
+closeShown : (taken m : Model) -> Task Error Model
+closeShown m =
+    if tabCount m <= 1 then
+        Task.succeed { m | closed = True }
+
+    else
+        m.remote.kill
+            |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "kill", path = Nothing, detail = why })
+            |> Task.andThen (\_ -> dropShown m)
+
+
+{-| A terminal for a new tab, at a size, as the window's first was made. -}
+freshTerm : Config -> Vt.Term -> Int -> Int -> Vt.Term
+freshTerm config like cols rows =
+    Vt.new
+        { cols = cols
+        , rows = rows
+        , scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = config.scrollbackLines }
+        , pageRows = Vt.defaultPageRows
+        , checksums = False
+        , cellWidth = like.config.cellWidth
+        , cellHeight = like.config.cellHeight
+        }
+        |> Vt.withPalette config.palette
+        |> Vt.withEmbedder (embedderOf config)
+
+
+isFree : Maybe Tab -> Bool
+isFree slot =
+    when slot is
+        Nothing ->
+            True
+
+        Just _ ->
+            False
+
+
+{-| A free slot for a tab put away, or one more. -}
+freeSlot : Model -> Int
+freeSlot m =
+    freeFrom 0 m
+
+
+freeFrom : Int -> Model -> Int
+freeFrom i m =
+    if i >= Builder.length m.tabs then
+        Builder.length m.tabs
+
+    else if (Builder.get i m.tabs |> Maybe.map isFree) == Just True then
+        i
+
+    else
+        freeFrom (i + 1) m
+
+
+{-| Ctrl+Shift+T: a new tab after the last, shown: the local program, or in
+a tab of a session to a host, another session to the same host. A program
+that does not start is said on standard error, and nothing changes. -}
+openTab : (taken m : Model) -> Task Error Model
+openTab m =
+    let
+        cols =
+            m.term.cols
+
+        rows =
+            m.windowRows - 1
+
+        host =
+            m.tab.host
+
+        starting =
+            when host is
+                Just h ->
+                    m.starter.ssh h
+
+                Nothing ->
+                    m.starter.local { columns = cols, rows = rows }
+    in
+    starting
+        |> Task.map Ok
+        |> Task.onError (\why -> Task.succeed (Err why))
+        |> Task.andThen
+            (\started ->
+                when started is
+                    Err why ->
+                        Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> m)
+
+                    Ok remote ->
+                        let
+                            id =
+                                m.nextTabId
+
+                            slot =
+                                freeSlot m
+
+                            tab =
+                                { info = { id = id, name = "", host = host, bells = 0, bell = False, activity = False }
+                                , remote = remote
+                                , term = freshTerm m.config m.term cols rows
+                                , charset = if host == Nothing then m.starter.charset else m.charset
+                                , decoder = Charset.decoder
+                                , replaced = 0
+                                , out = Outbox.empty
+                                , back = 0
+                                , selection = Nothing
+                                , pasting = Nothing
+                                , clips = []
+                                , clipRead = Nothing
+                                , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+                                , tmux = TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {}))
+                                , search = Nothing
+                                , syncSince = -1
+                                }
+
+                            r =
+                                swapTab tab { m | nextTabId = id + 1, order = Array.pushLast id m.order }
+
+                            next =
+                                r.model
+
+                            put =
+                                putAway r.old
+                        in
+                        relayout cols
+                            (afterSwitch
+                                { next
+                                    | tabs =
+                                        if slot < Builder.length next.tabs then
+                                            Builder.set slot (Just put) next.tabs
+
+                                        else
+                                            Builder.pushLast (Just put) next.tabs
+                                }
+                            )
+            )
+
+
+{-| Every tab at `cols` by the window's rows, less the bar's while it shows,
+its backend and its tmux told; nothing for a tab already that size. -}
+relayout : Int -> (taken m : Model) -> Task Error Model
+relayout cols m =
+    let
+        rows =
+            m.windowRows - barRows m
+
+        ids =
+            Array.map .id (hiddenOf m)
+    in
+    Array.foldl
+        (\id done -> done |> Task.andThen (\next -> atTab id (resizeShown cols rows) next))
+        (resizeShown cols rows m)
+        ids
+        |> Task.map (\next -> { next | shadow = View.shadowIn next.term.cols next.term.rows next.windowRows, urgent = True })
+
+
+{-| The shown tab at a size: its terminal, its backend and its tmux. -}
+resizeShown : Int -> Int -> (taken m : Model) -> Task Error Model
+resizeShown cols rows m =
+    if m.term.cols == cols && m.term.rows == rows then
+        Task.succeed m
+
+    else
+        let
+            told =
+                TmuxMode.resized { cols = cols, rows = rows } m.tmux
+        in
+        m.remote.resize { columns = cols, rows = rows }
+            |> Task.map (\_ -> sendRaw (commandLines told.commands) { m | term = Vt.resize cols rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing })
+
+
+{-| `work` done on a tab not shown, as if it were (docs/tabs.md TB2): it is
+swapped in, worked on with the code every tab's session goes through, and
+swapped out again to its slot. -}
+atTab : Int -> (Model -> Task Error Model) -> (taken m : Model) -> Task Error Model
+atTab id work m =
+    when slotOf id m is
+        Just slot ->
+            let
+                out =
+                    Builder.swap slot Nothing m.tabs
+            in
+            when out.old |> Maybe.andThen identity is
+                Just t ->
+                    let
+                        r =
+                            swapTab t { m | tabs = out.builder }
+
+                        wasShown =
+                            r.old
+                    in
+                    work r.model
+                        |> Task.map
+                            (\worked ->
+                                let
+                                    back =
+                                        swapTab wasShown worked
+
+                                    restored =
+                                        back.model
+                                in
+                                { restored | tabs = Builder.set slot (Just back.old) restored.tabs }
+                            )
+
+                Nothing ->
+                    Task.succeed { m | tabs = out.builder }
+
+        Nothing ->
+            Task.succeed m
+
+
+{-| What a tab not shown read: its terminal fed, and its marks set; its
+program's end closes it. -}
+behind : Int -> Incoming -> Int -> (taken m : Model) -> Task Error Model
+behind id incoming ms m =
+    when incoming is
+        Data chunk ->
+            if Bytes.length chunk == 0 then
+                endTab id False m
+
+            else
+                atTab id (\one -> feed one.remote chunk ms one |> Task.map marked) { m | urgent = True }
+
+        Notice told ->
+            atTab id (\one -> Task.succeed (marked (sshNoticed told one))) { m | urgent = True }
+
+
+{-| A tab that printed while not shown: marked so, and as having rung when
+its terminal's bells moved. -}
+marked : (taken m : Model) -> Model
+marked m =
+    let
+        info =
+            m.tab
+    in
+    { m | tab = { info | activity = True, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
+
+
+{-| A tab not shown gone: its program killed (`kill`) or ended, and waited
+for. -}
+endTab : Int -> Bool -> (taken m : Model) -> Task Error Model
+endTab id kill m =
+    when slotOf id m is
+        Just slot ->
+            let
+                out =
+                    Builder.swap slot Nothing m.tabs
+
+                cols =
+                    m.term.cols
+
+                rest =
+                    { m | tabs = out.builder, order = Array.keepIf (\i -> i /= id) m.order }
+            in
+            when out.old |> Maybe.andThen identity is
+                Just t ->
+                    (if kill then t.remote.kill else t.remote.waitForExit |> Task.map (\_ -> {}))
+                        |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })
+                        |> Task.andThen (\_ -> relayout cols rest)
+
+                Nothing ->
+                    Task.succeed rest
+
+        Nothing ->
+            Task.succeed m
+
+
+-- THE BAR
+
+
+{-| What a tab shows: the name given it, else its host's, else its
+program's title, else "shell", with `! ` once it rang. -}
+tabLabel : TabInfo -> String -> String
+tabLabel info title =
+    let
+        base =
+            if info.name /= "" then
+                info.name
+
+            else
+                when info.host is
+                    Just h ->
+                        h.name
+
+                    Nothing ->
+                        if title /= "" then String.takeFirst 24 title else "shell"
+    in
+    (if info.bell then "! " else "") ++ base
+
+
+{-| The bar's tabs in its order, where each is in pixels, and how it is
+marked. -}
+barTabs : Model -> Array { id : Int, label : String, x : Int, w : Int, active : Bool, bell : Bool, activity : Bool }
+barTabs m =
+    let
+        cw =
+            m.term.config.cellWidth
+
+        size =
+            max 8 (m.term.config.cellHeight * 3 // 5)
+
+        hidden =
+            labelsOf 0 m []
+
+        one id =
+            if id == m.tab.id then
+                Just { id = id, label = tabLabel m.tab m.term.title, active = True, bell = False, activity = False }
+
+            else
+                Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = f.value.label, active = False, bell = f.value.bell, activity = f.value.activity })
+    in
+    Array.foldl
+        (\t acc ->
+            let
+                w =
+                    min 400 (Text.width size t.label) + 2 * cw
+            in
+            { x = acc.x + w + 2
+            , out = Array.pushLast { id = t.id, label = t.label, x = acc.x, w = w, active = t.active, bell = t.bell, activity = t.activity } acc.out
+            }
+        )
+        { x = 2, out = [] }
+        (Array.mapAndKeepJust one m.order)
+        |> .out
+
+
+{-| The bar's records (docs/tabs.md TB1): the window's last row, each tab as
+wide as its name, the shown one in puritty's amber, one that rang red, one
+that printed with its name lit. -}
+tabBar : Model -> Bytes
+tabBar m =
+    if barRows m == 0 then
+        Bytes.empty
+
+    else
+        let
+            ch =
+                m.term.config.cellHeight
+
+            y =
+                m.term.rows * ch
+
+            width =
+                m.term.cols * m.term.config.cellWidth
+
+            size =
+                max 8 (ch * 3 // 5)
+
+            -- puritty's look: rounded, the shown tab amber; the plain one
+            -- (`[tabs] look`): square, a line between, the shown tab light
+            plain =
+                m.config.tabsLook == "plain"
+        in
+        Bytes.flatten
+            ([ SettingsGui.box { x = 0, y = y, w = width, h = ch, r = 0, color = if plain then 0x303030 else 0x262626 } ]
+                ++ Array.map
+                    (\t ->
+                        Bytes.flatten
+                            [ SettingsGui.box
+                                { x = t.x
+                                , y = if plain then y else y + 1
+                                , w = if plain then t.w + 1 else t.w
+                                , h = if plain then ch else ch - 2
+                                , r = if plain then 0 else 4
+                                , color =
+                                    if t.active then
+                                        if plain then 0xD0D0D0 else 0xFFAF00
+
+                                    else if t.bell then
+                                        0xD70000
+
+                                    else if plain then
+                                        0x444444
+
+                                    else
+                                        0x3A3A3A
+                                }
+                            , SettingsGui.text
+                                { x = t.x + m.term.config.cellWidth
+                                , y = y + (ch + size) // 2 - 1
+                                , size = size
+                                , color =
+                                    if t.active then 0x1C1C1C else if t.bell || t.activity then 0xFFFFFF else 0xBCBCBC
+                                , text = t.label
+                                }
+                            ]
+                    )
+                    (barTabs m)
+            )
+
+
+{-| A press on the bar: the tab under it shown, or with the middle button
+closed. -}
+barPress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
+barPress p m =
+    when Array.findFirst (\t -> p.x >= t.x && p.x < t.x + t.w) (barTabs m) is
+        Just hit ->
+            if p.button == 3 && m.config.tabsMiddleCloses then
+                if hit.value.id == m.tab.id then
+                    closeShown m
+
+                else
+                    endTab hit.value.id True m
+
+            else
+                Task.succeed (showTab hit.value.id m)
+
+        Nothing ->
+            Task.succeed m

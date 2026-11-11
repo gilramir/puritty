@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, frame, frameWith, frameBack, Highlight, noHighlight, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
+module Vt.View exposing (Shadow, shadow, shadowIn, frame, frameWith, frameBack, Highlight, noHighlight, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -126,6 +126,10 @@ type alias Shadow =
     , inked : Bool
     , drawnIn : Builder Int
     , pending : Bool
+      -- the window's rows, the terminal's and any below them its embedder
+      -- draws itself (a tab bar, puritty `docs/tabs.md` TB2): the size
+      -- record asks for them all, so the window keeps them
+    , screenRows : Int
     }
 
 
@@ -346,6 +350,14 @@ unknown =
 
 shadow : Int -> Int -> Shadow
 shadow cols rows =
+    shadowIn cols rows rows
+
+
+{-| A shadow for a terminal of `cols` by `rows` in a window `screenRows`
+high: the rows below the terminal's are the embedder's to draw (a tab bar),
+and the frame's size record asks the window for all of them. -}
+shadowIn : Int -> Int -> Int -> Shadow
+shadowIn cols rows screenRows =
     { cells = Builder.fromArray (Array.repeat (cols * rows) unknown)
     , hashes = Builder.fromArray (Array.repeat rows -1)
     , cols = cols
@@ -363,6 +375,7 @@ shadow cols rows =
     , inked = False
     , drawnIn = Builder.fromArray (Array.repeat (cols * rows) -1)
     , pending = False
+    , screenRows = max rows screenRows
     }
 
 
@@ -413,6 +426,10 @@ frameOn look focus preedit hl s clusters back t sh0 =
         key =
             colourKey look t
 
+        -- the window's rows, read before the shadow is taken
+        windowRows =
+            max t.rows sh0.screenRows
+
         last =
             t.cols * t.rows - 1
 
@@ -455,7 +472,7 @@ frameOn look focus preedit hl s clusters back t sh0 =
                     fresh =
                         shadow t.cols t.rows
                 in
-                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colourKey = key }
+                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colourKey = key, screenRows = windowRows }
 
             else
                 { sh0 | styleIds = Builder.empty 64, pending = False }
@@ -498,7 +515,7 @@ frameOn look focus preedit hl s clusters back t sh0 =
 
         size =
             if sh0.frames == 0 || t.cols /= sh0.cols || t.rows /= sh0.rows then
-                [ UInt8.fromInt 4 ] ++ Builder.toArray (push16 t.rows (push16 t.cols (Builder.empty 4)))
+                [ UInt8.fromInt 4 ] ++ Builder.toArray (push16 windowRows (push16 t.cols (Builder.empty 4)))
 
             else
                 []
