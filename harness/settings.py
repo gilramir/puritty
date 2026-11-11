@@ -53,7 +53,11 @@ CASES = [
     ("reset", '[font]\nsize = 13\n\n[colours]\nbackground = "#102030"\n', [DOWN, "Delete"]),
     ("comments-kept", "# mine\n[window]\ncolumns = 100 # wide\n", [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
     ("undo", None, [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER, "ctrl+z"]),
-    ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, ENTER]),
+    # Enter opens a choice's list (SG13), Down picks the next, Enter takes it
+    ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, ENTER, DOWN, ENTER]),
+    # the colour scheme's list left open, its picture in window.png; the file
+    # is not written
+    ("choice-list-open", None, [DOWN, DOWN, DOWN, ENTER, DOWN, DOWN]),
     # a font chosen from the system's, offered as its name is typed
     ("font-chosen", None, [ENTER] + [BACKSPACE] * 16 + [("type", "fira"), DOWN, ENTER]),
     ("typed-not-taken", None, [DOWN, ENTER, BACKSPACE, BACKSPACE, ("type", "2"), ENTER, "Escape"]),

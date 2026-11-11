@@ -334,3 +334,34 @@ description that fit in two lines keeps its 68-pixel row; the colour
 scheme's, five lines at that width, takes 119. The gate's two click cases
 aim at "bold is bright", which is below it and moved from 425 to 476.
 Settings 19 of 19, app tests 102.
+
+## SG13 · A choice drops its list (2026-11-11)
+
+*Gilbert, 2026-11-11, on the colour schemes:* "I wish the widget acted
+more like a pop-up menu. I can't see all the choices at once; I can only
+click one by one."
+
+The design above had a choice "that drops a list"; what was built made
+Enter and a click step to the next choice, which is no way to choose among
+sixteen schemes. Now Enter or a click on a choice's field opens its list
+(`SettingsWindow.choosing`), the pick on the value it has:
+
+- **Keys:** Up and Down move the pick, Home and End go to the ends, Page Up
+  and Down by ten, the wheel by one. Enter or Space take the pick, Escape
+  leaves the value as it was, and either closes the list. Any other key,
+  Ctrl+Z among them, does nothing while it is open.
+- **Mouse:** a click on a choice takes it; a click anywhere else only
+  closes the list.
+- **Drawing** (`SettingsGui.choiceList`): the font picker's list box, under
+  the field or over it where there is more room, as many 26-pixel items as
+  the room holds, the pick in the accent colour and the value it has
+  ticked. A list longer than the room scrolls with the pick and shows ▴ and
+  ▾ where there is more. An optional choice lists "the default" first.
+
+**Checked:** app tests 104. The test "Enter goes round a choice" is
+replaced by three: Down and Enter take the next choice, Escape changes
+nothing, and a click on a choice takes it where a click off the list only
+closes it. In the settings gate `search-and-choice` presses Down and Enter
+in the list. The new `choice-list-open` case leaves the colour scheme's
+list open for its picture: 10 of the 18 schemes at the gate's 38 rows,
+"puritty" ticked. Settings 20 of 20.

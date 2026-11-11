@@ -660,6 +660,7 @@ rows lang m size x0 cw px body small preedit d0 =
         |> Array.foldl each (d0 |> draw (clip listBox))
         |> (\d -> Array.foldl draw d empty)
         |> suggestionsOf lang m x0 cw vx valueW fieldH rowY px body
+        |> choiceList lang m vx valueW fieldH (\i -> { y = rowY i, h = heightOf i }) { top = top, bottom = bottom } px body
         |> draw noClip
 
 
@@ -957,6 +958,106 @@ suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
                 d
 
         Nothing ->
+            d
+
+
+{-| A choice setting's list, open (SG13): every choice the window has room
+for, under the value's field or over it where there is more room, the pick
+highlighted and the value it has ticked. A list longer than the room
+scrolls with the pick. -}
+choiceList : Lang -> Model -> Int -> Int -> Int -> (Int -> { y : Int, h : Int }) -> { top : Int, bottom : Int } -> (Int -> Int) -> Int -> Drawn -> Drawn
+choiceList lang m vx valueW fieldH rowAt area px body d =
+    when { pick = m.choosing, setting = SettingsWindow.focused m } is
+        { pick = Just pick, setting = Just s } ->
+            let
+                said =
+                    Words.words lang
+
+                choices =
+                    SettingsWindow.choicesOf s
+
+                now =
+                    s.get m.config
+
+                itemH =
+                    px 26
+
+                row =
+                    rowAt m.row
+
+                fieldTop =
+                    row.y + (row.h - fieldH) // 2
+
+                below =
+                    area.bottom - (fieldTop + fieldH + px 4) - px 8
+
+                above =
+                    fieldTop - px 4 - area.top - px 8
+
+                room =
+                    max below above
+
+                many =
+                    max 1 (min (Array.length choices) ((room - px 8) // itemH))
+
+                first =
+                    max 0 (min (Array.length choices - many) (pick - many // 2))
+
+                shown =
+                    Array.slice first (first + many) choices
+
+                listH =
+                    many * itemH + px 8
+
+                top =
+                    if below >= listH || below >= above then
+                        fieldTop + fieldH + px 4
+
+                    else
+                        fieldTop - px 4 - listH
+
+                listBox =
+                    { x = vx, y = top, w = valueW, h = listH }
+
+                nameOf v =
+                    when v is
+                        Text t ->
+                            t
+
+                        _ ->
+                            said.systemDefault
+            in
+            (d
+                |> draw noClip
+                |> draw (box { x = listBox.x + px 2, y = listBox.y + px 3, w = listBox.w, h = listBox.h, r = px 6, color = 0x0A0A0A })
+                |> draw (framed { x = listBox.x, y = listBox.y, w = listBox.w, h = listBox.h, r = px 6, color = 0x252526, border = look.fieldLine })
+            )
+                |> (\dd ->
+                        Array.indexedMap (\i v -> { i = first + i, v = v }) shown
+                            |> Array.foldl
+                                (\e acc ->
+                                    let
+                                        b =
+                                            { x = vx + px 4, y = top + px 4 + (e.i - first) * itemH, w = valueW - px 8, h = itemH }
+
+                                        picked =
+                                            e.i == pick
+
+                                        baseline =
+                                            b.y + itemH // 2 + body // 3
+                                    in
+                                    acc
+                                        |> draw (if picked then box { x = b.x, y = b.y, w = b.w, h = b.h, r = px 4, color = look.accent } else Bytes.empty)
+                                        |> draw (if e.v == now then text { x = b.x + px 6, y = baseline, size = body, color = if picked then 0xFFFFFF else look.accent, text = "✓" } else Bytes.empty)
+                                        |> draw (text { x = b.x + px 24, y = baseline, size = body, color = if picked then 0xFFFFFF else look.text, text = nameOf e.v })
+                                        |> target b (OnChoice e.i)
+                                )
+                                dd
+                   )
+                |> draw (if first > 0 then text { x = vx + valueW - px 20, y = top + px 4 + itemH // 2 + body // 3, size = body, color = look.dim, text = "▴" } else Bytes.empty)
+                |> draw (if first + many < Array.length choices then text { x = vx + valueW - px 20, y = top + listH - px 4 - itemH // 2 + body // 3, size = body, color = look.dim, text = "▾" } else Bytes.empty)
+
+        _ ->
             d
 
 

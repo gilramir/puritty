@@ -680,11 +680,34 @@ window =
                         , counts = Array.map (SettingsWindow.pageCount r.model) Schema.pages
                         }
           }
-        , { name = "Enter goes round a choice, the system's among them for an optional one"
+        , { name = "Enter opens a choice's list at its value; Down and Enter take the next, the system's first for an optional one"
           , test =
                 \_ ->
-                    Expect.equal [ "terminal.charset = utf-8", "terminal.charset = euc-kr", "terminal.charset = cp949", "terminal.charset = (unset)" ]
-                        (after ([ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter, k.enter, k.enter, k.enter ])).said
+                    Expect.equal [ "terminal.charset = utf-8", "terminal.charset = cp949", "terminal.charset = (unset)" ]
+                        (after ([ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter, k.down, k.enter, k.enter, k.down, k.down, k.enter, k.enter, k.up, k.up, k.up, k.up, k.enter ])).said
+          }
+        , { name = "Esc closes a choice's list and changes nothing; the keys typed while it is open do nothing else"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter, k.down, SettingsWindow.Typed "x", ctrl 'z', k.escape ])
+                    in
+                    Expect.equal { said = [], open = Nothing } { said = r.said, open = r.model.choosing }
+          }
+        , { name = "a click on a choice in the list takes it; a click off the list only closes it"
+          , test =
+                \_ ->
+                    let
+                        open =
+                            [ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter ]
+                    in
+                    Expect.equal
+                        { taken = [ "terminal.charset = euc-kr" ], off = [], offOpen = Nothing }
+                        { taken = (after (open ++ [ click (SettingsWindow.OnChoice 2) 1 ])).said
+                        , off = (after (open ++ [ click (SettingsWindow.OnPage 1) 1 ])).said
+                        , offOpen = (after (open ++ [ click (SettingsWindow.OnPage 1) 1 ])).model.choosing
+                        }
           }
         , { name = "Modified only, with nothing changed, lists nothing"
           , test = \_ -> Expect.equal { modifiedOnly = True, rows = 0 } ((after [ ctrl 'm' ]).model |> (\m -> { modifiedOnly = m.modifiedOnly, rows = SettingsWindow.rowCount m }))

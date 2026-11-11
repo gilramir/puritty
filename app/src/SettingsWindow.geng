@@ -1,7 +1,7 @@
 module SettingsWindow exposing
     ( Model, Input(..), Effect(..), Target(..), Focus(..), Typing
     , init, update, fileRead, told
-    , linesPerRow, rowLines, rowTop, withRowLines, listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
+    , linesPerRow, rowLines, rowTop, withRowLines, choicesOf, listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
     )
 
 {-| The settings window's model (`docs/settings.md` ST7, `settings-gui.md`
@@ -73,6 +73,9 @@ type alias Model =
       -- them so that no description is cut (SG12); a row not in it takes
       -- linesPerRow
     , lines : Array Int
+      -- the focused choice setting's list, open, and the choice picked in
+      -- it (SG13)
+    , choosing : Maybe Int
     }
 
 
@@ -106,6 +109,7 @@ type Target
     | OnValue Int
     | OnReset Int
     | OnSuggestion Int
+    | OnChoice Int
 
 
 {-| What the window asks of the program: a setting written to the file, or
@@ -140,6 +144,7 @@ init r =
     , launcher = r.launcher
     , form = Nothing
     , lines = []
+    , choosing = Nothing
     , message =
         when Array.first r.reports is
             Just first ->
@@ -382,31 +387,48 @@ update input m =
                 most =
                     max 0 (rowTop m (rowCount m) - bodyRows m)
             in
-            done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
+            when m.choosing is
+                Just pick ->
+                    choosingKey { sym = if steps < 0 then sym.up else sym.down, mods = 0, text = "" } pick m
+
+                Nothing ->
+                    done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
 
         Key pressed ->
             let
                 k =
                     { pressed | sym = mainKey pressed.sym }
             in
-            if Bitwise.and k.mods 2 /= 0 then
-                control k m
+            when m.choosing is
+                Just pick ->
+                    choosingKey k pick m
 
-            else
-                when m.typing is
-                    Just t ->
-                        typingKey k t m
+                Nothing ->
+                    if Bitwise.and k.mods 2 /= 0 then
+                        control k m
 
-                    Nothing ->
-                        when m.focus is
-                            OnSearch ->
-                                searchKey k m
+                    else
+                        keyed k m
 
-                            OnPages ->
-                                pagesKey k m
 
-                            OnRows ->
-                                rowsKey k m
+{-| A key with no list open and no Ctrl: to the field being typed in, or
+to the part of the window that has the focus. -}
+keyed : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+keyed k m =
+    when m.typing is
+        Just t ->
+            typingKey k t m
+
+        Nothing ->
+            when m.focus is
+                OnSearch ->
+                    searchKey k m
+
+                OnPages ->
+                    pagesKey k m
+
+                OnRows ->
+                    rowsKey k m
 
 
 done : Model -> { model : Model, effects : Array Effect }
@@ -742,8 +764,87 @@ printable text =
     String.all (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F) text
 
 
-{-| Enter on a setting: on and off, and a choice, change at once; the rest
-begin typing. -}
+{-| What a choice setting can be: its names, and "the default" first when
+it may be left unset. -}
+choicesOf : Setting -> Array Value
+choicesOf s =
+    when s.kind is
+        OneOf names ->
+            (if s.optional then [ Unset ] else []) ++ Array.map Text names
+
+        _ ->
+            []
+
+
+{-| A key while a choice's list is open (SG13): Up and Down move the pick,
+Home and End go to the ends, Page Up and Down by ten; Enter or Space take
+the pick and Escape leaves the value as it was. Either closes the list;
+every other key is ignored. -}
+choosingKey : { sym : Int, mods : Int, text : String } -> Int -> Model -> { model : Model, effects : Array Effect }
+choosingKey k pick m =
+    when focused m is
+        Just s ->
+            let
+                count =
+                    Array.length (choicesOf s)
+
+                moved n =
+                    done { m | choosing = Just (max 0 (min (count - 1) n)) }
+            in
+            if k.sym == sym.up then
+                moved (pick - 1)
+
+            else if k.sym == sym.down then
+                moved (pick + 1)
+
+            else if k.sym == sym.home then
+                moved 0
+
+            else if k.sym == sym.end then
+                moved (count - 1)
+
+            else if k.sym == sym.pageUp then
+                moved (pick - 10)
+
+            else if k.sym == sym.pageDown then
+                moved (pick + 10)
+
+            else if k.sym == sym.enter || k.sym == sym.keypadEnter || k.sym == sym.space then
+                chosen pick m
+
+            else if k.sym == sym.escape then
+                done { m | choosing = Nothing }
+
+            else
+                done m
+
+        Nothing ->
+            done { m | choosing = Nothing }
+
+
+{-| The focused choice setting given its `i`th choice, and the list
+closed. -}
+chosen : Int -> Model -> { model : Model, effects : Array Effect }
+chosen i m =
+    let
+        closed =
+            { m | choosing = Nothing }
+    in
+    when focused closed is
+        Just s ->
+            when Array.get i (choicesOf s) is
+                Just v ->
+                    set s v closed
+
+                Nothing ->
+                    done closed
+
+        Nothing ->
+            done closed
+
+
+{-| Enter on a setting: on and off change at once, a choice opens its
+list (SG13); the rest begin typing. -}
 change : Setting -> Model -> { model : Model, effects : Array Effect }
 change s m =
     let
@@ -754,18 +855,12 @@ change s m =
         OnOff ->
             set s (Flag (now /= Flag True)) m
 
-        OneOf names ->
+        OneOf _ ->
             let
-                choices =
-                    (if s.optional then [ Unset ] else []) ++ Array.map Text names
-
                 at =
-                    Array.findFirst (\c -> c == now) choices |> Maybe.map .index |> Maybe.withDefault -1
-
-                next =
-                    Maybe.withDefault now (Array.get (modBy (Array.length choices) (at + 1)) choices)
+                    Array.findFirst (\c -> c == now) (choicesOf s) |> Maybe.map .index |> Maybe.withDefault 0
             in
-            set s next m
+            done { m | choosing = Just at, message = Nothing }
 
         _ ->
             let
@@ -1078,11 +1173,18 @@ hit h m =
             m.typing /= Nothing && (h.target == OnValue m.row || h.target == OnRow m.row)
     in
     when { target = h.target, typing = m.typing } is
+        { target = OnChoice i, typing = _ } ->
+            chosen i m
+
         { target = OnSuggestion i, typing = Just t } ->
             typingKey { sym = sym.enter, mods = 0, text = "" } { t | pick = i } m
 
         _ ->
-            if typingHere then
+            if m.choosing /= Nothing then
+                -- a click off an open list closes it, and does nothing more
+                done { m | choosing = Nothing }
+
+            else if typingHere then
                 done m
 
             else
@@ -1159,6 +1261,9 @@ hitOn h m =
             rowsKey { sym = sym.delete, mods = 0, text = "" } { m | focus = OnRows, row = i }
 
         OnSuggestion _ ->
+            done m
+
+        OnChoice _ ->
             done m
 
 
