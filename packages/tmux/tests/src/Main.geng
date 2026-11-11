@@ -556,6 +556,16 @@ menu line =
             "none"
 
 
+panes : String -> String
+panes line =
+    when Syntax.panesOf line is
+        Just d ->
+            "d " ++ Maybe.withDefault "-" (Maybe.map String.fromInt d.duration) ++ (if d.keys then " keys " else " nokeys ") ++ d.template ++ " after [" ++ d.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
 ifFormat : String -> String
 ifFormat line =
     when Syntax.ifFormatOf line is
@@ -633,6 +643,17 @@ syntax =
                         ]
                         [ ifFormat "if-shell -F -t = \"#{mouse_any_flag}\" { select-pane -t = ; send-keys -M } { display-menu -x M -y M Top < { send-keys -X history-top } }"
                         , ifFormat "if-shell \"test -f x\" { kill-pane }"
+                        ]
+          }
+        , { name = "display-panes: the default template, -d, -N and a block"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "d - keys select-pane -t '%%' after []"
+                        , "d 3000 nokeys swap-pane -t '%%' after [display-message hi]"
+                        ]
+                        [ panes "display-panes"
+                        , panes "display-panes -N -d 3000 { swap-pane -t '%%' } \\; display-message hi"
                         ]
           }
         , { name = "a ; ending a word in a block, as list-keys writes it, is between commands"

@@ -9,6 +9,7 @@ module Tmux.Syntax exposing
     , MenuItem
     , menuOf
     , ifFormatOf
+    , panesOf
     , retarget
     , lines
     , fill
@@ -685,4 +686,45 @@ fails. -}
 lines : String -> Array String
 lines line =
     commands (tokens line) |> Array.map serialize
+
+
+{-| What a binding's `display-panes` asks (puritty `docs/tmux.md` TM28):
+how long the numbers stay (`-d`, milliseconds; `Nothing` for the
+option's), whether a digit chooses a pane (not with `-N`), the command a
+digit runs with `%%` its pane's index (`select-pane -t '%%'` when none is
+given), and the commands after it. -}
+panesOf : String -> Maybe { duration : Maybe Int, keys : Bool, template : String, after : String }
+panesOf command =
+    let
+        cmds =
+            commands (tokens command)
+    in
+    when Array.first cmds is
+        Just first ->
+            if Maybe.map .value (Array.first first) == Just "display-panes" || Maybe.map .value (Array.first first) == Just "displayp" then
+                let
+                    args =
+                        flags "dt" (Array.dropFirst 1 first)
+                in
+                Just
+                    { duration = getFlag 'd' args.values |> Maybe.andThen String.toInt
+                    , keys = not (String.contains "N" args.bools)
+                    , template =
+                        when args.rest is
+                            [] ->
+                                "select-pane -t '%%'"
+
+                            [ one ] ->
+                                if one.block then serialize (tokens one.value) else one.value
+
+                            many ->
+                                serialize many
+                    , after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+                    }
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
 

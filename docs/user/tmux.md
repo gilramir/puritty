@@ -100,6 +100,9 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   key, the arrows and Enter, or a click; Escape closes. With `look =
   "tmux"` they look as tmux draws them.
 
+- **Pane numbers**: `prefix q` shows each pane's number over it, for
+  `display-panes-time`; type one to go to that pane.
+
 Not yet under `-CC`: copy mode and tmux's other modes (choose-tree, the
 clock) change what tmux does but puritty does not draw them yet, so copy
 mode's cursor and selection are not shown. `prefix Ctrl+Z` does nothing and says

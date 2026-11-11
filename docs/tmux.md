@@ -1230,3 +1230,43 @@ open after its button is let go) and `-C` (the first item) are not read;
 `MouseDown3Status` and the other status-line bindings are not offered,
 since puritty's tab bar takes those clicks.
 
+## TM28 · The panes' numbers, shown by puritty (2026-11-11)
+
+Item 4 of TM24.5. `display-panes` (`prefix q`) draws on a terminal
+client's own screen, which a control client has none of, so nothing was
+shown and a digit typed after it went to the pane.
+
+**Read** (`Tmux.Syntax.panesOf`): `-d` (how long, in ms), `-N` (no digit
+chooses), the template (`select-pane -t '%%'` by default) and the commands
+after it. `Tmux.Bindings.held` holds it, and `TmuxMode.runLine` runs it:
+puritty asks `list-panes -F 'N #{pane_id} #{pane_index}'` for each pane's
+index and shows them. `display-panes-time` is read as puritty attaches.
+
+**Keys:** a digit that is a pane's index runs the template with it (filled
+as a prompt's answer is, TM25) and closes the numbers; any other key closes
+them and goes no further, as tmux's overlay takes it. **Time:** the
+numbers close by themselves after `-d` or `display-panes-time`:
+`TmuxMode.dueAt` is a time the loop wakes for (`Main.nextAt`), and
+`TmuxMode.tick` closes them then, the window drawn again.
+
+**Drawn** as tmux draws them, measured on 3.8 with a tmux client inside
+another tmux: each index in `window_clock_table`'s digits, five cells
+square and a cell apart, the first at the pane's middle less three cells a
+digit and two rows up, in `display-panes-colour` (blue) or
+`display-panes-active-colour` (red) for the active pane, with the pane's
+size (`50x29`) at its top right in the same colour; a pane too small for
+the digits gets the index as text in its middle. `[tmux] look =
+"puritty"`: the same digits, grey and the active pane's amber, without the
+size.
+
+**Checked:** packages/tmux 55 tests (Syntax 16: the default template; `-N
+-d 3000`, a block and a command after). `bench/tmux/show.py --scenario
+panes`, Gilbert's tmux.conf, each look, `display-panes-time` 3000 for the
+pictures: `C-a q` shows 0, 1 and 2 over three panes, the active one's in
+red or amber; `0` makes pane 0 active; after the time the numbers are gone
+and typing reaches the pane. The prefix and menus scenarios give what they
+gave.
+
+**Not yet:** an index of two digits (ten panes or more) cannot be chosen,
+as the first digit closes the numbers; tmux waits for the second.
+

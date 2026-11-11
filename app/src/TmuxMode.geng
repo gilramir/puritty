@@ -17,6 +17,8 @@ module TmuxMode exposing
     , typeInto
     , scrollKey
     , tabKey
+    , tick
+    , dueAt
     , selectedText
     , resized
     , title
@@ -111,6 +113,23 @@ type alias State =
       -- formats' answers from an earlier menu's (TM27)
     , menu : Maybe Menuing
     , serial : Int
+      -- the panes' numbers shown (`display-panes`, TM28), the time as the
+      -- last key or tick said, and `display-panes-time`
+    , numbers : Maybe Numbering
+    , clock : Int
+    , panesMs : Int
+    }
+
+
+{-| `display-panes` shown by puritty (TM28): each pane's index by its id,
+as tmux answers, until when they are shown, the command a digit runs and
+whether digits are taken, and the pane it was run in. -}
+type alias Numbering =
+    { indexes : Array { id : Int, index : Int }
+    , until : Int
+    , template : String
+    , keys : Bool
+    , pane : Int
     }
 
 
@@ -220,6 +239,8 @@ type Expect
     | ForInput
     | ForRan
     | ForCondition { pane : Int, mouse : Maybe { col : Int, row : Int }, yes : String, no : String, after : String }
+    | ForNumbers
+    | ForPanesTime
     | ForMenuTitle Int
     | ForMenuName { serial : Int, item : Int }
     | ForMenuCommand { serial : Int, item : Int }
@@ -275,6 +296,9 @@ idle _ =
     , view = Nothing
     , menu = Nothing
     , serial = 0
+    , numbers = Nothing
+    , clock = 0
+    , panesMs = 1000
     }
 
 
@@ -383,7 +407,7 @@ input method commits and what is pasted, or shows a view (TM26), which
 drops them. -}
 isAsking : State -> Bool
 isAsking s =
-    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing
+    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing
 
 
 {-| Text from an input method or a paste, typed into the prompt: a line
@@ -521,6 +545,7 @@ event size e acc =
                 , { command = "list-keys", expect = ForKeys }
                 , { command = "display-message -p " ++ Command.quote "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
                 , { command = "list-panes -s -F " ++ Command.quote modeFormat, expect = ForModes }
+                , { command = "display-message -p " ++ Command.quote "#{display-panes-time}", expect = ForPanesTime }
                 ]
                 { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty } }
 
@@ -529,7 +554,7 @@ event size e acc =
                 st =
                     acc.state
             in
-            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing } }
+            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing } }
 
         Reply r ->
             if r.flags == 0 then
@@ -787,6 +812,32 @@ replied expect ok lines acc =
                     runLine ctx c.after ran.state
             in
             { state = more.state, outside = acc.outside, commands = acc.commands ++ ran.commands ++ more.commands }
+
+        ForNumbers ->
+            let
+                st =
+                    acc.state
+
+                indexes =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split " " (Bytes.toStringLossy line) is
+                                [ "N", id, index ] ->
+                                    Maybe.map (\i -> { id = idOf id, index = i }) (String.toInt index)
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+            in
+            { acc | state = { st | numbers = Maybe.map (\n -> { n | indexes = indexes }) st.numbers } }
+
+        ForPanesTime ->
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = { st | panesMs = Array.first lines |> Maybe.andThen (\l -> String.toInt (Bytes.toStringLossy l)) |> Maybe.withDefault st.panesMs } }
 
         ForMenuTitle serial ->
             { acc | state = menuPart serial (\m -> { m | title = firstLine ok lines m.title }) acc.state }
@@ -1223,6 +1274,15 @@ paint s =
                         _ ->
                             cursor
 
+                -- the panes' numbers (TM28)
+                numbersDrawn =
+                    when s.numbers is
+                        Just n ->
+                            Array.mapAndFlatten (\p -> paneNumber s.lookTmux (p.id == active) n p) (tiled ++ floating)
+
+                        Nothing ->
+                            []
+
                 -- a menu of tmux's (TM27), once tmux has answered its
                 -- formats
                 menuDrawn =
@@ -1318,6 +1378,7 @@ paint s =
                         |> drawText messageColour tmuxLine
                         |> drawText messageColour caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
+                        |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c numbersDrawn)
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c menuDrawn)
                         |> Vt.feed (Bytes.fromString shownCursor)
             in
@@ -1433,18 +1494,21 @@ typed k bytes ms s =
         { state = s, commands = [] }
 
     else
-        when { asking = s.asking, menu = s.menu, view = s.view } is
-            { asking = Just a, menu = _, view = _ } ->
-                promptKey k bytes ms a s
+        when { asking = s.asking, menu = s.menu, numbers = s.numbers, view = s.view } is
+            { asking = Just a, menu = _, numbers = _, view = _ } ->
+                promptKey k bytes ms a { s | clock = ms }
 
-            { asking = Nothing, menu = Just m, view = _ } ->
-                menuKey k m s
+            { asking = Nothing, menu = Just m, numbers = _, view = _ } ->
+                menuKey k m { s | clock = ms }
 
-            { asking = Nothing, menu = Nothing, view = Just v } ->
-                { state = { s | view = viewKey k v }, commands = [] }
+            { asking = Nothing, menu = Nothing, numbers = Just n, view = _ } ->
+                numberKey k n { s | clock = ms }
+
+            { asking = Nothing, menu = Nothing, numbers = Nothing, view = Just v } ->
+                { state = { s | view = viewKey k v, clock = ms }, commands = [] }
 
             _ ->
-                keyByTable k bytes ms s
+                keyByTable k bytes ms { s | clock = ms }
 
 
 {-| A typed key with no prompt open: by the tables (TM24), a binding
@@ -2489,8 +2553,8 @@ paneName pane =
 `if-shell -F` that chooses between commands. -}
 runsHere : String -> Bool
 runsHere line =
-    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line } is
-        { ask = Nothing, menu = Nothing, test = Nothing } ->
+    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line } is
+        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing } ->
             False
 
         _ ->
@@ -2558,11 +2622,23 @@ runLine ctx line s =
                 sendAsking opened.expand { s | said = "", asking = Just opened.asking }
 
             Nothing ->
-                when Syntax.menuOf fixed is
-                    Just m ->
+                when { menu = Syntax.menuOf fixed, panes = Syntax.panesOf fixed } is
+                    { menu = Just m, panes = _ } ->
                         openMenu ctx m.menu m.after s
 
-                    Nothing ->
+                    { menu = Nothing, panes = Just d } ->
+                        let
+                            opened =
+                                sendAsking
+                                    [ { command = "list-panes -F " ++ Command.quote "N #{pane_id} #{pane_index}", expect = ForNumbers } ]
+                                    { s | said = "", numbers = Just { indexes = [], until = s.clock + Maybe.withDefault s.panesMs d.duration, template = d.template, keys = d.keys, pane = ctx.pane } }
+
+                            ran =
+                                runLine ctx d.after opened.state
+                        in
+                        { state = ran.state, commands = opened.commands ++ ran.commands }
+
+                    _ ->
                         when Syntax.ifFormatOf fixed is
                             Just f ->
                                 sendAsking
@@ -3054,6 +3130,174 @@ menuPointer p col row m s =
 
     else
         { state = { s | menu = Just { m | armed = m.armed || moved, selected = Maybe.withDefault m.selected under } }, commands = [] }
+
+
+-- THE PANES' NUMBERS (TM28)
+
+
+{-| A key while the panes' numbers are shown, as tmux's `display-panes`
+takes it: a digit that is a pane's index runs the command with it and
+closes them; any other key closes them and goes no further. -}
+numberKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Numbering -> (taken s : State) -> { state : State, commands : Array String }
+numberKey k n s =
+    let
+        text =
+            Bytes.toStringLossy k.text
+
+        chosen =
+            if n.keys && Bitwise.and k.mods 6 == 0 then
+                String.toInt text |> Maybe.andThen (\d -> Array.findFirst (\e -> e.index == d) n.indexes)
+
+            else
+                Nothing
+    in
+    when chosen is
+        Just _ ->
+            runLine { pane = n.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens n.template) [ text ]) { s | numbers = Nothing }
+
+        Nothing ->
+            { state = { s | numbers = Nothing }, commands = [] }
+
+
+{-| The time puritty's loop should wake to close the panes' numbers, -1
+for none (TM28). -}
+dueAt : State -> Int
+dueAt s =
+    when s.numbers is
+        Just n ->
+            n.until
+
+        Nothing ->
+            -1
+
+
+{-| The time, from the loop: the panes' numbers closed once it is past
+their time. -}
+tick : Int -> (taken s : State) -> State
+tick ms s =
+    when s.numbers is
+        Just n ->
+            if ms >= n.until then { s | numbers = Nothing, clock = ms } else { s | clock = ms }
+
+        Nothing ->
+            { s | clock = ms }
+
+
+{-| A pane's number as tmux draws it (`window_clock_table`'s digits, five
+cells square, a cell apart, in the middle of the pane, in
+`display-panes-colour`, blue, or `display-panes-active-colour`, red, for
+the active pane, with the pane's size at its top right), or as text where
+the pane is too small; in puritty's look in grey and amber, without the
+size. -}
+paneNumber : Bool -> Bool -> Numbering -> Layout.Pane -> Array { row : Int, col : Int, colour : String, text : String }
+paneNumber tmuxLook isActive n p =
+    when Array.findFirst (\e -> e.id == p.id) n.indexes is
+        Nothing ->
+            []
+
+        Just found ->
+            let
+                digits =
+                    String.fromInt found.value.index
+
+                len =
+                    String.count digits
+
+                block =
+                    if tmuxLook then
+                        if isActive then "\u{001B}[0;41m" else "\u{001B}[0;44m"
+
+                    else if isActive then
+                        "\u{001B}[0;48;5;214m"
+
+                    else
+                        "\u{001B}[0;48;5;242m"
+
+                ink =
+                    if tmuxLook then
+                        if isActive then "\u{001B}[0;31m" else "\u{001B}[0;34m"
+
+                    else if isActive then
+                        "\u{001B}[0;1;38;5;214m"
+
+                    else
+                        "\u{001B}[0;1;38;5;250m"
+
+                size =
+                    String.fromInt p.w ++ "x" ++ String.fromInt p.h
+            in
+            if p.w < len * 6 || p.h < 5 then
+                [ { row = p.y + p.h // 2, col = p.x + max 0 ((p.w - len) // 2), colour = ink, text = String.takeFirst p.w digits } ]
+
+            else
+                let
+                    px =
+                        p.x + p.w // 2 - len * 3
+
+                    py =
+                        p.y + p.h // 2 - 2
+
+                    cells =
+                        String.toArray digits
+                            |> Array.indexedMap
+                                (\i c ->
+                                    bigDigit c
+                                        |> Array.indexedMap
+                                            (\r line ->
+                                                String.toArray line
+                                                    |> Array.indexedMap (\col bit -> { row = py + r, col = px + i * 6 + col, on = bit == '1' })
+                                                    |> Array.keepIf .on
+                                            )
+                                        |> Array.flatten
+                                )
+                            |> Array.flatten
+                            |> Array.map (\cell -> { row = cell.row, col = cell.col, colour = block, text = " " })
+                in
+                cells
+                    ++ (if tmuxLook && String.count size <= p.w then
+                            [ { row = p.y, col = p.x + p.w - String.count size, colour = ink, text = size } ]
+
+                        else
+                            []
+                       )
+
+
+{-| tmux's digits, five rows of five (`window-clock.c`). -}
+bigDigit : Char -> Array String
+bigDigit c =
+    when c is
+        '0' ->
+            [ "11111", "10001", "10001", "10001", "11111" ]
+
+        '1' ->
+            [ "00001", "00001", "00001", "00001", "00001" ]
+
+        '2' ->
+            [ "11111", "00001", "11111", "10000", "11111" ]
+
+        '3' ->
+            [ "11111", "00001", "11111", "00001", "11111" ]
+
+        '4' ->
+            [ "10001", "10001", "11111", "00001", "00001" ]
+
+        '5' ->
+            [ "11111", "10000", "11111", "00001", "11111" ]
+
+        '6' ->
+            [ "11111", "10000", "11111", "10001", "11111" ]
+
+        '7' ->
+            [ "11111", "00001", "00001", "00001", "00001" ]
+
+        '8' ->
+            [ "11111", "10001", "11111", "10001", "11111" ]
+
+        '9' ->
+            [ "11111", "10001", "11111", "00001", "11111" ]
+
+        _ ->
+            []
 
 
 -- VIEWS (TM26)

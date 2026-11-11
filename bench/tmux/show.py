@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "panes":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                numbers(a, env, tmux, xdo, snap, cli, look)
             return
         if a.scenario == "menus":
             for look in ("puritty", "tmux"):
@@ -530,6 +535,64 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.5)
         print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def numbers(a, env, tmux, xdo, snap, cli, look):
+    """The panes' numbers (`display-panes`, docs/tmux.md TM28), with
+    Gilbert's tmux.conf, in each look: `C-a q` shows them, a digit selects
+    that pane, they close by themselves after `display-panes-time`, and a
+    key after that reaches the pane. Each read back from tmux."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    active = lambda: q("display-message", "-p", "#{pane_index}")
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "bar")
+        time.sleep(0.5)
+        xd("key", "ctrl+a", "minus")
+        time.sleep(0.6)
+        print(look, "| three panes, active:", active())
+        # longer than the default second, for the picture to be taken
+        # while they are up; puritty reads the option as it attaches
+        cli("set", "-g", "display-panes-time", "3000")
+        xd("key", "ctrl+a", "d")
+        time.sleep(1.0)
+        app.wait()
+        app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                                *t, "-CC", "attach"], env=env, stdout=subprocess.DEVNULL,
+                               stderr=open(WORK / "stderr.txt", "w"))
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "q")
+        time.sleep(0.5)
+        snap(f"{look}-numbers")
+        xd("key", "0")
+        time.sleep(0.6)
+        print(look, "| C-a q 0, active:", active())
+        xd("key", "ctrl+a", "q")
+        time.sleep(3.5)
+        snap(f"{look}-numbers-gone")
+        xd("type", "--delay", "20", "echo after-numbers")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print(look, "| after display-panes-time, typing reaches the pane:", "after-numbers" in q("capture-pane", "-p"), "| active:", active())
         cli("kill-server")
         time.sleep(1)
     finally:

@@ -776,7 +776,7 @@ nextAt m =
             else
                 -1
     in
-    soonest (soonest f b) m.settings.at
+    soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)
 
 
 {-| The sooner of two times, -1 standing for none. -}
@@ -984,7 +984,7 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (blink ms m) |> Task.andThen (\next -> step remote ms next)
+                                                reloadIfDue ms (blink ms (tmuxTick ms m)) |> Task.andThen (\next -> step remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -1422,6 +1422,17 @@ shoot m =
 
         Nothing ->
             Task.succeed m
+
+
+{-| The time told to tmux's control mode, which closes the panes' numbers
+when theirs is past (docs/tmux.md TM28), drawn again when it does. -}
+tmuxTick : Int -> (taken m : Model) -> Model
+tmuxTick ms m =
+    let
+        due =
+            TmuxMode.dueAt m.tmux
+    in
+    { m | tmux = TmuxMode.tick ms m.tmux, urgent = m.urgent || (due >= 0 && ms >= due) }
 
 
 blink : Int -> (taken m : Model) -> Model
