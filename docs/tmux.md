@@ -1365,3 +1365,51 @@ gives it `!` (tmux's flags `!-`), its tab red in puritty's look and
 over its box but its own place is not changed; puritty does not ring or
 flash for a bell in a pane it shows.
 
+## TM31 · Copy mode drawn by puritty (2026-11-11)
+
+TM25.4 found that tmux sends a control client a pane's output, never a
+mode's screen, so copy mode looked like a plain pane: no cursor, no
+selection, no scrolling. Gilbert uses vi copy mode from the keyboard.
+
+**What tmux gives.** Measured on 3.8: `capture-pane -M` gives the pane's own
+lines for copy mode, tree mode and clock mode alike, never what the mode
+draws. The formats give copy mode's state: `scroll_position` (lines back
+from the bottom), `history_size`, `copy_cursor_x` and `copy_cursor_y` (in
+the pane), `selection_present`, the selection's ends
+(`selection_start_x/y`, `selection_end_x/y`) in tmux's lines, 0 the
+history's first, so the view's top line is `history_size` less
+`scroll_position` (measured: after two lines up, a selection begun, a line
+up and a page up, the end's line was 79 − 10 + 8 = 77), and
+`rectangle_toggle`.
+
+**Drawn from puritty's own copy of the pane.** puritty keeps every pane's
+history (TM15, TM17), so copy mode is that history, scrolled: a pane in
+copy mode (`copy-mode` or `copy-mode-vi` in its mode, TM25) is asked
+`display-message -p -t pane 'C #{pane_id} #{scroll_position} …'` after
+each key typed while it is the active pane, and when output reaches it.
+A question already out is not asked twice: the pane is marked and asked
+again when the answer comes, so the last answer is from after the last key
+(found by the scenario: `Space k k $` typed at once left the picture one
+key behind). The answer sets the pane's view back by `scroll_position`
+(the bottoms of the two histories are the same screen, so the lines agree
+however long either history is), puts the cursor at `copy_cursor_x/y`,
+and inverts the selection, its ends included, by cells, or by columns for
+a rectangle. `[scroll_position/history_size]` is at the pane's top right,
+in `mode-style` in tmux's look and amber in puritty's. Leaving copy mode
+(`%pane-mode-changed`) gives the pane back its own view.
+
+**Checked:** `bench/tmux/show.py --scenario copy`, Gilbert's tmux.conf
+(vi keys), each look, after 60 lines: `C-a [`; `k k k 0` puts the cursor
+at 0,25 (tmux: `0/33 0,25`); `Space k k $` selects from `line 58` back to
+the end of `line 56` (tmux: start 0,58, end 6,56) and the picture shows
+exactly that; `C-b` scrolls to `[27/33]` with the selection grown up to
+the cursor; `Enter` (3.8's vi table has no `y`) copies `6\nline 57\nl`
+into tmux's buffer and leaves copy mode. Every other scenario gives what
+it gave.
+
+**Not yet:** search matches are not marked (tmux highlights them); a line
+longer than the pane that tmux wrapped is where puritty wrapped it, which
+is the same only when the pane's width has not changed since; lines beyond
+puritty's own history (`[scrollback] lines`) cannot be shown. Tree mode,
+the clock and tmux's other modes are not drawn (TM32).
+

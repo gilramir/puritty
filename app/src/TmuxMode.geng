@@ -121,6 +121,25 @@ type alias State =
     , panesMs : Int
       -- tmux's status line as it subscribes to it (TM29)
     , status : StatusLine
+      -- each pane in copy mode as tmux last said it, and the panes asked
+      -- about and not yet answered: `True` once something has changed
+      -- since the question was sent, to ask again (TM31)
+    , copy : Dict Int Copying
+    , copyAsked : Dict Int Bool
+    }
+
+
+{-| A pane in copy mode as tmux describes it (TM31): how far back it is
+(`scroll_position`), its history's lines (`history_size`), the cursor in
+the pane, and the selection's ends, in tmux's lines (0 the history's
+first), and whether it is a rectangle. -}
+type alias Copying =
+    { scroll : Int
+    , hsize : Int
+    , cx : Int
+    , cy : Int
+    , selection : Maybe { sx : Int, sy : Int, ex : Int, ey : Int }
+    , rectangle : Bool
     }
 
 
@@ -270,6 +289,7 @@ type Expect
     | ForRan
     | ForCondition { pane : Int, mouse : Maybe { col : Int, row : Int }, yes : String, no : String, after : String }
     | ForNumbers
+    | ForCopy
     | ForPanesTime
     | ForMenuTitle Int
     | ForMenuName { serial : Int, item : Int }
@@ -330,6 +350,8 @@ idle _ =
     , clock = 0
     , panesMs = 1000
     , status = noStatus
+    , copy = Dict.empty
+    , copyAsked = Dict.empty
     }
 
 
@@ -797,8 +819,22 @@ replied expect ok lines acc =
             let
                 st =
                     acc.state
+
+                moded =
+                    Array.foldl (\line m -> modeLine (Bytes.toStringLossy line) m) st lines
+
+                -- a pane out of copy mode is drawn as it is again; one in it
+                -- is asked where it is (TM31)
+                left =
+                    Dict.keys moded.copy |> Array.keepIf (\pane -> not (inCopy pane moded))
+
+                cleared =
+                    { moded | copy = Array.foldl Dict.remove moded.copy left, back = Array.foldl Dict.remove moded.back left }
+
+                entered =
+                    Dict.keys cleared.modes |> Array.keepIf (\pane -> inCopy pane cleared)
             in
-            { acc | state = Array.foldl (\line m -> modeLine (Bytes.toStringLossy line) m) st lines }
+            Array.foldl (\pane a -> askCopy pane a) { acc | state = cleared } entered
 
         ForLabel ->
             let
@@ -883,6 +919,22 @@ replied expect ok lines acc =
                     runLine ctx c.after ran.state
             in
             { state = more.state, outside = acc.outside, commands = acc.commands ++ ran.commands ++ more.commands }
+
+        ForCopy ->
+            let
+                st =
+                    acc.state
+
+                again =
+                    Dict.foldl (\pane stale list -> if stale then Array.pushLast pane list else list) [] st.copyAsked
+
+                answered =
+                    Array.foldl copyLine st lines
+            in
+            -- a pane changed since it was asked is asked again
+            Array.foldl (\pane a -> if inCopy pane a.state then askCopy pane a else a)
+                { acc | state = { answered | copyAsked = Array.foldl Dict.remove answered.copyAsked again } }
+                again
 
         ForNumbers ->
             let
@@ -1125,6 +1177,11 @@ notice n acc =
                                 sent (Command.sendBytes o.pane (Bytes.fromString "\n")) said
                         in
                         { acc | state = detached.state, commands = acc.commands ++ detached.commands }
+
+                    else if inCopy o.pane st then
+                        -- tmux keeps a copy mode's view where it was as lines
+                        -- arrive: asked again (TM31)
+                        askCopy o.pane { acc | state = feedPane o.pane o.bytes st }
 
                     else
                         { acc | state = feedPane o.pane o.bytes st }
@@ -1479,7 +1536,30 @@ paint s =
                     paneBorders s.lookTmux cols rows active tiled floating s.status
 
                 cursor =
-                    cursorOf s.active (backOf s.active s) (tiled ++ floating) s.ids s.panes
+                    when { copying = Dict.get s.active s.copy, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
+                        { copying = Just c, place = Just place } ->
+                            -- copy mode's cursor, where tmux has it (TM31)
+                            "\u{001B}[" ++ String.fromInt (place.value.y + c.cy + 1) ++ ";" ++ String.fromInt (place.value.x + c.cx + 1) ++ "H\u{001B}[?25h"
+
+                        _ ->
+                            cursorOf s.active (backOf s.active s) (tiled ++ floating) s.ids s.panes
+
+                -- copy mode's position at a pane's top right, as tmux shows
+                -- it (TM31)
+                copyMarks =
+                    Array.mapAndKeepJust
+                        (\p ->
+                            Dict.get p.id s.copy
+                                |> Maybe.map
+                                    (\c ->
+                                        let
+                                            text =
+                                                "[" ++ String.fromInt c.scroll ++ "/" ++ String.fromInt c.hsize ++ "]"
+                                        in
+                                        { row = p.y, col = p.x + max 0 (p.w - String.count text), colour = if s.lookTmux then messageColour else activeTabColour, text = String.takeFirst p.w text }
+                                    )
+                        )
+                        (tiled ++ floating)
 
                 -- the tiled panes and their dividers, then each floating
                 -- pane in its box, the bottom one first
@@ -1492,6 +1572,7 @@ paint s =
                         |> drawPieces borders.tiled
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawPieces borders.floating
+                        |> drawPieces copyMarks
                         |> (\c ->
                                 if tmuxLook then
                                     drawPieces statusBar c
@@ -1619,6 +1700,27 @@ that makes none (a release) sends nothing, and one tmux has no name for (a
 Super chord) still sends them to the pane. -}
 typed : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
 typed k bytes ms s =
+    let
+        r =
+            typedHere k bytes ms s
+
+        pane =
+            r.state.active
+    in
+    if inCopy pane r.state then
+        -- where copy mode is after the key, asked behind it (TM31)
+        let
+            asked =
+                askCopy pane { state = r.state, outside = [], commands = [] }
+        in
+        { state = asked.state, commands = r.commands ++ asked.commands }
+
+    else
+        r
+
+
+typedHere : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
+typedHere k bytes ms s =
     if s.active < 0 || Bytes.isEmpty bytes then
         { state = s, commands = [] }
 
@@ -2222,6 +2324,52 @@ row, where they show: its rows are absolute (pushed rows and the screen's),
 drawn at the pane's place less how far it is scrolled back. -}
 spans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
 spans q s =
+    when Dict.get q.id s.copy |> Maybe.andThen .selection is
+        Just sel ->
+            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, cx = 0, cy = 0, selection = Nothing, rectangle = False } (Dict.get q.id s.copy)) sel
+
+        Nothing ->
+            ownSpans q s
+
+
+{-| Copy mode's selection on the canvas (TM31): tmux's lines made the view's
+rows by the view's top (`history_size` less `scroll_position`), each end's
+cell included, by cells or, as a rectangle, the same columns on every row. -}
+copySpans : Layout.Pane -> Copying -> { sx : Int, sy : Int, ex : Int, ey : Int } -> Array { row : Int, from : Int, to : Int }
+copySpans q c sel =
+    let
+        top =
+            c.hsize - c.scroll
+
+        ordered =
+            if sel.sy < sel.ey || (sel.sy == sel.ey && sel.sx <= sel.ex) then
+                { fx = sel.sx, fy = sel.sy, tx = sel.ex, ty = sel.ey }
+
+            else
+                { fx = sel.ex, fy = sel.ey, tx = sel.sx, ty = sel.sy }
+
+        left =
+            min sel.sx sel.ex
+
+        right =
+            max sel.sx sel.ex
+    in
+    Array.range (max ordered.fy top) (min ordered.ty (top + q.h - 1))
+        |> Array.map
+            (\r ->
+                if c.rectangle then
+                    { row = q.y + r - top, from = q.x + left, to = q.x + min (q.w - 1) right }
+
+                else
+                    { row = q.y + r - top
+                    , from = q.x + (if r == ordered.fy then ordered.fx else 0)
+                    , to = q.x + min (q.w - 1) (if r == ordered.ty then ordered.tx else q.w - 1)
+                    }
+            )
+
+
+ownSpans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
+ownSpans q s =
     when s.selection is
         Just sel ->
             if sel.pane /= q.id then
@@ -3771,6 +3919,83 @@ bigDigit c =
 
         _ ->
             []
+
+
+-- COPY MODE (TM31)
+
+
+{-| What puritty asks of a pane in copy mode, one line: `C %pane` then
+`scroll_position`, `history_size`, the cursor, whether there is a
+selection and its ends, and `rectangle_toggle`. -}
+copyFormat : String
+copyFormat =
+    "C #{pane_id} #{scroll_position} #{history_size} #{copy_cursor_x} #{copy_cursor_y} #{selection_present} #{selection_start_x} #{selection_start_y} #{selection_end_x} #{selection_end_y} #{rectangle_toggle}"
+
+
+inCopy : Int -> State -> Bool
+inCopy pane s =
+    String.startsWith "copy-mode" (Maybe.withDefault "" (Dict.get pane s.modes))
+
+
+{-| A pane in copy mode asked where it is; if a question is out already,
+asked again once it is answered, so that the last answer is after the
+last key. -}
+askCopy : Int -> (taken acc : Acc) -> Acc
+askCopy pane acc =
+    let
+        st =
+            acc.state
+    in
+    if Dict.get pane st.copyAsked /= Nothing then
+        -- asked and not yet answered: asked again when it is
+        { acc | state = { st | copyAsked = Dict.set pane True st.copyAsked } }
+
+    else
+        ask [ { command = "display-message -p -t " ++ paneName pane ++ " " ++ Command.quote copyFormat, expect = ForCopy } ] { acc | state = { st | copyAsked = Dict.set pane False st.copyAsked } }
+
+
+{-| An answer to `copyFormat`: the pane's copy mode kept, and its view
+scrolled back as far as tmux's, as far as puritty's own history goes. -}
+copyLine : Bytes -> (taken s : State) -> State
+copyLine bytes s =
+    let
+        words =
+            String.split " " (Bytes.toStringLossy bytes)
+
+        num i =
+            Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i words))
+    in
+    when Array.get 0 words is
+        Just "C" ->
+            let
+                pane =
+                    idOf (Maybe.withDefault "" (Array.get 1 words))
+
+                answered =
+                    { s | copyAsked = Dict.remove pane s.copyAsked }
+            in
+            if Maybe.andThen String.toInt (Array.get 2 words) == Nothing || not (inCopy pane answered) then
+                -- not in copy mode (any more)
+                { answered | copy = Dict.remove pane answered.copy }
+
+            else
+                let
+                    c =
+                        { scroll = num 2
+                        , hsize = num 3
+                        , cx = num 4
+                        , cy = num 5
+                        , selection = if num 6 == 1 then Just { sx = num 7, sy = num 8, ex = num 9, ey = num 10 } else Nothing
+                        , rectangle = num 11 == 1
+                        }
+
+                    most =
+                        Maybe.withDefault 0 (withPane pane answered Vt.scrollbackRows)
+                in
+                { answered | copy = Dict.set pane c answered.copy, back = Dict.set pane (min most c.scroll) answered.back }
+
+        _ ->
+            s
 
 
 -- VIEWS (TM26)

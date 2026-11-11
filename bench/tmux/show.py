@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "copy":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                copy(a, env, tmux, xdo, snap, cli, look)
             return
         if a.scenario == "marks":
             for look in ("puritty", "tmux"):
@@ -545,6 +550,57 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.5)
         print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def copy(a, env, tmux, xdo, snap, cli, look):
+    """Copy mode drawn by puritty (docs/tmux.md TM31), with Gilbert's
+    tmux.conf (vi keys), in each look: entered, the cursor moved up, a
+    selection begun with Space and grown, a page up, output arriving behind it,
+    and Enter copying the selection (3.8's vi table has no y),
+    held to tmux's buffer."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    pos = lambda: q("display-message", "-p", "#{scroll_position}/#{history_size} #{copy_cursor_x},#{copy_cursor_y}")
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("type", "--delay", "5", "for i in $(seq 1 60); do echo line $i; done")
+        xd("key", "Return")
+        time.sleep(1)
+        xd("key", "ctrl+a", "bracketleft")
+        time.sleep(0.8)
+        snap(f"{look}-copy")
+        xd("key", "k", "k", "k", "0")
+        time.sleep(0.6)
+        print(look, "| k k k 0:", pos())
+        xd("key", "space", "k", "k", "dollar")
+        time.sleep(0.6)
+        print(look, "| Space k k $:", pos(), q("display-message", "-p", "#{selection_start_x},#{selection_start_y} #{selection_end_x},#{selection_end_y}"))
+        snap(f"{look}-copy-selection")
+        xd("key", "ctrl+b")
+        time.sleep(0.8)
+        print(look, "| C-b:", pos())
+        snap(f"{look}-copy-page-up")
+        xd("key", "ctrl+f")
+        time.sleep(0.6)
+        xd("key", "Return")
+        time.sleep(0.8)
+        print(look, "| Enter (copy-pipe-and-cancel), the buffer:", repr(q("show-buffer")), "| mode:", repr(q("display-message", "-p", "#{pane_mode}")))
+        snap(f"{look}-copy-done")
         cli("kill-server")
         time.sleep(1)
     finally:
