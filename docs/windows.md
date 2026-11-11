@@ -987,6 +987,37 @@ Tested on Linux, where X has both selections to read: the pointer gate's
 53 of 53. On Windows the build is installed on beelink1 for Gilbert to
 try.
 
+### WS27.2 · Both ways: a paste reads the clipboard (2026-11-11)
+
+*Gilbert, 2026-11-11:* text on Windows' clipboard was not what a middle
+click pasted, with `copy_to_clipboard` on; the option should work both
+ways, as PuTTY's does.
+
+WS27.1 left paste reading PRIMARY, which on Windows is puritty's own copy
+of its last selection (V53), so text copied in another program was pasted
+only by Ctrl+Shift+V. PuTTY on Windows (`windows/platform.h`) copies a
+selection to the clipboard by default (`CLIPUI_DEFAULT_AUTOCOPY true`) and
+pastes the clipboard on its mouse paste and on Shift+Insert
+(`CLIPUI_DEFAULT_MOUSE` and `CLIPUI_DEFAULT_INS`, `CLIPUI_EXPLICIT`, which
+`setup_clipboards` makes `CLIP_SYSTEM`); it keeps no selection of its own
+to paste. On Unix PuTTY pastes PRIMARY with the mouse (`CLIPUI_IMPLICIT`)
+whatever autocopy says.
+
+puritty now does the same: `Main.pasteFrom` makes a paste of PRIMARY (the
+paste button, in a pane under tmux too, and Shift+Insert) read the
+clipboard when `copy_to_clipboard` is on and PRIMARY is not shared with the
+desktop (`Platform.sharedPrimary`: false on Windows, true on Linux, where X
+programs share PRIMARY already and the paste keeps reading it). With the
+option off, Windows pastes puritty's own selection as before.
+
+Tested on beelink1, in Gilbert's desktop session (`harness/events/app.ps1`
+with a case and a script that first runs `Set-Clipboard -Value
+'from-windows-clip'`): a middle click, then Shift+Insert, each put
+`from-windows-clip` on PowerShell's line. On Linux the pointer gate (54),
+select (4) and the settings gate (20; its search for "paste" now finds
+`copy_to_clipboard` first, whose description says what the paste button
+does) pass.
+
 ## WS28 · Signing the exe: cloud signing, when the certificate comes (2026-11-11)
 
 *Gilbert, 2026-11-11:* puritty.exe will be signed with Authenticode so that

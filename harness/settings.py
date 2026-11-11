@@ -53,8 +53,9 @@ CASES = [
     ("reset", '[font]\nsize = 13\n\n[colours]\nbackground = "#102030"\n', [DOWN, "Delete"]),
     ("comments-kept", "# mine\n[window]\ncolumns = 100 # wide\n", [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
     ("undo", None, [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER, "ctrl+z"]),
-    # Enter opens a choice's list (SG13), Down picks the next, Enter takes it
-    ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, ENTER, DOWN, ENTER]),
+    # Enter opens a choice's list (SG13), Down picks the next, Enter takes it;
+    # "paste" finds copy_to_clipboard first (WS27.2), then the paste button
+    ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, DOWN, ENTER, DOWN, ENTER]),
     # the colour scheme's list left open, its picture in window.png; the file
     # is not written
     ("choice-list-open", None, [DOWN, DOWN, DOWN, ENTER, DOWN, DOWN]),

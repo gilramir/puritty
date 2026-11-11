@@ -2035,7 +2035,7 @@ handleOne remote ms rest ev m =
                             if isPasteKey k /= Nothing then
                                 -- Shift+Insert and Ctrl+Shift+V, the
                                 -- terminal's before the program's
-                                owned remote ms rest { m | toPaste = isPasteKey k }
+                                owned remote ms rest { m | toPaste = Maybe.map (pasteFrom m.config) (isPasteKey k) }
 
                             else if isCopyKey k then
                                 -- Ctrl+Shift+C: the selection to CLIPBOARD
@@ -2441,7 +2441,7 @@ pointer ms p m =
                 , tmux = r.state
                 , urgent = True
                 , toOwn = Maybe.map (\t -> { which = Window.Primary, text = t }) r.own
-                , toPaste = if r.paste then Just Window.Primary else m.toPaste
+                , toPaste = if r.paste then Just (pasteFrom m.config Window.Primary) else m.toPaste
             }
 
     else if m.barDrag || (p.action == 0 && p.button == 1 && barShown m && Dialog.scrollbarHit (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term } { x = p.x, y = p.y } /= Nothing) then
@@ -2552,8 +2552,9 @@ selecting ms p held m =
             pointAt p m
     in
     if p.button == m.config.pasteButton && p.action == 0 then
-        -- the paste button (docs/user/copy-and-paste.md), PRIMARY
-        { m | held = held, toPaste = Just Window.Primary }
+        -- the paste button (docs/user/copy-and-paste.md), PRIMARY, or
+        -- the clipboard where it is the selection (WS27.2)
+        { m | held = held, toPaste = Just (pasteFrom m.config Window.Primary) }
 
     else if p.button == 1 && p.action == 0 then
         let
@@ -2870,6 +2871,20 @@ key remote ms rest k m =
                         0
             }
         )
+
+
+{-| Where a paste of PRIMARY reads from (`docs/windows.md` WS27.2): the
+clipboard when a selection is copied to it and PRIMARY is puritty's own,
+as on Windows, so that what another program copied is pasted by the
+middle button and Shift+Insert, as PuTTY's are on Windows; PRIMARY where
+the desktop shares it (X), as PuTTY's are there. -}
+pasteFrom : Config -> Window.Selection -> Window.Selection
+pasteFrom config which =
+    if which == Window.Primary && config.copyToClipboard && not Platform.sharedPrimary then
+        Window.Clipboard
+
+    else
+        which
 
 
 {-| The paste keys, pressed (docs/user/copy-and-paste.md): Shift+Insert

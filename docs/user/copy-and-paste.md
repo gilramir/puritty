@@ -30,8 +30,10 @@ the clipboard for later while you select and middle-click other things.
 **On Windows** there is only the clipboard, which every Windows program
 shares. Selecting text copies it to the clipboard when you let go of the
 button, as PuTTY and MobaXterm do, so the selection and the clipboard are
-the same thing: paste it in puritty with a middle click, Shift+Insert or
-Ctrl+Shift+V, and in other programs with Ctrl+V. If you would rather copy
+the same thing both ways: paste it in puritty with a middle click,
+Shift+Insert or Ctrl+Shift+V, and in other programs with Ctrl+V; and what
+you copy in another program is what a middle click or Shift+Insert pastes
+in puritty. If you would rather copy
 only when you ask, set `copy_to_clipboard = false` under `[selection]`
 (the settings window's "Mouse & selection" page); then selecting text
 makes it what a middle click or Shift+Insert pastes in puritty alone, and
