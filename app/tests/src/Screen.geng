@@ -1,47 +1,8 @@
-module Screen exposing (screenOf, feedInputs)
+module Screen exposing (feedInputs)
 
-{-| The settings window's screen, read as the terminal core reads it:
-`SettingsWindow.view` fed to a `Vt.Term` of the window's size, and its
-rows. -}
+{-| The settings window driven by inputs, as the program drives it. -}
 
-import Bytes
 import SettingsWindow
-import Vt
-
-
-screenOf : SettingsWindow.Model -> Array String
-screenOf m =
-    let
-        t =
-            Vt.feed (Bytes.fromString (SettingsWindow.view m))
-                (Vt.new
-                    { cols = m.cols
-                    , rows = m.rows
-                    , scrollbackBytes = 0
-                    , pageRows = Vt.defaultPageRows
-                    , checksums = False
-                    , cellWidth = 0
-                    , cellHeight = 0
-                    }
-                )
-    in
-    String.lines (Vt.dump t)
-        |> Array.mapAndKeepJust row
-
-
-{-| A dump's row, `N |text|`, as its text with the spaces at its end cut. -}
-row : String -> Maybe String
-row line =
-    when String.firstIndexOf " |" line is
-        Just at ->
-            if String.all Char.isDigit (String.takeFirst at line) && at > 0 then
-                Just (String.trimRight (String.dropLast 1 (String.dropFirst (at + 2) line)))
-
-            else
-                Nothing
-
-        Nothing ->
-            Nothing
 
 
 {-| The model after each input, and every effect asked for. -}

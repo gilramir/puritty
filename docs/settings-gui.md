@@ -263,3 +263,26 @@ where it is told and was right already. The settings window on Linux
 is now kerned as it is on Windows.
 
 Pixels gate: 41 of 41 on Linux, and the five `ui` cases on beelink1.
+
+## SG10 · The text screen retired (2026-11-10)
+
+SG6 left `SettingsWindow.view` and the cell-based `Click` in place, used
+only by the app tests, which read the model through the terminal text
+they drew. Now the tests read the model itself:
+
+- what the window says at its foot (`m.message` in English);
+- the setting with the focus;
+- the rows listed, as `key = value`;
+- whether a row differs from its default;
+- the pages' counts;
+- the fonts offered;
+- the hosts listed, with their lines in English.
+
+They click through the targets the drawn window's boxes give
+(`Hit { target, count }`). `view` and its screen, rows, header, footer,
+cursor and cell widths are gone, with `Click`, `clickOn` and the
+column constants, and SettingsWindow is 1,252 lines where it was about
+1,870. One test went with it: "a narrow window still draws every row"
+counted the text screen's lines. The wheel's test reads the scroll
+(one setting, `linesPerRow`). The app tests are 99. The settings, hosts
+and sshwindow gates pass, 19, 13 and 8.
