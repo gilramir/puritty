@@ -172,18 +172,17 @@ inside data at r events =
     if at >= n then
         { reader = r, events = events }
 
-    else if byteAt at data == 0x1B then
-        if at + 1 >= n then
-            { reader = { r | held = Bytes.slice at n data }, events = events }
+    else if byteAt at data == 0x1B && at + 1 >= n then
+        -- ST, or a line that starts with an escape: the next read says
+        { reader = { r | held = Bytes.slice at n data }, events = events }
 
-        else if byteAt (at + 1) data == 0x5C then
-            step data (at + 2) { r | inside = False, block = Nothing } (Array.pushLast Exited events)
-
-        else
-            -- not ST: an escape tmux does not send here, skipped
-            inside data (at + 1) r events
+    else if byteAt at data == 0x1B && byteAt (at + 1) data == 0x5C then
+        step data (at + 2) { r | inside = False, block = Nothing } (Array.pushLast Exited events)
 
     else
+        -- a line, which may start with an escape: a reply's line is the
+        -- command's output as it is, and `capture-pane -e`'s starts with
+        -- the SGR of its first cell
         let
             nl =
                 indexOf 0x0A at data

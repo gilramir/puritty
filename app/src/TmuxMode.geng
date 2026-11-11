@@ -21,6 +21,7 @@ The panes' terminals answer nothing: tmux answered their programs already.
 
 import Array.Builder as Builder exposing (Builder)
 import Bytes exposing (Bytes)
+import Dict exposing (Dict)
 import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
@@ -42,6 +43,37 @@ type alias State =
     , modal : Bool
       -- the window's picture, made of the panes (`Vt.compose`)
     , canvas : Vt.Term
+      -- what each command sent waits for in its reply, in the order sent:
+      -- tmux answers a client's commands in turn (docs/tmux.md TM5.2)
+    , expecting : Array Expect
+      -- what tmux said of each pane on attach, for its capture
+    , info : Dict Int PaneInfo
+    }
+
+
+{-| What a command's reply is for. -}
+type Expect
+    = ForWindow
+    | ForPanes
+    | ForInfo Int
+    | ForSaved Int
+    | ForCapture Int
+    | ForNothing
+
+
+{-| A pane as `list-panes` describes it on attach (TM5.8), and the main
+screen's lines a capture of its saved grid gave while the alternate screen
+was up. -}
+type alias PaneInfo =
+    { w : Int
+    , h : Int
+    , x : Int
+    , y : Int
+    , alt : Bool
+    , top : Int
+    , bottom : Int
+    , modes : Array Int
+    , saved : Array Bytes
     }
 
 
@@ -57,6 +89,8 @@ idle _ =
     , active = -1
     , modal = False
     , canvas = blank 1 1
+    , expecting = []
+    , info = Dict.empty
     }
 
 
@@ -107,6 +141,63 @@ windowQuery =
     "display-message -p " ++ Command.quote "W #{window_id} #{window_visible_layout} #{window_name}"
 
 
+{-| Every pane of the session, each a line starting with `P`, so that none
+can read as a guard. -}
+panesQuery : String
+panesQuery =
+    "list-panes -s -F " ++ Command.quote "P #{pane_id}"
+
+
+{-| A pane's state, read in the same command line as its captures, so that
+no output of the pane's comes between them (tmux runs one line's commands
+in turn, before it reads a pane again): a capture holds the screen at one
+moment, and the cursor that goes with it is read at that moment too. -}
+infoOf : Int -> String
+infoOf pane =
+    "display-message -p -t "
+        ++ Command.quote ("%" ++ String.fromInt pane)
+        ++ " "
+        ++ Command.quote "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes}"
+
+
+{-| A pane's history and screen, with its colours and attributes, wrapped
+lines joined; or, with `saved`, the main screen kept while the alternate
+one is up. -}
+captureOf : Bool -> Int -> String
+captureOf saved pane =
+    "capture-pane -p -e -J -S - -E -"
+        ++ (if saved then " -a -q" else "")
+        ++ " -t "
+        ++ Command.quote ("%" ++ String.fromInt pane)
+
+
+{-| Commands sent on one line, `a ; b ; c`, each with what its reply is
+for: tmux runs them in turn with nothing between, and answers each. -}
+askLine : Array { command : String, expect : Expect } -> (taken acc : Acc) -> Acc
+askLine asked acc =
+    let
+        st =
+            acc.state
+    in
+    { acc
+        | state = { st | expecting = st.expecting ++ Array.map .expect asked }
+        , commands = Array.pushLast (String.join " ; " (Array.map .command asked)) acc.commands
+    }
+
+
+{-| Commands sent, each with what its reply is for. -}
+ask : Array { command : String, expect : Expect } -> (taken acc : Acc) -> Acc
+ask asked acc =
+    let
+        st =
+            acc.state
+    in
+    { acc
+        | state = { st | expecting = st.expecting ++ Array.map .expect asked }
+        , commands = acc.commands ++ Array.map .command asked
+    }
+
+
 event : { cols : Int, rows : Int } -> Event -> (taken acc : Acc) -> Acc
 event size e acc =
     when e is
@@ -118,23 +209,182 @@ event size e acc =
                 st =
                     acc.state
             in
-            { acc
-                | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows }
-                , commands = acc.commands ++ [ Command.clientFlags, Command.size { cols = size.cols, rows = size.rows }, windowQuery ]
-            }
+            ask
+                [ { command = Command.clientFlags, expect = ForNothing }
+                , { command = Command.size { cols = size.cols, rows = size.rows }, expect = ForNothing }
+                , { command = windowQuery, expect = ForWindow }
+                , { command = panesQuery, expect = ForPanes }
+                ]
+                { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty } }
 
         Exited ->
             let
                 st =
                     acc.state
             in
-            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1 } }
+            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty } }
 
         Reply r ->
-            { acc | state = Array.foldl replyLine acc.state r.lines }
+            if r.flags == 0 then
+                -- a command not this client's: the one it was started
+                -- with, or a hook's
+                acc
+
+            else
+                let
+                    st =
+                        acc.state
+
+                    expect =
+                        Maybe.withDefault ForNothing (Array.first st.expecting)
+
+                    popped =
+                        { acc | state = { st | expecting = Array.dropFirst 1 st.expecting } }
+                in
+                replied expect r.ok r.lines popped
 
         Notice n ->
             notice n acc
+
+
+{-| A reply, by what its command was for. -}
+replied : Expect -> Bool -> Array Bytes -> (taken acc : Acc) -> Acc
+replied expect ok lines acc =
+    when expect is
+        ForWindow ->
+            { acc | state = Array.foldl replyLine acc.state lines }
+
+        ForPanes ->
+            -- each pane's state and both its captures on one line: three
+            -- replies, in turn
+            Array.foldl
+                (\line a ->
+                    when String.split " " (Bytes.toStringLossy line) is
+                        [ "P", id ] ->
+                            let
+                                pane =
+                                    idOf id
+                            in
+                            askLine
+                                [ { command = infoOf pane, expect = ForInfo pane }
+                                , { command = captureOf True pane, expect = ForSaved pane }
+                                , { command = captureOf False pane, expect = ForCapture pane }
+                                ]
+                                a
+
+                        _ ->
+                            a
+                )
+                acc
+                lines
+
+        ForInfo pane ->
+            let
+                st =
+                    acc.state
+            in
+            when Array.first lines |> Maybe.andThen paneLine is
+                Just d ->
+                    { acc | state = { st | info = Dict.set pane d.info st.info } }
+
+                Nothing ->
+                    { acc | state = st }
+
+        ForSaved pane ->
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = { st | info = Dict.update pane (Maybe.map (\i -> { i | saved = if ok then lines else [] })) st.info } }
+
+        ForCapture pane ->
+            if ok then
+                { acc | state = rebuild pane lines acc.state }
+
+            else
+                acc
+
+        ForNothing ->
+            acc
+
+
+{-| A line of `panesQuery`'s answer. -}
+paneLine : Bytes -> Maybe { id : Int, info : PaneInfo }
+paneLine bytes =
+    let
+        words =
+            String.split " " (Bytes.toStringLossy bytes)
+
+        int i =
+            Maybe.withDefault 0 (String.toInt (Maybe.withDefault "" (Array.get i words)))
+    in
+    if Array.get 0 words /= Just "P" then
+        Nothing
+
+    else
+        Just
+            { id = idOf (Maybe.withDefault "" (Array.get 1 words))
+            , info =
+                { w = int 2
+                , h = int 3
+                , x = int 4
+                , y = int 5
+                , alt = int 6 == 1
+                , top = int 7
+                , bottom = int 8
+                , modes = String.split "," (Maybe.withDefault "" (Array.get 9 words)) |> Array.mapAndKeepJust String.toInt
+                , saved = []
+                }
+            }
+
+
+{-| A pane's terminal made again from its capture: the main screen's lines,
+then, with the alternate screen up, that screen's; the private modes that
+are on; the scroll region; the cursor. Whatever the pane printed before
+the capture's reply is in the capture, so what its terminal held is
+dropped (TM5.8). -}
+rebuild : Int -> Array Bytes -> (taken s : State) -> State
+rebuild pane lines s =
+    when Dict.get pane s.info is
+        Nothing ->
+            s
+
+        Just i ->
+            let
+                screen ls =
+                    Bytes.flatten (Array.intersperse (Bytes.fromString "\u{001B}[0m\r\n") ls)
+
+                modes =
+                    Array.map (\m -> "\u{001B}[?" ++ String.fromInt m ++ "h") i.modes
+                        ++ (if Array.member 25 i.modes then [] else [ "\u{001B}[?25l" ])
+                        ++ (if Array.member 7 i.modes then [] else [ "\u{001B}[?7l" ])
+
+                region =
+                    if i.top > 0 || i.bottom < i.h - 1 then
+                        "\u{001B}[" ++ String.fromInt (i.top + 1) ++ ";" ++ String.fromInt (i.bottom + 1) ++ "r"
+
+                    else
+                        ""
+
+                cursor =
+                    "\u{001B}[" ++ String.fromInt (i.y + 1) ++ ";" ++ String.fromInt (i.x + 1) ++ "H"
+
+                made =
+                    blank i.w i.h
+                        |> Vt.feed (screen (if i.alt then i.saved else lines))
+                        |> Vt.feed (Bytes.fromString (if i.alt then "\u{001B}[0m\u{001B}[?1049h\u{001B}[H" else "\u{001B}[0m"))
+                        |> (\t -> if i.alt then Vt.feed (screen lines) t else t)
+                        |> Vt.feed (Bytes.fromString ("\u{001B}[0m" ++ String.join "" modes ++ region ++ cursor))
+
+                term =
+                    (Vt.takeReplies made).term
+            in
+            when Array.findFirst (\x -> x == pane) s.ids is
+                Just found ->
+                    { s | panes = Builder.set found.index term s.panes }
+
+                Nothing ->
+                    { s | ids = Array.pushLast pane s.ids, panes = Builder.pushLast term s.panes }
 
 
 {-| A line of `windowQuery`'s answer: `W @id layout name`. -}
@@ -197,10 +447,10 @@ notice n acc =
 
         SessionWindowChanged _ ->
             -- another window of the session shown: ask for its layout
-            { acc | state = st, commands = Array.pushLast windowQuery acc.commands }
+            ask [ { command = windowQuery, expect = ForWindow } ] { acc | state = st }
 
         SessionChanged _ ->
-            { acc | state = st, commands = Array.pushLast windowQuery acc.commands }
+            ask [ { command = windowQuery, expect = ForWindow }, { command = panesQuery, expect = ForPanes } ] { acc | state = st }
 
         WindowRenamed r ->
             if r.window == st.window then
@@ -400,20 +650,26 @@ boxAround cols rows p =
 
 
 {-| What a key or a paste sends, as commands to the active pane. -}
-keys : Bytes -> State -> Array String
+keys : Bytes -> (taken s : State) -> { state : State, commands : Array String }
 keys bytes s =
     if s.active < 0 then
-        []
+        { state = s, commands = [] }
 
     else
-        Command.sendBytes s.active bytes
+        sent (Command.sendBytes s.active bytes) s
+
+
+{-| Commands whose replies say nothing puritty reads, sent. -}
+sent : Array String -> (taken s : State) -> { state : State, commands : Array String }
+sent commands s =
+    { state = { s | expecting = s.expecting ++ Array.map (\_ -> ForNothing) commands }, commands = commands }
 
 
 {-| The window at a new size: the canvas, and tmux told. -}
 resized : { cols : Int, rows : Int } -> (taken s : State) -> { state : State, commands : Array String }
 resized size s =
     if s.on then
-        { state = { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }, commands = [ Command.size size ] }
+        sent [ Command.size size ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
 
     else
         { state = s, commands = [] }

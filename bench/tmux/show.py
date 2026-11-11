@@ -36,6 +36,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
+    ap.add_argument("--scenario", default="build", choices=["build", "attach"],
+                    help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
     (WORK / "config.toml").write_text("[window]\ncolumns = 100\nrows = 30\n")
@@ -69,6 +71,9 @@ def main():
             print("tmux", *args, "->", r.stderr.strip())
 
     try:
+        if a.scenario == "attach":
+            attach(a, env, tmux, xdo, snap, cli)
+            return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
                                stderr=open(WORK / "stderr.txt", "w"))
@@ -105,6 +110,37 @@ def main():
             app.wait()
         xvfb.terminate()
         xvfb.wait()
+
+
+def attach(a, env, tmux, xdo, snap, cli):
+    """A session made and filled before puritty attaches (docs/tmux.md
+    TM15): history and colours in one pane, less on the alternate screen in
+    another, a floating pane; then `tmux -CC attach`, and keys typed."""
+    cli("new-session", "-d", "-s", "work", "-x", "100", "-y", "29")
+    cli("send-keys", "-t", "%0", "seq 1 60; printf '\\033[1;33mbefore attach\\033[0m 한글\\n'", "Enter")
+    cli("split-window", "-h", "-t", "%0")
+    cli("send-keys", "-t", "%1", "seq 1 200 | less", "Enter")
+    cli("new-pane", "-t", "work")
+    cli("send-keys", "-t", "%2", "echo floating, made before attach", "Enter")
+    time.sleep(1.5)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *tmux, "-CC", "attach", "-t", "work"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
+        time.sleep(2)
+        snap("attached")
+        cli("select-pane", "-t", "%1")
+        time.sleep(0.3)
+        subprocess.run([xdo, "type", "--delay", "40", "jjjj"], env=env, check=True)
+        snap("less-scrolled")
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
 
 
 if __name__ == "__main__":

@@ -625,3 +625,44 @@ there, in boxes over the tiled panes. A floating pane is not pulled out into
 a window of its own: tmux's coordinates would no longer say where it is, and
 puritty has one window a process (`ssh-client.md` SC22). Step 4's mouse
 moves and resizes them within the window, by `move-pane` and `resize-pane`.
+
+## TM15 · Step 4.1: what the panes hold on attach (2026-11-11)
+
+*Gilbert, 2026-11-11:* do all of step 4, in this order: what the panes hold
+on attach, the mouse on panes, scrollback and selection within a pane,
+tmux's windows as tabs, and slow links and safety.
+
+Attaching to a session that was already running showed empty panes until
+their programs wrote again. Now, on entry, puritty asks for the session's
+panes (`list-panes -s`) and, for each, sends one line of three commands:
+`display-message` with the pane's size, cursor, alternate screen, scroll
+region and private modes (3.8's `#{pane_private_modes}`), `capture-pane
+-a -q` for the main screen kept behind an alternate one, and `capture-pane
+-p -e -J -S - -E -` for its history and screen with their colours. The
+pane's terminal is made again from them: the main screen's lines, then the
+alternate screen's after `?1049h`, then the modes, the region and the
+cursor.
+
+- **One line, one moment.** tmux runs a line's commands in turn before it
+  reads a pane again, so the state and the captures are of one moment.
+  Measured: with the cursor read by an earlier `list-panes`, a `less`
+  resized by the attach had redrawn in between, its relative scrolling
+  then lost a line, and puritty's copy of the pane drifted from tmux's.
+  The reproduction (tmux 3.8 driven from Python, what puritty builds fed
+  to `core-dump`) now ends as tmux's own capture of the pane does.
+- **The attach race needs nothing more** (TM5.8): output a pane wrote
+  before the capture's reply is in the capture, and the rebuilt terminal
+  replaces whatever the pane's terminal held.
+- **Replies are matched to commands** by a queue of what each command sent
+  waits for (`Expect`), popped by each reply with flags 1; a reply with
+  flags 0 is a command not puritty's (its first, a hook's). Keys and
+  resizes put their own entries on it.
+- **A reply's line may start with an escape**, as a capture with `-e`
+  does: `Tmux.Control` took any `ESC` at a line's start for the end of
+  control mode and skipped it, and drew `[1m` as text. Only `ESC \` ends
+  it now (a test of its own).
+
+Shown with `bench/tmux/show.py --scenario attach`: a session made before
+attaching, with history and colours in one pane, `less` on the alternate
+screen in another and a floating pane, came back as it was, and `less`
+scrolled correctly after.
