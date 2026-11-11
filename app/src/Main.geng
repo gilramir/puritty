@@ -1690,6 +1690,11 @@ ownTerm m screen =
         hidden t =
             String.repeat (String.count t) "•"
 
+        -- where the cursor goes back to once the screen is written: after
+        -- what is typed, where the next character will show (DECSC)
+        mark =
+            "\u{001B}7"
+
         question =
             when screen.asking is
                 Just asking ->
@@ -1709,10 +1714,10 @@ ownTerm m screen =
                             ]
 
                         Session.Password p ->
-                            [ line "", line (bold (cleanText p.prompt ++ ": ") ++ hidden asking.typed), line "", line (dim "  Enter: log in    Esc: do not use a password") ]
+                            [ line "", line (bold (cleanText p.prompt ++ ": ") ++ hidden asking.typed ++ mark), line "", line (dim "  Enter: log in    Esc: do not use a password") ]
 
                         Session.Passphrase p ->
-                            [ line "", line (bold ("The passphrase for " ++ cleanText p.file ++ ": ") ++ hidden asking.typed), line "", line (dim "  Enter: unlock the key    Esc: do not use this key") ]
+                            [ line "", line (bold ("The passphrase for " ++ cleanText p.file ++ ": ") ++ hidden asking.typed ++ mark), line "", line (dim "  Enter: unlock the key    Esc: do not use this key") ]
 
                         Session.Responses r ->
                             let
@@ -1730,6 +1735,7 @@ ownTerm m screen =
                                                         else
                                                             hidden asking.typed
                                                        )
+                                                    ++ mark
                                                 )
 
                                         Nothing ->
@@ -1774,6 +1780,8 @@ ownTerm m screen =
                  ]
                     ++ Array.map (\l -> line (dim ("  " ++ l))) (Array.takeLast (max 1 (m.term.rows - 12)) screen.lines)
                     ++ question
+                    -- the cursor back after what is typed (DECRC)
+                    ++ [ if typing then "\u{001B}8" else "" ]
                 )
     in
     Vt.new

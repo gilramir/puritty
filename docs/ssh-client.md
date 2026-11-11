@@ -1208,3 +1208,10 @@ The core gives a bullet one cell, as its widths (Ghostty's) do every
 ambiguous-width character. Fira Code, Cascadia Mono and DejaVu Sans Mono
 each have the glyph. Checked on Linux with Fira Code: eight bullets,
 level. The sshwindow gate passes, 8 of 8.
+
+**The cursor after what is typed.** The own screen's cursor showed where
+its text ended, at the start of the line under the last hint, not after
+what was being typed. Each line that takes typing now ends what is typed
+with DECSC (ESC 7), and the screen ends with DECRC (ESC 8). The cursor
+is drawn after the last bullet, and the IME's candidate window follows
+it there. Checked on Linux; the sshwindow gate passes, 8 of 8.
