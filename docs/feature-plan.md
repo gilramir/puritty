@@ -34,6 +34,7 @@ The survey's "biggest opening" is the work puritty already has planned.
 | **Scrollbar** | Small | With search. |
 | **Key bindings in the config**, including multi-key sequences | Medium | A `[keys]` section and a "Keyboard" page in the settings UI. Before the Windows product, since that needs bindings for ssh actions. |
 | **Multi-line paste warning** | Small | Any time; one setting, on by default. |
+| **Selection copied to the clipboard** (Gilbert's request, 2026-11-11), as PuTTY and MobaXterm do | Small | With the Windows product; `windows.md` WS27. An option, on by default on Windows. |
 | **Key sounds** (Gilbert's request, §3) | Small to medium: audio is new | Soon, and the first new setting added through the settings UI. |
 | **Jump between and fold command outputs** | Medium; needs shell integration (OSC 133) | Later. |
 | **Pipe a pane's text to a command** (pull out URLs) | Small | Later. |

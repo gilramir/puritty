@@ -939,3 +939,33 @@ The two levers that are left:
    last one's own time, not only 16 ms.
 
 Both are proposals for Gilbert, not built.
+
+## WS27 · The selection as the clipboard: Gilbert's request (2026-11-11)
+
+*Gilbert, 2026-11-11:* on Windows, an option for puritty's selection to be
+Windows' clipboard: what is selected is copied at once, without
+Ctrl+Shift+C. PuTTY and MobaXterm do this (general knowledge, not checked
+here), and Windows users coming from them expect a selection and the
+clipboard to be the same thing.
+
+This amends V53 (WS8), which keeps the selection within puritty. Noted,
+not built. To settle when it is:
+
+- **The setting**: one boolean in `config.toml` and on the settings
+  window's page for the mouse and selection. *Leaning:* on by default on
+  Windows, where users come from PuTTY and MobaXterm; off on Linux, where
+  PRIMARY already does this and X programs keep the two apart. A Linux
+  user can turn it on there too: it then writes CLIPBOARD as well as
+  PRIMARY.
+- **When the copy happens**: when the mouse button is let go, as PRIMARY's
+  is now (`copy-and-paste.md`), not on every move of a drag, so the
+  clipboard's history (Win+V) gets one entry per selection.
+- **Paste**: a middle click and Shift+Insert then paste the clipboard,
+  which is the selection. PuTTY also pastes on a right click; whether
+  puritty does is a separate choice, as the right button has no use in
+  puritty today.
+- **What a program's own copy does**: an OSC 52 write already goes to the
+  clipboard (§16) and is unchanged. A selection made while a program has
+  the mouse (Shift+drag) is copied the same way.
+- **Tests**: the events gate's Windows cases, a selection made and the
+  clipboard read with `Get-Clipboard`, as V53 was measured.
