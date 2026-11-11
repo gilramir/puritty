@@ -1,0 +1,263 @@
+module Tmux.Style exposing
+    ( Style
+    , plain
+    , apply
+    , runs
+    , sgr
+    , strip
+    )
+
+{-| tmux's styles (tmux(1) STYLES), as much as puritty needs to draw a
+status line as tmux does (puritty `docs/tmux.md` TM29): an option's style
+(`bg=green,fg=black`) and the `#[…]` within a format's text, made into the
+SGR that draws them. Colours by name, `brightred`, `colour123`, `#rrggbb`,
+and tmux 3.8's theme names (`themegreen`, taken as `green`); the
+attributes bold, dim, italics, underscore, blink, reverse, hidden,
+strikethrough and overline, each turned off by `no` before it; `default`
+for the colours and `none` for the attributes. What places text (`align`,
+`list`, `range`, `fill`, `push-default`, `pop-default`) is left out.
+-}
+
+
+{-| A style: the foreground's and the background's SGR parameters (`31`,
+`38;5;123`, `""` for the terminal's own), and the attributes', in order. -}
+type alias Style =
+    { fg : String, bg : String, attrs : Array String }
+
+
+{-| No colour and no attribute. -}
+plain : Style
+plain =
+    { fg = "", bg = "", attrs = [] }
+
+
+{-| A style string applied over `base`: `fg=red,bold`, its parts split by
+commas or spaces. `default`, alone or as a colour, is `base`'s, as tmux
+takes a window's `default` style to be the status line's. -}
+apply : String -> Style -> Style
+apply text base =
+    applyFrom base text base
+
+
+applyFrom : Style -> String -> Style -> Style
+applyFrom defaults text start =
+    String.replace " " "," text
+        |> String.split ","
+        |> Array.keepIf (\part -> part /= "")
+        |> Array.foldl (applyPart defaults) start
+
+
+applyPart : Style -> String -> Style -> Style
+applyPart defaults part style =
+    if part == "fg=default" || part == "fg=terminal" then
+        { style | fg = defaults.fg }
+
+    else if part == "bg=default" || part == "bg=terminal" then
+        { style | bg = defaults.bg }
+
+    else if String.startsWith "fg=" part then
+        { style | fg = colour 30 (String.dropFirst 3 part) }
+
+    else if String.startsWith "bg=" part then
+        { style | bg = colour 40 (String.dropFirst 3 part) }
+
+    else if part == "default" then
+        defaults
+
+    else if part == "none" then
+        { style | attrs = [] }
+
+    else if String.startsWith "no" part then
+        when attr (String.dropFirst 2 part) is
+            Just a ->
+                { style | attrs = Array.keepIf (\x -> x /= a) style.attrs }
+
+            Nothing ->
+                style
+
+    else
+        when attr part is
+            Just a ->
+                if Array.member a style.attrs then style else { style | attrs = Array.pushLast a style.attrs }
+
+            Nothing ->
+                style
+
+
+attr : String -> Maybe String
+attr name =
+    when name is
+        "bright" ->
+            Just "1"
+
+        "bold" ->
+            Just "1"
+
+        "dim" ->
+            Just "2"
+
+        "italics" ->
+            Just "3"
+
+        "underscore" ->
+            Just "4"
+
+        "double-underscore" ->
+            Just "4"
+
+        "curly-underscore" ->
+            Just "4"
+
+        "dotted-underscore" ->
+            Just "4"
+
+        "dashed-underscore" ->
+            Just "4"
+
+        "blink" ->
+            Just "5"
+
+        "reverse" ->
+            Just "7"
+
+        "hidden" ->
+            Just "8"
+
+        "strikethrough" ->
+            Just "9"
+
+        "overline" ->
+            Just "53"
+
+        _ ->
+            Nothing
+
+
+{-| A colour's SGR parameters, `base` 30 for a foreground, 40 for a
+background. -}
+colour : Int -> String -> String
+colour base name0 =
+    let
+        name =
+            if String.startsWith "theme" name0 then String.dropFirst 5 name0 else name0
+
+        named n =
+            when n is
+                "black" ->
+                    Just 0
+
+                "red" ->
+                    Just 1
+
+                "green" ->
+                    Just 2
+
+                "yellow" ->
+                    Just 3
+
+                "blue" ->
+                    Just 4
+
+                "magenta" ->
+                    Just 5
+
+                "cyan" ->
+                    Just 6
+
+                "white" ->
+                    Just 7
+
+                _ ->
+                    Nothing
+
+        hex s =
+            String.toArray (String.toLower s)
+                |> Array.foldl (\c acc -> Maybe.andThen (\v -> Maybe.map (\d -> v * 16 + d) (hexDigit c)) acc) (Just 0)
+    in
+    if String.startsWith "bright" name then
+        Maybe.map (\i -> String.fromInt (base + 60 + i)) (named (String.dropFirst 6 name)) |> Maybe.withDefault ""
+
+    else if String.startsWith "colour" name || String.startsWith "color" name then
+        String.toInt (String.dropFirst (if String.startsWith "colour" name then 6 else 5) name)
+            |> Maybe.map (\n -> String.fromInt (base + 8) ++ ";5;" ++ String.fromInt n)
+            |> Maybe.withDefault ""
+
+    else if String.startsWith "#" name && String.count name == 7 then
+        when { r = hex (String.slice 1 3 name), g = hex (String.slice 3 5 name), b = hex (String.slice 5 7 name) } is
+            { r = Just r, g = Just g, b = Just b } ->
+                String.fromInt (base + 8) ++ ";2;" ++ String.fromInt r ++ ";" ++ String.fromInt g ++ ";" ++ String.fromInt b
+
+            _ ->
+                ""
+
+    else
+        Maybe.map (\i -> String.fromInt (base + i)) (named name) |> Maybe.withDefault ""
+
+
+hexDigit : Char -> Maybe Int
+hexDigit c =
+    let
+        code =
+            Char.toCode c
+    in
+    if code >= 0x30 && code <= 0x39 then
+        Just (code - 0x30)
+
+    else if code >= 0x61 && code <= 0x66 then
+        Just (code - 0x61 + 10)
+
+    else
+        Nothing
+
+
+{-| A format's expanded text as runs of one style each, `#[…]` changing
+the style from `base` on (`#[default]` back to `base`), `##` one `#`. -}
+runs : Style -> String -> Array { style : Style, text : String }
+runs base text =
+    let
+        done =
+            String.toArray text
+                |> Array.foldl
+                    (\c acc ->
+                        if acc.inStyle then
+                            if c == ']' then
+                                { acc | inStyle = False, style = applyFrom base (String.fromArray acc.spec) acc.style, spec = [] }
+
+                            else
+                                { acc | spec = Array.pushLast c acc.spec }
+
+                        else if acc.hash then
+                            if c == '[' then
+                                { acc | hash = False, inStyle = True, out = Array.pushLast { style = acc.style, text = String.fromArray acc.current } acc.out, current = [] }
+
+                            else if c == '#' then
+                                { acc | hash = False, current = Array.pushLast '#' acc.current }
+
+                            else
+                                { acc | hash = False, current = Array.pushLast c (Array.pushLast '#' acc.current) }
+
+                        else if c == '#' then
+                            { acc | hash = True }
+
+                        else
+                            { acc | current = Array.pushLast c acc.current }
+                    )
+                    { style = base, inStyle = False, hash = False, spec = [], current = [], out = [] }
+
+        last =
+            String.fromArray (if done.hash then Array.pushLast '#' done.current else done.current)
+    in
+    Array.pushLast { style = done.style, text = last } done.out
+        |> Array.keepIf (\r -> r.text /= "")
+
+
+{-| A format's text without its styles. -}
+strip : String -> String
+strip text =
+    runs plain text |> Array.map .text |> String.join ""
+
+
+{-| The SGR that draws a style, from the terminal's defaults. -}
+sgr : Style -> String
+sgr style =
+    "\u{001B}[" ++ String.join ";" ([ "0" ] ++ style.attrs ++ Array.keepIf (\p -> p /= "") [ style.fg, style.bg ]) ++ "m"

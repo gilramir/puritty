@@ -41,6 +41,7 @@ import Dict exposing (Dict)
 import Keys
 import Tmux.Bindings as Bindings
 import Tmux.Command as Command
+import Tmux.Style as Style
 import Tmux.Syntax as Syntax
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
@@ -118,7 +119,30 @@ type alias State =
     , numbers : Maybe Numbering
     , clock : Int
     , panesMs : Int
+      -- tmux's status line as it subscribes to it (TM29)
+    , status : StatusLine
     }
+
+
+{-| tmux's status line, as `refresh-client -B` tells puritty of it (TM29):
+`status-left` and `status-right` expanded (strftime too), `status-style`,
+`window-status-separator`, the two lengths, and each window's
+`window-status-format` (its current one for the active window) expanded,
+its style and its flags, by window id. -}
+type alias StatusLine =
+    { left : String
+    , right : String
+    , style : String
+    , separator : String
+    , leftLength : Int
+    , rightLength : Int
+    , windows : Dict Int { text : String, style : String, flags : String }
+    }
+
+
+noStatus : StatusLine
+noStatus =
+    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty }
 
 
 {-| `display-panes` shown by puritty (TM28): each pane's index by its id,
@@ -299,6 +323,7 @@ idle _ =
     , numbers = Nothing
     , clock = 0
     , panesMs = 1000
+    , status = noStatus
     }
 
 
@@ -547,7 +572,8 @@ event size e acc =
                 , { command = "list-panes -s -F " ++ Command.quote modeFormat, expect = ForModes }
                 , { command = "display-message -p " ++ Command.quote "#{display-panes-time}", expect = ForPanesTime }
                 ]
-                { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty } }
+                { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus } }
+                |> ask (Array.map (\sub -> { command = "refresh-client -B " ++ Command.quote sub, expect = ForNothing }) statusSubscriptions)
 
         Exited ->
             let
@@ -1105,6 +1131,9 @@ notice n acc =
         PaneModeChanged pane ->
             ask [ { command = "display-message -p -t " ++ Command.quote ("%" ++ String.fromInt pane) ++ " " ++ Command.quote modeFormat, expect = ForModes } ] { acc | state = st }
 
+        SubscriptionChanged sub ->
+            { acc | state = { st | status = subscribed sub.name sub.window sub.value st.status } }
+
         WindowRenamed r ->
             let
                 tabs =
@@ -1283,6 +1312,13 @@ paint s =
                         Nothing ->
                             []
 
+                -- the bar in tmux's look, tmux's status line (TM29)
+                tmuxLook =
+                    s.lookTmux
+
+                statusBar =
+                    if s.lookTmux then (tmuxBar cols barRow s).pieces else []
+
                 -- a menu of tmux's (TM27), once tmux has answered its
                 -- formats
                 menuDrawn =
@@ -1322,8 +1358,10 @@ paint s =
                         room =
                             max 0 (cols - String.count tabBar.text - 2)
 
+                        -- what was said, else tmux's `status-right` without
+                        -- its styles (TM29)
                         shown =
-                            String.takeFirst room s.said
+                            String.takeFirst room (if s.said == "" then Style.strip s.status.right else s.said)
                     in
                     if shown == "" then
                         []
@@ -1372,9 +1410,16 @@ paint s =
                         |> Vt.invert tiledSpans
                         |> drawText lineColour lines
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
-                        |> drawText barColour [ { row = barRow, col = 0, text = String.padRight cols ' ' tabBar.text } ]
-                        |> drawText activeTabColour tabBar.active
-                        |> drawText barColour (if s.lookTmux then [] else saidPiece)
+                        |> (\c ->
+                                if tmuxLook then
+                                    drawPieces statusBar c
+
+                                else
+                                    c
+                                        |> drawText barColour [ { row = barRow, col = 0, text = String.padRight cols ' ' tabBar.text } ]
+                                        |> drawText activeTabColour tabBar.active
+                                        |> drawText barColour saidPiece
+                           )
                         |> drawText messageColour tmuxLine
                         |> drawText messageColour caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
@@ -2503,6 +2548,15 @@ active one inverse, then ` + `, cut at the window's width; and which
 columns each tab and the `+` cover, `-1` for the `+`. -}
 tabsOf : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
 tabsOf cols row s =
+    if s.lookTmux then
+        { text = "", active = [], hits = (tmuxBar cols row s).hits }
+
+    else
+        puritySTabs cols row s
+
+
+puritySTabs : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
+puritySTabs cols row s =
     let
         labels =
             Array.map (\t -> { window = t.id, text = " " ++ String.fromInt t.index ++ ":" ++ t.name ++ " " }) s.tabs
@@ -2530,6 +2584,175 @@ tabsOf cols row s =
             |> Array.map (\h -> { row = row, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
     , hits = laid.hits
     }
+
+
+-- THE STATUS LINE (TM29)
+
+
+{-| What puritty subscribes to (`refresh-client -B`, tmux 3.2 on): tmux
+sends each when it changes, at most once a second, the time in it
+expanded (`T:`). -}
+statusSubscriptions : Array String
+statusSubscriptions =
+    [ "puritty-left::#{T:status-left}"
+    , "puritty-right::#{T:status-right}"
+    , "puritty-style::#{status-style}"
+    , "puritty-sep::#{window-status-separator}"
+    , "puritty-lengths::#{status-left-length} #{status-right-length}"
+    , "puritty-wtext:@*:#{?window_active,#{T:window-status-current-format},#{T:window-status-format}}"
+    , "puritty-wstyle:@*:#{?window_active,#{window-status-current-style},#{window-status-style}}"
+    , "puritty-wflags:@*:#{window_flags}"
+    ]
+
+
+subscribed : String -> Int -> String -> StatusLine -> StatusLine
+subscribed name window value status =
+    let
+        perWindow change =
+            { status
+                | windows =
+                    Dict.set window
+                        (change (Maybe.withDefault { text = "", style = "", flags = "" } (Dict.get window status.windows)))
+                        status.windows
+            }
+    in
+    when name is
+        "puritty-left" ->
+            { status | left = value }
+
+        "puritty-right" ->
+            { status | right = value }
+
+        "puritty-style" ->
+            { status | style = value }
+
+        "puritty-sep" ->
+            { status | separator = value }
+
+        "puritty-lengths" ->
+            when String.split " " value |> Array.map String.toInt is
+                [ Just l, Just r ] ->
+                    { status | leftLength = l, rightLength = r }
+
+                _ ->
+                    status
+
+        "puritty-wtext" ->
+            perWindow (\w -> { w | text = value })
+
+        "puritty-wstyle" ->
+            perWindow (\w -> { w | style = value })
+
+        "puritty-wflags" ->
+            perWindow (\w -> { w | flags = value })
+
+        _ ->
+            status
+
+
+{-| The first `n` characters of styled runs. -}
+takeRuns : Int -> Array { style : Style.Style, text : String } -> Array { style : Style.Style, text : String }
+takeRuns n all =
+    Array.foldl
+        (\r acc ->
+            let
+                room =
+                    n - acc.used
+
+                piece =
+                    String.takeFirst (max 0 room) r.text
+            in
+            if room <= 0 then
+                acc
+
+            else
+                { used = acc.used + String.count piece, out = Array.pushLast { r | text = piece } acc.out }
+        )
+        { used = 0, out = [] }
+        all
+        |> .out
+
+
+{-| Styled runs laid from column `col` on row `row`. -}
+laidRuns : Int -> Int -> Array { style : Style.Style, text : String } -> { pieces : Array { row : Int, col : Int, colour : String, text : String }, end : Int }
+laidRuns row col all =
+    Array.foldl
+        (\r acc -> { end = acc.end + String.count r.text, pieces = Array.pushLast { row = row, col = acc.end, colour = Style.sgr r.style, text = r.text } acc.pieces })
+        { end = col, pieces = [] }
+        all
+
+
+{-| The bar in tmux's look (TM29): tmux's status line as tmux 3.8 draws it
+by default, measured in a tmux client inside another tmux: `status-style`
+across the row, `status-left` cut to its length, the windows' own texts
+in their styles with the separator between, `status-right` cut to its
+length at the right; and where each window's text is, for a click. -}
+tmuxBar : Int -> Int -> State -> { pieces : Array { row : Int, col : Int, colour : String, text : String }, hits : Array { from : Int, to : Int, window : Int } }
+tmuxBar cols row s =
+    let
+        base =
+            Style.apply s.status.style Style.plain
+
+        left =
+            laidRuns row 0 (takeRuns s.status.leftLength (Style.runs base s.status.left))
+
+        windows =
+            Array.foldl
+                (\t acc ->
+                    let
+                        own =
+                            Maybe.withDefault { text = "", style = "", flags = "" } (Dict.get t.id s.status.windows)
+
+                        text =
+                            if own.text == "" then
+                                String.fromInt t.index ++ ":" ++ t.name ++ (if t.id == s.window then "*" else own.flags)
+
+                            else
+                                own.text
+
+                        sep =
+                            if Array.isEmpty acc.hits then [] else Style.runs base s.status.separator
+
+                        gap =
+                            laidRuns row acc.end sep
+
+                        entry =
+                            laidRuns row gap.end (Style.runs (Style.apply own.style base) text)
+                    in
+                    { end = entry.end
+                    , pieces = acc.pieces ++ gap.pieces ++ entry.pieces
+                    , hits = Array.pushLast { from = gap.end, to = entry.end - 1, window = t.id } acc.hits
+                    }
+                )
+                { end = left.end, pieces = [], hits = [] }
+                s.tabs
+
+        rightRuns =
+            takeRuns s.status.rightLength (Style.runs base s.status.right)
+
+        rightWidth =
+            Array.foldl (\r n -> n + String.count r.text) 0 rightRuns
+
+        right =
+            if windows.end + rightWidth <= cols then
+                (laidRuns row (cols - rightWidth) rightRuns).pieces
+
+            else
+                []
+    in
+    { pieces =
+        [ { row = row, col = 0, colour = Style.sgr base, text = String.repeat cols " " } ]
+            ++ left.pieces
+            ++ Array.keepIf (\p -> p.col < cols) windows.pieces
+            ++ right
+    , hits = windows.hits
+    }
+
+
+{-| Pieces of text, each in its own colour, in order. -}
+drawPieces : Array { row : Int, col : Int, colour : String, text : String } -> (taken t : Vt.Term) -> Vt.Term
+drawPieces pieces t =
+    Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) t pieces
 
 
 -- RUNNING tmux's COMMANDS, AND MENUS (TM27)

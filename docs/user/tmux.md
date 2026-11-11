@@ -100,6 +100,10 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   key, the arrows and Enter, or a click; Escape closes. With `look =
   "tmux"` they look as tmux draws them.
 
+- **The status line**: tmux's `status-right` (the host and the time, by
+  default) shows at the tab bar's right. With `look = "tmux"` the whole bar
+  is tmux's status line, with your `status-left`, `status-right`, window
+  formats and colours; click a window's name to go to it.
 - **Pane numbers**: `prefix q` shows each pane's number over it, for
   `display-panes-time`; type one to go to that pane.
 

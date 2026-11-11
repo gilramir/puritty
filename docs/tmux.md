@@ -1270,3 +1270,52 @@ gave.
 **Not yet:** an index of two digits (ten panes or more) cannot be chosen,
 as the first digit closes the numbers; tmux waits for the second.
 
+## TM29 · tmux's status line (2026-11-11)
+
+Item 5 of TM24.5. A control client has no status line (`status.c`), so
+`status-left`, `status-right` and the window list as tmux formats them
+were nowhere; puritty's tab bar showed the windows its own way.
+
+**Asked** with subscriptions (`refresh-client -B`, tmux 3.2 on), sent as
+puritty attaches: `#{T:status-left}` and `#{T:status-right}` (`T:` gives
+strftime the result, so `%H:%M` is the time), `status-style`,
+`window-status-separator`, the two lengths, and for every window (`@*`)
+its `window-status-current-format` or `window-status-format`, expanded,
+its matching style, and its flags. tmux sends each when it changes, at most
+once a second; `Tmux.Control`'s `SubscriptionChanged` now carries the
+window it is for (`-1` for none). Measured on 3.8: `status-style` is
+`bg=themegreen,fg=themeblack`, the current window's style `underscore`,
+the formats `#I:#W#{?window_flags,#{window_flags}, }`.
+
+**Styles** (`Tmux.Style`): an option's style and a format's `#[…]` made
+into SGR: named colours, `bright…`, `colour…`, `#rrggbb`, 3.8's theme
+names as the colour they name, the attributes and their `no…`, `none`;
+`default`, alone or as a colour, is the base style's, as tmux takes a
+window's `default` style to be the status line's and `#[default]` to go
+back to it. What places text (`align`, `list`, `range`, `fill`) is left out.
+
+**Drawn** by `[tmux] look`: `"tmux"` as tmux draws its status line,
+compared with tmux 3.8 drawing in a tmux client inside another tmux: the
+row in `status-style`, `status-left` cut to `status-left-length`, each
+window's own text in its own style with the separator between,
+`status-right` cut to its length at the right edge; a click on a window's
+text selects it, as a tab did, and a menu placed at `W` goes to it.
+`"puritty"`: the tabs as before, and `status-right` without its styles at
+the bar's right, where what tmux or puritty says (TM24) goes in its place
+until the next key.
+
+**Checked:** packages/tmux 61 tests (Control 16: a subscription's name,
+window and value; Style 5: theme, named, bright, 256 and RGB colours,
+attributes on and off, a format's runs, `default` as the base's, strip).
+`bench/tmux/show.py --scenario status`, Gilbert's tmux.conf, each look:
+`[0] 0:first- 1:sh*` and `"nene" 13:46 11-Nov-26` as tmux shows them; then
+`status-right` set to `#[fg=white,bg=red,bold] right #[default] %H:%M ` and
+`status-left` to `#[fg=yellow]<#S> ` while attached, both drawn within a
+second; in tmux's look a click on `0:first-` selects it. The tabs, prompts
+and menus scenarios give what they gave.
+
+**Not yet:** `status-justify` (centred or right window lists),
+`status-position`, more than one status line (`status 2`) and `status off`
+are not read: the bar stays where `[tmux] tabs` puts it; a wide character
+counts one cell in the line's layout.
+
