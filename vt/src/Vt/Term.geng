@@ -11,6 +11,8 @@ module Vt.Term exposing
     , noSaved
     , Screen
     , Term
+    , Embedder
+    , ghosttyEmbedder
     , psGround
     , psEscape
     , psEscInter
@@ -47,6 +49,27 @@ import Vt.Style exposing (..)
 
 
 -- THE STATE
+
+
+{-| What the embedder says of itself, which a program can ask
+(`docs/tmux.md` TM4): its foreground and background, which OSC 10 and 11
+answer while no program has set them and DSR 996 reports as dark or light;
+DA1's answer; and XTVERSION's name. `ghosttyEmbedder` is libghostty-vt's
+without an embedder: no colours, `?62;22c` and puritty's name, which the
+replay corpus is held to; puritty's window says more (`Vt.withEmbedder`). -}
+type alias Embedder =
+    { look : Maybe { foreground : Int, background : Int }
+    , attributes : String
+    , version : String
+    }
+
+
+ghosttyEmbedder : Embedder
+ghosttyEmbedder =
+    { look = Nothing
+    , attributes = "\u{001B}[?62;22c"
+    , version = "puritty"
+    }
 
 
 {-| `checksums` turns on DECRQCRA's answer (§VC10). It is off unless asked
@@ -340,6 +363,7 @@ type alias Term =
       -- the embedder's (`Vt.withPalette`); OSC 4 answers them, OSC 104 and
       -- RIS bring them back (docs/phase3-select.md §22)
     , named : Array Int where Array.length named == 16
+    , embedder : Embedder
     , cursorShape : Int
     , otherShape : Int -- the hidden screen's: each has its own (§VC28)
     , ps : Int

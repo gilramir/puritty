@@ -632,6 +632,7 @@ run imeLog shotPath charset config cell remote settings problems opener =
                                     , cellHeight = cell.height
                                     }
                                     |> Vt.withPalette config.palette
+                                    |> Vt.withEmbedder (embedderOf config)
                                     -- what was wrong in the settings, before the
                                     -- program's first output (settings-ui.md §5)
                                     |> Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems)))
@@ -791,6 +792,19 @@ legacy forms are raw bytes. -}
 sendRaw : Bytes -> (taken m : Model) -> Model
 sendRaw bytes m =
     { m | out = Outbox.push bytes m.out }
+
+
+{-| What puritty says of itself to the core (`Vt.Embedder`,
+`docs/tmux.md` TM4): the look's colours, which OSC 10 and 11 answer and
+DSR 996 judges; DA1 with 21 (left and right margins) and 52 (OSC 52), which
+tmux turns its `margins` and `clipboard` on from; and XTVERSION with a
+version, as tmux matches a name followed by a space. -}
+embedderOf : Config -> Vt.Embedder
+embedderOf config =
+    { look = Just { foreground = config.foreground, background = config.background }
+    , attributes = "\u{001B}[?62;21;22;52c"
+    , version = "puritty 0.1.0"
+    }
 
 
 {-| The queue written as far as the pty takes it. -}
@@ -1070,12 +1084,24 @@ applySettings new m =
             else
                 m.term
 
-        term =
+        term1 =
             if new.scrollbackLines /= old.scrollbackLines then
                 Vt.setScrollbackBytes (Vt.scrollbackBytesFor { cols = term0.cols, rows = new.scrollbackLines }) term0
 
             else
                 term0
+
+        -- the colours a program asks for, and a 997 to one that asked to
+        -- hear of the theme changing (docs/tmux.md TM4), sent at once
+        told =
+            if new.foreground /= old.foreground || new.background /= old.background then
+                Vt.takeReplies (Vt.withEmbedder (embedderOf new) term1)
+
+            else
+                { term = term1, replies = [] }
+
+        term =
+            told.term
 
         -- read before `term` is moved into the model
         shape =
@@ -1101,6 +1127,7 @@ applySettings new m =
                 , shadow = View.shadow shape.cols shape.rows
                 , urgent = True
             }
+                |> (\a -> Array.foldl sendRaw a told.replies)
     in
     (if new.hosts /= old.hosts then
         Window.systemMenu (Array.map .label (menuItems new))

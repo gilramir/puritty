@@ -5,7 +5,6 @@ module Vt.Dispatch exposing
     , count0
     , zeroIsNothing
     , takesOne
-    , primaryAttributes
     , cursorLeft
     , reverseLeft
     , rectChecksum
@@ -110,6 +109,14 @@ dispatchRest final priv inter params t =
         else if final == 0x6E && param 0 0 params == 998 then
             visibilityReport t
 
+        else if final == 0x6E && param 0 0 params == 996 then
+            when themeReport t is
+                Just answer ->
+                    reply answer t
+
+                Nothing ->
+                    t
+
         else if final == 0x6E && param 0 0 params == 6 then
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
 
@@ -147,7 +154,7 @@ dispatchRest final priv inter params t =
         { t | modes = Dict.remove modifyOtherKeysKey t.modes }
 
     else if priv == 0x3E && final == 0x71 && inter == 0 then
-        reply "\u{001B}P>|puritty\u{001B}\\" t
+        reply ("\u{001B}P>|" ++ t.embedder.version ++ "\u{001B}\\") t
 
     else if priv == 0x3D && final == 0x63 && inter == 0 then
         reply "\u{001B}P!|00000000\u{001B}\\" t
@@ -399,7 +406,7 @@ dispatchRare final params t =
             t
 
     else if final == 0x63 then
-        reply primaryAttributes t
+        reply t.embedder.attributes t
 
     else if final == 0x74 && Array.length params == 1 && (param 0 0 params == 18 || param 0 0 params == 19) then
         -- 19, the screen's size, is the text area's as in Ghostty and VTE
@@ -479,11 +486,6 @@ takesOne final =
         || final == 0x6B
 
 
-{-| DA1's answer, and DECID's: a VT220 with ANSI colour, as libghostty-vt
-answers when its embedder does not say otherwise (§VC10). -}
-primaryAttributes : String
-primaryAttributes =
-    "\u{001B}[?62;22c"
 
 
 {-| BS and CUB: `n` columns left. With autowrap and reverse wraparound

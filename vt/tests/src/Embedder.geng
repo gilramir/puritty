@@ -1,0 +1,113 @@
+module Embedder exposing (suite)
+
+{-| What the embedder says of itself, and what a program asking hears
+(`Vt.withEmbedder`, puritty `docs/tmux.md` TM4): the look's colours to
+OSC 10 and 11, dark or light to DSR 996 and, under mode 2031, when that
+changes; DA1's answer and XTVERSION's name. Without one the answers are
+libghostty-vt's, which the replay corpus is held to.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+{-| The replies to `input`. -}
+asked : String -> (taken t : Vt.Term) -> Array String
+asked input t =
+    Array.map Support.text (Vt.takeReplies (feed input t)).replies
+
+
+{-| An embedder with this background and a foreground of its own. -}
+embedder : Int -> Vt.Embedder
+embedder background =
+    { look = Just { foreground = 0xC5C8C6, background = background }
+    , attributes = "\u{001B}[?62;21;22;52c"
+    , version = "puritty 0.1.0"
+    }
+
+
+dark : Int
+dark =
+    0x1D1F21
+
+
+light : Int
+light =
+    0xFAFAFA
+
+
+{-| A terminal that took its embedder, with the replies so far taken. -}
+told : Int -> Vt.Term
+told background =
+    (Vt.takeReplies (Vt.withEmbedder (embedder background) (term 10 2))).term
+
+
+queries : String
+queries =
+    "\u{001B}]10;?\u{0007}\u{001B}]11;?\u{0007}\u{001B}[?996n\u{001B}[c\u{001B}[>q"
+
+
+suite : U.Suite
+suite =
+    Support.run "Embedder"
+        [ { name = "without an embedder, OSC 10, 11 and DSR 996 are not answered, and DA1 and XTVERSION are libghostty-vt's"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[?62;22c", "\u{001B}P>|puritty\u{001B}\\" ]
+                        (asked queries (term 10 2))
+          }
+        , { name = "an embedder's colours, theme, attributes and name are what a program hears"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}]10;rgb:c5c5/c8c8/c6c6\u{0007}"
+                        , "\u{001B}]11;rgb:1d1d/1f1f/2121\u{0007}"
+                        , "\u{001B}[?997;1n"
+                        , "\u{001B}[?62;21;22;52c"
+                        , "\u{001B}P>|puritty 0.1.0\u{001B}\\"
+                        ]
+                        (asked queries (told dark))
+          }
+        , { name = "a light background is reported light"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[?997;2n" ] (asked "\u{001B}[?996n" (told light))
+          }
+        , { name = "a background a program set is the one judged, and answered"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[?997;2n", "\u{001B}]11;rgb:ffff/ffff/ffff\u{0007}" ]
+                        (asked "\u{001B}]11;rgb:ffff/ffff/ffff\u{0007}\u{001B}[?996n\u{001B}]11;?\u{0007}" (told dark))
+          }
+        , { name = "the cursor's colour is the foreground's when only the embedder gives one"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}]12;rgb:c5c5/c8c8/c6c6\u{0007}" ] (asked "\u{001B}]12;?\u{0007}" (told dark))
+          }
+        , { name = "under mode 2031, a change from dark to light is told at once"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[?997;2n" ]
+                        (Array.map Support.text (Vt.takeReplies (Vt.withEmbedder (embedder light) (feed "\u{001B}[?2031h" (told dark)))).replies)
+          }
+        , { name = "under mode 2031, a new background on the same side is not told"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (Array.map Support.text (Vt.takeReplies (Vt.withEmbedder (embedder 0x000000) (feed "\u{001B}[?2031h" (told dark)))).replies)
+          }
+        , { name = "without mode 2031, a change of theme is not told"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (Array.map Support.text (Vt.takeReplies (Vt.withEmbedder (embedder light) (told dark))).replies)
+          }
+        , { name = "RIS keeps the embedder"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[?997;1n", "\u{001B}[?62;21;22;52c" ]
+                        (asked "\u{001B}c\u{001B}[?996n\u{001B}[c" (told dark))
+          }
+        ]

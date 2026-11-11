@@ -1,4 +1,4 @@
-module Vt.Palette exposing (dynamicKey, dynamicColour, paletteColour, defaultColour, namedColours, rgbOf)
+module Vt.Palette exposing (dynamicKey, dynamicColour, paletteColour, defaultColour, namedColours, rgbOf, themeReport, programColour)
 
 {-| Part of `Vt`: the colours a terminal holds (OSC 4 and 10 to 12) and the
 palette before anything sets it, which the renderer (`Vt.View`) resolves a
@@ -14,11 +14,11 @@ dynamicKey c =
     1000 + c
 
 
-{-| A dynamic colour: the one set, or none, since the core has no default
-foreground or background, as libghostty-vt has none unless its embedder
-gives one; the cursor's is the foreground's when it has none. -}
-dynamicColour : Int -> Term -> Maybe Int
-dynamicColour c t =
+{-| A dynamic colour as a program set it with OSC 10 to 12, or none; the
+cursor's is the foreground's when it has none. The renderer's (`Vt.View`),
+which has the look's own colours and the cell's under the cursor. -}
+programColour : Int -> Term -> Maybe Int
+programColour c t =
     if c == 12 then
         when Dict.get (dynamicKey 12) t.colours is
             Just v ->
@@ -32,6 +32,52 @@ dynamicColour c t =
 
     else
         Nothing
+
+
+{-| A dynamic colour as OSC 10 to 12 answer it: the one set, else the embedder's foreground or
+background (`Term.Embedder`), else none, as libghostty-vt has none unless
+its embedder gives one; the cursor's is the foreground's when it has none. -}
+dynamicColour : Int -> Term -> Maybe Int
+dynamicColour c t =
+    if c == 12 then
+        when Dict.get (dynamicKey 12) t.colours is
+            Just v ->
+                Just v
+
+            Nothing ->
+                dynamicColour 10 t
+
+    else if c == 10 || c == 11 then
+        when Dict.get (dynamicKey c) t.colours is
+            Just v ->
+                Just v
+
+            Nothing ->
+                Maybe.map (\look -> if c == 10 then look.foreground else look.background) t.embedder.look
+
+    else
+        Nothing
+
+
+{-| DSR 996's answer, `CSI ? 997 ; 1 n` for a dark background and `; 2 n`
+for a light one, from the background OSC 11 answers; none when there is no
+background to judge (`docs/tmux.md` TM4). Light is a relative luminance
+over half, with sRGB's weights on the channels as they are. -}
+themeReport : Term -> Maybe String
+themeReport t =
+    dynamicColour 11 t
+        |> Maybe.map
+            (\bg ->
+                let
+                    luma =
+                        2126 * Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 bg) + 7152 * Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 bg) + 722 * Bitwise.and 0xFF bg
+                in
+                if luma > 1275000 then
+                    "\u{001B}[?997;2n"
+
+                else
+                    "\u{001B}[?997;1n"
+            )
 
 
 paletteColour : Int -> Term -> Int

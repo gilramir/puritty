@@ -620,7 +620,8 @@ General knowledge; check against the WHATWG Encoding Standard and glibc's charma
 
 *2026-11-11:* measured in `tmux.md` TM11. No tmux from 2.7 to 3.8 carries EUC-KR
 bytes a program writes, and 2.7 refuses an EUC-KR locale; the conversion has to
-happen inside the pane.
+happen inside the pane. Confirmed by Gilbert's colleagues: EUC-KR by default, UTF-8
+when they use tmux.
 
 It isn't yet known whether the EUC-KR users run tmux; the combination will be tested
 on RHEL8 later. tmux stores its grid as UTF-8 and decides from the client's locale

@@ -256,7 +256,10 @@ character and 64 marks, as Ghostty keeps them).
 DA3 `!|00000000`, DECRQM's answers, DECRQSS's forms; XTVERSION answers
 `puritty`. What puritty says it is is a product question for phase 3,
 when programs start asking it; until then matching the oracle keeps the
-gate whole.
+gate whole. *2026-11-11:* the core's own answers stay these; its
+embedder says more through `Vt.withEmbedder` (`tmux.md` TM12): puritty's
+window answers DA1 `?62;21;22;52c`, XTVERSION `puritty 0.1.0`, OSC 10
+and 11 from its look and DSR 996.
 
 ---
 

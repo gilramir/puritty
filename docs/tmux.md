@@ -481,5 +481,53 @@ tmux are UTF-8, and puritty's EUC-KR setting (`cjk-and-thai.md` §10) must
 be off for that session, in ordinary and in control mode alike. This is
 inferred from the table; how the colleagues work is Gilbert's to confirm.
 
-`cjk-and-thai.md` §10.4's open questions are answered here, but one: what
-the colleagues run inside the pane.
+`cjk-and-thai.md` §10.4's open questions are answered here.
+
+**Confirmed, 2026-11-11:** Gilbert asked the colleagues. They work in
+EUC-KR by default and switch to UTF-8 to use tmux. So a session on such a
+host is EUC-KR outside tmux and UTF-8 inside it, and puritty's character
+set has to follow:
+
+- **In control mode** puritty knows it is talking to tmux, so the session's
+  panes are UTF-8 whatever the host's setting says. Nothing for the user to
+  do (phase 4).
+- **In an ordinary attach** puritty sees only bytes. Today the user changes
+  the host's character set in the settings and back. Ideas, none built: a
+  quick switch in the window's menu; or a host entry's `command` that runs
+  tmux (`settings.md` ST23) marking that session UTF-8.
+
+## TM12 · TM4.3 built (2026-11-11)
+
+Gilbert accepted TM10's leanings, so the five fixes are in:
+
+- **`Vt.Embedder`** (`vt/src/Vt/Term.geng`): what the embedder says of
+  itself, its foreground and background, DA1's answer and XTVERSION's
+  name. Without one (`ghosttyEmbedder`) every answer is libghostty-vt's as
+  before, so the replay corpus and the oracle are untouched (`vt-core.md`
+  V4). `Vt.withEmbedder` sets it.
+- **OSC 10, 11 and 12 `?`** answer the program's colour, else the
+  embedder's (`Palette.dynamicColour`). The renderer keeps to the colours a
+  program set (`Palette.programColour`), so a block cursor still takes the
+  colour of the text under it.
+- **DSR 996** answers `CSI ? 997 ; 1 n` or `; 2 n` from the background OSC
+  11 answers, light when its relative luminance is over half, and nothing
+  when there is none. `withEmbedder` sends the same, unasked, under mode
+  2031 when the side changes: puritty's settings reloaded with another
+  background is sent at once (`applySettings`).
+- **puritty's window** (`app/src/Main.geng`, `embedderOf`) gives the
+  look's colours, DA1 `?62;21;22;52c` (21 margins, 52 OSC 52) and
+  XTVERSION `puritty 0.1.0`.
+- **The user guide** has `docs/user/tmux.md`, with TM4.3's line for
+  `.tmux.conf` and the EUC-KR finding of TM11.
+
+**Measured** with `bench/tmux/inside.py`: tmux 3.8 attached inside puritty
+on Xvfb, a lone Esc typed with xdotool, timed until the pane shows it;
+three runs each.
+
+| puritty | Esc 1 s after attach | Esc 6 s after | `client_theme` | features tmux turned on |
+|---|---|---|---|---|
+| 9dc01c1, before | 503 ms | 17 ms | (empty) | bpaste, ccolour, clipboard, cstyle, focus, RGB, sync, title |
+| with TM12 | 17 ms | — | dark | the same and **margins** |
+
+The core's unit tests have a suite for it (`vt/tests/src/Embedder.geng`,
+9 tests).

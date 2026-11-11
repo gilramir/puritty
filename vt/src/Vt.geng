@@ -5,6 +5,7 @@ module Vt exposing
     , View, scrollbackRows, rowsPushed, viewAt, viewPainted, paint, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
     , Clip, takeClipboard, withPalette, setPalette, setScrollbackBytes
+    , Embedder, withEmbedder
     )
 
 {-| puritty's headless terminal core (`docs/vt-core.md`).
@@ -71,6 +72,11 @@ type alias Term =
 {-| A clipboard request of an OSC 52 (`Vt.Term.Clip`, `takeClipboard`). -}
 type alias Clip =
     State.Clip
+
+
+{-| What the embedder says of itself (`withEmbedder`). -}
+type alias Embedder =
+    State.Embedder
 
 
 {-| The rows a view scrolled back shows (`viewAt`), for `Vt.View.frameBack`:
@@ -918,6 +924,36 @@ new config0 =
             }
     in
     withScroll (fresh config)
+
+
+{-| The terminal with what its embedder says of itself (`Term.Embedder`,
+`docs/tmux.md` TM4): the colours OSC 10 and 11 answer and DSR 996 judges,
+DA1's answer and XTVERSION's name. When the theme that makes dark or light
+changes and a program asked to hear of it (mode 2031), the terminal tells
+it, `CSI ? 997 ; 1 n` or `; 2 n`, among its replies: puritty's settings
+reloaded with another background is such a change. -}
+withEmbedder : Embedder -> (taken t : Term) -> Term
+withEmbedder embedder t =
+    let
+        before =
+            themeReport t
+
+        told =
+            { t | embedder = embedder }
+
+        after =
+            themeReport told
+    in
+    when after is
+        Just report ->
+            if after /= before && Dict.get 2031 told.modes == Just True then
+                reply report told
+
+            else
+                told
+
+        Nothing ->
+            told
 
 
 {-| The terminal with its 16 named colours as its embedder's (puritty's
