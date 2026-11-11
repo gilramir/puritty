@@ -567,3 +567,61 @@ so phase 4 starts. The steps, each tested and committed:
 4. Then: capture on attach and on `%continue`, `pause-after`, tmux windows
    as tabs, the mouse (focus, moving and resizing floating panes), and
    detach and reattach.
+
+## TM14 · Step 3: tmux's panes in puritty's window (2026-11-11)
+
+Built: `tmux -CC` run on puritty's terminal shows the tmux window's panes
+in puritty's window, floating and modal panes included.
+
+- **`app/src/TmuxMode.geng`** keeps the control mode's state: the reader
+  (`Tmux.Control`), the window shown, a `Vt.Term` for each pane with its
+  id beside it, the layout, the active pane, and the canvas. `Main.feed`
+  gives every read to `TmuxMode.read` first: the terminal's own bytes go
+  on to its core as before, each `%output` is fed to its pane's
+  terminal (whose replies are dropped: tmux answered them, TM5.4), a
+  `%layout-change` of the window shown sizes the panes' terminals to
+  their boxes, `%window-pane-changed` moves the active pane. On entry
+  puritty sends `refresh-client -f new-layouts`, `refresh-client -C` with
+  the window's size, and asks for the window's id and layout.
+- **Keys and pastes** (`Main.send`) go to the active pane as `send-keys
+  -H` while control mode is on; a resize of the window becomes
+  `refresh-client -C`.
+- **The picture** is a canvas `Vt.Term` the size of the window, made
+  again each frame by `TmuxMode.paint`: cleared, the tiled panes laid on
+  with `Vt.compose`, the lines between them painted (`Vt.paint`), then
+  each floating pane in a box, bottom first, so a box lies over what is
+  under it; then the cursor at the active pane's. `draw` frames the
+  canvas as it frames the terminal, so the renderer, its shadow and its
+  scroll copies are unchanged. The title is `tmux: ` and the window's
+  name.
+- **`Vt.compose`** (new in the core): panes' screens laid on a terminal's
+  screen at their places, by index into a `Builder` of terminals, which
+  are only read; each cell's style and grapheme cluster interned into the
+  canvas's own tables, so a style id means one style in the frame.
+  `Vt.cursorOf` reads a pane's cursor. The canvas is kept between frames,
+  so a style keeps its id and the renderer's diff draws only what
+  changed.
+- **The pane terminals live in an `Array.Builder`**, updated in place
+  with `Builder.update`: Geng's ownership checker refuses a terminal
+  rewritten inside `Array.map`, as an array only lends its elements.
+
+**Shown** with `bench/tmux/show.py`, puritty on Xvfb running `tmux -CC
+new-session` while a second client splits the window and opens a floating
+and a modal pane: text typed with xdotool reached the active pane each
+time, the right pane's green text and Hangul came through, the vertical
+divider stops at the floating box, and the modal box lies over the
+floating one.
+
+**Not yet** (TM13 step 4): what the panes held before attaching (a
+capture), `pause-after`, the session's other windows as tabs, the mouse
+(focus by click, moving and resizing floating panes), scrollback and
+selection within a pane, colours for the dividers and the active pane's
+box, and puritty's own screen while tmux exits.
+
+**Decided, Gilbert, 2026-11-11: floating panes stay inside the window.**
+tmux keeps a floating pane within its window's area (it clamps each back
+inside on a resize, `layout_clamp_floating_panes`), and puritty draws them
+there, in boxes over the tiled panes. A floating pane is not pulled out into
+a window of its own: tmux's coordinates would no longer say where it is, and
+puritty has one window a process (`ssh-client.md` SC22). Step 4's mouse
+moves and resizes them within the window, by `move-pane` and `resize-pane`.

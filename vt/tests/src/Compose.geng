@@ -1,0 +1,49 @@
+module Compose exposing (suite)
+
+{-| `Vt.compose`, which lays panes' screens on a terminal's, as puritty
+draws tmux's panes in one window (puritty `docs/tmux.md` TM14).
+-}
+
+import Array.Builder as Builder
+import Expect
+import Support exposing (feed, lines, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+{-| Two panes: `ab` in bold red, 3 wide, and `xy` with a mark on its `y`
+(a cluster), 2 wide. -}
+panes : {} -> Builder.Builder Vt.Term
+panes _ =
+    Builder.empty 2
+        |> Builder.pushLast (feed "\u{001B}[1;31mab" (term 3 1))
+        |> Builder.pushLast (feed "xy\u{0301}" (term 2 1))
+
+
+suite : U.Suite
+suite =
+    Support.run "Compose"
+        [ { name = "panes laid at their places, the rest blank"
+          , test =
+                \_ ->
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 0, x = 0, y = 0 }, { index = 1, x = 4, y = 1 } ] (term 6 2)))
+                        (lines (feed "\u{001B}[1;31mab\u{001B}[0m\u{001B}[2;5Hxy\u{0301}\u{001B}[H" (term 6 2)))
+          }
+        , { name = "a later pane lies over an earlier one, and a pane is cut at the edge"
+          , test =
+                \_ ->
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 0, x = 0, y = 0 }, { index = 1, x = 1, y = 0 }, { index = 0, x = 5, y = 1 } ] (term 6 2)))
+                        (lines (feed "\u{001B}[1;31ma\u{001B}[0mxy\u{0301}\u{001B}[2;6H\u{001B}[1;31ma\u{001B}[H" (term 6 2)))
+          }
+        , { name = "what no pane covers keeps what the screen held"
+          , test =
+                \_ ->
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 1, x = 0, y = 0 } ] (feed "....\u{001B}[H" (term 4 1))))
+                        (lines (feed "xy\u{0301}..\u{001B}[H" (term 4 1)))
+          }
+        , { name = "an index with no pane lays nothing"
+          , test =
+                \_ ->
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 7, x = 0, y = 0 } ] (term 4 1))) (lines (term 4 1))
+          }
+        ]

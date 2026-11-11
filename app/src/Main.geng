@@ -67,6 +67,7 @@ import Ssh.Session as Session
 import Source exposing (Source)
 import Task exposing (Task)
 import Time
+import TmuxMode
 import Vt
 import Vt.Charset as Charset exposing (Charset)
 import Vt.Mouse as Mouse
@@ -146,6 +147,9 @@ type alias Model =
       -- puritty's own screen shows until the session runs, a question it
       -- asks, how the session ended
     , ssh : Maybe SshScreen
+      -- tmux control mode, when `tmux -CC` runs on the terminal
+      -- (docs/tmux.md TM14)
+    , tmux : TmuxMode.State
     }
 
 
@@ -677,6 +681,7 @@ run imeLog shotPath charset config cell remote settings problems opener =
                                 Maybe.map
                                     (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
                                     config.remote
+                            , tmux = TmuxMode.idle {}
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -774,6 +779,16 @@ the loop races beside its read, so a program that stops reading until its
 output is read never holds the window (V48, geng-lang D1049). -}
 send : Bytes -> (taken m : Model) -> Model
 send text m =
+    if TmuxMode.isOn m.tmux then
+        -- under tmux control mode, to the active pane (docs/tmux.md TM14)
+        sendRaw (commandLines (TmuxMode.keys text m.tmux)) m
+
+    else
+        sendPty text m
+
+
+sendPty : Bytes -> (taken m : Model) -> Model
+sendPty text m =
     let
         -- in the pane's character set (cjk-and-thai.md §10.3, V49); what
         -- it cannot send goes as `?`, counted and shown in the title. A
@@ -1386,10 +1401,44 @@ replyCap =
     1048576
 
 
+{-| A read: what tmux control mode says, if it runs (docs/tmux.md TM14),
+done to its panes and its commands queued; the rest fed to the core. -}
+feed : Backend -> Bytes -> Int -> (taken m : Model) -> Task Error Model
+feed remote chunk ms m =
+    let
+        size =
+            { cols = m.term.cols, rows = m.term.rows }
+
+        r =
+            TmuxMode.read size chunk m.tmux
+
+        on =
+            TmuxMode.isOn r.state
+    in
+    feedTerm remote r.outside ms
+        { m
+            | tmux = r.state
+            , urgent = m.urgent || on
+            , pending =
+                if on && m.pending < 0 then
+                    ms
+
+                else
+                    m.pending
+        }
+        |> Task.map (\fed -> sendRaw (commandLines r.commands) fed)
+
+
+{-| tmux commands as the lines written to it. -}
+commandLines : Array String -> Bytes
+commandLines commands =
+    Bytes.fromString (String.join "" (Array.map (\c -> c ++ "\n") commands))
+
+
 {-| A read fed to the core and its replies queued, while fewer than
 `replyCap` bytes wait. -}
-feed : Backend -> Bytes -> Int -> (taken m : Model) -> Task Error Model
-feed remote chunk0 ms m =
+feedTerm : Backend -> Bytes -> Int -> (taken m : Model) -> Task Error Model
+feedTerm remote chunk0 ms m =
     let
         -- an EUC-KR or CP949 pane's bytes in UTF-8 before the core (V49)
         decoded =
@@ -1885,8 +1934,12 @@ handleOne remote ms rest ev m =
                                         key remote ms rest k m
 
                 Window.Resized size ->
+                    let
+                        told =
+                            TmuxMode.resized { cols = size.cols, rows = size.rows } m.tmux
+                    in
                     remote.resize { columns = size.cols, rows = size.rows }
-                        |> Task.andThen (\_ -> handle remote ms rest { m | term = Vt.resize size.cols size.rows m.term, urgent = True, back = 0, selection = Nothing })
+                        |> Task.andThen (\_ -> handle remote ms rest (sendRaw (commandLines told.commands) { m | term = Vt.resize size.cols size.rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing }))
 
                 Window.Focus on ->
                     let
@@ -2744,27 +2797,25 @@ draw ms m =
             else
                 Nothing
 
-        f =
-            when { own = own, menu = m.menu } is
-                { own = Just t } ->
-                    View.frameWith m.look m.focus { text = "", feedback = [], caret = 0 } View.noHighlight t m.shadow
+        tmuxOn =
+            TmuxMode.isOn m.tmux
 
-                { menu = Just menu } ->
-                    -- the menu painted over a copy of the screen (ST26)
-                    View.frameBack m.look m.focus 0 (Vt.viewPainted (menuPaints menu m.term.cols m.term.rows) m.term) highlight m.term m.shadow
+        -- under tmux control mode the window is its panes (docs/tmux.md TM14)
+        tmux =
+            if tmuxOn then
+                TmuxMode.paint m.tmux
 
-                _ ->
-                    if back > 0 then
-                        View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
-
-                    else
-                        View.frameWith m.look m.focus preedit highlight m.term m.shadow
+            else
+                m.tmux
 
         spot =
-            View.preeditSpot preedit m.term
+            View.preeditSpot preedit (if tmuxOn then tmux.canvas else m.term)
 
         title =
-            (if ownUp then
+            (if tmuxOn then
+                TmuxMode.title tmux
+
+             else if ownUp then
                 -- puritty's own while its screen is up, which no server can set
                 "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
 
@@ -2795,6 +2846,26 @@ draw ms m =
                         Nothing ->
                             ""
                    )
+
+        f =
+            if tmuxOn then
+                View.frameWith m.look m.focus preedit View.noHighlight tmux.canvas m.shadow
+
+            else
+                when { own = own, menu = m.menu } is
+                    { own = Just t } ->
+                        View.frameWith m.look m.focus { text = "", feedback = [], caret = 0 } View.noHighlight t m.shadow
+
+                    { menu = Just menu } ->
+                        -- the menu painted over a copy of the screen (ST26)
+                        View.frameBack m.look m.focus 0 (Vt.viewPainted (menuPaints menu m.term.cols m.term.rows) m.term) highlight m.term m.shadow
+
+                    _ ->
+                        if back > 0 then
+                            View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
+
+                        else
+                            View.frameWith m.look m.focus preedit highlight m.term m.shadow
     in
     Window.draw f.list
         |> Task.andThen (\up -> Window.spot spot |> Task.map (\_ -> up))
@@ -2819,6 +2890,7 @@ draw ms m =
                             in
                             { m
                                 | shadow = shadow
+                                , tmux = tmux
                                 , last = ms
                                 , pending = -1
                                 , urgent = again

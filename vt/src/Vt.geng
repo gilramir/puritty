@@ -5,7 +5,7 @@ module Vt exposing
     , View, scrollbackRows, rowsPushed, viewAt, viewPainted, paint, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
     , Clip, takeClipboard, withPalette, setPalette, setScrollbackBytes
-    , Embedder, withEmbedder
+    , Embedder, withEmbedder, compose, cursorOf
     )
 
 {-| puritty's headless terminal core (`docs/vt-core.md`).
@@ -169,6 +169,140 @@ viewPainted paints t =
             paintedRows paints t
     in
     { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
+
+
+{-| Where the cursor is on the screen, and whether DECTCEM shows it. -}
+cursorOf : Term -> { x : Int, y : Int, visible : Bool }
+cursorOf t =
+    { x = t.x, y = t.y, visible = t.showCursor }
+
+
+{-| Panes drawn into a terminal's screen, as puritty draws tmux's panes in
+one window (`docs/tmux.md` TM14): each place's pane, by its index, its
+screen's rows and columns from the place's row and column of this
+terminal's, in the places' order, so a later pane lies over an earlier
+one, and cut at this terminal's edges. The panes are only read. A pane's cells keep
+their characters, clusters and styles: its styles and clusters are taken
+into this terminal's own tables. What no pane covers keeps what this
+terminal's screen held, so panes, and text `paint` paints between them, can
+be laid on in turns; ED 2 first clears it. This terminal is the embedder's canvas, never fed a program's output; its
+cursor is the embedder's to place.
+
+A pane's colours by number resolve against this terminal's palette, and a
+pane's own OSC 4, 10 and 11 are not carried. -}
+compose : Builder Term -> Array { index : Int, x : Int, y : Int } -> (taken t : Term) -> Term
+compose panes places t =
+    let
+        cols =
+            t.cols
+
+        rows =
+            t.rows
+
+        -- what the screen holds, each row its full width
+        start =
+            { rows = Array.map (\r -> r.cells ++ Array.repeat (cols - Array.length r.cells) (Int64.fromInt 0)) (rowsBetween 0 rows t).rows
+            , styles = t.styles
+            , clusters = t.clusters
+            }
+
+        done =
+            Array.foldl
+                (\place acc ->
+                    when Builder.get place.index panes is
+                        Just pane ->
+                            composePane cols rows pane place.x place.y acc
+
+                        Nothing ->
+                            acc
+                )
+                start
+                places
+
+        written =
+            Array.map (\cells -> { cells = cells, wrapped = False, prompt = 0 }) done.rows
+    in
+    { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters }
+
+
+composePane : Int -> Int -> Term -> Int -> Int -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }
+composePane cols rows pane px py acc =
+    let
+        read =
+            rowsBetween 0 pane.rows pane
+
+        width =
+            max 0 (min pane.cols (cols - px))
+    in
+    Array.indexedFoldl
+        (\ry row a ->
+            let
+                ty =
+                    py + ry
+            in
+            if ty < 0 || ty >= rows || width == 0 || px < 0 then
+                a
+
+            else
+                let
+                    cells =
+                        Array.takeFirst width row.cells
+
+                    padded =
+                        cells ++ Array.repeat (width - Array.length cells) (Int64.fromInt 0)
+
+                    moved =
+                        Array.foldl
+                            (\c m ->
+                                let
+                                    one =
+                                        composeCell pane.styles read.clusters c m.styles m.clusters
+                                in
+                                { cells = Array.pushLast one.cell m.cells, styles = one.styles, clusters = one.clusters }
+                            )
+                            { cells = [], styles = a.styles, clusters = a.clusters }
+                            padded
+
+                    target =
+                        Maybe.withDefault [] (Array.get ty a.rows)
+                in
+                { rows = Array.set ty (Array.setMany px moved.cells target |> Array.takeFirst cols) a.rows
+                , styles = moved.styles
+                , clusters = moved.clusters
+                }
+        )
+        acc
+        read.rows
+
+
+{-| A pane's cell with its style and cluster ids this terminal's. -}
+composeCell : Styles -> Clusters -> Int64 -> Styles -> Clusters -> { cell : Int64, styles : Styles, clusters : Clusters }
+composeCell paneStyles paneClusters c styles clusters =
+    let
+        style =
+            Bitwise.and 0xFFFF (cellStyle c)
+
+        interned =
+            if style == 0 then
+                { id = 0, styles = styles }
+
+            else
+                intern (styleOf style paneStyles) styles
+
+        styled =
+            Bitwise.or (styleBits interned.id) (Bitwise.and (Bitwise.complement (styleBits 0xFFFF)) c)
+    in
+    if cellIsCluster c then
+        when internCluster (cellPoints c paneClusters) clusters is
+            Just k ->
+                { cell = Bitwise.or (Int64.fromInt k.id) (Bitwise.and (Bitwise.complement 0x1FFFFF) styled), styles = interned.styles, clusters = k.clusters }
+
+            Nothing ->
+                -- no room for another cluster: its first code point alone
+                { cell = Bitwise.or (Int64.fromInt (Maybe.withDefault 32 (Array.first (cellPoints c paneClusters)))) (Bitwise.and (Bitwise.complement 0xFFFFFF) styled), styles = interned.styles, clusters = clusters }
+
+    else
+        { cell = styled, styles = interned.styles, clusters = clusters }
 
 
 {-| The text `viewPainted` paints, painted into the term's own screen

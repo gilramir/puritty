@@ -1,0 +1,419 @@
+module TmuxMode exposing
+    ( State
+    , idle
+    , isOn
+    , read
+    , paint
+    , keys
+    , resized
+    , title
+    )
+
+{-| tmux control mode in puritty's window (`docs/tmux.md` TM13 step 3,
+TM14): when `tmux -CC` starts on the terminal, the window shows the tmux
+window's panes, each a terminal of its own fed its `%output`; tiled panes
+where tmux puts them with a line between, floating panes over them in a
+box; the active pane's cursor. Keys go to the active pane, the window's
+size to tmux. `%exit` gives the terminal back.
+
+The panes' terminals answer nothing: tmux answered their programs already.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bytes exposing (Bytes)
+import Tmux.Command as Command
+import Tmux.Control as Control exposing (Event(..), Notice(..))
+import Tmux.Layout as Layout
+import Vt
+
+
+type alias State =
+    { reader : Control.Reader
+    , on : Bool
+      -- the tmux window shown, -1 until tmux says which
+    , window : Int
+    , name : String
+      -- each pane's terminal, and its id at the same index
+    , ids : Array Int
+    , panes : Builder Vt.Term
+    , layout : Maybe Layout.Cell
+    , active : Int
+      -- whether the window has a modal pane, which takes every key
+    , modal : Bool
+      -- the window's picture, made of the panes (`Vt.compose`)
+    , canvas : Vt.Term
+    }
+
+
+idle : {} -> State
+idle _ =
+    { reader = Control.reader
+    , on = False
+    , window = -1
+    , name = ""
+    , ids = []
+    , panes = Builder.empty 0
+    , layout = Nothing
+    , active = -1
+    , modal = False
+    , canvas = blank 1 1
+    }
+
+
+blank : Int -> Int -> Vt.Term
+blank cols rows =
+    Vt.new
+        { cols = max 1 cols
+        , rows = max 1 rows
+        , scrollbackBytes = Vt.scrollbackBytesFor { cols = max 1 cols, rows = 1000 }
+        , pageRows = Vt.defaultPageRows
+        , checksums = False
+        , cellWidth = 0
+        , cellHeight = 0
+        }
+
+
+isOn : State -> Bool
+isOn s =
+    s.on
+
+
+title : State -> String
+title s =
+    "tmux: " ++ s.name
+
+
+{-| A read's bytes: the terminal's own (`outside`, for its core), and
+what tmux said, done to the panes. `commands` are tmux commands to write,
+each a line. -}
+read : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String }
+read size bytes s =
+    let
+        fed =
+            Control.feed bytes s.reader
+
+        done =
+            Array.foldl (event size) { state = { s | reader = fed.reader }, outside = [], commands = [] } fed.events
+    in
+    { state = done.state, outside = Bytes.flatten done.outside, commands = done.commands }
+
+
+type alias Acc =
+    { state : State, outside : Array Bytes, commands : Array String }
+
+
+windowQuery : String
+windowQuery =
+    "display-message -p " ++ Command.quote "W #{window_id} #{window_visible_layout} #{window_name}"
+
+
+event : { cols : Int, rows : Int } -> Event -> (taken acc : Acc) -> Acc
+event size e acc =
+    when e is
+        Outside b ->
+            { acc | outside = Array.pushLast b acc.outside }
+
+        Entered ->
+            let
+                st =
+                    acc.state
+            in
+            { acc
+                | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows }
+                , commands = acc.commands ++ [ Command.clientFlags, Command.size { cols = size.cols, rows = size.rows }, windowQuery ]
+            }
+
+        Exited ->
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1 } }
+
+        Reply r ->
+            { acc | state = Array.foldl replyLine acc.state r.lines }
+
+        Notice n ->
+            notice n acc
+
+
+{-| A line of `windowQuery`'s answer: `W @id layout name`. -}
+replyLine : Bytes -> (taken s : State) -> State
+replyLine bytes s =
+    let
+        words =
+            String.split " " (Bytes.toStringLossy bytes)
+    in
+    when words is
+        [ "W", w, layoutText ] ->
+            showWindow (idOf w) layoutText "" s
+
+        _ ->
+            when Array.get 0 words is
+                Just "W" ->
+                    showWindow (idOf (Maybe.withDefault "" (Array.get 1 words))) (Maybe.withDefault "" (Array.get 2 words)) (String.join " " (Array.dropFirst 3 words)) s
+
+                _ ->
+                    s
+
+
+idOf : String -> Int
+idOf w =
+    Maybe.withDefault -1 (String.toInt (String.dropFirst 1 w))
+
+
+showWindow : Int -> String -> String -> (taken s : State) -> State
+showWindow window layoutText name s =
+    if window < 0 then
+        s
+
+    else
+        applyLayout layoutText { s | window = window, name = if name == "" then s.name else name }
+
+
+notice : Notice -> (taken acc : Acc) -> Acc
+notice n acc =
+    let
+        st =
+            acc.state
+    in
+    when n is
+        Output o ->
+            { acc | state = feedPane o.pane o.bytes st }
+
+        LayoutChange l ->
+            if l.window == st.window || st.window < 0 then
+                { acc | state = applyLayout l.visible { st | window = l.window, modal = String.contains "O" l.flags } }
+
+            else
+                { acc | state = st }
+
+        WindowPaneChanged p ->
+            if p.window == st.window then
+                { acc | state = { st | active = p.pane } }
+
+            else
+                { acc | state = st }
+
+        SessionWindowChanged _ ->
+            -- another window of the session shown: ask for its layout
+            { acc | state = st, commands = Array.pushLast windowQuery acc.commands }
+
+        SessionChanged _ ->
+            { acc | state = st, commands = Array.pushLast windowQuery acc.commands }
+
+        WindowRenamed r ->
+            if r.window == st.window then
+                { acc | state = { st | name = r.name } }
+
+            else
+                { acc | state = st }
+
+        _ ->
+            { acc | state = st }
+
+
+{-| A pane's output fed to its terminal, made at a guessed size if tmux
+has not yet said where it goes; its replies dropped. -}
+feedPane : Int -> Bytes -> (taken s : State) -> State
+feedPane id bytes s =
+    when Array.findFirst (\i -> i == id) s.ids is
+        Just found ->
+            { s | panes = Builder.update found.index (\t -> (Vt.takeReplies (Vt.feed bytes t)).term) s.panes }
+
+        Nothing ->
+            { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
+
+
+{-| A layout: its panes' terminals made or sized to their boxes. -}
+applyLayout : String -> (taken s : State) -> State
+applyLayout text s =
+    when Layout.parse text is
+        Ok cell ->
+            let
+                boxes =
+                    Layout.panes cell
+
+                sized =
+                    Array.foldl sizePane { ids = s.ids, panes = s.panes } boxes
+
+                active =
+                    when Array.findFirst .active boxes is
+                        Just a ->
+                            a.value.id
+
+                        Nothing ->
+                            s.active
+            in
+            { s | layout = Just cell, ids = sized.ids, panes = sized.panes, active = active }
+
+        Err _ ->
+            s
+
+
+sizePane : Layout.Pane -> (taken acc : { ids : Array Int, panes : Builder Vt.Term }) -> { ids : Array Int, panes : Builder Vt.Term }
+sizePane place acc =
+    when Array.findFirst (\i -> i == place.id) acc.ids is
+        Just found ->
+            { ids = acc.ids
+            , panes =
+                Builder.update found.index
+                    (\t ->
+                        if t.cols /= place.w || t.rows /= place.h then
+                            Vt.resize (max 1 place.w) (max 1 place.h) t
+
+                        else
+                            t
+                    )
+                    acc.panes
+            }
+
+        Nothing ->
+            { ids = Array.pushLast place.id acc.ids, panes = Builder.pushLast (blank place.w place.h) acc.panes }
+
+
+{-| The window's picture made again: the tiled panes with lines between,
+the floating ones over them in boxes, the bottom first, and the cursor at
+the active pane's. -}
+paint : (taken s : State) -> State
+paint s =
+    when s.layout is
+        Nothing ->
+            s
+
+        Just cell ->
+            let
+                tiled =
+                    Layout.tiled cell
+
+                floating =
+                    Layout.floating cell
+
+                placeOf p =
+                    Array.findFirst (\i -> i == p.id) s.ids |> Maybe.map (\found -> { index = found.index, x = p.x, y = p.y })
+
+                cols =
+                    s.canvas.cols
+
+                rows =
+                    s.canvas.rows
+
+                -- the dividers right of and below each tiled pane
+                lines =
+                    Array.mapAndFlatten (divider cols rows) tiled
+
+                cursor =
+                    cursorOf s.active (tiled ++ floating) s.ids s.panes
+
+                -- the tiled panes and their dividers, then each floating
+                -- pane in its box, the bottom one first
+                composed =
+                    s.canvas
+                        |> Vt.feed (Bytes.fromString "\u{001B}[H\u{001B}[2J")
+                        |> Vt.compose s.panes (Array.mapAndKeepJust placeOf tiled)
+                        |> Vt.paint lines
+                        |> (\c -> Array.foldl (\p acc -> acc |> Vt.paint (boxAround cols rows p) |> Vt.compose s.panes (Array.mapAndKeepJust placeOf [ p ])) c floating)
+                        |> Vt.feed (Bytes.fromString cursor)
+            in
+            { s | canvas = (Vt.takeReplies composed).term }
+
+
+{-| CUP to the active pane's cursor in the window, and DECTCEM as the
+pane has it. -}
+cursorOf : Int -> Array Layout.Pane -> Array Int -> Builder Vt.Term -> String
+cursorOf active boxes ids panes =
+    when { place = Array.findFirst (\b -> b.id == active) boxes, index = Array.findFirst (\i -> i == active) ids } is
+        { place = Just place, index = Just index } ->
+            when Builder.get index.index panes is
+                Just t ->
+                    let
+                        at =
+                            Vt.cursorOf t
+                    in
+                    "\u{001B}["
+                        ++ String.fromInt (place.value.y + at.y + 1)
+                        ++ ";"
+                        ++ String.fromInt (place.value.x + at.x + 1)
+                        ++ "H"
+                        ++ (if at.visible then "\u{001B}[?25h" else "\u{001B}[?25l")
+
+                Nothing ->
+                    "\u{001B}[?25l"
+
+        _ ->
+            "\u{001B}[?25l"
+
+
+divider : Int -> Int -> Layout.Pane -> Array { row : Int, col : Int, text : String }
+divider cols rows p =
+    let
+        right =
+            if p.x + p.w < cols then
+                Array.range p.y (min rows (p.y + p.h) - 1) |> Array.map (\r -> { row = r, col = p.x + p.w, text = "│" })
+
+            else
+                []
+
+        below =
+            if p.y + p.h < rows then
+                [ { row = p.y + p.h, col = p.x, text = String.repeat (min p.w (cols - p.x)) "─" } ]
+
+            else
+                []
+    in
+    right ++ below
+
+
+boxAround : Int -> Int -> Layout.Pane -> Array { row : Int, col : Int, text : String }
+boxAround cols rows p =
+    let
+        left =
+            p.x - 1
+
+        right =
+            p.x + p.w
+
+        top =
+            p.y - 1
+
+        bottom =
+            p.y + p.h
+
+        inside =
+            max 0 (min p.w (cols - p.x))
+
+        edge l mid r =
+            (if left >= 0 then l else "") ++ String.repeat inside mid ++ (if right < cols then r else "")
+
+        from =
+            if left >= 0 then left else p.x
+    in
+    (if top >= 0 then [ { row = top, col = from, text = edge "┌" "─" "┐" } ] else [])
+        ++ (Array.range p.y (min rows bottom - 1)
+                |> Array.mapAndFlatten
+                    (\r ->
+                        (if left >= 0 then [ { row = r, col = left, text = "│" } ] else [])
+                            ++ (if right < cols then [ { row = r, col = right, text = "│" } ] else [])
+                    )
+           )
+        ++ (if bottom < rows then [ { row = bottom, col = from, text = edge "└" "─" "┘" } ] else [])
+
+
+{-| What a key or a paste sends, as commands to the active pane. -}
+keys : Bytes -> State -> Array String
+keys bytes s =
+    if s.active < 0 then
+        []
+
+    else
+        Command.sendBytes s.active bytes
+
+
+{-| The window at a new size: the canvas, and tmux told. -}
+resized : { cols : Int, rows : Int } -> (taken s : State) -> { state : State, commands : Array String }
+resized size s =
+    if s.on then
+        { state = { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }, commands = [ Command.size size ] }
+
+    else
+        { state = s, commands = [] }

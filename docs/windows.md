@@ -986,3 +986,25 @@ Tested on Linux, where X has both selections to read: the pointer gate's
 `hello`) and `select-not-to-clipboard` (Linux's default: PRIMARY alone);
 53 of 53. On Windows the build is installed on beelink1 for Gilbert to
 try.
+
+## WS28 · Signing the exe: cloud signing, when the certificate comes (2026-11-11)
+
+*Gilbert, 2026-11-11:* puritty.exe will be signed with Authenticode so that
+people can install it easily, with a certificate whose key is held by a
+cloud signing service (DigiCert KeyLocker, SSL.com eSigner or Azure Trusted
+Signing), not a USB token. Not done yet; what is in place:
+
+- `signtool.exe` is on beelink1 with the Windows 10 SDK
+  (`Windows Kits\10\bin\10.0.26100.0\x64`), and PowerShell has
+  `Set-AuthenticodeSignature` (checked 2026-11-11).
+- `osslsigncode` 2.14 is in nixpkgs at the commit devbox pins for tmux;
+  not installed. It signs a PE from Linux, and the cross-built MinGW exe
+  is a PE like any other.
+
+When the certificate comes, `app/release.sh` gets a signing step through the
+service's own client (each has a Windows one; some work from Linux), with an
+RFC 3161 timestamp (`/tr … /td sha256`) so the signature outlives the
+certificate, and `signtool verify /pa` on beelink1 checks it. An installer
+(MSI or MSIX, or `winget`), if one comes, is signed the same way. A new
+publisher's signed exe may still meet SmartScreen's warning until it has
+reputation; signing ends "unknown publisher" and shows tampering.
