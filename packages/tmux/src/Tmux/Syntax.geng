@@ -10,6 +10,7 @@ module Tmux.Syntax exposing
     , menuOf
     , ifFormatOf
     , panesOf
+    , treeOf
     , retarget
     , lines
     , fill
@@ -713,6 +714,51 @@ panesOf command =
                         when args.rest is
                             [] ->
                                 "select-pane -t '%%'"
+
+                            [ one ] ->
+                                if one.block then serialize (tokens one.value) else one.value
+
+                            many ->
+                                serialize many
+                    , after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+                    }
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| What a binding's `choose-tree` asks (puritty `docs/tmux.md` TM32), or
+`choose-session` and `choose-window`, its old names: whether it starts
+with the sessions folded (`-s`) or open on the windows (`-w`), whether it
+zooms the pane (`-Z`), the command a choice runs with `%%` the target
+chosen (`switch-client -t '%%'` when none is given), and the commands
+after it. -}
+treeOf : String -> Maybe { sessions : Bool, zoom : Bool, template : String, after : String }
+treeOf command =
+    let
+        cmds =
+            commands (tokens command)
+
+        name =
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+    in
+    when Array.first cmds is
+        Just first ->
+            if name == "choose-tree" || name == "choose-session" || name == "choose-window" then
+                let
+                    args =
+                        flags "FfKOt" (Array.dropFirst 1 first)
+                in
+                Just
+                    { sessions = name == "choose-session" || (name == "choose-tree" && String.contains "s" args.bools && not (String.contains "w" args.bools))
+                    , zoom = String.contains "Z" args.bools
+                    , template =
+                        when args.rest is
+                            [] ->
+                                "switch-client -t '%%'"
 
                             [ one ] ->
                                 if one.block then serialize (tokens one.value) else one.value

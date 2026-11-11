@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy", "modes"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "modes":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                modes(a, env, tmux, xdo, snap, cli, look)
             return
         if a.scenario == "copy":
             for look in ("puritty", "tmux"):
@@ -550,6 +555,70 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.5)
         print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def modes(a, env, tmux, xdo, snap, cli, look):
+    """tmux's other modes (docs/tmux.md TM32), with Gilbert's tmux.conf, in
+    each look: `C-a w` and `C-a s` shown by puritty and a window and a
+    session chosen from them; the clock (`C-a t`), and a key leaving it;
+    `C-a =`, a mode puritty does not draw, said, and q leaving it. Read
+    back from tmux."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-s", "main", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    where = lambda: q("list-clients", "-F", "#{client_session}:#{window_index}")
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "c")
+        time.sleep(0.5)
+        cli("new-session", "-d", "-s", "other", "-n", "elsewhere")
+        print(look, "| before:", where())
+        xd("key", "ctrl+a", "w")
+        time.sleep(0.8)
+        snap(f"{look}-tree-windows")
+        xd("key", "Up", "Return")
+        time.sleep(0.8)
+        print(look, "| C-a w Up Enter:", where())
+        xd("key", "ctrl+a", "s")
+        time.sleep(0.8)
+        snap(f"{look}-tree-sessions")
+        xd("key", "Up", "Return")
+        time.sleep(0.8)
+        print(look, "| C-a s Up Enter:", where())
+        xd("key", "ctrl+a", "s")
+        time.sleep(0.6)
+        xd("key", "Escape")
+        time.sleep(0.4)
+        print(look, "| C-a s Escape:", where(), "| tmux answers:", q("display-message", "-p", "ok"))
+        xd("key", "ctrl+a", "t")
+        time.sleep(1.2)
+        snap(f"{look}-clock")
+        print(look, "| C-a t:", q("display-message", "-p", "-t", "other:", "#{pane_mode}"), "| tmux's time:", q("display-message", "-p", "%H:%M"))
+        xd("key", "q")
+        time.sleep(0.6)
+        print(look, "| q:", repr(q("display-message", "-p", "-t", "other:", "#{pane_mode}")))
+        cli("set-buffer", "-b", "one", "kept text")
+        xd("key", "ctrl+a", "equal")
+        time.sleep(1.0)
+        print(look, "| C-a =:", q("display-message", "-p", "-t", "other:", "#{pane_mode}"))
+        snap(f"{look}-buffer-mode")
+        xd("key", "q")
+        time.sleep(0.6)
+        print(look, "| C-a = then q:", repr(q("display-message", "-p", "-t", "other:", "#{pane_mode}")))
         cli("kill-server")
         time.sleep(1)
     finally:

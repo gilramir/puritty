@@ -567,6 +567,16 @@ menu line =
             "none"
 
 
+tree : String -> String
+tree line =
+    when Syntax.treeOf line is
+        Just t ->
+            (if t.sessions then "sessions " else "windows ") ++ (if t.zoom then "zoom " else "- ") ++ t.template ++ " after [" ++ t.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
 panes : String -> String
 panes line =
     when Syntax.panesOf line is
@@ -666,6 +676,16 @@ syntax =
                         [ panes "display-panes"
                         , panes "display-panes -N -d 3000 { swap-pane -t '%%' } \\; display-message hi"
                         ]
+          }
+        , { name = "choose-tree: -Zs folded, -Zw open, a template; choose-window"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "sessions zoom switch-client -t '%%' after []"
+                        , "windows zoom switch-client -t '%%' after []"
+                        , "windows - kill-window -t '%%' after []"
+                        ]
+                        [ tree "choose-tree -Zs", tree "choose-tree -Zw", tree "choose-window \"kill-window -t '%%'\"" ]
           }
         , { name = "a ; ending a word in a block, as list-keys writes it, is between commands"
           , test =

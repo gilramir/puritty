@@ -126,7 +126,36 @@ type alias State =
       -- since the question was sent, to ask again (TM31)
     , copy : Dict Int Copying
     , copyAsked : Dict Int Bool
+      -- each pane's mode by tmux's name for it (`clock-mode`), the time
+      -- of day less the loop's clock for the clock (TM32), and the tree
+      -- puritty shows for `choose-tree`
+    , paneModes : Dict Int String
+    , dayOffset : Maybe Int
+    , tree : Maybe Tree
     }
+
+
+{-| `choose-tree` shown by puritty (TM32): the sessions and windows tmux
+listed, `loaded` once both lists are in, which sessions are open, the row
+chosen, the command a choice runs, the pane it was run in, and whether
+it covers every pane (`-Z`). -}
+type alias Tree =
+    { sessions : Array { id : Int, name : String, attached : Bool, windows : Int }
+    , windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int }
+    , loaded : Int
+    , open : Dict Int Bool
+    , selected : Int
+    , startSessions : Bool
+    , template : String
+    , pane : Int
+    , zoom : Bool
+    }
+
+
+{-| A row of the tree: a session (its id) or a window (its id and its
+session's), with what it says and whether it is its session's last. -}
+type alias TreeRow =
+    { session : Int, window : Int, text : String, last : Bool }
 
 
 {-| A pane in copy mode as tmux describes it (TM31): how far back it is
@@ -290,6 +319,9 @@ type Expect
     | ForCondition { pane : Int, mouse : Maybe { col : Int, row : Int }, yes : String, no : String, after : String }
     | ForNumbers
     | ForCopy
+    | ForTreeSessions
+    | ForTreeWindows
+    | ForDayTime
     | ForPanesTime
     | ForMenuTitle Int
     | ForMenuName { serial : Int, item : Int }
@@ -352,6 +384,9 @@ idle _ =
     , status = noStatus
     , copy = Dict.empty
     , copyAsked = Dict.empty
+    , paneModes = Dict.empty
+    , dayOffset = Nothing
+    , tree = Nothing
     }
 
 
@@ -460,7 +495,7 @@ input method commits and what is pasted, or shows a view (TM26), which
 drops them. -}
 isAsking : State -> Bool
 isAsking s =
-    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing
+    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing || s.tree /= Nothing
 
 
 {-| Text from an input method or a paste, typed into the prompt: a line
@@ -833,8 +868,19 @@ replied expect ok lines acc =
 
                 entered =
                     Dict.keys cleared.modes |> Array.keepIf (\pane -> inCopy pane cleared)
+
+                clocked =
+                    Dict.values cleared.paneModes |> Array.any (\m -> m == "clock-mode")
+
+                asked =
+                    Array.foldl (\pane a -> askCopy pane a) { acc | state = cleared } entered
             in
-            Array.foldl (\pane a -> askCopy pane a) { acc | state = cleared } entered
+            if clocked && asked.state.dayOffset == Nothing then
+                -- the time of day, for the clock (TM32)
+                ask [ { command = "display-message -p " ++ Command.quote "D %H %M %S", expect = ForDayTime } ] asked
+
+            else
+                asked
 
         ForLabel ->
             let
@@ -919,6 +965,76 @@ replied expect ok lines acc =
                     runLine ctx c.after ran.state
             in
             { state = more.state, outside = acc.outside, commands = acc.commands ++ ran.commands ++ more.commands }
+
+        ForTreeSessions ->
+            let
+                st =
+                    acc.state
+
+                sessions =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split " " (Bytes.toStringLossy line) is
+                                [ "S", id, attached, count, first ] ->
+                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault 0 (String.toInt count), name = first }
+
+                                _ ->
+                                    when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
+                                        Just { first = "S", rest = rest } ->
+                                            Just
+                                                { id = idOf (Maybe.withDefault "" (Array.get 0 rest))
+                                                , attached = Array.get 1 rest /= Just "0"
+                                                , windows = Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get 2 rest))
+                                                , name = String.join " " (Array.dropFirst 3 rest)
+                                                }
+
+                                        _ ->
+                                            Nothing
+                        )
+                        lines
+            in
+            { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | sessions = sessions, loaded = t.loaded + 1 }) st.tree } }
+
+        ForTreeWindows ->
+            let
+                st =
+                    acc.state
+
+                windows =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
+                                Just { first = "W", rest = rest } ->
+                                    Just
+                                        { session = idOf (Maybe.withDefault "" (Array.get 0 rest))
+                                        , id = idOf (Maybe.withDefault "" (Array.get 1 rest))
+                                        , index = Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get 2 rest))
+                                        , active = Array.get 3 rest == Just "1"
+                                        , panes = Maybe.withDefault 1 (Maybe.andThen String.toInt (Array.get 4 rest))
+                                        , name = String.join " " (Array.dropFirst 5 rest)
+                                        }
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+            in
+            { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+
+        ForDayTime ->
+            let
+                st =
+                    acc.state
+
+                seconds =
+                    when Array.first lines |> Maybe.map (\l -> String.split " " (Bytes.toStringLossy l) |> Array.map String.toInt) is
+                        Just [ _, Just h, Just m, Just sec ] ->
+                            Just ((h * 60 + m) * 60 + sec)
+
+                        _ ->
+                            Nothing
+            in
+            { acc | state = { st | dayOffset = Maybe.map (\day -> day * 1000 - modBy 86400000 st.clock) seconds } }
 
         ForCopy ->
             let
@@ -1086,7 +1202,7 @@ modeLine line s =
                     else
                         ""
             in
-            { s | modes = Dict.set (idOf id) table s.modes, modeKeys = if modeKeys == "" then s.modeKeys else modeKeys }
+            { s | modes = Dict.set (idOf id) table s.modes, paneModes = Dict.set (idOf id) mode s.paneModes, modeKeys = if modeKeys == "" then s.modeKeys else modeKeys }
 
         _ ->
             s
@@ -1420,7 +1536,7 @@ paint s =
                             []
 
                 shownCursor =
-                    when { asking = s.asking, view = s.view, menu = s.menu } is
+                    when { asking = s.asking, view = s.view, menu = if s.menu /= Nothing || s.tree /= Nothing then Just {} else Nothing } is
                         { asking = Just _, view = _, menu = _ } ->
                             if s.lookTmux then "\u{001B}[?25h" else "\u{001B}[?25l"
 
@@ -1432,6 +1548,36 @@ paint s =
 
                         _ ->
                             cursor
+
+                -- tmux's other modes (TM32): the clock drawn, the others
+                -- said; and the tree puritty shows for `choose-tree`
+                modesDrawn =
+                    Array.mapAndFlatten (\p -> modeOverlay s.lookTmux (p.id == active) (Maybe.withDefault "" (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
+
+                treeDrawn =
+                    when s.tree is
+                        Just t ->
+                            if t.loaded < 2 then
+                                []
+
+                            else
+                                let
+                                    area =
+                                        if t.zoom then
+                                            Just { id = -1, x = 0, y = if s.barTop then bar else 0, w = cols, h = rows - bar, active = True, z = Nothing }
+
+                                        else
+                                            Array.findFirst (\p -> p.id == t.pane) (tiled ++ floating) |> Maybe.map .value
+                                in
+                                when area is
+                                    Just place ->
+                                        drawTree s.lookTmux place t
+
+                                    Nothing ->
+                                        []
+
+                        Nothing ->
+                            []
 
                 -- the panes' numbers (TM28)
                 numbersDrawn =
@@ -1542,7 +1688,13 @@ paint s =
                             "\u{001B}[" ++ String.fromInt (place.value.y + c.cy + 1) ++ ";" ++ String.fromInt (place.value.x + c.cx + 1) ++ "H\u{001B}[?25h"
 
                         _ ->
-                            cursorOf s.active (backOf s.active s) (tiled ++ floating) s.ids s.panes
+                            if not (String.startsWith "copy-mode" (Maybe.withDefault "" (Dict.get s.active s.paneModes)) || Maybe.withDefault "" (Dict.get s.active s.paneModes) == "") then
+                                -- the clock and the modes puritty does not
+                                -- draw show no cursor, as in tmux (TM32)
+                                "\u{001B}[?25l"
+
+                            else
+                                cursorOf s.active (backOf s.active s) (tiled ++ floating) s.ids s.panes
 
                 -- copy mode's position at a pane's top right, as tmux shows
                 -- it (TM31)
@@ -1573,6 +1725,8 @@ paint s =
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawPieces borders.floating
                         |> drawPieces copyMarks
+                        |> drawPieces modesDrawn
+                        |> drawPieces treeDrawn
                         |> (\c ->
                                 if tmuxLook then
                                     drawPieces statusBar c
@@ -1738,8 +1892,13 @@ typedHere k bytes ms s =
             { asking = Nothing, menu = Nothing, numbers = Nothing, view = Just v } ->
                 { state = { s | view = viewKey k v, clock = ms }, commands = [] }
 
-            _ ->
-                keyByTable k bytes ms { s | clock = ms }
+            { asking = Nothing, menu = Nothing, numbers = Nothing, view = Nothing } ->
+                when s.tree is
+                    Just t ->
+                        treeKey k t { s | clock = ms }
+
+                    Nothing ->
+                        keyByTable k bytes ms { s | clock = ms }
 
 
 {-| A typed key with no prompt open: by the tables (TM24), a binding
@@ -3174,8 +3333,8 @@ paneName pane =
 `if-shell -F` that chooses between commands. -}
 runsHere : String -> Bool
 runsHere line =
-    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line } is
-        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing } ->
+    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line } is
+        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing } ->
             False
 
         _ ->
@@ -3247,6 +3406,25 @@ runLine ctx line s =
                     { menu = Just m, panes = _ } ->
                         openMenu ctx m.menu m.after s
 
+                    { menu = Nothing, panes = Nothing } ->
+                        when Syntax.treeOf fixed is
+                            Just t ->
+                                let
+                                    opened =
+                                        sendAsking
+                                            [ { command = "list-sessions -F " ++ Command.quote "S #{session_id} #{session_attached} #{session_windows} #{session_name}", expect = ForTreeSessions }
+                                            , { command = "list-windows -a -F " ++ Command.quote "W #{session_id} #{window_id} #{window_index} #{window_active} #{window_panes} #{window_name}", expect = ForTreeWindows }
+                                            ]
+                                            { s | said = "", tree = Just { sessions = [], windows = [], loaded = 0, open = Dict.empty, selected = 0, startSessions = t.sessions, template = t.template, pane = ctx.pane, zoom = t.zoom } }
+
+                                    ran =
+                                        runLine ctx t.after opened.state
+                                in
+                                { state = ran.state, commands = opened.commands ++ ran.commands }
+
+                            Nothing ->
+                                plainLines ctx fixed s
+
                     { menu = Nothing, panes = Just d } ->
                         let
                             opened =
@@ -3259,7 +3437,11 @@ runLine ctx line s =
                         in
                         { state = ran.state, commands = opened.commands ++ ran.commands }
 
-                    _ ->
+
+{-| `runLine`'s commands that are not a prompt, a menu, the panes' numbers
+or a tree. -}
+plainLines : Context -> String -> (taken s : State) -> { state : State, commands : Array String }
+plainLines ctx fixed s =
                         when Syntax.ifFormatOf fixed is
                             Just f ->
                                 sendAsking
@@ -3784,12 +3966,21 @@ numberKey k n s =
 for none (TM28). -}
 dueAt : State -> Int
 dueAt s =
+    let
+        clockDue =
+            if s.dayOffset /= Nothing && Array.any (\m -> m == "clock-mode") (Dict.values s.paneModes) then
+                -- the clock drawn again as the minute turns
+                s.clock + 60000 - modBy 60000 (s.clock + Maybe.withDefault 0 s.dayOffset)
+
+            else
+                -1
+    in
     when s.numbers is
         Just n ->
-            n.until
+            if clockDue >= 0 then min n.until clockDue else n.until
 
         Nothing ->
-            -1
+            clockDue
 
 
 {-| The time, from the loop: the panes' numbers closed once it is past
@@ -3919,6 +4110,342 @@ bigDigit c =
 
         _ ->
             []
+
+
+-- TREE MODE, THE CLOCK AND THE OTHER MODES (TM32)
+
+
+{-| A tree whose lists are in: the sessions open as `-w` asks (all) or
+`-s` (none), and the row of the window shown, or of its session, chosen. -}
+treeLoaded : Int -> Tree -> Tree
+treeLoaded shown t =
+    if t.loaded < 2 then
+        t
+
+    else
+        let
+            current =
+                Array.findFirst (\w -> w.id == shown) t.windows |> Maybe.map (\w -> w.value.session) |> Maybe.withDefault -1
+
+            open =
+                if t.startSessions then
+                    Dict.empty
+
+                else
+                    Array.foldl (\x d -> Dict.set x.id True d) Dict.empty t.sessions
+
+            opened =
+                { t | open = open }
+
+            rows =
+                treeRows opened
+        in
+        { opened
+            | selected =
+                Array.findFirst (\r -> if t.startSessions then r.window < 0 && r.session == current else r.window == shown) rows
+                    |> Maybe.map .index
+                    |> Maybe.withDefault 0
+        }
+
+
+{-| The tree's rows: each session, and an open one's windows under it. -}
+treeRows : Tree -> Array TreeRow
+treeRows t =
+    Array.mapAndFlatten
+        (\x ->
+            let
+                own =
+                    Array.keepIf (\w -> w.session == x.id) t.windows
+
+                count =
+                    Array.length own
+            in
+            Array.pushFirst
+                { session = x.id, window = -1, text = x.name ++ ": " ++ String.fromInt x.windows ++ " windows" ++ (if x.attached then " (attached)" else ""), last = False }
+                (if Dict.get x.id t.open == Just True then
+                    Array.indexedMap (\i w -> { session = x.id, window = w.id, text = String.fromInt w.index ++ ": " ++ w.name ++ (if w.active then "*" else "") ++ " (" ++ String.fromInt w.panes ++ " panes)", last = i == count - 1 }) own
+
+                 else
+                    []
+                )
+        )
+        t.sessions
+
+
+{-| A key while the tree is shown, as tmux's tree mode takes it: Up, k,
+C-p and Down, j, C-n move; PPage, NPage, Home, g, End, G; Right, l opens
+a session, Left, h closes it or goes to it from a window; `+` and `-`
+open and close every one; Enter chooses; a digit chooses that row, as
+tmux numbers the first ten; q, Escape and C-c close it. -}
+treeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Tree -> (taken s : State) -> { state : State, commands : Array String }
+treeKey k t s =
+    let
+        name =
+            Maybe.withDefault "" (lookupName k)
+
+        rows =
+            treeRows t
+
+        count =
+            Array.length rows
+
+        at =
+            Array.get t.selected rows
+
+        moved i st =
+            { state = { st | tree = Just { t | selected = clamp 0 (max 0 (count - 1)) i } }, commands = [] }
+
+        page =
+            10
+    in
+    if name == "q" || name == "Escape" || name == "C-c" then
+        { state = { s | tree = Nothing }, commands = [] }
+
+    else if name == "Up" || name == "k" || name == "C-p" then
+        moved (if t.selected == 0 then count - 1 else t.selected - 1) s
+
+    else if name == "Down" || name == "j" || name == "C-n" then
+        moved (if t.selected >= count - 1 then 0 else t.selected + 1) s
+
+    else if name == "PPage" || name == "C-b" then
+        moved (t.selected - page) s
+
+    else if name == "NPage" || name == "C-f" then
+        moved (t.selected + page) s
+
+    else if name == "Home" || name == "g" then
+        moved 0 s
+
+    else if name == "End" || name == "G" then
+        moved (count - 1) s
+
+    else if name == "Right" || name == "l" then
+        when at is
+            Just r ->
+                { state = { s | tree = Just { t | open = Dict.set r.session True t.open } }, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "Left" || name == "h" then
+        when at is
+            Just r ->
+                let
+                    closed =
+                        { t | open = Dict.remove r.session t.open }
+                in
+                { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> x.window < 0 && x.session == r.session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault 0 } }, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "+" then
+        { state = { s | tree = Just { t | open = Array.foldl (\x d -> Dict.set x.id True d) Dict.empty t.sessions } }, commands = [] }
+
+    else if name == "-" then
+        let
+            closed =
+                { t | open = Dict.empty }
+
+            session =
+                Maybe.map .session at
+        in
+        { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> Just x.session == session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault 0 } }, commands = [] }
+
+    else if name == "Enter" || name == "KPEnter" || name == "C-m" then
+        chooseRow at t s
+
+    else
+        when String.toInt name is
+            Just d ->
+                chooseRow (Array.get d rows) t s
+
+            Nothing ->
+                { state = s, commands = [] }
+
+
+{-| A row chosen: the tree closed and its command run with the session's
+or the window's id (`$1`, `@2`), which tmux takes as a target. -}
+chooseRow : Maybe TreeRow -> Tree -> (taken s : State) -> { state : State, commands : Array String }
+chooseRow row t s =
+    when row is
+        Just r ->
+            let
+                target =
+                    if r.window >= 0 then "@" ++ String.fromInt r.window else "$" ++ String.fromInt r.session
+            in
+            runLine { pane = t.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens t.template) [ target ]) { s | tree = Nothing }
+
+        Nothing ->
+            { state = { s | tree = Nothing }, commands = [] }
+
+
+{-| The tree's cells (TM32): in tmux's look as tmux's tree mode lists it,
+each row's key in brackets, `+` or `-` for a session folded or open, the
+windows under it joined by `├─>` and `└─>`, the chosen row in
+`mode-style`; in puritty's, the view's box. tmux's preview of the chosen
+item, below the list, is not drawn. -}
+drawTree : Bool -> Layout.Pane -> Tree -> Array { row : Int, col : Int, colour : String, text : String }
+drawTree tmuxLook place t =
+    let
+        rows =
+            treeRows t
+
+        shownRows =
+            max 1 (if tmuxLook then place.h else place.h - 2)
+
+        top =
+            if t.selected < shownRows then 0 else t.selected - shownRows + 1
+
+        lineOf i r =
+            let
+                key =
+                    if i < 10 then "(" ++ String.fromInt i ++ ") " else "    "
+
+                shape =
+                    if r.window < 0 then
+                        (if Dict.get r.session t.open == Just True then "- " else "+ ")
+
+                    else if r.last then
+                        "└─> "
+
+                    else
+                        "├─> "
+            in
+            if tmuxLook then key ++ " " ++ shape ++ r.text else (if r.window < 0 then (if Dict.get r.session t.open == Just True then "▾ " else "▸ ") else "    ") ++ r.text
+
+        width =
+            if tmuxLook then place.w else place.w - 4
+
+        listed =
+            Array.slice top (top + shownRows) rows
+                |> Array.indexedMap
+                    (\j r ->
+                        let
+                            i =
+                                top + j
+
+                            chosen =
+                                i == t.selected
+                        in
+                        { row = (if tmuxLook then place.y else place.y + 1) + j
+                        , col = if tmuxLook then place.x else place.x + 2
+                        , colour =
+                            if chosen then
+                                if tmuxLook then messageColour else activeTabColour
+
+                            else if tmuxLook then
+                                "\u{001B}[0m"
+
+                            else
+                                viewTextColour
+                        , text = String.padRight width ' ' (String.takeFirst width (lineOf i r))
+                        }
+                    )
+    in
+    if tmuxLook then
+        Array.range 0 (place.h - 1) |> Array.map (\r -> { row = place.y + r, col = place.x, colour = "\u{001B}[0m", text = String.repeat place.w " " })
+            |> (\cleared -> cleared ++ listed)
+
+    else
+        let
+            inner =
+                place.w - 2
+
+            label =
+                " choose " ++ (if t.startSessions then "a session " else "a window ")
+
+            foot =
+                " Enter: go  ←→: fold  q: close "
+        in
+        [ { row = place.y, col = place.x, colour = viewEdgeColour, text = "╭" ++ String.takeFirst inner (label ++ String.repeat inner "─") ++ "╮" } ]
+            ++ (Array.range 1 (place.h - 2) |> Array.mapAndFlatten (\r -> [ { row = place.y + r, col = place.x, colour = viewEdgeColour, text = "│" ++ String.repeat inner " " ++ "│" } ]))
+            ++ listed
+            ++ [ { row = place.y + place.h - 1, col = place.x, colour = viewEdgeColour, text = "╰" ++ String.takeFirst inner (foot ++ String.repeat inner "─") ++ "╯" } ]
+
+
+{-| The time of day for the clock, `HH:MM`, from the loop's clock and the
+offset tmux's own time gave; empty until it is known. -}
+clockText : State -> String
+clockText s =
+    when s.dayOffset is
+        Just offset ->
+            let
+                minutes =
+                    modBy 1440 ((s.clock + offset) // 60000)
+
+                two n =
+                    String.padLeft 2 '0' (String.fromInt n)
+            in
+            two (minutes // 60) ++ ":" ++ two (modBy 60 minutes)
+
+        Nothing ->
+            ""
+
+
+{-| What a pane in one of tmux's modes shows (TM32): the clock (`clock-mode`)
+as tmux draws it, its digits five cells square in `clock-mode-colour`
+(blue) in the pane's middle, amber in puritty's look; for a mode puritty
+does not draw (`tree-mode` entered otherwise than by a binding,
+`buffer-mode`, `client-mode`, `options-mode`), a line in the pane's middle
+that says so and how to leave it, since tmux has the pane's keys. Copy and
+view mode are drawn elsewhere (TM31). -}
+modeOverlay : Bool -> Bool -> String -> String -> Layout.Pane -> Array { row : Int, col : Int, colour : String, text : String }
+modeOverlay tmuxLook isActive mode time p =
+    if mode == "" || mode == "copy-mode" || mode == "view-mode" then
+        []
+
+    else if mode == "clock-mode" then
+        let
+            block =
+                if tmuxLook then "\u{001B}[0;44m" else "\u{001B}[0;48;5;214m"
+
+            ink =
+                if tmuxLook then "\u{001B}[0;34m" else "\u{001B}[0;1;38;5;214m"
+
+            len =
+                String.count time
+
+            emptied =
+                Array.range 0 (p.h - 1) |> Array.map (\r -> { row = p.y + r, col = p.x, colour = "\u{001B}[0m", text = String.repeat p.w " " })
+        in
+        if time == "" then
+            emptied
+
+        else if p.w < len * 6 || p.h < 5 then
+            emptied ++ [ { row = p.y + p.h // 2, col = p.x + max 0 ((p.w - len) // 2), colour = ink, text = String.takeFirst p.w time } ]
+
+        else
+            let
+                px =
+                    p.x + p.w // 2 - len * 3
+
+                py =
+                    p.y + p.h // 2 - 2
+            in
+            emptied
+                ++ (String.toArray time
+                        |> Array.indexedMap
+                            (\i c ->
+                                (if c == ':' then [ "00000", "00100", "00000", "00100", "00000" ] else bigDigit c)
+                                    |> Array.indexedMap
+                                        (\r line ->
+                                            String.toArray line
+                                                |> Array.indexedMap (\col bit -> { row = py + r, col = px + i * 6 + col, on = bit == '1' })
+                                                |> Array.keepIf .on
+                                        )
+                                    |> Array.flatten
+                            )
+                        |> Array.flatten
+                        |> Array.map (\cell -> { row = cell.row, col = cell.col, colour = block, text = " " })
+                   )
+
+    else
+        let
+            text =
+                String.takeFirst p.w (" tmux's " ++ mode ++ " is not drawn under -CC; q leaves it ")
+        in
+        [ { row = p.y + p.h // 2, col = p.x + max 0 ((p.w - String.count text) // 2), colour = if tmuxLook then messageColour else activeTabColour, text = text } ]
 
 
 -- COPY MODE (TM31)

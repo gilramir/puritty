@@ -115,9 +115,14 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   `mode-keys` says) scroll the pane, and puritty shows copy mode's cursor,
   selection and `[position/lines]` as tmux has them.
 
-Not yet under `-CC`: tmux's other modes (choose-tree, the clock, the
-buffer and client lists) change what tmux does but puritty does not draw
-them yet. `prefix Ctrl+Z` does nothing and says
+- **Choosing a session or window**: `prefix s` and `prefix w` list your
+  sessions and windows; move with the arrows or `j` and `k`, open and fold
+  a session with Right and Left, Enter (or a row's number) goes there,
+  Escape closes. **The clock**: `prefix t`.
+
+Not yet under `-CC`: the buffer list (`prefix =`), the client list
+(`prefix D`) and the options editor (`prefix C`) work as in tmux but
+puritty does not draw them; the pane says so, and `q` leaves them. `prefix Ctrl+Z` does nothing and says
 why in the tab bar, since tmux would then take no more keys from puritty.
 
 ## tmux drawing for itself

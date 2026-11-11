@@ -1413,3 +1413,54 @@ is the same only when the pane's width has not changed since; lines beyond
 puritty's own history (`[scrollback] lines`) cannot be shown. Tree mode,
 the clock and tmux's other modes are not drawn (TM32).
 
+## TM32 · The tree, the clock and tmux's other modes (2026-11-11)
+
+The rest of TM25.4. tmux's other modes draw only on a terminal client's
+screen, and `capture-pane -M` gives the pane's own lines for them too
+(TM31), so there is nothing to mirror. Measured on 3.8, the default
+bindings that enter one: `s` and `w` (`choose-tree -Zs`, `-Zw`), `t`
+(`clock-mode`), `=` (`choose-buffer -Z`), `D` (`choose-client -Z`), `C`
+(`customize-mode -Z`).
+
+**The tree is puritty's.** `choose-tree` (and its old names
+`choose-session`, `choose-window`) is held (`Tmux.Bindings.held`) and read
+(`Tmux.Syntax.treeOf`: `-s`, `-w`, `-Z`, the template, by default
+`switch-client -t '%%'`) and run by puritty, as menus are (TM27): it asks
+`list-sessions` and `list-windows -a`, lists the sessions with an open
+one's windows under it, folded (`-s`) or open (`-w`), the current session
+or window chosen. Keys as tmux's tree mode takes them: Up, Down, k, j,
+C-p, C-n, PPage, NPage, Home, End, g, G; Right and l open a session, Left
+and h fold it; `+` and `-` open and fold all; Enter, or a row's digit,
+runs the template with the row's id (`$1` a session, `@2` a window; tmux
+takes either as `switch-client`'s target, measured); q, Escape and C-c
+close it. Drawn in tmux's look as tmux lists it, `(0)` keys, `+`/`-`, the
+windows joined by `├─>` and `└─>`, the chosen row in `mode-style`, over
+every pane for `-Z`; in puritty's, the view's box. tmux's preview of the
+chosen item, under the list, is not drawn.
+
+**The clock is drawn.** Each pane's mode is kept by name with its table
+(`modeLine`); a pane in `clock-mode` shows `HH:MM` in tmux's five-cell
+digits and colon in `clock-mode-colour` (blue; amber in puritty's look),
+in the pane's middle, the cursor hidden. The time of day is tmux's: on
+the first clock puritty asks `display-message -p 'D %H %M %S'` and keeps
+its distance from the loop's clock, and `dueAt` wakes the loop as each
+minute turns. tmux's own keys leave it, as before.
+
+**The others are said.** A pane in `buffer-mode`, `client-mode`,
+`options-mode`, or `tree-mode` entered some other way (another client, a
+command) shows, in its middle, `tmux's buffer-mode is not drawn under -CC;
+q leaves it`, the cursor hidden, since tmux has the pane's keys and the
+pane would otherwise seem to take none.
+
+**Checked:** packages/tmux 62 tests (Syntax 17: `-Zs`, `-Zw`, a template
+with `choose-window`). `bench/tmux/show.py --scenario modes`, Gilbert's
+tmux.conf, each look, two sessions: `C-a w Up Enter` goes from `main:1`
+to `main:0`; `C-a s Up Enter` to `other:0`; `C-a s Escape` stays, tmux
+answering; `C-a t` shows the time tmux gives (`14:26`) in its digits, and
+q leaves `clock-mode`; `C-a =` with a buffer is `buffer-mode`, said, and
+q leaves it. Every other scenario gives what it gave.
+
+**Not yet:** the tree's preview, tags (`t`), kill (`x`), sorting (`O`),
+filters (`f`) and the panes level; choose-buffer, choose-client and
+customize-mode are only said, not drawn.
+
