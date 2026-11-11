@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "marks":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                marks(a, env, tmux, xdo, snap, cli, look)
             return
         if a.scenario == "status":
             for look in ("puritty", "tmux"):
@@ -540,6 +545,49 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.5)
         print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def marks(a, env, tmux, xdo, snap, cli, look):
+    """Marks, titles and alerts (docs/tmux.md TM30), with Gilbert's
+    tmux.conf, in each look: a pane marked by `C-a m`, pane titles by
+    `pane-border-status top`, and a bell rung in a window behind. Read back
+    from tmux, and the pictures looked at."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "bar")
+        time.sleep(0.5)
+        xd("key", "ctrl+a", "m")
+        time.sleep(1.5)
+        print(look, "| C-a m, marked:", q("display-message", "-p", "#{pane_marked}"))
+        snap(f"{look}-marked")
+        cli("set", "-g", "pane-border-status", "top")
+        time.sleep(1.5)
+        snap(f"{look}-titles")
+        xd("key", "ctrl+a", "c")
+        time.sleep(0.6)
+        xd("type", "--delay", "20", "sleep 1; printf '\\a'")
+        xd("key", "Return")
+        xd("key", "ctrl+a", "0")
+        time.sleep(2.5)
+        print(look, "| a bell behind, flags of window 1:", repr(q("display-message", "-p", "-t", ":1", "#{window_flags}")))
+        snap(f"{look}-bell")
         cli("kill-server")
         time.sleep(1)
     finally:

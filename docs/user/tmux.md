@@ -104,6 +104,10 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   default) shows at the tab bar's right. With `look = "tmux"` the whole bar
   is tmux's status line, with your `status-left`, `status-right`, window
   formats and colours; click a window's name to go to it.
+- **Marks, titles and alerts**: the marked pane (`prefix m`) is framed in
+  magenta; with `set -g pane-border-status top` (or `bottom`) each pane's
+  title is on its border, as tmux draws it; a window that rang its bell
+  has a red tab with `!`, one with activity `#`.
 - **Pane numbers**: `prefix q` shows each pane's number over it, for
   `display-panes-time`; type one to go to that pane.
 

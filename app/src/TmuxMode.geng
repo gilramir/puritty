@@ -128,7 +128,10 @@ type alias State =
 `status-left` and `status-right` expanded (strftime too), `status-style`,
 `window-status-separator`, the two lengths, and each window's
 `window-status-format` (its current one for the active window) expanded,
-its style and its flags, by window id. -}
+its style and its flags, by window id; and the panes' borders (TM30):
+`pane-border-status`, `pane-border-style`, and each pane's
+`pane-border-format` expanded, its border's style (the active one's for
+the active pane) and whether it is marked, by pane id. -}
 type alias StatusLine =
     { left : String
     , right : String
@@ -137,12 +140,15 @@ type alias StatusLine =
     , leftLength : Int
     , rightLength : Int
     , windows : Dict Int { text : String, style : String, flags : String }
+    , borderStatus : String
+    , borderStyle : String
+    , panes : Dict Int { title : String, border : String, marked : Bool }
     }
 
 
 noStatus : StatusLine
 noStatus =
-    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty }
+    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty, borderStatus = "off", borderStyle = "", panes = Dict.empty }
 
 
 {-| `display-panes` shown by puritty (TM28): each pane's index by its id,
@@ -474,6 +480,45 @@ setLook tmuxLook s =
 bar : Int
 bar =
     1
+
+
+{-| A tiled pane as tmux places it inside its layout cell when
+`pane-border-status` is on (measured on 3.8, where no `%layout-change`
+says so): a pane on the window's top edge moves down a row for its title
+(`top`), one on its bottom edge gives up its last row (`bottom`); the
+others' titles are on the line between panes. A floating pane keeps its
+cell. -}
+fitted : String -> Int -> Layout.Pane -> Layout.Pane
+fitted borderStatus height p =
+    if p.z /= Nothing || p.h < 2 then
+        p
+
+    else if borderStatus == "top" && p.y == 0 then
+        { p | y = 1, h = p.h - 1 }
+
+    else if borderStatus == "bottom" && p.y + p.h >= height then
+        { p | h = p.h - 1 }
+
+    else
+        p
+
+
+{-| The layout's height: its root cell's. -}
+heightOf : Layout.Cell -> Int
+heightOf cell =
+    when cell is
+        Layout.Split c ->
+            c.h
+
+        Layout.Leaf p ->
+            p.h
+
+
+{-| The panes where they are drawn: placed as tmux places them for their
+titles, then below the bar when it is at the top. -}
+placedPanes : State -> Layout.Cell -> Array Layout.Pane -> Array Layout.Pane
+placedPanes s cell panes =
+    Array.map (\p -> down s.barTop (fitted s.status.borderStatus (heightOf cell) p)) panes
 
 
 {-| A pane of the layout where it is drawn in puritty's window: below the
@@ -1132,7 +1177,20 @@ notice n acc =
             ask [ { command = "display-message -p -t " ++ Command.quote ("%" ++ String.fromInt pane) ++ " " ++ Command.quote modeFormat, expect = ForModes } ] { acc | state = st }
 
         SubscriptionChanged sub ->
-            { acc | state = { st | status = subscribed sub.name sub.window sub.value st.status } }
+            let
+                was =
+                    st.status.borderStatus
+
+                next =
+                    { st | status = subscribed sub.name sub.window sub.pane sub.value st.status }
+            in
+            if next.status.borderStatus /= was then
+                -- the panes' sizes change with their titles' rows, and
+                -- tmux sends no layout for it
+                { acc | state = refit next }
+
+            else
+                { acc | state = next }
 
         WindowRenamed r ->
             let
@@ -1192,7 +1250,7 @@ applyLayout text s =
         Ok cell ->
             let
                 boxes =
-                    Layout.panes cell
+                    Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell)
 
                 sized =
                     Array.foldl sizePane { ids = s.ids, panes = s.panes } boxes
@@ -1208,6 +1266,21 @@ applyLayout text s =
             { s | layout = Just cell, ids = sized.ids, panes = sized.panes, active = active }
 
         Err _ ->
+            s
+
+
+{-| Every pane sized again to the layout as it is placed now. -}
+refit : (taken s : State) -> State
+refit s =
+    when s.layout is
+        Just cell ->
+            let
+                sized =
+                    Array.foldl sizePane { ids = s.ids, panes = s.panes } (Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell))
+            in
+            { s | ids = sized.ids, panes = sized.panes }
+
+        Nothing ->
             s
 
 
@@ -1244,10 +1317,10 @@ paint s =
         Just cell ->
             let
                 tiled =
-                    Array.map (down s.barTop) (Layout.tiled cell)
+                    placedPanes s cell (Layout.tiled cell)
 
                 floating =
-                    Array.map (down s.barTop) (Layout.floating cell)
+                    placedPanes s cell (Layout.floating cell)
 
                 barRow =
                     if s.barTop then 0 else s.canvas.rows - 1
@@ -1398,6 +1471,13 @@ paint s =
                 lines =
                     Array.mapAndFlatten (divider cols rows) tiled
 
+                -- in tmux's look the lines in `pane-border-style`, the
+                -- active pane's framed in its own; the marked pane framed
+                -- in either look; each pane's `pane-border-format` on its
+                -- border when `pane-border-status` asks (TM30)
+                borders =
+                    paneBorders s.lookTmux cols rows active tiled floating s.status
+
                 cursor =
                     cursorOf s.active (backOf s.active s) (tiled ++ floating) s.ids s.panes
 
@@ -1408,8 +1488,10 @@ paint s =
                         |> Vt.feed (Bytes.fromString "\u{001B}[?7l\u{001B}[0m\u{001B}[H\u{001B}[2J")
                         |> Vt.compose s.panes tiledPlaces
                         |> Vt.invert tiledSpans
-                        |> drawText lineColour lines
+                        |> drawText borders.lineColour lines
+                        |> drawPieces borders.tiled
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> drawPieces borders.floating
                         |> (\c ->
                                 if tmuxLook then
                                     drawPieces statusBar c
@@ -1418,6 +1500,8 @@ paint s =
                                     c
                                         |> drawText barColour [ { row = barRow, col = 0, text = String.padRight cols ' ' tabBar.text } ]
                                         |> drawText activeTabColour tabBar.active
+                                        |> drawText alertTabColour tabBar.alerted
+                                        |> drawText busyTabColour tabBar.busy
                                         |> drawText barColour saidPiece
                            )
                         |> drawText messageColour tmuxLine
@@ -2235,7 +2319,7 @@ pointer how p s =
 
                 -- the topmost pane first: floating ones top down, then tiled
                 order =
-                    Array.map (down s.barTop) (Array.reverse (Layout.floating cell) ++ Layout.tiled cell)
+                    placedPanes s cell (Array.reverse (Layout.floating cell) ++ Layout.tiled cell)
 
                 inside q =
                     col >= q.x && col < q.x + q.w && row >= q.y && row < q.y + q.h
@@ -2546,21 +2630,28 @@ extended boundaries at sel s =
 {-| The tab bar: a tab for each window, ` 1:name `, between `│`s, the
 active one inverse, then ` + `, cut at the window's width; and which
 columns each tab and the `+` cover, `-1` for the `+`. -}
-tabsOf : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
+tabsOf : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, alerted : Array { row : Int, col : Int, text : String }, busy : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
 tabsOf cols row s =
     if s.lookTmux then
-        { text = "", active = [], hits = (tmuxBar cols row s).hits }
+        { text = "", active = [], alerted = [], busy = [], hits = (tmuxBar cols row s).hits }
 
     else
         puritySTabs cols row s
 
 
-puritySTabs : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
+puritySTabs : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, alerted : Array { row : Int, col : Int, text : String }, busy : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
 puritySTabs cols row s =
     let
+        -- tmux's alerts and marks on a tab (TM30): `!` a bell, `#`
+        -- activity, `~` silence, `M` the marked pane, `Z` zoomed
+        marksOf t =
+            Dict.get t.id s.status.windows
+                |> Maybe.map (\w -> String.toArray w.flags |> Array.keepIf (\c -> c == '!' || c == '#' || c == '~' || c == 'M' || c == 'Z') |> String.fromArray)
+                |> Maybe.withDefault ""
+
         labels =
-            Array.map (\t -> { window = t.id, text = " " ++ String.fromInt t.index ++ ":" ++ t.name ++ " " }) s.tabs
-                ++ [ { window = -1, text = " + " } ]
+            Array.map (\t -> { window = t.id, marks = marksOf t, text = " " ++ String.fromInt t.index ++ ":" ++ t.name ++ (if marksOf t == "" then "" else " " ++ marksOf t) ++ " " }) s.tabs
+                ++ [ { window = -1, marks = "", text = " + " } ]
 
         laid =
             Array.foldl
@@ -2572,18 +2663,148 @@ puritySTabs cols row s =
                     { at = acc.at + width + 1
                     , text = acc.text ++ l.text ++ "│"
                     , hits = Array.pushLast { from = acc.at, to = acc.at + width - 1, window = l.window } acc.hits
+                    , alerts = if String.contains "!" l.marks then Array.pushLast { from = acc.at, to = acc.at + width - 1, window = l.window } acc.alerts else acc.alerts
+                    , busy = if String.contains "#" l.marks || String.contains "~" l.marks then Array.pushLast { from = acc.at, to = acc.at + width - 1, window = l.window } acc.busy else acc.busy
                     }
                 )
-                { at = 0, text = "", hits = [] }
+                { at = 0, text = "", hits = [], alerts = [], busy = [] }
                 labels
+
+        place hits =
+            hits
+                |> Array.keepIf (\h -> h.window /= s.window && h.from < cols)
+                |> Array.map (\h -> { row = row, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
     in
     { text = String.takeFirst cols laid.text
     , active =
         laid.hits
             |> Array.keepIf (\h -> h.window == s.window && h.window >= 0 && h.from < cols)
             |> Array.map (\h -> { row = row, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
+    , alerted = place laid.alerts
+    , busy = place laid.busy
     , hits = laid.hits
     }
+
+
+-- THE PANES' BORDERS (TM30)
+
+
+{-| What is drawn on the panes' borders (TM30): the lines' colour, then
+over the tiled panes' lines, in tmux's look, the active pane's frame in
+its `pane-active-border-style`, the marked pane's frame, and each pane's
+`pane-border-format` where `pane-border-status` puts it (`top`: the row
+above the pane, which tmux leaves for it; `bottom`: the row below), from
+two cells in, as tmux draws it (`screen_redraw_make_pane_status`), the
+part after `#[align=right]` at the right; the floating panes' titles, over
+their boxes, apart. -}
+paneBorders : Bool -> Int -> Int -> Int -> Array Layout.Pane -> Array Layout.Pane -> StatusLine -> { lineColour : String, tiled : Array { row : Int, col : Int, colour : String, text : String }, floating : Array { row : Int, col : Int, colour : String, text : String } }
+paneBorders tmuxLook cols rows active tiled floating status =
+    let
+        base =
+            Style.apply status.borderStyle Style.plain
+
+        own p =
+            Maybe.withDefault { title = "", border = "", marked = False } (Dict.get p.id status.panes)
+
+        frameColour p =
+            if (own p).marked then
+                if tmuxLook then Style.sgr (Style.apply "fg=magenta" base) else markedColour
+
+            else if tmuxLook && p.id == active then
+                Style.sgr (Style.apply (own p).border base)
+
+            else
+                ""
+
+        frames =
+            Array.mapAndFlatten
+                (\p ->
+                    let
+                        colour =
+                            frameColour p
+                    in
+                    if colour == "" || p.z /= Nothing then
+                        []
+
+                    else
+                        Array.map (\piece -> { row = piece.row, col = piece.col, colour = colour, text = piece.text }) (frameOf cols rows p)
+                )
+                tiled
+
+        titleOf p =
+            if status.borderStatus /= "top" && status.borderStatus /= "bottom" then
+                []
+
+            else
+                let
+                    row =
+                        if status.borderStatus == "top" then p.y - 1 else p.y + p.h
+
+                    style =
+                        if tmuxLook then
+                            Style.apply (own p).border base
+
+                        else
+                            Style.apply (if p.id == active then "fg=colour214" else "fg=colour245") Style.plain
+
+                    parts =
+                        String.split "#[align=right]" (own p).title
+
+                    room =
+                        max 0 (p.w - 4)
+
+                    leftRuns =
+                        takeRuns room (Style.runs style (Maybe.withDefault "" (Array.first parts)))
+
+                    rightRuns =
+                        Style.runs style (String.join "" (Array.dropFirst 1 parts))
+
+                    used =
+                        Array.foldl (\r n -> n + String.count r.text) 0 leftRuns
+
+                    rightWidth =
+                        Array.foldl (\r n -> n + String.count r.text) 0 rightRuns
+
+                    lineIn =
+                        if frameColour p /= "" then frameColour p else if tmuxLook then Style.sgr base else lineColour
+                in
+                if row < 0 || row >= rows || (own p).title == "" then
+                    []
+
+                else
+                    -- the border's line along the row, the title over it,
+                    -- as tmux draws it
+                    [ { row = row, col = p.x, colour = lineIn, text = String.repeat (max 0 (min p.w (cols - p.x))) "─" } ]
+                        ++ (laidRuns row (p.x + 2) leftRuns).pieces
+                        ++ (if used + 1 + rightWidth <= room then (laidRuns row (p.x + 2 + room - rightWidth) rightRuns).pieces else [])
+    in
+    { lineColour = if tmuxLook then Style.sgr base else lineColour
+    , tiled = frames ++ Array.mapAndFlatten titleOf tiled
+    , floating = Array.mapAndFlatten titleOf floating
+    }
+
+
+{-| The lines around a tiled pane that are its border: beside and above
+and below it, inside the window. -}
+frameOf : Int -> Int -> Layout.Pane -> Array { row : Int, col : Int, text : String }
+frameOf cols rows p =
+    let
+        sides =
+            Array.range p.y (min rows (p.y + p.h) - 1)
+                |> Array.mapAndFlatten
+                    (\r ->
+                        (if p.x > 0 then [ { row = r, col = p.x - 1, text = "│" } ] else [])
+                            ++ (if p.x + p.w < cols then [ { row = r, col = p.x + p.w, text = "│" } ] else [])
+                    )
+
+        across r =
+            if r >= 0 && r < rows then
+                [ { row = r, col = p.x, text = String.repeat (max 0 (min p.w (cols - p.x))) "─" } ]
+
+            else
+                []
+    in
+    sides ++ (if p.y > 0 then across (p.y - 1) else []) ++ across (p.y + p.h)
 
 
 -- THE STATUS LINE (TM29)
@@ -2600,14 +2821,26 @@ statusSubscriptions =
     , "puritty-sep::#{window-status-separator}"
     , "puritty-lengths::#{status-left-length} #{status-right-length}"
     , "puritty-wtext:@*:#{?window_active,#{T:window-status-current-format},#{T:window-status-format}}"
-    , "puritty-wstyle:@*:#{?window_active,#{window-status-current-style},#{window-status-style}}"
+    , "puritty-wstyle:@*:#{?window_active,#{window-status-current-style},#{window-status-style}} #{?window_bell_flag,#{window-status-bell-style},} #{?window_activity_flag,#{window-status-activity-style},}"
     , "puritty-wflags:@*:#{window_flags}"
+    , "puritty-borders::#{pane-border-status} #{pane-border-style}"
+    , "puritty-ptitle:%*:#{T:pane-border-format}"
+    , "puritty-pborder:%*:#{?pane_active,#{E:pane-active-border-style},#{E:pane-border-style}}"
+    , "puritty-pmarked:%*:#{pane_marked}"
     ]
 
 
-subscribed : String -> Int -> String -> StatusLine -> StatusLine
-subscribed name window value status =
+subscribed : String -> Int -> Int -> String -> StatusLine -> StatusLine
+subscribed name window pane value status =
     let
+        perPane change =
+            { status
+                | panes =
+                    Dict.set pane
+                        (change (Maybe.withDefault { title = "", border = "", marked = False } (Dict.get pane status.panes)))
+                        status.panes
+            }
+
         perWindow change =
             { status
                 | windows =
@@ -2645,6 +2878,23 @@ subscribed name window value status =
 
         "puritty-wflags" ->
             perWindow (\w -> { w | flags = value })
+
+        "puritty-borders" ->
+            when String.split " " value |> Array.popFirst is
+                Just { first, rest } ->
+                    { status | borderStatus = first, borderStyle = String.join " " rest }
+
+                Nothing ->
+                    status
+
+        "puritty-ptitle" ->
+            perPane (\q -> { q | title = value })
+
+        "puritty-pborder" ->
+            perPane (\q -> { q | border = value })
+
+        "puritty-pmarked" ->
+            perPane (\q -> { q | marked = value == "1" })
 
         _ ->
             status
@@ -3105,7 +3355,7 @@ menuPlace cols rows s m =
         pane =
             when s.layout is
                 Just cell ->
-                    Array.findFirst (\q -> q.id == m.pane) (Array.map (down s.barTop) (Layout.tiled cell ++ Layout.floating cell)) |> Maybe.map .value
+                    Array.findFirst (\q -> q.id == m.pane) (placedPanes s cell (Layout.tiled cell ++ Layout.floating cell)) |> Maybe.map .value
 
                 Nothing ->
                     Nothing
@@ -3775,6 +4025,25 @@ barColour =
 activeTabColour : String
 activeTabColour =
     "\u{001B}[0;1;38;5;234;48;5;214m"
+
+
+{-| A tab whose window rang its bell, white on red, and one with activity
+or silence, amber on the bar (TM30). -}
+alertTabColour : String
+alertTabColour =
+    "\u{001B}[0;1;38;5;231;48;5;160m"
+
+
+busyTabColour : String
+busyTabColour =
+    "\u{001B}[0;38;5;214;48;5;236m"
+
+
+{-| The marked pane's frame in puritty's look, magenta, as tmux 3.8 draws
+the marked pane's border (TM30). -}
+markedColour : String
+markedColour =
+    "\u{001B}[0;38;5;170m"
 
 
 {-| The keys of the tabs: Ctrl+Shift+T a new window, Ctrl+PgUp and

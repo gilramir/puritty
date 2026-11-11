@@ -1319,3 +1319,49 @@ and menus scenarios give what they gave.
 are not read: the bar stays where `[tmux] tabs` puts it; a wide character
 counts one cell in the line's layout.
 
+## TM30 · Marks, pane titles, bells and activity (2026-11-11)
+
+Item 6 of TM24.5, the last. A terminal client shows these on its borders
+and status line, which a control client has none of.
+
+**Asked** with more subscriptions (TM29): `pane-border-status` and
+`pane-border-style` for the session, and for every pane (`%*`) its
+`pane-border-format` expanded (`T:`), its border's style (`E:` of
+`pane-active-border-style` for the active pane, which in 3.8 is itself a
+format: magenta when marked, green otherwise, `pane-border-style` for the
+rest) and `pane_marked`. `SubscriptionChanged` now carries the pane too.
+The windows' style subscription adds `window-status-bell-style` and
+`window-status-activity-style` when the window's flag is set.
+
+**Titles take a row tmux does not announce.** Measured on 3.8: with
+`pane-border-status top`, panes on the window's top edge move down a row
+and lose one, with `bottom` panes on its bottom edge lose their last row,
+and the others' titles are on the line between panes; tmux sends no
+`%layout-change` for any of it, the layout still giving the whole cell.
+puritty places tiled panes so (`fitted`), sizes their terminals to it, and
+sizes them again when the setting changes (`refit`).
+
+**Drawn:** the title row as tmux draws it: the border's line along it, the
+title from two cells in, the part after `#[align=right]` (3.8's `[f][z][x]`
+buttons) at the right. In tmux's look the lines are in `pane-border-style`
+and the active pane is framed in its own style; the marked pane is framed
+in magenta in both looks. The tabs in puritty's look show a window's
+alerts and marks after its name (`!` a bell, `#` activity, `~` silence,
+`M` the marked pane, `Z` zoomed), a bell's tab white on red, activity's
+amber; in tmux's look the window's own text carries its flags, in its bell
+or activity style (`reverse` by default).
+
+**Checked:** packages/tmux 61 tests (Control: a pane's subscription, `%2`
+read as 2). `bench/tmux/show.py --scenario marks`, Gilbert's tmux.conf,
+each look: `C-a m` marks the pane (tmux says `pane_marked` 1) and it is
+framed in magenta; `pane-border-status top` set while attached moves both
+panes down a row and shows `0 "nene"` and `1 "nene"` with `[f][z][x]` on
+the line, as in a tmux client; `printf '\a'` in window 1 behind window 0
+gives it `!` (tmux's flags `!-`), its tab red in puritty's look and
+`1:sh!-` reversed in tmux's. Every other scenario gives what it gave.
+
+**Not yet:** a click on the title's `[f]`, `[z]` and `[x]` does nothing
+(tmux 3.8's `range=control` buttons); a floating pane's title is drawn
+over its box but its own place is not changed; puritty does not ring or
+flash for a bell in a pane it shows.
+
