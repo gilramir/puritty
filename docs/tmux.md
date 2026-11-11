@@ -450,3 +450,36 @@ Beyond phase 4's tabs and splits, each built on TM5:
    3.9 is released.
 5. **EUC-KR and tmux**: do the colleagues on EUC-KR hosts run tmux there?
    If they do, TM8's last item needs a decision; if not, nothing to do.
+
+**Gilbert's answers, 2026-11-11:** the leanings of questions 1 to 4 are
+accepted. The colleagues do use tmux with EUC-KR (TM11).
+
+## TM11 · EUC-KR through tmux, measured (2026-11-11)
+
+`ko_KR.euckr` and `ko_KR.utf8` were built with `localedef` into a scratch
+`LOCPATH` (for 2.7, with its own glibc 2.27's `localedef`). A program in a
+pane printed `한글` as EUC-KR (`c7 d1 b1 db`) and as UTF-8, and an ordinary
+client attached on a pty, with the server and the client each in either
+locale. tmux 2.7 is nixpkgs 18.09's (RHEL8 packages 2.7), 3.6a nixos-25.11's
+(Gilbert's hosts run 3.6), 3.4 Mint's, 3.8 nixpkgs-unstable's.
+
+| tmux | EUC-KR from the pane reaches a UTF-8 client as | and `capture-pane` as | a client in `ko_KR.euckr` |
+|---|---|---|---|
+| 2.7 | nothing: the bytes are dropped | dropped | **refuses to start**: "need UTF-8 locale (LC_CTYPE) but have EUC-KR", `-u` or not |
+| 3.4 | dropped | dropped | starts; every non-ASCII character, UTF-8 too, is `_` |
+| 3.6a | `�` per invalid byte (three for the four bytes) | the same `�` | `_` |
+| 3.8 | `�`, as 3.6a | `�` | `_` |
+
+The server's own locale changed nothing. So **no tmux carries EUC-KR bytes
+a program writes**: tmux decodes the pane as UTF-8 and keeps UTF-8 cells,
+and it sends a client UTF-8 or nothing. Whatever the colleagues do, the
+EUC-KR is turned into UTF-8 *before* tmux sees it, inside the pane (a
+converter such as `luit` or `cocot` around the program or the ssh, or an
+editor that converts files on reading, as vim's `fileencodings` does), and
+the tmux client runs in a UTF-8 locale. Then the bytes puritty gets from
+tmux are UTF-8, and puritty's EUC-KR setting (`cjk-and-thai.md` §10) must
+be off for that session, in ordinary and in control mode alike. This is
+inferred from the table; how the colleagues work is Gilbert's to confirm.
+
+`cjk-and-thai.md` §10.4's open questions are answered here, but one: what
+the colleagues run inside the pane.
