@@ -9,7 +9,9 @@ offsets joined by commas (or empty): the bytes before each are fed and a
 frame drawn, so that a later frame draws only what changed, as the app's
 do; a last frame follows the last byte, and the frames the view then asks
 for at once (`View.wantsFrame`). FOCUS `unfocused` draws as a
-window without the focus does. `harness/pixels.py` holds the pictures to
+window without the focus does; `blinkoff` draws a blinking cursor in the
+half of its blink that hides it; `noligatures` shapes without the font's
+ligatures (`docs/renderer.md` §R19). `harness/pixels.py` holds the pictures to
 their pins.
 
 FOCUS `ui` takes FILE as a display list of the settings window's records
@@ -163,8 +165,9 @@ draw args bytes =
                             |> Task.andThen (\_ -> shot args)
 
                       else
-                        feedAll
-                            { focused = Array.get 8 args /= Just "unfocused", blinkOn = True }
+                        Text.ligatures (Array.get 8 args /= Just "noligatures")
+                            |> Task.andThen (\_ -> feedAll
+                            { focused = Array.get 8 args /= Just "unfocused", blinkOn = Array.get 8 args /= Just "blinkoff" }
                             bytes
                             (Array.mapAndKeepJust String.toInt (String.split "," (arg 7 args)))
                             0
@@ -189,7 +192,7 @@ draw args bytes =
 
                                     else
                                         Task.succeed {}
-                                )
+                                ))
                             |> Task.andThen (\_ -> shot args)
             )
 

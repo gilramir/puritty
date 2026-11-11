@@ -843,7 +843,9 @@ while the frame waits is decided then (`geng-plan.md` §6, phase 3).
 **V28 · Ligatures are on, from the font's `calt`.** A changed cell redraws
 the stretch of its row it is shaped with, out to the nearest space on
 each side. The cursor and colours apply per glyph, not by splitting runs
-(§13.7). A setting turns `calt` off.
+(§13.7). A setting turns `calt` off. *Amended 2026-11-11
+(`renderer.md` §R19): the cursor's cell is shaped alone, splitting the run
+there, and the setting is `[font] ligatures`.*
 
 **V29 · Colour emoji and narrow compression come before the renderer**
 (§13.10).

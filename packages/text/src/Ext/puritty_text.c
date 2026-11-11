@@ -503,6 +503,18 @@ static void flush_placed(void) {
  * face, and the word it is in, the cells from w0 to w1 with no blank. */
 typedef struct { int cell, width, style, n; const uint32_t *cps; int face, w0, w1; } Cluster;
 
+/* Whether runs are shaped with the font's ligatures (renderer.md §R19):
+ * the setting `font.ligatures`. Off, the three features that make them are
+ * turned off, as Ghostty's `font-feature = -calt, -liga, -dlig` does. */
+static int ligatures = 1;
+static const hb_feature_t no_ligatures[3] = {
+    {HB_TAG('c', 'a', 'l', 't'), 0, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+    {HB_TAG('l', 'i', 'g', 'a'), 0, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+    {HB_TAG('d', 'l', 'i', 'g'), 0, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+};
+
+void pt_ligatures(int on) { ligatures = on != 0; }
+
 /* A segment of clusters in one face, shaped as one run, each code point's
  * cluster its cell, so glyphs go back to cells by the core's widths. */
 static void shape_segment(const Cluster *cl, int n, int x0, int y) {
@@ -518,7 +530,7 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
     hb_buffer_guess_segment_properties(hbuf);
     if (language) hb_buffer_set_language(hbuf, language);
     hb_buffer_set_cluster_level(hbuf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
-    hb_shape(faces[f].hb, hbuf, NULL, 0);
+    hb_shape(faces[f].hb, hbuf, ligatures ? NULL : no_ligatures, ligatures ? 0 : 3);
     st.shape_ns += ns() - t0;
     st.segments++;
     unsigned gn;
@@ -855,7 +867,11 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
     for (int i = 1; i <= ncl; i++)
         /* A segment is one face's, and stops at an empty cell: shaping
          * across one would join what a screen shows apart (§R16). */
-        if (i == ncl || cl[i].face != cl[from].face || cl[i].cell != cl[i - 1].cell + cl[i - 1].width) {
+        /* The cursor's cell is shaped alone (§R19), as Ghostty's
+         * `font-shaping-break` does: a ligature across it would put its
+         * ink in the next cell and leave the cursor's cell a spacer. */
+        if (i == ncl || cl[i].face != cl[from].face || cl[i].cell != cl[i - 1].cell + cl[i - 1].width
+            || (cl[i].style & 0x8000) != (cl[i - 1].style & 0x8000)) {
             if (cl[from].face == BOX)
                 for (int k = from; k < i; k++) place_box(cl[k].cps[0], x + cl[k].cell, y, cl[k].width, cl[k].style);
             else

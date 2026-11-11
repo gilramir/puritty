@@ -69,6 +69,7 @@ import Ssh.Session as Session
 import Source exposing (Source)
 import Task exposing (Task)
 import Time
+import Text
 import TmuxMode
 import Vt
 import Vt.Charset as Charset exposing (Charset)
@@ -460,6 +461,7 @@ hostList cp fs vars given asked got =
                                                         -- window's shape, becomes a terminal's:
                                                         -- the session's size (SG11)
                                                         Window.resize { cols = config.columns, rows = config.rows }
+                                                            |> Task.andThen (\_ -> Text.ligatures config.ligatures)
                                                             |> Task.andThen (\_ -> begin cp vars given got.problems locale config cell)
 
                                                     Err why ->
@@ -493,7 +495,8 @@ startIn cp vars given problems locale config =
                         Task.fail ("cannot open the window: " ++ why)
 
                     Ok cell ->
-                        begin cp vars given problems locale config cell
+                        Text.ligatures config.ligatures
+                            |> Task.andThen (\_ -> begin cp vars given problems locale config cell)
             )
 
 
@@ -1186,6 +1189,7 @@ applySettings new m =
      else
         Task.succeed {}
     )
+        |> Task.andThen (\_ -> Text.ligatures new.ligatures)
         |> Task.andThen (\_ -> refontOr new old language applied)
 
 

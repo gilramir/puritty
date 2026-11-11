@@ -1,4 +1,4 @@
-module Text exposing (interfaceFont, renderer, width)
+module Text exposing (interfaceFont, ligatures, renderer, width)
 
 {-| puritty's text renderer (`docs/windows.md` V52): the C both platforms'
 windows draw with, `src/Ext/puritty_text.c`, whose header
@@ -9,7 +9,7 @@ a glyph kept, the glyphs drawn, a scroll. The windows draw with it from
 their own C; what Geng asks of it is the interface's font and a text's width
 in it (`docs/settings-gui.md` SG2), for the settings window's layout.
 
-@docs renderer, interfaceFont, width
+@docs renderer, interfaceFont, ligatures, width
 
 -}
 
@@ -31,6 +31,20 @@ interfaceFont name =
     interfaceFontExtern (Bytes.fromString name)
 
 
+{-| Whether the terminal's runs are shaped with the font's ligatures
+(`calt`, `liga`, `dlig`; `docs/renderer.md` §R19): on until this turns them
+off. Every cell must be drawn again after a change. -}
+ligatures : Bool -> Task x {}
+ligatures on =
+    ligaturesExtern
+        (if on then
+            1
+
+         else
+            0
+        )
+
+
 {-| A text's width in pixels in the interface font at `size` pixels an em,
 as it is drawn: a pure function, since the interface's font is chosen once
 when the window opens and does not change, and the layout of a settings
@@ -42,6 +56,10 @@ width size text =
 
 @extern(c, "puritty_text_interfaceFont")
 interfaceFontExtern : Bytes -> Task x {}
+
+
+@extern(c, "puritty_text_ligatures")
+ligaturesExtern : Int -> Task x {}
 
 
 @externPure(c, "puritty_text_width")

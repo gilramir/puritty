@@ -870,3 +870,39 @@ Registered for phase 3 (`geng-plan.md` §6): the size taken from the
 screen's own resolution (`Xft.dpi`, else the screen's physical size), and
 a zoom at run time. The session at nene's own desktop is left to phase
 3's daily use.
+
+
+## R19. The cursor breaks a ligature, and ligatures can be turned off (2026-11-11)
+
+*Gilbert, 2026-11-11,* in Fira Code: `..` is drawn as one double period;
+with the cursor on the first cell he saw only the cursor and one dot, and
+on the second, one inverse period and an empty first cell.
+
+That was V28 working as written: the cursor applied per glyph, without
+splitting runs. A ligature is a spacer glyph in its first cell and a glyph
+in the last whose ink reaches back over the others (phase2-window §13.7),
+so the cursor on the first cell covered an empty glyph and hid the left
+dot drawn from the next cell, and on the second it drew the whole
+ligature's glyph in the cursor's colours, clipped to the cursor's cell.
+V28 also promised a setting that turns `calt` off, and none was built.
+
+**The cursor's cell is shaped alone.** `draw_glyphs` ends a segment where
+a cluster's style moves into or out of the cursor's (`0x8000` and up), so
+the cells before the cursor, the cursor's, and those after it are three
+runs: under the cursor `..` is two periods, and the ligature joins again
+when the cursor leaves, since a cell the cursor leaves is drawn again with
+its word (V40). Ghostty does the same by default (`font-shaping-break =
+cursor`, `ghostty.md`). A blinking cursor (mode 12) in the half of its
+blink that hides it is cursor shape 5 (`Vt.View`): its cell keeps its
+colours and nothing is drawn over it, but it is still the cursor's, so a
+ligature does not flicker between its two shapes with the blink.
+
+**`[font] ligatures = false`** (`docs/settings.md` ST30) shapes every run
+with `calt`, `liga` and `dlig` off, as Ghostty's `font-feature = -calt,
+-liga, -dlig` does: `pt_ligatures`, from `Text.ligatures`, applied when the
+window opens and on every reload, which draws every cell again.
+
+Tested: the pixel gate, four cases in Fira Code (`ligature-cursor-first`,
+`-second`, `-blinkoff`, `ligatures-off`), each picture looked at before it
+was pinned (46 of 46); the view gate (345) and replay (325) unchanged.
+

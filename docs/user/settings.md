@@ -32,6 +32,8 @@ family = "Fira Code"        # DejaVu Sans Mono when left out,
                             # Cascadia Mono on Windows
 size = 11                   # points
 language = "ko"             # which regional forms fallback fonts use
+ligatures = true            # the font's, as Fira Code's != and ->; the
+                            # cell under the cursor is always drawn alone
 
 [colours]
 foreground = "#c5c8c6"

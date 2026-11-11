@@ -41,6 +41,11 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
  * cells that fit its window with `pt_resize`. */
 int pt_zoom(int points, int dpi);
 
+/* Whether runs are shaped with the font's ligatures (`calt`, `liga`,
+ * `dlig`): on until it is turned off. The platform draws every cell again
+ * after a change. */
+void pt_ligatures(int on);
+
 /* A target of `c` by `r` cells, all of it the colour 0: the platform's
  * `pt_target` asked for one, and filled. */
 void pt_resize(int c, int r);

@@ -19,6 +19,12 @@ geng_cancel puritty_text_interfaceFont(void *name, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+geng_cancel puritty_text_ligatures(int32_t on, geng_wait *wait) {
+    pt_ligatures(on);
+    geng_succeed(wait, geng_slot_U(0));
+    return (geng_cancel) {0};
+}
+
 int32_t puritty_text_width(void *text, int32_t px) {
     geng_bytes *b = text;
     return pt_measure(b->data, (int) b->length, px);

@@ -946,3 +946,11 @@ Tested: app tests (a scheme sets the colours; a foreground beside it wins,
 written before it or after; an unknown name is reported and leaves the
 colours; 102); the settings gate and the window's model tests moved down a
 row for the new one on the Appearance page (19 of 19).
+
+## ST30 · Ligatures (2026-11-11)
+
+`[font] ligatures`, on by default, on the Text and language page: off, runs
+are shaped without the font's `calt`, `liga` and `dlig` (`renderer.md`
+§R19). It was promised by V28 (`phase2-window.md`) and not built until
+Gilbert saw Fira Code's `..` under the cursor. It applies at once.
+

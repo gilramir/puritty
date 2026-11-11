@@ -21,7 +21,9 @@ two differences. Its first line may say more than the size:
 
 the primary font as fontconfig names it (DejaVu Sans Mono), its points
 (11), the language fallback fonts are asked for (none), and whether the
-window has the focus. And `\\F` in the body draws a frame there, so that
+window has the focus (`unfocused`), or `blinkoff` (a blinking cursor in
+the half of its blink that hides it) or `noligatures` (the setting
+`font.ligatures` off, renderer.md §R19). And `\\F` in the body draws a frame there, so that
 the next frame draws only what changed, as the app's frames do; a last
 frame follows the last byte.
 
@@ -158,7 +160,7 @@ def parse_case(text):
     s = {"cols": cols, "rows": rows, "font": "DejaVu Sans Mono", "points": 11, "lang": "", "focus": "focused",
          "ui_font": ""}
     for w in words[2:]:
-        if w in ("unfocused", "ui", "over"):
+        if w in ("unfocused", "ui", "over", "blinkoff", "noligatures"):
             s["focus"] = w
         elif "=" in w and w.split("=", 1)[0] in ("font", "points", "lang", "ui_font"):
             k, v = w.split("=", 1)

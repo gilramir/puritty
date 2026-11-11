@@ -68,7 +68,7 @@ it.
 style id with its top bit set, `0x8000 + id`, whose record this frame
 carries the cursor's colours and shape. The shape is the underline byte's
 top four bits (1 a block, 2 an underline, 3 a bar, 4 a hollow block, which
-is any cursor while the window does not have the focus); its bottom four
+is any cursor while the window does not have the focus, 5 none); its bottom four
 are the underline's kind. A block's record has the cell's background as
 its foreground and the cursor's colour (OSC 12, else the cell's
 foreground) as its background; the others keep the cell's colours and
@@ -77,9 +77,11 @@ list draws the shape in. A wide character's two cells both take it. The
 shadow keeps the cursor's cells marked (their shape in bits 56 and up, which
 no cell of the core's has), so a cell the cursor leaves differs from what
 the shadow says was drawn and is drawn again, and so is one whose cursor
-changes shape. Nothing is drawn for a cursor DECTCEM hides, or for a
-blinking one (mode 12) while `Focus.blinkOn` is false: blinking is the
-loop's, which knows the time.
+changes shape. Nothing is drawn for a cursor DECTCEM hides. A blinking
+one (mode 12) while `Focus.blinkOn` is false is shape 5, which draws
+nothing and keeps the cell's colours: its cell is still the cursor's, so a
+ligature stays broken there through the blink (`docs/renderer.md` §R19).
+Blinking is the loop's, which knows the time.
 
 A style's colours are resolved here, from the core's palette and dynamic
 colours (OSC 4, 10, 11) and the profile's `Look`: inverse and the screen's
@@ -1283,7 +1285,7 @@ colourKey look t =
 
 {-| Where the cursor is drawn, as an index into the shadow's cells (`-1`
 for none), how many cells it covers, and its shape (1 a block, 2 an
-underline, 3 a bar, 4 a hollow block). -}
+underline, 3 a bar, 4 a hollow block, 5 none: a blinking one in the half that hides it). -}
 type alias Cursor =
     { at : Int, cells : Int, shape : Int, preAt : Int, pre : Array PreCell, selFrom : Int, selTo : Int }
 
@@ -1296,7 +1298,7 @@ cursorOf focus s back t =
     in
     -- the cursor's row in the screen drawn is `back` rows lower in a view
     -- scrolled back, and is read only when it is in view
-    if not t.showCursor || (blinking && not focus.blinkOn) || t.x >= t.cols || t.x < 0 || back >= s.rows - t.y || back < 0 - t.y then
+    if not t.showCursor || t.x >= t.cols || t.x < 0 || back >= s.rows - t.y || back < 0 - t.y then
         { at = -1, cells = 0, shape = 0, preAt = -1, pre = [], selFrom = -1, selTo = -1 }
 
     else
@@ -1324,7 +1326,10 @@ cursorOf focus s back t =
         , at = y * t.cols + head
         , cells = if wide then 2 else 1
         , shape =
-            if not focus.focused then
+            if blinking && not focus.blinkOn then
+                5
+
+            else if not focus.focused then
                 4
 
             else if t.cursorShape == 3 then
@@ -1438,6 +1443,9 @@ styleRecord look t shape id b =
         out =
             if cursorShape == 1 then
                 { fg = bg, bg = cursorColour, ulc = bg }
+
+            else if cursorShape == 5 then
+                { fg = fg, bg = bg, ulc = ulc }
 
             else if cursorShape > 1 then
                 { fg = fg, bg = bg, ulc = cursorColour }
