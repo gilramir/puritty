@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -79,6 +79,9 @@ def main():
             return
         if a.scenario == "select":
             select(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "tabs":
+            tabs(a, env, tmux, xdo, snap, cli)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -152,9 +155,17 @@ def attach(a, env, tmux, xdo, snap, cli):
 CW, CH = 9, 17   # the pixel gate's font at 96 dpi: a cell's size
 
 
+BAR = 1          # puritty's tab bar, above tmux's rows (docs/tmux.md TM18)
+
+
 def at(col, row):
     """A cell's centre, in the window's pixels."""
     return str(col * CW + CW // 2), str(row * CH + CH // 2)
+
+
+def at_t(col, row):
+    """A cell of tmux's, by tmux's coordinates: below the tab bar."""
+    return at(col, row + BAR)
 
 
 def mouse(a, env, tmux, xdo, snap, cli):
@@ -185,21 +196,21 @@ def mouse(a, env, tmux, xdo, snap, cli):
         time.sleep(0.5)
         print("after a click in the right pane, active:", q("display-message", "-p", "#{pane_id}"))
         left, top = map(int, geom().split()[0].split(","))
-        x0, y0 = at(left + 3, top - 1)
-        x1, y1 = at(left + 13, top + 4)
+        x0, y0 = at_t(left + 3, top - 1)
+        x1, y1 = at_t(left + 13, top + 4)
         subprocess.run([xdo, "mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) + 30), y0,
                         "mousemove", x1, y1, "mouseup", "1"], env=env, check=True)
         time.sleep(0.6)
         print("floating after moving its top edge by 10,5:", geom())
         left, top = map(int, geom().split()[0].split(","))
         w, h = map(int, geom().split()[1].split("x"))
-        x0, y0 = at(left + w, top + h)
-        x1, y1 = at(left + w + 6, top + h + 2)
+        x0, y0 = at_t(left + w, top + h)
+        x1, y1 = at_t(left + w + 6, top + h + 2)
         subprocess.run([xdo, "mousemove", x0, y0, "mousedown", "1", "mousemove", x1, y1, "mouseup", "1"], env=env, check=True)
         time.sleep(0.6)
         print("floating after dragging its corner by 6,2:", geom())
         snap("mouse-moved")
-        x, y = at(5, 25)
+        x, y = at_t(5, 24)
         subprocess.run([xdo, "mousemove", x, y, "click", "1"], env=env, check=True)
         time.sleep(0.4)
         subprocess.run([xdo, "key", "Up"], env=env, check=True)
@@ -239,8 +250,8 @@ def select(a, env, tmux, xdo, snap, cli):
         xd("mousemove", x, y, "click", "4", "click", "4", "click", "4")
         time.sleep(0.5)
         snap("scrolled-left")
-        x0, y0 = at(51, 0)
-        x1, y1 = at(61, 0)
+        x0, y0 = at_t(51, 0)
+        x1, y1 = at_t(61, 0)
         xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) + 20), y0, "mousemove", x1, y1, "mouseup", "1")
         time.sleep(0.5)
         print("a drag in the right pane, PRIMARY:", repr(sel("primary")))
@@ -255,6 +266,56 @@ def select(a, env, tmux, xdo, snap, cli):
         xd("key", "Return")
         time.sleep(0.5)
         snap("back-down")
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+def tabs(a, env, tmux, xdo, snap, cli):
+    """tmux's windows as tabs (docs/tmux.md TM18), read back from tmux: a
+    click on a tab selects its window, `+` makes one, Ctrl+PgUp goes to the
+    previous, Ctrl+Shift+T makes one, and a rename shows on its tab."""
+    cli("new-session", "-d", "-s", "t", "-x", "100", "-y", "29", "-n", "editor")
+    cli("send-keys", "-t", "t:0", "echo the first window", "Enter")
+    cli("new-window", "-t", "t", "-n", "logs")
+    cli("send-keys", "-t", "t:1", "echo the second window", "Enter")
+    cli("select-window", "-t", "t:0")
+    time.sleep(1.0)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *tmux, "-CC", "attach", "-t", "t"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    q = lambda *args: subprocess.run([*tmux, *args], env=env, capture_output=True, text=True).stdout.strip()
+    state = lambda: f"active {q('display-message', '-p', '-t', 't', '#{window_index}:#{window_name}')}, " \
+                    f"{len(q('list-windows', '-t', 't').splitlines())} windows"
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        print("attached:", state())
+        snap("tabs-attached")
+        # the tabs are " 0:editor │ 1:logs │ + │"
+        x, y = at(13, 0)
+        xd("mousemove", x, y, "click", "1")
+        time.sleep(0.6)
+        print("a click on the second tab:", state())
+        snap("tabs-second")
+        x, y = at(20, 0)
+        xd("mousemove", x, y, "click", "1")
+        time.sleep(0.8)
+        print("a click on +:", state())
+        xd("key", "ctrl+Prior")
+        time.sleep(0.6)
+        print("Ctrl+PgUp:", state())
+        xd("key", "ctrl+shift+t")
+        time.sleep(0.8)
+        print("Ctrl+Shift+T:", state())
+        cli("rename-window", "-t", "t:1", "renamed")
+        time.sleep(0.6)
+        snap("tabs-renamed")
         cli("kill-server")
         time.sleep(1)
     finally:

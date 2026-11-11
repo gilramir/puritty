@@ -9,6 +9,7 @@ module TmuxMode exposing
     , activeMode
     , pointer
     , scrollKey
+    , tabKey
     , selectedText
     , resized
     , title
@@ -69,6 +70,9 @@ type alias State =
     , back : Dict Int Int
     , selection : Maybe Sel
     , clicks : { at : Int, count : Int, pane : Int, point : Vt.Point }
+      -- the session's windows, shown as tabs on the window's first row
+      -- (docs/tmux.md TM18)
+    , tabs : Array { id : Int, index : Int, name : String }
     }
 
 
@@ -106,6 +110,7 @@ type alias Drag =
 {-| What a command's reply is for. -}
 type Expect
     = ForWindow
+    | ForTabs
     | ForPanes
     | ForInfo Int
     | ForSaved Int
@@ -149,6 +154,7 @@ idle _ =
     , back = Dict.empty
     , selection = Nothing
     , clicks = { at = -1000, count = 0, pane = -1, point = { row = 0, col = 0 } }
+    , tabs = []
     }
 
 
@@ -197,6 +203,31 @@ type alias Acc =
 windowQuery : String
 windowQuery =
     "display-message -p " ++ Command.quote "W #{window_id} #{window_visible_layout} #{window_name}"
+
+
+{-| The session's windows, each a line starting with `T`. -}
+tabsQuery : String
+tabsQuery =
+    "list-windows -F " ++ Command.quote "T #{window_id} #{window_index} #{window_name}"
+
+
+{-| The rows of puritty's window above tmux's: the tab bar. -}
+bar : Int
+bar =
+    1
+
+
+{-| A pane of the layout where it is drawn in puritty's window: below the
+tab bar. -}
+down : Layout.Pane -> Layout.Pane
+down p =
+    { p | y = p.y + bar }
+
+
+{-| The size tmux is told: puritty's window less the tab bar. -}
+tmuxSize : { cols : Int, rows : Int } -> { cols : Int, rows : Int }
+tmuxSize size =
+    { cols = size.cols, rows = max 1 (size.rows - bar) }
 
 
 {-| Every pane of the session, each a line starting with `P`, so that none
@@ -269,8 +300,9 @@ event size e acc =
             in
             ask
                 [ { command = Command.clientFlags, expect = ForNothing }
-                , { command = Command.size { cols = size.cols, rows = size.rows }, expect = ForNothing }
+                , { command = Command.size (tmuxSize size), expect = ForNothing }
                 , { command = windowQuery, expect = ForWindow }
+                , { command = tabsQuery, expect = ForTabs }
                 , { command = panesQuery, expect = ForPanes }
                 ]
                 { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty } }
@@ -311,6 +343,29 @@ replied expect ok lines acc =
     when expect is
         ForWindow ->
             { acc | state = Array.foldl replyLine acc.state lines }
+
+        ForTabs ->
+            let
+                st =
+                    acc.state
+
+                tabs =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
+                                Just { first = "T", rest = rest } ->
+                                    Just
+                                        { id = idOf (Maybe.withDefault "" (Array.get 0 rest))
+                                        , index = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "" (Array.get 1 rest)))
+                                        , name = String.join " " (Array.dropFirst 2 rest)
+                                        }
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+            in
+            { acc | state = { st | tabs = tabs } }
 
         ForPanes ->
             -- each pane's state and both its captures on one line: three
@@ -508,14 +563,24 @@ notice n acc =
             ask [ { command = windowQuery, expect = ForWindow } ] { acc | state = st }
 
         SessionChanged _ ->
-            ask [ { command = windowQuery, expect = ForWindow }, { command = panesQuery, expect = ForPanes } ] { acc | state = st }
+            ask [ { command = windowQuery, expect = ForWindow }, { command = tabsQuery, expect = ForTabs }, { command = panesQuery, expect = ForPanes } ] { acc | state = st }
+
+        WindowAdd _ ->
+            ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
+
+        WindowClose _ ->
+            ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
 
         WindowRenamed r ->
+            let
+                tabs =
+                    Array.map (\t -> if t.id == r.window then { t | name = r.name } else t) st.tabs
+            in
             if r.window == st.window then
-                { acc | state = { st | name = r.name } }
+                { acc | state = { st | name = r.name, tabs = tabs } }
 
             else
-                { acc | state = st }
+                { acc | state = { st | tabs = tabs } }
 
         _ ->
             { acc | state = st }
@@ -616,10 +681,13 @@ paint s =
         Just cell ->
             let
                 tiled =
-                    Layout.tiled cell
+                    Array.map down (Layout.tiled cell)
 
                 floating =
-                    Layout.floating cell
+                    Array.map down (Layout.floating cell)
+
+                tabBar =
+                    tabsOf cols s
 
                 -- where each pane goes, and how far back its view is, read
                 -- before the canvas is written
@@ -659,6 +727,8 @@ paint s =
                         |> Vt.invert tiledSpans
                         |> Vt.paint lines
                         |> (\c -> Array.foldl (\p acc -> acc |> Vt.paint (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> Vt.paint [ { row = 0, col = 0, text = tabBar.text } ]
+                        |> Vt.invert tabBar.active
                         |> Vt.feed (Bytes.fromString cursor)
             in
             { s | canvas = (Vt.takeReplies composed).term }
@@ -912,7 +982,7 @@ pointer how p s =
 
                 -- the topmost pane first: floating ones top down, then tiled
                 order =
-                    Array.reverse (Layout.floating cell) ++ Layout.tiled cell
+                    Array.map down (Array.reverse (Layout.floating cell) ++ Layout.tiled cell)
 
                 inside q =
                     col >= q.x && col < q.x + q.w && row >= q.y && row < q.y + q.h
@@ -922,6 +992,13 @@ pointer how p s =
 
                 under =
                     Array.findFirst (\q -> inside q || onBox q) order |> Maybe.map .value
+
+                tabHit =
+                    if row < bar && p.action == 0 && p.button == 1 && s.drag == Nothing && s.grab == Nothing then
+                        Array.findFirst (\h -> col >= h.from && col <= h.to) (tabsOf (p.width // max 1 p.cellWidth) s).hits |> Maybe.map .value
+
+                    else
+                        Nothing
 
                 -- the pane a press began in, while a button is held
                 target =
@@ -940,11 +1017,15 @@ pointer how p s =
                 takesMouse =
                     not how.select && paneTakesMouse target s
             in
-            when s.drag is
-                Just d ->
+            when { drag = s.drag, tab = tabHit } is
+                { drag = Just d } ->
                     plain (dragged col row (p.action == 1) d s)
 
-                Nothing ->
+                { tab = Just hit } ->
+                    -- a tab selects its window; `+` makes one
+                    plain (sent [ if hit.window < 0 then "new-window" else "select-window -t " ++ Command.quote ("@" ++ String.fromInt hit.window) ] s)
+
+                _ ->
                     when target is
                         Nothing ->
                             { state = s, commands = [], own = Nothing, paste = False }
@@ -1161,6 +1242,70 @@ extended boundaries at sel s =
             { sel | anchor = sel.first, head = w.end }
 
 
+{-| The tab bar: a tab for each window, ` 1:name `, between `│`s, the
+active one inverse, then ` + `, cut at the window's width; and which
+columns each tab and the `+` cover, `-1` for the `+`. -}
+tabsOf : Int -> State -> { text : String, active : Array { row : Int, from : Int, to : Int }, hits : Array { from : Int, to : Int, window : Int } }
+tabsOf cols s =
+    let
+        labels =
+            Array.map (\t -> { window = t.id, text = " " ++ String.fromInt t.index ++ ":" ++ t.name ++ " " }) s.tabs
+                ++ [ { window = -1, text = " + " } ]
+
+        laid =
+            Array.foldl
+                (\l acc ->
+                    let
+                        width =
+                            String.count l.text
+                    in
+                    { at = acc.at + width + 1
+                    , text = acc.text ++ l.text ++ "│"
+                    , hits = Array.pushLast { from = acc.at, to = acc.at + width - 1, window = l.window } acc.hits
+                    }
+                )
+                { at = 0, text = "", hits = [] }
+                labels
+    in
+    { text = String.takeFirst cols laid.text
+    , active =
+        laid.hits
+            |> Array.keepIf (\h -> h.window == s.window && h.window >= 0)
+            |> Array.map (\h -> { row = 0, from = h.from, to = min (cols - 1) h.to })
+    , hits = laid.hits
+    }
+
+
+{-| The keys of the tabs: Ctrl+Shift+T a new window, Ctrl+PgUp and
+Ctrl+PgDn the previous and next. -}
+tabKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken s : State) -> { state : State, commands : Array String, used : Bool }
+tabKey k s =
+    let
+        command =
+            if k.action == 1 && Bitwise.and k.mods 15 == 3 && (k.sym == 0x54 || k.sym == 0x74) then
+                Just "new-window"
+
+            else if k.action /= 0 && Bitwise.and k.mods 15 == 2 && k.sym == 0xFF55 then
+                Just "previous-window"
+
+            else if k.action /= 0 && Bitwise.and k.mods 15 == 2 && k.sym == 0xFF56 then
+                Just "next-window"
+
+            else
+                Nothing
+    in
+    when command is
+        Just c ->
+            let
+                r =
+                    sent [ c ] s
+            in
+            { state = r.state, commands = r.commands, used = True }
+
+        Nothing ->
+            { state = s, commands = [], used = False }
+
+
 {-| The selection's text, for Ctrl+Shift+C. -}
 selectedText : State -> Maybe String
 selectedText s =
@@ -1236,7 +1381,9 @@ dragged col row released d s =
 
         command =
             if d.move then
-                "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (d.y - 1 + dy)
+                -- `d.y` is where it is drawn, below the tab bar; tmux's rows
+                -- start under it
+                "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (d.y - bar - 1 + dy)
 
             else
                 -- a floating pane's size, as resize-pane takes it, counts its
@@ -1327,7 +1474,7 @@ report held p q s =
 resized : { cols : Int, rows : Int } -> (taken s : State) -> { state : State, commands : Array String }
 resized size s =
     if s.on then
-        sent [ Command.size size ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
+        sent [ Command.size (tmuxSize size) ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
 
     else
         { state = s, commands = [] }

@@ -1952,16 +1952,25 @@ handleOne remote ms rest ev m =
 
                             else
                                 if TmuxMode.isOn m.tmux then
-                                    -- the active pane's view (docs/tmux.md TM17)
+                                    -- the tabs' keys, then the active pane's
+                                    -- view (docs/tmux.md TM17, TM18)
                                     let
-                                        scrolled =
-                                            TmuxMode.scrollKey k m.tmux
+                                        tabbed =
+                                            TmuxMode.tabKey k m.tmux
                                     in
-                                    if scrolled.used then
-                                        handle remote ms rest { m | tmux = scrolled.state, urgent = True }
+                                    if tabbed.used then
+                                        handle remote ms rest (sendRaw (commandLines tabbed.commands) { m | tmux = tabbed.state, urgent = True })
 
                                     else
-                                        key remote ms rest k { m | tmux = scrolled.state }
+                                        let
+                                            scrolled =
+                                                TmuxMode.scrollKey k tabbed.state
+                                        in
+                                        if scrolled.used then
+                                            handle remote ms rest { m | tmux = scrolled.state, urgent = True }
+
+                                        else
+                                            key remote ms rest k { m | tmux = scrolled.state }
 
                                 else
                                     when scrollKeyOf m k is

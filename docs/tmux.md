@@ -736,3 +736,30 @@ double click on the scrolled left pane made it `left`, highlighted, and
 Ctrl+Shift+C put `left` on the clipboard; Return brought the view back to
 line 200 and the prompt. The core's tests have a scrolled compose and
 `invert` (94).
+
+## TM18 · Step 4.4: tmux's windows as tabs (2026-11-11)
+
+While control mode is on, puritty's first row is a tab bar: ` 0:editor │
+1:logs │ + │`, the window shown inverse. tmux is told the window is a row
+shorter (`refresh-client -C` with `rows - 1`), and the panes are drawn a
+row down: the layout's panes are moved down where they are read for
+drawing and for the pointer, and only what tells tmux a place (`move-pane
+-Y`) takes the row off again.
+
+- **The windows** come from `list-windows`, asked on attach and again on
+  `%window-add`, `%window-close` and `%session-changed`; `%window-renamed`
+  renames a tab in place. Windows of other sessions (`%unlinked-…`) are
+  not shown.
+- **A click** on a tab is `select-window`; on `+`, `new-window`. Ctrl+Shift+T
+  is `new-window`, Ctrl+PgUp and Ctrl+PgDn `previous-window` and
+  `next-window`; those keys no longer reach the pane.
+- **No close button.** Closing a tmux window kills the programs in it, so
+  the bar offers no click that does: a window closes when its programs end,
+  or with tmux's `kill-window`.
+
+**Checked against tmux** (`bench/tmux/show.py --scenario tabs`): attached
+to a session of two windows, 0:editor active; a click on the second tab
+made 1:logs active and showed its pane; `+` made a third and showed it;
+Ctrl+PgUp went back to 1; Ctrl+Shift+T made a fourth; a rename from
+another client showed on its tab. The mouse and select scenarios, moved
+down a row, pass as before.
