@@ -925,7 +925,8 @@ buffers) as a second client reads it. A prompt's binding is followed by
 
 | what happens | keys (prefix table) |
 |---|---|
-| works through the panes and layouts | Space ! " % * ; = @ C D E [ ] c l n o p s t w z { } PPage Tab BTab arrows, M-1…M-7, M-o, M-arrows, C-o, C-arrows, C-b (send-prefix), `(` `)` (other session), d (detach: `%exit`), g (switch-client -T move) |
+| works through the panes and layouts | Space ! " % * ; @ E ] c l n o p z { } arrows, M-1…M-7, M-o, M-arrows, C-o, C-arrows, C-b (send-prefix), `(` `)` (other session), d (detach: `%exit`), g (switch-client -T move) |
+| tmux enters a mode puritty does not show (TM25.4) | [ PPage (copy mode), = (choose-buffer), C (customize), D (choose-client), s w (choose-tree), t (clock), Tab BTab (switch-mode in a floating pane) |
 | said in the tab bar now (TM24.4) | i (display-message), errors: 0–9 for a missing window, L with no last session, M-n/M-p with no alert |
 | output dropped; a terminal client shows a view | # (list-buffers), ? (list-keys -N), ~ (show-messages) |
 | held back now (TM24.4); would wedge the client | $ ' , . / : f T (command-prompt), & x (confirm-before), C-z (suspend-client) |
@@ -969,7 +970,7 @@ expiry, a repeating key not reaching a non-repeating binding,
 `switch-client -T`, a plain root binding sent, suspend held, the version
 rule). `bench/tmux/show.py --scenario prefix`, with Gilbert's tmux.conf,
 on 3.8: `C-a x`, then `C-a ,`, then `C-a |` makes the fourth pane (tmux
-still answers), the bar says why; `C-a i` shows tmux's message; `C-a C-z`
+still answers), the bar says why (TM25 asks them instead; the step now answers Escape to each); `C-a i` shows tmux's message; `C-a C-z`
 then typing reaches the pane; `C-a 5` shows `can't find window: 5`. On
 3.3a: typing reaches the pane and the bar says why the prefix does
 nothing. The build, tabs, select, mouse, safety, lines and attach
@@ -1005,3 +1006,101 @@ where the bar is.
    bell and activity on the tabs.
 
 The order is by what a keyboard user meets first; 1 removes every held key.
+
+## TM25 · tmux's prompts asked by puritty, and copy mode's table (2026-11-11)
+
+Item 1 of TM24.5: the keys TM24 held back now open puritty's own prompt,
+which runs what tmux would have run. Gilbert, 2026-11-11: "Ok, proceed".
+
+### TM25.1 · Copy mode's keys were a second way to wedge the client
+
+tmux looks a key up in the active pane's mode table while the client is in
+`root` (`server-client.c:1531`): `copy-mode-vi` or `copy-mode` by
+`mode-keys` (`window_copy_key_table`), the only modes with a table. There,
+`/ ? :` and `f F t T` are `command-prompt -P` (3.8's prompt in the pane)
+and the digits `command-prompt -NP`, which wait as `command-prompt` does.
+Measured: after `send-keys -K C-b [` and `send-keys -K /`, the control
+client answered nothing again. Gilbert sets `mode-keys vi`, so TM24's guard
+missed his copy mode's search.
+
+puritty now follows each pane's mode: `list-panes -s -F 'M #{pane_id}
+#{pane_mode} #{mode-keys}'` on attach and, for one pane, on each
+`%pane-mode-changed`. `Bindings.route` takes the active pane's table and
+does what tmux does with it: the mode table first while in `root`; the
+prefix from any table but `prefix`; a key bound nowhere in its table
+looked for in `root` (TM24 did that only while repeating). A binding sent
+that enters copy mode (`copy-mode`, `copy-mode -u`) sets the pane's table at
+once, before tmux's notice, so that `C-a [ /` typed within a round trip is
+looked up in copy mode.
+
+### TM25.2 · The prompt
+
+- **Read from the binding** (`packages/tmux` `Tmux.Syntax`): tmux's words,
+  quotes, `{ … }` blocks and `;`, as `list-keys` writes them.
+  `confirm-before`: `-p`, `-c`, `-y`, and the command; with no `-p`, tmux's
+  own `Confirm 'cmd'? (y/n)`. `command-prompt`: `-p` and `-I` split at
+  commas (`-l` not), `-1`, `-N`, `-k`, flags run together (`-1P`, `-NP`),
+  the template a block or a string, and with none, the colon prompt whose
+  answer is the command. The commands after the prompt in the binding run
+  when it closes, answered or not, as tmux continues the queue.
+- **Formats:** a question or first text holding `#` is expanded by
+  `display-message -p` (`kill-pane #P?` shows `kill-pane 1?`); a first text
+  that comes back after a key has changed the line does not replace it.
+- **Keys** (`TmuxMode.promptKey`): a confirmation runs on its key, or Enter
+  with `-y`; any other key says no. A line edits as tmux's emacs
+  `status-keys` do: Left, Right, Home, End, C-a, C-e, C-b, C-f, BSpace, C-h,
+  DC, C-d, C-u, C-k, C-w; Up and Down go through earlier answers; Enter
+  answers; Escape, C-c, C-g cancel. `-1` takes a key's text, `-k` a key's
+  name, `-N` digits, and any other key answers the count and then goes on
+  as typed, so copy mode's `3k` sets the count and moves. Text from an input
+  method or a paste goes into the line, a line end as a space.
+- **Run:** each answer fills the template: `%%` (or `%%%`) the first
+  answer once, `%1`…`%9` each theirs, in the word they are written in and
+  inside blocks; a filled word is written again in single quotes, so what
+  is typed is one argument and never tmux syntax (a name `a"; kill-server;
+  'x` stays a name). The line is sent as puritty's own command; an error,
+  or the first line of what it prints, shows at the bar.
+- **Drawn** by `[tmux] look`: `"puritty"` (the default) in the window's
+  question box (`Dialog`, SC23, which now has a caret inside the line), the
+  pane's cursor hidden; `"tmux"` on the bar's row in tmux's default
+  `message-style`, black on yellow, the caret after the text before it,
+  wide characters placed by the core. In tmux's look, a message also takes
+  the whole row, as on tmux's status line.
+
+**Checked:** packages/tmux 51 tests (Syntax 12: both commands' flags,
+defaults, run-together flags, several prompts and the commands after, a
+binding that is no prompt, an answer that tries tmux syntax, `%1 %2`, a
+word around `%%`, a string template, `;` inside a block; Bindings 13, two
+new: copy mode's table, and root after the prefix). `bench/tmux/show.py
+--scenario prompts`, Gilbert's tmux.conf, in each look, read back from
+tmux: `C-a x` then `n` leaves 2 panes, then `y` 1; `C-a ,` with `editor 1`
+renames the window, then `한글 창`; `C-a ,` Escape leaves it, tmux still
+answering; `C-a :` `split-window -h` makes 2 panes; in copy mode `3 k`
+moves the cursor from row 28 to 25; `/` `echo` finds `echo`; `q` leaves the
+mode. App tests 104; every harness and tmux scenario as before.
+
+### TM25.3 · Not yet
+
+- `status-keys vi`: the line edits with emacs keys only.
+- `-i` (incremental search, copy mode's emacs table) answers once, on
+  Enter, rather than on each key.
+- Tab completion on the colon prompt.
+- A binding whose prompt is inside another command (`if-shell … {
+  command-prompt … }`) is still held back with a message (none of tmux's
+  defaults is).
+- tree mode's own questions (`x` in choose-tree) are tmux's `status_prompt`
+  without a waiting command: they do not wedge the client but are not
+  shown.
+
+### TM25.4 · Found: tmux's modes are not drawn under -CC
+
+The prompts scenario's pictures show copy mode as a plain pane: tmux sends
+a control client a pane's output (`%output`), never a mode's screen. Copy
+mode, view mode (`prefix ?`), choose-tree, the clock and the other modes
+change what tmux does with keys, and TM24's table had them as working
+because the probe read tmux's state, not the picture. TM24.3 is corrected.
+What there is to draw them with, measured on 3.8: `capture-pane -M` gives
+copy mode's backing screen, the pane's own lines, not the view with its
+cursor, selection or position; the formats give the rest (`copy_cursor_x`,
+`copy_cursor_y`, `scroll_position`, `selection_present` and the selection's
+ends). For a keyboard user in vi copy mode this comes before TM24.5's menus.

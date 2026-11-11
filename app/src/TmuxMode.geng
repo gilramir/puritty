@@ -11,6 +11,10 @@ module TmuxMode exposing
     , activeMode
     , pointer
     , setBar
+    , setLook
+    , promptBox
+    , isAsking
+    , typeInto
     , scrollKey
     , tabKey
     , selectedText
@@ -35,6 +39,7 @@ import Dict exposing (Dict)
 import Keys
 import Tmux.Bindings as Bindings
 import Tmux.Command as Command
+import Tmux.Syntax as Syntax
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
 import Vt
@@ -91,6 +96,31 @@ type alias State =
       -- what tmux said (`%message`) or puritty says of a key, shown at the
       -- tab bar's right until the next key (TM24)
     , said : String
+      -- each pane's mode's key table (`copy-mode-vi` in copy mode), and
+      -- `mode-keys`; a prompt puritty asks for tmux, the answers given
+      -- before, and whether it is drawn in tmux's look (TM25)
+    , modes : Dict Int String
+    , modeKeys : String
+    , asking : Maybe Asking
+    , history : Array String
+    , lookTmux : Bool
+    }
+
+
+{-| A prompt of tmux's, asked by puritty (TM25): what the binding asks,
+the commands after it, which of its questions is asked and the answers to
+those before, the question as tmux would show it, and what is typed with
+the caret. `edited` once a key has changed the text, so that a first text
+tmux expands late does not replace it. -}
+type alias Asking =
+    { ask : Syntax.Ask
+    , after : String
+    , step : Int
+    , answers : Array String
+    , label : String
+    , chars : Array Char
+    , caret : Int
+    , edited : Bool
     }
 
 
@@ -137,6 +167,10 @@ type Expect
     | ForCapture Int
     | ForKeys
     | ForPrefixes
+    | ForModes
+    | ForLabel
+    | ForInput
+    | ForRan
     | ForNothing
 
 
@@ -181,6 +215,11 @@ idle _ =
     , barTop = False
     , keys = Bindings.follow
     , said = ""
+    , modes = Dict.empty
+    , modeKeys = "emacs"
+    , asking = Nothing
+    , history = []
+    , lookTmux = False
     }
 
 
@@ -231,6 +270,12 @@ windowQuery =
     "display-message -p " ++ Command.quote "W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}"
 
 
+{-| A pane's mode and `mode-keys`, a line starting with `M`. -}
+modeFormat : String
+modeFormat =
+    "M #{pane_id} #{pane_mode} #{mode-keys}"
+
+
 {-| The session's windows, each a line starting with `T`. -}
 tabsQuery : String
 tabsQuery =
@@ -241,6 +286,83 @@ tabsQuery =
 setBar : Bool -> (taken s : State) -> State
 setBar top s =
     { s | barTop = top }
+
+
+{-| The prompt puritty asks for tmux, in puritty's look, for the window's
+box (`Dialog`): the question, what is typed and where the caret is, and the
+keys that answer (TM25). -}
+promptBox : State -> Maybe { title : String, typed : String, caret : Int, field : Bool, hint : String }
+promptBox s =
+    if s.lookTmux then
+        Nothing
+
+    else
+        Maybe.map
+            (\a ->
+                when a.ask is
+                    Syntax.Confirm c ->
+                        { title = String.trim a.label, typed = "", caret = 0, field = False, hint = c.key ++ ": yes    any other key: no" }
+
+                    Syntax.Prompt p ->
+                        { title = String.trim a.label
+                        , typed = String.fromArray a.chars
+                        , caret = a.caret
+                        , field = True
+                        , hint =
+                            when p.entry is
+                                Syntax.Single ->
+                                    "a key answers    Esc: cancel"
+
+                                Syntax.KeyName ->
+                                    "a key answers"
+
+                                _ ->
+                                    "Enter: run    Esc: cancel    Up, Down: earlier answers"
+                        }
+            )
+            s.asking
+
+
+{-| Whether puritty asks one of tmux's prompts, which then takes what an
+input method commits and what is pasted. -}
+isAsking : State -> Bool
+isAsking s =
+    s.asking /= Nothing
+
+
+{-| Text from an input method or a paste, typed into the prompt: a line
+end as a space, other control characters left out; a prompt that takes a
+key or digits takes none of it. -}
+typeInto : String -> (taken s : State) -> State
+typeInto text s =
+    when s.asking is
+        Just a ->
+            when a.ask is
+                Syntax.Prompt p ->
+                    if p.entry == Syntax.Text then
+                        let
+                            clean =
+                                String.toArray text
+                                    |> Array.map (\c -> if c == '\n' || c == '\r' || c == '\t' then ' ' else c)
+                                    |> Array.keepIf (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F)
+                                    |> String.fromArray
+                        in
+                        { s | asking = Just (insert clean a) }
+
+                    else
+                        s
+
+                Syntax.Confirm _ ->
+                    s
+
+        Nothing ->
+            s
+
+
+{-| tmux's prompts and messages in tmux's look (`True`) or puritty's. -}
+setLook : Bool -> (taken s : State) -> State
+setLook tmuxLook s =
+    { s | lookTmux = tmuxLook }
 
 
 {-| The rows of puritty's window that are not tmux's: the tab bar. -}
@@ -342,6 +464,7 @@ event size e acc =
                 , { command = panesQuery, expect = ForPanes }
                 , { command = "list-keys", expect = ForKeys }
                 , { command = "display-message -p " ++ Command.quote "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
+                , { command = "list-panes -s -F " ++ Command.quote modeFormat, expect = ForModes }
                 ]
                 { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty } }
 
@@ -507,6 +630,66 @@ replied expect ok lines acc =
             else
                 { acc | state = st }
 
+        ForModes ->
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = Array.foldl (\line m -> modeLine (Bytes.toStringLossy line) m) st lines }
+
+        ForLabel ->
+            let
+                st =
+                    acc.state
+
+                text =
+                    Array.first lines |> Maybe.map Bytes.toStringLossy
+            in
+            when { asking = st.asking, text = text, ok = ok } is
+                { asking = Just a, text = Just t, ok = True } ->
+                    { acc | state = { st | asking = Just { a | label = t } } }
+
+                _ ->
+                    { acc | state = st }
+
+        ForInput ->
+            let
+                st =
+                    acc.state
+
+                text =
+                    Array.first lines |> Maybe.map Bytes.toStringLossy
+            in
+            when { asking = st.asking, text = text, ok = ok } is
+                { asking = Just a, text = Just t, ok = True } ->
+                    if a.edited then
+                        { acc | state = st }
+
+                    else
+                        { acc | state = { st | asking = Just { a | chars = String.toArray t, caret = String.count t } } }
+
+                _ ->
+                    { acc | state = st }
+
+        ForRan ->
+            -- what a command run from a prompt said: its error, or its
+            -- output's first line, at the bar's right (TM25)
+            let
+                st =
+                    acc.state
+
+                first =
+                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault ""
+
+                more =
+                    Array.length lines - 1
+            in
+            if Array.isEmpty lines then
+                { acc | state = st }
+
+            else
+                { acc | state = { st | said = if more > 0 then first ++ " (" ++ String.fromInt more ++ " more lines)" else first } }
+
         ForCapture pane ->
             if ok then
                 { acc | state = rebuild pane lines acc.state }
@@ -605,6 +788,27 @@ rebuild pane lines s =
 
                 Nothing ->
                     { s | ids = Array.pushLast pane s.ids, panes = Builder.pushLast term s.panes }
+
+
+{-| A line of `modeFormat`: the pane's mode's key table kept, copy mode's
+and view mode's by `mode-keys` (`window_copy_key_table`); the other modes
+take keys without a table (TM25). -}
+modeLine : String -> (taken s : State) -> State
+modeLine line s =
+    when String.split " " line is
+        [ "M", id, mode, modeKeys ] ->
+            let
+                table =
+                    if mode == "copy-mode" || mode == "view-mode" then
+                        if modeKeys == "vi" then "copy-mode-vi" else "copy-mode"
+
+                    else
+                        ""
+            in
+            { s | modes = Dict.set (idOf id) table s.modes, modeKeys = if modeKeys == "" then s.modeKeys else modeKeys }
+
+        _ ->
+            s
 
 
 {-| A line of `windowQuery`'s answer: `W @window %pane layout name`. -}
@@ -740,6 +944,9 @@ notice n acc =
         Message text ->
             { acc | state = { st | said = text } }
 
+        PaneModeChanged pane ->
+            ask [ { command = "display-message -p -t " ++ Command.quote ("%" ++ String.fromInt pane) ++ " " ++ Command.quote modeFormat, expect = ForModes } ] { acc | state = st }
+
         WindowRenamed r ->
             let
                 tabs =
@@ -861,6 +1068,48 @@ paint s =
                 tabBar =
                     tabsOf cols barRow s
 
+                -- in tmux's look, a prompt or a message over the whole bar, as
+                -- tmux shows them on its status line (TM25)
+                tmuxLine =
+                    if not s.lookTmux then
+                        []
+
+                    else
+                        when s.asking is
+                            Just a ->
+                                [ { row = barRow, col = 0, text = String.padRight cols ' ' (String.takeFirst cols (a.label ++ String.fromArray a.chars)) } ]
+
+                            Nothing ->
+                                if s.said == "" then
+                                    []
+
+                                else
+                                    [ { row = barRow, col = 0, text = String.padRight cols ' ' (String.takeFirst cols s.said) } ]
+
+                -- the caret of a prompt in tmux's look: the text before it
+                -- written again leaves the cursor after it, wide characters
+                -- counted by the core; none while puritty's box asks, which
+                -- draws its own
+                caretPiece =
+                    when s.asking is
+                        Just a ->
+                            if s.lookTmux then
+                                [ { row = barRow, col = 0, text = String.takeFirst cols (a.label ++ String.fromArray (Array.slice 0 a.caret a.chars)) } ]
+
+                            else
+                                []
+
+                        Nothing ->
+                            []
+
+                shownCursor =
+                    when s.asking is
+                        Just _ ->
+                            if s.lookTmux then "\u{001B}[?25h" else "\u{001B}[?25l"
+
+                        Nothing ->
+                            cursor
+
                 -- what tmux or puritty said, at the bar's right (TM24)
                 saidPiece =
                     let
@@ -919,8 +1168,10 @@ paint s =
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawText barColour [ { row = barRow, col = 0, text = String.padRight cols ' ' tabBar.text } ]
                         |> drawText activeTabColour tabBar.active
-                        |> drawText barColour saidPiece
-                        |> Vt.feed (Bytes.fromString cursor)
+                        |> drawText barColour (if s.lookTmux then [] else saidPiece)
+                        |> drawText messageColour tmuxLine
+                        |> drawText messageColour caretPiece
+                        |> Vt.feed (Bytes.fromString shownCursor)
             in
             { s | canvas = (Vt.takeReplies composed).term }
 
@@ -1034,53 +1285,365 @@ typed k bytes ms s =
         { state = s, commands = [] }
 
     else
-        let
-            commands =
-                if s.keys.byTable then
-                    byName k bytes s.active
+        when s.asking is
+            Just a ->
+                promptKey k bytes ms a s
 
-                else
-                    -- a tmux before 3.4 has no `send-keys -K`: the bytes to
-                    -- the pane, its bindings out of reach (TM24)
-                    Command.sendBytes s.active bytes
+            Nothing ->
+                keyByTable k bytes ms s
 
-            way =
-                if s.keys.byTable then
-                    Bindings.route (lookupName k) ms s.keys
 
-                else
-                    -- said at the prefix, and kept through the key after it
-                    let
-                        isPrefix =
-                            Maybe.map (\key -> Array.member key s.keys.prefixes) (lookupName k) == Just True
-                    in
-                    { send = True
-                    , reset = False
-                    , table = if isPrefix then "prefix" else "root"
-                    , repeatUntil = -1
-                    , said =
-                        if isPrefix then
-                            "puritty: tmux's key bindings under -CC need tmux 3.4 (send-keys -K)"
+{-| A typed key with no prompt open: by the tables (TM24), a binding
+whose prompt puritty can ask opening it (TM25). -}
+keyByTable : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
+keyByTable k bytes ms s =
+    let
+        commands =
+            if s.keys.byTable then
+                byName k bytes s.active
 
-                        else if s.keys.table == "prefix" then
-                            s.said
+            else
+                -- a tmux before 3.4 has no `send-keys -K`: the bytes to
+                -- the pane, its bindings out of reach (TM24)
+                Command.sendBytes s.active bytes
+
+        modeTable =
+            Maybe.withDefault "" (Dict.get s.active s.modes)
+
+        way =
+            if s.keys.byTable then
+                Bindings.route (lookupName k) ms modeTable s.keys
+
+            else
+                -- said at the prefix, and kept through the key after it
+                let
+                    isPrefix =
+                        Maybe.map (\key -> Array.member key s.keys.prefixes) (lookupName k) == Just True
+                in
+                { send = True
+                , reset = False
+                , table = if isPrefix then "prefix" else "root"
+                , repeatUntil = -1
+                , said =
+                    if isPrefix then
+                        "puritty: tmux's key bindings under -CC need tmux 3.4 (send-keys -K)"
+
+                    else if s.keys.table == "prefix" then
+                        s.said
+
+                    else
+                        ""
+                , held = ""
+                , ran = ""
+                }
+
+        tables =
+            s.keys
+
+        followed =
+            { tables | table = way.table, repeatUntil = way.repeatUntil }
+
+        -- copy mode entered by a binding is known before tmux says so, so
+        -- that a quick `/` after it is looked up in copy mode's table
+        modes =
+            if String.startsWith "copy-mode" way.ran then
+                Dict.set s.active (if s.modeKeys == "vi" then "copy-mode-vi" else "copy-mode") s.modes
+
+            else
+                s.modes
+
+        reset =
+            if way.reset then [ "switch-client -T root" ] else []
+    in
+    if way.send then
+        -- a key the pane's program gets brings its view to the bottom
+        sent commands { s | back = Dict.remove s.active s.back, keys = followed, said = way.said, modes = modes }
+
+    else
+        when Syntax.askOf way.held is
+            Just found ->
+                let
+                    opened =
+                        opening found.ask found.after
+                in
+                sendAsking (Array.map (\c -> { command = c, expect = ForNothing }) reset ++ opened.expand) { s | keys = followed, said = "", asking = Just opened.asking }
+
+            Nothing ->
+                sent reset { s | keys = followed, said = way.said }
+
+
+{-| A prompt opened at its first question: the question and first text as
+written, and the `display-message`s that expand them where they hold a
+format (`#W`, `#{…}`). -}
+opening : Syntax.Ask -> String -> { asking : Asking, expand : Array { command : String, expect : Expect } }
+opening question after =
+    let
+        start =
+            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False }
+    in
+    stepTo 0 [] start
+
+
+{-| A prompt at question `step`, with the answers before it. -}
+stepTo : Int -> Array String -> Asking -> { asking : Asking, expand : Array { command : String, expect : Expect } }
+stepTo step answers a =
+    let
+        q =
+            when a.ask is
+                Syntax.Confirm c ->
+                    { label = c.prompt, input = "" }
+
+                Syntax.Prompt p ->
+                    { label = Maybe.withDefault "" (Array.get step p.prompts), input = Maybe.withDefault "" (Array.get step p.inputs) }
+
+        expand text expect =
+            if String.contains "#" text then
+                [ { command = "display-message -p " ++ Command.quote text, expect = expect } ]
+
+            else
+                []
+    in
+    { asking = { a | step = step, answers = answers, label = q.label, chars = String.toArray q.input, caret = String.count q.input, edited = False }
+    , expand = expand q.label ForLabel ++ expand q.input ForInput
+    }
+
+
+{-| A key while a prompt is open (TM25). A confirmation takes its key, or
+Enter where `-y` says so, and runs its command; any other key says no. A
+command prompt edits its line as tmux's emacs keys do (Left, Right, Home,
+End, C-a, C-e, C-b, C-f, BSpace, DC, C-d, C-u, C-k, C-w, Up and Down for
+earlier answers), Enter answers and Escape, C-c or C-g closes it; `-1`
+takes one key's text, `-k` a key's name, `-N` digits, any other key
+answering and then going on as typed. The commands after the prompt run
+when it closes, answered or not, as tmux runs them. -}
+promptKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+promptKey k bytes ms a s =
+    let
+        name =
+            Maybe.withDefault "" (lookupName k)
+
+        text =
+            Bytes.toStringLossy k.text
+
+        plainText =
+            Bitwise.and k.mods 6 == 0 && text /= "" && Maybe.withDefault False (Maybe.map (\c -> Char.toCode c.first >= 0x20 && Char.toCode c.first /= 0x7F) (String.popFirst text))
+
+        enter =
+            name == "Enter" || name == "KPEnter" || name == "C-m" || name == "C-j"
+
+        cancel =
+            name == "Escape" || name == "C-c" || name == "C-g"
+    in
+    when a.ask is
+        Syntax.Confirm c ->
+            closePrompt (if text == c.key || (enter && c.enterYes) then [ c.run ] else []) a s
+
+        Syntax.Prompt p ->
+            when p.entry is
+                Syntax.Single ->
+                    if cancel then
+                        closePrompt [] a s
+
+                    else
+                        answer (if plainText then text else name) a s
+
+                Syntax.KeyName ->
+                    answer name a s
+
+                Syntax.Numeric ->
+                    if plainText && String.all Char.isDigit text then
+                        { state = { s | asking = Just (insert text a) }, commands = [] }
+
+                    else if enter then
+                        answer (String.fromArray a.chars) a s
+
+                    else if cancel then
+                        closePrompt [] a s
+
+                    else if name == "BSpace" || name == "C-h" then
+                        { state = { s | asking = Just (editLine name a s.history) }, commands = [] }
+
+                    else
+                        -- the count answered, and the key goes on as typed
+                        let
+                            counted =
+                                answer (String.fromArray a.chars) a s
+
+                            next =
+                                typed k bytes ms counted.state
+                        in
+                        { state = next.state, commands = counted.commands ++ next.commands }
+
+                Syntax.Text ->
+                    if enter then
+                        answer (String.fromArray a.chars) a s
+
+                    else if cancel then
+                        closePrompt [] a s
+
+                    else if plainText then
+                        { state = { s | asking = Just (insert text a) }, commands = [] }
+
+                    else
+                        { state = { s | asking = Just (editLine name a s.history) }, commands = [] }
+
+
+{-| Text typed at the caret. -}
+insert : String -> Asking -> Asking
+insert text a =
+    let
+        added =
+            String.toArray text
+    in
+    { a | chars = Array.slice 0 a.caret a.chars ++ added ++ Array.dropFirst a.caret a.chars, caret = a.caret + Array.length added, edited = True }
+
+
+{-| An editing key, by its tmux name, on the line. -}
+editLine : String -> Asking -> Array String -> Asking
+editLine name a history =
+    let
+        n =
+            Array.length a.chars
+
+        wordStart =
+            -- the start of the word before the caret, spaces before it too
+            let
+                back i skipping =
+                    if i <= 0 then
+                        0
+
+                    else
+                        let
+                            space =
+                                Array.get (i - 1) a.chars == Just ' '
+                        in
+                        if skipping && space then
+                            back (i - 1) True
+
+                        else if space then
+                            i
 
                         else
-                            ""
-                    }
+                            back (i - 1) False
+            in
+            back a.caret True
 
-            tables =
-                s.keys
+        recalled step =
+            -- Up goes back through earlier answers, Down forward
+            let
+                current =
+                    String.fromArray a.chars
 
-            followed =
-                { tables | table = way.table, repeatUntil = way.repeatUntil }
-        in
-        if way.send then
-            -- a key the pane's program gets brings its view to the bottom
-            sent commands { s | back = Dict.remove s.active s.back, keys = followed, said = way.said }
+                at =
+                    Array.findLast (\h -> h == current) history |> Maybe.map .index |> Maybe.withDefault (Array.length history)
+
+                to =
+                    at + step
+            in
+            when Array.get to history is
+                Just h ->
+                    { a | chars = String.toArray h, caret = String.count h, edited = True }
+
+                Nothing ->
+                    if to >= Array.length history then
+                        { a | chars = [], caret = 0, edited = True }
+
+                    else
+                        a
+    in
+    if name == "Left" || name == "C-b" then
+        { a | caret = max 0 (a.caret - 1) }
+
+    else if name == "Right" || name == "C-f" then
+        { a | caret = min n (a.caret + 1) }
+
+    else if name == "Home" || name == "C-a" then
+        { a | caret = 0 }
+
+    else if name == "End" || name == "C-e" then
+        { a | caret = n }
+
+    else if name == "BSpace" || name == "C-h" then
+        if a.caret == 0 then
+            a
 
         else
-            sent (if way.reset then [ "switch-client -T root" ] else []) { s | keys = followed, said = way.said }
+            { a | chars = Array.slice 0 (a.caret - 1) a.chars ++ Array.dropFirst a.caret a.chars, caret = a.caret - 1, edited = True }
+
+    else if name == "DC" || name == "C-d" then
+        { a | chars = Array.slice 0 a.caret a.chars ++ Array.dropFirst (a.caret + 1) a.chars, edited = True }
+
+    else if name == "C-u" then
+        { a | chars = Array.dropFirst a.caret a.chars, caret = 0, edited = True }
+
+    else if name == "C-k" then
+        { a | chars = Array.slice 0 a.caret a.chars, edited = True }
+
+    else if name == "C-w" then
+        { a | chars = Array.slice 0 wordStart a.chars ++ Array.dropFirst a.caret a.chars, caret = wordStart, edited = True }
+
+    else if name == "Up" then
+        recalled -1
+
+    else if name == "Down" then
+        recalled 1
+
+    else
+        a
+
+
+{-| An answer to the question asked: the next question, or the command
+run with every answer, then the commands after the prompt. A typed line
+is kept for Up. -}
+answer : String -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+answer given a s =
+    let
+        answers =
+            Array.pushLast given a.answers
+
+        history =
+            if given == "" || Array.last s.history == Just given then s.history else Array.pushLast given s.history
+    in
+    when a.ask is
+        Syntax.Prompt p ->
+            if a.step + 1 < Array.length p.prompts then
+                let
+                    next =
+                        stepTo (a.step + 1) answers a
+                in
+                sendAsking next.expand { s | asking = Just next.asking, history = history }
+
+            else
+                let
+                    line =
+                        when p.template is
+                            Just t ->
+                                Syntax.fill t answers
+
+                            Nothing ->
+                                given
+                in
+                closePrompt (if String.trim line == "" then [] else [ line ]) a { s | history = history }
+
+        Syntax.Confirm _ ->
+            closePrompt [] a s
+
+
+{-| The prompt closed: `run`, then the commands after it, each said at the
+bar if it says anything. -}
+closePrompt : Array String -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+closePrompt run a s =
+    let
+        lines =
+            run ++ (if a.after == "" then [] else [ a.after ])
+    in
+    sendAsking (Array.map (\c -> { command = c, expect = ForRan }) lines) { s | asking = Nothing }
+
+
+{-| Commands sent, each with what its reply is for. -}
+sendAsking : Array { command : String, expect : Expect } -> (taken s : State) -> { state : State, commands : Array String }
+sendAsking list s =
+    { state = { s | expecting = s.expecting ++ Array.map .expect list }, commands = Array.map .command list }
 
 
 {-| A key as `send-keys -K` takes it (TM23): by its tmux name where it has
@@ -1761,6 +2324,13 @@ boxColour =
 activeColour : String
 activeColour =
     "\u{001B}[0;38;5;214m"
+
+
+{-| tmux's `message-style` by default, black on yellow: a prompt or a
+message in tmux's look (TM25). -}
+messageColour : String
+messageColour =
+    "\u{001B}[0;30;43m"
 
 
 barColour : String

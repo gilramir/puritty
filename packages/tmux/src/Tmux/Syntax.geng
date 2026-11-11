@@ -1,0 +1,492 @@
+module Tmux.Syntax exposing
+    ( Token
+    , tokens
+    , commands
+    , Ask(..)
+    , Entry(..)
+    , askOf
+    , fill
+    )
+
+{-| tmux's command language, as much of it as puritty needs to run a
+binding's prompt itself (puritty `docs/tmux.md` TM25): words, quotes,
+`{ … }` blocks and `;` between commands, as `list-keys` writes them;
+`command-prompt` and `confirm-before` read from them; and a template
+filled with what was typed, each filled word quoted so that nothing typed
+is read as tmux syntax.
+-}
+
+import Tmux.Command as Command
+
+
+{-| A word as written (`raw`), what it says with its quotes and escapes
+taken off (`value`), and whether it is a `{ … }` block (its `value` then
+what is inside the braces) or a `;` between commands. -}
+type alias Token =
+    { raw : String, value : String, block : Bool, sep : Bool }
+
+
+{-| The words of a command line. -}
+tokens : String -> Array Token
+tokens text =
+    scan (String.toArray text) 0 []
+
+
+scan : Array Char -> Int -> Array Token -> Array Token
+scan chars i acc =
+    when Array.get i chars is
+        Nothing ->
+            acc
+
+        Just c ->
+            if c == ' ' || c == '\t' || c == '\n' then
+                scan chars (i + 1) acc
+
+            else if c == ';' then
+                scan chars (i + 1) (Array.pushLast { raw = ";", value = ";", block = False, sep = True } acc)
+
+            else if c == '{' then
+                let
+                    close =
+                        closing chars (i + 1) 1
+                in
+                scan chars (close + 1)
+                    (Array.pushLast
+                        { raw = String.fromArray (Array.slice i (close + 1) chars)
+                        , value = String.trim (String.fromArray (Array.slice (i + 1) close chars))
+                        , block = True
+                        , sep = False
+                        }
+                        acc
+                    )
+
+            else
+                let
+                    w =
+                        word chars i { value = "", quote = ' ' }
+
+                    raw =
+                        String.fromArray (Array.slice i w.end chars)
+
+                    t =
+                        { raw = raw, value = w.value, block = False, sep = raw == "\\;" }
+
+                    withSep =
+                        if w.sepAfter then
+                            Array.pushLast { raw = ";", value = ";", block = False, sep = True } (Array.pushLast t acc)
+
+                        else
+                            Array.pushLast t acc
+                in
+                scan chars (if w.sepAfter then w.end + 1 else w.end) withSep
+
+
+{-| Where a block's `}` is: braces counted, quotes skipped; the end of
+the text when there is none. -}
+closing : Array Char -> Int -> Int -> Int
+closing chars i depth =
+    when Array.get i chars is
+        Nothing ->
+            i
+
+        Just c ->
+            if c == '}' then
+                if depth == 1 then i else closing chars (i + 1) (depth - 1)
+
+            else if c == '{' then
+                closing chars (i + 1) (depth + 1)
+
+            else if c == '\'' then
+                closing chars (skipTo chars (i + 1) '\'') depth
+
+            else if c == '"' then
+                closing chars (skipTo chars (i + 1) '"') depth
+
+            else if c == '\\' then
+                closing chars (i + 2) depth
+
+            else
+                closing chars (i + 1) depth
+
+
+skipTo : Array Char -> Int -> Char -> Int
+skipTo chars i q =
+    when Array.get i chars is
+        Nothing ->
+            i
+
+        Just c ->
+            if c == q then
+                i + 1
+
+            else if c == '\\' && q == '"' then
+                skipTo chars (i + 2) q
+
+            else
+                skipTo chars (i + 1) q
+
+
+{-| A word from `i`: its value, where it ends, and whether an unquoted `;`
+ended it. -}
+word : Array Char -> Int -> { value : String, quote : Char } -> { value : String, end : Int, sepAfter : Bool }
+word chars i st =
+    when Array.get i chars is
+        Nothing ->
+            { value = st.value, end = i, sepAfter = False }
+
+        Just c ->
+            if st.quote == '\'' then
+                if c == '\'' then
+                    word chars (i + 1) { st | quote = ' ' }
+
+                else
+                    word chars (i + 1) { st | value = st.value ++ String.fromChar c }
+
+            else if st.quote == '"' then
+                if c == '"' then
+                    word chars (i + 1) { st | quote = ' ' }
+
+                else if c == '\\' then
+                    word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault "") }
+
+                else
+                    word chars (i + 1) { st | value = st.value ++ String.fromChar c }
+
+            else if c == ' ' || c == '\t' || c == '\n' then
+                { value = st.value, end = i, sepAfter = False }
+
+            else if c == ';' then
+                { value = st.value, end = i, sepAfter = True }
+
+            else if c == '\'' || c == '"' then
+                word chars (i + 1) { st | quote = c }
+
+            else if c == '\\' then
+                word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault "") }
+
+            else
+                word chars (i + 1) { st | value = st.value ++ String.fromChar c }
+
+
+{-| The commands of a line, split at its `;`s. -}
+commands : Array Token -> Array (Array Token)
+commands ts =
+    let
+        split =
+            Array.foldl
+                (\t acc ->
+                    if t.sep then
+                        { done = Array.pushLast acc.current acc.done, current = [] }
+
+                    else
+                        { acc | current = Array.pushLast t acc.current }
+                )
+                { done = [], current = [] }
+                ts
+    in
+    Array.pushLast split.current split.done
+        |> Array.keepIf (\c -> not (Array.isEmpty c))
+
+
+{-| What a `command-prompt` asks for each answer: text, one key's text
+(`-1`), digits (`-N`), or a key's name (`-k`). -}
+type Entry
+    = Text
+    | Single
+    | Numeric
+    | KeyName
+
+
+{-| A prompt a binding opens, read from its command: a confirmation, with
+its question, the command it runs, the key that says yes and whether
+Enter does; or a command prompt, with a question and a first text for
+each answer, how an answer is typed, and its template (`Nothing`: what is
+typed is the command). -}
+type Ask
+    = Confirm { prompt : String, run : String, key : String, enterYes : Bool }
+    | Prompt { prompts : Array String, inputs : Array String, entry : Entry, template : Maybe (Array Token) }
+
+
+{-| The prompt a binding's command opens when it begins with
+`command-prompt` or `confirm-before`, and the commands after it, which
+tmux runs once the prompt closes, as one line. -}
+askOf : String -> Maybe { ask : Ask, after : String }
+askOf command =
+    let
+        cmds =
+            commands (tokens command)
+
+        after =
+            Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+    in
+    when Array.first cmds is
+        Just first ->
+            when Array.first first is
+                Just name ->
+                    let
+                        args =
+                            flags (Array.dropFirst 1 first)
+                    in
+                    if name.value == "confirm-before" then
+                        let
+                            run =
+                                runOf args.rest
+
+                            key =
+                                Maybe.withDefault "y" (getFlag 'c' args.values)
+                        in
+                        Just
+                            { ask =
+                                Confirm
+                                    { prompt =
+                                        when getFlag 'p' args.values is
+                                            Just p ->
+                                                p ++ " "
+
+                                            Nothing ->
+                                                "Confirm '" ++ firstWord run ++ "'? (" ++ key ++ "/n) "
+                                    , run = run
+                                    , key = key
+                                    , enterYes = String.contains "y" args.bools
+                                    }
+                            , after = after
+                            }
+
+                    else if name.value == "command-prompt" then
+                        let
+                            template =
+                                when args.rest is
+                                    [] ->
+                                        Nothing
+
+                                    [ one ] ->
+                                        Just (tokens one.value)
+
+                                    many ->
+                                        Just (tokens (String.join " " (Array.map .raw many)))
+
+                            literal =
+                                String.contains "l" args.bools
+
+                            prompts =
+                                when getFlag 'p' args.values is
+                                    Just p ->
+                                        (if literal then [ p ] else String.split "," p) |> Array.map (\q -> q ++ " ")
+
+                                    Nothing ->
+                                        when template is
+                                            Just t ->
+                                                [ "(" ++ firstWord (serialize t) ++ ") " ]
+
+                                            Nothing ->
+                                                [ ":" ]
+
+                            inputs =
+                                when getFlag 'I' args.values is
+                                    Just i ->
+                                        if literal then [ i ] else String.split "," i
+
+                                    Nothing ->
+                                        []
+
+                            entry =
+                                if String.contains "1" args.bools then
+                                    Single
+
+                                else if String.contains "N" args.bools then
+                                    Numeric
+
+                                else if String.contains "k" args.bools then
+                                    KeyName
+
+                                else
+                                    Text
+                        in
+                        Just
+                            { ask = Prompt { prompts = prompts, inputs = inputs, entry = entry, template = template }
+                            , after = after
+                            }
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| The flags of a command's arguments: the ones without a value, run
+together (`1NP`), those with one (`-p text`, `-ptext`), and the words
+after them. -}
+flags : Array Token -> { bools : String, values : Array { flag : Char, value : String }, rest : Array Token }
+flags ts =
+    let
+        withValue c =
+            c == 'I' || c == 'p' || c == 'T' || c == 't' || c == 'c'
+
+        go i acc =
+            when Array.get i ts is
+                Just t ->
+                    if t.block || not (String.startsWith "-" t.value) || String.count t.value < 2 then
+                        { acc | rest = Array.dropFirst i ts }
+
+                    else if t.value == "--" then
+                        { acc | rest = Array.dropFirst (i + 1) ts }
+
+                    else
+                        let
+                            letters =
+                                String.toArray (String.dropFirst 1 t.value)
+
+                            found =
+                                Array.foldl
+                                    (\c a ->
+                                        if a.taking /= Nothing then
+                                            { a | tail = a.tail ++ String.fromChar c }
+
+                                        else if withValue c then
+                                            { a | taking = Just c }
+
+                                        else
+                                            { a | bools = a.bools ++ String.fromChar c }
+                                    )
+                                    { bools = "", taking = Nothing, tail = "" }
+                                    letters
+                        in
+                        when found.taking is
+                            Just f ->
+                                if found.tail /= "" then
+                                    go (i + 1) { acc | bools = acc.bools ++ found.bools, values = Array.pushLast { flag = f, value = found.tail } acc.values }
+
+                                else
+                                    go (i + 2) { acc | bools = acc.bools ++ found.bools, values = Array.pushLast { flag = f, value = Array.get (i + 1) ts |> Maybe.map .value |> Maybe.withDefault "" } acc.values }
+
+                            Nothing ->
+                                go (i + 1) { acc | bools = acc.bools ++ found.bools }
+
+                Nothing ->
+                    { acc | rest = [] }
+    in
+    go 0 { bools = "", values = [], rest = [] }
+
+
+getFlag : Char -> Array { flag : Char, value : String } -> Maybe String
+getFlag c values =
+    Array.findLast (\v -> v.flag == c) values |> Maybe.map (\f -> f.value.value)
+
+
+{-| The command a confirmation runs, as a line: a block's commands, or the
+words as written. -}
+runOf : Array Token -> String
+runOf rest =
+    when rest is
+        [ one ] ->
+            if one.block then
+                serialize (tokens one.value)
+
+            else
+                one.value
+
+        _ ->
+            serialize rest
+
+
+firstWord : String -> String
+firstWord line =
+    String.split " " (String.trim line) |> Array.first |> Maybe.withDefault ""
+
+
+{-| Words as a command line again: as written, a block's inside written
+again, a `;` as one. -}
+serialize : Array Token -> String
+serialize ts =
+    ts
+        |> Array.map
+            (\t ->
+                if t.sep then
+                    ";"
+
+                else if t.block then
+                    "{ " ++ serialize (tokens t.value) ++ " }"
+
+                else
+                    t.raw
+            )
+        |> String.join " "
+
+
+{-| A template filled with the answers (tmux's `%%` and `%%%` the first
+answer, once; `%1` to `%9`, and `%1%`…, each its answer, everywhere), in
+the words they are written in and in blocks: a word changed is written
+again in single quotes, so that what was typed is one word of text and
+never tmux syntax. -}
+fill : Array Token -> Array String -> String
+fill template answers =
+    template
+        |> Array.map
+            (\t ->
+                if t.sep then
+                    ";"
+
+                else if t.block then
+                    "{ " ++ fill (tokens t.value) answers ++ " }"
+
+                else
+                    let
+                        filled =
+                            substitute t.value answers
+                    in
+                    if filled == t.value then
+                        t.raw
+
+                    else
+                        Command.quote filled
+            )
+        |> String.join " "
+
+
+substitute : String -> Array String -> String
+substitute value answers =
+    let
+        first =
+            Maybe.withDefault "" (Array.get 0 answers)
+
+        once =
+            if String.contains "%%%" value then
+                replaceFirst "%%%" first value
+
+            else if String.contains "%%" value then
+                replaceFirst "%%" first value
+
+            else
+                value
+    in
+    Array.foldl
+        (\i v ->
+            let
+                answer =
+                    Maybe.withDefault "" (Array.get (i - 1) answers)
+
+                mark =
+                    "%" ++ String.fromInt i
+            in
+            v |> String.replace (mark ++ "%") answer |> String.replace mark answer
+        )
+        once
+        (Array.range 1 9)
+
+
+replaceFirst : String -> String -> String -> String
+replaceFirst pattern with text =
+    when String.split pattern text |> Array.popFirst is
+        Just { first, rest } ->
+            if Array.isEmpty rest then
+                text
+
+            else
+                first ++ with ++ String.join pattern rest
+
+        Nothing ->
+            text

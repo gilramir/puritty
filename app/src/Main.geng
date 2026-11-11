@@ -694,7 +694,7 @@ run imeLog shotPath charset config cell remote settings problems opener =
                                 Maybe.map
                                     (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
                                     config.remote
-                            , tmux = TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})
+                            , tmux = TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))
                             , overlaid = False
                             , search = Nothing
                             , barDrag = False
@@ -1163,7 +1163,7 @@ applySettings new m =
         applied =
             { m
                 | config = new
-                , tmux = TmuxMode.setBar (new.tmuxTabs == "top") m.tmux
+                , tmux = TmuxMode.setLook (new.tmuxLook == "tmux") (TmuxMode.setBar (new.tmuxTabs == "top") m.tmux)
                 , look = { foreground = new.foreground, background = new.background, boldIsBright = new.boldIsBright }
                 , term = term
                 , back = shape.back
@@ -1814,7 +1814,7 @@ dialogOf screen =
                         }
 
                 Session.Password p ->
-                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True }, hint = "Enter: log in    Esc: do not use a password" }
+                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, hint = "Enter: log in    Esc: do not use a password" }
 
                 Session.Passphrase p ->
                     let
@@ -1825,7 +1825,7 @@ dialogOf screen =
                         name =
                             String.split "/" file |> Array.last |> Maybe.withDefault file |> String.split "\\" |> Array.last |> Maybe.withDefault file
                     in
-                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True }, hint = "Enter: unlock the key    Esc: skip this key" }
+                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, hint = "Enter: unlock the key    Esc: skip this key" }
 
                 Session.Responses r ->
                     when Array.get (Array.length asking.given) r.prompts is
@@ -1833,7 +1833,7 @@ dialogOf screen =
                             Just
                                 { title = if r.name == "" then "The server asks" else cleanText r.name
                                 , lines = (if r.instruction == "" then [] else [ cleanText r.instruction ]) ++ [ cleanText prompt.text ]
-                                , field = Just { typed = asking.typed, hidden = not prompt.echo }
+                                , field = Just { typed = asking.typed, hidden = not prompt.echo, caret = String.count asking.typed }
                                 , hint = "Enter: answer    Esc: do not answer"
                                 }
 
@@ -2119,6 +2119,10 @@ handleOne remote ms rest ev m =
                     -- what the IME commits, typed into the question
                     handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
 
+                  else if TmuxMode.isAsking m.tmux then
+                    -- typed into tmux's prompt that puritty asks (TM25)
+                    handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
+
                   else
                     -- the key path: the text as typed, never as a paste (V46)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
@@ -2333,6 +2337,17 @@ had mode 2004 set when its first text came, and queued as typed text is, in
 the pane's character set. The view comes to the bottom, as for a key. -}
 pasteIn : Bool -> Bytes -> (taken m : Model) -> Model
 pasteIn more text m =
+    if TmuxMode.isAsking m.tmux then
+        -- into tmux's prompt that puritty asks, its line ends as spaces
+        -- (docs/tmux.md TM25)
+        { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
+
+    else
+        pasteInto more text m
+
+
+pasteInto : Bool -> Bytes -> (taken m : Model) -> Model
+pasteInto more text m =
     let
         first =
             m.pasting == Nothing
@@ -3071,10 +3086,25 @@ draw ms m =
         ownUp =
             ownScreenUp m
 
+        overlay =
+            overlaySize m
+
         -- a question asked in a box over puritty's screen (SC23)
         dialog =
             if ownUp then
                 Maybe.andThen dialogOf m.ssh
+
+            else if tmuxOn then
+                -- a prompt of tmux's in puritty's look (docs/tmux.md TM25)
+                TmuxMode.promptBox m.tmux
+                    |> Maybe.map
+                        (\p ->
+                            { title = p.title
+                            , lines = []
+                            , field = if p.field then Just { typed = p.typed, hidden = False, caret = p.caret } else Nothing
+                            , hint = p.hint
+                            }
+                        )
 
             else
                 Nothing
@@ -3092,7 +3122,7 @@ draw ms m =
         -- the scrollbar and the search bar (docs/phase3-select.md §23)
         bar =
             if barShown m then
-                Dialog.scrollbar (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term }
+                Dialog.scrollbar overlay { back = viewBack m, most = Vt.scrollbackRows m.term }
 
             else
                 Bytes.empty
@@ -3103,7 +3133,7 @@ draw ms m =
 
             else
                 Maybe.map
-                    (\s -> Dialog.searchBar (overlaySize m) { query = s.query, note = if s.failed then "No match" else "Enter: older    Shift+Enter: newer    Esc: close", failed = s.failed })
+                    (\s -> Dialog.searchBar overlay { query = s.query, note = if s.failed then "No match" else "Enter: older    Shift+Enter: newer    Esc: close", failed = s.failed })
                     m.search
 
         -- every cell drawn while anything is over them, and in the frame
@@ -3119,7 +3149,7 @@ draw ms m =
                 m.shadow
 
         boxDrawn =
-            Maybe.map (Dialog.draw (overlaySize m)) dialog
+            Maybe.map (Dialog.draw overlay) dialog
 
         tmuxOn =
             TmuxMode.isOn m.tmux

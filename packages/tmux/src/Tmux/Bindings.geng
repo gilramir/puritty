@@ -83,30 +83,37 @@ hasSendKeysK version =
         major > 3 || (major == 3 && minor >= 4)
 
 
-{-| Where a key goes by tmux's key tables, as tmux will look it up (TM24):
-the prefix moves to the `prefix` table; a binding moves back to `root`,
-or stays for `repeat-time` if it repeats, or to the table a
-`switch-client -T` names. A binding `held` gives a reason for is not
-sent: it is said instead, and tmux put back in `root` when the prefix had
-taken it out. -}
-route : Maybe String -> Int -> Follow -> { send : Bool, reset : Bool, table : String, repeatUntil : Int, said : String }
-route name ms s =
+{-| Where a key goes by tmux's key tables, as tmux will look it up
+(`server-client.c`, TM24, TM25): in the active pane's mode table
+(`modeTable`, `copy-mode-vi` in copy mode, `""` in none) while the client
+is in `root`; the prefix moves to `prefix` from any other table; a key
+bound nowhere in its table is looked for in `root`; a binding moves back to
+`root`, or stays for `repeat-time` if it repeats, or to the table a
+`switch-client -T` names. A binding `held` gives a reason for is not sent:
+its command is answered (`held`), for puritty to run itself or say why
+not, and tmux put back in `root` when the prefix had taken it out. A
+binding sent is answered too (`ran`), for what it will change. -}
+route : Maybe String -> Int -> String -> Follow -> { send : Bool, reset : Bool, table : String, repeatUntil : Int, said : String, held : String, ran : String }
+route name ms modeTable s =
     let
         repeating =
             s.repeatUntil >= 0 && ms <= s.repeatUntil
 
-        current =
+        clientTable =
             if s.repeatUntil >= 0 && not repeating then "root" else s.table
 
+        current =
+            if clientTable == "root" && modeTable /= "" then modeTable else clientTable
+
         plain =
-            { send = True, reset = False, table = "root", repeatUntil = -1, said = "" }
+            { send = True, reset = False, table = "root", repeatUntil = -1, said = "", held = "", ran = "" }
     in
     when name is
         Nothing ->
             plain
 
         Just key ->
-            if current == "root" && Array.member key s.prefixes then
+            if current /= "prefix" && Array.member key s.prefixes then
                 { plain | table = "prefix" }
 
             else
@@ -121,7 +128,7 @@ route name ms s =
                                 Just { binding = b, table = current }
 
                             Nothing ->
-                                if repeating || current == "root" then
+                                if current /= "root" then
                                     Dict.get ("root " ++ key) s.bindings |> Maybe.map (\b -> { binding = b, table = "root" })
 
                                 else
@@ -136,19 +143,21 @@ route name ms s =
                                 , table = "root"
                                 , repeatUntil = -1
                                 , said = "puritty: " ++ key ++ " is " ++ why
+                                , held = f.binding.command
+                                , ran = ""
                                 }
 
                             Nothing ->
                                 when switchedTo f.binding.command is
                                     Just table ->
-                                        { plain | table = table }
+                                        { plain | table = table, ran = f.binding.command }
 
                                     Nothing ->
                                         if f.binding.repeat then
-                                            { plain | table = f.table, repeatUntil = ms + s.repeatMs }
+                                            { plain | table = f.table, repeatUntil = ms + s.repeatMs, ran = f.binding.command }
 
                                         else
-                                            plain
+                                            { plain | ran = f.binding.command }
 
                     Nothing ->
                         plain

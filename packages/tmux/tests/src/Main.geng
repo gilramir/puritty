@@ -15,6 +15,7 @@ import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Tmux.Bindings as Bindings
 import Tmux.Command as Command
+import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
 import UInt8
@@ -28,7 +29,7 @@ main =
                 U.run env
                     { name = "puritty-tmux"
                     , version = "0.1.0"
-                    , suites = [ control, layout, command, bindings ]
+                    , suites = [ control, layout, command, bindings, syntax ]
                     }
             )
 
@@ -367,6 +368,8 @@ listed =
             , "bind-key -r -T prefix Up      select-pane -U"
             , "bind-key    -T prefix C-a     send-prefix"
             , "bind-key    -T prefix C-z     suspend-client"
+            , "bind-key    -T copy-mode-vi / command-prompt -P -T search -p \"(search down)\" { send-keys -X search-forward -- \"%%\" }"
+            , "bind-key    -T copy-mode-vi q send-keys -X cancel"
             , "bind-key    -T root   C-k     send-keys -R \\; send-keys C-l \\; clear-history"
             , "bind-key    -T root   M-p     command-prompt -p pane { select-pane -t \"%%\" }"
             ]
@@ -381,11 +384,17 @@ listed =
 {-| Keys typed one after another at the times given, and where each went. -}
 typedAt : Array { key : String, ms : Int } -> Array { send : Bool, reset : Bool, table : String }
 typedAt presses =
+    typedIn (Array.map (\p -> { key = p.key, ms = p.ms, mode = Nothing }) presses)
+
+
+{-| The same, each key with the active pane's mode table. -}
+typedIn : Array { key : String, ms : Int, mode : Maybe String } -> Array { send : Bool, reset : Bool, table : String }
+typedIn presses =
     Array.foldl
         (\p acc ->
             let
                 way =
-                    Bindings.route (Just p.key) p.ms acc.state
+                    Bindings.route (Just p.key) p.ms (Maybe.withDefault "" p.mode) acc.state
             in
             { state = { listed | table = way.table, repeatUntil = way.repeatUntil, bindings = acc.state.bindings }
             , out = Array.pushLast { send = way.send, reset = way.reset, table = way.table } acc.out
@@ -449,6 +458,25 @@ bindings =
                     Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
                         (typedAt [ { key = "C-a", ms = 0 }, { key = "C-z", ms = 10 } ])
           }
+        , { name = "in copy mode its table first: / is held, q sent, C-k found in root, the prefix still the prefix"
+          , test =
+                \_ ->
+                    Expect.equal [ False, True, True, True ]
+                        (typedIn
+                            [ { key = "/", ms = 0, mode = Just "copy-mode-vi" }
+                            , { key = "q", ms = 10, mode = Just "copy-mode-vi" }
+                            , { key = "C-k", ms = 20, mode = Just "copy-mode-vi" }
+                            , { key = "C-a", ms = 30, mode = Just "copy-mode-vi" }
+                            ]
+                            |> Array.map .send
+                        )
+          }
+        , { name = "after the prefix, a key bound only in root is looked for there"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "M-p", ms = 10 } ])
+          }
         , { name = "switch-client -T moves to that table"
           , test =
                 \_ ->
@@ -466,6 +494,110 @@ bindings =
                 \_ ->
                     Expect.equal [ True, True, True, False, False, False, False ]
                         (Array.map (\v -> (Bindings.prefixesOf ("C-b None 500 " ++ v)).byTable) [ "3.4", "3.8", "next-3.9", "3.3a", "3.2a", "2.7", "" ])
+          }
+        ]
+
+
+{-| A binding's prompt as the test reads it. -}
+asked : String -> String
+asked line =
+    when Syntax.askOf line is
+        Just a ->
+            when a.ask is
+                Confirm c ->
+                    "confirm [" ++ c.prompt ++ "] run [" ++ c.run ++ "] key " ++ c.key ++ (if c.enterYes then " enter" else "") ++ " after [" ++ a.after ++ "]"
+
+                Prompt p ->
+                    "prompt " ++ String.join "|" p.prompts ++ " inputs " ++ String.join "|" p.inputs
+                        ++ (when p.entry is
+                                Text ->
+                                    ""
+
+                                Single ->
+                                    " single"
+
+                                Numeric ->
+                                    " numeric"
+
+                                KeyName ->
+                                    " key"
+                           )
+                        ++ " after [" ++ a.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
+{-| A binding's prompt filled with answers. -}
+filled : String -> Array String -> String
+filled line answers =
+    when Syntax.askOf line |> Maybe.map .ask is
+        Just (Prompt p) ->
+            when p.template is
+                Just t ->
+                    Syntax.fill t answers
+
+                Nothing ->
+                    "(the answer)"
+
+        _ ->
+            "none"
+
+
+syntax : U.Suite
+syntax =
+    run "Syntax"
+        [ { name = "confirm-before -p, its question and the command"
+          , test = \_ -> Expect.equal "confirm [kill-pane #P? (y/n) ] run [kill-pane] key y after []" (asked "confirm-before -p \"kill-pane #P? (y/n)\" kill-pane")
+          }
+        , { name = "confirm-before with no -p asks tmux's own question; -c and -y"
+          , test = \_ -> Expect.equal "confirm [Confirm 'kill-window'? (k/n) ] run [kill-window -t :2] key k enter after []" (asked "confirm-before -y -c k { kill-window -t :2 }")
+          }
+        , { name = "command-prompt -I with a block template"
+          , test = \_ -> Expect.equal "prompt (rename-window)  inputs #W after []" (asked "command-prompt -I \"#W\" { rename-window \"%%\" }")
+          }
+        , { name = "command-prompt with nothing: the colon prompt"
+          , test = \_ -> Expect.equal "prompt : inputs  after []" (asked "command-prompt")
+          }
+        , { name = "flags run together: -1P single, -NP numeric with -I, -k"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "prompt (jump forward)  inputs  single after []"
+                        , "prompt (repeat)  inputs 3 numeric after []"
+                        , "prompt key  inputs  key after []"
+                        ]
+                        [ asked "command-prompt -1P -p \"(jump forward)\" { send-keys -X jump-forward -- \"%%\" }"
+                        , asked "command-prompt -NP -I 3 -p (repeat) { send-keys -N \"%%\" }"
+                        , asked "command-prompt -k -p key { list-keys -1N \"%%\" }"
+                        ]
+          }
+        , { name = "several prompts, by commas, and the commands after the prompt"
+          , test = \_ -> Expect.equal "prompt a |b  inputs x|y after [display-message done]" (asked "command-prompt -p a,b -I x,y { swap-window -s %1 -t %2 } \\; display-message done")
+          }
+        , { name = "not a prompt: none"
+          , test = \_ -> Expect.equal "none" (asked "if-shell -F \"#{pane_floating_flag}\" { join-pane } { break-pane -W }")
+          }
+        , { name = "an answer filled in is one quoted word, whatever it holds"
+          , test =
+                \_ ->
+                    Expect.equal "rename-window 'a\"; kill-server; '\\''x'"
+                        (filled "command-prompt -I \"#W\" { rename-window \"%%\" }" [ "a\"; kill-server; 'x" ])
+          }
+        , { name = "%1 and %2 in their words; words without them as written"
+          , test = \_ -> Expect.equal "swap-window -s '3' -t '5'" (filled "command-prompt -p a,b { swap-window -s %1 -t %2 }" [ "3", "5" ])
+          }
+        , { name = "a word around the answer keeps the rest of it"
+          , test = \_ -> Expect.equal "select-window -t ':4'" (filled "command-prompt -p index { select-window -t \":%%\" }" [ "4" ])
+          }
+        , { name = "a string template is a command line too"
+          , test = \_ -> Expect.equal "new-window -n 'logs'" (filled "command-prompt -p name \"new-window -n '%%'\"" [ "logs" ])
+          }
+        , { name = "a ; ending a word in a block, as list-keys writes it, is between commands"
+          , test =
+                \_ ->
+                    Expect.equal [ [ "copy-mode", "-q" ], [ "set-buffer", "x y" ] ]
+                        (Syntax.commands (Syntax.tokens "copy-mode -q; set-buffer \"x y\"") |> Array.map (Array.map .value))
           }
         ]
 

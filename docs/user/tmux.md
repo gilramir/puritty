@@ -73,15 +73,25 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   tmux, typing works but the prefix does nothing, and the tab bar says so.
   Messages from tmux (`prefix i`, an error such as "can't find window")
   show at the right of the tab bar until the next key.
+- **tmux's prompts and questions**: the command prompt (`prefix :`),
+  renaming (`prefix ,`, `prefix $`), yes-or-no questions (`prefix x`,
+  `prefix &`) and copy mode's search and counts (`/`, `?`, `3k`) open a box
+  over the window, which runs what tmux would run when you answer. Typing
+  works as on tmux's own prompt line: Left, Right, Home, End, Ctrl+A,
+  Ctrl+E, Ctrl+U, Ctrl+K, Ctrl+W, and Up and Down for earlier answers;
+  Escape cancels. Korean typed with an input method, or pasted, goes into
+  it. To have them on the bottom row in tmux's own yellow instead, set:
 
-Not yet under `-CC`: tmux's command prompt (`prefix :`, and renaming with
-`prefix ,` or `prefix $`), its yes-or-no questions (`prefix x`,
-`prefix &`), its menus, and the lists `prefix ?`, `prefix #` and
-`prefix ~` show. A key that would open a prompt or a question does nothing
-and says why in the tab bar, because under `-CC` tmux would wait for an
-answer puritty has no way to give. `prefix Ctrl+Z` is held back the same
-way. Until puritty draws these, use the tmux command line from a shell:
-`tmux kill-pane`, `tmux rename-window name`.
+  ```toml
+  [tmux]
+  look = "tmux"
+  ```
+
+Not yet under `-CC`: copy mode and tmux's other modes (choose-tree, the
+clock, `prefix ?`) change what tmux does but puritty does not draw them yet,
+so copy mode's cursor and selection are not shown; nor are tmux's menus or
+the lists `prefix #` and `prefix ~`. `prefix Ctrl+Z` does nothing and says
+why in the tab bar, since tmux would then take no more keys from puritty.
 
 ## tmux drawing for itself
 

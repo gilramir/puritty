@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "prompts":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                prompts(a, env, tmux, xdo, snap, cli, look)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -382,15 +387,17 @@ def prefix(a, env, tmux, xdo, snap, cli):
         print("C-a \" (unbound):", panes(), "panes")
         snap("prefix-splits")
         # a prompt or a confirmation would leave the client answering nothing
-        # (TM24): puritty holds the key back and says so, and tmux still answers
+        # (TM24): puritty asks it itself (TM25), and tmux still answers
         xd("key", "ctrl+a", "x")
         time.sleep(0.6)
-        snap("prefix-confirm-held")
+        snap("prefix-confirm-asked")
+        xd("key", "Escape")
         xd("key", "ctrl+a", "comma")
         time.sleep(0.4)
+        xd("key", "Escape")
         xd("key", "ctrl+a", "bar")
         time.sleep(0.8)
-        print("C-a x, C-a , then C-a |:", panes(), "panes")
+        print("C-a x Escape, C-a , Escape, then C-a |:", panes(), "panes")
         xd("key", "ctrl+a", "i")
         time.sleep(0.6)
         snap("prefix-message")
@@ -424,6 +431,95 @@ def prefix(a, env, tmux, xdo, snap, cli):
         time.sleep(0.4)
         xd("key", "ctrl+a", "ctrl+a")
         time.sleep(0.4)
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def prompts(a, env, tmux, xdo, snap, cli, look):
+    """tmux's prompts asked by puritty (docs/tmux.md TM25), with Gilbert's
+    tmux.conf, in puritty's look or tmux's: a confirmation answered and
+    refused, a rename typed in English and Korean, the command prompt,
+    copy mode's search and its count, and Escape; each read back from tmux."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    panes = lambda: len(q("list-panes").splitlines())
+    name = lambda: q("display-message", "-p", "#{window_name}")
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "bar")
+        time.sleep(0.6)
+        print(look, "| two panes:", panes())
+        xd("key", "ctrl+a", "x")
+        time.sleep(0.6)
+        snap(f"{look}-confirm")
+        xd("key", "n")
+        time.sleep(0.5)
+        print(look, "| C-a x, n:", panes(), "panes")
+        xd("key", "ctrl+a", "x")
+        time.sleep(0.4)
+        xd("key", "y")
+        time.sleep(0.6)
+        print(look, "| C-a x, y:", panes(), "panes")
+        xd("key", "ctrl+a", "comma")
+        time.sleep(0.6)
+        xd("key", "ctrl+u")
+        xd("type", "--delay", "30", "editor 1")
+        time.sleep(0.3)
+        snap(f"{look}-rename")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print(look, "| C-a , editor 1:", repr(name()))
+        xd("key", "ctrl+a", "comma")
+        time.sleep(0.4)
+        xd("key", "ctrl+u")
+        xd("type", "--delay", "30", "한글 창")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print(look, "| C-a , in Korean:", repr(name()))
+        xd("key", "ctrl+a", "comma")
+        time.sleep(0.4)
+        xd("type", "--delay", "30", "nope")
+        xd("key", "Escape")
+        time.sleep(0.5)
+        print(look, "| C-a , Escape:", repr(name()), "and tmux answers:", q("display-message", "-p", "ok"))
+        xd("key", "ctrl+a", "colon")
+        time.sleep(0.4)
+        xd("type", "--delay", "30", "split-window -h")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print(look, "| C-a : split-window -h:", panes(), "panes")
+        for _ in range(20):
+            xd("type", "--delay", "3", "echo line")
+            xd("key", "Return")
+        time.sleep(0.5)
+        xd("key", "ctrl+a", "bracketleft")
+        time.sleep(0.6)
+        xd("key", "3", "k")
+        time.sleep(0.5)
+        print(look, "| copy mode, 3 k: cursor row", q("display-message", "-p", "#{copy_cursor_y}"), "of", q("display-message", "-p", "#{pane_height}"))
+        xd("key", "slash")
+        time.sleep(0.5)
+        xd("type", "--delay", "30", "echo")
+        snap(f"{look}-search")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print(look, "| / echo:", q("display-message", "-p", "#{pane_mode} #{search_present} #{search_match}"))
+        xd("key", "q")
+        time.sleep(0.5)
+        print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
         cli("kill-server")
         time.sleep(1)
     finally:
