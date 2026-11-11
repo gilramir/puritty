@@ -787,3 +787,16 @@ three-quarter CRT and an amber lambda) as the fallback.
 Checked on beelink1: the title bar shows the small cut, and the taskbar
 button the 32 px picture. The window on Linux still has no icon of its
 own (`_NET_WM_ICON`), and neither does a desktop file.
+
+**Then A (2026-11-10).** Gilbert tried D and asked for A instead. The
+SVGs are now A:
+- `puritty.svg` is the draft with its gradients and the text on its
+  glass, without the draft's scanlines, which only muddy 32 to 64 px.
+- `puritty-small.svg` has flat colors and no text, its outlines and
+  lambda thick enough to stay whole at 16 px. It keeps the tube's depth,
+  which is what says CRT.
+
+The pipeline is unchanged. On beelink1 the title bar shows A at once.
+The taskbar and a shortcut kept showing D. Explorer caches an exe's icon
+by its path, and `ie4uinit -show` did not clear it; the cache clears
+when Explorer restarts, at sign-out or reboot.
