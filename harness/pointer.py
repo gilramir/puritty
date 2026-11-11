@@ -89,6 +89,9 @@ CASES = [
     ("select-double-drag", "", "move:58,8 click:1 down:1 move:130,8 up:1 primary", TEXT),
     ("select-triple", "", "move:40,25 triple:1 primary", TEXT),
     ("select-copy", "", "move:4,8 down:1 move:40,8 up:1 key:ctrl+shift+c clipboard primary", TEXT),
+    ("select-to-clipboard", "", "move:4,8 down:1 move:40,8 up:1 sleep:0.3 clipboard primary", TEXT,
+     '[selection]\ncopy_to_clipboard = true\n'),
+    ("select-not-to-clipboard", "", "move:4,8 down:1 move:40,8 up:1 sleep:0.3 clipboard primary", TEXT),
     ("select-shift", SGR, "move:4,8 key-down:shift down:1 move:40,8 up:1 key-up:shift primary", TEXT),
     ("select-large", "", "key:shift+Home sleep:0.5 move:0,0 down:1 key:shift+End sleep:0.5 move:715,400 up:1 sleep:0.5 primary", LARGE),
     # paste (docs/phase3-select.md §15)

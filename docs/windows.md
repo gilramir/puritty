@@ -969,3 +969,20 @@ not built. To settle when it is:
   the mouse (Shift+drag) is copied the same way.
 - **Tests**: the events gate's Windows cases, a selection made and the
   clipboard read with `Get-Clipboard`, as V53 was measured.
+
+### WS27.1 · Built (2026-11-11)
+
+Gilbert: make it so. `[selection] copy_to_clipboard` (`Schema.geng`, on
+the "Mouse & selection" page, Korean label and description in `Words`),
+its default `Platform.copyToClipboard`: true on Windows, false on Linux.
+When a selection is made (the button let go), `Main.owned` makes it
+PRIMARY as before and then, with the setting on, the clipboard too, so
+Ctrl+Shift+C is no longer needed but still works. Paste is unchanged: the
+middle button (or the right, `paste_button`) and Shift+Insert paste
+PRIMARY, which on Windows is puritty's own copy of the same text.
+
+Tested on Linux, where X has both selections to read: the pointer gate's
+`select-to-clipboard` (the setting on: the clipboard and PRIMARY both
+`hello`) and `select-not-to-clipboard` (Linux's default: PRIMARY alone);
+53 of 53. On Windows the build is installed on beelink1 for Gilbert to
+try.

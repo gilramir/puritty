@@ -28,10 +28,18 @@ Ctrl+Shift+C does not change the selection. So you can keep something on
 the clipboard for later while you select and middle-click other things.
 
 **On Windows** there is only the clipboard, which every Windows program
-shares. puritty keeps the selection for itself: selecting text still makes
-it what a middle-click or Shift+Insert pastes, in puritty, and other
-programs never see it. Ctrl+Shift+C and Ctrl+Shift+V are Windows'
-clipboard, as Ctrl+C and Ctrl+V are in other programs.
+shares. Selecting text copies it to the clipboard when you let go of the
+button, as PuTTY and MobaXterm do, so the selection and the clipboard are
+the same thing: paste it in puritty with a middle click, Shift+Insert or
+Ctrl+Shift+V, and in other programs with Ctrl+V. If you would rather copy
+only when you ask, set `copy_to_clipboard = false` under `[selection]`
+(the settings window's "Mouse & selection" page); then selecting text
+makes it what a middle click or Shift+Insert pastes in puritty alone, and
+Ctrl+Shift+C copies it to the clipboard. Ctrl+Shift+C and Ctrl+Shift+V
+are Windows' clipboard, as Ctrl+C and Ctrl+V are in other programs.
+
+**On Linux** the same setting is off by default. Turned on, a selection
+goes to the clipboard as well as to the selection.
 
 **Why Ctrl+Shift, not Ctrl?** In a terminal, Ctrl+C interrupts the running
 program and Ctrl+V tells the shell to take the next key literally. puritty

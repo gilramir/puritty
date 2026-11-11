@@ -2015,8 +2015,18 @@ owned : Backend -> Int -> Array Window.Event -> (taken m : Model) -> Task Error 
 owned remote ms rest m =
     when m.toOwn is
         Just own ->
+            let
+                -- a selection made, copied to the clipboard as well when
+                -- the settings say (docs/windows.md WS27)
+                next =
+                    if own.which == Window.Primary && m.config.copyToClipboard then
+                        Just { which = Window.Clipboard, text = own.text }
+
+                    else
+                        Nothing
+            in
             Window.select own.which (Bytes.fromString own.text)
-                |> Task.andThen (\_ -> owned remote ms rest { m | toOwn = Nothing })
+                |> Task.andThen (\_ -> owned remote ms rest { m | toOwn = next })
 
         Nothing ->
             when m.toPaste is
