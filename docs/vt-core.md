@@ -4325,3 +4325,44 @@ Tested: every harness (view 345, replay 325, pixels 46, keys, mouse,
 paste, events on beelink1 13, settings 20, app tests 104, …) and `perf.py`
 within the record.
 
+## VC59. Where puritty stands before local tabs (2026-11-11)
+
+`geng checks Main` in `app/linux`, against `corpus/checks/baseline.tsv`:
+
+| | 2026-11-11, before | after VC58 and TM34 |
+|---|---:|---:|
+| checks hold | 1,662 | 1,891 |
+| fallbacks never run | 42 | 46 |
+| fallbacks can run | 740 | 736 |
+| open | 51 | 0 |
+| type invariant checks | 298 | 420 |
+
+**The list.** On 2026-11-09 it held the core, `x11` and `Main`'s 224
+entries; since then the ssh and tmux packages, the settings window and
+most of the app came into the report, 376 entries never looked at, so the
+check failed on every build. They have been read by kind and module and
+recorded (480 lines): the core's 161 (as VC57 left them, less the ones
+VC58 settled); and the app's and packages': a default for a setting or a
+reply that is missing, a `Maybe` field of the model that is `Nothing`
+when no search, menu, dialog or prompt is open, an `Err` from the system
+or the network, and a few index reads. **From now on a new fallback that
+can run, or any open check, fails `geng checks`**, which is the guard for
+the tab work: each one it reports is to be proved away or recorded with a
+reason.
+
+**What is left worth refining, in order of use to the tabs:**
+
+1. **Index reads in the app** that an invariant on the model would prove:
+   `Main`'s menu (`menuKey`, `menuChosen`: the selected item inside the
+   items), the dialog's prompts (`dialogOf`, `ownTerm`), the preedit's
+   feedback. The tabs' own model is the same shape (TM34): the shown tab
+   inside the list, written with that invariant from the start.
+2. **`core`'s `Array.findFirst`** promising its index is inside the array
+   (TM34): every "find the pane, then read its terminal" in TmuxMode, and
+   the tabs to come, would be proved by it.
+3. **TmuxMode's 160**, mostly replies tmux may not send (`replied`,
+   `copyLine`, `subscribed`) and formats asked for: intended; a few pane
+   lookups follow from 2.
+4. **The ssh client's 115** and the settings window's 90: parsing and
+   protocol defaults, intended; a separate round, not on the tabs' path.
+

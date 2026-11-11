@@ -1490,3 +1490,28 @@ over values nothing bounded:
 Checked with `geng checks`: 0 open (51 before); the tmux package's tests
 (62); every tmux scenario of `bench/tmux/show.py` gives what it gave.
 
+## TM34 · The panes' ids and terminals, held to the same count (2026-11-11)
+
+`TmuxMode.State` keeps each pane's terminal in `panes` and its id at the
+same index in `ids`. Nothing said they were as long as each other, so
+`withPane` had to allow for an id with no terminal, and any update that
+pushed to one and not the other would have shifted every pane after it
+onto the wrong terminal. The record now carries the invariant
+`Array.length ids == Builder.length panes`, which the compiler checks at
+every place a `State` is built or updated (420 type invariant checks with
+the others, 304 before). `sizePane` states that it keeps it, and the
+layout's panes are sized by a loop, `sizeAll`, instead of a fold, since the
+checker does not follow refinements through a function passed as a value
+(geng-lang D829).
+
+`withPane` still allows for the id not being found in `ids` at an index
+the terminal list has: `core`'s `Array.findFirst` does not promise that
+the index it answers is inside the array. That contract is `core`'s to add
+(geng-lang `m4-proof-report.md` PR17).
+
+Local tabs (`docs/terminator.md` TA3, `docs/research/reports/Terminal tabs
+survey.md`) will hold the same shape, a list of sessions and the one
+shown; their model should carry such invariants from its first line (the
+shown tab inside the list, each tab's terminal beside its id) rather than
+have them added afterwards.
+

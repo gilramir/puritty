@@ -56,9 +56,11 @@ type alias State =
       -- the tmux window shown, -1 until tmux says which
     , window : Int
     , name : String
-      -- each pane's terminal, and its id at the same index
+      -- each pane's terminal, and its id at the same index: as many of
+      -- one as of the other, which the compiler holds every update to
+      -- (TM34)
     , ids : Array Int
-    , panes : Builder Vt.Term
+    , panes : Builder Vt.Term where Array.length ids == Builder.length panes
     , layout : Maybe Layout.Cell
     , active : Int
       -- whether the window has a modal pane, which takes every key
@@ -1426,7 +1428,7 @@ applyLayout text s =
                     Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell)
 
                 sized =
-                    Array.foldl sizePane { ids = s.ids, panes = s.panes } boxes
+                    sizeAll { ids = s.ids, panes = s.panes } boxes
 
                 active =
                     when Array.findFirst .active boxes is
@@ -1449,7 +1451,7 @@ refit s =
         Just cell ->
             let
                 sized =
-                    Array.foldl sizePane { ids = s.ids, panes = s.panes } (Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell))
+                    sizeAll { ids = s.ids, panes = s.panes } (Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell))
             in
             { s | ids = sized.ids, panes = sized.panes }
 
@@ -1457,7 +1459,20 @@ refit s =
             s
 
 
-sizePane : Layout.Pane -> (taken acc : { ids : Array Int, panes : Builder Vt.Term }) -> { ids : Array Int, panes : Builder Vt.Term }
+{-| Every pane of the layout sized, or made, in turn: a loop rather than a
+fold, so that the compiler sees each step keep the ids and the terminals
+as many as each other (TM34). -}
+sizeAll : (taken acc : { ids : Array Int, panes : Builder Vt.Term } where Array.length acc.ids == Builder.length acc.panes) -> Array Layout.Pane -> (r : { ids : Array Int, panes : Builder Vt.Term } where Array.length r.ids == Builder.length r.panes)
+sizeAll acc boxes =
+    when Array.popFirst boxes is
+        Just { first, rest } ->
+            sizeAll (sizePane first acc) rest
+
+        Nothing ->
+            acc
+
+
+sizePane : Layout.Pane -> (taken acc : { ids : Array Int, panes : Builder Vt.Term } where Array.length acc.ids == Builder.length acc.panes) -> (r : { ids : Array Int, panes : Builder Vt.Term } where Array.length r.ids == Builder.length r.panes)
 sizePane place acc =
     when Array.findFirst (\i -> i == place.id) acc.ids is
         Just found ->
