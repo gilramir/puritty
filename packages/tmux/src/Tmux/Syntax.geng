@@ -5,7 +5,14 @@ module Tmux.Syntax exposing
     , Ask(..)
     , Entry(..)
     , askOf
+    , Menu
+    , MenuItem
+    , menuOf
+    , ifFormatOf
+    , retarget
+    , lines
     , fill
+    , serialize
     )
 
 {-| tmux's command language, as much of it as puritty needs to run a
@@ -225,7 +232,7 @@ askOf command =
                 Just name ->
                     let
                         args =
-                            flags (Array.dropFirst 1 first)
+                            flags "IpTtc" (Array.dropFirst 1 first)
                     in
                     if name.value == "confirm-before" then
                         let
@@ -317,14 +324,150 @@ askOf command =
             Nothing
 
 
+{-| A menu a binding shows (`display-menu`, puritty `docs/tmux.md` TM27):
+its title, the pane its formats are read in (`-t`, `=` for the mouse's),
+where it goes (`-x`, `-y`: a number, or `C`, `R`, `P`, `M`, `W`, `S` as
+tmux(1) has them), and its items, as written: formats are tmux's to
+expand. -}
+type alias Menu =
+    { title : String
+    , target : String
+    , x : String
+    , y : String
+    , items : Array MenuItem
+    }
+
+
+{-| An item: its name (empty for a line between items; a name that begins
+with `-` once expanded is shown and cannot be chosen), the key that
+chooses it, and its command as one line. -}
+type alias MenuItem =
+    { name : String, key : String, command : String }
+
+
+{-| The menu a binding's command shows when it begins with
+`display-menu`, and the commands after it, which tmux runs at once: a
+menu does not wait. -}
+menuOf : String -> Maybe { menu : Menu, after : String }
+menuOf command =
+    let
+        cmds =
+            commands (tokens command)
+    in
+    when Array.first cmds is
+        Just first ->
+            if Maybe.map .value (Array.first first) == Just "display-menu" || Maybe.map .value (Array.first first) == Just "menu" then
+                let
+                    args =
+                        flags "bcCHsStTxy" (Array.dropFirst 1 first)
+
+                    value c =
+                        Maybe.withDefault "" (getFlag c args.values)
+                in
+                Just
+                    { menu =
+                        { title = value 'T'
+                        , target = value 't'
+                        , x = value 'x'
+                        , y = value 'y'
+                        , items = itemsOf args.rest []
+                        }
+                    , after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+                    }
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| A menu's items from its words: a name, a key and a command each, or an
+empty name alone for a line. -}
+itemsOf : Array Token -> Array MenuItem -> Array MenuItem
+itemsOf ts acc =
+    when Array.first ts is
+        Nothing ->
+            acc
+
+        Just name ->
+            if name.value == "" && not name.block then
+                itemsOf (Array.dropFirst 1 ts) (Array.pushLast { name = "", key = "", command = "" } acc)
+
+            else
+                let
+                    key =
+                        Array.get 1 ts |> Maybe.map .value |> Maybe.withDefault ""
+
+                    command =
+                        when Array.get 2 ts is
+                            Just c ->
+                                if c.block then
+                                    serialize (tokens c.value)
+
+                                else
+                                    c.value
+
+                            Nothing ->
+                                ""
+                in
+                itemsOf (Array.dropFirst 3 ts) (Array.pushLast { name = name.value, key = key, command = command } acc)
+
+
+{-| A binding's command that chooses by a format, `if-shell -F` (or `if
+-F`): the pane it is read in, the format, the commands it runs when the
+format gives something other than empty or `0`, those it runs otherwise,
+and the commands after it, which wait for it. `Nothing` for an `if-shell`
+that runs a shell command, which only tmux can run. -}
+ifFormatOf : String -> Maybe { target : String, condition : String, yes : String, no : String, after : String }
+ifFormatOf command =
+    let
+        cmds =
+            commands (tokens command)
+
+        branch t =
+            if t.block then
+                serialize (tokens t.value)
+
+            else
+                t.value
+    in
+    when Array.first cmds is
+        Just first ->
+            if Maybe.map .value (Array.first first) == Just "if-shell" || Maybe.map .value (Array.first first) == Just "if" then
+                let
+                    args =
+                        flags "t" (Array.dropFirst 1 first)
+                in
+                if String.contains "F" args.bools then
+                    when args.rest is
+                        [ condition, yes ] ->
+                            Just { target = Maybe.withDefault "" (getFlag 't' args.values), condition = condition.value, yes = branch yes, no = "", after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; " }
+
+                        [ condition, yes, no ] ->
+                            Just { target = Maybe.withDefault "" (getFlag 't' args.values), condition = condition.value, yes = branch yes, no = branch no, after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; " }
+
+                        _ ->
+                            Nothing
+
+                else
+                    Nothing
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
 {-| The flags of a command's arguments: the ones without a value, run
-together (`1NP`), those with one (`-p text`, `-ptext`), and the words
-after them. -}
-flags : Array Token -> { bools : String, values : Array { flag : Char, value : String }, rest : Array Token }
-flags ts =
+together (`1NP`), those with one (`-p text`, `-ptext`), whose letters
+`valued` holds, and the words after them. -}
+flags : String -> Array Token -> { bools : String, values : Array { flag : Char, value : String }, rest : Array Token }
+flags valued ts =
     let
         withValue c =
-            c == 'I' || c == 'p' || c == 'T' || c == 't' || c == 'c'
+            String.contains (String.fromChar c) valued
 
         go i acc =
             when Array.get i ts is
@@ -490,3 +633,56 @@ replaceFirst pattern with text =
 
         Nothing ->
             text
+
+
+{-| A command line with the mouse's pane (`-t =`, `-t=`, `-t {mouse}`,
+flags run together as `-Xt=`) made `pane`: under control mode there is no
+mouse event for tmux to find it by (puritty `docs/tmux.md` TM27). -}
+retarget : String -> String -> String
+retarget pane line =
+    retargetTokens pane (tokens line)
+
+
+retargetTokens : String -> Array Token -> String
+retargetTokens pane ts =
+    Array.foldl
+        (\t acc ->
+            let
+                afterT =
+                    String.startsWith "-" acc.prev && not (String.startsWith "--" acc.prev) && String.endsWith "t" acc.prev
+
+                out =
+                    if t.sep then
+                        ";"
+
+                    else if t.block && t.value == "mouse" && afterT then
+                        pane
+
+                    else if t.block then
+                        "{ " ++ retargetTokens pane (tokens t.value) ++ " }"
+
+                    else if t.value == "=" && afterT then
+                        pane
+
+                    else if String.startsWith "-" t.value && not (String.startsWith "--" t.value) && String.endsWith "t=" t.raw then
+                        String.dropLast 1 t.raw ++ pane
+
+                    else
+                        t.raw
+            in
+            { prev = if t.block then "" else t.value, out = Array.pushLast out acc.out }
+        )
+        { prev = "", out = [] }
+        ts
+        |> .out
+        |> String.join " "
+
+
+{-| A command line's commands, each a line of its own: tmux answers each
+command of a line in a block of its own and stops at the first that fails,
+so a line sent as its commands one by one has one answer each, whatever
+fails. -}
+lines : String -> Array String
+lines line =
+    commands (tokens line) |> Array.map serialize
+

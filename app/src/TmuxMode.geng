@@ -107,7 +107,43 @@ type alias State =
       -- what a binding or a command printed, shown in a view that takes
       -- the keys until it is closed (TM26)
     , view : Maybe View
+      -- a menu of tmux's shown by puritty, and a count that tells its
+      -- formats' answers from an earlier menu's (TM27)
+    , menu : Maybe Menuing
+    , serial : Int
     }
+
+
+{-| A menu of tmux's (`display-menu`) shown by puritty (TM27): its title and
+items, their formats answered by tmux as they come (`pending` still to
+come), the item chosen (an index into `items`, -1 for none), the pane it
+was opened for and the mouse's cell when a click opened it, where it goes
+(`-x`, `-y`), and whether the pointer has been pressed or moved since it
+opened, so that the release of the click that opened it chooses nothing. -}
+type alias Menuing =
+    { serial : Int
+    , title : String
+    , items : Array Syntax.MenuItem
+    , pending : Int
+    , selected : Int
+    , pane : Int
+    , mouse : Maybe { col : Int, row : Int }
+    , x : String
+    , y : String
+    , armed : Bool
+    }
+
+
+{-| What a command puritty runs for tmux runs in (TM27): the pane, and the
+mouse's cell when a click began it. -}
+type alias Context =
+    { pane : Int, mouse : Maybe { col : Int, row : Int } }
+
+
+{-| A menu's row as shown: a line, or an item (its index in the menu) with
+its name, its key and whether it can be chosen. -}
+type alias MenuRow =
+    { index : Int, line : Bool, text : String, key : String, enabled : Bool }
 
 
 {-| What tmux printed for this client (TM26): its lines, the first shown,
@@ -183,6 +219,10 @@ type Expect
     | ForLabel
     | ForInput
     | ForRan
+    | ForCondition { pane : Int, mouse : Maybe { col : Int, row : Int }, yes : String, no : String, after : String }
+    | ForMenuTitle Int
+    | ForMenuName { serial : Int, item : Int }
+    | ForMenuCommand { serial : Int, item : Int }
     | ForNothing
 
 
@@ -233,6 +273,8 @@ idle _ =
     , history = []
     , lookTmux = False
     , view = Nothing
+    , menu = Nothing
+    , serial = 0
     }
 
 
@@ -341,7 +383,7 @@ input method commits and what is pasted, or shows a view (TM26), which
 drops them. -}
 isAsking : State -> Bool
 isAsking s =
-    s.asking /= Nothing || s.view /= Nothing
+    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing
 
 
 {-| Text from an input method or a paste, typed into the prompt: a line
@@ -487,7 +529,7 @@ event size e acc =
                 st =
                     acc.state
             in
-            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing } }
+            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing } }
 
         Reply r ->
             if r.flags == 0 then
@@ -724,6 +766,36 @@ replied expect ok lines acc =
 
             else
                 { acc | state = { st | said = if more > 0 then first ++ " (" ++ String.fromInt more ++ " more lines)" else first } }
+
+        ForCondition c ->
+            -- `if-shell -F`'s format answered: its branch run, then the
+            -- commands after it (TM27)
+            let
+                value =
+                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault ""
+
+                ctx =
+                    { pane = c.pane, mouse = c.mouse }
+
+                branch =
+                    if ok && value /= "" && value /= "0" then c.yes else c.no
+
+                ran =
+                    runLine ctx branch acc.state
+
+                more =
+                    runLine ctx c.after ran.state
+            in
+            { state = more.state, outside = acc.outside, commands = acc.commands ++ ran.commands ++ more.commands }
+
+        ForMenuTitle serial ->
+            { acc | state = menuPart serial (\m -> { m | title = firstLine ok lines m.title }) acc.state }
+
+        ForMenuName part ->
+            { acc | state = menuPart part.serial (\m -> { m | items = Array.update part.item (\it -> { it | name = firstLine ok lines it.name }) m.items }) acc.state }
+
+        ForMenuCommand part ->
+            { acc | state = menuPart part.serial (\m -> { m | items = Array.update part.item (\it -> { it | command = firstLine ok lines it.command }) m.items }) acc.state }
 
         ForCapture pane ->
             if ok then
@@ -1138,15 +1210,32 @@ paint s =
                             []
 
                 shownCursor =
-                    when { asking = s.asking, view = s.view } is
-                        { asking = Just _, view = _ } ->
+                    when { asking = s.asking, view = s.view, menu = s.menu } is
+                        { asking = Just _, view = _, menu = _ } ->
                             if s.lookTmux then "\u{001B}[?25h" else "\u{001B}[?25l"
 
-                        { asking = Nothing, view = Just _ } ->
+                        { asking = Nothing, view = Just _, menu = _ } ->
+                            "\u{001B}[?25l"
+
+                        { asking = Nothing, view = Nothing, menu = Just _ } ->
                             "\u{001B}[?25l"
 
                         _ ->
                             cursor
+
+                -- a menu of tmux's (TM27), once tmux has answered its
+                -- formats
+                menuDrawn =
+                    when s.menu is
+                        Just m ->
+                            if m.pending > 0 then
+                                []
+
+                            else
+                                drawMenu s.lookTmux (menuPlace cols rows s m) m
+
+                        Nothing ->
+                            []
 
                 -- a view of what tmux printed (TM26): over the active pane
                 -- in tmux's look, in a box over the panes in puritty's
@@ -1229,6 +1318,7 @@ paint s =
                         |> drawText messageColour tmuxLine
                         |> drawText messageColour caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
+                        |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c menuDrawn)
                         |> Vt.feed (Bytes.fromString shownCursor)
             in
             { s | canvas = (Vt.takeReplies composed).term, view = Maybe.map (\v -> { v | rows = max 1 viewDrawn.rows }) s.view }
@@ -1343,11 +1433,14 @@ typed k bytes ms s =
         { state = s, commands = [] }
 
     else
-        when { asking = s.asking, view = s.view } is
-            { asking = Just a, view = _ } ->
+        when { asking = s.asking, menu = s.menu, view = s.view } is
+            { asking = Just a, menu = _, view = _ } ->
                 promptKey k bytes ms a s
 
-            { asking = Nothing, view = Just v } ->
+            { asking = Nothing, menu = Just m, view = _ } ->
+                menuKey k m s
+
+            { asking = Nothing, menu = Nothing, view = Just v } ->
                 { state = { s | view = viewKey k v }, commands = [] }
 
             _ ->
@@ -1420,17 +1513,23 @@ keyByTable k bytes ms s =
         -- a key the pane's program gets brings its view to the bottom
         sent commands { s | back = Dict.remove s.active s.back, keys = followed, said = way.said, modes = modes }
 
-    else
-        when Syntax.askOf way.held is
-            Just found ->
-                let
-                    opened =
-                        opening found.ask found.after
-                in
-                sendAsking (Array.map (\c -> { command = c, expect = ForNothing }) reset ++ opened.expand) { s | keys = followed, said = "", asking = Just opened.asking }
+    else if runsHere way.held then
+        -- a prompt, a menu, or an `if-shell -F` around one: puritty runs
+        -- the binding (TM25, TM27)
+        let
+            ctx =
+                { pane = s.active, mouse = Nothing }
 
-            Nothing ->
-                sent reset { s | keys = followed, said = way.said }
+            back =
+                sent reset { s | keys = followed, said = "" }
+
+            ran =
+                runHeld ctx "" "" way.held back.state
+        in
+        { state = ran.state, commands = back.commands ++ ran.commands }
+
+    else
+        sent reset { s | keys = followed, said = way.said }
 
 
 {-| A prompt opened at its first question: the question and first text as
@@ -1459,7 +1558,7 @@ stepTo step answers a =
 
         expand text expect =
             if String.contains "#" text then
-                [ { command = "display-message -p " ++ Command.quote text, expect = expect } ]
+                [ { command = "display-message -p " ++ Command.quote (noTime text), expect = expect } ]
 
             else
                 []
@@ -1698,7 +1797,7 @@ closePrompt run a s =
         lines =
             run ++ (if a.after == "" then [] else [ a.after ])
     in
-    sendAsking (Array.map (\c -> { command = c, expect = ForRan }) lines) { s | asking = Nothing }
+    sendAsking (Array.map (\c -> { command = c, expect = ForRan }) (Array.mapAndFlatten Syntax.lines lines)) { s | asking = Nothing }
 
 
 {-| Commands sent, each with what its reply is for. -}
@@ -2084,11 +2183,14 @@ pointer how p s =
                 takesMouse =
                     not how.select && paneTakesMouse target s
             in
-            when { drag = s.drag, tab = tabHit } is
-                { drag = Just d } ->
+            when { drag = s.drag, tab = tabHit, menu = s.menu } is
+                { drag = _, tab = _, menu = Just m } ->
+                    plain (menuPointer p col row m s)
+
+                { drag = Just d, tab = _, menu = Nothing } ->
                     plain (dragged col row (p.action == 1) d s)
 
-                { tab = Just hit } ->
+                { drag = Nothing, tab = Just hit, menu = Nothing } ->
                     -- a tab selects its window; `+` makes one
                     plain (sent [ if hit.window < 0 then "new-window" else "select-window -t " ++ Command.quote ("@" ++ String.fromInt hit.window) ] s)
 
@@ -2165,7 +2267,25 @@ selecting how p col row q s =
         wheel =
             p.button == 4 || p.button == 5
     in
-    if p.action == 0 && p.button == how.pasteButton then
+    if p.action == 0 && p.button == 2 && how.pasteButton /= 2 && not how.select && Dict.get "root MouseDown3Pane" s.keys.bindings /= Nothing then
+        -- the right button: tmux's own binding for it, its menu by default,
+        -- when tmux has the mouse on (TM27)
+        let
+            word =
+                withPane q.id s (\t -> Vt.wordAt how.boundaries at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault ""
+
+            line =
+                withPane q.id s (\t -> Vt.lineAt at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault ""
+
+            binding =
+                Dict.get "root MouseDown3Pane" s.keys.bindings |> Maybe.map .command |> Maybe.withDefault ""
+
+            r =
+                runHeld { pane = q.id, mouse = Just { col = col, row = row } } word line ("if-shell -F -t " ++ paneName q.id ++ " '#{mouse}' { " ++ binding ++ " }") s
+        in
+        { state = r.state, commands = r.commands, own = Nothing, paste = False }
+
+    else if p.action == 0 && p.button == how.pasteButton then
         { state = s, commands = [], own = Nothing, paste = True }
 
     else if p.action == 0 && wheel then
@@ -2346,6 +2466,594 @@ tabsOf cols row s =
             |> Array.map (\h -> { row = row, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
     , hits = laid.hits
     }
+
+
+-- RUNNING tmux's COMMANDS, AND MENUS (TM27)
+
+
+{-| A format for `display-message -p` to expand as tmux expands one in a
+menu or a prompt: `display-message` also gives `%` to strftime, which
+would make a template's `%%` one `%` (measured: a menu's Rename named the
+window `%`), so each `%` is written `%%`, which strftime gives back. -}
+noTime : String -> String
+noTime text =
+    String.replace "%" "%%" text
+
+
+paneName : Int -> String
+paneName pane =
+    "%" ++ String.fromInt pane
+
+
+{-| Whether puritty runs a held binding itself: a prompt, a menu, or an
+`if-shell -F` that chooses between commands. -}
+runsHere : String -> Bool
+runsHere line =
+    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line } is
+        { ask = Nothing, menu = Nothing, test = Nothing } ->
+            False
+
+        _ ->
+            True
+
+
+{-| A binding run by puritty, from a key or a click (TM27): where it
+names the mouse's word or line (`mouse_word`, `mouse_line`), those are
+set first as the pane's options it is read with instead, since tmux has
+no mouse event of this client's to find them in. -}
+runHeld : Context -> String -> String -> String -> (taken s : State) -> { state : State, commands : Array String }
+runHeld ctx word line command s =
+    let
+        options =
+            if String.contains "mouse_" command then
+                [ { command = "set-option -p -t " ++ paneName ctx.pane ++ " @puritty_mouse_word " ++ Command.quote word, expect = ForNothing }
+                , { command = "set-option -p -t " ++ paneName ctx.pane ++ " @puritty_mouse_line " ++ Command.quote line, expect = ForNothing }
+                ]
+
+            else
+                []
+
+        set =
+            sendAsking options s
+
+        ran =
+            runLine ctx command set.state
+    in
+    { state = ran.state, commands = set.commands ++ ran.commands }
+
+
+{-| The mouse's formats as the options `runHeld` sets: written once, so
+that a line made from one already changed changes no further. -}
+mouseNames : String -> String
+mouseNames line =
+    line
+        |> String.replace "@puritty_mouse_word" "mouse_word"
+        |> String.replace "@puritty_mouse_line" "mouse_line"
+        |> String.replace "mouse_word" "@puritty_mouse_word"
+        |> String.replace "mouse_line" "@puritty_mouse_line"
+
+
+{-| A command line run by puritty for tmux (TM27), as tmux would run it: a
+prompt opens puritty's (TM25), a menu puritty's, an `if-shell -F` asks tmux
+the format and runs the branch it gives; other commands are sent, each on
+a line of its own, the mouse's pane named where `-t =` names it, and
+`send-keys -M` left out, since puritty gives a pane the mouse itself.
+Anything held for another reason (`suspend-client`) is said, not run. -}
+runLine : Context -> String -> (taken s : State) -> { state : State, commands : Array String }
+runLine ctx line s =
+    let
+        fixed =
+            Syntax.retarget (paneName ctx.pane) (mouseNames line)
+    in
+    if String.trim fixed == "" then
+        { state = s, commands = [] }
+
+    else
+        when Syntax.askOf fixed is
+            Just found ->
+                let
+                    opened =
+                        opening found.ask found.after
+                in
+                sendAsking opened.expand { s | said = "", asking = Just opened.asking }
+
+            Nothing ->
+                when Syntax.menuOf fixed is
+                    Just m ->
+                        openMenu ctx m.menu m.after s
+
+                    Nothing ->
+                        when Syntax.ifFormatOf fixed is
+                            Just f ->
+                                sendAsking
+                                    [ { command = "display-message -p -t " ++ Command.quote (if f.target == "" then paneName ctx.pane else f.target) ++ " -- " ++ Command.quote (noTime f.condition)
+                                      , expect = ForCondition { pane = ctx.pane, mouse = ctx.mouse, yes = f.yes, no = f.no, after = f.after }
+                                      }
+                                    ]
+                                    s
+
+                            Nothing ->
+                                when Array.popFirst (Syntax.lines fixed) is
+                                    Just { first, rest } ->
+                                        let
+                                            one =
+                                                runOne first s
+
+                                            others =
+                                                runLine ctx (String.join " ; " rest) one.state
+                                        in
+                                        { state = others.state, commands = one.commands ++ others.commands }
+
+                                    Nothing ->
+                                        { state = s, commands = [] }
+
+
+{-| One plain command of `runLine`'s. -}
+runOne : String -> (taken s : State) -> { state : State, commands : Array String }
+runOne command s =
+    let
+        words =
+            String.split " " command |> Array.keepIf (\w -> w /= "")
+
+        name =
+            Maybe.withDefault "" (Array.first words)
+
+        mouseKeys =
+            (name == "send-keys" || name == "send") && Array.any (\w -> String.startsWith "-" w && not (String.startsWith "--" w) && String.contains "M" w) words
+    in
+    if mouseKeys then
+        { state = s, commands = [] }
+
+    else
+        when Bindings.held command is
+            Just why ->
+                { state = { s | said = "puritty: " ++ why }, commands = [] }
+
+            Nothing ->
+                sendAsking [ { command = command, expect = ForRan } ] s
+
+
+{-| A menu opened (TM27): its title, names and commands that hold a
+format asked of tmux in the menu's pane, as tmux expands them when it
+shows a menu, and the commands after it run at once, as tmux runs them. -}
+openMenu : Context -> Syntax.Menu -> String -> (taken s : State) -> { state : State, commands : Array String }
+openMenu ctx menu after s =
+    let
+        serial =
+            s.serial + 1
+
+        expand text expect =
+            if String.contains "#" text then
+                [ { command = "display-message -p -t " ++ paneName ctx.pane ++ " -- " ++ Command.quote (noTime text), expect = expect } ]
+
+            else
+                []
+
+        asks =
+            expand menu.title (ForMenuTitle serial)
+                ++ (Array.range 0 (Array.length menu.items - 1)
+                        |> Array.mapAndFlatten
+                            (\i ->
+                                when Array.get i menu.items is
+                                    Just it ->
+                                        expand it.name (ForMenuName { serial = serial, item = i }) ++ expand it.command (ForMenuCommand { serial = serial, item = i })
+
+                                    Nothing ->
+                                        []
+                            )
+                   )
+
+        shown =
+            readied
+                { serial = serial
+                , title = menu.title
+                , items = menu.items
+                , pending = Array.length asks
+                , selected = -1
+                , pane = ctx.pane
+                , mouse = ctx.mouse
+                , x = menu.x
+                , y = menu.y
+                , armed = False
+                }
+
+        opened =
+            sendAsking asks { s | serial = serial, said = "", menu = Just shown }
+
+        ran =
+            runLine ctx after opened.state
+    in
+    { state = ran.state, commands = opened.commands ++ ran.commands }
+
+
+{-| A menu whose formats have all been answered: from the keyboard, its
+first item that can be chosen is chosen, as tmux does; from a click,
+none. -}
+readied : Menuing -> Menuing
+readied m =
+    if m.pending > 0 || m.mouse /= Nothing then
+        m
+
+    else
+        { m | selected = Array.findFirst .enabled (menuRows m) |> Maybe.map (\r -> r.value.index) |> Maybe.withDefault -1 }
+
+
+{-| One of a menu's formats answered: its first line, or what was written
+when tmux could not expand it. -}
+firstLine : Bool -> Array Bytes -> String -> String
+firstLine ok lines written =
+    if ok then
+        Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault ""
+
+    else
+        written
+
+
+menuPart : Int -> (Menuing -> Menuing) -> (taken s : State) -> State
+menuPart serial change s =
+    when s.menu is
+        Just m ->
+            if m.serial == serial then
+                { s | menu = Just (readied (change { m | pending = m.pending - 1 })) }
+
+            else
+                s
+
+        Nothing ->
+            s
+
+
+{-| Text without tmux's styles (`#[align=centre]`), and `##` as `#`. -}
+unstyled : String -> String
+unstyled text =
+    String.toArray text
+        |> Array.foldl
+            (\c acc ->
+                if acc.inStyle then
+                    { acc | inStyle = c /= ']', prev = ' ' }
+
+                else if c == '[' && acc.prev == '#' then
+                    { acc | inStyle = True, out = Array.dropLast 1 acc.out, prev = ' ' }
+
+                else if c == '#' && acc.prev == '#' then
+                    { acc | prev = ' ' }
+
+                else
+                    { acc | out = Array.pushLast c acc.out, prev = c }
+            )
+            { inStyle = False, out = [], prev = ' ' }
+        |> .out
+        |> String.fromArray
+
+
+{-| A menu's rows as tmux shows them (`menu_add_item`): a name expanded
+to nothing is a line, never two together and none first or last; a name
+that begins with `-` is shown without it and cannot be chosen, and has no
+key shown. -}
+menuRows : Menuing -> Array MenuRow
+menuRows m =
+    let
+        rows =
+            Array.range 0 (Array.length m.items - 1)
+                |> Array.foldl
+                    (\i acc ->
+                        when Array.get i m.items is
+                            Just it ->
+                                let
+                                    name =
+                                        unstyled it.name
+                                in
+                                if String.trim name == "" then
+                                    when Array.last acc is
+                                        Just last ->
+                                            if last.line then acc else Array.pushLast { index = i, line = True, text = "", key = "", enabled = False } acc
+
+                                        Nothing ->
+                                            acc
+
+                                else if String.startsWith "-" name then
+                                    Array.pushLast { index = i, line = False, text = String.dropFirst 1 name, key = "", enabled = False } acc
+
+                                else
+                                    Array.pushLast { index = i, line = False, text = name, key = it.key, enabled = True } acc
+
+                            Nothing ->
+                                acc
+                    )
+                    []
+    in
+    when Array.last rows is
+        Just last ->
+            if last.line then Array.dropLast 1 rows else rows
+
+        Nothing ->
+            rows
+
+
+{-| Where a menu goes and its size (TM27): as wide as its widest item and
+its key, `(k)`, with a space either side, or its title; `-x` and `-y` as
+tmux(1) has them, measured on 3.8: `P` the pane's left and its bottom row
+as the menu's last, `W` the window's tab and the row beside the bar, `M`
+the mouse's cell, `C` the middle, `R` the right; a number as it is; kept
+inside the panes' rows. -}
+menuPlace : Int -> Int -> State -> Menuing -> { x : Int, y : Int, w : Int, h : Int, rows : Array MenuRow, title : String }
+menuPlace cols rows s m =
+    let
+        shown =
+            menuRows m
+
+        keyText r =
+            if r.enabled && r.key /= "" then "(" ++ r.key ++ ")" else ""
+
+        widest =
+            Array.foldl (\r acc -> max acc (String.count r.text + (if keyText r == "" then 0 else 1 + String.count (keyText r)))) 0 shown
+
+        heading =
+            unstyled m.title
+
+        w =
+            min cols (max (widest + 4) (String.count heading + 4))
+
+        areaTop =
+            if s.barTop then bar else 0
+
+        areaH =
+            rows - bar
+
+        h =
+            min areaH (Array.length shown + 2)
+
+        pane =
+            when s.layout is
+                Just cell ->
+                    Array.findFirst (\q -> q.id == m.pane) (Array.map (down s.barTop) (Layout.tiled cell ++ Layout.floating cell)) |> Maybe.map .value
+
+                Nothing ->
+                    Nothing
+
+        barRow =
+            if s.barTop then 0 else rows - 1
+
+        tab =
+            Array.findFirst (\hit -> hit.window == s.window) (tabsOf cols barRow s).hits |> Maybe.map (\f -> f.value.from) |> Maybe.withDefault 0
+
+        mouse =
+            Maybe.withDefault { col = (cols - w) // 2, row = areaTop + (areaH - h) // 2 } m.mouse
+
+        x =
+            when m.x is
+                "R" ->
+                    cols - w
+
+                "P" ->
+                    Maybe.withDefault 0 (Maybe.map .x pane)
+
+                "M" ->
+                    mouse.col
+
+                "W" ->
+                    tab
+
+                other ->
+                    Maybe.withDefault ((cols - w) // 2) (String.toInt other)
+
+        y =
+            when m.y is
+                "P" ->
+                    Maybe.withDefault areaTop (Maybe.map (\q -> q.y + q.h - h) pane)
+
+                "M" ->
+                    mouse.row
+
+                "W" ->
+                    if s.barTop then areaTop else areaTop + areaH - h
+
+                "S" ->
+                    if s.barTop then areaTop else areaTop + areaH - h
+
+                other ->
+                    Maybe.withDefault (areaTop + (areaH - h) // 2) (String.toInt other)
+    in
+    { x = clamp 0 (max 0 (cols - w)) x
+    , y = clamp areaTop (max areaTop (areaTop + areaH - h)) y
+    , w = w
+    , h = h
+    , rows = shown
+    , title = heading
+    }
+
+
+{-| A menu's cells: in tmux's look as tmux draws one, measured on 3.8
+(single lines, the title in the middle of the top edge, the chosen item
+in `menu-selected-style`, black on yellow, one that cannot be chosen
+dim); in puritty's, in the view's box with the chosen item amber. -}
+drawMenu : Bool -> { x : Int, y : Int, w : Int, h : Int, rows : Array MenuRow, title : String } -> Menuing -> Array { row : Int, col : Int, colour : String, text : String }
+drawMenu tmuxLook place m =
+    let
+        inner =
+            place.w - 2
+
+        edge =
+            if tmuxLook then "\u{001B}[0;38;5;249;48;5;235m" else viewEdgeColour
+
+        plainColour =
+            if tmuxLook then "\u{001B}[0;38;5;254;48;5;235m" else viewTextColour
+
+        dimColour =
+            if tmuxLook then "\u{001B}[0;2;38;5;254;48;5;235m" else "\u{001B}[0;38;5;243;48;5;236m"
+
+        chosenColour =
+            if tmuxLook then messageColour else activeTabColour
+
+        heading =
+            String.takeFirst inner place.title
+
+        top =
+            if tmuxLook then
+                let
+                    left =
+                        (inner - String.count heading) // 2
+                in
+                "┌" ++ String.repeat left "─" ++ heading ++ String.repeat (inner - left - String.count heading) "─" ++ "┐"
+
+            else
+                let
+                    label =
+                        if heading == "" then "" else " " ++ String.takeFirst (inner - 2) heading ++ " "
+                in
+                "╭" ++ label ++ String.repeat (inner - String.count label) "─" ++ "╮"
+
+        bottom =
+            (if tmuxLook then "└" else "╰") ++ String.repeat inner "─" ++ (if tmuxLook then "┘" else "╯")
+
+        body =
+            Array.range 0 (place.h - 3)
+                |> Array.mapAndFlatten
+                    (\i ->
+                        when Array.get i place.rows is
+                            Just r ->
+                                if r.line then
+                                    [ { row = place.y + 1 + i, col = place.x, colour = edge, text = "├" ++ String.repeat inner "─" ++ "┤" } ]
+
+                                else
+                                    let
+                                        key =
+                                            if r.enabled && r.key /= "" then "(" ++ r.key ++ ")" else ""
+
+                                        text =
+                                            " " ++ String.padRight (inner - 2 - String.count key) ' ' (String.takeFirst (inner - 2) r.text) ++ key ++ " "
+
+                                        colour =
+                                            if r.index == m.selected && r.enabled then chosenColour else if r.enabled then plainColour else dimColour
+                                    in
+                                    [ { row = place.y + 1 + i, col = place.x, colour = edge, text = (if tmuxLook then "│" else "│") ++ String.repeat inner " " ++ "│" }
+                                    , { row = place.y + 1 + i, col = place.x + 1, colour = colour, text = text }
+                                    , { row = place.y + 1 + i, col = place.x + place.w - 1, colour = edge, text = "│" }
+                                    ]
+
+                            Nothing ->
+                                []
+                    )
+    in
+    [ { row = place.y, col = place.x, colour = edge, text = top } ]
+        ++ body
+        ++ [ { row = place.y + place.h - 1, col = place.x, colour = edge, text = bottom } ]
+
+
+{-| A key while a menu is open (TM27), as tmux's menu takes it: an item's
+own key chooses it; Up, k, Down and j move among those that can be
+chosen; Home and g the first, End and G the last; Enter or Space chooses
+the one moved to; Escape, q and C-c close it. -}
+menuKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Menuing -> (taken s : State) -> { state : State, commands : Array String }
+menuKey k m s =
+    let
+        name =
+            Maybe.withDefault "" (lookupName k)
+
+        choosable =
+            Array.keepIf .enabled (menuRows m)
+
+        at =
+            Array.findFirst (\r -> r.index == m.selected) choosable |> Maybe.map .index
+
+        count =
+            Array.length choosable
+
+        moveTo i st =
+            { state = { st | menu = Just { m | selected = Array.get (modBy (max 1 count) i) choosable |> Maybe.map .index |> Maybe.withDefault -1 } }, commands = [] }
+    in
+    if m.pending > 0 then
+        if name == "Escape" || name == "q" || name == "C-c" then
+            { state = { s | menu = Nothing }, commands = [] }
+
+        else
+            { state = s, commands = [] }
+
+    else
+        when Array.findFirst (\r -> r.key == name && name /= "") choosable is
+            Just r ->
+                chooseItem r.value.index m s
+
+            Nothing ->
+                if name == "Escape" || name == "q" || name == "C-c" then
+                    { state = { s | menu = Nothing }, commands = [] }
+
+                else if name == "Up" || name == "k" || name == "BTab" then
+                    moveTo (Maybe.withDefault 0 at - 1) s
+
+                else if name == "Down" || name == "j" || name == "Tab" then
+                    moveTo (Maybe.withDefault -1 at + 1) s
+
+                else if name == "Home" || name == "g" then
+                    moveTo 0 s
+
+                else if name == "End" || name == "G" then
+                    moveTo (count - 1) s
+
+                else if name == "Enter" || name == "KPEnter" || name == "Space" || name == "C-m" then
+                    if m.selected >= 0 then chooseItem m.selected m s else { state = { s | menu = Nothing }, commands = [] }
+
+                else
+                    { state = s, commands = [] }
+
+
+{-| An item chosen: the menu closed and its command run in its pane. -}
+chooseItem : Int -> Menuing -> (taken s : State) -> { state : State, commands : Array String }
+chooseItem index m s =
+    let
+        command =
+            Array.get index m.items |> Maybe.map .command |> Maybe.withDefault ""
+    in
+    runLine { pane = m.pane, mouse = m.mouse } command { s | menu = Nothing }
+
+
+{-| The pointer while a menu is open (TM27): over an item it is chosen;
+a press outside closes the menu; letting a button go over an item runs it,
+once the pointer has moved or been pressed since the menu opened, so that
+letting go of the click that opened it does not. -}
+menuPointer : Window.PointerEvent -> Int -> Int -> Menuing -> (taken s : State) -> { state : State, commands : Array String }
+menuPointer p col row m s =
+    let
+        place =
+            menuPlace s.canvas.cols s.canvas.rows s m
+
+        inside =
+            col >= place.x && col < place.x + place.w && row >= place.y && row < place.y + place.h
+
+        under =
+            if inside then
+                Array.get (row - place.y - 1) place.rows |> Maybe.andThen (\r -> if r.enabled then Just r.index else Nothing)
+
+            else
+                Nothing
+
+        moved =
+            m.mouse /= Just { col = col, row = row }
+    in
+    if p.button == 4 || p.button == 5 then
+        { state = s, commands = [] }
+
+    else if p.action == 0 then
+        if inside then
+            { state = { s | menu = Just { m | armed = True, selected = Maybe.withDefault m.selected under } }, commands = [] }
+
+        else
+            { state = { s | menu = Nothing }, commands = [] }
+
+    else if p.action == 1 then
+        when under is
+            Just i ->
+                if m.armed || moved then
+                    chooseItem i m s
+
+                else
+                    { state = s, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else
+        { state = { s | menu = Just { m | armed = m.armed || moved, selected = Maybe.withDefault m.selected under } }, commands = [] }
 
 
 -- VIEWS (TM26)

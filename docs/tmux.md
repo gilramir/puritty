@@ -1149,3 +1149,84 @@ window; tmux answers after. Every picture looked at.
 is cut, where tmux's copy mode scrolls sideways; copy mode's search is not
 offered inside the view.
 
+## TM27 · tmux's menus, shown by puritty (2026-11-11)
+
+Item 3 of TM24.5. `display-menu` does nothing for a control client
+(`cmd-display-menu.c` returns at once), so `prefix <` (the window's menu),
+`prefix >` (the pane's), the right button's menu and the `move` table's
+(`prefix g` then `,` or `.`, an `if-shell -F` around one) showed nothing.
+
+**Read** (`Tmux.Syntax.menuOf`, `ifFormatOf`): `display-menu`'s flags
+(`-T -t -x -y` and the others that take a value) and its items, a name, a
+key and a command each, or `''` alone for a line; `if-shell -F [-t] format
+{ yes } [{ no }]`. `Tmux.Bindings.held` now holds a binding with
+`display-menu`, as it holds a prompt.
+
+**Run** (`TmuxMode.runLine`): a command line puritty runs for tmux as tmux
+would. A prompt opens puritty's (TM25); a menu opens puritty's; an
+`if-shell -F` asks tmux its format (`display-message -p -t pane`) and runs
+the branch it gives (true unless empty or `0`); anything else is sent, each
+command on its own line (tmux answers each command of a line with a block
+of its own and stops at the first that fails, so one per line keeps the
+answers counted; TM25's `closePrompt` now does the same). `-t =`, the
+mouse's pane, which a control client has no event for, is made the pane's
+id (`Syntax.retarget`); `send-keys -M` is left out, since puritty hands a
+pane the mouse itself; `suspend-client` is still said, not run.
+
+**Formats:** tmux expands a menu's title, names and commands when it shows
+it (`menu_add_item`); puritty asks `display-message -p -t pane` for each
+that holds a `#` and shows the menu when all have come back. `display-
+message` also hands `%` to strftime, which made the Rename item's `%%` one
+`%` (measured: the window was renamed `%`), so each `%` is sent as `%%`
+(`noTime`, also for TM25's prompt texts). `mouse_word` and `mouse_line`
+have no event to come from: puritty sets the pane's options
+`@puritty_mouse_word` and `@puritty_mouse_line` from the cell clicked
+(`Vt.wordAt`, `Vt.lineAt`) and reads the binding with those names instead,
+so the right button over a word gives tmux's Search For, Type, Copy and
+Paste items for it. From a key they are set empty, as tmux has no word
+then.
+
+**Shown** as tmux shows a menu (`menu.c`), measured on 3.8 with a tmux
+client inside another tmux: a name expanded to nothing is a line, never
+two together, none first or last; a name starting with `-` is dim, cannot
+be chosen and has no key; the key in brackets at the right; from a key the
+first item that can be chosen is chosen, from a click none. Placed by `-x`
+and `-y`: `P` the pane's left with the menu's last row on the pane's last,
+`W` at the window's tab, beside the bar, `M` at the clicked cell, `C` the
+middle, `R` the right, a number as given; kept inside the panes' rows.
+`[tmux] look = "tmux"`: single lines, the title in the middle of the top
+edge, grey on dark, the chosen item black on yellow (`menu-selected-style`);
+`"puritty"`: the view's amber box, the chosen item amber.
+
+**Keys:** an item's own key runs it; Up, k, BTab and Down, j, Tab move;
+Home, g and End, G; Enter or Space runs the chosen item; Escape, q, C-c
+close. **Pointer:** a press inside chooses the item under it, letting go
+over an item runs it once the pointer has been pressed or moved since the
+menu opened (so letting go of the right click that opened it does not), a
+press outside closes it, the wheel does nothing.
+
+**The right button** (button 2 as puritty numbers them), over a pane whose
+program does not take the mouse, without Shift, and when it is not the
+paste button: tmux's own `MouseDown3Pane` binding, run as `if-shell -F -t
+pane '#{mouse}' { binding }`, so it does nothing while tmux's `mouse` is
+off, as in tmux.
+
+**Checked:** packages/tmux 54 tests (Syntax 15: a menu's title, place and
+items with a line and a disabled name; `-t =`, an empty command and
+commands after; `if-shell -F`'s branches, a shell `if-shell` not read).
+`bench/tmux/show.py --scenario menus`, Gilbert's tmux.conf, each look:
+`C-a <` drawn at the tab with Swap Left and Right dim in one window, Down
+Down to Mark; `n` opens the rename prompt and `renamed` names the window;
+`C-a >` then `h` splits; Escape closes, tmux answering; `C-a >` Down Enter
+splits; with `mouse on`, the right button over `wordy` shows Search For
+wordy, Type wordy, Copy wordy, then `v` splits, `c` puts `wordy` in a
+buffer, and a click on Zoom zooms. Every other scenario gives what it
+gave. Every picture looked at.
+
+**Not yet:** the pointer over an item does not mark it until a button is
+pressed (puritty is told of motion only while a button is held); a style
+in a name (`#[underscore]`) is left out, not drawn; `-O` (a menu that stays
+open after its button is let go) and `-C` (the first item) are not read;
+`MouseDown3Status` and the other status-line bindings are not offered,
+since puritty's tab bar takes those clicks.
+

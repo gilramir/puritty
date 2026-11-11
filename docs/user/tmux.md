@@ -94,9 +94,15 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   "tmux"` they cover the active pane, with tmux's `[n/m]` at the top right,
   as tmux shows them.
 
+- **Menus**: `prefix <` (the window's) and `prefix >` (the pane's), and,
+  when tmux's `mouse` option is on, the right button's menu over a pane,
+  with tmux's items for the word under the pointer. Choose with an item's
+  key, the arrows and Enter, or a click; Escape closes. With `look =
+  "tmux"` they look as tmux draws them.
+
 Not yet under `-CC`: copy mode and tmux's other modes (choose-tree, the
 clock) change what tmux does but puritty does not draw them yet, so copy
-mode's cursor and selection are not shown; nor are tmux's menus. `prefix Ctrl+Z` does nothing and says
+mode's cursor and selection are not shown. `prefix Ctrl+Z` does nothing and says
 why in the tab bar, since tmux would then take no more keys from puritty.
 
 ## tmux drawing for itself

@@ -544,6 +544,28 @@ filled line answers =
             "none"
 
 
+menu : String -> String
+menu line =
+    when Syntax.menuOf line is
+        Just m ->
+            "title [" ++ m.menu.title ++ "] x " ++ m.menu.x ++ " y " ++ m.menu.y ++ " t [" ++ m.menu.target ++ "] items "
+                ++ String.join " " (Array.map (\i -> if i.name == "" then "[--]" else "[" ++ i.name ++ "|" ++ i.key ++ "|" ++ i.command ++ "]") m.menu.items)
+                ++ " after [" ++ m.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
+ifFormat : String -> String
+ifFormat line =
+    when Syntax.ifFormatOf line is
+        Just f ->
+            "t [" ++ f.target ++ "] if [" ++ f.condition ++ "] yes [" ++ f.yes ++ "] no [" ++ f.no ++ "] after [" ++ f.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
 syntax : U.Suite
 syntax =
     run "Syntax"
@@ -592,6 +614,26 @@ syntax =
           }
         , { name = "a string template is a command line too"
           , test = \_ -> Expect.equal "new-window -n 'logs'" (filled "command-prompt -p name \"new-window -n '%%'\"" [ "logs" ])
+          }
+        , { name = "display-menu: title, place, items, a line, a disabled name kept as written"
+          , test =
+                \_ ->
+                    Expect.equal "title [#[align=centre]#{window_index}] x W y W t [] items [#{?pane_marked_set,,-}Swap Marked|s|swap-window] [--] [Kill|X|kill-window] [Rename|n|command-prompt -F -I \"#W\" { rename-window -t \"#{window_id}\" \"%%\" }] after []"
+                        (menu "display-menu -T \"#[align=centre]#{window_index}\" -x W -y W \"#{?pane_marked_set,,-}Swap Marked\" s { swap-window } '' Kill X { kill-window } Rename n { command-prompt -F -I \"#W\" { rename-window -t \"#{window_id}\" \"%%\" } }")
+          }
+        , { name = "display-menu -t = with an empty command and commands after it"
+          , test = \_ -> Expect.equal "title [Kill pane?] x M y M t [=] items [Yes|y|kill-pane -t =] [No|n|] after [display-message done]" (menu "display-menu -O -T \"Kill pane?\" -t = -x M -y M Yes y { kill-pane -t = } No n {  } \\; display-message done")
+          }
+        , { name = "if-shell -F: the pane, the format and both branches; a shell's if-shell is none"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "t [=] if [#{mouse_any_flag}] yes [select-pane -t = ; send-keys -M] no [display-menu -x M -y M Top < { send-keys -X history-top }] after []"
+                        , "none"
+                        ]
+                        [ ifFormat "if-shell -F -t = \"#{mouse_any_flag}\" { select-pane -t = ; send-keys -M } { display-menu -x M -y M Top < { send-keys -X history-top } }"
+                        , ifFormat "if-shell \"test -f x\" { kill-pane }"
+                        ]
           }
         , { name = "a ; ending a word in a block, as list-keys writes it, is between commands"
           , test =

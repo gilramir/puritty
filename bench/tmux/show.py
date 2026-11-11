@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "menus":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                menus(a, env, tmux, xdo, snap, cli, look)
             return
         if a.scenario == "views":
             for look in ("puritty", "tmux"):
@@ -525,6 +530,99 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.5)
         print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def menus(a, env, tmux, xdo, snap, cli, look):
+    """tmux's menus shown by puritty (docs/tmux.md TM27), with Gilbert's
+    tmux.conf, in each look: the window menu (`C-a <`) and the pane menu
+    (`C-a >`) from the keyboard, an item chosen by its key, by the arrows
+    and Enter, and one that opens a prompt; Escape; and, with tmux's mouse
+    on, the right button's menu over a word, chosen by a click. Each read
+    back from tmux."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    panes = lambda: len(q("list-panes").splitlines())
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "less")
+        time.sleep(0.8)
+        snap(f"{look}-menu-window")
+        xd("key", "Down", "Down")
+        time.sleep(0.3)
+        snap(f"{look}-menu-window-down")
+        xd("key", "n")
+        time.sleep(0.6)
+        xd("key", "ctrl+u")
+        xd("type", "--delay", "20", "renamed")
+        xd("key", "Return")
+        time.sleep(0.6)
+        print(look, "| C-a < n renamed:", repr(q("display-message", "-p", "#{window_name}")))
+        xd("key", "ctrl+a", "greater")
+        time.sleep(0.8)
+        snap(f"{look}-menu-pane")
+        xd("key", "h")
+        time.sleep(0.8)
+        print(look, "| C-a > h:", panes(), "panes")
+        xd("key", "ctrl+a", "less")
+        time.sleep(0.6)
+        xd("key", "Escape")
+        time.sleep(0.4)
+        print(look, "| C-a < Escape, tmux answers:", q("display-message", "-p", "ok"), "| windows:", len(q("list-windows").splitlines()))
+        xd("key", "ctrl+a", "greater")
+        time.sleep(0.6)
+        xd("key", "Down", "Return")
+        time.sleep(0.8)
+        print(look, "| C-a > Down Enter (Horizontal Split):", panes(), "panes")
+        # the right button, with tmux's mouse on: the pane's menu at the
+        # pointer, over a word
+        cli("set", "-g", "mouse", "on")
+        xd("type", "--delay", "20", "echo wordy")
+        xd("key", "Return")
+        time.sleep(0.6)
+        xd("mousemove", "--window", win, "700", "26")
+        time.sleep(0.2)
+        xd("click", "3")
+        time.sleep(1.0)
+        snap(f"{look}-menu-right")
+        xd("key", "Escape")
+        time.sleep(0.4)
+        before = panes()
+        xd("mousemove", "--window", win, "60", "26")
+        xd("click", "3")
+        time.sleep(1.0)
+        xd("key", "v")
+        time.sleep(0.8)
+        print(look, "| right button, v:", before, "->", panes(), "panes")
+        xd("mousemove", "--window", win, "700", "26")
+        xd("click", "3")
+        time.sleep(1.0)
+        xd("key", "c")
+        time.sleep(0.6)
+        print(look, "| right button on a word, c (Copy):", repr(q("show-buffer")))
+        xd("mousemove", "--window", win, "700", "26")
+        xd("click", "3")
+        time.sleep(1.0)
+        xd("mousemove", "--window", win, "700", "348")
+        time.sleep(0.2)
+        snap(f"{look}-menu-hover")
+        xd("click", "1")
+        time.sleep(0.8)
+        print(look, "| right button, a click on Zoom:", q("display-message", "-p", "#{window_zoomed_flag}"))
         cli("kill-server")
         time.sleep(1)
     finally:
