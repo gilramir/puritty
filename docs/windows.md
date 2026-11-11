@@ -760,7 +760,7 @@ were drawn. He chose D, an outlined CRT with a `>` prompt and a solid
 lambda in front, all in one color, to try on Windows, with A (a beige
 three-quarter CRT and an amber lambda) as the fallback.
 
-- **The art** is in `app/windows/icon`, as two SVGs:
+- **The art** is in `app/icon` (`app/windows/icon` until Linux took it too, WS25), as two SVGs:
   - `puritty.svg` is for 32 px and up.
   - `puritty-small.svg` is for 16 to 24 px. Its strokes are at least a
     pixel wide at 16, and it has no prompt, which would only be a smudge
@@ -813,3 +813,29 @@ icons there. Two changes:
   that 125%, 150%, 200% and 300% each have their own.
 
 The small cut is unchanged.
+
+## WS25 · The icon on Linux too (2026-11-10)
+
+The art moved to `app/icon`, as Linux uses it as well. There are three
+pieces:
+
+- **The window.** puritty's X window, and so the settings window and
+  the host list, carries `_NET_WM_ICON`, which a dock or a taskbar
+  shows. Its pictures are the 16, 24, 32, 48 and 64 px ones as ARGB,
+  from `packages/x11/src/Ext/puritty_icon.h`, which
+  `app/icon/pack-x11.py` writes from the PNGs (`build.sh` runs it). That
+  is 33 KB, sent with each window, over `ssh -X` too, so the 256 px
+  picture is left out of it. `xprop` on Xvfb reads the property back.
+- **The desktop file.** `app/linux/puritty.desktop` has
+  `StartupWMClass=Puritty`, matching the window's `WM_CLASS`, so a dock
+  groups the windows under it. Its actions are Settings and Hosts, in
+  English and Korean.
+- **The install script.** `app/linux/install-desktop.sh` puts the
+  desktop file, with `Exec` naming the checkout's `app/puritty`, and the
+  icons (16 to 256 px and the SVG) under `~/.local/share` for the user
+  who runs it. It does not build GTK's icon cache, which in a user's own
+  icon directory would hide icons added there later. It was tried into a
+  scratch `XDG_DATA_HOME`, not into a home directory.
+
+The Windows build reads `app/icon/puritty.rc` from there (`windres
+-I ../icon`), and the exe still carries all twelve sizes.

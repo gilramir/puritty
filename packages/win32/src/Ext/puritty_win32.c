@@ -1457,7 +1457,7 @@ static void *window_thread(void *arg) {
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = L"puritty";
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR) IDC_IBEAM);
-    /* the exe's icon (app/windows/icon), each size taken from the .ico's own
+    /* the exe's icon (app/icon), each size taken from the .ico's own
      * picture of it: the large for Alt+Tab, the small for the title bar and
      * the taskbar; Windows' own where the exe has none */
     wc.hIcon = (HICON) LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON),

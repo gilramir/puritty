@@ -88,6 +88,7 @@
 #include <xcb-imdkit/imclient.h>
 #include <xcb-imdkit/encoding.h>
 
+#include "puritty_icon.h"
 #include "geng.h"
 #include "puritty_text.h"
 
@@ -957,6 +958,10 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     selection_atoms();
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, wm_protocols, XCB_ATOM_ATOM, 32, 1, &wm_delete);
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "puritty\0Puritty\0");
+    /* the icon a dock or a taskbar shows (docs/windows.md WS25), 16 to 64
+     * px: 33 KB, sent with each window, over ssh -X too */
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom("_NET_WM_ICON"), XCB_ATOM_CARDINAL, 32,
+                        (uint32_t) (sizeof puritty_icon / sizeof puritty_icon[0]), puritty_icon);
     /* WM_NORMAL_HINTS (ICCCM 4.1.2.3): a minimum of one cell, the base 0,
      * and a step of a cell. Flags: PMinSize 16, PResizeInc 64, PBaseSize 256. */
     uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
