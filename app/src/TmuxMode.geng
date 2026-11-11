@@ -583,7 +583,7 @@ tab bar when the bar is at the top, where tmux has it when at the bottom. -}
 down : Bool -> Layout.Pane -> Layout.Pane
 down top p =
     if top then
-        { p | y = p.y + bar }
+        { p | y = min 16384 (p.y + bar) }
 
     else
         p
@@ -2149,10 +2149,18 @@ editLine name a history =
                     String.fromArray a.chars
 
                 at =
-                    Array.findLast (\h -> h == current) history |> Maybe.map .index |> Maybe.withDefault (Array.length history)
+                    clamp 0 (Array.length history) (Array.findLast (\h -> h == current) history |> Maybe.map .index |> Maybe.withDefault (Array.length history))
 
+                -- one back or one on, written so that neither can wrap
                 to =
-                    at + step
+                    if step < 0 then
+                        if at > 0 then at - 1 else -1
+
+                    else if at < Array.length history then
+                        at + 1
+
+                    else
+                        Array.length history
             in
             when Array.get to history is
                 Just h ->
@@ -2657,7 +2665,7 @@ pointer how p s =
                         Nothing
 
                 barRow =
-                    if s.barTop then 0 else p.height // max 1 p.cellHeight - 1
+                    if s.barTop then 0 else max 0 (p.height // max 1 p.cellHeight) - 1
 
                 tabHit =
                     if row == barRow && p.action == 0 && p.button == 1 && s.drag == Nothing && s.grab == Nothing then
@@ -3655,7 +3663,7 @@ tmux(1) has them, measured on 3.8: `P` the pane's left and its bottom row
 as the menu's last, `W` the window's tab and the row beside the bar, `M`
 the mouse's cell, `C` the middle, `R` the right; a number as it is; kept
 inside the panes' rows. -}
-menuPlace : Int -> Int -> State -> Menuing -> { x : Int, y : Int, w : Int, h : Int, rows : Array MenuRow, title : String }
+menuPlace : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> State -> Menuing -> (r : { x : Int, y : Int, w : Int, h : Int, rows : Array MenuRow, title : String } where 0 <= r.x && r.x <= 1000 && 0 <= r.y && r.y <= 1000 && 0 <= r.w && r.w <= 1000 && 0 <= r.h && r.h <= 1000)
 menuPlace cols rows s m =
     let
         shown =
@@ -3671,7 +3679,7 @@ menuPlace cols rows s m =
             unstyled m.title
 
         w =
-            min cols (max (widest + 4) (String.count heading + 4))
+            clamp 0 cols (max (min 1000 widest + 4) (min 1000 (String.count heading) + 4))
 
         areaTop =
             if s.barTop then bar else 0
@@ -3680,7 +3688,7 @@ menuPlace cols rows s m =
             rows - bar
 
         h =
-            min areaH (Array.length shown + 2)
+            clamp 0 (max 0 areaH) (min 1000 (Array.length shown) + 2)
 
         pane =
             when s.layout is
@@ -4619,7 +4627,11 @@ tmuxView p v =
             max 0 (Array.length v.lines - p.h)
 
         top =
-            min v.top hidden
+            clamp 0 hidden v.top
+
+        -- the lines in view, taken without adding to `top`
+        inView =
+            Array.dropFirst top v.lines
 
         position =
             "[" ++ String.fromInt (hidden - top) ++ "/" ++ String.fromInt hidden ++ "]"
@@ -4629,7 +4641,7 @@ tmuxView p v =
                 |> Array.mapAndFlatten
                     (\r ->
                         [ { row = p.y + r, col = p.x, colour = "\u{001B}[0m", text = String.repeat p.w " " }
-                        , { row = p.y + r, col = p.x, colour = "\u{001B}[0m", text = String.takeFirst p.w (Maybe.withDefault "" (Array.get (top + r) v.lines)) }
+                        , { row = p.y + r, col = p.x, colour = "\u{001B}[0m", text = String.takeFirst p.w (Maybe.withDefault "" (Array.get r inView)) }
                         ]
                     )
     in
@@ -4647,7 +4659,7 @@ tmuxView p v =
 
 {-| The view in puritty's look: a box over the panes, as wide as its
 longest line allows, its keys and where it is on the bottom edge. -}
-boxView : Int -> Int -> Bool -> View -> { rows : Int, pieces : Array { row : Int, col : Int, colour : String, text : String } }
+boxView : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Bool -> View -> { rows : Int, pieces : Array { row : Int, col : Int, colour : String, text : String } }
 boxView cols rows barTop v =
     let
         areaTop =
@@ -4663,7 +4675,7 @@ boxView cols rows barTop v =
             max 4 (min cols (max 40 (longest + 4)))
 
         h =
-            max 3 (min areaH (Array.length v.lines + 2))
+            max 3 (min areaH (min 1000 (Array.length v.lines) + 2))
 
         inner =
             h - 2
@@ -4678,7 +4690,11 @@ boxView cols rows barTop v =
             max 0 (Array.length v.lines - inner)
 
         top =
-            min v.top last
+            clamp 0 last v.top
+
+        -- the lines in view, taken without adding to `top`
+        inView =
+            Array.dropFirst top v.lines
 
         shown =
             if Array.length v.lines > inner then
@@ -4698,7 +4714,7 @@ boxView cols rows barTop v =
                 |> Array.mapAndFlatten
                     (\r ->
                         [ { row = y0 + 1 + r, col = x0, colour = viewEdgeColour, text = "│" ++ String.repeat (w - 2) " " }
-                        , { row = y0 + 1 + r, col = x0 + 2, colour = viewTextColour, text = String.takeFirst (w - 4) (Maybe.withDefault "" (Array.get (top + r) v.lines)) }
+                        , { row = y0 + 1 + r, col = x0 + 2, colour = viewTextColour, text = String.takeFirst (w - 4) (Maybe.withDefault "" (Array.get r inView)) }
                         , { row = y0 + 1 + r, col = x0 + w - 1, colour = viewEdgeColour, text = "│" }
                         ]
                     )

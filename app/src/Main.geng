@@ -1317,25 +1317,25 @@ menuChosen c m =
 
 
 {-| The menu's box: where it is drawn, kept on the screen. -}
-menuBox : Menu -> Int -> Int -> { row : Int, col : Int, width : Int, height : Int }
+menuBox : Menu -> (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> (r : { row : Int, col : Int, width : Int, height : Int } where 0 <= r.row && r.row <= 1000 && 0 <= r.col && r.col <= 1000 && 0 <= r.width && r.width <= 1000 && 0 <= r.height && r.height <= 1000)
 menuBox menu cols rows =
     let
         width =
-            Array.foldl (\i w -> max w (String.count i.label)) 0 menu.items + 6
+            clamp 0 cols (min 1000 (Array.foldl (\i w -> max w (String.count i.label)) 0 menu.items) + 6)
 
         height =
-            Array.length menu.items + 2
+            clamp 0 rows (min 1000 (Array.length menu.items) + 2)
     in
-    { row = max 0 (min menu.row (rows - height))
-    , col = max 0 (min menu.col (cols - width))
-    , width = min width cols
-    , height = min height rows
+    { row = clamp 0 rows (min menu.row (rows - height))
+    , col = clamp 0 cols (min menu.col (cols - width))
+    , width = width
+    , height = height
     }
 
 
 {-| The menu as the text painted over the screen: a box, the marked item
 pointed at. -}
-menuPaints : Menu -> Int -> Int -> Array { row : Int, col : Int, text : String }
+menuPaints : Menu -> (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Array { row : Int, col : Int, text : String }
 menuPaints menu cols rows =
     let
         box =
@@ -1392,8 +1392,10 @@ menuPress p menu m =
         box =
             menuBox menu m.term.cols m.term.rows
 
+        -- the pointer's cell, kept near the screen so that nothing
+        -- computed from it can wrap
         cell =
-            { row = p.y // max 1 p.cellHeight, col = p.x // max 1 p.cellWidth }
+            { row = clamp -1 2000 (p.y // max 1 p.cellHeight), col = clamp -1 2000 (p.x // max 1 p.cellWidth) }
 
         i =
             cell.row - box.row - 1

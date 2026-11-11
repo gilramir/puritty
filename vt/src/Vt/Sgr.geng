@@ -118,13 +118,15 @@ styleCacheSize =
 
 {-| The cache's slot for a style's key: its key at the slot, and its pen's
 id and its erase cell's id, 16 bits each, after it. -}
-cacheSlot : Int64 -> Int
+cacheSlot : Int64 -> (r : Int where 0 <= r && r <= 1022)
 cacheSlot key =
     let
         mixed =
             Bitwise.xor key (Bitwise.xor (Bitwise.shiftRightZfBy 17 key) (Bitwise.shiftRightZfBy 37 key))
     in
-    2 * Int64.toIntWrap (Bitwise.and (Int64.fromInt (styleCacheSize - 1)) mixed)
+    -- the masked hash is 0 to 511 already; the clamp says so to the
+    -- compiler, so that the slot's second cell (`h + 1`) cannot wrap
+    2 * clamp 0 511 (Int64.toIntWrap (Bitwise.and (Int64.fromInt (styleCacheSize - 1)) mixed))
 
 
 sgr : Array Int -> Int -> Int -> Attrs -> Attrs
@@ -370,9 +372,14 @@ extendedColour params colons k =
 {-| Red, green and blue at `at` of the parameters, as a direct colour. -}
 rgbAt : Array Int -> Int -> Int
 rgbAt params at =
+    let
+        -- the three from `at` on, read without adding to it
+        from =
+            Array.dropFirst at params
+    in
     Bitwise.or 0x1000000
-        (Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get at params))))
-            (Bitwise.or (Bitwise.shiftLeftBy 8 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (at + 1) params)))) (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get (at + 2) params))))
+        (Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get 0 from))))
+            (Bitwise.or (Bitwise.shiftLeftBy 8 (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get 1 from)))) (Bitwise.and 0xFF (Maybe.withDefault 0 (Array.get 2 from))))
         )
 
 

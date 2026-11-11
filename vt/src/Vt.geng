@@ -281,7 +281,7 @@ compose panes places t =
     { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters }
 
 
-composePane : Int -> Int -> Term -> Int -> Int -> Int -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }
+composePane : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Term -> Int -> Int -> Int -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }
 composePane cols rows pane px py back0 acc =
     let
         -- the pane's rows scrolled `back` rows up, as `viewAt` reads them
@@ -291,14 +291,16 @@ composePane cols rows pane px py back0 acc =
         read =
             rowsBetween (0 - back) pane.rows pane
 
+        -- a place far outside the window draws nothing, so that nothing
+        -- computed from it can wrap
         width =
-            max 0 (min pane.cols (cols - px))
+            if px < 0 || px > 16384 then 0 else max 0 (min pane.cols (cols - px))
     in
     Array.indexedFoldl
         (\ry row a ->
             let
                 ty =
-                    py + ry
+                    if ry < rows && py >= -16384 && py <= 16384 then py + ry else -1
             in
             if ty < 0 || ty >= rows || width == 0 || px < 0 then
                 a
@@ -669,11 +671,27 @@ wordAt boundaries p t =
 
 runEdge : Array Int -> Bool -> Array (Maybe Int) -> Int -> Int -> Int
 runEdge boundaries want cps i step =
+    let
+        -- the next index along, -1 for none: one back, or one on while it
+        -- is inside the line, so that it cannot wrap
+        next =
+            if i < 0 then
+                -1
+
+            else if step < 0 then
+                i - 1
+
+            else if i < Array.length cps then
+                i + 1
+
+            else
+                -1
+    in
     -- `Array.get` counts a negative index from the end
-    when (if i + step < 0 then Nothing else Maybe.andThen identity (Array.get (i + step) cps)) is
+    when (if next < 0 then Nothing else Maybe.andThen identity (Array.get next cps)) is
         Just c ->
             if Array.member c boundaries == want then
-                runEdge boundaries want cps (i + step) step
+                runEdge boundaries want cps next step
 
             else
                 i

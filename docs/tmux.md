@@ -1464,3 +1464,29 @@ q leaves it. Every other scenario gives what it gave.
 filters (`f`) and the panes level; choose-buffer, choose-client and
 customize-mode are only said, not drawn.
 
+## TM33 · The app's open checks, and a pane's box bounded (2026-11-11)
+
+Part of `vt-core.md` §VC58's round (`geng checks` before local tabs). The
+app's and packages' open checks, 27 of the 51, were sums and differences
+over values nothing bounded:
+
+- **`Tmux.Layout.Pane`** now carries a type invariant: its place and size
+  0 to 16,384 on each axis, clamped as tmux's layout is read (`bounded`,
+  both layout forms), and `down` keeps it below the bar. Every sum puritty
+  makes from a pane's box is then inside `Int`, and the tabs to come, which
+  will place panes too, inherit it.
+- **Menus and views** (TM26, TM27): `menuPlace`, `menuBox` and `boxView`
+  take the window's size, 1 to 1000, and promise their box inside it; the
+  lines of a view are taken with `Array.dropFirst` instead of `top + r`;
+  the pointer's cell and the bar's row are clamped where they are made.
+- **The prompt's history** steps one back or one on without a sum that can
+  wrap; `Tmux.Syntax.substitute` walks `%1` to `%9` by index.
+- **`Window.decode`** (X11 and Windows alike) holds every read and step to
+  the bytes left (`advance`), so a short or broken buffer ends the events
+  instead of reading past it.
+- **`Outbox.leading`** compares a piece against what is left of 64 KB;
+  the settings window's host rows and suggestions clamp their indexes.
+
+Checked with `geng checks`: 0 open (51 before); the tmux package's tests
+(62); every tmux scenario of `bench/tmux/show.py` gives what it gave.
+

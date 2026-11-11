@@ -4276,3 +4276,52 @@ past `Int`; both are `lo + (hi - lo) // 2`, their bounds stated (`0 <= lo`,
 reads with `Array.getProven`, its callers `lineTop` and `lineBottom`
 testing the index they pass. `geng checks` against the list: 0 new, 4 gone
 (224 entries); every test passes and `perf.py` is within the record.
+
+## VC58. No open checks: every sum and product the report doubted, bounded (2026-11-11)
+
+Gilbert, 2026-11-11, before local tabs: run `geng checks` and see where
+puritty stands, adding refinements where they fix errors or prevent them.
+The report over the whole program (`app/linux`, `Main`) said 1,662 checks
+hold, 740 fallbacks can run and **51 checks are open**: sums and products
+the compiler could not show stay inside `Int`. Of those, 24 were the core's;
+the rest were the app's and the tmux and window packages' (`docs/tmux.md`
+TM33). After this round: **1,883 hold, 0 open**, 735 can run.
+
+The core's, each bounded where the value is made, not tested again where
+it is used:
+
+- **The renderer's previous frame, `y * cols`** (`diffRow`, `runEnd`,
+  `differs`, `inWord`, PR16's open sums): the rows the frame walks start at
+  0 (`diffRows` and `collect` now say `0 <= y`, which was `0 - s.hist <=
+  y`, so a negative row could not reach the shadow, where `Builder.get`
+  would count it from the end), and the helpers take `y < 1000` and `cols`
+  1 to 1000. The checker shows such a product does not wrap but not how big
+  it is, so `rowStart y cols` gives the row's first index with its range
+  stated (`clamp 0 999000`, two compares a row); `cellAt`, `drawnAs`,
+  `writeRun` take the row at most 999,000 and the column at most 1000, and
+  `runEnd` promises its end at most `cols`. `cellAt` reads the preedit only
+  for a `preAt` of 0 or more.
+- **`scanY` and `searchK`**: the shift between this frame and the last is
+  within 1000 either way, and the rows within the screen.
+- **`inkRecords`**, the renderer's ink bytes, and **`Window.decode`**, the
+  window's events: the bytes left from the offset are compared instead of
+  `at + 5`; the step is `advance`, which never goes back or past the end.
+- **`composePane`**: a pane placed outside ±16,384 draws nothing.
+- **`runEdge`** (a word's or line's edge for a click): one back, or one on
+  while inside the line.
+- **`Dump.ringRow`** reads within the row's extent; **`Sgr.cacheSlot`**
+  states its slot 0 to 1022, so `h + 1` cannot wrap; **`rgbAt`** reads its
+  three parameters from `Array.dropFirst at`.
+- **`Resize.writeRows`**: `from + y` only for a `from` of 0 to 10^9.
+
+**A cost found on the way.** Written as a `let` before the function's `if`,
+`writeRows`'s index made `perf.py`'s long-line resizes 12% dearer (245.7 M
+recorded, 268.4 M measured); written inside the branch, they are as before
+(238.8 M). The value is the same and pure, so this is the compiler's: the
+`let` ahead of the tail call seems to stop the screen being updated in
+place. Noted for geng-lang (its `m4-proof-report.md` PR17).
+
+Tested: every harness (view 345, replay 325, pixels 46, keys, mouse,
+paste, events on beelink1 13, settings 20, app tests 104, …) and `perf.py`
+within the record.
+

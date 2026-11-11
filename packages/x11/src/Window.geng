@@ -389,16 +389,38 @@ take =
 takeExtern : Task x Bytes
 
 
-decode : Bytes -> Int -> Array Event -> Array Event
+decode : Bytes -> (at : Int where 0 <= at) -> Array Event -> Array Event
 decode b at acc =
     let
+        -- the bytes left from `at`; every read and every step is held to
+        -- them, so a short or broken buffer ends the events, and no offset
+        -- can wrap (docs/tmux.md TM33)
+        rest =
+            Bytes.length b - at
+
         byte i =
-            Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) b))
+            if i >= 0 && i < rest then
+                Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i) b))
+
+            else
+                0
 
         u16 i =
-            Bitwise.or (Bitwise.shiftLeftBy 8 (byte i)) (byte (i + 1))
+            if i >= 0 && i < rest - 1 then
+                Bitwise.or (Bitwise.shiftLeftBy 8 (byte i)) (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (at + i + 1) b)))
+
+            else
+                0
+
+        -- `len` bytes from `k` on, or none when they are not all there
+        piece k len =
+            if k >= 0 && len >= 0 && k <= rest && len <= rest - k then
+                Bytes.slice (at + k) (at + k + len) b
+
+            else
+                Bytes.empty
     in
-    if at >= Bytes.length b then
+    if rest <= 0 then
         acc
 
     else
@@ -406,13 +428,13 @@ decode b at acc =
             1 ->
                 let
                     n =
-                        byte 15
+                        clamp 0 255 (byte 15)
 
                     u32 i =
                         Bitwise.or (Bitwise.shiftLeftBy 16 (u16 i)) (u16 (i + 2))
                 in
                 decode b
-                    (at + 16 + n)
+                    (advance b at (16 + n))
                     (Array.pushLast
                         (Key
                             { action = byte 1
@@ -421,68 +443,71 @@ decode b at acc =
                             , consumed = u16 5
                             , unshifted = u32 7
                             , sym = u32 11
-                            , text = Bytes.slice (at + 16) (at + 16 + n) b
+                            , text = piece 16 n
                             }
                         )
                         acc
                     )
 
             2 ->
-                decode b (at + 5) (Array.pushLast (Resized { cols = u16 1, rows = u16 3 }) acc)
+                decode b (advance b at 5) (Array.pushLast (Resized { cols = u16 1, rows = u16 3 }) acc)
 
             3 ->
-                decode b (at + 2) (Array.pushLast (Focus (byte 1 == 1)) acc)
+                decode b (advance b at 2) (Array.pushLast (Focus (byte 1 == 1)) acc)
 
             4 ->
-                decode b (at + 1) (Array.pushLast Close acc)
+                decode b (advance b at 1) (Array.pushLast Close acc)
 
             5 ->
                 let
                     n =
-                        u16 1
+                        clamp 0 65535 (u16 1)
                 in
-                decode b (at + 3 + n) (Array.pushLast (Commit (Bytes.slice (at + 3) (at + 3 + n) b)) acc)
+                decode b (advance b at (3 + n)) (Array.pushLast (Commit (piece 3 n)) acc)
 
             6 ->
                 let
                     n =
-                        u16 7
+                        clamp 0 65535 (u16 7)
 
                     f =
-                        at + 9 + n
+                        9 + n
 
                     nf =
-                        Bitwise.or (Bitwise.shiftLeftBy 8 (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get f b)))) (Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get (f + 1) b)))
+                        clamp 0 65535 (u16 f)
+
+                    start =
+                        advance b at (f + 2)
                 in
                 decode b
-                    (f + 2 + nf)
+                    (advance b at (f + 2 + nf))
                     (Array.pushLast
                         (Preedit
                             { caret = u16 1
                             , first = u16 3
                             , length = u16 5
-                            , text = Bytes.slice (at + 9) (at + 9 + n) b
-                            , feedback = Array.initialize nf (f + 2) (\i -> Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get i b)))
+                            , text = piece 9 n
+                            , feedback = Array.initialize nf start (\i -> Maybe.withDefault 0 (Maybe.map UInt8.toInt (Bytes.get i b)))
                             }
                         )
                         acc
                     )
 
             7 ->
-                decode b (at + 1) (Array.pushLast PreeditDone acc)
+                decode b (advance b at 1) (Array.pushLast PreeditDone acc)
 
             8 ->
-                decode b (at + 1) (Array.pushLast ImeReady acc)
+                decode b (advance b at 1) (Array.pushLast ImeReady acc)
 
             11 ->
-                decode b (at + 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
+                decode b (advance b at 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
 
             12 ->
-                decode b (at + 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)
+                decode b (advance b at 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)
 
             10 ->
                 decode b
-                    (at + 2)
+                    (advance b at 2)
                     (Array.pushLast
                         (SelectionLost
                             (if byte 1 == 1 then
@@ -509,7 +534,7 @@ decode b at acc =
                             v
                 in
                 decode b
-                    (at + 17)
+                    (advance b at 17)
                     (Array.pushLast
                         (Pointer
                             { action = byte 1
@@ -528,3 +553,17 @@ decode b at acc =
 
             _ ->
                 acc
+
+
+{-| `at` moved on `k` bytes in `b`, or to its end: never back, and never
+past the end, so that the sum cannot wrap (`docs/tmux.md` TM33). -}
+advance : Bytes -> (at : Int where 0 <= at) -> (k : Int where 0 <= k) -> (r : Int where 0 <= r)
+advance b at k =
+    if k < Bytes.length b - at then
+        at + k
+
+    else if Bytes.length b < at then
+        at
+
+    else
+        Bytes.length b

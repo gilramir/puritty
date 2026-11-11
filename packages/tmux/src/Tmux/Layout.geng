@@ -22,13 +22,17 @@ import Json.Decode as Decode exposing (Decoder)
 
 
 {-| A pane: its id (`%id`), its box, whether it is the window's active
-pane, and its place among the floating panes if it floats. -}
+pane, and its place among the floating panes if it floats. Its box is
+inside 0 to `most` on each axis (puritty `docs/tmux.md` TM33): tmux's
+windows are far smaller, and a place or a size outside it, from a broken
+layout, is clamped as it is read, so that what is computed from a pane's
+box cannot wrap. -}
 type alias Pane =
     { id : Int
     , w : Int
     , h : Int
     , x : Int
-    , y : Int
+    , y : Int where 0 <= w && w <= 16384 && 0 <= h && h <= 16384 && 0 <= x && x <= 16384 && 0 <= y && y <= 16384
     , active : Bool
     , z : Maybe Int
     }
@@ -112,7 +116,7 @@ splitDecoder leftRight =
 paneDecoder : Decoder Cell
 paneDecoder =
     Decode.map5
-        (\w h x y more -> Leaf { id = more.id, w = w, h = h, x = x, y = y, active = more.active, z = more.z })
+        (\w h x y more -> Leaf { id = more.id, w = bounded w, h = bounded h, x = bounded x, y = bounded y, active = more.active, z = more.z })
         (Decode.field "w" Decode.int)
         (Decode.field "h" Decode.int)
         (Decode.field "x" Decode.int)
@@ -161,6 +165,12 @@ oldForm text =
                 Err why
 
 
+{-| A place or a size kept inside what a pane's box may hold. -}
+bounded : Int -> (r : Int where 0 <= r && r <= 16384)
+bounded v =
+    clamp 0 16384 v
+
+
 oldCell : Array Int -> Int -> Result String { cell : Cell, at : Int }
 oldCell chars at =
     number chars at
@@ -175,7 +185,7 @@ oldRest chars box at =
     when Array.get at chars is
         Just 0x2C ->
             number chars (at + 1)
-                |> Result.map (\i -> { cell = Leaf { id = i.value, w = box.w, h = box.h, x = box.x, y = box.y, active = False, z = Nothing }, at = i.at })
+                |> Result.map (\i -> { cell = Leaf { id = i.value, w = bounded box.w, h = bounded box.h, x = bounded box.x, y = bounded box.y, active = False, z = Nothing }, at = i.at })
 
         Just 0x7B ->
             children chars (at + 1) 0x7D []

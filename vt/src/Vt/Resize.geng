@@ -1360,7 +1360,11 @@ writeRows rows from y count s =
         s
 
     else
-        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (from + y) rows)) s)
+        -- the row's index in `rows`: `from` is a count of rows, far from
+        -- `Int`'s end, and `y` within the screen, so the sum cannot wrap
+        -- (§VC58). Written inside the branch: a `let` before the `if`
+        -- cost 12% on a long resize
+        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (if from >= 0 && from < 1000000000 then from + y else -1) rows)) s)
 
 
 writeRow : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> Row -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)

@@ -129,15 +129,17 @@ smallPiece =
 
 
 {-| The leading pieces, up to 64 KB (the first always), and what is left. -}
-leading : Pieces -> Int -> Array Bytes -> { taken : Array Bytes, rest : Pieces }
+leading : Pieces -> (count : Int where 0 <= count && count <= 65537) -> Array Bytes -> { taken : Array Bytes, rest : Pieces }
 leading pieces count acc =
     when pieces is
         Cons c ->
-            if count > 0 && count + Bytes.length c.head > 65536 then
+            -- compared as what is left, so that a piece's length cannot
+            -- wrap the count; the first is taken whatever its size
+            if count > 0 && Bytes.length c.head > 65536 - count then
                 { taken = acc, rest = pieces }
 
             else
-                leading c.tail (count + Bytes.length c.head) (Array.pushLast c.head acc)
+                leading c.tail (if Bytes.length c.head > 65536 - count then 65537 else count + Bytes.length c.head) (Array.pushLast c.head acc)
 
         Nil ->
             { taken = acc, rest = pieces }
