@@ -44,9 +44,27 @@ command = "tmux -CC new -A -s main"
 
 Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 
-**Coming next:** what the panes already held when you attach, tmux's other
-windows as tabs, and the mouse: clicking a pane to make it active, moving
-and resizing floating panes, scrollback and selection within a pane.
+### What you can do
+
+- **Attach to a session that's already running**: every pane comes back as
+  it was, its history, colours and cursor, and a program like `less` or
+  vim on its own screen.
+- **Tabs**: the top row shows the session's windows. Click one to switch,
+  `+` or **Ctrl+Shift+T** for a new window, **Ctrl+PgUp** and **Ctrl+PgDn**
+  to move between them. A window closes when its programs end; the tab bar
+  has no close button, since closing a window ends what runs in it.
+- **The mouse**: click a pane to make it the active one (its box, if it
+  floats, turns amber). Drag a floating pane by its top edge to move it,
+  by its other edges to resize it, and drag the line between two panes to
+  give one more room. Programs that use the mouse, such as vim or htop,
+  get it in their own pane; hold **Shift** to select over them instead.
+- **Scrollback and selection, pane by pane**: the wheel or
+  **Shift+PgUp/PgDn** scroll the pane under the pointer or the active one;
+  drag, double-click or triple-click selects within one pane, its
+  scrollback included, and copies as everywhere else in puritty.
+- **Slow connections**: if puritty falls behind on a pane over a slow
+  link, tmux pauses it, and puritty picks it up again where it is, without
+  losing what it printed.
 
 ## tmux drawing for itself
 
