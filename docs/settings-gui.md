@@ -222,3 +222,44 @@ settings", "through X", "from ~/.ssh/config") is now a message, said in
 the window's language too.
 
 The app tests are 100. The settings and hosts gates pass, 19 and 13.
+
+## SG9 · The pixels gate holds the drawn window; kerning on X (2026-11-10)
+
+SG5's first step. A pixels case whose first line says `ui` is a list of
+the settings window's records, a line each, in pixels:
+
+- `box X Y W H RADIUS #rrggbb` (record 6);
+- `text X BASELINE PX #rrggbb TEXT` (7);
+- `clip X Y W H` and `noclip` (8);
+- `textin "FONT" X BASELINE PX #rrggbb TEXT` (9).
+
+`harness/pixels.py` encodes them, and `core-pixels` draws them as one
+frame, with `ui_font=` (DejaVu Sans by default, the gate's own) as the
+interface font. Five cases:
+
+- `ui-boxes`: corners at radii 0 to 20, a field, a switch;
+- `ui-text`: sizes, colors, kerning pairs, an ellipsis;
+- `ui-hangul`: Hangul from the Korean fallback beside Latin;
+- `ui-clip`: text and a box cut, then not;
+- `ui-textin`: names in their own fonts, Hangul from the fallback in a
+  sample.
+
+A name that no font has is left out of `ui-textin`. fontconfig answers
+its nearest font for one, while the Windows driver, which reads its
+fonts from a directory, finds none and uses the interface font.
+
+**Kerning was lost on X.** Drawn on beelink1 (`--windows`), three cases
+differed from Linux by a pixel or a few, in the lines with kerning pairs
+("AVATAR", "Wo", "Va"). Both platforms shaped the same: the same
+DejaVuSans.ttf, the same sizes, and the same kerned advances, printed
+from each. The difference was in the drawing. X's server moves its pen
+by the advance a glyph was uploaded with, which is unkerned, and the X
+side starts a new element only where a glyph's place differs from the
+place it predicts. The interface text gave it the kerned advance as the
+prediction, so kerned pairs came out apart on X. It now gives the
+uploaded advance (kept beside the glyph's id), and X starts a new
+element wherever kerning moves a glyph. Windows places every glyph
+where it is told and was right already. The settings window on Linux
+is now kerned as it is on Windows.
+
+Pixels gate: 41 of 41 on Linux, and the five `ui` cases on beelink1.

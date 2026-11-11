@@ -23,7 +23,20 @@ the primary font as fontconfig names it (DejaVu Sans Mono), its points
 (11), the language fallback fonts are asked for (none), and whether the
 window has the focus. And `\\F` in the body draws a frame there, so that
 the next frame draws only what changed, as the app's frames do; a last
-frame follows the last byte. A resize (`\\R`) is not taken. A case drawn
+frame follows the last byte.
+
+A case whose first line says `ui` is the settings window's drawing
+instead (docs/settings-gui.md SG2, SG7): its body is a record a line, in
+pixels, drawn as one frame, with `ui_font=` the interface font (DejaVu
+Sans, the gate's own, by default):
+
+    box X Y W H RADIUS #rrggbb
+    text X BASELINE PX #rrggbb TEXT
+    textin "FONT" X BASELINE PX #rrggbb TEXT
+    clip X Y W H
+    noclip
+
+TEXT is the rest of the line. `#` starts a comment line. A resize (`\\R`) is not taken. A case drawn
 in frames is also drawn in one, and the two pictures must be the same:
 what a later frame draws over, the cells whose ink reached into it among
 them, it must draw again (V40).
@@ -142,15 +155,19 @@ def parse_case(text):
     if len(words) < 2 or words[0] != "size":
         raise ValueError("first line must be `size COLSxROWS ...`")
     cols, rows = (int(n) for n in words[1].split("x"))
-    s = {"cols": cols, "rows": rows, "font": "DejaVu Sans Mono", "points": 11, "lang": "", "focus": "focused"}
+    s = {"cols": cols, "rows": rows, "font": "DejaVu Sans Mono", "points": 11, "lang": "", "focus": "focused",
+         "ui_font": ""}
     for w in words[2:]:
-        if w == "unfocused":
+        if w in ("unfocused", "ui"):
             s["focus"] = w
-        elif "=" in w and w.split("=", 1)[0] in ("font", "points", "lang"):
+        elif "=" in w and w.split("=", 1)[0] in ("font", "points", "lang", "ui_font"):
             k, v = w.split("=", 1)
             s[k] = int(v) if k == "points" else v
         else:
             raise ValueError(f"unknown setting {w!r}")
+    if s["focus"] == "ui":
+        s["ui_font"] = s["ui_font"] or "DejaVu Sans"
+        return s, ui_records(body), []
     out, breaks = bytearray(), []
     raw = body.replace("\n", "").encode("utf-8")
     i = 0
@@ -173,6 +190,41 @@ def parse_case(text):
         else:
             raise ValueError(f"unknown escape \\{k} at byte {i}")
     return s, bytes(out), breaks
+
+
+def ui_records(body):
+    """A ui case's lines as the renderer's records 6 to 9."""
+    def u16(n):
+        return struct.pack(">H", n & 0xFFFF)
+
+    def rgb(c):
+        return bytes.fromhex(c.lstrip("#"))
+
+    out = bytearray()
+    for line in body.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        w = shlex.split(line)
+        if w[0] == "box":
+            x, y, wd, h, r = map(int, w[1:6])
+            out += b"\x06" + u16(x) + u16(y) + u16(wd) + u16(h) + bytes([r]) + rgb(w[6])
+        elif w[0] in ("text", "textin"):
+            font = w[1].encode() if w[0] == "textin" else b""
+            k = 2 if w[0] == "textin" else 1
+            x, y, px = map(int, w[k:k + 3])
+            colour = w[k + 3]
+            text = line.split(colour, 1)[1].lstrip(" ").encode()
+            if w[0] == "text":
+                out += b"\x07" + u16(x) + u16(y) + bytes([px]) + rgb(colour) + u16(len(text)) + text
+            else:
+                out += b"\x09" + u16(x) + u16(y) + bytes([px]) + rgb(colour) + bytes([len(font)]) + font + u16(len(text)) + text
+        elif w[0] == "clip":
+            out += b"\x08" + b"".join(u16(int(v)) for v in w[1:5])
+        elif w[0] == "noclip":
+            out += b"\x08" + bytes(8)
+        else:
+            raise ValueError(f"unknown record {w[0]!r}")
+    return bytes(out)
 
 
 # PICTURES
@@ -275,7 +327,7 @@ def draw(case, display, conf, out, faces, whole=False):
             env["X11_STATS"] = "1"
         cmd = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G",
                str(DRIVER), str(s["cols"]), str(s["rows"]), f.name, str(out), s["font"], str(s["points"]), s["lang"],
-               ",".join(map(str, breaks)), s["focus"]]
+               ",".join(map(str, breaks)), s["focus"]] + ([s["ui_font"]] if s["focus"] == "ui" else [])
         p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         raise RuntimeError((p.stdout + p.stderr).strip() or f"exit {p.returncode}")
@@ -306,7 +358,7 @@ def draw_windows(cases, host, faces):
             runs.append((case.stem + ".once", ""))
         for out, b in runs:
             lines.append("\t".join([case.stem + ".bin", out + ".ppm", str(s["cols"]), str(s["rows"]), s["font"],
-                                    str(s["points"]), s["lang"], b, s["focus"]]))
+                                    str(s["points"]), s["lang"], b, s["focus"], s["ui_font"]]))
     (stage / "runs.tsv").write_text("\n".join(lines) + "\n")
     ssh = ["ssh", "-o", "BatchMode=yes", host]
     have = subprocess.run(ssh + [f"powershell -NoProfile -Command \"if (Test-Path {REMOTE}\\fonts\\DejaVuSansMono.ttf) {{ 'yes' }}\""],

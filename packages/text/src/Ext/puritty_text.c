@@ -1115,7 +1115,7 @@ static int ui_clipped;
 /* An interface glyph's id: from bit 30, numbered as they are uploaded, a
  * table from (face, size, glyph) to the id, forgotten with every glyph. */
 #define UI_KEYS 8192
-static struct { uint32_t key, id; } ui_keys[UI_KEYS];
+static struct { uint32_t key, id; int advance; } ui_keys[UI_KEYS];
 static uint32_t ui_next = 0x40000000u;
 
 static void ui_reset(void) {
@@ -1230,7 +1230,7 @@ static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
     for (unsigned k = 0; k < UI_KEYS; k++) {
         unsigned j = (h + k) % UI_KEYS;
         if (ui_keys[j].key == key) {
-            *advance = 0;
+            *advance = ui_keys[j].advance;
             return ui_keys[j].id;
         }
         if (ui_keys[j].key == 0) { h = j; break; }
@@ -1253,6 +1253,7 @@ static uint32_t ui_glyph(int f, int px, uint32_t g, int *advance) {
     free(data);
     ui_keys[h].key = key;
     ui_keys[h].id = id;
+    ui_keys[h].advance = glyph.advance;
     *advance = glyph.advance;
     return id;
 }
@@ -1292,7 +1293,11 @@ static int ui_text(const uint8_t *s, int n, int x, int y, int px, uint32_t rgb, 
             if (draw && nplaced < 8192) {
                 int adv;
                 uint32_t id = ui_glyph(f, px, gi[k].codepoint, &adv);
-                if (id) placed[nplaced++] = (PtPlaced) {id, pen + (gp[k].x_offset >> 6), y - (gp[k].y_offset >> 6), rgb, (gp[k].x_advance + 32) >> 6, ui_clipped ? 0 : -1};
+                /* the advance the glyph was uploaded with, which is the
+                 * one X's server moves the pen by: where kerning places
+                 * the next glyph elsewhere, X starts a new element there
+                 * (SG9) */
+                if (id) placed[nplaced++] = (PtPlaced) {id, pen + (gp[k].x_offset >> 6), y - (gp[k].y_offset >> 6), rgb, adv, ui_clipped ? 0 : -1};
             }
             pen += (gp[k].x_advance + 32) >> 6;
         }

@@ -12,10 +12,15 @@ for at once (`View.wantsFrame`). FOCUS `unfocused` draws as a
 window without the focus does. `harness/pixels.py` holds the pictures to
 their pins.
 
+FOCUS `ui` takes FILE as a display list of the settings window's records
+instead (6 a rounded box, 7 text, 8 a clip, 9 text in a named font;
+`docs/settings-gui.md` SG2, SG7), drawn as one frame of the window's size
+with UIFONT as the interface font.
+
 Exits 1, saying why, when the window will not open or the picture cannot
 be written.
 
-usage: core-pixels COLS ROWS FILE OUT FONT POINTS LANG BREAKS [FOCUS]
+usage: core-pixels COLS ROWS FILE OUT FONT POINTS LANG BREAKS [FOCUS [UIFONT]]
 
 -}
 
@@ -25,6 +30,8 @@ import Os.Env
 import Os.File
 import Os.Path
 import Task exposing (Task)
+import Text
+import UInt8
 import Vt
 import Vt.View as View
 import Window
@@ -108,7 +115,7 @@ main =
         |> Task.andThen
             (\s ->
                 if Array.length s.args < 8 then
-                    failWith "usage: core-pixels COLS ROWS FILE OUT FONT POINTS LANG BREAKS [FOCUS]"
+                    failWith "usage: core-pixels COLS ROWS FILE OUT FONT POINTS LANG BREAKS [FOCUS [UIFONT]]"
 
                 else
                     Os.File.readFile s.perm (Os.Path.fromBytes (Maybe.withDefault Bytes.empty (Array.get 2 s.raw)))
@@ -151,6 +158,11 @@ draw args bytes =
                         failWith ("cannot open the window: " ++ why)
 
                     Ok cell ->
+                      if Array.get 8 args == Just "ui" then
+                        drawList cols rows bytes (arg 9 args)
+                            |> Task.andThen (\_ -> shot args)
+
+                      else
                         feedAll
                             { focused = Array.get 8 args /= Just "unfocused", blinkOn = True }
                             bytes
@@ -168,13 +180,34 @@ draw args bytes =
                                     }
                             , shadow = View.shadow cols rows
                             }
-                            |> Task.andThen (\_ -> Window.shot (arg 3 args))
-                            |> Task.andThen
-                                (\ok ->
-                                    if ok then
-                                        Task.succeed {}
-
-                                    else
-                                        failWith "cannot write the picture"
-                                )
+                            |> Task.andThen (\_ -> shot args)
             )
+
+
+shot : Array String -> Task x {}
+shot args =
+    Window.shot (arg 3 args)
+        |> Task.andThen
+            (\ok ->
+                if ok then
+                    Task.succeed {}
+
+                else
+                    failWith "cannot write the picture"
+            )
+
+
+{-| A display list of the settings window's records, after the record of
+the window's size, drawn in one frame with `font` as the interface font. -}
+drawList : Int -> Int -> Bytes -> String -> Task x {}
+drawList cols rows list font =
+    let
+        u16 n =
+            [ n // 256, modBy 256 n ]
+
+        size =
+            Bytes.fromUInt8s (Array.map UInt8.fromIntWrap ([ 4 ] ++ u16 cols ++ u16 rows))
+    in
+    Text.interfaceFont font
+        |> Task.andThen (\_ -> Window.draw (Bytes.flatten [ size, list ]))
+        |> Task.map (\_ -> {})

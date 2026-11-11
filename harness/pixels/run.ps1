@@ -18,7 +18,12 @@ foreach ($line in Get-Content -Encoding UTF8 runs.tsv) {
     # drops "" unless it is written as '""'
     $lang = if ($f[6]) { $f[6] } else { '""' }
     $breaks = if ($f[7]) { $f[7] } else { '""' }
-    $out = & .\core-pixels.exe $f[2] $f[3] $f[0] $f[1] $f[4] $f[5] $lang $breaks $f[8] 2>&1
+    # a ui case's interface font, tenth; terminal cases have none
+    if ($f.Length -gt 9 -and $f[9]) {
+        $out = & .\core-pixels.exe $f[2] $f[3] $f[0] $f[1] $f[4] $f[5] $lang $breaks $f[8] $f[9] 2>&1
+    } else {
+        $out = & .\core-pixels.exe $f[2] $f[3] $f[0] $f[1] $f[4] $f[5] $lang $breaks $f[8] 2>&1
+    }
     $code = $LASTEXITCODE
     foreach ($o in $out) { if ($f[1] -notlike "*.once.ppm") { $log.Add("$name`t$o") } }
     if ($code -ne 0) { $log.Add("$name`tFAILED $code") }
