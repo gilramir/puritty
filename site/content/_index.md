@@ -77,7 +77,7 @@ link_text = "Hosts in the settings"
 
 [[extra.features]]
 kicker = "Correct, and checked"
-title = "Tested against the best, written in a memory-safe language"
+title = "Written in a memory-safe language with compile-time constraint checking"
 body = """
 The terminal core is tested against libghostty-vt on recorded sessions,
 fuzzed, and run against the `esctest2` conformance suite, where it passes
