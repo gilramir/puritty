@@ -1,3 +1,5 @@
+<p align="center"><img src="app/windows/icon/png/256.png" width="128" height="128" alt="puritty's icon: a beige CRT with an amber lambda in front of it"></p>
+
 # puritty
 
 **A terminal for Linux that stays fast when it runs on another machine, gets
