@@ -1,0 +1,138 @@
+module Dialog exposing (Dialog, draw)
+
+{-| A question asked over the terminal (`docs/ssh-client.md` SC23), as
+ChromeOS's Terminal asks for a password: a box in the middle of the
+window, in the settings window's look, drawn with the renderer's interface
+records after the terminal's cells, so nothing of the terminal lies over
+it. A title, lines of text, a field with what is typed (bullets for a
+secret) and a caret, and a line of the keys that answer.
+-}
+
+import Bytes exposing (Bytes)
+import Math
+import SettingsGui exposing (box, clip, fit, framed, look, noClip, text)
+import Text
+
+
+type alias Dialog =
+    { title : String
+    , lines : Array String
+    , field : Maybe { typed : String, hidden : Bool }
+    , hint : String
+    }
+
+
+{-| The box's records for a window of `cols` by `rows` cells, and where the
+caret is, in cells, for an input method's window. -}
+draw : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> { list : Bytes, spot : { x : Int, y : Int } }
+draw size d =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        h =
+            size.rows * size.cellHeight
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px n =
+            max 1 (Math.round (toFloat n * k))
+
+        body =
+            px 14
+
+        small =
+            px 12
+
+        pad =
+            px 22
+
+        lineH =
+            px 22
+
+        fieldH =
+            px 34
+
+        bw =
+            min (w - px 32) (px 560)
+
+        inner =
+            bw - 2 * pad
+
+        bh =
+            pad
+                + lineH
+                + Array.length d.lines * lineH
+                + (when d.field is
+                    Just _ ->
+                        px 8 + fieldH
+
+                    Nothing ->
+                        0
+                  )
+                + px 12
+                + lineH
+                + pad
+
+        bx =
+            (w - bw) // 2
+
+        by =
+            max 0 ((h - bh) // 2)
+
+        baseline row =
+            by + pad + row * lineH + lineH // 2 + body // 3
+
+        fieldY =
+            by + pad + (1 + Array.length d.lines) * lineH + px 8
+
+        shown =
+            when d.field is
+                Just f ->
+                    if f.hidden then
+                        String.repeat (String.count f.typed) "•"
+
+                    else
+                        f.typed
+
+                Nothing ->
+                    ""
+
+        typedW =
+            Text.width body shown
+
+        caretX =
+            bx + pad + px 10 + min typedW (inner - px 20)
+
+        hintY =
+            by + bh - pad - lineH // 2 + small // 3
+
+        records =
+            [ framed { x = bx, y = by, w = bw, h = bh, r = px 10, color = look.bg, border = look.fieldLine }
+            , text { x = bx + pad, y = baseline 0, size = body, color = look.strong, text = fit body inner d.title }
+            ]
+                ++ Array.indexedMap (\i l -> text { x = bx + pad, y = baseline (i + 1), size = body, color = look.text, text = fit body inner l }) d.lines
+                ++ (when d.field is
+                        Just _ ->
+                            [ framed { x = bx + pad, y = fieldY, w = inner, h = fieldH, r = px 5, color = look.field, border = look.accent }
+                            , clip { x = bx + pad + 1, y = fieldY, w = inner - 2, h = fieldH }
+                            , text { x = bx + pad + px 10, y = fieldY + fieldH // 2 + body // 3, size = body, color = look.strong, text = shown }
+                            , box { x = caretX, y = fieldY + px 7, w = 1, h = fieldH - px 14, r = 0, color = look.strong }
+                            , noClip
+                            ]
+
+                        Nothing ->
+                            []
+                   )
+                ++ [ text { x = bx + pad, y = hintY, size = small, color = look.dim, text = fit small inner d.hint } ]
+    in
+    { list = Bytes.flatten records
+    , spot =
+        when d.field is
+            Just _ ->
+                { x = caretX // max 1 size.cellWidth, y = fieldY // max 1 size.cellHeight }
+
+            Nothing ->
+                { x = (bx + pad) // max 1 size.cellWidth, y = baseline 0 // max 1 size.cellHeight }
+    }

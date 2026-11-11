@@ -50,6 +50,7 @@ import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSettings, settingsFile, watchSettings, overridden)
 import Outbox exposing (Outbox)
 import Console
+import Dialog
 import Dict exposing (Dict)
 import Int64
 import Keys
@@ -150,6 +151,9 @@ type alias Model =
       -- tmux control mode, when `tmux -CC` runs on the terminal
       -- (docs/tmux.md TM14)
     , tmux : TmuxMode.State
+      -- whether the last frame had a question's box over it, so that the
+      -- frame it comes or goes in draws every cell (docs/ssh-client.md SC23)
+    , overlaid : Bool
     }
 
 
@@ -686,6 +690,7 @@ run imeLog shotPath charset config cell remote settings problems opener =
                                     (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
                                     config.remote
                             , tmux = TmuxMode.idle {}
+                            , overlaid = False
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -1767,10 +1772,64 @@ updateTyped f m =
             m
 
 
+{-| A question of the ssh session, or why it failed, as a box over the
+screen (docs/ssh-client.md SC23): what `ownTerm` writes on the screen
+without one. -}
+dialogOf : SshScreen -> Maybe Dialog.Dialog
+dialogOf screen =
+    when screen.asking is
+        Just asking ->
+            when asking.ask is
+                Session.TrustHostKey k ->
+                    Just
+                        { title = "The host " ++ cleanText k.host ++ " is not known"
+                        , lines =
+                            [ "Its " ++ k.algorithm ++ " key's fingerprint:", "    " ++ k.fingerprint ]
+                                ++ (if Array.isEmpty k.knownTypes then [] else [ "It is known by its " ++ String.join ", " k.knownTypes ++ " key, not this one." ])
+                        , field = Nothing
+                        , hint = "A: trust and remember    O: trust once    Esc: don't connect"
+                        }
+
+                Session.Password p ->
+                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True }, hint = "Enter: log in    Esc: do not use a password" }
+
+                Session.Passphrase p ->
+                    let
+                        file =
+                            cleanText p.file
+
+                        -- the key's own name, after the last / or \
+                        name =
+                            String.split "/" file |> Array.last |> Maybe.withDefault file |> String.split "\\" |> Array.last |> Maybe.withDefault file
+                    in
+                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True }, hint = "Enter: unlock the key    Esc: skip this key" }
+
+                Session.Responses r ->
+                    when Array.get (Array.length asking.given) r.prompts is
+                        Just prompt ->
+                            Just
+                                { title = if r.name == "" then "The server asks" else cleanText r.name
+                                , lines = (if r.instruction == "" then [] else [ cleanText r.instruction ]) ++ [ cleanText prompt.text ]
+                                , field = Just { typed = asking.typed, hidden = not prompt.echo }
+                                , hint = "Enter: answer    Esc: do not answer"
+                                }
+
+                        Nothing ->
+                            Nothing
+
+        Nothing ->
+            when screen.failed is
+                Just why ->
+                    Just { title = "The session could not go on", lines = [ why ], field = Nothing, hint = "Enter: close    R: connect again" }
+
+                Nothing ->
+                    Nothing
+
+
 {-| The own screen as a terminal of the window's size: a heading, what has
 happened, then the question or the failure and the keys that answer it. -}
-ownTerm : Model -> SshScreen -> Vt.Term
-ownTerm m screen =
+ownTerm : Model -> Bool -> SshScreen -> Vt.Term
+ownTerm m boxed screen =
     let
         dim t =
             "\u{001B}[2m" ++ t ++ "\u{001B}[0m"
@@ -1792,7 +1851,7 @@ ownTerm m screen =
         mark =
             "\u{001B}7"
 
-        question =
+        asked =
             when screen.asking is
                 Just asking ->
                     when asking.ask is
@@ -1855,7 +1914,7 @@ ownTerm m screen =
                             []
 
         -- the cursor only where something is typed
-        typing =
+        typingAsked =
             when screen.asking is
                 Just asking ->
                     when asking.ask is
@@ -1867,6 +1926,17 @@ ownTerm m screen =
 
                 Nothing ->
                     False
+
+        -- a question in a box over the screen is not on it (SC23)
+        question =
+            if boxed then
+                []
+
+            else
+                asked
+
+        typing =
+            not boxed && typingAsked
 
         text =
             String.join ""
@@ -2862,12 +2932,34 @@ draw ms m =
         ownUp =
             ownScreenUp m
 
-        own =
+        -- a question asked in a box over puritty's screen (SC23)
+        dialog =
             if ownUp then
-                Maybe.map (ownTerm m) m.ssh
+                Maybe.andThen dialogOf m.ssh
 
             else
                 Nothing
+
+        boxed =
+            dialog /= Nothing
+
+        own =
+            if ownUp then
+                Maybe.map (ownTerm m boxed) m.ssh
+
+            else
+                Nothing
+
+        -- every cell drawn in the frame a box comes or goes in
+        shadow0 =
+            if boxed /= m.overlaid then
+                View.shadow m.term.cols m.term.rows
+
+            else
+                m.shadow
+
+        boxDrawn =
+            Maybe.map (Dialog.draw { cols = m.term.cols, rows = m.term.rows, cellWidth = m.term.config.cellWidth, cellHeight = m.term.config.cellHeight }) dialog
 
         tmuxOn =
             TmuxMode.isOn m.tmux
@@ -2921,26 +3013,26 @@ draw ms m =
 
         f =
             if tmuxOn then
-                View.frameWith m.look m.focus preedit View.noHighlight tmux.canvas m.shadow
+                View.frameWith m.look m.focus preedit View.noHighlight tmux.canvas shadow0
 
             else
                 when { own = own, menu = m.menu } is
                     { own = Just t } ->
-                        View.frameWith m.look m.focus { text = "", feedback = [], caret = 0 } View.noHighlight t m.shadow
+                        View.frameWith m.look m.focus { text = "", feedback = [], caret = 0 } View.noHighlight t shadow0
 
                     { menu = Just menu } ->
                         -- the menu painted over a copy of the screen (ST26)
-                        View.frameBack m.look m.focus 0 (Vt.viewPainted (menuPaints menu m.term.cols m.term.rows) m.term) highlight m.term m.shadow
+                        View.frameBack m.look m.focus 0 (Vt.viewPainted (menuPaints menu m.term.cols m.term.rows) m.term) highlight m.term shadow0
 
                     _ ->
                         if back > 0 then
-                            View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term m.shadow
+                            View.frameBack m.look m.focus back (Vt.viewAt back m.term) highlight m.term shadow0
 
                         else
-                            View.frameWith m.look m.focus preedit highlight m.term m.shadow
+                            View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw f.list
-        |> Task.andThen (\up -> Window.spot spot |> Task.map (\_ -> up))
+    Window.draw (Bytes.flatten [ f.list, Maybe.withDefault Bytes.empty (Maybe.map .list boxDrawn) ])
+        |> Task.andThen (\up -> Window.spot (Maybe.withDefault spot (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 (if title /= m.title then
@@ -2963,6 +3055,7 @@ draw ms m =
                             { m
                                 | shadow = shadow
                                 , tmux = tmux
+                                , overlaid = boxed
                                 , last = ms
                                 , pending = -1
                                 , urgent = again

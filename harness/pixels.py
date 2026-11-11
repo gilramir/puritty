@@ -158,7 +158,7 @@ def parse_case(text):
     s = {"cols": cols, "rows": rows, "font": "DejaVu Sans Mono", "points": 11, "lang": "", "focus": "focused",
          "ui_font": ""}
     for w in words[2:]:
-        if w in ("unfocused", "ui"):
+        if w in ("unfocused", "ui", "over"):
             s["focus"] = w
         elif "=" in w and w.split("=", 1)[0] in ("font", "points", "lang", "ui_font"):
             k, v = w.split("=", 1)
@@ -168,6 +168,12 @@ def parse_case(text):
     if s["focus"] == "ui":
         s["ui_font"] = s["ui_font"] or "DejaVu Sans"
         return s, ui_records(body), []
+    if s["focus"] == "over":
+        # text, then `---`, then records drawn over its cells
+        # (docs/ssh-client.md SC23)
+        s["ui_font"] = s["ui_font"] or "DejaVu Sans"
+        body, _, records = body.partition("\n---\n")
+        s["over"] = ui_records(records)
     out, breaks = bytearray(), []
     raw = body.replace("\n", "").encode("utf-8")
     i = 0
@@ -328,7 +334,15 @@ def draw(case, display, conf, out, faces, whole=False):
         cmd = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G",
                str(DRIVER), str(s["cols"]), str(s["rows"]), f.name, str(out), s["font"], str(s["points"]), s["lang"],
                ",".join(map(str, breaks)), s["focus"]] + ([s["ui_font"]] if s["focus"] == "ui" else [])
+        records = None
+        if s["focus"] == "over":
+            records = tempfile.NamedTemporaryFile(suffix=".ui")
+            records.write(s["over"])
+            records.flush()
+            cmd += [s["ui_font"], records.name]
         p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+        if records:
+            records.close()
     if p.returncode != 0:
         raise RuntimeError((p.stdout + p.stderr).strip() or f"exit {p.returncode}")
     return s, [line.split(": ", 1)[1] for line in p.stderr.splitlines() if line.startswith("face ")]

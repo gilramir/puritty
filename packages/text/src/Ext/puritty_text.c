@@ -1422,7 +1422,7 @@ static const uint8_t *ui_record(const uint8_t *p, const uint8_t *end) {
 void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
     double t0 = ns();
     if (glyph_bytes > glyph_cap) reset_glyphs();
-    const uint8_t *p = list, *end = list + length, *runs = NULL;
+    const uint8_t *p = list, *end = list + length, *runs = NULL, *over = NULL;
     int first = pt_rows, last = -1, sized = 0;
     inklen = 0;
     sel_from = sel_to = -1;
@@ -1461,9 +1461,17 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
             if (y < first) first = y;
             if (y > last) last = y;
         } else if (p[0] >= 6 && p[0] <= 9) {
+            if (runs) {
+                /* the interface over the cells (docs/ssh-client.md SC23): drawn
+                 * after the runs' glyphs below, so that no glyph lies over it */
+                over = p;
+                break;
+            }
             const uint8_t *next = ui_record(p, end);
             if (!next) break;
             p = next;
+            first = 0;
+            last = pt_rows - 1;
         } else
             break; /* a record this does not know: the rest of the list is not read */
     }
@@ -1471,6 +1479,12 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
      * are drawn from the first run to where the backgrounds stopped. */
     for (int pass = 1; pass <= 2 && runs; pass++)
         for (const uint8_t *r = runs; r < p && r[0] == 2;) r = draw_run(r, p, pass);
+    for (const uint8_t *u = over; u && u < end && u[0] >= 6 && u[0] <= 9;) u = ui_record(u, end);
+    if (over) {
+        /* the interface may lie on any row: all of them are shown again */
+        first = 0;
+        last = pt_rows - 1;
+    }
     /* A glyph's ink may reach a row next to the rows drawn. */
     if (last >= first) {
         if (first > 0) first--;

@@ -1301,3 +1301,38 @@ Answers, not built:
   Lifting it is work in those packages and in `Main`'s loop. tmux's tabs
   and floating panes (phase 4) are drawn inside one window and need none
   of it.
+
+## SC23 · The question in a box over the screen (2026-11-11)
+
+*Gilbert, 2026-11-11:* do the password box (SC22's first answer). The ssh
+session's questions, a host key not known, a password, a key's passphrase,
+a server's questions, and why a session could not go on, are asked in a
+box in the middle of the window, in the settings window's look, over
+puritty's own screen, which keeps the connection's lines. The box has a
+title, lines, a field with bullets for a secret (the typed text where the
+server says it may be shown) and a caret, and the keys that answer. The
+keys are the same as before (SC18, SC20), and the sshwindow gate's nine
+cases pass unchanged.
+
+- **`app/src/Dialog.geng`** draws it with the renderer's interface records
+  (rounded boxes, text, a clip), sized from the cell's height as the
+  settings window's are, `Text.width` placing the caret, a line cut to fit
+  with an ellipsis. A key's passphrase is asked by the key's file name, its
+  path on the line under it.
+- **`Main.draw`** writes puritty's screen without the question (`ownTerm`'s
+  `boxed`), frames it, and puts the box's records after the cells' runs; in
+  the frame the box comes or goes in, every cell is drawn (`overlaid`), so
+  nothing of it is left behind. An input method's window goes to the
+  field's caret.
+- **The executor** (`puritty_text.c`, `pt_frame`) read interface records as
+  they came, and draws the runs' glyphs only after the list is read, so a
+  box after the runs would have had the terminal's letters drawn over it.
+  Interface records after runs are now drawn after the glyph passes; and a
+  frame with interface records shows every row again, since a box may lie
+  on rows no run changed. The settings window's lists, which have no runs,
+  draw as before.
+
+Tested: the pixel gate has `ui-over-cells` (`over`, a mode of its own:
+text, then records drawn over its cells in a frame of every cell, as
+`Main` draws one), 42 of 42; `harness/sshwindow.py --shots` saves the
+window as each question is asked.

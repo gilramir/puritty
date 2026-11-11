@@ -180,6 +180,16 @@ draw args bytes =
                                     }
                             , shadow = View.shadow cols rows
                             }
+                            |> Task.andThen
+                                (\r ->
+                                    if Array.get 8 args == Just "over" then
+                                        -- the interface over the cells (docs/ssh-client.md
+                                        -- SC23): a frame of every cell, its records after
+                                        over cols rows r.term (arg 9 args) (arg 10 args)
+
+                                    else
+                                        Task.succeed {}
+                                )
                             |> Task.andThen (\_ -> shot args)
             )
 
@@ -194,6 +204,25 @@ shot args =
 
                 else
                     failWith "cannot write the picture"
+            )
+
+
+{-| A frame of every cell of `term`, and the records in the file `path`
+after its runs, as puritty draws a question's box over its screen. -}
+over : Int -> Int -> (taken term : Vt.Term) -> String -> String -> Task x {}
+over cols rows term font path =
+    Os.File.initialize
+        |> Task.andThen (\perm -> Os.File.readFile perm (Os.Path.fromString path) |> Task.map Ok |> Task.onError (\_ -> Task.succeed (Err {})))
+        |> Task.andThen
+            (\read ->
+                when read is
+                    Ok records ->
+                        Text.interfaceFont font
+                            |> Task.andThen (\_ -> Window.draw (Bytes.flatten [ (View.frame View.defaultLook { focused = True, blinkOn = True } term (View.shadow cols rows)).list, records ]))
+                            |> Task.map (\_ -> {})
+
+                    Err {} ->
+                        failWith "cannot read the records"
             )
 
 

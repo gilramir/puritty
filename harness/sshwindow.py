@@ -56,6 +56,9 @@ CASES = [
 ]
 
 
+SHOTS = False
+
+
 def run_case(env0, name, key, passphrase, known, presses, command, keys):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
@@ -80,7 +83,8 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
         (home / "config" / "puritty" / "config.toml").write_text(
             f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
             f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size)}"\n' + jump)
-        env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
+        env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser(),
+                   PURITTY_SHOT=str(home / "shot.ppm"))
         env.pop("SSH_AUTH_SOCK", None)
         p = subprocess.Popen([str(APP), "--host", "test"], env=env, stdout=subprocess.DEVNULL,
                              stderr=open(home / "stderr.txt", "w"))
@@ -90,7 +94,12 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             titles.append(reload.title_of(env))
             win = subprocess.run([hosts.XDO, "search", "--sync", "--name", "^puritty: ssh to"], env=env, capture_output=True,
                                  text=True, timeout=10).stdout.split()
-            for k in presses:
+            for n, k in enumerate(presses):
+                if SHOTS:
+                    # the window as the question is asked (docs/ssh-client.md SC23)
+                    pic = reload.read_ppm(home / "shot.ppm")
+                    if pic:
+                        reload.save_png(WORK / f"{name}-{n}.png", pic)
                 if win:
                     subprocess.run([hosts.XDO, "windowfocus", "--sync", win[0]], env=env, capture_output=True)
                 if k.startswith("type:"):
@@ -120,7 +129,10 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--update", action="store_true")
+    ap.add_argument("--shots", action="store_true", help="save the window's picture before each key, in .harness-work/sshwindow")
     a = ap.parse_args()
+    global SHOTS
+    SHOTS = a.shots
     if not APP.exists():
         sys.exit("sshwindow.py: build app/puritty first (app/build.sh)")
     hosts.XDO = hosts.xdotool()
