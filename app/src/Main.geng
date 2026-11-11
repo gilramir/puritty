@@ -809,12 +809,12 @@ send text m =
 
 {-| A typed key sent: under tmux control mode through the client's key
 table, so that tmux's prefix and bindings work (docs/tmux.md TM23). -}
-sendKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> (taken m : Model) -> Model
-sendKey k bytes m =
+sendKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken m : Model) -> Model
+sendKey k bytes ms m =
     if TmuxMode.isOn m.tmux then
         let
             r =
-                TmuxMode.typed k bytes m.tmux
+                TmuxMode.typed k bytes ms m.tmux
         in
         sendRaw (commandLines r.commands) { m | tmux = r.state }
 
@@ -2837,7 +2837,7 @@ key remote ms rest k m =
             { focused = m.focus.focused, blinkOn = True }
     in
     handle remote ms rest
-        (sendKey k bytes
+        (sendKey k bytes ms
             { m
                 | urgent = True
                 , focus = focus

@@ -877,3 +877,131 @@ typed `echo 한글 typed` arrives; `C-a |` makes 2 panes and `C-a -` 3; `C-a
 "` leaves 3; `C-k` takes the history from 47 lines to 0; `C-a [` enters
 copy mode and `q` leaves it. The build, tabs, select and mouse scenarios
 give what they gave; packages/tmux 26 tests, app 102.
+
+## TM24 · What tmux does for a keyboard user under -CC: survey and guard (2026-11-11)
+
+*Gilbert, 2026-11-11, after TM23:* "Why did we miss this in our tmux
+support? It makes me wonder if we are missing other tmux things." Then:
+-CC must support tmux's right-click menu too; puritty is free to draw these
+things its own way, as it draws the tabs, "but we should always have an
+option for the user to choose our look vs a more traditional tmux look".
+He drives tmux entirely from the keyboard.
+
+### TM24.1 · How it was measured
+
+`bench/tmux/bindings.py` starts tmux 3.8 with its default bindings (two
+panes, two windows, a paste buffer), attaches a control client, and for
+each of the 93 bindings of the `prefix` table sends `send-keys -K C-b
+<key>`, as puritty sends keys since TM23. It records what the control
+client is sent, and what changed (panes, windows, sessions, clients,
+buffers) as a second client reads it. A prompt's binding is followed by
+`probe` and Enter, a confirmation's by `y`. The root table is the mouse's
+(30 bindings) and Gilbert's own `bind -n C-k`, done in TM23.
+
+### TM24.2 · Found: four ways a binding can wedge or lose the client
+
+- **`confirm-before` and `command-prompt` leave the control client
+  answering nothing, for good.** Both return "wait", which holds the
+  client's command queue until the prompt closes; a control client's keys
+  arrive as commands on that same queue, so the `y` never reaches the
+  prompt. Measured: after `send-keys -K C-b x`, `display -p still-here`
+  had no reply, nor did anything after it. TM23 made this reachable: from
+  2ddf18a to this section, `C-a x` (or `,`, `$`, `.`, `'`, `/`, `:`, `f`,
+  `T`, `&`) under puritty froze the session's window.
+- **`suspend-client` (`C-z`) makes tmux drop every key from that client**
+  (`server-client.c` ignores a suspended client's keys), and nothing
+  resumes a control client: measured, keys after it reached no pane, nor
+  after `refresh-client`. `lock-client` is harmless (keys still arrive).
+- **`display-message` writes `%message` inside the binding's own
+  `%begin`/`%end` block** (flags 0), not as a notification, so puritty,
+  which drops blocks that are not its own, never saw it. A binding's error
+  (`can't find window: 5`) comes back the same way, as the block's
+  `%error`.
+- **Output that a terminal client shows in a view comes back as text** in
+  the binding's block: `list-buffers` (`#`), `list-keys -N` (`?`),
+  `show-messages` (`~`).
+
+### TM24.3 · Every default binding, under -CC
+
+| what happens | keys (prefix table) |
+|---|---|
+| works through the panes and layouts | Space ! " % * ; = @ C D E [ ] c l n o p s t w z { } PPage Tab BTab arrows, M-1…M-7, M-o, M-arrows, C-o, C-arrows, C-b (send-prefix), `(` `)` (other session), d (detach: `%exit`), g (switch-client -T move) |
+| said in the tab bar now (TM24.4) | i (display-message), errors: 0–9 for a missing window, L with no last session, M-n/M-p with no alert |
+| output dropped; a terminal client shows a view | # (list-buffers), ? (list-keys -N), ~ (show-messages) |
+| held back now (TM24.4); would wedge the client | $ ' , . / : f T (command-prompt), & x (confirm-before), C-z (suspend-client) |
+| nothing for a control client | < > (display-menu: nothing sent, nothing changed; `display-popup` returns at once for a control client, `cmd-display-menu.c:594`), q (display-panes: a mode on the active pane that ends by itself, no numbers puritty could show), m (marks the pane: tmux has it, puritty draws no mark), M (clears it), S-arrows and DC (refresh-client -U/-D/-L/-R/-c: pan a client smaller than its window; a control client has the window's size) |
+| nothing to see | r (refresh-client) |
+
+Not measured by this probe, and on the list for TM25: tmux's status line
+(`status-left`, `status-right`; a control client has none,
+`status.c:104`), pane titles and `pane-border-status`, the bell and
+activity flags a window's tab could show, copy mode's copy reaching the
+system clipboard (`set-clipboard on`, `%paste-buffer-changed`), and the
+root table's mouse bindings, which puritty does not send since it handles
+the mouse itself (TM16).
+
+### TM24.4 · The guard, now
+
+- **Following tmux's key tables** (`packages/tmux` `Tmux.Bindings`): on
+  attach puritty reads `list-keys` and `#{prefix} #{prefix2}
+  #{repeat-time} #{version}`, and follows the table each key leaves the
+  client in, as tmux does: the prefix to `prefix`, a binding back to
+  `root`, a `bind -r` key keeping its table for `repeat-time`, and
+  `switch-client -T` to the table it names.
+- **Held back:** a key whose binding has `command-prompt`,
+  `confirm-before` or `suspend-client` is not sent; puritty sends
+  `switch-client -T root` when the prefix had moved tmux out of `root`,
+  and says `puritty: x is confirm-before; tmux -CC shows no prompt yet`
+  at the tab bar's right.
+- **Said:** a `%message` or an `%error` in a block that is not puritty's
+  is shown at the tab bar's right until the next key.
+- **tmux before 3.4** has no `send-keys -K` (tmux CHANGES, 3.4; 3.8 fixed
+  where those keys land in the input queue). puritty asks the version and
+  sends keys to the pane as before TM23 on an older tmux; the prefix there
+  says `tmux's key bindings under -CC need tmux 3.4 (send-keys -K)`.
+  Measured on 3.3a (nixpkgs 23.05): typing had also been lost on it, since
+  its layouts do not mark the active pane and puritty never learnt it; the
+  window query now asks `#{pane_id}` with the window.
+
+**Checked:** packages/tmux 37 tests (Bindings 11: the escaped key, `-r`,
+prefix and back, the confirmation and both prompts held, repeat and its
+expiry, a repeating key not reaching a non-repeating binding,
+`switch-client -T`, a plain root binding sent, suspend held, the version
+rule). `bench/tmux/show.py --scenario prefix`, with Gilbert's tmux.conf,
+on 3.8: `C-a x`, then `C-a ,`, then `C-a |` makes the fourth pane (tmux
+still answers), the bar says why; `C-a i` shows tmux's message; `C-a C-z`
+then typing reaches the pane; `C-a 5` shows `can't find window: 5`. On
+3.3a: typing reaches the pane and the bar says why the prefix does
+nothing. The build, tabs, select, mouse, safety, lines and attach
+scenarios give what they gave.
+
+### TM24.5 · Plan, keyboard first, each with tmux's look as an option
+
+One setting chooses the look of everything below: `[tmux] look =
+"puritty"` (boxes over the panes, as the settings window's dialogs) or
+`"tmux"` (on the bar's row and over the panes as a terminal client draws
+them). Leaning: one setting, not one per feature; `[tmux] tabs` stays for
+where the bar is.
+
+1. **Prompts and confirmations, drawn by puritty** (the held keys today).
+   puritty runs the binding itself instead of sending the key:
+   `confirm-before -p text cmd` asks the text (its formats expanded by
+   `display -p`) and on `y` runs `cmd`; `command-prompt` takes `-I`, `-p`,
+   `-k` and the template, puritty edits the line (history, Tab for nothing
+   at first) and runs the template with `%%`/`%1` replaced. A binding with
+   more than these (`if-shell … { command-prompt … }`) is run as tmux
+   would, puritty taking the prompt's part. tmux look: the prompt on the
+   bar's row in `message-style`.
+2. **Views:** what `#`, `?`, `~` and any binding's command print, in a box
+   puritty scrolls (q or Escape closes); tmux look: over the active pane.
+3. **Menus:** `display-menu` read from the binding (`<`, `>`, and the
+   right-click's `MouseDown3Pane`, sent to puritty's mouse code), drawn at
+   the place tmux would put it, run as chosen.
+4. **`display-panes`** numbers over the panes, a digit choosing one.
+5. **Status line:** `status-left` and `status-right` asked with
+   `refresh-client -B` subscriptions, shown in the bar; tmux look draws
+   `status-style` and the window list as tmux would.
+6. **Marks and flags:** the marked pane, pane titles (`pane-border-status`),
+   bell and activity on the tabs.
+
+The order is by what a keyboard user meets first; 1 removes every held key.

@@ -1,0 +1,240 @@
+module Tmux.Bindings exposing
+    ( Binding
+    , Follow
+    , follow
+    , bindingOf
+    , prefixesOf
+    , route
+    , held
+    )
+
+{-| tmux's key tables, followed from outside (puritty `docs/tmux.md`
+TM24): `list-keys` read into bindings, and where each key typed goes, so
+that a key whose binding would open tmux's prompt is held back, since
+under control mode it would leave the client answering nothing.
+-}
+
+import Dict exposing (Dict)
+
+
+{-| A key's binding as `list-keys` gives it: its command, and whether it
+repeats (`bind -r`). -}
+type alias Binding =
+    { command : String, repeat : Bool }
+
+
+{-| What following the tables needs: the bindings by `"table key"`, the
+prefix keys, `repeat-time`, the table the client is in, until when a
+repeatable binding keeps it there (-1 when none does), and whether the
+server has `send-keys -K` (3.4 on) to send keys through the tables at
+all. -}
+type alias Follow =
+    { bindings : Dict String Binding
+    , prefixes : Array String
+    , repeatMs : Int
+    , table : String
+    , repeatUntil : Int
+    , byTable : Bool
+    }
+
+
+{-| Before `list-keys` is read: no bindings, `root`. -}
+follow : Follow
+follow =
+    { bindings = Dict.empty, prefixes = [], repeatMs = 500, table = "root", repeatUntil = -1, byTable = False }
+
+
+{-| `display-message -p '#{prefix} #{prefix2} #{repeat-time} #{version}'`'s
+line: the prefix keys (`None` is none), the repeat time in ms, and whether
+the version has `send-keys -K` (3.4 on; a `next-` build is newer). -}
+prefixesOf : String -> { prefixes : Array String, repeatMs : Int, byTable : Bool }
+prefixesOf line =
+    let
+        words =
+            String.split " " line
+    in
+    { prefixes = Array.keepIf (\w -> w /= "" && w /= "None") (Array.slice 0 2 words)
+    , repeatMs = Maybe.withDefault 500 (Maybe.andThen String.toInt (Array.get 2 words))
+    , byTable = hasSendKeysK (Maybe.withDefault "" (Array.get 3 words))
+    }
+
+
+{-| Whether a `#{version}` is 3.4 or later: `3.8`, `3.4`, `next-3.9` yes;
+`3.3a`, `2.7`, nothing no. -}
+hasSendKeysK : String -> Bool
+hasSendKeysK version =
+    if String.startsWith "next-" version then
+        True
+
+    else
+        let
+            parts =
+                String.split "." version
+
+            major =
+                Maybe.andThen String.toInt (Array.get 0 parts) |> Maybe.withDefault 0
+
+            minor =
+                Array.get 1 parts
+                    |> Maybe.map leadingDigits
+                    |> Maybe.andThen String.toInt
+                    |> Maybe.withDefault 0
+        in
+        major > 3 || (major == 3 && minor >= 4)
+
+
+{-| Where a key goes by tmux's key tables, as tmux will look it up (TM24):
+the prefix moves to the `prefix` table; a binding moves back to `root`,
+or stays for `repeat-time` if it repeats, or to the table a
+`switch-client -T` names. A binding `held` gives a reason for is not
+sent: it is said instead, and tmux put back in `root` when the prefix had
+taken it out. -}
+route : Maybe String -> Int -> Follow -> { send : Bool, reset : Bool, table : String, repeatUntil : Int, said : String }
+route name ms s =
+    let
+        repeating =
+            s.repeatUntil >= 0 && ms <= s.repeatUntil
+
+        current =
+            if s.repeatUntil >= 0 && not repeating then "root" else s.table
+
+        plain =
+            { send = True, reset = False, table = "root", repeatUntil = -1, said = "" }
+    in
+    when name is
+        Nothing ->
+            plain
+
+        Just key ->
+            if current == "root" && Array.member key s.prefixes then
+                { plain | table = "prefix" }
+
+            else
+                let
+                    inTable =
+                        Dict.get (current ++ " " ++ key) s.bindings
+                            |> Maybe.andThen (\b -> if repeating && not b.repeat then Nothing else Just b)
+
+                    found =
+                        when inTable is
+                            Just b ->
+                                Just { binding = b, table = current }
+
+                            Nothing ->
+                                if repeating || current == "root" then
+                                    Dict.get ("root " ++ key) s.bindings |> Maybe.map (\b -> { binding = b, table = "root" })
+
+                                else
+                                    Nothing
+                in
+                when found is
+                    Just f ->
+                        when held f.binding.command is
+                            Just why ->
+                                { send = False
+                                , reset = current /= "root"
+                                , table = "root"
+                                , repeatUntil = -1
+                                , said = "puritty: " ++ key ++ " is " ++ why
+                                }
+
+                            Nothing ->
+                                when switchedTo f.binding.command is
+                                    Just table ->
+                                        { plain | table = table }
+
+                                    Nothing ->
+                                        if f.binding.repeat then
+                                            { plain | table = f.table, repeatUntil = ms + s.repeatMs }
+
+                                        else
+                                            plain
+
+                    Nothing ->
+                        plain
+
+
+{-| Why a binding's command is held back, if it is (TM24):
+`command-prompt` and `confirm-before` wait for keys that, under control
+mode, wait behind them, so the client answers nothing again; after
+`suspend-client` tmux takes no key from a control client again, and
+nothing resumes it. -}
+held : String -> Maybe String
+held command =
+    let
+        words =
+            String.split " " command |> Array.map (\w -> if String.startsWith "{" w then String.dropFirst 1 w else w)
+
+        has name =
+            Array.member name words
+    in
+    if has "command-prompt" then
+        Just "command-prompt; tmux -CC shows no prompt yet"
+
+    else if has "confirm-before" then
+        Just "confirm-before; tmux -CC shows no prompt yet"
+
+    else if has "suspend-client" then
+        Just "suspend-client, after which tmux -CC would take no keys"
+
+    else
+        Nothing
+
+
+{-| The table a binding's `switch-client -T table` puts the client in. -}
+switchedTo : String -> Maybe String
+switchedTo command =
+    when String.split " " command |> Array.keepIf (\w -> w /= "") is
+        [ "switch-client", "-T", table ] ->
+            Just table
+
+        _ ->
+            Nothing
+
+
+
+{-| A `list-keys` line, `bind-key [-r] -T table key command…`, put in the
+bindings by table and key; a key `list-keys` escapes (`\"`, `\#`) without
+its backslash. -}
+bindingOf : String -> Dict String Binding -> Dict String Binding
+bindingOf line d =
+    let
+        words =
+            String.split " " line |> Array.keepIf (\w -> w /= "")
+    in
+    when Array.findFirst (\w -> w == "-T") words is
+        Just t ->
+            when { first = Array.get 0 words, table = Array.get (t.index + 1) words, key = Array.get (t.index + 2) words } is
+                { first = Just "bind-key", table = Just table, key = Just key } ->
+                    let
+                        bare =
+                            if String.count key == 2 && String.startsWith "\\" key then String.dropFirst 1 key else key
+                    in
+                    Dict.set (table ++ " " ++ bare)
+                        { command = String.join " " (Array.dropFirst (t.index + 3) words)
+                        , repeat = Array.member "-r" (Array.slice 0 t.index words)
+                        }
+                        d
+
+                _ ->
+                    d
+
+        Nothing ->
+            d
+
+
+{-| The digits a text begins with: `4` of `4a`. -}
+leadingDigits : String -> String
+leadingDigits text =
+    String.toArray text
+        |> Array.foldl
+            (\c acc ->
+                if acc.done || not (Char.isDigit c) then
+                    { acc | done = True }
+
+                else
+                    { acc | digits = acc.digits ++ String.fromChar c }
+            )
+            { digits = "", done = False }
+        |> .digits
+

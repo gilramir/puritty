@@ -33,6 +33,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Keys
+import Tmux.Bindings as Bindings
 import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
@@ -82,6 +83,14 @@ type alias State =
       -- the tab bar at the window's top, or at its bottom where tmux's
       -- status line was (`[tmux] tabs`, TM22)
     , barTop : Bool
+      -- tmux's key bindings, by table and key, and the prefix keys, read
+      -- on attach; the table the client is in as puritty follows it, and
+      -- until when a repeatable binding keeps it there, -1 when none does
+      -- (TM24)
+    , keys : Bindings.Follow
+      -- what tmux said (`%message`) or puritty says of a key, shown at the
+      -- tab bar's right until the next key (TM24)
+    , said : String
     }
 
 
@@ -126,6 +135,8 @@ type Expect
     | ForInfo Int
     | ForSaved Int
     | ForCapture Int
+    | ForKeys
+    | ForPrefixes
     | ForNothing
 
 
@@ -168,6 +179,8 @@ idle _ =
     , tabs = []
     , nested = Dict.empty
     , barTop = False
+    , keys = Bindings.follow
+    , said = ""
     }
 
 
@@ -215,7 +228,7 @@ type alias Acc =
 
 windowQuery : String
 windowQuery =
-    "display-message -p " ++ Command.quote "W #{window_id} #{window_visible_layout} #{window_name}"
+    "display-message -p " ++ Command.quote "W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}"
 
 
 {-| The session's windows, each a line starting with `T`. -}
@@ -327,6 +340,8 @@ event size e acc =
                 , { command = windowQuery, expect = ForWindow }
                 , { command = tabsQuery, expect = ForTabs }
                 , { command = panesQuery, expect = ForPanes }
+                , { command = "list-keys", expect = ForKeys }
+                , { command = "display-message -p " ++ Command.quote "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
                 ]
                 { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty } }
 
@@ -340,8 +355,28 @@ event size e acc =
         Reply r ->
             if r.flags == 0 then
                 -- a command not this client's: the one it was started
-                -- with, or a hook's
-                acc
+                -- with, a hook's, or a key binding's, in whose block tmux
+                -- writes what `display-message` says to this client (TM24)
+                when Array.findLast (\line -> String.startsWith "%message " (Bytes.toStringLossy line)) r.lines is
+                    Nothing ->
+                        if r.ok then
+                            acc
+
+                        else
+                            -- a binding's error, as tmux's status line would
+                            -- show it (TM24)
+                            let
+                                st =
+                                    acc.state
+                            in
+                            { acc | state = { st | said = Array.first r.lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault st.said } }
+
+                    Just m ->
+                        let
+                            st =
+                                acc.state
+                        in
+                        { acc | state = { st | said = String.dropFirst 9 (Bytes.toStringLossy m.value) } }
 
             else
                 let
@@ -440,6 +475,37 @@ replied expect ok lines acc =
                     acc.state
             in
             { acc | state = { st | info = Dict.update pane (Maybe.map (\i -> { i | saved = if ok then lines else [] })) st.info } }
+
+        ForKeys ->
+            let
+                st =
+                    acc.state
+
+                tables =
+                    st.keys
+            in
+            if ok then
+                { acc | state = { st | keys = { tables | bindings = Array.foldl (\line d -> Bindings.bindingOf (Bytes.toStringLossy line) d) Dict.empty lines } } }
+
+            else
+                { acc | state = st }
+
+        ForPrefixes ->
+            let
+                st =
+                    acc.state
+
+                got =
+                    Bindings.prefixesOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "")
+
+                tables =
+                    st.keys
+            in
+            if ok then
+                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs, byTable = got.byTable } } }
+
+            else
+                { acc | state = st }
 
         ForCapture pane ->
             if ok then
@@ -541,24 +607,33 @@ rebuild pane lines s =
                     { s | ids = Array.pushLast pane s.ids, panes = Builder.pushLast term s.panes }
 
 
-{-| A line of `windowQuery`'s answer: `W @id layout name`. -}
+{-| A line of `windowQuery`'s answer: `W @window %pane layout name`. -}
 replyLine : Bytes -> (taken s : State) -> State
 replyLine bytes s =
     let
         words =
             String.split " " (Bytes.toStringLossy bytes)
     in
-    when words is
-        [ "W", w, layoutText ] ->
-            showWindow (idOf w) layoutText "" s
+    when Array.get 0 words is
+        Just "W" ->
+            -- the active pane asked with the window: a layout before 3.4's
+            -- new-layouts does not mark it, and keys go nowhere without it
+            -- (TM24)
+            let
+                shown =
+                    showWindow (idOf (Maybe.withDefault "" (Array.get 1 words))) (Maybe.withDefault "" (Array.get 3 words)) (String.join " " (Array.dropFirst 4 words)) s
+
+                pane =
+                    idOf (Maybe.withDefault "" (Array.get 2 words))
+            in
+            if pane >= 0 then
+                { shown | active = pane }
+
+            else
+                shown
 
         _ ->
-            when Array.get 0 words is
-                Just "W" ->
-                    showWindow (idOf (Maybe.withDefault "" (Array.get 1 words))) (Maybe.withDefault "" (Array.get 2 words)) (String.join " " (Array.dropFirst 3 words)) s
-
-                _ ->
-                    s
+            s
 
 
 idOf : String -> Int
@@ -661,6 +736,9 @@ notice n acc =
 
         WindowClose _ ->
             ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
+
+        Message text ->
+            { acc | state = { st | said = text } }
 
         WindowRenamed r ->
             let
@@ -783,6 +861,21 @@ paint s =
                 tabBar =
                     tabsOf cols barRow s
 
+                -- what tmux or puritty said, at the bar's right (TM24)
+                saidPiece =
+                    let
+                        room =
+                            max 0 (cols - String.count tabBar.text - 2)
+
+                        shown =
+                            String.takeFirst room s.said
+                    in
+                    if shown == "" then
+                        []
+
+                    else
+                        [ { row = barRow, col = cols - String.count shown - 1, text = shown } ]
+
                 active =
                     s.active
 
@@ -826,6 +919,7 @@ paint s =
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawText barColour [ { row = barRow, col = 0, text = String.padRight cols ' ' tabBar.text } ]
                         |> drawText activeTabColour tabBar.active
+                        |> drawText barColour saidPiece
                         |> Vt.feed (Bytes.fromString cursor)
             in
             { s | canvas = (Vt.takeReplies composed).term }
@@ -934,30 +1028,98 @@ work (TM23): a named key or one with Ctrl or Alt by its tmux name, other
 text as its bytes. `bytes` is what the pane's modes make of the key; a key
 that makes none (a release) sends nothing, and one tmux has no name for (a
 Super chord) still sends them to the pane. -}
-typed : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> (taken s : State) -> { state : State, commands : Array String }
-typed k bytes s =
+typed : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
+typed k bytes ms s =
     if s.active < 0 || Bytes.isEmpty bytes then
         { state = s, commands = [] }
 
     else
         let
-            mods =
-                Bitwise.and k.mods 15
-
             commands =
-                when keyName k is
-                    Just name ->
-                        [ Command.sendKey name ]
+                if s.keys.byTable then
+                    byName k bytes s.active
 
-                    Nothing ->
-                        if Bitwise.and mods 14 == 0 && not (Bytes.isEmpty k.text) then
-                            Command.typeText k.text
+                else
+                    -- a tmux before 3.4 has no `send-keys -K`: the bytes to
+                    -- the pane, its bindings out of reach (TM24)
+                    Command.sendBytes s.active bytes
+
+            way =
+                if s.keys.byTable then
+                    Bindings.route (lookupName k) ms s.keys
+
+                else
+                    -- said at the prefix, and kept through the key after it
+                    let
+                        isPrefix =
+                            Maybe.map (\key -> Array.member key s.keys.prefixes) (lookupName k) == Just True
+                    in
+                    { send = True
+                    , reset = False
+                    , table = if isPrefix then "prefix" else "root"
+                    , repeatUntil = -1
+                    , said =
+                        if isPrefix then
+                            "puritty: tmux's key bindings under -CC need tmux 3.4 (send-keys -K)"
+
+                        else if s.keys.table == "prefix" then
+                            s.said
 
                         else
-                            Command.sendBytes s.active bytes
+                            ""
+                    }
+
+            tables =
+                s.keys
+
+            followed =
+                { tables | table = way.table, repeatUntil = way.repeatUntil }
         in
-        -- a key the pane's program gets brings its view to the bottom
-        sent commands { s | back = Dict.remove s.active s.back }
+        if way.send then
+            -- a key the pane's program gets brings its view to the bottom
+            sent commands { s | back = Dict.remove s.active s.back, keys = followed, said = way.said }
+
+        else
+            sent (if way.reset then [ "switch-client -T root" ] else []) { s | keys = followed, said = way.said }
+
+
+{-| A key as `send-keys -K` takes it (TM23): by its tmux name where it has
+one, other text as its bytes, a Super chord as the pane's bytes. -}
+byName : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> Array String
+byName k bytes pane =
+    when keyName k is
+        Just name ->
+            [ Command.sendKey name ]
+
+        Nothing ->
+            if Bitwise.and (Bitwise.and k.mods 15) 14 == 0 && not (Bytes.isEmpty k.text) then
+                Command.typeText k.text
+
+            else
+                Command.sendBytes pane bytes
+
+
+{-| A key's name as `list-keys` gives it: `keyName`'s, or a character
+typed alone, a space as `Space`. -}
+lookupName : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe String
+lookupName k =
+    when keyName k is
+        Just name ->
+            Just name
+
+        Nothing ->
+            let
+                text =
+                    Bytes.toStringLossy k.text
+            in
+            if text == " " then
+                Just "Space"
+
+            else if String.count text == 1 then
+                Just text
+
+            else
+                Nothing
 
 
 {-| A key's tmux name (tmux(1) KEY BINDINGS): a named key (`Up`, `F5`,

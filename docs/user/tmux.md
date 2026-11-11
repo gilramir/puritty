@@ -49,10 +49,12 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 - **Attach to a session that's already running**: every pane comes back as
   it was, its history, colours and cursor, and a program like `less` or
   vim on its own screen.
-- **Tabs**: the top row shows the session's windows. Click one to switch,
-  `+` or **Ctrl+Shift+T** for a new window, **Ctrl+PgUp** and **Ctrl+PgDn**
-  to move between them. A window closes when its programs end; the tab bar
-  has no close button, since closing a window ends what runs in it.
+- **Tabs**: the bottom row shows the session's windows, where tmux's
+  status line was (`tabs = "top"` under `[tmux]` in the settings puts it
+  at the top). Click one to switch, `+` or **Ctrl+Shift+T** for a new
+  window, **Ctrl+PgUp** and **Ctrl+PgDn** to move between them. A window
+  closes when its programs end; the tab bar has no close button, since
+  closing a window ends what runs in it.
 - **The mouse**: click a pane to make it the active one (its box, if it
   floats, turns amber). Drag a floating pane by its top edge to move it,
   by its other edges to resize it, and drag the line between two panes to
@@ -65,6 +67,21 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 - **Slow connections**: if puritty falls behind on a pane over a slow
   link, tmux pauses it, and puritty picks it up again where it is, without
   losing what it printed.
+- **Your key bindings**: keys go through tmux's own key tables, so your
+  prefix (say **Ctrl+A**) and your `bind` and `bind -n` keys work as in
+  plain tmux. This needs tmux 3.4 or later on the server; with an older
+  tmux, typing works but the prefix does nothing, and the tab bar says so.
+  Messages from tmux (`prefix i`, an error such as "can't find window")
+  show at the right of the tab bar until the next key.
+
+Not yet under `-CC`: tmux's command prompt (`prefix :`, and renaming with
+`prefix ,` or `prefix $`), its yes-or-no questions (`prefix x`,
+`prefix &`), its menus, and the lists `prefix ?`, `prefix #` and
+`prefix ~` show. A key that would open a prompt or a question does nothing
+and says why in the tab bar, because under `-CC` tmux would wait for an
+answer puritty has no way to give. `prefix Ctrl+Z` is held back the same
+way. Until puritty draws these, use the tmux command line from a shell:
+`tmux kill-pane`, `tmux rename-window name`.
 
 ## tmux drawing for itself
 

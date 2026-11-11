@@ -7,11 +7,13 @@ both forms; the commands.
 -}
 
 import Bytes exposing (Bytes)
+import Dict
 import Expect exposing (Expectation)
 import Fixtures
 import Node
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
+import Tmux.Bindings as Bindings
 import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
@@ -26,7 +28,7 @@ main =
                 U.run env
                     { name = "puritty-tmux"
                     , version = "0.1.0"
-                    , suites = [ control, layout, command ]
+                    , suites = [ control, layout, command, bindings ]
                     }
             )
 
@@ -349,3 +351,121 @@ command =
           , test = \_ -> Expect.equal "'it'\\''s'" (Command.quote "it's")
           }
         ]
+
+
+{-| Lines of tmux 3.8's own `list-keys`, and Gilbert's tmux.conf's. -}
+listed : Bindings.Follow
+listed =
+    { bindings =
+        Array.foldl Bindings.bindingOf
+            Bindings.follow.bindings
+            [ "bind-key    -T prefix \\\"      split-window"
+            , "bind-key    -T prefix x       confirm-before -p \"kill-pane #P? (y/n)\" kill-pane"
+            , "bind-key    -T prefix ,       command-prompt -I \"#W\" { rename-window \"%%\" }"
+            , "bind-key    -T prefix |       split-window -h"
+            , "bind-key    -T prefix g       switch-client -T move"
+            , "bind-key -r -T prefix Up      select-pane -U"
+            , "bind-key    -T prefix C-a     send-prefix"
+            , "bind-key    -T prefix C-z     suspend-client"
+            , "bind-key    -T root   C-k     send-keys -R \\; send-keys C-l \\; clear-history"
+            , "bind-key    -T root   M-p     command-prompt -p pane { select-pane -t \"%%\" }"
+            ]
+    , prefixes = [ "C-a" ]
+    , repeatMs = 500
+    , table = "root"
+    , repeatUntil = -1
+    , byTable = True
+    }
+
+
+{-| Keys typed one after another at the times given, and where each went. -}
+typedAt : Array { key : String, ms : Int } -> Array { send : Bool, reset : Bool, table : String }
+typedAt presses =
+    Array.foldl
+        (\p acc ->
+            let
+                way =
+                    Bindings.route (Just p.key) p.ms acc.state
+            in
+            { state = { listed | table = way.table, repeatUntil = way.repeatUntil, bindings = acc.state.bindings }
+            , out = Array.pushLast { send = way.send, reset = way.reset, table = way.table } acc.out
+            }
+        )
+        { state = listed, out = [] }
+        presses
+        |> .out
+
+
+bindings : U.Suite
+bindings =
+    run "Bindings"
+        [ { name = "list-keys lines: an escaped key without its backslash, and -r"
+          , test =
+                \_ ->
+                    Expect.equal [ Just "split-window", Just "select-pane -U", Nothing ]
+                        [ Maybe.map .command (Dict.get "prefix \"" listed.bindings)
+                        , Maybe.map .command (Dict.get "prefix Up" listed.bindings |> Maybe.keepIf .repeat)
+                        , Maybe.map .command (Dict.get "prefix \\\"" listed.bindings)
+                        ]
+          }
+        , { name = "the prefix moves to the prefix table, a binding back to root"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = True, reset = False, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "|", ms = 10 } ])
+          }
+        , { name = "a confirmation after the prefix is held back and tmux put back in root"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "x", ms = 10 } ])
+          }
+        , { name = "the command prompt, after the prefix and from a root binding, is held back"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" }, { send = False, reset = False, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = ",", ms = 10 }, { key = "M-p", ms = 20 } ])
+          }
+        , { name = "a repeatable binding keeps its table for repeat-time, then root again"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { send = True, reset = False, table = "prefix" }
+                        , { send = True, reset = False, table = "prefix" }
+                        , { send = True, reset = False, table = "prefix" }
+                        , { send = True, reset = False, table = "root" }
+                        ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "Up", ms = 10 }, { key = "Up", ms = 300 }, { key = "x", ms = 2000 } ])
+          }
+        , { name = "a key repeating does not reach a binding that does not repeat"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "Up", ms = 10 }, { key = "x", ms = 100 } ] |> Array.map .send)
+          }
+        , { name = "suspend-client is held back: a suspended control client takes no keys again"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "C-z", ms = 10 } ])
+          }
+        , { name = "switch-client -T moves to that table"
+          , test =
+                \_ ->
+                    Expect.equal [ "prefix", "move" ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "g", ms = 10 } ] |> Array.map .table)
+          }
+        , { name = "a root binding that is no prompt is sent"
+          , test = \_ -> Expect.equal [ { send = True, reset = False, table = "root" } ] (typedAt [ { key = "C-k", ms = 0 } ])
+          }
+        , { name = "the prefixes and repeat time, None left out"
+          , test = \_ -> Expect.equal { prefixes = [ "C-a" ], repeatMs = 600, byTable = True } (Bindings.prefixesOf "C-a None 600 3.8")
+          }
+        , { name = "send-keys -K from 3.4: 3.4, 3.8, a next- build yes; 3.3a, 3.2a, 2.7, none no"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True, False, False, False, False ]
+                        (Array.map (\v -> (Bindings.prefixesOf ("C-b None 500 " ++ v)).byTable) [ "3.4", "3.8", "next-3.9", "3.3a", "3.2a", "2.7", "" ])
+          }
+        ]
+
