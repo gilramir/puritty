@@ -1188,3 +1188,23 @@ use, and exited with the command's status.
 **Not yet, of step 9:** Gilbert's own session to an EUC-KR host;
 passwords kept in Windows' Credential Manager; the jump host, the strip
 and the changed-key dialog of SC18.
+
+## SC20 · A typed secret shown as bullets (2026-11-10)
+
+Gilbert, typing a password on Windows: a star rose while Shift was held
+and fell back when it was let go. Shift was not the cause. Two scripted
+runs on beelink1 held Shift (once, then repeated as a keyboard repeats
+it), and the frames with Shift held and let go were identical. What
+moved was a font's ligature. Fira Code, his font, joins `***` and draws
+its middle star higher, so the third star typed raised the second, and
+the fourth undid it. The same shows on Linux with Fira Code, three stars
+at the end of the passphrase line.
+
+U+200C ZERO WIDTH NON-JOINER between the stars did not stop it: the core
+joins it to the star's cell and HarfBuzz is given it, but Fira Code's
+rule still matched. What is typed at a password, a passphrase or a
+hidden answer is now shown as bullets (U+2022), which no font joins.
+The core gives a bullet one cell, as its widths (Ghostty's) do every
+ambiguous-width character. Fira Code, Cascadia Mono and DejaVu Sans Mono
+each have the glyph. Checked on Linux with Fira Code: eight bullets,
+level. The sshwindow gate passes, 8 of 8.
