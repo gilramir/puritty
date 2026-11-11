@@ -1933,21 +1933,43 @@ handleOne remote ms rest ev m =
                                 -- (docs/user/copy-and-paste.md), the key
                                 -- puritty's with or without one
                                 owned remote ms rest
-                                    (when m.selection is
-                                        Just s ->
-                                            { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
+                                    (if TmuxMode.isOn m.tmux then
+                                        when TmuxMode.selectedText m.tmux is
+                                            Just text ->
+                                                { m | toOwn = Just { which = Window.Clipboard, text = text } }
 
-                                        Nothing ->
-                                            m
+                                            Nothing ->
+                                                m
+
+                                     else
+                                        when m.selection is
+                                            Just s ->
+                                                { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
+
+                                            Nothing ->
+                                                m
                                     )
 
                             else
-                                when scrollKeyOf m k is
-                                    Just back ->
-                                        handle remote ms rest { m | back = back, urgent = True }
+                                if TmuxMode.isOn m.tmux then
+                                    -- the active pane's view (docs/tmux.md TM17)
+                                    let
+                                        scrolled =
+                                            TmuxMode.scrollKey k m.tmux
+                                    in
+                                    if scrolled.used then
+                                        handle remote ms rest { m | tmux = scrolled.state, urgent = True }
 
-                                    Nothing ->
-                                        key remote ms rest k m
+                                    else
+                                        key remote ms rest k { m | tmux = scrolled.state }
+
+                                else
+                                    when scrollKeyOf m k is
+                                        Just back ->
+                                            handle remote ms rest { m | back = back, urgent = True }
+
+                                        Nothing ->
+                                            key remote ms rest k m
 
                 Window.Resized size ->
                     let
@@ -2273,13 +2295,21 @@ pointer ms p m =
         taken =
             Bitwise.and p.mods 1 /= 0 && not wheel && (p.action /= 2 || held /= 0)
     in
-    if TmuxMode.isOn m.tmux && not taken then
-        -- tmux's panes take the mouse, but Shift (docs/tmux.md TM16)
+    if TmuxMode.isOn m.tmux then
+        -- tmux's panes, their programs and selections in them
+        -- (docs/tmux.md TM16, TM17); Shift selects
         let
             r =
-                TmuxMode.pointer held p m.tmux
+                TmuxMode.pointer { ms = ms, held = held, select = taken, boundaries = m.wordBoundaries, pasteButton = m.config.pasteButton } p m.tmux
         in
-        sendRaw (commandLines r.commands) { m | held = held, tmux = r.state, urgent = True }
+        sendRaw (commandLines r.commands)
+            { m
+                | held = held
+                , tmux = r.state
+                , urgent = True
+                , toOwn = Maybe.map (\t -> { which = Window.Primary, text = t }) r.own
+                , toPaste = if r.paste then Just Window.Primary else m.toPaste
+            }
 
     else if modes.tracking == Mouse.none && wheel && p.action == 0 then
         wheelStep p.button { m | held = held }

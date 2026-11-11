@@ -5,7 +5,7 @@ module Vt exposing
     , View, scrollbackRows, rowsPushed, viewAt, viewPainted, paint, promptJump
     , Point, selectionText, wordAt, lineAt, rowsHash, defaultWordBoundaries
     , Clip, takeClipboard, withPalette, setPalette, setScrollbackBytes
-    , Embedder, withEmbedder, compose, cursorOf
+    , Embedder, withEmbedder, compose, cursorOf, invert
     )
 
 {-| puritty's headless terminal core (`docs/vt-core.md`).
@@ -171,6 +171,62 @@ viewPainted paints t =
     { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
 
 
+{-| Spans of the screen drawn inverse, as puritty draws a selection over
+the panes it laid on (`docs/tmux.md` TM17): each cell from `from` to `to`
+in its row, both included, its style's inverse flag turned over. -}
+invert : Array { row : Int, from : Int, to : Int } -> (taken t : Term) -> Term
+invert spans t =
+    if Array.isEmpty spans then
+        t
+
+    else
+        let
+            cols =
+                t.cols
+
+            read =
+                rowsBetween 0 t.rows t
+
+            start =
+                { rows = Array.map (\r -> r.cells ++ Array.repeat (cols - Array.length r.cells) (Int64.fromInt 0)) read.rows, styles = t.styles }
+
+            done =
+                Array.foldl
+                    (\sp acc ->
+                        when Array.get sp.row acc.rows is
+                            Just cells ->
+                                let
+                                    turned =
+                                        Array.foldl
+                                            (\x a ->
+                                                when Array.get x a.cells is
+                                                    Just c ->
+                                                        let
+                                                            attrs =
+                                                                styleOf (Bitwise.and 0xFFFF (cellStyle c)) a.styles
+
+                                                            interned =
+                                                                intern { attrs | flags = Bitwise.xor 16 attrs.flags } a.styles
+                                                        in
+                                                        { cells = Array.set x (Bitwise.or (styleBits interned.id) (Bitwise.and (Bitwise.complement (styleBits 0xFFFF)) c)) a.cells, styles = interned.styles }
+
+                                                    Nothing ->
+                                                        a
+                                            )
+                                            { cells = cells, styles = acc.styles }
+                                            (Array.range (max 0 sp.from) (min (cols - 1) sp.to))
+                                in
+                                { rows = Array.set sp.row turned.cells acc.rows, styles = turned.styles }
+
+                            Nothing ->
+                                acc
+                    )
+                    start
+                    spans
+        in
+        { t | screen = writeRows (Array.map (\cells -> { cells = cells, wrapped = False, prompt = 0 }) done.rows) 0 0 t.rows t.screen, styles = done.styles }
+
+
 {-| Where the cursor is on the screen, and whether DECTCEM shows it. -}
 cursorOf : Term -> { x : Int, y : Int, visible : Bool }
 cursorOf t =
@@ -190,7 +246,7 @@ cursor is the embedder's to place.
 
 A pane's colours by number resolve against this terminal's palette, and a
 pane's own OSC 4, 10 and 11 are not carried. -}
-compose : Builder Term -> Array { index : Int, x : Int, y : Int } -> (taken t : Term) -> Term
+compose : Builder Term -> Array { index : Int, x : Int, y : Int, back : Int } -> (taken t : Term) -> Term
 compose panes places t =
     let
         cols =
@@ -211,7 +267,7 @@ compose panes places t =
                 (\place acc ->
                     when Builder.get place.index panes is
                         Just pane ->
-                            composePane cols rows pane place.x place.y acc
+                            composePane cols rows pane place.x place.y place.back acc
 
                         Nothing ->
                             acc
@@ -225,11 +281,15 @@ compose panes places t =
     { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters }
 
 
-composePane : Int -> Int -> Term -> Int -> Int -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }
-composePane cols rows pane px py acc =
+composePane : Int -> Int -> Term -> Int -> Int -> Int -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }
+composePane cols rows pane px py back0 acc =
     let
+        -- the pane's rows scrolled `back` rows up, as `viewAt` reads them
+        back =
+            clamp 0 (scrollbackRows pane) back0
+
         read =
-            rowsBetween 0 pane.rows pane
+            rowsBetween (0 - back) pane.rows pane
 
         width =
             max 0 (min pane.cols (cols - px))

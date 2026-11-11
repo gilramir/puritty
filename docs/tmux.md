@@ -700,3 +700,39 @@ gave it `ESC [<0;6;26M` and `ESC [<0;6;26m` for the cell clicked, and Up
 then gave `ESC O A`.
 
 Not done here: dragging the line between tiled panes to resize them.
+
+## TM17 · Step 4.3: scrollback and selection within a pane (2026-11-11)
+
+- **Each pane has its own view.** The wheel over a pane whose program does
+  not take the mouse scrolls that pane's view three rows, or on its
+  alternate screen sends three arrow keys (by the pane's DECCKM), as
+  puritty does without tmux; Shift+PgUp, PgDn, Home and End scroll the
+  active pane's view; a key its program gets brings the view to the
+  bottom; output keeps a view scrolled back on its rows. `Vt.compose` takes
+  how far back each place is drawn, read by `rowsBetween` from the pane's
+  scrollback as `viewAt` reads it; the cursor is drawn where its row has
+  moved to, or not at all once it is scrolled out of the pane.
+- **A selection lives in one pane**, in that pane's terminal: a drag, a
+  double click for a word, a triple for a line (`Vt.wordAt`, `Vt.lineAt`,
+  the word boundaries of the settings), its rows absolute as the core's
+  `Point`s are, so it covers the pane's scrollback and joins its wrapped
+  lines (`Vt.selectionText`). A drag that leaves the pane stays at its
+  edge. Shift selects over a program that takes the mouse. Let go, its
+  text is PRIMARY, and with `copy_to_clipboard` the clipboard (WS27);
+  Ctrl+Shift+C copies it; the paste button pastes.
+- **The highlight** is drawn in the canvas, not by the renderer: the new
+  `Vt.invert` turns the inverse flag of a span's cells, right after the
+  selection's pane is laid on, so a floating pane laid on later covers it
+  as it covers the pane.
+- **Ownership:** what `paint` reads of the state (each pane's place and
+  view, the selection's spans) is read before the canvas is written, by
+  helpers that only look; closures that held the whole state while its
+  canvas was being written were refused.
+
+**Checked** (`bench/tmux/show.py --scenario select`): three wheel steps over
+the left pane, which had `seq` 200 lines, showed lines 163 to 192; a drag
+over the right pane's first eleven cells made PRIMARY `hello world`; a
+double click on the scrolled left pane made it `left`, highlighted, and
+Ctrl+Shift+C put `left` on the clipboard; Return brought the view back to
+line 200 and the prompt. The core's tests have a scrolled compose and
+`invert` (94).

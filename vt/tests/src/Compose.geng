@@ -26,24 +26,40 @@ suite =
         [ { name = "panes laid at their places, the rest blank"
           , test =
                 \_ ->
-                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 0, x = 0, y = 0 }, { index = 1, x = 4, y = 1 } ] (term 6 2)))
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 0, x = 0, y = 0, back = 0 }, { index = 1, x = 4, y = 1, back = 0 } ] (term 6 2)))
                         (lines (feed "\u{001B}[1;31mab\u{001B}[0m\u{001B}[2;5Hxy\u{0301}\u{001B}[H" (term 6 2)))
           }
         , { name = "a later pane lies over an earlier one, and a pane is cut at the edge"
           , test =
                 \_ ->
-                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 0, x = 0, y = 0 }, { index = 1, x = 1, y = 0 }, { index = 0, x = 5, y = 1 } ] (term 6 2)))
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 0, x = 0, y = 0, back = 0 }, { index = 1, x = 1, y = 0, back = 0 }, { index = 0, x = 5, y = 1, back = 0 } ] (term 6 2)))
                         (lines (feed "\u{001B}[1;31ma\u{001B}[0mxy\u{0301}\u{001B}[2;6H\u{001B}[1;31ma\u{001B}[H" (term 6 2)))
           }
         , { name = "what no pane covers keeps what the screen held"
           , test =
                 \_ ->
-                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 1, x = 0, y = 0 } ] (feed "....\u{001B}[H" (term 4 1))))
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 1, x = 0, y = 0, back = 0 } ] (feed "....\u{001B}[H" (term 4 1))))
                         (lines (feed "xy\u{0301}..\u{001B}[H" (term 4 1)))
+          }
+        , { name = "a pane scrolled back is laid from its scrollback"
+          , test =
+                \_ ->
+                    let
+                        scrolled =
+                            Builder.empty 1 |> Builder.pushLast (feed "one\r\ntwo\r\nthree" (term 5 2))
+                    in
+                    Expect.equal (lines (feed "one\r\ntwo\u{001B}[H" (term 5 2)))
+                        (lines (Vt.compose scrolled [ { index = 0, x = 0, y = 0, back = 1 } ] (term 5 2)))
+          }
+        , { name = "invert turns a span's cells inverse, and only those"
+          , test =
+                \_ ->
+                    Expect.equal (lines (feed "a\u{001B}[7mbc\u{001B}[0md\u{001B}[H" (term 4 1)))
+                        (lines (Vt.invert [ { row = 0, from = 1, to = 2 } ] (feed "abcd\u{001B}[H" (term 4 1))))
           }
         , { name = "an index with no pane lays nothing"
           , test =
                 \_ ->
-                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 7, x = 0, y = 0 } ] (term 4 1))) (lines (term 4 1))
+                    Expect.equal (lines (Vt.compose (panes {}) [ { index = 7, x = 0, y = 0, back = 0 } ] (term 4 1))) (lines (term 4 1))
           }
         ]

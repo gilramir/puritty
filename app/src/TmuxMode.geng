@@ -8,6 +8,8 @@ module TmuxMode exposing
     , encodeKey
     , activeMode
     , pointer
+    , scrollKey
+    , selectedText
     , resized
     , title
     )
@@ -23,6 +25,7 @@ The panes' terminals answer nothing: tmux answered their programs already.
 -}
 
 import Array.Builder as Builder exposing (Builder)
+import Bitwise
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Keys
@@ -59,6 +62,29 @@ type alias State =
     , drag : Maybe Drag
     , grab : Maybe Int
     , mouseLast : Maybe Mouse.Cell
+      -- how far back each pane's view is scrolled, 0 or missing at the
+      -- bottom; a selection, in one pane's rows (absolute, as the core's
+      -- `Point`s are); the last press of the left button, for double and
+      -- triple clicks (docs/tmux.md TM17)
+    , back : Dict Int Int
+    , selection : Maybe Sel
+    , clicks : { at : Int, count : Int, pane : Int, point : Vt.Point }
+    }
+
+
+{-| A selection within a pane: from `anchor` to `head`, by cells (mode 0),
+words (1) or lines (2), the first word or line kept as `first` to `last`;
+`made` once the button is let go, with its text. -}
+type alias Sel =
+    { pane : Int
+    , anchor : Vt.Point
+    , head : Vt.Point
+    , first : Vt.Point
+    , last : Vt.Point
+    , mode : Int
+    , moved : Bool
+    , made : Bool
+    , text : String
     }
 
 
@@ -120,6 +146,9 @@ idle _ =
     , drag = Nothing
     , grab = Nothing
     , mouseLast = Nothing
+    , back = Dict.empty
+    , selection = Nothing
+    , clicks = { at = -1000, count = 0, pane = -1, point = { row = 0, col = 0 } }
     }
 
 
@@ -498,7 +527,31 @@ feedPane : Int -> Bytes -> (taken s : State) -> State
 feedPane id bytes s =
     when Array.findFirst (\i -> i == id) s.ids is
         Just found ->
-            { s | panes = Builder.update found.index (\t -> (Vt.takeReplies (Vt.feed bytes t)).term) s.panes }
+            let
+                back =
+                    backOf id s
+
+                pushedBefore =
+                    if back > 0 then
+                        Maybe.withDefault 0 (withPane id s Vt.rowsPushed)
+
+                    else
+                        0
+
+                fed =
+                    { s | panes = Builder.update found.index (\t -> (Vt.takeReplies (Vt.feed bytes t)).term) s.panes }
+            in
+            if back > 0 then
+                -- a view scrolled back stays on its rows as more come in
+                let
+                    after =
+                        withPane id fed (\t -> { pushed = Vt.rowsPushed t, most = Vt.scrollbackRows t })
+                            |> Maybe.withDefault { pushed = pushedBefore, most = back }
+                in
+                { fed | back = Dict.set id (min after.most (back + after.pushed - pushedBefore)) fed.back }
+
+            else
+                fed
 
         Nothing ->
             { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
@@ -568,8 +621,13 @@ paint s =
                 floating =
                     Layout.floating cell
 
-                placeOf p =
-                    Array.findFirst (\i -> i == p.id) s.ids |> Maybe.map (\found -> { index = found.index, x = p.x, y = p.y })
+                -- where each pane goes, and how far back its view is, read
+                -- before the canvas is written
+                tiledPlaces =
+                    placesOf tiled s
+
+                floatPlaces =
+                    Array.map (\p -> { id = p.id, places = [] }) floating |> eachPlaces floating s
 
                 cols =
                     s.canvas.cols
@@ -577,21 +635,30 @@ paint s =
                 rows =
                     s.canvas.rows
 
+                -- the selection's cells, read before the canvas is written
+                tiledSpans =
+                    spansAll tiled s
+
+                floatSpans =
+                    Array.map (\p -> { id = p.id, spans = [] }) floating
+                        |> withSpans floating s
+
                 -- the dividers right of and below each tiled pane
                 lines =
                     Array.mapAndFlatten (divider cols rows) tiled
 
                 cursor =
-                    cursorOf s.active (tiled ++ floating) s.ids s.panes
+                    cursorOf s.active (backOf s.active s) (tiled ++ floating) s.ids s.panes
 
                 -- the tiled panes and their dividers, then each floating
                 -- pane in its box, the bottom one first
                 composed =
                     s.canvas
                         |> Vt.feed (Bytes.fromString "\u{001B}[H\u{001B}[2J")
-                        |> Vt.compose s.panes (Array.mapAndKeepJust placeOf tiled)
+                        |> Vt.compose s.panes tiledPlaces
+                        |> Vt.invert tiledSpans
                         |> Vt.paint lines
-                        |> (\c -> Array.foldl (\p acc -> acc |> Vt.paint (boxAround cols rows p) |> Vt.compose s.panes (Array.mapAndKeepJust placeOf [ p ])) c floating)
+                        |> (\c -> Array.foldl (\p acc -> acc |> Vt.paint (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> Vt.feed (Bytes.fromString cursor)
             in
             { s | canvas = (Vt.takeReplies composed).term }
@@ -599,8 +666,8 @@ paint s =
 
 {-| CUP to the active pane's cursor in the window, and DECTCEM as the
 pane has it. -}
-cursorOf : Int -> Array Layout.Pane -> Array Int -> Builder Vt.Term -> String
-cursorOf active boxes ids panes =
+cursorOf : Int -> Int -> Array Layout.Pane -> Array Int -> Builder Vt.Term -> String
+cursorOf active back boxes ids panes =
     when { place = Array.findFirst (\b -> b.id == active) boxes, index = Array.findFirst (\i -> i == active) ids } is
         { place = Just place, index = Just index } ->
             when Builder.get index.index panes is
@@ -609,12 +676,17 @@ cursorOf active boxes ids panes =
                         at =
                             Vt.cursorOf t
                     in
-                    "\u{001B}["
-                        ++ String.fromInt (place.value.y + at.y + 1)
-                        ++ ";"
-                        ++ String.fromInt (place.value.x + at.x + 1)
-                        ++ "H"
-                        ++ (if at.visible then "\u{001B}[?25h" else "\u{001B}[?25l")
+                    if at.y + back >= place.value.h then
+                        -- scrolled back past it
+                        "\u{001B}[?25l"
+
+                    else
+                        "\u{001B}["
+                            ++ String.fromInt (place.value.y + at.y + back + 1)
+                            ++ ";"
+                            ++ String.fromInt (place.value.x + at.x + 1)
+                            ++ "H"
+                            ++ (if at.visible then "\u{001B}[?25h" else "\u{001B}[?25l")
 
                 Nothing ->
                     "\u{001B}[?25l"
@@ -685,7 +757,8 @@ keys bytes s =
         { state = s, commands = [] }
 
     else
-        sent (Command.sendBytes s.active bytes) s
+        -- a key the pane's program gets brings its view to the bottom
+        sent (Command.sendBytes s.active bytes) { s | back = if Bytes.isEmpty bytes then s.back else Dict.remove s.active s.back }
 
 
 {-| `n` more replies to read and drop. -}
@@ -731,17 +804,103 @@ withPane pane s f =
             Nothing
 
 
-{-| A pointer event in the window (docs/tmux.md TM16): a press on a floating
-pane's top edge moves it and on its bottom or right edge resizes it, tmux
-told as the pointer reaches each new cell; a press elsewhere makes the pane
-under it active. A pane whose program asked for the mouse gets the event as
-its own, in its own cells; the pane a press began in keeps the mouse until
-it is let go. `held` is the buttons held after the event. -}
-pointer : Int -> Window.PointerEvent -> (taken s : State) -> { state : State, commands : Array String }
-pointer held p s =
+{-| How far back a pane's view is scrolled. -}
+backOf : Int -> State -> Int
+backOf pane s =
+    Maybe.withDefault 0 (Dict.get pane s.back)
+
+
+{-| The cells of the canvas a pane's part of the selection covers, row by
+row, where they show: its rows are absolute (pushed rows and the screen's),
+drawn at the pane's place less how far it is scrolled back. -}
+spans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
+spans q s =
+    when s.selection is
+        Just sel ->
+            if sel.pane /= q.id then
+                []
+
+            else
+                Maybe.withDefault []
+                    (withPane q.id s
+                        (\t ->
+                            let
+                                top =
+                                    Vt.rowsPushed t - backOf q.id s
+
+                                ordered =
+                                    if before sel.head sel.anchor then
+                                        { from = sel.head, to = sel.anchor }
+
+                                    else
+                                        { from = sel.anchor, to = sel.head }
+                            in
+                            Array.range (max ordered.from.row top) (min ordered.to.row (top + q.h - 1))
+                                |> Array.map
+                                    (\r ->
+                                        { row = q.y + r - top
+                                        , from = q.x + (if r == ordered.from.row then ordered.from.col else 0)
+                                        , to = q.x + (if r == ordered.to.row then ordered.to.col else q.w - 1)
+                                        }
+                                    )
+                        )
+                    )
+
+        Nothing ->
+            []
+
+
+placesOf : Array Layout.Pane -> State -> Array { index : Int, x : Int, y : Int, back : Int }
+placesOf panes s =
+    Array.mapAndKeepJust (\p -> Array.findFirst (\i -> i == p.id) s.ids |> Maybe.map (\found -> { index = found.index, x = p.x, y = p.y, back = backOf p.id s })) panes
+
+
+eachPlaces : Array Layout.Pane -> State -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int } } -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int } }
+eachPlaces panes s _ =
+    Array.map (\p -> { id = p.id, places = placesOf [ p ] s }) panes
+
+
+placesIn : Int -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int } } -> Array { index : Int, x : Int, y : Int, back : Int }
+placesIn id all =
+    Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.places) |> Maybe.withDefault []
+
+
+spansAll : Array Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
+spansAll panes s =
+    Array.mapAndFlatten (\p -> spans p s) panes
+
+
+withSpans : Array Layout.Pane -> State -> Array { id : Int, spans : Array { row : Int, from : Int, to : Int } } -> Array { id : Int, spans : Array { row : Int, from : Int, to : Int } }
+withSpans panes s _ =
+    Array.map (\p -> { id = p.id, spans = spans p s }) panes
+
+
+spansIn : Int -> Array { id : Int, spans : Array { row : Int, from : Int, to : Int } } -> Array { row : Int, from : Int, to : Int }
+spansIn id all =
+    Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.spans) |> Maybe.withDefault []
+
+
+before : Vt.Point -> Vt.Point -> Bool
+before a b =
+    a.row < b.row || (a.row == b.row && a.col < b.col)
+
+
+{-| A pointer event in the window (docs/tmux.md TM16, TM17): a press on a
+floating pane's top edge moves it and on its bottom or right edge resizes
+it, tmux told as the pointer reaches each new cell; a press elsewhere makes
+the pane under it active. A pane whose program asked for the mouse gets the
+event as its own, in its own cells; the pane a press began in keeps the
+mouse until it is let go. Otherwise, or with Shift (`select`), the left
+button selects within the pane (a click, a double click for a word, a
+triple for a line), the paste button asks for a paste, and the wheel
+scrolls the pane's view, or on its alternate screen sends three arrow
+keys. `held` is the buttons held after the event; `own` is a selection's
+text when it is made, for PRIMARY. -}
+pointer : { ms : Int, held : Int, select : Bool, boundaries : Array Int, pasteButton : Int } -> Window.PointerEvent -> (taken s : State) -> { state : State, commands : Array String, own : Maybe String, paste : Bool }
+pointer how p s =
     when s.layout is
         Nothing ->
-            { state = s, commands = [] }
+            { state = s, commands = [], own = Nothing, paste = False }
 
         Just cell ->
             let
@@ -763,59 +922,288 @@ pointer held p s =
 
                 under =
                     Array.findFirst (\q -> inside q || onBox q) order |> Maybe.map .value
+
+                -- the pane a press began in, while a button is held
+                target =
+                    when s.grab is
+                        Just g ->
+                            Array.findFirst (\q -> q.id == g) order |> Maybe.map .value
+
+                        Nothing ->
+                            under
+
+                plain r =
+                    { state = r.state, commands = r.commands, own = Nothing, paste = False }
+
+                -- whether the pane under the pointer, or the one that has it,
+                -- has a program that takes the mouse
+                takesMouse =
+                    not how.select && paneTakesMouse target s
             in
             when s.drag is
                 Just d ->
-                    dragged col row (p.action == 1) d s
+                    plain (dragged col row (p.action == 1) d s)
 
                 Nothing ->
-                    if p.action == 0 && p.button == 1 then
-                        when under is
-                            Just q ->
+                    when target is
+                        Nothing ->
+                            { state = s, commands = [], own = Nothing, paste = False }
+
+                        Just q ->
+                            if p.action == 0 && p.button == 1 && onBox q then
+                                -- the top edge moves the box; the others resize it
                                 let
                                     select =
                                         selected q.id s
                                 in
-                                if onBox q then
-                                    -- the top edge moves the box; the others resize it
-                                    sent select { s | drag = Just { pane = q.id, move = row == q.y - 1, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } }
+                                plain (sent select { s | drag = Just { pane = q.id, move = row == q.y - 1, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } })
 
-                                else
-                                    let
-                                        reported =
-                                            report held p q { s | grab = Just q.id }
-                                    in
-                                    -- what each sends waits for nothing, so their
-                                    -- entries' order does not matter, only that
-                                    -- there is one for each
-                                    { state = waitingFor (Array.length select) reported.state, commands = select ++ reported.commands }
+                            else if takesMouse then
+                                let
+                                    select =
+                                        if p.action == 0 then
+                                            selected q.id s
 
-                            Nothing ->
-                                { state = s, commands = [] }
+                                        else
+                                            []
 
-                    else
-                        let
-                            target =
-                                when s.grab is
-                                    Just g ->
-                                        Array.findFirst (\q -> q.id == g) order |> Maybe.map .value
+                                    grabbed =
+                                        if p.action == 0 then
+                                            { s | grab = Just q.id }
 
-                                    Nothing ->
-                                        under
+                                        else if how.held == 0 then
+                                            { s | grab = Nothing }
 
-                            released =
-                                if held == 0 then
-                                    { s | grab = Nothing }
+                                        else
+                                            s
 
-                                else
-                                    s
-                        in
-                        when target is
-                            Just q ->
-                                report held p q released
+                                    reported =
+                                        report how.held p q grabbed
+                                in
+                                plain { state = waitingFor (Array.length select) reported.state, commands = select ++ reported.commands }
 
-                            Nothing ->
-                                { state = released, commands = [] }
+                            else
+                                selecting how p col row q s
+
+
+paneTakesMouse : Maybe Layout.Pane -> State -> Bool
+paneTakesMouse target s =
+    when target is
+        Just q ->
+            withPane q.id s (\t -> (Vt.mouseModes t).tracking /= Mouse.none) == Just True
+
+        Nothing ->
+            False
+
+
+{-| The pointer over a pane whose program does not take the mouse, or with
+Shift: selection, paste and the wheel, as puritty does without tmux
+(`Main.selecting`, `wheelStep`), in the pane's own terminal. -}
+selecting : { ms : Int, held : Int, select : Bool, boundaries : Array Int, pasteButton : Int } -> Window.PointerEvent -> Int -> Int -> Layout.Pane -> (taken s : State) -> { state : State, commands : Array String, own : Maybe String, paste : Bool }
+selecting how p col row q s =
+    let
+        at =
+            Maybe.withDefault { row = 0, col = 0 }
+                (withPane q.id s (\t -> { row = Vt.rowsPushed t + clamp 0 (q.h - 1) (row - q.y) - backOf q.id s, col = clamp 0 (q.w - 1) (col - q.x) }))
+
+        none r =
+            { state = r, commands = [], own = Nothing, paste = False }
+
+        wheel =
+            p.button == 4 || p.button == 5
+    in
+    if p.action == 0 && p.button == how.pasteButton then
+        { state = s, commands = [], own = Nothing, paste = True }
+
+    else if p.action == 0 && wheel then
+        let
+            up =
+                p.button == 4
+
+            -- on the alternate screen, three arrow keys, as without tmux
+            arrows =
+                withPane q.id s
+                    (\t ->
+                        if t.alt && Dict.get 1007 t.modes /= Just False then
+                            let
+                                arrow =
+                                    (if Dict.get 1 t.modes == Just True then "\u{001B}O" else "\u{001B}[") ++ (if up then "A" else "B")
+                            in
+                            Just (arrow ++ arrow ++ arrow)
+
+                        else
+                            Nothing
+                    )
+                    |> Maybe.andThen identity
+
+            most =
+                Maybe.withDefault 0 (withPane q.id s Vt.scrollbackRows)
+        in
+        when arrows is
+            Just keyed ->
+                let
+                    r =
+                        sent (Command.sendBytes q.id (Bytes.fromString keyed)) s
+                in
+                { state = r.state, commands = r.commands, own = Nothing, paste = False }
+
+            Nothing ->
+                let
+                    now =
+                        backOf q.id s
+
+                    next =
+                        if up then min most (now + 3) else max 0 (now - 3)
+                in
+                none { s | back = Dict.set q.id next s.back }
+
+    else if p.action == 0 && p.button == 1 then
+        let
+            count =
+                if how.ms - s.clicks.at <= 500 && s.clicks.pane == q.id && s.clicks.point == at then
+                    modBy 3 s.clicks.count + 1
+
+                else
+                    1
+
+            span =
+                withPane q.id s
+                    (\t ->
+                        if count == 2 then
+                            Vt.wordAt how.boundaries at t
+
+                        else if count == 3 then
+                            Vt.lineAt at t
+
+                        else
+                            Just { start = at, end = at }
+                    )
+                    |> Maybe.andThen identity
+
+            sel =
+                Maybe.map (\w -> { pane = q.id, anchor = w.start, head = w.end, first = w.start, last = w.end, mode = count - 1, moved = count > 1, made = False, text = "" }) span
+
+            select =
+                selected q.id s
+
+            r =
+                sent select { s | selection = sel, grab = Just q.id, clicks = { at = how.ms, count = count, pane = q.id, point = at } }
+        in
+        { state = r.state, commands = r.commands, own = Nothing, paste = False }
+
+    else if p.action == 2 && Bitwise.and how.held 2 /= 0 then
+        when s.selection is
+            Just sel ->
+                if sel.made || sel.pane /= q.id then
+                    none s
+
+                else
+                    none { s | selection = Just (extended how.boundaries at sel s) }
+
+            Nothing ->
+                none s
+
+    else if p.action == 1 && p.button == 1 then
+        when s.selection is
+            Just sel ->
+                if sel.made then
+                    none { s | grab = Nothing }
+
+                else if sel.mode == 0 && not sel.moved then
+                    -- a click: no selection
+                    none { s | grab = Nothing, selection = Nothing }
+
+                else
+                    let
+                        text =
+                            Maybe.withDefault "" (withPane sel.pane s (Vt.selectionText sel.anchor sel.head))
+                    in
+                    { state = { s | grab = Nothing, selection = Just { sel | made = True, text = text } }, commands = [], own = Just text, paste = False }
+
+            Nothing ->
+                none { s | grab = Nothing }
+
+    else
+        none
+            (if how.held == 0 then
+                { s | grab = Nothing }
+
+             else
+                s
+            )
+
+
+{-| A selection being dragged, its head at `at`: by cells, at it; by words
+or lines, the word or line there, the first one kept on the far side. -}
+extended : Array Int -> Vt.Point -> Sel -> State -> Sel
+extended boundaries at sel s =
+    if sel.mode == 0 then
+        { sel | head = at, moved = True }
+
+    else
+        let
+            w =
+                withPane sel.pane s
+                    (\t ->
+                        if sel.mode == 1 then
+                            Vt.wordAt boundaries at t
+
+                        else
+                            Vt.lineAt at t
+                    )
+                    |> Maybe.andThen identity
+                    |> Maybe.withDefault { start = at, end = at }
+        in
+        if before w.start sel.first then
+            { sel | anchor = sel.last, head = w.start }
+
+        else
+            { sel | anchor = sel.first, head = w.end }
+
+
+{-| The selection's text, for Ctrl+Shift+C. -}
+selectedText : State -> Maybe String
+selectedText s =
+    s.selection |> Maybe.andThen (\sel -> if sel.made then Just sel.text else Nothing)
+
+
+{-| Shift+PgUp, PgDn, Home and End scroll the active pane's view, a page
+or to the end, as without tmux; `Nothing` for any other key. -}
+scrollKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken s : State) -> { state : State, used : Bool }
+scrollKey k s =
+    let
+        sizes =
+            withPane s.active s (\t -> { most = Vt.scrollbackRows t, page = t.rows })
+                |> Maybe.withDefault { most = 0, page = 0 }
+
+        now =
+            backOf s.active s
+
+        next =
+            if k.action == 0 || sizes.most == 0 || Bitwise.and k.mods 15 /= 1 then
+                Nothing
+
+            else if k.sym == 0xFF55 then
+                Just (min sizes.most (now + sizes.page))
+
+            else if k.sym == 0xFF56 then
+                Just (max 0 (now - sizes.page))
+
+            else if k.sym == 0xFF50 then
+                Just sizes.most
+
+            else if k.sym == 0xFF57 then
+                Just 0
+
+            else
+                Nothing
+    in
+    when next is
+        Just b ->
+            { state = { s | back = Dict.set s.active b s.back }, used = True }
+
+        Nothing ->
+            { state = s, used = False }
 
 
 {-| `select-pane` when the pane is not already the active one. -}

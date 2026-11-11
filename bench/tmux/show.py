@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -76,6 +76,9 @@ def main():
             return
         if a.scenario == "mouse":
             mouse(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "select":
+            select(a, env, tmux, xdo, snap, cli)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -204,6 +207,54 @@ def mouse(a, env, tmux, xdo, snap, cli):
         print("active:", q("display-message", "-p", "#{pane_id}"), "| the left pane's program got:",
               repr(q("capture-pane", "-p", "-t", "%0").split("cat -v")[-1].strip()[:80]))
         snap("mouse-left")
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+def select(a, env, tmux, xdo, snap, cli):
+    """Scrollback and selection within a pane (docs/tmux.md TM17): the wheel
+    scrolls the pane under the pointer, a drag and a double click select in
+    that pane's own text, read back as PRIMARY, and Ctrl+Shift+C copies it to
+    CLIPBOARD; a key brings the view back down."""
+    cli("new-session", "-d", "-s", "s", "-x", "100", "-y", "30")
+    cli("send-keys", "-t", "%0", "seq -f 'left %g' 1 200", "Enter")
+    cli("split-window", "-h", "-t", "%0")
+    cli("send-keys", "-t", "%1", "clear; echo 'hello world from the right pane'", "Enter")
+    time.sleep(1.0)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *tmux, "-CC", "attach", "-t", "s"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    sel = lambda which: subprocess.run(["xclip", "-o", "-selection", which], env=env, capture_output=True,
+                                       text=True, timeout=5).stdout
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        x, y = at(10, 10)
+        xd("mousemove", x, y, "click", "4", "click", "4", "click", "4")
+        time.sleep(0.5)
+        snap("scrolled-left")
+        x0, y0 = at(51, 0)
+        x1, y1 = at(61, 0)
+        xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) + 20), y0, "mousemove", x1, y1, "mouseup", "1")
+        time.sleep(0.5)
+        print("a drag in the right pane, PRIMARY:", repr(sel("primary")))
+        x, y = at(2, 5)
+        xd("mousemove", x, y, "click", "--repeat", "2", "--delay", "80", "1")
+        time.sleep(0.5)
+        print("a double click on the scrolled left pane, PRIMARY:", repr(sel("primary")))
+        snap("selected-left")
+        xd("key", "ctrl+shift+c")
+        time.sleep(0.5)
+        print("Ctrl+Shift+C, CLIPBOARD:", repr(sel("clipboard")))
+        xd("key", "Return")
+        time.sleep(0.5)
+        snap("back-down")
         cli("kill-server")
         time.sleep(1)
     finally:
