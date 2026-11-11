@@ -1099,6 +1099,17 @@ static void refit(void) {
     xcb_flush(conn);
 }
 
+/* The window sized to hold cols by rows cells (docs/settings-gui.md SG11),
+ * where it is; the window manager may refuse or adjust it, and the
+ * ConfigureNotify that follows reports what it is. */
+geng_cancel puritty_x11_resize(int32_t cols, int32_t rows, geng_wait *wait) {
+    uint32_t wh[2] = {(uint32_t) (cols * pt_cw), (uint32_t) (rows * pt_ch)};
+    xcb_configure_window(conn, window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, wh);
+    xcb_flush(conn);
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
 geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
     if (pt_zoom(points, dpi0)) refit();
     geng_succeed(wait, geng_slot_I4(pt_cw * 65536 + pt_ch));

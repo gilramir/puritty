@@ -1742,6 +1742,21 @@ static void refit(void) {
     InvalidateRect(win, NULL, FALSE);
 }
 
+/* The window sized to hold cols by rows cells (docs/settings-gui.md SG11):
+ * the frame Windows draws around them added for the window's style and
+ * resolution, where it is; a maximized window is left as it is. WM_SIZE
+ * then reports the new size, as a resize by the user does. */
+geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
+    if (win && !IsZoomed(win)) {
+        RECT r = {0, 0, cols * cell_w, rows * cell_h};
+        DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
+        AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) open_dpi);
+        SetWindowPos(win, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
 geng_cancel puritty_win32_zoom(int32_t points, geng_wait *wait) {
     EnterCriticalSection(&paint);
     int changed = pt_zoom(points, open_dpi);

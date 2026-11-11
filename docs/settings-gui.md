@@ -286,3 +286,27 @@ column constants, and SettingsWindow is 1,252 lines where it was about
 counted the text screen's lines. The wheel's test reads the scroll
 (one setting, `linesPerRow`). The app tests are 99. The settings, hosts
 and sshwindow gates pass, 19, 13 and 8.
+
+## SG11 · The host list's window becomes a terminal's size (2026-11-11)
+
+*Gilbert, 2026-11-11, trying the Windows build:* after typing `nene` in
+the host list, the session ran in a window of the settings window's shape
+(84 by 38 cells, narrower than tall, SG8). With no size remembered, a
+session's window should be a terminal's, wider than tall.
+
+The window packages had no way to size their window from the program:
+`Window.resize { cols, rows }` is new in both. On Windows it adds the frame
+for the window's style and resolution (`AdjustWindowRectExForDpi`) and calls
+`SetWindowPos` where the window is, leaving a maximized window alone; on X11
+it configures the window's width and height, which the window manager may
+adjust. Either way the platform reports the new size, as a user's resize.
+When a host is chosen in the host list, `Main.hostList` sizes the window to
+the session's `[window] columns` and `rows`, 80 by 24 unless set, before the
+session begins. puritty remembers no window size of its own yet; the
+settings' size is the one it has.
+
+**Checked** in the hosts gate, whose cases that drive a window now pin its
+size from its picture: `host-list`, Enter on a host, ends at 720 by 408
+pixels, 80 by 24 cells of the gate's font, where it was 756 by 646, the
+host list's 84 by 38; `start-hosts`, the list opened and nothing chosen,
+stays 756 by 646.

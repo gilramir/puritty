@@ -153,10 +153,14 @@ def run_case(env0, name, start, args, keys=None):
         row = pic[len(pic) * 3 // 4]
         x = (len(row) // 3) * 3 // 4
         colour = "#" + row[x * 3:x * 3 + 3].hex()
+    # the window's size, from its picture: the host list's window turns
+    # into a terminal's size when a host is chosen (docs/settings-gui.md SG11)
+    size = f"{len(pic[0]) // 3}x{len(pic)}" if pic and name in ("host-list", "start-hosts") else None
     return (f"ssh: {ssh if ssh is not None else 'not run'}\n"
             f"title: {title}\n"
             f"background: {colour}\n"
-            + (f"windows: {seen}\n" if seen is not None else ""))
+            + (f"windows: {seen}\n" if seen is not None else "")
+            + (f"size: {size}\n" if size is not None else ""))
 
 
 def main():
