@@ -4314,12 +4314,16 @@ it is used:
   three parameters from `Array.dropFirst at`.
 - **`Resize.writeRows`**: `from + y` only for a `from` of 0 to 10^9.
 
-**A cost found on the way.** Written as a `let` before the function's `if`,
-`writeRows`'s index made `perf.py`'s long-line resizes 12% dearer (245.7 M
-recorded, 268.4 M measured); written inside the branch, they are as before
-(238.8 M). The value is the same and pure, so this is the compiler's: the
-`let` ahead of the tail call seems to stop the screen being updated in
-place. Noted for geng-lang (its `m4-proof-report.md` PR17).
+**A cost found on the way, and what it was.** Written as a `let` before the
+function's `if`, `writeRows`'s index made `perf.py`'s long-line resizes 12%
+dearer (245.7 M recorded, 268.4 M measured); written inside the branch they
+are as before (238.8 M). It is not the `let` (geng-lang `m4-proof-report.md`
+PR17.1): the two programs allocate the same, but in the first a stack slot
+`writeRows` left a pointer in is read again, unwritten, inside
+`Recut.recut`'s frame on the next resize, and the nursery's conservative
+scan of the stack pins what it points at, 18 MB more promoted over the
+run. Moving the `let` moved the word, not a defect; geng-lang's D915 has
+the remedy, precise stack roots, registered.
 
 Tested: every harness (view 345, replay 325, pixels 46, keys, mouse,
 paste, events on beelink1 13, settings 20, app tests 104, …) and `perf.py`
