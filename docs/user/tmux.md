@@ -1,5 +1,55 @@
 # tmux in puritty
 
+![puritty on Windows 11, connected to a Linux host with its built-in ssh client, showing tmux 3.8 in control mode: three tiled panes and a floating pane in a box over them](../images/tmux-on-windows.png)
+
+*puritty on Windows 11, connected to a Linux host with its built-in ssh
+client, running `tmux -CC attach` with tmux 3.8: three tiled panes, and a
+floating pane over them.*
+
+There are two ways to use tmux in puritty: as in any terminal, where tmux
+draws everything itself, or in **control mode**, where puritty draws
+tmux's panes itself.
+
+## Control mode: tmux's panes as puritty's own
+
+Start or attach to tmux with `-CC`:
+
+```
+tmux -CC new -A -s main      # attach to "main", or make it
+tmux -CC attach              # attach to the last session
+```
+
+tmux then stops drawing and tells puritty what is in each pane and where the
+panes are, and puritty draws them:
+
+- **Tiled panes** where tmux puts them, with a line between them.
+- **Floating and modal panes** (tmux 3.7 and later) in boxes over the tiled
+  ones, the topmost last. They stay inside the window, as tmux keeps them.
+- **What you type** goes to tmux's active pane, and when you resize the
+  window, tmux lays its panes out again for the new size.
+- **Colours, Korean and other wide characters, and every other escape** a
+  program writes are drawn by puritty's own terminal for each pane.
+
+`-CC` belongs to the client: your tmux server and sessions are as they
+always were, and a plain `tmux attach` from another terminal still works on
+the same session. Detach, or lose the connection, and `tmux -CC attach`
+brings the same panes back. A host in puritty's settings can do it for you
+each time you connect:
+
+```toml
+[hosts."build-box"]
+host = "build.example.com"
+command = "tmux -CC new -A -s main"
+```
+
+Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
+
+**Coming next:** what the panes already held when you attach, tmux's other
+windows as tabs, and the mouse: clicking a pane to make it active, moving
+and resizing floating panes, scrollback and selection within a pane.
+
+## tmux drawing for itself
+
 tmux asks the terminal it runs in what it can do, and turns its features on
 from the answers. puritty answers:
 

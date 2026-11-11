@@ -19,6 +19,8 @@ the IME that has to work the first time.
 > Until then, building it needs the Geng toolchain (see
 > [Building](#building)).
 
+**Website and guide: <https://gilramir.github.io/puritty/>**
+
 ---
 
 ## Why puritty
@@ -194,22 +196,21 @@ osc52_read = "deny"         # or "allow"
 
 ## What's coming
 
-In roughly this order:
+Built so far, beyond the terminal itself: the settings window (English and
+Korean), the host list with quick connect, Windows with the ssh client built
+in, and the first part of **tmux control mode** (`tmux -CC`), where tmux's
+tiled, floating and modal panes are drawn as puritty's own
+([the tmux guide](docs/user/tmux.md)). Next, in roughly this order:
 
-1. **A settings window**, opened with Ctrl+Comma. Every change applies to the
-   running terminal at once, and your hand-edited `config.toml` keeps its
-   comments and layout.
-2. **Key sounds**, an optional typewriter click as you type.
-3. **tmux control mode** (`tmux -CC`): tmux windows and panes become native
-   tabs and splits, including tmux 3.8's floating panes. Only iTerm2 on macOS
-   does this well today. puritty brings it to Linux.
-4. **Inline images**: Sixel, Kitty graphics and iTerm2 images.
-5. **Scrollback search** and a scrollbar, and **key bindings** in the config.
-6. **A GPU renderer** for local desktops, beside the X11 one.
-7. **RHEL 8**, built against its older libraries.
-8. **Windows**, as an SSH terminal with the SSH client built in: a host list
-   with groups, import from `~/.ssh/config`, PuTTY and MobaXterm, and
-   passwords kept in the Windows credential store.
+1. **The rest of tmux control mode**: what the panes held when you attach,
+   tmux's windows as tabs, the mouse on panes, scrollback and selection
+   within a pane.
+2. **Inline images**: Sixel, Kitty graphics and iTerm2 images.
+3. **Scrollback search**, a scrollbar, and **key bindings** in the config.
+4. **Key sounds**, an optional typewriter click as you type.
+5. **RHEL 8**, built against its older libraries.
+6. **A signed Windows release**, and passwords kept in the Windows
+   credential store.
 
 ---
 
@@ -217,7 +218,7 @@ In roughly this order:
 
 puritty is a Geng program with a small amount of C for X11, fonts and the
 input method. Until Geng's first release, a build needs a
-[geng-lang](https://github.com/geng-language/geng) checkout with its
+geng-lang checkout ([geng-lang.org](https://geng-lang.org)) with its
 compiler built, and the libraries in this repository's `devbox.json`
 (libxcb, xkbcommon, FreeType, HarfBuzz, fontconfig). From the repository:
 
