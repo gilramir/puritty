@@ -1488,11 +1488,25 @@ sessionMode r target =
             , keepaliveSeconds = 0
             , keepaliveCountMax = 3
             }
+
+        -- `--jump HOST:PORT`, again for each hop: the same user, keys and
+        -- known hosts as the host's (docs/ssh-client.md SC21)
+        jumps =
+            many "--jump"
+                |> Array.map
+                    (\j ->
+                        when String.lastIndexOf ":" j is
+                            Just colon ->
+                                { options | host = String.takeFirst colon j, port = String.toInt (String.dropFirst (colon + 1) j) |> Maybe.withDefault 22, session = { terminal = Nothing, env = [], command = Nothing } }
+
+                            Nothing ->
+                                { options | host = j, port = 22, session = { terminal = Nothing, env = [], command = Nothing } }
+                    )
     in
     Task.map2 (\notices inputs -> { notices = notices, inputs = inputs }) Source.new Source.new
         |> Task.andThen
             (\sources ->
-                Process.spawn (Session.run { net = r.net, fs = r.fs } options sources.notices sources.inputs)
+                Process.spawn (Session.run { net = r.net, fs = r.fs } jumps options sources.notices sources.inputs)
                     |> Task.andThen (\_ -> watch r.args sources [])
             )
 

@@ -50,6 +50,9 @@ CASES = [
     ("decline", "ed", "", "empty", ["Escape", "Return"], "exit 7"),
     ("changed", "ed", "", "other", ["Return"], "exit 7"),
     ("no-key-then-reconnect", "other", "", "known", ["r", "Return"], "exit 7"),
+    # through a jump host (docs/ssh-client.md SC21): the host's `jump` is a
+    # second sshd, its key from ~/.ssh/config's IdentityFile for it
+    ("jump", "ed", "", "known", [], "stty size > {size}; exit 7"),
 ]
 
 
@@ -60,18 +63,23 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
     (home / ".ssh").mkdir()
     size = home / "size.txt"
     server = sshd.Server([])
+    bastion = sshd.Server([]) if name == "jump" else None
     try:
         server_pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
         other_pub = (sshd.WORK / "userkeys" / "other.pub").read_text().split()[:2]
         kh = home / ".ssh" / "known_hosts"
         lookup = f"[127.0.0.1]:{server.port}"
         if known == "known":
-            kh.write_text(f"{lookup} {' '.join(server_pub)}\n")
+            kh.write_text(f"{lookup} {' '.join(server_pub)}\n" + (f"[127.0.0.1]:{bastion.port} {' '.join(server_pub)}\n" if bastion else ""))
         elif known == "other":
             kh.write_text(f"{lookup} {' '.join(other_pub)}\n")
+        jump = ""
+        if bastion:
+            (home / ".ssh" / "config").write_text(f"Host 127.0.0.1\n    IdentityFile {keys[key]}\n")
+            jump = f'jump = "{getpass.getuser()}@127.0.0.1:{bastion.port}"\n'
         (home / "config" / "puritty" / "config.toml").write_text(
             f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
-            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size)}"\n')
+            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size)}"\n' + jump)
         env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
         env.pop("SSH_AUTH_SOCK", None)
         p = subprocess.Popen([str(APP), "--host", "test"], env=env, stdout=subprocess.DEVNULL,
@@ -100,6 +108,8 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             status = "did not end"
     finally:
         server.stop()
+        if bastion:
+            bastion.stop()
     held = kh.exists() and " ".join(server_pub) in kh.read_text()
     seen = size.read_text().strip() if size.exists() else "none"
     return (f"titles: {titles}\n".replace(str(server.port), "PORT")

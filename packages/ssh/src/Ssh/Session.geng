@@ -22,6 +22,13 @@ What only the user can answer it asks: whether to trust a host's key
 the first time, a password, a key's passphrase, a server's prompts. It
 never asks about a key that has changed: as OpenSSH does, it refuses the
 connection and says which lines of which file hold the old key.
+
+A session can go through jump hosts, as OpenSSH's `ProxyJump` does (SC21):
+each hop is a session of its own, its key checked and its user logged in,
+asking in the same window, and then a `direct-tcpip` channel to the next.
+The connection to the next hop, and in the end to the host, runs inside
+that channel, so the jump hosts see only encrypted bytes. Once its channel
+is open a hop runs in a process of its own, carrying bytes both ways.
 -}
 
 import Bytes exposing (Bytes)
@@ -152,10 +159,37 @@ type Waiting
     | ForResponses
 
 
+{-| What a session's transport reads from and writes to: a socket, or a
+jump host's channel. `read` answers empty bytes at the end. -}
+type alias Link =
+    { read : Task Os.Error.Error Bytes
+    , write : Bytes -> Task Os.Error.Error {}
+    , close : Task Os.Error.Error {}
+    }
+
+
+socketLink : Net.Socket -> Link
+socketLink socket =
+    { read = Net.read socket
+    , write = \bytes -> Net.write bytes socket
+    , close = Net.close socket |> Task.onError (\_ -> Task.succeed {})
+    }
+
+
+{-| What a session is for: the user's terminal on the host, or a hop to
+the next host, whose bytes go to `toInner` as they come. -}
+type Role
+    = Terminal
+    | Forward { host : String, port : Int, toInner : Source Bytes }
+
+
 type alias State =
     { options : Options
     , permissions : Permissions
-    , socket : Net.Socket
+    , link : Link
+    , role : Role
+    , label : String
+    , forwarding : Bool
     , agent : Maybe AgentLink
     , notices : Source Notice
     , transport : Transport.Transport
@@ -172,25 +206,118 @@ type alias State =
     }
 
 
+{-| A notice to the window; a jump host's status lines and its failure
+carry its name first. -}
 tell : Notice -> State -> Task x State
 tell notice st =
-    Source.emit st.notices notice |> Task.map (\_ -> st)
-
-
-{-| The session, from connecting to the end, telling `notices` as it goes;
-it ends by telling `Ended`. -}
-run : Permissions -> Options -> Source Notice -> Source Input -> Task x {}
-run permissions options notices inputs =
     let
-        say n =
-            Source.emit notices n
+        labelled =
+            when notice is
+                Status line ->
+                    Status (st.label ++ line)
 
-        lookupName =
-            KnownHosts.lookupName { host = Maybe.withDefault options.host options.hostKeyAlias, port = options.port }
+                Failed why ->
+                    Failed (st.label ++ why)
+
+                other ->
+                    other
     in
-    say
+    Source.emit st.notices labelled |> Task.map (\_ -> st)
+
+
+{-| The session, from connecting to the end, through `jumps` in order when
+there are any, telling `notices` as it goes; it ends by telling `Ended`. -}
+run : Permissions -> Array Options -> Options -> Source Notice -> Source Input -> Task x {}
+run permissions jumps options notices inputs =
+    through permissions jumps options notices inputs Nothing
+        |> Task.onError (\e -> Source.emit notices (Failed (Os.Error.toString e)))
+        |> Task.andThen (\_ -> Source.emit notices Ended)
+
+
+{-| The next hop or the host, over `link` (a jump host's channel) or a
+connection of its own. -}
+through : Permissions -> Array Options -> Options -> Source Notice -> Source Input -> Maybe Link -> Task Os.Error.Error {}
+through permissions jumps target notices inputs given =
+    when Array.popFirst jumps is
+        Nothing ->
+            connectTo permissions target notices "" given
+                |> Task.andThen
+                    (\link ->
+                        session permissions target Terminal "" link notices
+                            |> Task.andThen (loop (Source.next inputs |> Task.map FromWindow))
+                            |> Task.andThen (\st -> st.link.close)
+                    )
+
+        Just hop ->
+            let
+                next =
+                    Array.first hop.rest |> Maybe.withDefault target
+
+                label =
+                    "jump host " ++ hop.first.host ++ ": "
+            in
+            Task.map2 (\toInner fromInner -> { toInner = toInner, fromInner = fromInner }) Source.new Source.new
+                |> Task.andThen
+                    (\pipes ->
+                        connectTo permissions hop.first notices label given
+                            |> Task.andThen
+                                (\link ->
+                                    session permissions hop.first (Forward { host = next.host, port = next.port, toInner = pipes.toInner }) label link notices
+                                        |> Task.andThen (loop (Source.next inputs |> Task.map FromWindow))
+                                )
+                            |> Task.andThen
+                                (\st ->
+                                    if st.forwarding && not st.done then
+                                        -- the hop's channel is open: it carries the next
+                                        -- connection in a process of its own
+                                        Process.spawn (carry pipes.fromInner st)
+                                            |> Task.andThen
+                                                (\_ ->
+                                                    through permissions hop.rest target notices inputs
+                                                        (Just
+                                                            { read = Source.next pipes.toInner |> Task.map (Maybe.withDefault Bytes.empty)
+                                                            , write = \bytes -> Source.emit pipes.fromInner bytes
+                                                            , close = Source.close pipes.fromInner
+                                                            }
+                                                        )
+                                                )
+
+                                    else
+                                        st.link.close
+                                )
+                    )
+
+
+{-| A hop's channel kept running: what the next connection writes goes to
+it, what comes from it goes to the next connection, until either ends;
+then the hop's connection closes, and the next connection reads its end.
+-}
+carry : Source Bytes -> State -> Task x {}
+carry fromInner st =
+    loop (Source.next fromInner |> Task.map FromInner) { st | forwarding = False }
+        |> Task.onError (\_ -> Task.succeed st)
+        |> Task.andThen (\s -> s.link.close |> Task.onError (\_ -> Task.succeed {}))
+        |> Task.andThen (\_ -> closeInner st)
+
+
+closeInner : State -> Task x {}
+closeInner st =
+    when st.role is
+        Forward f ->
+            Source.close f.toInner
+
+        Terminal ->
+            Task.succeed {}
+
+
+{-| A connection to the session's host: `given` (a jump host's channel), or
+a socket of its own. -}
+connectTo : Permissions -> Options -> Source Notice -> String -> Maybe Link -> Task Os.Error.Error Link
+connectTo permissions options notices label given =
+    Source.emit notices
         (Status
-            ("connecting to "
+            (label
+                ++ "connecting to "
                 ++ options.host
                 ++ (if options.port == 22 then
                         ""
@@ -200,7 +327,26 @@ run permissions options notices inputs =
                    )
             )
         )
-        |> Task.andThen (\_ -> readKnownHosts permissions options)
+        |> Task.andThen
+            (\_ ->
+                when given is
+                    Just link ->
+                        Task.succeed link
+
+                    Nothing ->
+                        Net.connect permissions.net { host = options.host, port = options.port } |> Task.map socketLink
+            )
+
+
+{-| A session begun over `link`: its known hosts, keys and agent read, and
+its transport started. -}
+session : Permissions -> Options -> Role -> String -> Link -> Source Notice -> Task Os.Error.Error State
+session permissions options role label link notices =
+    let
+        lookupName =
+            KnownHosts.lookupName { host = Maybe.withDefault options.host options.hostKeyAlias, port = options.port }
+    in
+    readKnownHosts permissions options
         |> Task.andThen
             (\known ->
                 identitiesOf permissions options
@@ -212,48 +358,41 @@ run permissions options notices inputs =
                                         Os.Random.bytes 32
                                             |> Task.andThen
                                                 (\seed ->
-                                                    Net.connect permissions.net { host = options.host, port = options.port }
-                                                        |> Task.andThen
-                                                            (\socket ->
-                                                                let
-                                                                    defaults =
-                                                                        Transport.defaultConfig
+                                                    let
+                                                        defaults =
+                                                            Transport.defaultConfig
 
-                                                                    config =
-                                                                        { defaults | hostKeys = KnownHosts.orderHostKeys (KnownHosts.keyTypesFor lookupName known) defaults.hostKeys }
+                                                        config =
+                                                            { defaults | hostKeys = KnownHosts.orderHostKeys (KnownHosts.keyTypesFor lookupName known) defaults.hostKeys }
 
-                                                                    started =
-                                                                        Transport.start config seed
-
-                                                                    st =
-                                                                        { options = options
-                                                                        , permissions = permissions
-                                                                        , socket = socket
-                                                                        , agent = agent.link
-                                                                        , notices = notices
-                                                                        , transport = started.transport
-                                                                        , auth = Nothing
-                                                                        , connection = Nothing
-                                                                        , identities = files ++ agent.identities
-                                                                        , known = known
-                                                                        , hostKeyTrusted = False
-                                                                        , keysReady = False
-                                                                        , waiting = NotWaiting
-                                                                        , exitStatus = Nothing
-                                                                        , unanswered = 0
-                                                                        , done = False
-                                                                        }
-                                                                in
-                                                                onTransport started st
-                                                                    |> Task.andThen (\s -> loop inputs s)
-                                                                    |> Task.andThen (\s -> Net.close s.socket |> Task.onError (\_ -> Task.succeed {}))
-                                                            )
+                                                        started =
+                                                            Transport.start config seed
+                                                    in
+                                                    onTransport started
+                                                        { options = options
+                                                        , permissions = permissions
+                                                        , link = link
+                                                        , role = role
+                                                        , label = label
+                                                        , forwarding = False
+                                                        , agent = agent.link
+                                                        , notices = notices
+                                                        , transport = started.transport
+                                                        , auth = Nothing
+                                                        , connection = Nothing
+                                                        , identities = files ++ agent.identities
+                                                        , known = known
+                                                        , hostKeyTrusted = False
+                                                        , keysReady = False
+                                                        , waiting = NotWaiting
+                                                        , exitStatus = Nothing
+                                                        , unanswered = 0
+                                                        , done = False
+                                                        }
                                                 )
                                     )
                         )
             )
-        |> Task.onError (\e -> say (Failed (Os.Error.toString e)))
-        |> Task.andThen (\_ -> say Ended)
 
 
 {-| Every `known_hosts` file's entries, a missing file none. -}
@@ -376,15 +515,18 @@ agentRead readMore got =
 type Turn
     = FromServer Bytes
     | FromWindow (Maybe Input)
+    | FromInner (Maybe Bytes)
     | Tick
 
 
-{-| The server's bytes, the window's inputs and the keepalive's timer,
-raced, until the session is done. A read and a `Source.next` that lose a
-race keep what they took (D1045, D377). -}
-loop : Source Input -> State -> Task Os.Error.Error State
-loop inputs st =
-    if st.done then
+{-| The server's bytes, the other side's (the window's inputs, or for a
+hop that carries a connection, that connection's bytes) and the
+keepalive's timer, raced, until the session is done, or a hop's channel
+has opened and it is to run on its own. A read and a `Source.next` that
+lose a race keep what they took (D1045, D377). -}
+loop : Task Os.Error.Error Turn -> State -> Task Os.Error.Error State
+loop other st =
+    if st.done || st.forwarding then
         Task.succeed st
 
     else
@@ -396,7 +538,7 @@ loop inputs st =
                 else
                     []
         in
-        Task.race (Net.read st.socket |> Task.map FromServer) ([ Source.next inputs |> Task.map FromWindow ] ++ timer)
+        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer)
             |> Task.andThen
                 (\turn ->
                     when turn is
@@ -413,6 +555,13 @@ loop inputs st =
                         FromWindow Nothing ->
                             onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }
 
+                        FromInner (Just bytes) ->
+                            withConnection (Connection.write bytes) st
+
+                        FromInner Nothing ->
+                            -- the connection inside is over
+                            onTransport (Transport.disconnect 11 "the session through it ended" st.transport) { st | done = True }
+
                         Tick ->
                             if st.unanswered >= st.options.keepaliveCountMax then
                                 ending "the server stopped answering keepalives" st
@@ -421,7 +570,7 @@ loop inputs st =
                             else
                                 withConnection Connection.keepalive st
                 )
-            |> Task.andThen (loop inputs)
+            |> Task.andThen (loop other)
 
 
 {-| The session over: why, unless it already said how the program ended. -}
@@ -438,20 +587,27 @@ ending why st =
 
 onInput : Input -> State -> Task Os.Error.Error State
 onInput input st =
-    when input is
-        Keys bytes ->
+    when { input = input, role = st.role } is
+        { role = Forward _, input = Keys _ } ->
+            -- a hop's channel carries the next connection, not keys
+            Task.succeed st
+
+        { role = Forward _, input = Resize _ } ->
+            Task.succeed st
+
+        { input = Keys bytes } ->
             withConnection (Connection.write bytes) st
 
-        Resize size ->
+        { input = Resize size } ->
             withConnection (Connection.resize size) st
 
-        Hangup ->
+        { input = Hangup } ->
             onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }
 
-        Answered answer ->
+        { input = Answered answer } ->
             onAnswer answer st
 
-        Reconnect ->
+        { input = Reconnect } ->
             Task.succeed st
 
 
@@ -471,7 +627,7 @@ onTransport step st0 =
         Task.succeed {}
 
      else
-        Net.write step.out st0.socket
+        st0.link.write step.out
     )
         |> Task.andThen
             (\_ ->
@@ -663,7 +819,16 @@ onAuthEvent event st =
 
         Auth.Authenticated ->
             tell (Status "logged in") st
-                |> Task.andThen (\s -> onConnection (Connection.open s.options.session) s)
+                |> Task.andThen
+                    (\s ->
+                        when s.role is
+                            Terminal ->
+                                onConnection (Connection.open s.options.session) s
+
+                            Forward f ->
+                                tell (Status ("connecting through it to " ++ f.host ++ ":" ++ String.fromInt f.port)) s
+                                    |> Task.andThen (onConnection (Connection.openDirect { host = f.host, port = f.port }))
+                    )
 
         Auth.Exhausted exhausted ->
             ending ("permission denied: nothing left to try (the server takes " ++ String.join ", " exhausted.allowed ++ ")") st
@@ -819,31 +984,42 @@ onConnection step st0 =
 
 onConnectionEvent : Connection.Event -> State -> Task Os.Error.Error State
 onConnectionEvent event st =
-    when event is
-        Connection.Started ->
+    when { event = event, role = st.role } is
+        { event = Connection.Started, role = Forward _ } ->
+            -- the hop's channel is open: it is to run on its own
+            Task.succeed { st | forwarding = True }
+
+        { event = Connection.Output bytes, role = Forward f } ->
+            Source.emit f.toInner bytes |> Task.map (\_ -> st)
+
+        { event = Connection.Ended, role = Forward f } ->
+            Source.close f.toInner
+                |> Task.andThen (\_ -> onTransport (Transport.disconnect 11 "the channel ended" st.transport) { st | done = True })
+
+        { event = Connection.Started } ->
             tell Started st
 
-        Connection.Refused why ->
+        { event = Connection.Refused why } ->
             ending why st
                 |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "refused" s.transport) s)
 
-        Connection.Output bytes ->
+        { event = Connection.Output bytes } ->
             tell (Output bytes) st
 
-        Connection.ErrorOutput bytes ->
+        { event = Connection.ErrorOutput bytes } ->
             tell (Output bytes) st
 
-        Connection.Exited status ->
+        { event = Connection.Exited status } ->
             tell (Exited status) { st | exitStatus = Just status }
 
-        Connection.Killed _ ->
+        { event = Connection.Killed _ } ->
             -- what OpenSSH's ssh exits with for a signal
             tell (Exited 255) { st | exitStatus = Just 255 }
 
-        Connection.Ended ->
+        { event = Connection.Ended } ->
             onTransport (Transport.disconnect 11 "the session ended" st.transport) { st | done = True }
 
-        Connection.KeepaliveUnanswered n ->
+        { event = Connection.KeepaliveUnanswered n } ->
             Task.succeed { st | unanswered = n }
 
 
@@ -867,12 +1043,95 @@ user, port and key before the file's lines, as `ssh -l -p -i` put theirs
 are the platform's, tried in turn unless `IdentityAgent` names one. The settings' problems
 (a line that does not read, a `Match` this client cannot judge) come back
 beside the options.
+
+`jumps` are the hosts to go through first, in order (SC21): the entry's
+`jump`, else the file's `ProxyJump`, each `[user@]host[:port]` and each
+resolved through the file as a host of its own (its `HostName`, `User`,
+`Port`, keys and known hosts). A jump host's own `ProxyJump` is not
+followed.
 -}
 optionsFor :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
-    -> Task x { options : Options, problems : Array String }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
+    -> Task x { options : Options, jumps : Array Options, problems : Array String }
 optionsFor permissions given =
+    resolveOne permissions given
+        |> Task.andThen
+            (\target ->
+                jumpSpecs target.proxyJump
+                    |> Array.map
+                        (\spec ->
+                            resolveOne permissions
+                                { given | host = spec.host, user = spec.user, port = spec.port, identity = Nothing, jump = Nothing, command = Nothing, terminal = Nothing }
+                        )
+                    |> Task.sequence
+                    |> Task.map
+                        (\hops ->
+                            { options = target.options
+                            , jumps = Array.map .options hops
+                            , problems = target.problems ++ Array.mapAndFlatten .problems hops
+                            }
+                        )
+            )
+
+
+{-| `ProxyJump`'s hosts: a comma-separated list of `[user@]host[:port]`,
+`ssh://` before one taken off; `none` is none. -}
+jumpSpecs : String -> Array { host : String, user : Maybe String, port : Maybe Int }
+jumpSpecs value =
+    if String.toLower (String.trim value) == "none" || String.trim value == "" then
+        []
+
+    else
+        String.split "," value
+            |> Array.map String.trim
+            |> Array.keepIf (\v -> v /= "")
+            |> Array.map
+                (\v0 ->
+                    let
+                        v =
+                            if String.startsWith "ssh://" v0 then String.dropFirst 6 v0 else v0
+
+                        userAndRest =
+                            when String.lastIndexOf "@" v is
+                                Just at ->
+                                    { user = Just (String.takeFirst at v), rest = String.dropFirst (at + 1) v }
+
+                                Nothing ->
+                                    { user = Nothing, rest = v }
+
+                        rest =
+                            userAndRest.rest
+
+                        hostAndPort =
+                            if String.startsWith "[" rest then
+                                -- [an IPv6 address]:port
+                                when String.firstIndexOf "]" rest is
+                                    Just close ->
+                                        { host = String.slice 1 close rest, port = String.toInt (String.dropFirst (close + 2) rest) }
+
+                                    Nothing ->
+                                        { host = rest, port = Nothing }
+
+                            else
+                                when String.lastIndexOf ":" rest is
+                                    Just colon ->
+                                        { host = String.takeFirst colon rest, port = String.toInt (String.dropFirst (colon + 1) rest) }
+
+                                    Nothing ->
+                                        { host = rest, port = Nothing }
+                    in
+                    { host = hostAndPort.host, user = userAndRest.user, port = hostAndPort.port }
+                )
+
+
+{-| One host's options, and its `ProxyJump` as the file and the entry give
+it (`none` when neither does). -}
+resolveOne :
+    Permissions
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool } }
+    -> Task x { options : Options, proxyJump : String, problems : Array String }
+resolveOne permissions given =
     let
         userFile =
             given.home ++ "/.ssh/config"
@@ -881,6 +1140,7 @@ optionsFor permissions given =
             [ Maybe.map (\u -> { file = "puritty", lineNumber = 0, keyword = "user", args = [ u ] }) given.user
             , Maybe.map (\p -> { file = "puritty", lineNumber = 0, keyword = "port", args = [ String.fromInt p ] }) given.port
             , Maybe.map (\i -> { file = "puritty", lineNumber = 0, keyword = "identityfile", args = [ i ] }) given.identity
+            , Maybe.map (\j -> { file = "puritty", lineNumber = 0, keyword = "proxyjump", args = [ j ] }) given.jump
             ]
                 |> Array.mapAndFlatten (\m -> Maybe.map (\d -> [ d ]) m |> Maybe.withDefault [])
     in
@@ -996,6 +1256,7 @@ optionsFor permissions given =
                                 , keepaliveSeconds = String.toInt (one "serveraliveinterval" "0") |> Maybe.withDefault 0
                                 , keepaliveCountMax = String.toInt (one "serveralivecountmax" "3") |> Maybe.withDefault 3
                                 }
+                            , proxyJump = one "proxyjump" "none"
                             , problems = parsed.problems ++ settings.problems
                             }
                         )

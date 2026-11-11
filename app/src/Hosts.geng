@@ -1,4 +1,4 @@
-module Hosts exposing (named, quick, session, sshCommand)
+module Hosts exposing (jumpSpec, named, quick, session, sshCommand)
 
 {-| Starting an ssh session from a host (`docs/settings.md` ST10, V61-V64):
 the command OpenSSH is run with, and the settings the session's window
@@ -67,6 +67,23 @@ quick target =
         Just { h | user = user, port = port }
 
 
+{-| A host's jump host as OpenSSH's `-J` and `ProxyJump` take it: another
+of the settings' hosts written as its `user@host:port`, anything else as it
+is (an alias of ~/.ssh/config, or `user@host:port`). -}
+jumpSpec : Config -> Host -> Maybe String
+jumpSpec config h =
+    Maybe.map
+        (\j ->
+            when Array.findFirst (\o -> o.name == j) config.hosts is
+                Just found ->
+                    spec found.value
+
+                Nothing ->
+                    j
+        )
+        h.jump
+
+
 {-| The command that connects to a host with OpenSSH: its port, user, key
 and jump host as `ssh` takes them, and a command run there on a terminal
 (`-t`) when it has one. A jump that names another of the settings' hosts
@@ -75,16 +92,7 @@ sshCommand : Config -> Host -> Array String
 sshCommand config h =
     let
         jumpTo =
-            Maybe.map
-                (\j ->
-                    when Array.findFirst (\o -> o.name == j) config.hosts is
-                        Just found ->
-                            spec found.value
-
-                        Nothing ->
-                            j
-                )
-                h.jump
+            jumpSpec config h
     in
     [ "ssh" ]
         ++ option "-p" (Maybe.map String.fromInt h.port)
@@ -146,7 +154,5 @@ session config h =
         , font = Maybe.withDefault config.font h.font
         , points = Maybe.withDefault config.points h.points
         , charset = if h.charset /= Nothing then h.charset else config.charset
-        -- the built-in client takes no jump host yet (ssh-client.md SC18):
-        -- a host that goes through one stays OpenSSH's
-        , remote = if Maybe.withDefault Platform.defaultClient h.client == "built-in" && h.jump == Nothing then Just h else Nothing
+        , remote = if Maybe.withDefault Platform.defaultClient h.client == "built-in" then Just h else Nothing
     }

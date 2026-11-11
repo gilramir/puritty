@@ -69,7 +69,7 @@ pty child =
 it tells the window comes through `read`, keys, sizes and answers go to it.
 Its exit status is what it tells (`Session.Exited`), which `Main` keeps; a
 session that ends waits for a reconnect or a hang-up. -}
-ssh : Session.Permissions -> Session.Options -> Task x Backend
+ssh : Session.Permissions -> { options : Session.Options, jumps : Array Session.Options } -> Task x Backend
 ssh permissions options =
     Task.map2 (\notices inputs -> { notices = notices, inputs = inputs }) Source.new Source.new
         |> Task.andThen
@@ -105,13 +105,13 @@ ssh permissions options =
 
 {-| The session run, and again on each reconnect, until the window hangs
 up; then the notices close, which ends the window's reads. -}
-supervise : Session.Permissions -> Session.Options -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task x {}
+supervise : Session.Permissions -> { options : Session.Options, jumps : Array Session.Options } -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task x {}
 supervise permissions options sources =
-    Session.run permissions options sources.notices sources.inputs
+    Session.run permissions options.jumps options.options sources.notices sources.inputs
         |> Task.andThen (\_ -> afterEnd permissions options sources)
 
 
-afterEnd : Session.Permissions -> Session.Options -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task x {}
+afterEnd : Session.Permissions -> { options : Session.Options, jumps : Array Session.Options } -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task x {}
 afterEnd permissions options sources =
     Source.next sources.inputs
         |> Task.andThen

@@ -1215,3 +1215,62 @@ what was being typed. Each line that takes typing now ends what is typed
 with DECSC (ESC 7), and the screen ends with DECRC (ESC 8). The cursor
 is drawn after the last bullet, and the IME's candidate window follows
 it there. Checked on Linux; the sshwindow gate passes, 8 of 8.
+
+## SC21 · Jump hosts (2026-11-10)
+
+The built-in client goes through jump hosts as OpenSSH's `ProxyJump` and
+`-J` do, so a host behind a bastion no longer falls back to OpenSSH (SC18
+had left it there).
+
+**How.**
+
+- **Hops before the host.** `Session.run` takes the jump hosts, in order,
+  before the host. Each hop is a session of its own over the previous
+  one's link: its key is checked against `known_hosts`, and its user logs
+  in with its keys, its agent or a password, asking in the same window.
+  Its status lines and its failure begin with `jump host NAME:`.
+- **A channel to the next.** Once logged in, a hop opens a `direct-tcpip`
+  channel (RFC 4254 §7.2) to the next hop or the host
+  (`Connection.openDirect`). The next connection's transport runs inside
+  that channel, so a jump host carries only encrypted bytes.
+- **The link.** A session's transport reads and writes a `Link` (read,
+  write, close): a socket, or a hop's channel. When a hop's channel is
+  open, a process of its own (`carry`) runs the hop. It races the hop's
+  link, the next connection's writes and the keepalive timer, as the
+  session's loop does.
+- **The end, down the chain.** When the host's session ends, it closes
+  its link. The hop then closes its channel and its connection, and so on
+  down. If a hop ends first, the next connection reads its end and says
+  the server closed the connection.
+- **A refusal says why.** A channel the jump host refuses is said with its
+  reason: forwarding not allowed there (`AllowTcpForwarding no`), or the
+  connection to the host failed.
+
+**Where the hops come from.** A puritty host's `jump` comes first; if it
+has none, the user's `~/.ssh/config` `ProxyJump` does (`Hosts.jumpSpec`).
+`jump` is written as OpenSSH's `-J` takes it: another puritty host's name
+becomes that host's `user@host:port`. A `ProxyJump` value is a
+comma-separated list of `[user@]host[:port]`, an `ssh://` before one taken
+off. Each hop is resolved through `~/.ssh/config` as a host of its own
+(its `HostName`, `User`, `Port`, `IdentityFile`, known hosts and agent),
+as `ssh -J` does. Two limits:
+
+- A jump host's own `ProxyJump` is not followed.
+- A puritty host named as a jump keeps its user, host and port but not its
+  `identity`, which `-J` cannot carry either. Its key comes from
+  `~/.ssh/config` or the agent.
+
+**Held.** The ssh gate (`packages/ssh/tests/sshd.py`) has five jump cases
+against two or three local sshd:
+
+- through one jump host, every key known;
+- the jump host's key unknown and trusted once;
+- through two jump hosts;
+- a jump host with `AllowTcpForwarding no`, refused with that reason;
+- the host down, refused with "the connection failed".
+
+The host's `SSH_CONNECTION` shows the connection came from the jump host.
+The ssh gate is 62 of 62. `harness/sshwindow.py` has a `jump` case:
+puritty's window, a host entry with `jump = "user@127.0.0.1:PORT"`, the
+remote command's exit status and terminal size through it. That gate is
+9 of 9.

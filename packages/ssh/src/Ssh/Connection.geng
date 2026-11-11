@@ -7,6 +7,7 @@ module Ssh.Connection exposing
     , isConnectionMessage
     , keepalive
     , open
+    , openDirect
     , received
     , resize
     , sendEof
@@ -20,6 +21,11 @@ variables (`env`), a shell or a command, the bytes both ways under each
 side's window, the terminal's size (`window-change`), and how it ended
 (`exit-status`, `exit-signal`). Keepalives are global requests a server
 must answer.
+
+A `direct-tcpip` channel (§7.2) carries a connection to another host
+through this one, as OpenSSH's `ProxyJump` does: it opens without
+requests, and its bytes go both ways under the same windows
+([`openDirect`](#openDirect)).
 
 Pure, as the transport and authentication are: each step answers the
 payloads to send and what happened.
@@ -85,6 +91,7 @@ theirs; how many of our requests wait for an answer, in order; keepalives
 in flight. -}
 type alias State =
     { session : Session
+    , direct : Maybe { host : String, port : Int }
     , phase : Phase
     , remote : Int
     , remoteWindow : Int
@@ -219,8 +226,45 @@ queue payload st =
 {-| The session channel asked for, once authentication is done. -}
 open : Session -> Step
 open session =
+    opening session Nothing
+        (Bytes.flatten
+            [ Wire.writeByte msgOpen
+            , Wire.writeText "session"
+            , Wire.writeUint32 ourChannel
+            , Wire.writeUint32 windowSize
+            , Wire.writeUint32 maxPacket
+            ]
+        )
+
+
+{-| A `direct-tcpip` channel to `host` and `port` asked for, once
+authentication is done (RFC 4254 §7.2): the server connects there, and
+the channel is that connection. It says it came from 127.0.0.1, port 0,
+as OpenSSH's `ssh -W` does. `Started` when the server has connected;
+`Output` is what the far host sent, and [`write`](#write) sends to it. -}
+openDirect : { host : String, port : Int } -> Step
+openDirect target =
+    opening { terminal = Nothing, env = [], command = Nothing }
+        (Just target)
+        (Bytes.flatten
+            [ Wire.writeByte msgOpen
+            , Wire.writeText "direct-tcpip"
+            , Wire.writeUint32 ourChannel
+            , Wire.writeUint32 windowSize
+            , Wire.writeUint32 maxPacket
+            , Wire.writeText target.host
+            , Wire.writeUint32 target.port
+            , Wire.writeText "127.0.0.1"
+            , Wire.writeUint32 0
+            ]
+        )
+
+
+opening : Session -> Maybe { host : String, port : Int } -> Bytes -> Step
+opening session direct request =
     finish
         { session = session
+        , direct = direct
         , phase = Opening
         , remote = 0
         , remoteWindow = 0
@@ -231,15 +275,7 @@ open session =
         , eofPending = False
         , sentEof = False
         , keepalives = 0
-        , send =
-            [ Bytes.flatten
-                [ Wire.writeByte msgOpen
-                , Wire.writeText "session"
-                , Wire.writeUint32 ourChannel
-                , Wire.writeUint32 windowSize
-                , Wire.writeUint32 maxPacket
-                ]
-            ]
+        , send = [ request ]
         , events = []
         }
 
@@ -374,20 +410,64 @@ onChannel n body st =
                     st
 
                 else
-                    afterOpen { st | remote = opened.remote, remoteWindow = opened.window, remoteMaxPacket = max 1 (min opened.most maxPacket) }
+                    let
+                        open1 =
+                            { st | remote = opened.remote, remoteWindow = opened.window, remoteMaxPacket = max 1 (min opened.most maxPacket) }
+                    in
+                    when st.direct is
+                        -- a direct channel asks nothing more: it runs
+                        Just _ ->
+                            flush (emit Started { open1 | phase = Running })
+
+                        Nothing ->
+                            afterOpen open1
 
             Err _ ->
                 ended (emit (Refused "a channel confirmation that does not read") st)
 
     else if n == msgOpenFailure then
         let
-            why =
+            -- the reason's code, then a description the server may leave
+            -- empty (RFC 4254 §5.1)
+            failure =
                 afterChannel
-                    |> Result.andThen (\reason -> Wire.name reason.next)
-                    |> Result.map .value
-                    |> Result.withDefault ""
+                    |> Result.andThen (\c -> Wire.uint32 c.next)
+                    |> Result.andThen (\code -> Wire.name code.next |> Result.map (\text -> { code = code.value, text = String.trim text.value }))
+                    |> Result.withDefault { code = 0, text = "" }
+
+            reason =
+                when failure.code is
+                    1 ->
+                        "it is not allowed there"
+
+                    2 ->
+                        "the connection failed"
+
+                    3 ->
+                        "the server does not know the channel's type"
+
+                    4 ->
+                        "the server is short of resources"
+
+                    _ ->
+                        "no reason given"
+
+            why =
+                if failure.text == "" then reason else reason ++ " (" ++ failure.text ++ ")"
         in
-        ended (emit (Refused ("the server would not open a session: " ++ why)) st)
+        ended
+            (emit
+                (Refused
+                    (when st.direct is
+                        Just target ->
+                            "the server would not connect to " ++ target.host ++ ":" ++ String.fromInt target.port ++ ": " ++ why
+
+                        Nothing ->
+                            "the server would not open a session: " ++ why
+                    )
+                )
+                st
+            )
 
     else if n == msgWindowAdjust then
         when afterChannel |> Result.andThen (\c -> Wire.uint32Clamped c.next) is

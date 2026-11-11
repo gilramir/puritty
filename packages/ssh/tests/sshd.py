@@ -119,6 +119,21 @@ SESSION_DRIVER_CASES = [
 ]
 
 
+# jump hosts (SC21): name, how many jump hosts before the host, which of
+# the servers' keys known_hosts holds ("all", or "host" for the host's
+# only), client options, sshd config lines for the jump hosts. The host is
+# reached through each in turn, as `ssh -J` does; its port, and each jump
+# host's, are written as PORT, JUMP1, JUMP2 in the pins. "down" sends the
+# last jump host to a port nothing listens on.
+JUMP_CASES = [
+    ("jump-known", 1, "all", ["--identity", "{ed}"], []),
+    ("jump-trust-bastion", 1, "host", ["--identity", "{ed}", "--trust-once"], []),
+    ("jump-two-hops", 2, "all", ["--identity", "{ed}"], []),
+    ("jump-forwarding-refused", 1, "all", ["--identity", "{ed}"], ["AllowTcpForwarding no"]),
+    ("jump-host-down", 1, "all", ["--identity", "{ed}"], []),
+]
+
+
 class Agent:
     def __init__(self, keys, adds):
         self.path = WORK / f"agent.{os.getpid()}.{free_port()}"
@@ -287,6 +302,38 @@ def main():
             print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
         else:
             print(f"ok   {name}")
+    server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
+    for name, hops, known, options, extra in JUMP_CASES:
+        host = Server([])
+        jumps = [Server(extra) for _ in range(hops)]
+        kh = WORK / f"known_hosts.{name}"
+        ports = [host.port] + [j.port for j in jumps]
+        if name == "jump-host-down":
+            ports[0] = free_port()
+        kh.write_text("".join(f"[127.0.0.1]:{p} {' '.join(server_pub)}\n" for p in (ports if known == "all" else ports[:1])))
+        try:
+            args = ["session", "127.0.0.1", str(ports[0]), "--user", getpass.getuser(), "--known-hosts", str(kh),
+                    "--exec", "echo hi; echo $SSH_CONNECTION | cut -d' ' -f1; exit 4"]
+            for j in jumps:
+                args += ["--jump", f"127.0.0.1:{j.port}"]
+            got = run_client(args + [o.format(**keys) for o in options])
+        finally:
+            host.stop()
+            for j in jumps:
+                j.stop()
+        got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS"))
+        for i, j in enumerate(jumps):
+            got = got.replace(str(j.port), f"JUMP{i + 1}")
+        got = got.replace(str(ports[0]), "PORT").replace(f"as {getpass.getuser()}", "as USER")
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     for name, adds, extra in AGENT_CASES:
         server = Server(extra)
         agent = Agent(keys, adds)
@@ -321,7 +368,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(AGENT_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)
