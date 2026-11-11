@@ -203,7 +203,7 @@ paint lang m size preedit =
             px 12
 
         side =
-            px 210
+            px 190
 
         x0 =
             side + px 24
@@ -400,6 +400,64 @@ settingDescription lang s =
     Words.lookup lang ("setting." ++ Schema.tableKey s ++ ".description") s.description
 
 
+{-| Where a row's label and its description's first line have their
+baselines: the block of the label and `descLines` lines under it centred
+in the row. -}
+labelled : { y : Int, rowH : Int, body : Int, small : Int, descLines : Int, px : Int -> Int } -> { label : Int, desc : Int }
+labelled r =
+    let
+        n =
+            max 1 r.descLines
+
+        blockH =
+            r.body + r.px 5 + n * r.small + (n - 1) * r.px 4
+
+        label =
+            r.y + (r.rowH - blockH) // 2 + r.body - r.px 2
+    in
+    { label = label, desc = label + r.small + r.px 5 }
+
+
+{-| A text in at most two lines of `room` pixels: broken at spaces, the
+second line ending in "…" where the rest does not fit. A first word
+too wide for a line is cut with "…" on one line. -}
+wrapTwo : Int -> Int -> String -> Array String
+wrapTwo size room whole =
+    if Text.width size whole <= room then
+        [ whole ]
+
+    else
+        let
+            words =
+                String.split " " whole
+
+            firstLine =
+                Array.foldl
+                    (\w acc ->
+                        if acc.full then
+                            acc
+
+                        else
+                            let
+                                tried =
+                                    if acc.text == "" then w else acc.text ++ " " ++ w
+                            in
+                            if Text.width size tried <= room then
+                                { acc | text = tried, taken = acc.taken + 1 }
+
+                            else
+                                { acc | full = True }
+                    )
+                    { text = "", taken = 0, full = False }
+                    words
+        in
+        if firstLine.taken == 0 then
+            [ fit size room whole ]
+
+        else
+            [ firstLine.text, fit size room (String.join " " (Array.dropFirst firstLine.taken words)) ]
+
+
 {-| The text, or as much of it as fits in `room` pixels followed by "…". -}
 fit : Int -> Int -> String -> String
 fit size room whole =
@@ -482,10 +540,10 @@ rows lang m size x0 cw px body small preedit d0 =
             (m.rows - 2) * line
 
         rowH =
-            3 * line
+            SettingsWindow.linesPerRow * line
 
         valueW =
-            min (px 280) (cw // 2)
+            min (px 260) (cw * 9 // 20)
 
         resetW =
             px 30
@@ -563,12 +621,6 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
         modified =
             SettingsWindow.changed m.config s
 
-        labelY =
-            y + rowH // 2 - px 3
-
-        descY =
-            labelY + small + px 5
-
         description =
             settingDescription lang s
                 ++ (if s.applies == Schema.NewWindows then " " ++ said.newWindows else "")
@@ -581,13 +633,22 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
 
         textClip =
             { x = x0, y = y, w = vx - x0 - px 16, h = rowH }
+
+        lines =
+            wrapTwo small textClip.w description
+
+        at =
+            labelled { y = y, rowH = rowH, body = body, small = small, descLines = Array.length lines, px = px }
+
+        line =
+            rowH // SettingsWindow.linesPerRow
     in
     d
         |> draw (if modified then box { x = x0 - px 12, y = y + px 10, w = px 3, h = rowH - px 20, r = 1, color = look.accent } else Bytes.empty)
         |> draw (clip textClip)
-        |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = fit body textClip.w (settingLabel lang s) })
-        |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = fit small textClip.w description })
-        |> draw (clip { x = x0 - px 16, y = 3 * (rowH // 3), w = vx + valueW + resetW - x0 + px 16, h = (m.rows - 5) * (rowH // 3) })
+        |> draw (text { x = x0, y = at.label, size = body, color = look.strong, text = fit body textClip.w (settingLabel lang s) })
+        |> (\dd -> Array.foldl (\e acc -> draw (text { x = x0, y = at.desc + e.i * (small + px 4), size = small, color = look.dim, text = e.text }) acc) dd (Array.indexedMap (\k l -> { i = k, text = l }) lines))
+        |> draw (clip { x = x0 - px 16, y = 3 * line, w = vx + valueW + resetW - x0 + px 16, h = (m.rows - 5) * line })
         |> valueOf lang m s valueBox typingHere preedit px body
         |> target valueBox (OnValue i)
         |> (\dd ->
@@ -699,11 +760,14 @@ hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit d =
         said =
             Words.words lang
 
+        at =
+            labelled { y = y, rowH = rowH, body = body, small = small, descLines = 1, px = px }
+
         labelY =
-            y + rowH // 2 - px 3
+            at.label
 
         descY =
-            labelY + small + px 5
+            at.desc
 
         valueBox =
             { x = vx, y = y + (rowH - fieldH) // 2, w = valueW, h = fieldH }
@@ -740,8 +804,8 @@ hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit d =
             Just h ->
                 d
                     |> draw (text { x = x0, y = labelY, size = body, color = look.strong, text = h.name })
-                    |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = h.from })
-                    |> draw (text { x = vx, y = labelY, size = body, color = look.text, text = h.detail })
+                    |> draw (text { x = x0, y = descY, size = small, color = look.dim, text = Words.say lang h.from })
+                    |> draw (text { x = vx, y = labelY, size = body, color = look.text, text = Words.say lang h.detail })
                     |> target { x = vx, y = y, w = valueW, h = rowH } (OnValue i)
 
             Nothing ->
@@ -867,7 +931,7 @@ footer lang m size px small d =
         hint =
             when m.typing is
                 Just _ ->
-                    if SettingsWindow.isFamily m then said.hintFont else said.hintTyping
+                    if SettingsWindow.isFamily m then said.hintFont else if SettingsWindow.inList m && m.row == 0 then said.hintQuick else said.hintTyping
 
                 Nothing ->
                     when m.focus is

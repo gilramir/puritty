@@ -70,13 +70,13 @@ CASES = [
     ("host-copied", HOSTS, TO_HOSTS + [DOWN, DOWN, "ctrl+d"]),
     # the mouse (ST27): a click on a value changes it, one on the reset
     # mark resets it, a click on a page shows it. Clicks are at pixels of the
-    # drawn window (docs/settings-gui.md SG3): at the gate's font a line is
-    # 17 pixels, the list begins at 51 and a setting is 51 tall, a value's
-    # box begins at x 566 and the reset mark at 850, and the side bar's
-    # pages are 32 tall from 51.
-    ("click-value", None, [("click", 586, 280, 1)]),
-    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 860, 280, 1)]),
-    ("click-page-and-value", None, [("click", 50, 99, 1), ("click", 586, 76, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
+    # drawn window (docs/settings-gui.md SG3, SG8): at the gate's font a
+    # line is 17 pixels, the list begins at 51 and a setting is 68 tall, a
+    # value's box begins at x 469 and the reset mark at 706, and the side
+    # bar's pages are 32 tall from 51.
+    ("click-value", None, [("click", 489, 357, 1)]),
+    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 716, 357, 1)]),
+    ("click-page-and-value", None, [("click", 50, 99, 1), ("click", 489, 85, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
     ("terminal-follows", None, [DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]
 

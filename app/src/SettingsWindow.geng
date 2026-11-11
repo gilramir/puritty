@@ -1,7 +1,7 @@
 module SettingsWindow exposing
     ( Model, Input(..), Effect(..), Target(..), Focus(..), Typing
     , init, update, view, fileRead, told
-    , listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
+    , linesPerRow, listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
     )
 
 {-| The settings window's model and its screen (`docs/settings.md` ST7,
@@ -141,7 +141,7 @@ init r =
     , scroll = 0
     , search = []
     , modifiedOnly = False
-    , typing = Nothing
+    , typing = if r.launcher then Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 } else Nothing
     , undo = []
     , fonts = r.fonts
     , aliases = r.aliases
@@ -276,15 +276,21 @@ onHosts m =
 
 {-| The hosts listed: the file's, then ~/.ssh/config's that the file does
 not name, each with where it goes and where it is from. -}
-hostRows : Model -> Array { name : String, detail : String, from : String, own : Bool }
+hostRows : Model -> Array { name : String, detail : Message, from : Message, own : Bool }
 hostRows m =
     let
         own =
             Array.map
                 (\h ->
                     { name = h.name
-                    , detail = Maybe.withDefault "" (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ Maybe.withDefault "" (Maybe.map (\p -> ":" ++ String.fromInt p) h.port)
-                    , from = (if h.jump /= Nothing then "through " ++ Maybe.withDefault "" h.jump ++ " · " else "") ++ "from the settings"
+                    , detail = Words.plain (Maybe.withDefault "" (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ Maybe.withDefault "" (Maybe.map (\p -> ":" ++ String.fromInt p) h.port))
+                    , from =
+                        when h.jump is
+                            Just jump ->
+                                Words.message "message.hostThrough" |> Words.with "jump" jump
+
+                            Nothing ->
+                                Words.message "message.hostFromSettings"
                     , own = True
                     }
                 )
@@ -293,7 +299,7 @@ hostRows m =
         theirs =
             m.aliases
                 |> Array.keepIf (\a -> not (Array.any (\h -> h.name == a) m.config.hosts))
-                |> Array.map (\a -> { name = a, detail = "as ~/.ssh/config has it", from = "from ~/.ssh/config", own = False })
+                |> Array.map (\a -> { name = a, detail = Words.message "message.asSshConfig", from = Words.message "message.hostFromSshConfig", own = False })
     in
     own ++ theirs
 
@@ -305,7 +311,7 @@ inList m =
 
 
 {-| The host on a row of the list (quick connect and New host come first). -}
-hostAt : Model -> Int -> Maybe { name : String, detail : String, from : String, own : Bool }
+hostAt : Model -> Int -> Maybe { name : String, detail : Message, from : Message, own : Bool }
 hostAt m row =
     Array.get (row - 2) (hostRows m)
 
@@ -369,6 +375,9 @@ update input m =
                     if m.focus == OnSearch then
                         done (searched (m.search ++ String.toArray text) m)
 
+                    else if m.focus == OnRows && inList m && m.row <= 1 then
+                        typed (insert text { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }) m
+
                     else
                         done m
 
@@ -383,7 +392,7 @@ update input m =
                 most =
                     max 0 (rowCount m * linesPerRow - bodyRows m)
             in
-            done { m | scroll = max 0 (min most (m.scroll + 3 * steps)) }
+            done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
 
         Key pressed ->
             let
@@ -643,6 +652,10 @@ rowsKey k m =
 
                 else
                     done (searched [] m)
+
+            else if inList m && m.row <= 1 && k.text /= "" && k.text /= " " && Bitwise.and k.mods 4 == 0 && printable k.text then
+                -- a key typed on quick connect or a new host begins typing it
+                quickKey k { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 } { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
 
             else if (isEnter k.sym || k.sym == sym.space) && inList m then
                 if m.row <= 1 then
@@ -988,6 +1001,10 @@ quickKey k t m =
     in
     if k.sym == sym.escape then
         done { m | typing = Nothing, message = Nothing }
+
+    else if k.sym == sym.down || k.sym == sym.up then
+        -- what is typed is left, and the list moved in
+        done (keepInView { m | typing = Nothing, message = Nothing, row = if k.sym == sym.down then min (rowCount m - 1) (m.row + 1) else max 0 (m.row - 1) })
 
     else if isEnter k.sym then
         when Hosts.quick text is
@@ -1343,7 +1360,7 @@ modifiedOnlyWidth =
 
 linesPerRow : Int
 linesPerRow =
-    3
+    4
 
 
 {-| The rows between the two rules: the window's rows less three above
@@ -1635,6 +1652,7 @@ rowLines m width i s =
     [ [ marker, { style = labelStyle, text = padTo (valueColumn - 3) s.label }, { style = "", text = " " } ] ++ valueRuns ++ reset
     , [ { style = "2", text = "     " ++ description } ]
     , []
+    , []
     ]
 
 
@@ -1663,6 +1681,7 @@ hostLines m =
                    )
             , [ { style = "2", text = "     Connect without saving a host." } ]
             , []
+            , []
             ]
 
         newHost =
@@ -1683,11 +1702,13 @@ hostLines m =
                    )
             , [ { style = "2", text = "     A host of the settings, named as you type." } ]
             , []
+            , []
             ]
 
         each i h =
-            [ [ { style = "", text = "   " }, { style = if here (i + 2) then "7" else "", text = padTo (valueColumn - 3) h.name }, { style = "", text = " " ++ h.detail } ]
-            , [ { style = "2", text = "     " ++ h.from } ]
+            [ [ { style = "", text = "   " }, { style = if here (i + 2) then "7" else "", text = padTo (valueColumn - 3) h.name }, { style = "", text = " " ++ Words.say Words.English h.detail } ]
+            , [ { style = "2", text = "     " ++ Words.say Words.English h.from } ]
+            , []
             , []
             ]
     in

@@ -188,3 +188,37 @@ Cascadia Code).
 
 Still open: the pixels gate has no cases for records 6 to 9 (SG5 step 1),
 and the app tests read the model through the old text screen (SG6).
+
+## SG8 · A window's shape, and the host list first on Windows (2026-11-10)
+
+Gilbert: at 100 by 30 cells the settings window "looks like yet another
+terminal"; it should be a bit narrower and taller. And on Windows,
+`puritty` with nothing after it should first ask where to connect,
+with the built-in client (the Windows default since SC12).
+
+**The shape.** The window opens at 84 by 38 cells. At the gates' DejaVu
+Sans Mono 11 pt that is 756 by 646 pixels, a ratio of 1.17 where it was
+1.76. To fit the narrower width:
+
+- The side bar is 190 pixels, and the value column the smaller of 260
+  pixels and 45% of the list.
+- A setting is four lines tall (`SettingsWindow.linesPerRow`), so its
+  description wraps to two lines (`wrapTwo`, broken at spaces, the second
+  line ending in "…" when the rest does not fit). The label and the
+  description are centred in the row (`labelled`).
+- The wheel moves one setting a step.
+- The text view the app tests read has four lines a row too, and its
+  tests' line numbers moved with it.
+- The settings and hosts gates click at the new positions.
+
+**The host list first.** `start`'s default is now `Platform.start`:
+"hosts" on Windows and "shell" on Linux, said in the setting's
+description in both languages. The host list opens typing in Quick
+connect, so `user@host:port` and Enter connect at once. Down (or Up)
+leaves the field for the hosts under it. A key typed on Quick connect
+or New host begins typing it. While typing, the footer says what to do
+(`window.hintQuick`). A host's line under its name ("from the
+settings", "through X", "from ~/.ssh/config") is now a message, said in
+the window's language too.
+
+The app tests are 100. The settings and hosts gates pass, 19 and 13.

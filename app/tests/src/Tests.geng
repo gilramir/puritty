@@ -575,13 +575,13 @@ window =
                     Expect.equal
                         { top = "Search:                                                                            Modified only [ ]"
                         , first = "Appearance            │   Font                        DejaVu Sans Mono"
-                        , colour = "Advanced              │   Foreground                  #c5c8c6 ██"
+                        , colour = "                      │   Foreground                  #c5c8c6 ██"
                         , foot = "font.family · Enter change · Del reset · Ctrl+Z undo · Ctrl+M modified only · Esc close"
                         , count = 24
                         }
                         { top = Maybe.withDefault "" (Array.get 0 rows)
                         , first = Maybe.withDefault "" (Array.get 3 rows)
-                        , colour = Maybe.withDefault "" (Array.get 9 rows)
+                        , colour = Maybe.withDefault "" (Array.get 11 rows)
                         , foot = lastRow rows
                         , count = Array.length rows
                         }
@@ -802,37 +802,46 @@ window =
           , test = \_ -> Expect.equal [ "put work" ] (onHostsPage False [ k.down, k.down, k.down, press 0xFF53 ]).said
           }
         , { name = "the host list opens on the Hosts page, and connects there"
-          , test = \_ -> Expect.equal True (String.startsWith "Enter connects here" (lastRow (onHostsPage True []).screen))
+          , test = \_ -> Expect.equal True (String.startsWith "Enter connects here" (lastRow (onHostsPage True [ k.escape ]).screen))
+          }
+        , { name = "the host list opens typing where to connect"
+          , test = \_ -> Expect.equal [ "connect to me@box" ] (onHostsPage True (typeIn "me@box" ++ [ k.enter ])).said
+          }
+        , { name = "Down leaves where to connect for the hosts under it"
+          , test = \_ -> Expect.equal { typing = False, row = 1 } (onHostsPage True [ k.down ] |> .model |> (\md -> { typing = md.typing /= Nothing, row = md.row }))
+          }
+        , { name = "a key typed on quick connect begins typing it"
+          , test = \_ -> Expect.equal [ "connect to a@b" ] (onHostsPage False (typeIn "a@b" ++ [ k.enter ])).said
           }
         , { name = "a click on a value changes it, as Enter does"
-          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true" ] (after [ click 15 (valueAt + 1) 1 ]).said
+          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true" ] (after [ click 19 (valueAt + 1) 1 ]).said
           }
         , { name = "a click on the reset mark resets"
           , test =
                 \_ ->
                     -- "[x] on" is six cells, and the mark two after it
-                    Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ click 15 (valueAt + 1) 1, click 15 (valueAt + 6 + 2) 1 ]).said
+                    Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ click 19 (valueAt + 1) 1, click 19 (valueAt + 6 + 2) 1 ]).said
           }
         , { name = "a click on a label only moves to it"
           , test =
                 \_ ->
                     let
                         r =
-                            after [ click 15 26 1 ]
+                            after [ click 19 26 1 ]
                     in
                     Expect.equal { said = [], foot = True } { said = r.said, foot = String.startsWith "colours.bold_is_bright · " (lastRow r.screen) }
           }
         , { name = "a click away keeps what is typed, as Enter does, and Ctrl+Z undoes it"
-          , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ click 15 26 1, ctrl 'z' ])).said
+          , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ click 19 26 1, ctrl 'z' ])).said
           }
         , { name = "a click away puts back what is typed when it is not a value"
-          , test = \_ -> Expect.equal [] (after [ k.down, k.enter, k.backspace, click 15 26 1 ]).said
+          , test = \_ -> Expect.equal [] (after [ k.down, k.enter, k.backspace, click 19 26 1 ]).said
           }
         , { name = "a double click on a host connects to it"
-          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ click 9 30 2 ]).said
+          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ click 11 30 2 ]).said
           }
         , { name = "a single click on a host only moves to it"
-          , test = \_ -> Expect.equal [] (onHostsPage False [ click 9 30 1 ]).said
+          , test = \_ -> Expect.equal [] (onHostsPage False [ click 11 30 1 ]).said
           }
         , { name = "the wheel scrolls the settings by a setting a step"
           , test =
