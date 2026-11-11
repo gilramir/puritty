@@ -71,11 +71,12 @@ CASES = [
     # the mouse (ST27): a click on a value changes it, one on the reset
     # mark resets it, a click on a page shows it. Clicks are at pixels of the
     # drawn window (docs/settings-gui.md SG3, SG8): at the gate's font a
-    # line is 17 pixels, the list begins at 51 and a setting is 68 tall, a
-    # value's box begins at x 469 and the reset mark at 706, and the side
-    # bar's pages are 32 tall from 51.
-    ("click-value", None, [("click", 489, 425, 1)]),
-    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 716, 425, 1)]),
+    # line is 17 pixels, the list begins at 51 and a setting is 68 tall but
+    # for the colour scheme's, whose description takes 119 (SG12), so
+    # "bold is bright" is 442 to 510; a value's box begins at x 469 and the
+    # reset mark at 706, and the side bar's pages are 32 tall from 51.
+    ("click-value", None, [("click", 489, 476, 1)]),
+    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 716, 476, 1)]),
     ("click-page-and-value", None, [("click", 50, 99, 1), ("click", 489, 85, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
     ("terminal-follows", None, [DOWN, DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]

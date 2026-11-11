@@ -1,7 +1,7 @@
 module SettingsWindow exposing
     ( Model, Input(..), Effect(..), Target(..), Focus(..), Typing
     , init, update, fileRead, told
-    , linesPerRow, listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
+    , linesPerRow, rowLines, rowTop, withRowLines, listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
     )
 
 {-| The settings window's model (`docs/settings.md` ST7, `settings-gui.md`
@@ -69,6 +69,10 @@ type alias Model =
     , launcher : Bool
       -- the host whose form is shown on the Hosts page (ST25)
     , form : Maybe String
+      -- how many lines each listed row takes, as the drawing measured
+      -- them so that no description is cut (SG12); a row not in it takes
+      -- linesPerRow
+    , lines : Array Int
     }
 
 
@@ -135,6 +139,7 @@ init r =
     , aliases = r.aliases
     , launcher = r.launcher
     , form = Nothing
+    , lines = []
     , message =
         when Array.first r.reports is
             Just first ->
@@ -375,7 +380,7 @@ update input m =
         Scroll steps ->
             let
                 most =
-                    max 0 (rowCount m * linesPerRow - bodyRows m)
+                    max 0 (rowTop m (rowCount m) - bodyRows m)
             in
             done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
 
@@ -1215,6 +1220,33 @@ linesPerRow =
     4
 
 
+{-| How many lines row `i` takes: what the drawing measured, and never
+fewer than `linesPerRow`. -}
+rowLines : Model -> Int -> Int
+rowLines m i =
+    max linesPerRow (Maybe.withDefault linesPerRow (Array.get i m.lines))
+
+
+{-| The line row `i` starts on, counted from the first row's. -}
+rowTop : Model -> Int -> Int
+rowTop m i =
+    Array.foldl (\k acc -> acc + rowLines m k) 0 (Array.range 0 (i - 1))
+
+
+{-| The lines the listed rows take, as measured, with the scroll kept
+inside them. -}
+withRowLines : Array Int -> Model -> Model
+withRowLines lines m =
+    let
+        measured =
+            { m | lines = lines }
+
+        most =
+            max 0 (rowTop measured (rowCount measured) - bodyRows measured)
+    in
+    { measured | scroll = min most measured.scroll }
+
+
 {-| The rows between the two rules: the window's rows less three above
 (the search, a space, a rule; the drawn window's header is as tall) and
 two below. -}
@@ -1234,10 +1266,10 @@ keepInView m =
             max 0 (min (count - 1) m.row)
 
         top =
-            row * linesPerRow
+            rowTop m row
 
         bottom =
-            top + linesPerRow - 1
+            top + rowLines m row - 1
 
         scroll =
             if top < m.scroll then

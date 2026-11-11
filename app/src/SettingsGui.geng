@@ -1,4 +1,4 @@
-module SettingsGui exposing (Hit, Size, paint, look, box, framed, text, clip, noClip, fit)
+module SettingsGui exposing (Hit, Size, paint, measure, look, box, framed, text, clip, noClip, fit)
 
 {-| The settings window drawn (`docs/settings-gui.md` SG2, SG3): the model
 `SettingsWindow` keeps, as boxes and proportional text for the renderer's
@@ -418,44 +418,92 @@ labelled r =
     { label = label, desc = label + r.small + r.px 5 }
 
 
-{-| A text in at most two lines of `room` pixels: broken at spaces, the
-second line ending in "…" where the rest does not fit. A first word
-too wide for a line is cut with "…" on one line. -}
-wrapTwo : Int -> Int -> String -> Array String
-wrapTwo size room whole =
-    if Text.width size whole <= room then
-        [ whole ]
+{-| How many lines each listed row needs so that its label and its whole
+description show (SG12): what `SettingsWindow.withRowLines` is given. The
+host list's rows keep `linesPerRow`. -}
+measure : Lang -> Model -> Size -> Array Int
+measure lang m size =
+    if SettingsWindow.inList m then
+        []
 
     else
         let
-            words =
-                String.split " " whole
+            line =
+                size.cellHeight
 
-            firstLine =
-                Array.foldl
-                    (\w acc ->
-                        if acc.full then
-                            acc
+            k =
+                toFloat line / 17
 
-                        else
-                            let
-                                tried =
-                                    if acc.text == "" then w else acc.text ++ " " ++ w
-                            in
-                            if Text.width size tried <= room then
-                                { acc | text = tried, taken = acc.taken + 1 }
+            px n =
+                max 1 (Math.round (toFloat n * k))
 
-                            else
-                                { acc | full = True }
-                    )
-                    { text = "", taken = 0, full = False }
-                    words
+            body =
+                px 13
+
+            small =
+                px 12
+
+            x0 =
+                px 190 + px 24
+
+            cw =
+                m.cols * size.cellWidth - x0 - px 24
+
+            room =
+                descriptionRoom x0 cw px
+
+            linesFor s =
+                let
+                    n =
+                        Array.length (wrapAll small room (descriptionOf lang s))
+
+                    blockH =
+                        body + px 5 + n * small + (n - 1) * px 4 + px 16
+                in
+                max SettingsWindow.linesPerRow ((blockH + line - 1) // max 1 line)
         in
-        if firstLine.taken == 0 then
-            [ fit size room whole ]
+        Array.map linesFor (SettingsWindow.listed m)
 
-        else
-            [ firstLine.text, fit size room (String.join " " (Array.dropFirst firstLine.taken words)) ]
+
+{-| The width a row's label and description have: the row less its value
+field and reset button. -}
+descriptionRoom : Int -> Int -> (Int -> Int) -> Int
+descriptionRoom x0 cw px =
+    let
+        valueW =
+            min (px 260) (cw * 9 // 20)
+    in
+    x0 + cw - valueW - px 30 - x0 - px 16
+
+
+{-| A setting's description as its row shows it. -}
+descriptionOf : Lang -> Setting -> String
+descriptionOf lang s =
+    settingDescription lang s
+        ++ (if s.applies == Schema.NewWindows then " " ++ (Words.words lang).newWindows else "")
+
+
+{-| A text in as many lines of `room` pixels as it takes, broken at spaces;
+a word too wide for a line is cut with "…". -}
+wrapAll : Int -> Int -> String -> Array String
+wrapAll size room whole =
+    let
+        put w acc =
+            let
+                tried =
+                    if acc.current == "" then w else acc.current ++ " " ++ w
+            in
+            if acc.current == "" || Text.width size tried <= room then
+                { acc | current = tried }
+
+            else
+                { lines = Array.pushLast acc.current acc.lines, current = w }
+
+        done =
+            Array.foldl put { lines = [], current = "" } (String.split " " whole)
+    in
+    Array.pushLast done.current done.lines
+        |> Array.map (fit size room)
 
 
 {-| The text, or as much of it as fits in `room` pixels followed by "…". -}
@@ -539,9 +587,6 @@ rows lang m size x0 cw px body small preedit d0 =
         bottom =
             (m.rows - 2) * line
 
-        rowH =
-            SettingsWindow.linesPerRow * line
-
         valueW =
             min (px 260) (cw * 9 // 20)
 
@@ -555,10 +600,13 @@ rows lang m size x0 cw px body small preedit d0 =
             { x = x0 - px 16, y = top, w = cw + px 32, h = bottom - top }
 
         rowY i =
-            top + i * rowH - m.scroll * line
+            top + (SettingsWindow.rowTop m i - m.scroll) * line
+
+        heightOf i =
+            SettingsWindow.rowLines m i * line
 
         visible i =
-            rowY i + rowH > top && rowY i < bottom
+            rowY i + heightOf i > top && rowY i < bottom
 
         fieldH =
             px 28
@@ -578,6 +626,9 @@ rows lang m size x0 cw px body small preedit d0 =
                 let
                     y =
                         rowY i
+
+                    rowH =
+                        heightOf i
 
                     here =
                         m.focus == OnRows && i == m.row
@@ -622,8 +673,7 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
             SettingsWindow.changed m.config s
 
         description =
-            settingDescription lang s
-                ++ (if s.applies == Schema.NewWindows then " " ++ said.newWindows else "")
+            descriptionOf lang s
 
         valueBox =
             { x = vx, y = y + (rowH - fieldH) // 2, w = valueW, h = fieldH }
@@ -635,13 +685,13 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
             { x = x0, y = y, w = vx - x0 - px 16, h = rowH }
 
         lines =
-            wrapTwo small textClip.w description
+            wrapAll small textClip.w description
 
         at =
             labelled { y = y, rowH = rowH, body = body, small = small, descLines = Array.length lines, px = px }
 
         line =
-            rowH // SettingsWindow.linesPerRow
+            rowH // SettingsWindow.rowLines m i
     in
     d
         |> draw (if modified then box { x = x0 - px 12, y = y + px 10, w = px 3, h = rowH - px 20, r = 1, color = look.accent } else Bytes.empty)

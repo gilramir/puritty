@@ -69,6 +69,7 @@ osc52_read = "deny"         # or "allow"
 | `solarized-dark`, `solarized-light` | Solarized |
 | `tango-dark`, `tango-light` | Tango |
 | `dark-plus` | VS Code's Dark+ |
+| `green-screen`, `amber-screen` | the green and amber phosphor screens of early terminals |
 
 ```toml
 [colours]

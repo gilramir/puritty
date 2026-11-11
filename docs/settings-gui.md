@@ -310,3 +310,27 @@ size from its picture: `host-list`, Enter on a host, ends at 720 by 408
 pixels, 80 by 24 cells of the gate's font, where it was 756 by 646, the
 host list's 84 by 38; `start-hosts`, the list opened and nothing chosen,
 stays 756 by 646.
+
+## SG12 · A setting's description is never cut (2026-11-11)
+
+*Gilbert, 2026-11-11:* on the Mouse & selection page, "Copy the selection
+to the clipboard"'s description was cut off. Descriptions are not to be
+hidden.
+
+A row was `linesPerRow` (4) lines tall and its description at most two
+lines, the second ending in "…" (`wrapTwo`). Now a description wraps into
+as many lines as it takes (`SettingsGui.wrapAll`; only a single word too
+wide for a line is still cut), and a row is as tall as its label and
+description need with 8 pixels above and below at the gate's font, never
+fewer than 4 lines. The drawing measures the rows (`SettingsGui.measure`,
+which needs text widths) and the program hands the counts to the window
+(`SettingsWindow.withRowLines`) before each input and each frame, so the
+wheel's limit and keeping the focused row in view count the rows as drawn
+(`rowLines`, `rowTop`); a window never measured, as in the app tests,
+counts 4 lines a row as before.
+
+**Measured** at the settings gate's font (17-pixel lines): every
+description that fit in two lines keeps its 68-pixel row; the colour
+scheme's, five lines at that width, takes 119. The gate's two click cases
+aim at "bold is bright", which is below it and moved from 425 to 476.
+Settings 19 of 19, app tests 102.

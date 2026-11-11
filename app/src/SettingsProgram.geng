@@ -284,8 +284,11 @@ draw s =
         preedit =
             String.fromArray (Array.mapAndKeepJust Char.fromCode s.preedit.points)
 
+        window =
+            measured s s.window
+
         frame =
-            SettingsGui.paint s.lang s.window { cols = s.window.cols, rows = s.window.rows, cellWidth = s.cell.width, cellHeight = s.cell.height } preedit
+            SettingsGui.paint s.lang window { cols = s.window.cols, rows = s.window.rows, cellWidth = s.cell.width, cellHeight = s.cell.height } preedit
     in
     Window.draw frame.list
         |> Task.andThen (\up -> Window.spot frame.spot |> Task.map (\_ -> up))
@@ -298,7 +301,7 @@ draw s =
                     Nothing ->
                         Task.succeed up
             )
-        |> Task.map (\up -> { s | hits = frame.hits, lost = s.lost || up == Nothing })
+        |> Task.map (\up -> { s | window = window, hits = frame.hits, lost = s.lost || up == Nothing })
 
 
 handle : Array Window.Event -> State -> Task String State
@@ -402,9 +405,15 @@ input : SettingsWindow.Input -> State -> Task String State
 input i s =
     let
         r =
-            SettingsWindow.update i s.window
+            SettingsWindow.update i (measured s s.window)
     in
-    Array.foldl (\e t -> t |> Task.andThen (effect e)) (Task.succeed { s | window = r.model }) r.effects
+    Array.foldl (\e t -> t |> Task.andThen (effect e)) (Task.succeed { s | window = measured s r.model }) r.effects
+
+
+{-| The window with its rows measured as they will be drawn (SG12). -}
+measured : State -> SettingsWindow.Model -> SettingsWindow.Model
+measured s w =
+    SettingsWindow.withRowLines (SettingsGui.measure s.lang w { cols = w.cols, rows = w.rows, cellWidth = s.cell.width, cellHeight = s.cell.height }) w
 
 
 effect : SettingsWindow.Effect -> State -> Task String State
