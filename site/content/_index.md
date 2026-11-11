@@ -2,7 +2,7 @@
 title = "puritty"
 
 [extra]
-headline = "A terminal that stays fast over the network, and gets Korean, Chinese, Japanese and Thai right"
+headline = "A terminal that's fast, and just does things right"
 lede = "puritty runs on Linux and Windows. It draws tmux's panes as its own, carries its own ssh client, and is just as quick when it runs on another machine and draws on your desktop."
 status = "**Pre-release.** puritty is its author's daily terminal. It will be published with the first alpha of [Geng](https://geng-lang.org), the language it is written in; until then you build it from source."
 hero_image = "tmux-on-windows.png"
