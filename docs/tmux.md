@@ -1104,3 +1104,48 @@ copy mode's backing screen, the pane's own lines, not the view with its
 cursor, selection or position; the formats give the rest (`copy_cursor_x`,
 `copy_cursor_y`, `scroll_position`, `selection_present` and the selection's
 ends). For a keyboard user in vi copy mode this comes before TM24.5's menus.
+
+## TM26 · What tmux prints, in a view (2026-11-11)
+
+Item 2 of TM24.5. A terminal client shows what a command prints for it
+(`list-keys -N` from `prefix ?`, `list-buffers` from `#`, `show-messages`
+from `~`, anything run from the colon prompt) in view mode over the active
+pane. A control client gets it as the lines of the command's block
+instead: a key binding's block is flags 0 (TM24.2), a command puritty ran
+from a prompt is its own (TM25, `ForRan`).
+
+**Shown:** lines in either block open a view (`TmuxMode.View`), unless the
+block holds `display-message`'s `%message`, which goes to the bar as
+before; a command's error goes to the bar too. Tabs become spaces to the
+next column of eight and other control characters spaces, so nothing
+printed reaches the canvas as a sequence. While it is open the view takes
+every key and drops what an input method commits or a paste brings; the
+pane's cursor is hidden.
+
+**Keys:** q, Escape and C-c close it; Up, Down, k, j, C-p, C-n, C-y, C-e
+and Enter move a line; PPage, NPage, C-b, C-f, b, f and Space a page (the
+view's rows less two, as tmux pages: measured 21 in a pane of 23 rows);
+C-u and C-d half a page; g, Home and M-< the top; G, End and M-> the bottom.
+
+**Drawn** by `[tmux] look` (TM25.2): `"puritty"` in a box over the panes as
+wide as the longest line (40 columns at least, the window at most) and as
+tall as its lines, amber edges on the tab bar's dark band, with "q: close"
+and where it is (`28-54 of 89`) on the bottom edge. `"tmux"` over the
+active pane, as tmux draws view mode, measured on 3.8 by a tmux client
+inside another tmux: the lines from the pane's top, and `[N/M]` in
+`mode-style` at its top right, M the lines that do not fit and N those
+below the view, so it opens at `[M/M]` (`prefix ?` in 23 rows: `[70/70]`)
+and G gives `[0/M]`. tmux 3.8 writes the top line's time before it
+(`copy-mode-position-format`); puritty has no time for a line and leaves
+it out.
+
+**Checked:** `bench/tmux/show.py --scenario views`, Gilbert's tmux.conf,
+in each look: `C-a ?` opens the view; `zzz`, `j j Next`, `G` move it and
+`zzz` never reaches the pane; `q` closes it and typing reaches the pane
+again; `C-a #` with a buffer set shows it; `C-a :` `list-windows` shows the
+window; tmux answers after. Every picture looked at.
+
+**Not yet:** the wheel does not scroll the view; a line wider than the view
+is cut, where tmux's copy mode scrolls sideways; copy mode's search is not
+offered inside the view.
+

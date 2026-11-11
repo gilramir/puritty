@@ -87,10 +87,16 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   look = "tmux"
   ```
 
+- **Lists tmux prints**: `prefix ?` (the key bindings), `prefix #` (the
+  paste buffers), `prefix ~` (tmux's messages), and anything a command from
+  `prefix :` prints, open in a box you scroll with the arrows, `j` and `k`,
+  PgUp and PgDn, Space, `g` and `G`; `q` or Escape closes it. With `look =
+  "tmux"` they cover the active pane, with tmux's `[n/m]` at the top right,
+  as tmux shows them.
+
 Not yet under `-CC`: copy mode and tmux's other modes (choose-tree, the
-clock, `prefix ?`) change what tmux does but puritty does not draw them yet,
-so copy mode's cursor and selection are not shown; nor are tmux's menus or
-the lists `prefix #` and `prefix ~`. `prefix Ctrl+Z` does nothing and says
+clock) change what tmux does but puritty does not draw them yet, so copy
+mode's cursor and selection are not shown; nor are tmux's menus. `prefix Ctrl+Z` does nothing and says
 why in the tab bar, since tmux would then take no more keys from puritty.
 
 ## tmux drawing for itself

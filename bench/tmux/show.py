@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,11 @@ def main():
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "views":
+            for look in ("puritty", "tmux"):
+                (WORK / "config.toml").write_text(f'[window]\ncolumns = 100\nrows = 30\n\n[tmux]\nlook = "{look}"\n')
+                views(a, env, tmux, xdo, snap, cli, look)
             return
         if a.scenario == "prompts":
             for look in ("puritty", "tmux"):
@@ -520,6 +525,65 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.5)
         print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        subprocess.run([*t, "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        app.terminate()
+        app.wait()
+
+
+def views(a, env, tmux, xdo, snap, cli, look):
+    """What a binding prints, in a view (docs/tmux.md TM26), with
+    Gilbert's tmux.conf, in each look: `C-a ?` opened, moved and closed,
+    keys typed while it is open kept from the pane, `C-a #`, and a command
+    from the colon prompt; each read back from tmux."""
+    conf = WORK / "prefix.conf"
+    conf.write_text(PREFIX_CONF)
+    t = [a.tmux, "-L", SOCK, "-f", str(conf)]
+    q = lambda *args: subprocess.run([*t, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *t, "-CC", "new-session", "-n", "first"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        xd("key", "ctrl+a", "bar")
+        time.sleep(0.6)
+        xd("key", "ctrl+a", "question")
+        time.sleep(0.8)
+        snap(f"{look}-view-keys")
+        xd("type", "--delay", "20", "zzz")
+        xd("key", "j", "j", "Next")
+        time.sleep(0.4)
+        snap(f"{look}-view-moved")
+        xd("key", "G")
+        time.sleep(0.4)
+        snap(f"{look}-view-bottom")
+        xd("key", "q")
+        time.sleep(0.5)
+        xd("type", "--delay", "20", "echo after-view")
+        xd("key", "Return")
+        time.sleep(0.6)
+        shown = q("capture-pane", "-p")
+        print(look, "| after q, typing reaches the pane:", "after-view" in shown, "| keys kept from it while open:", "zzz" not in shown)
+        cli("set-buffer", "-b", "kept", "a buffer's text")
+        xd("key", "ctrl+a", "numbersign")
+        time.sleep(0.8)
+        snap(f"{look}-view-buffers")
+        xd("key", "Escape")
+        xd("key", "ctrl+a", "colon")
+        time.sleep(0.4)
+        xd("type", "--delay", "20", "list-windows")
+        xd("key", "Return")
+        time.sleep(0.8)
+        snap(f"{look}-view-command")
+        xd("key", "q")
+        time.sleep(0.4)
+        print(look, "| tmux answers:", q("display-message", "-p", "ok"), "| panes:", len(q("list-panes").splitlines()))
         cli("kill-server")
         time.sleep(1)
     finally:

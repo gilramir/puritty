@@ -104,6 +104,18 @@ type alias State =
     , asking : Maybe Asking
     , history : Array String
     , lookTmux : Bool
+      -- what a binding or a command printed, shown in a view that takes
+      -- the keys until it is closed (TM26)
+    , view : Maybe View
+    }
+
+
+{-| What tmux printed for this client (TM26): its lines, the first shown,
+and how many rows the view had when it was last drawn, a page. -}
+type alias View =
+    { lines : Array String
+    , top : Int
+    , rows : Int
     }
 
 
@@ -220,6 +232,7 @@ idle _ =
     , asking = Nothing
     , history = []
     , lookTmux = False
+    , view = Nothing
     }
 
 
@@ -324,10 +337,11 @@ promptBox s =
 
 
 {-| Whether puritty asks one of tmux's prompts, which then takes what an
-input method commits and what is pasted. -}
+input method commits and what is pasted, or shows a view (TM26), which
+drops them. -}
 isAsking : State -> Bool
 isAsking s =
-    s.asking /= Nothing
+    s.asking /= Nothing || s.view /= Nothing
 
 
 {-| Text from an input method or a paste, typed into the prompt: a line
@@ -473,7 +487,7 @@ event size e acc =
                 st =
                     acc.state
             in
-            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty } }
+            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing } }
 
         Reply r ->
             if r.flags == 0 then
@@ -483,7 +497,18 @@ event size e acc =
                 when Array.findLast (\line -> String.startsWith "%message " (Bytes.toStringLossy line)) r.lines is
                     Nothing ->
                         if r.ok then
-                            acc
+                            -- what a binding printed (`list-keys -N`,
+                            -- `list-buffers`, `show-messages`), which a
+                            -- terminal client shows in view mode (TM26)
+                            if Array.isEmpty r.lines then
+                                acc
+
+                            else
+                                let
+                                    st =
+                                        acc.state
+                                in
+                                { acc | state = { st | view = Just (viewOf r.lines) } }
 
                         else
                             -- a binding's error, as tmux's status line would
@@ -686,6 +711,16 @@ replied expect ok lines acc =
             in
             if Array.isEmpty lines then
                 { acc | state = st }
+
+            else if ok then
+                -- printed: in a view, as tmux shows a command's output
+                -- (TM26); `display-message`'s own words at the bar
+                when Array.findLast (\line -> String.startsWith "%message " (Bytes.toStringLossy line)) lines is
+                    Just m ->
+                        { acc | state = { st | said = String.dropFirst 9 (Bytes.toStringLossy m.value) } }
+
+                    Nothing ->
+                        { acc | state = { st | view = Just (viewOf lines) } }
 
             else
                 { acc | state = { st | said = if more > 0 then first ++ " (" ++ String.fromInt more ++ " more lines)" else first } }
@@ -1103,12 +1138,34 @@ paint s =
                             []
 
                 shownCursor =
-                    when s.asking is
-                        Just _ ->
+                    when { asking = s.asking, view = s.view } is
+                        { asking = Just _, view = _ } ->
                             if s.lookTmux then "\u{001B}[?25h" else "\u{001B}[?25l"
 
-                        Nothing ->
+                        { asking = Nothing, view = Just _ } ->
+                            "\u{001B}[?25l"
+
+                        _ ->
                             cursor
+
+                -- a view of what tmux printed (TM26): over the active pane
+                -- in tmux's look, in a box over the panes in puritty's
+                viewDrawn =
+                    when s.view is
+                        Just v ->
+                            if s.lookTmux then
+                                when Array.findFirst (\p -> p.id == active) (tiled ++ floating) is
+                                    Just place ->
+                                        tmuxView place.value v
+
+                                    Nothing ->
+                                        boxView cols rows s.barTop v
+
+                            else
+                                boxView cols rows s.barTop v
+
+                        Nothing ->
+                            { rows = 0, pieces = [] }
 
                 -- what tmux or puritty said, at the bar's right (TM24)
                 saidPiece =
@@ -1171,9 +1228,10 @@ paint s =
                         |> drawText barColour (if s.lookTmux then [] else saidPiece)
                         |> drawText messageColour tmuxLine
                         |> drawText messageColour caretPiece
+                        |> (\c -> Array.foldl (\piece acc -> drawText piece.colour [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
                         |> Vt.feed (Bytes.fromString shownCursor)
             in
-            { s | canvas = (Vt.takeReplies composed).term }
+            { s | canvas = (Vt.takeReplies composed).term, view = Maybe.map (\v -> { v | rows = max 1 viewDrawn.rows }) s.view }
 
 
 {-| CUP to the active pane's cursor in the window, and DECTCEM as the
@@ -1285,11 +1343,14 @@ typed k bytes ms s =
         { state = s, commands = [] }
 
     else
-        when s.asking is
-            Just a ->
+        when { asking = s.asking, view = s.view } is
+            { asking = Just a, view = _ } ->
                 promptKey k bytes ms a s
 
-            Nothing ->
+            { asking = Nothing, view = Just v } ->
+                { state = { s | view = viewKey k v }, commands = [] }
+
+            _ ->
                 keyByTable k bytes ms s
 
 
@@ -2285,6 +2346,204 @@ tabsOf cols row s =
             |> Array.map (\h -> { row = row, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
     , hits = laid.hits
     }
+
+
+-- VIEWS (TM26)
+
+
+{-| A view of lines tmux printed, at its first line: tabs to the next
+column of eight, other control characters as spaces, so that nothing
+printed is read as a terminal's sequence when it is drawn. -}
+viewOf : Array Bytes -> View
+viewOf lines =
+    { lines = Array.map (\line -> shownLine (Bytes.toStringLossy line)) lines, top = 0, rows = 1 }
+
+
+shownLine : String -> String
+shownLine text =
+    String.toArray text
+        |> Array.foldl
+            (\c acc ->
+                if c == '\t' then
+                    acc ++ String.toArray (String.repeat (8 - modBy 8 (Array.length acc)) " ")
+
+                else if Char.toCode c < 0x20 || Char.toCode c == 0x7F || (Char.toCode c >= 0x80 && Char.toCode c < 0xA0) then
+                    Array.pushLast ' ' acc
+
+                else
+                    Array.pushLast c acc
+            )
+            []
+        |> String.fromArray
+
+
+{-| A key while a view is open: q, Escape or C-c closes it; the rest move
+it as copy mode's keys do, vi's and emacs's both: a line (Up, Down, k, j,
+C-p, C-n, C-y, C-e, Enter), a page (PPage, NPage, C-b, C-f, Space), half
+a page (C-u, C-d), the top (g, Home, M-<) and the bottom (G, End, M->). -}
+viewKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> View -> Maybe View
+viewKey k v =
+    let
+        name =
+            Maybe.withDefault "" (lookupName k)
+
+        page =
+            max 1 (v.rows - 2)
+
+        half =
+            max 1 (v.rows // 2)
+
+        last =
+            max 0 (Array.length v.lines - v.rows)
+
+        to n =
+            Just { v | top = max 0 (min last n) }
+    in
+    if name == "q" || name == "Escape" || name == "C-c" then
+        Nothing
+
+    else if Array.member name [ "Up", "k", "C-p", "C-y" ] then
+        to (v.top - 1)
+
+    else if Array.member name [ "Down", "j", "C-n", "C-e", "Enter" ] then
+        to (v.top + 1)
+
+    else if Array.member name [ "PPage", "C-b", "b" ] then
+        to (v.top - page)
+
+    else if Array.member name [ "NPage", "C-f", "Space", "f" ] then
+        to (v.top + page)
+
+    else if name == "C-u" then
+        to (v.top - half)
+
+    else if name == "C-d" then
+        to (v.top + half)
+
+    else if Array.member name [ "g", "Home", "M-<" ] then
+        to 0
+
+    else if Array.member name [ "G", "End", "M->" ] then
+        to last
+
+    else
+        Just v
+
+
+{-| The view in tmux's look: over the active pane, its lines from the
+pane's top and tmux's position, `[N/M]` in `mode-style` at the top right,
+N the lines below the view and M those that do not fit, as tmux counts
+them (measured on 3.8: `prefix ?` opens at `[70/70]` in a pane of 23 rows
+over 93 lines). -}
+tmuxView : Layout.Pane -> View -> { rows : Int, pieces : Array { row : Int, col : Int, colour : String, text : String } }
+tmuxView p v =
+    let
+        hidden =
+            max 0 (Array.length v.lines - p.h)
+
+        top =
+            min v.top hidden
+
+        position =
+            "[" ++ String.fromInt (hidden - top) ++ "/" ++ String.fromInt hidden ++ "]"
+
+        rowsOf =
+            Array.range 0 (p.h - 1)
+                |> Array.mapAndFlatten
+                    (\r ->
+                        [ { row = p.y + r, col = p.x, colour = "\u{001B}[0m", text = String.repeat p.w " " }
+                        , { row = p.y + r, col = p.x, colour = "\u{001B}[0m", text = String.takeFirst p.w (Maybe.withDefault "" (Array.get (top + r) v.lines)) }
+                        ]
+                    )
+    in
+    { rows = p.h
+    , pieces =
+        rowsOf
+            ++ (if String.count position <= p.w then
+                    [ { row = p.y, col = p.x + p.w - String.count position, colour = messageColour, text = position } ]
+
+                else
+                    []
+               )
+    }
+
+
+{-| The view in puritty's look: a box over the panes, as wide as its
+longest line allows, its keys and where it is on the bottom edge. -}
+boxView : Int -> Int -> Bool -> View -> { rows : Int, pieces : Array { row : Int, col : Int, colour : String, text : String } }
+boxView cols rows barTop v =
+    let
+        areaTop =
+            if barTop then bar else 0
+
+        areaH =
+            rows - bar
+
+        longest =
+            Array.foldl (\line m -> max m (String.count line)) 0 v.lines
+
+        w =
+            max 4 (min cols (max 40 (longest + 4)))
+
+        h =
+            max 3 (min areaH (Array.length v.lines + 2))
+
+        inner =
+            h - 2
+
+        x0 =
+            (cols - w) // 2
+
+        y0 =
+            areaTop + (areaH - h) // 2
+
+        last =
+            max 0 (Array.length v.lines - inner)
+
+        top =
+            min v.top last
+
+        shown =
+            if Array.length v.lines > inner then
+                " " ++ String.fromInt (top + 1) ++ "-" ++ String.fromInt (top + inner) ++ " of " ++ String.fromInt (Array.length v.lines) ++ " "
+
+            else
+                ""
+
+        foot =
+            String.takeFirst (w - 2) (" q: close " ++ (if shown == "" then "" else "─" ++ shown))
+
+        edge left mid right label =
+            left ++ label ++ String.repeat (max 0 (w - 2 - String.count label)) mid ++ right
+
+        body =
+            Array.range 0 (inner - 1)
+                |> Array.mapAndFlatten
+                    (\r ->
+                        [ { row = y0 + 1 + r, col = x0, colour = viewEdgeColour, text = "│" ++ String.repeat (w - 2) " " }
+                        , { row = y0 + 1 + r, col = x0 + 2, colour = viewTextColour, text = String.takeFirst (w - 4) (Maybe.withDefault "" (Array.get (top + r) v.lines)) }
+                        , { row = y0 + 1 + r, col = x0 + w - 1, colour = viewEdgeColour, text = "│" }
+                        ]
+                    )
+    in
+    { rows = inner
+    , pieces =
+        [ { row = y0, col = x0, colour = viewEdgeColour, text = edge "╭" "─" "╮" " tmux " } ]
+            ++ body
+            ++ [ { row = y0 + h - 1, col = x0, colour = viewEdgeColour, text = edge "╰" "─" "╯" foot } ]
+    }
+
+
+{-| A view's box in puritty's look: amber edges, on the tab bar's dark
+band. -}
+viewEdgeColour : String
+viewEdgeColour =
+    "\u{001B}[0;38;5;214;48;5;236m"
+
+
+viewTextColour : String
+viewTextColour =
+    "\u{001B}[0;38;5;252;48;5;236m"
 
 
 {-| Text written in the canvas in a colour (TM21): each piece at its row
