@@ -610,6 +610,9 @@ Details in [`cjk-and-thai.md`](cjk-and-thai.md) §4–§5.
 
 ## 7. tmux control mode
 
+*2026-11-11:* `tmux.md` reads tmux 3.8 for the questions below left to
+its source, records a 3.8 session, and corrects §7.3 in its TM6.
+
 ### 7.1 Protocol facts to design around
 
 - **Entry:** tmux writes `ESC P 1000 p`, then a line protocol, then ST at exit.
