@@ -1008,3 +1008,38 @@ certificate, and `signtool verify /pa` on beelink1 checks it. An installer
 (MSI or MSIX, or `winget`), if one comes, is signed the same way. A new
 publisher's signed exe may still meet SmartScreen's warning until it has
 reputation; signing ends "unknown publisher" and shows tampering.
+
+## WS29 · A profile-guided puritty.exe (2026-11-11)
+
+*Gilbert, 2026-11-11:* profile-guided on Windows as on Linux, before the
+release. The core is the same Geng on both platforms and MinGW's clang is
+the same 21.1.8 as Linux's, so the profile `harness/bench/pgo.sh` trains on
+Linux is the Windows build's: `app/release-windows.sh` trains it and runs
+`app/build-windows.sh --profile-use=…`. clang matches all but one function
+of each of two files (`-Wprofile-instr-out-of-date`), as on Linux.
+
+**Measured on beelink1** with `harness/bench/build-windows.sh` (new:
+core-bench for Windows), plain and profile-guided, the least of seven runs
+of each of the thirteen throughput inputs, the two builds alternating
+first:
+
+| input | plain ms | profile-guided ms | change |
+|---|---|---|---|
+| cup | 102 | 73 | −28.4% |
+| gitlog | 140 | 123 | −12.1% |
+| ls | 86 | 80 | −7.0% |
+| vte-cursor_motion | 50 | 36 | −28.0% |
+| vte-dense_cells | 43 | 32 | −25.6% |
+| vte-light_cells | 12 | 14 | +2 ms |
+| vte-scrolling | 92 | 64 | −30.4% |
+| vte-scrolling_bottom_region | 62 | 39 | −37.1% |
+| vte-scrolling_bottom_small_region | 62 | 39 | −37.1% |
+| vte-scrolling_fullscreen | 22 | 22 | 0 |
+| vte-scrolling_top_region | 62 | 39 | −37.1% |
+| vte-scrolling_top_small_region | 62 | 40 | −35.5% |
+| vte-unicode | 34 | 29 | −14.7% |
+
+Seven to 37 percent on eleven inputs, Linux's 7 to 32 (`vt-core.md` §VC56);
+the two that do not move run 12 to 22 ms, where the clock's milliseconds
+are too coarse to tell. The release exe was run on beelink1 with a scheme
+set and its picture taken.
