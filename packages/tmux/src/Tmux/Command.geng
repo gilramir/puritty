@@ -1,0 +1,72 @@
+module Tmux.Command exposing
+    ( sendBytes
+    , size
+    , clientFlags
+    , quote
+    , listPanes
+    )
+
+{-| The commands puritty sends tmux in control mode (puritty
+`docs/tmux.md` TM5), each a line without its `\n`. Ids go in quotes, as
+an unquoted `%0:…` is a parse error in tmux 3.8 (TM3).
+-}
+
+import Bytes exposing (Bytes)
+
+
+{-| `send-keys -H`: the bytes as the pane's program reads them, hex, at
+most 256 to a command so that a paste makes lines of a sensible length. -}
+sendBytes : Int -> Bytes -> Array String
+sendBytes pane bytes =
+    let
+        hex =
+            Bytes.toHexString { padding = False } bytes
+
+        count =
+            Bytes.length bytes
+    in
+    Array.range 0 ((count - 1) // 256)
+        |> Array.keepIf (\_ -> count > 0)
+        |> Array.map
+            (\i ->
+                let
+                    part =
+                        String.slice (i * 512) (min (2 * count) ((i + 1) * 512)) hex
+                in
+                "send-keys -t " ++ quote ("%" ++ String.fromInt pane) ++ " -H " ++ pairs part
+            )
+
+
+{-| `abcd` as `ab cd`. -}
+pairs : String -> String
+pairs hex =
+    Array.range 0 (String.count hex // 2 - 1)
+        |> Array.map (\i -> String.slice (2 * i) (2 * i + 2) hex)
+        |> String.join " "
+
+
+{-| The client's size, `refresh-client -C`, in cells. -}
+size : { cols : Int, rows : Int } -> String
+size s =
+    "refresh-client -C " ++ String.fromInt (max 1 s.cols) ++ "x" ++ String.fromInt (max 1 s.rows)
+
+
+{-| The flags puritty sets on attach: 3.8's layouts with floating panes;
+an older tmux ignores a name it does not know (TM5.5). -}
+clientFlags : String
+clientFlags =
+    "refresh-client -f new-layouts"
+
+
+{-| Each pane of the session's current window and its state, one line a
+pane, each starting with `P` so that no line can read as a guard (TM5.2). -}
+listPanes : String
+listPanes =
+    "list-panes -F " ++ quote "P #{pane_id} #{window_id} #{pane_active} #{cursor_x} #{cursor_y} #{alternate_on} #{window_layout}"
+
+
+{-| A word for tmux's command line, single-quoted: tmux takes nothing in
+single quotes as special, and `'` itself is ended, escaped and begun. -}
+quote : String -> String
+quote s =
+    "'" ++ String.replace "'" "'\\''" s ++ "'"

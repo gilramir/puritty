@@ -1,0 +1,246 @@
+module Tmux.Layout exposing
+    ( Cell(..)
+    , Pane
+    , parse
+    , panes
+    , tiled
+    , floating
+    )
+
+{-| A tmux window's layout (puritty `docs/tmux.md` TM5.6), from either of
+tmux's two forms: the old string (`b25d,80x24,0,0,0`), which tmux 3.2 to
+3.8 send, and 3.8's JSON (`{"V":2,"L":…}`), which a client that set the
+`new-layouts` flag gets. Which is which is the first character.
+
+Every cell's size and place are in the window's cells, so a pane's box is
+where it is drawn, whatever its parents. A floating pane (3.7 and later)
+is a leaf among the tiled ones with a `z`, 0 the topmost; it is drawn over
+the tiled panes at its own box, not laid out by its parent.
+-}
+
+import Json.Decode as Decode exposing (Decoder)
+
+
+{-| A pane: its id (`%id`), its box, whether it is the window's active
+pane, and its place among the floating panes if it floats. -}
+type alias Pane =
+    { id : Int
+    , w : Int
+    , h : Int
+    , x : Int
+    , y : Int
+    , active : Bool
+    , z : Maybe Int
+    }
+
+
+{-| A layout cell: a split, its children left to right (`leftRight`) or
+top to bottom, or a pane. -}
+type Cell
+    = Split { leftRight : Bool, w : Int, h : Int, x : Int, y : Int, children : Array Cell }
+    | Leaf Pane
+
+
+{-| A layout from either form, or why not. -}
+parse : String -> Result String Cell
+parse text =
+    if String.startsWith "{" text then
+        Decode.decodeString (Decode.field "L" cellDecoder) text
+            |> Result.mapError Decode.errorToString
+
+    else
+        oldForm text
+
+
+{-| Every pane, in the layout's order. -}
+panes : Cell -> Array Pane
+panes cell =
+    when cell is
+        Leaf p ->
+            [ p ]
+
+        Split s ->
+            Array.mapAndFlatten panes s.children
+
+
+{-| The tiled panes. -}
+tiled : Cell -> Array Pane
+tiled cell =
+    Array.keepIf (\p -> p.z == Nothing) (panes cell)
+
+
+{-| The floating panes, the bottom one first, so that drawing them in
+order leaves the topmost (`z` 0) on top. -}
+floating : Cell -> Array Pane
+floating cell =
+    panes cell
+        |> Array.keepIf (\p -> p.z /= Nothing)
+        |> Array.sortBy (\p -> 0 - Maybe.withDefault 0 p.z)
+
+
+
+-- 3.8's JSON
+
+
+cellDecoder : Decoder Cell
+cellDecoder =
+    Decode.field "t" Decode.string
+        |> Decode.andThen
+            (\t ->
+                if t == "p" then
+                    paneDecoder
+
+                else if t == "h" || t == "v" then
+                    splitDecoder (t == "h")
+
+                else
+                    Decode.fail ("a cell of type " ++ t)
+            )
+
+
+splitDecoder : Bool -> Decoder Cell
+splitDecoder leftRight =
+    Decode.map5
+        (\w h x y kids -> Split { leftRight = leftRight, w = w, h = h, x = x, y = y, children = kids })
+        (Decode.field "w" Decode.int)
+        (Decode.field "h" Decode.int)
+        (Decode.field "x" Decode.int)
+        (Decode.field "y" Decode.int)
+        (Decode.field "c" (Decode.array (Decode.lazy (\_ -> cellDecoder))))
+
+
+paneDecoder : Decoder Cell
+paneDecoder =
+    Decode.map5
+        (\w h x y more -> Leaf { id = more.id, w = w, h = h, x = x, y = y, active = more.active, z = more.z })
+        (Decode.field "w" Decode.int)
+        (Decode.field "h" Decode.int)
+        (Decode.field "x" Decode.int)
+        (Decode.field "y" Decode.int)
+        (Decode.map3 (\i a z -> { id = i, active = a, z = z })
+            (Decode.field "I" Decode.string
+                |> Decode.andThen
+                    (\s ->
+                        when String.toInt (String.dropFirst 1 s) is
+                            Just n ->
+                                Decode.succeed n
+
+                            Nothing ->
+                                Decode.fail ("a pane id " ++ s)
+                    )
+            )
+            (Decode.maybe (Decode.field "a" Decode.bool) |> Decode.map (Maybe.withDefault False))
+            (Decode.maybe (Decode.field "z" Decode.int))
+        )
+
+
+
+-- the old form: `csum,` then a cell, `WxH,X,Y` and `,id` for a pane or
+-- `{…}` (left to right) or `[…]` (top to bottom) of cells
+
+
+oldForm : String -> Result String Cell
+oldForm text =
+    let
+        chars =
+            Array.map Char.toCode (String.toArray text)
+    in
+    if Array.length chars < 6 || Array.get 4 chars /= Just 0x2C then
+        Err ("not a layout: " ++ text)
+
+    else
+        when oldCell chars 5 is
+            Ok got ->
+                if got.at == Array.length chars then
+                    Ok got.cell
+
+                else
+                    Err ("more after the layout: " ++ text)
+
+            Err why ->
+                Err why
+
+
+oldCell : Array Int -> Int -> Result String { cell : Cell, at : Int }
+oldCell chars at =
+    number chars at
+        |> Result.andThen (\w -> expect 0x78 chars w.at |> Result.andThen (\a1 -> number chars a1
+        |> Result.andThen (\h -> expect 0x2C chars h.at |> Result.andThen (\a2 -> number chars a2
+        |> Result.andThen (\x -> expect 0x2C chars x.at |> Result.andThen (\a3 -> number chars a3
+        |> Result.andThen (\y -> oldRest chars { w = w.value, h = h.value, x = x.value, y = y.value } y.at)))))))
+
+
+oldRest : Array Int -> { w : Int, h : Int, x : Int, y : Int } -> Int -> Result String { cell : Cell, at : Int }
+oldRest chars box at =
+    when Array.get at chars is
+        Just 0x2C ->
+            number chars (at + 1)
+                |> Result.map (\i -> { cell = Leaf { id = i.value, w = box.w, h = box.h, x = box.x, y = box.y, active = False, z = Nothing }, at = i.at })
+
+        Just 0x7B ->
+            children chars (at + 1) 0x7D []
+                |> Result.map (\c -> { cell = Split { leftRight = True, w = box.w, h = box.h, x = box.x, y = box.y, children = c.cells }, at = c.at })
+
+        Just 0x5B ->
+            children chars (at + 1) 0x5D []
+                |> Result.map (\c -> { cell = Split { leftRight = False, w = box.w, h = box.h, x = box.x, y = box.y, children = c.cells }, at = c.at })
+
+        _ ->
+            Err ("a layout cell with no pane and no children at " ++ String.fromInt at)
+
+
+children : Array Int -> Int -> Int -> Array Cell -> Result String { cells : Array Cell, at : Int }
+children chars at close cells =
+    when oldCell chars at is
+        Ok got ->
+            when Array.get got.at chars is
+                Just c ->
+                    if c == 0x2C then
+                        children chars (got.at + 1) close (Array.pushLast got.cell cells)
+
+                    else if c == close then
+                        Ok { cells = Array.pushLast got.cell cells, at = got.at + 1 }
+
+                    else
+                        Err ("a layout's children end badly at " ++ String.fromInt got.at)
+
+                Nothing ->
+                    Err "a layout's children do not end"
+
+        Err why ->
+            Err why
+
+
+expect : Int -> Array Int -> Int -> Result String Int
+expect c chars at =
+    if Array.get at chars == Just c then
+        Ok (at + 1)
+
+    else
+        Err ("a layout wants byte " ++ String.fromInt c ++ " at " ++ String.fromInt at)
+
+
+number : Array Int -> Int -> Result String { value : Int, at : Int }
+number chars at =
+    numberFrom chars at at 0
+
+
+numberFrom : Array Int -> Int -> Int -> Int -> Result String { value : Int, at : Int }
+numberFrom chars start at value =
+    when Array.get at chars is
+        Just c ->
+            if c >= 0x30 && c <= 0x39 && at - start < 9 then
+                numberFrom chars start (at + 1) (value * 10 + c - 0x30)
+
+            else if at > start then
+                Ok { value = value, at = at }
+
+            else
+                Err ("a layout wants a number at " ++ String.fromInt at)
+
+        Nothing ->
+            if at > start then
+                Ok { value = value, at = at }
+
+            else
+                Err "a layout ends where a number should be"

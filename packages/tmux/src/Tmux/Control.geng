@@ -1,0 +1,568 @@
+module Tmux.Control exposing
+    ( Reader
+    , reader
+    , isInside
+    , Event(..)
+    , Notice(..)
+    , feed
+    , unescape
+    )
+
+{-| tmux's control mode (`tmux -CC`), read from the bytes the terminal
+receives (puritty `docs/tmux.md` TM5).
+
+Outside control mode the bytes are the terminal's, and `feed` hands them
+back as `Outside`. `ESC P 1000 p` enters it; from there the bytes are
+lines, each a reply line between `%begin` and `%end` or `%error`, or a
+notification starting with `%`; `ESC \` at the start of a line leaves it.
+Lines end in `\r\n` (tmux's client sets ONLCR), and the `\r` is dropped.
+
+A read may end anywhere: what cannot be decided yet (a partial line, or
+the first bytes of `ESC P 1000 p`) is kept for the next read.
+-}
+
+import Bytes exposing (Bytes)
+import UInt8
+
+
+{-| Where reading has got to. -}
+type alias Reader =
+    { inside : Bool
+    , held : Bytes
+    , block : Maybe Block
+    }
+
+
+{-| A command's reply being read: `%begin`'s number and flags, and its
+lines so far. -}
+type alias Block =
+    { number : Int
+    , flags : Int
+    , lines : Array Bytes
+    }
+
+
+reader : Reader
+reader =
+    { inside = False, held = Bytes.empty, block = Nothing }
+
+
+isInside : Reader -> Bool
+isInside r =
+    r.inside
+
+
+{-| What the bytes said. `Reply`'s `number` is `%begin`'s, which tmux
+counts over the whole server, so a reply is matched to its command by
+equality; `flags` is 1 for a command this client sent. -}
+type Event
+    = Outside Bytes
+    | Entered
+    | Notice Notice
+    | Reply { number : Int, flags : Int, ok : Bool, lines : Array Bytes }
+    | Exited
+
+
+{-| tmux 3.8's notifications (`docs/tmux.md` TM5.3). Ids are the numbers
+after `%`, `@` and `$`. `Output`'s bytes are unescaped, the pane's bytes
+as its program wrote them; `%extended-output` is `Output` too, its age
+dropped. A line that is none of these is `Unknown`, never an error. -}
+type Notice
+    = Output { pane : Int, bytes : Bytes }
+    | Pause Int
+    | Continue Int
+    | LayoutChange { window : Int, layout : String, visible : String, flags : String }
+    | WindowAdd Int
+    | WindowClose Int
+    | WindowRenamed { window : Int, name : String }
+    | UnlinkedWindowAdd Int
+    | UnlinkedWindowClose Int
+    | UnlinkedWindowRenamed { window : Int, name : String }
+    | WindowPaneChanged { window : Int, pane : Int }
+    | SessionChanged { session : Int, name : String }
+    | ClientSessionChanged { client : String, session : Int, name : String }
+    | SessionRenamed { session : Int, name : String }
+    | SessionsChanged
+    | SessionWindowChanged { session : Int, window : Int }
+    | PaneModeChanged Int
+    | ClientDetached String
+    | SubscriptionChanged { name : String, value : String }
+    | PasteBufferChanged String
+    | PasteBufferDeleted String
+    | Message String
+    | ConfigError String
+    | Exit String
+    | Unknown String
+
+
+{-| The events in a read's bytes, in order, and where reading got to. -}
+feed : Bytes -> Reader -> { reader : Reader, events : Array Event }
+feed bytes r =
+    let
+        data =
+            if Bytes.isEmpty r.held then
+                bytes
+
+            else
+                Bytes.flatten [ r.held, bytes ]
+    in
+    step data 0 { inside = r.inside, held = Bytes.empty, block = r.block } []
+
+
+step : Bytes -> Int -> Reader -> Array Event -> { reader : Reader, events : Array Event }
+step data at r events =
+    if r.inside then
+        inside data at r events
+
+    else
+        outside data at at r events
+
+
+entry : Bytes
+entry =
+    Bytes.fromString "\u{001B}P1000p"
+
+
+{-| Outside control mode: the terminal's bytes from `from`, looking at
+`at` for `ESC P 1000 p`. -}
+outside : Bytes -> Int -> Int -> Reader -> Array Event -> { reader : Reader, events : Array Event }
+outside data from at r events =
+    let
+        n =
+            Bytes.length data
+
+        esc =
+            indexOf 0x1B at data
+    in
+    if esc < 0 then
+        { reader = r, events = withOutside data from n events }
+
+    else
+        let
+            seen =
+                Bytes.slice esc (min n (esc + 7)) data
+        in
+        if seen == entry then
+            step data (esc + 7) { r | inside = True } (Array.pushLast Entered (withOutside data from esc events))
+
+        else if Bytes.length seen < 7 && seen == Bytes.slice 0 (Bytes.length seen) entry then
+            -- the start of `ESC P 1000 p`, or not: the next read says
+            { reader = { r | held = seen }, events = withOutside data from esc events }
+
+        else
+            outside data from (esc + 1) r events
+
+
+withOutside : Bytes -> Int -> Int -> Array Event -> Array Event
+withOutside data from to events =
+    if to > from then
+        Array.pushLast (Outside (Bytes.slice from to data)) events
+
+    else
+        events
+
+
+{-| Inside control mode: lines from `at`, or `ESC \` leaving it. -}
+inside : Bytes -> Int -> Reader -> Array Event -> { reader : Reader, events : Array Event }
+inside data at r events =
+    let
+        n =
+            Bytes.length data
+    in
+    if at >= n then
+        { reader = r, events = events }
+
+    else if byteAt at data == 0x1B then
+        if at + 1 >= n then
+            { reader = { r | held = Bytes.slice at n data }, events = events }
+
+        else if byteAt (at + 1) data == 0x5C then
+            step data (at + 2) { r | inside = False, block = Nothing } (Array.pushLast Exited events)
+
+        else
+            -- not ST: an escape tmux does not send here, skipped
+            inside data (at + 1) r events
+
+    else
+        let
+            nl =
+                indexOf 0x0A at data
+        in
+        if nl < 0 then
+            { reader = { r | held = Bytes.slice at n data }, events = events }
+
+        else
+            let
+                end =
+                    if nl > at && byteAt (nl - 1) data == 0x0D then
+                        nl - 1
+
+                    else
+                        nl
+
+                read =
+                    line (Bytes.slice at end data) r.block events
+            in
+            inside data (nl + 1) { r | block = read.block } read.events
+
+
+{-| One line: a reply's, a guard, or a notification. -}
+line : Bytes -> Maybe Block -> Array Event -> { block : Maybe Block, events : Array Event }
+line bytes block events =
+    when block is
+        Just open ->
+            when guard bytes is
+                Just g ->
+                    if g.number == open.number && (g.kind == "%end" || g.kind == "%error") then
+                        { block = Nothing
+                        , events = Array.pushLast (Reply { number = open.number, flags = open.flags, ok = g.kind == "%end", lines = open.lines }) events
+                        }
+
+                    else
+                        { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
+
+                Nothing ->
+                    { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
+
+        Nothing ->
+            when guard bytes is
+                Just g ->
+                    if g.kind == "%begin" then
+                        { block = Just { number = g.number, flags = g.flags, lines = [] }, events = events }
+
+                    else
+                        -- an `%end` with no `%begin`: nothing to close
+                        { block = Nothing, events = events }
+
+                Nothing ->
+                    { block = Nothing, events = Array.pushLast (Notice (notice bytes)) events }
+
+
+{-| `%begin`, `%end` or `%error`, with their time, number and flags. -}
+guard : Bytes -> Maybe { kind : String, number : Int, flags : Int }
+guard bytes =
+    if Bytes.length bytes > 64 || byteAt 0 bytes /= 0x25 then
+        Nothing
+
+    else
+        let
+            words =
+                String.split " " (Bytes.toStringLossy bytes)
+        in
+        when words is
+            [ kind, _, number, flags ] ->
+                if kind == "%begin" || kind == "%end" || kind == "%error" then
+                    when { n = String.toInt number, f = String.toInt flags } is
+                        { n = Just nv, f = Just fv } ->
+                            Just { kind = kind, number = nv, flags = fv }
+
+                        _ ->
+                            Nothing
+
+                else
+                    Nothing
+
+            _ ->
+                Nothing
+
+
+{-| A notification line. -}
+notice : Bytes -> Notice
+notice bytes =
+    if startsWith "%output " bytes then
+        output 8 False bytes
+
+    else if startsWith "%extended-output " bytes then
+        output 17 True bytes
+
+    else
+        named (Bytes.toStringLossy bytes)
+
+
+startsWith : String -> Bytes -> Bool
+startsWith prefix bytes =
+    let
+        p =
+            Bytes.fromString prefix
+    in
+    Bytes.slice 0 (Bytes.length p) bytes == p
+
+
+{-| `%output %N data`, or `%extended-output %N age ... : data`, from `at`
+just past the name. -}
+output : Int -> Bool -> Bytes -> Notice
+output at extended bytes =
+    let
+        space =
+            indexOf 0x20 at bytes
+
+        pane =
+            id (Bytes.toStringLossy (Bytes.slice at (if space < 0 then Bytes.length bytes else space) bytes))
+
+        dataAt =
+            if space < 0 then
+                -1
+
+            else if extended then
+                let
+                    colon =
+                        indexOf 0x3A space bytes
+                in
+                if colon < 0 then
+                    -1
+
+                else
+                    colon + 2
+
+            else
+                space + 1
+    in
+    when pane is
+        Just p ->
+            if dataAt < 0 then
+                Output { pane = p, bytes = Bytes.empty }
+
+            else
+                Output { pane = p, bytes = unescape (Bytes.slice dataAt (Bytes.length bytes) bytes) }
+
+        Nothing ->
+            Unknown (Bytes.toStringLossy bytes)
+
+
+{-| A notification other than output, from its text. -}
+named : String -> Notice
+named text =
+    let
+        words =
+            String.split " " text
+
+        word i =
+            Maybe.withDefault "" (Array.get i words)
+
+        -- the text after the first `k` words, spaces kept
+        rest k =
+            String.join " " (Array.dropFirst k words)
+
+        name =
+            word 0
+    in
+    if name == "%layout-change" then
+        when id (word 1) is
+            Just w ->
+                LayoutChange { window = w, layout = word 2, visible = word 3, flags = word 4 }
+
+            Nothing ->
+                Unknown text
+
+    else if name == "%window-pane-changed" then
+        when { w = id (word 1), p = id (word 2) } is
+            { w = Just w, p = Just p } ->
+                WindowPaneChanged { window = w, pane = p }
+
+            _ ->
+                Unknown text
+
+    else if name == "%session-window-changed" then
+        when { s = id (word 1), w = id (word 2) } is
+            { s = Just s, w = Just w } ->
+                SessionWindowChanged { session = s, window = w }
+
+            _ ->
+                Unknown text
+
+    else if name == "%session-changed" || name == "%session-renamed" then
+        when id (word 1) is
+            Just s ->
+                if name == "%session-changed" then
+                    SessionChanged { session = s, name = rest 2 }
+
+                else
+                    SessionRenamed { session = s, name = rest 2 }
+
+            Nothing ->
+                Unknown text
+
+    else if name == "%client-session-changed" then
+        when id (word 2) is
+            Just s ->
+                ClientSessionChanged { client = word 1, session = s, name = rest 3 }
+
+            Nothing ->
+                Unknown text
+
+    else if name == "%window-renamed" || name == "%unlinked-window-renamed" then
+        when id (word 1) is
+            Just w ->
+                if name == "%window-renamed" then
+                    WindowRenamed { window = w, name = rest 2 }
+
+                else
+                    UnlinkedWindowRenamed { window = w, name = rest 2 }
+
+            Nothing ->
+                Unknown text
+
+    else if name == "%subscription-changed" then
+        when String.firstIndexOf " : " text is
+            Just i ->
+                SubscriptionChanged { name = word 1, value = String.dropFirst (i + 3) text }
+
+            Nothing ->
+                Unknown text
+
+    else if name == "%sessions-changed" then
+        SessionsChanged
+
+    else if name == "%client-detached" then
+        ClientDetached (rest 1)
+
+    else if name == "%paste-buffer-changed" then
+        PasteBufferChanged (rest 1)
+
+    else if name == "%paste-buffer-deleted" then
+        PasteBufferDeleted (rest 1)
+
+    else if name == "%message" then
+        Message (rest 1)
+
+    else if name == "%config-error" then
+        ConfigError (rest 1)
+
+    else if name == "%exit" then
+        Exit (rest 1)
+
+    else
+        when id (word 1) is
+            Just i ->
+                if name == "%pause" then
+                    Pause i
+
+                else if name == "%continue" then
+                    Continue i
+
+                else if name == "%window-add" then
+                    WindowAdd i
+
+                else if name == "%window-close" then
+                    WindowClose i
+
+                else if name == "%unlinked-window-add" then
+                    UnlinkedWindowAdd i
+
+                else if name == "%unlinked-window-close" then
+                    UnlinkedWindowClose i
+
+                else if name == "%pane-mode-changed" then
+                    PaneModeChanged i
+
+                else
+                    Unknown text
+
+            Nothing ->
+                Unknown text
+
+
+{-| `%3`, `@3` or `$3` as 3. -}
+id : String -> Maybe Int
+id s =
+    if String.startsWith "%" s || String.startsWith "@" s || String.startsWith "$" s then
+        String.toInt (String.dropFirst 1 s)
+
+    else
+        Nothing
+
+
+{-| `%output`'s data as the pane's bytes: `\ooo` is the byte with that
+octal value (tmux escapes bytes below 0x20 and `\` itself so); every
+other byte is itself. -}
+unescape : Bytes -> Bytes
+unescape bytes =
+    let
+        first =
+            indexOf 0x5C 0 bytes
+    in
+    if first < 0 then
+        bytes
+
+    else
+        Bytes.flatten (unescapeFrom bytes 0 first [])
+
+
+unescapeFrom : Bytes -> Int -> Int -> Array Bytes -> Array Bytes
+unescapeFrom bytes from slash pieces =
+    let
+        n =
+            Bytes.length bytes
+    in
+    if slash < 0 then
+        Array.pushLast (Bytes.slice from n bytes) pieces
+
+    else
+        let
+            d0 =
+                byteAt (slash + 1) bytes - 0x30
+
+            d1 =
+                byteAt (slash + 2) bytes - 0x30
+
+            d2 =
+                byteAt (slash + 3) bytes - 0x30
+
+            octal =
+                d0 >= 0 && d0 <= 3 && d1 >= 0 && d1 <= 7 && d2 >= 0 && d2 <= 7
+
+            before =
+                Array.pushLast (Bytes.slice from slash bytes) pieces
+        in
+        if octal then
+            unescapeFrom bytes (slash + 4) (indexOf 0x5C (slash + 4) bytes)
+                (Array.pushLast (Bytes.fromUInt8s [ UInt8.fromInt (d0 * 64 + d1 * 8 + d2) ]) before)
+
+        else
+            -- a `\` not followed by three octal digits stays as it is
+            unescapeFrom bytes slash (indexOf 0x5C (slash + 1) bytes) pieces
+
+
+{-| The first index of byte `b` at or after `from`, or -1. -}
+indexOf : Int -> Int -> Bytes -> Int
+indexOf b from bytes =
+    let
+        n =
+            Bytes.length bytes
+
+        below =
+            if b > 0 then
+                Bytes.spanWithin 0 (b - 1) from n bytes
+
+            else
+                from
+
+        past =
+            if b < 255 then
+                Bytes.spanWithin (b + 1) 255 below n bytes
+
+            else
+                below
+    in
+    if past >= n then
+        -1
+
+    else if past == from then
+        if byteAt from bytes == b then
+            from
+
+        else
+            indexOf b (from + 1) bytes
+
+    else
+        indexOf b past bytes
+
+
+byteAt : Int -> Bytes -> Int
+byteAt i bytes =
+    when Bytes.get i bytes is
+        Just v ->
+            UInt8.toInt v
+
+        Nothing ->
+            -1

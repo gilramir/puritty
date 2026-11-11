@@ -531,3 +531,39 @@ three runs each.
 
 The core's unit tests have a suite for it (`vt/tests/src/Embedder.geng`,
 9 tests).
+
+## TM13 · Phase 4 begun: the protocol package (2026-11-11)
+
+*Gilbert, 2026-11-11:* he wants to see floating panes in puritty, natively,
+so phase 4 starts. The steps, each tested and committed:
+
+1. **devbox's tmux is 3.8** (`devbox.json`, a pinned nixpkgs-unstable
+   commit). Done.
+2. **`packages/tmux`**, pure Geng and runtime-free (`runtime = "any"`):
+   - `Tmux.Control`: `feed` reads a terminal's bytes a read at a time.
+     Outside control mode they come back as `Outside`; `ESC P 1000 p`
+     gives `Entered`, then each line a `Notice` (every 3.8 notification of
+     TM5.3, anything else `Unknown`) or, from `%begin` to the `%end` or
+     `%error` of the same number, a `Reply` with its lines; `ESC \` at a
+     line's start gives `Exited`. `%output` and `%extended-output` are
+     `Output` with the pane's bytes unescaped (`\ooo`), raw high bytes
+     kept. A partial line or a partial `ESC P 1000 p` waits for the next
+     read. Scanning uses `Bytes.spanWithin`, 16 bytes at a time natively.
+   - `Tmux.Layout`: both forms to one tree, the old by a small parser and
+     3.8's JSON by `Json.Decode`; `panes`, `tiled`, and `floating` bottom
+     first.
+   - `Tmux.Command`: `send-keys -H` in commands of 256 bytes, the pane id
+     quoted; `refresh-client -C` and `-f new-layouts`; `list-panes` with
+     each line prefixed.
+   - Tests (`packages/tmux/tests`, 22): two sessions recorded with tmux
+     3.8 (`record.sh`, plain `sh` with a `$ ` prompt, `BARE` recordings
+     with no markers), read whole and split at every byte; the layouts in
+     both forms, nested and floating; the commands. Done.
+3. **The app**: when `tmux -CC` starts on the pty, the window shows the
+   tmux window's panes, tiled panes where tmux puts them with a divider
+   between, floating panes over them with a border, the active pane's
+   cursor; keys go to the active pane by `send-keys -H`; the window's size
+   to tmux by `refresh-client -C`; `%exit` gives the terminal back.
+4. Then: capture on attach and on `%continue`, `pause-after`, tmux windows
+   as tabs, the mouse (focus, moving and resizing floating panes), and
+   detach and reattach.

@@ -1,0 +1,330 @@
+module Main exposing (main)
+
+{-| The tmux package's unit tests (puritty `docs/tmux.md` TM13), with
+gren-unit-node: control mode read from sessions recorded with tmux 3.8
+(`record.sh`, `Fixtures`), whole and split at every byte; the layouts in
+both forms; the commands.
+-}
+
+import Bytes exposing (Bytes)
+import Expect exposing (Expectation)
+import Fixtures
+import Node
+import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Tmux.Command as Command
+import Tmux.Control as Control exposing (Event(..), Notice(..))
+import Tmux.Layout as Layout
+import UInt8
+
+
+main : Task Never {}
+main =
+    Node.getEnvironment
+        |> Task.andThen
+            (\env ->
+                U.run env
+                    { name = "puritty-tmux"
+                    , version = "0.1.0"
+                    , suites = [ control, layout, command ]
+                    }
+            )
+
+
+run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
+run name tests =
+    U.suite
+        { name = name
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map (\c -> U.test c.name (\fix -> Task.succeed (c.test fix))) tests
+        }
+
+
+bytes : Array Int -> Bytes
+bytes values =
+    Bytes.fromUInt8s (Array.map UInt8.fromInt values)
+
+
+events : Bytes -> Array Event
+events b =
+    (Control.feed b Control.reader).events
+
+
+{-| The events of `b` fed in two reads, split at `at`. -}
+split : Bytes -> Int -> Array Event
+split b at =
+    let
+        first =
+            Control.feed (Bytes.slice 0 at b) Control.reader
+
+        second =
+            Control.feed (Bytes.slice at (Bytes.length b) b) first.reader
+    in
+    merged (first.events ++ second.events)
+
+
+{-| `Outside` runs side by side as one, as a split read gives two. -}
+merged : Array Event -> Array Event
+merged all =
+    Array.foldl
+        (\e acc ->
+            when { e = e, last = Array.last acc } is
+                { e = Outside b, last = Just (Outside a) } ->
+                    Array.pushLast (Outside (Bytes.flatten [ a, b ])) (Array.dropLast 1 acc)
+
+                _ ->
+                    Array.pushLast e acc
+        )
+        []
+        all
+
+
+notices : Array Event -> Array Notice
+notices all =
+    Array.mapAndKeepJust
+        (\e ->
+            when e is
+                Notice n ->
+                    Just n
+
+                _ ->
+                    Nothing
+        )
+        all
+
+
+replies : Array Event -> Array (Array String)
+replies all =
+    Array.mapAndKeepJust
+        (\e ->
+            when e is
+                Reply r ->
+                    Just (Array.map Bytes.toStringLossy r.lines)
+
+                _ ->
+                    Nothing
+        )
+        all
+
+
+layoutFlags : Array Event -> Array String
+layoutFlags all =
+    Array.mapAndKeepJust
+        (\n ->
+            when n is
+                LayoutChange l ->
+                    Just l.flags
+
+                _ ->
+                    Nothing
+        )
+        (notices all)
+
+
+outputOf : Int -> Array Event -> Bytes
+outputOf pane all =
+    Array.mapAndKeepJust
+        (\n ->
+            when n is
+                Output o ->
+                    if o.pane == pane then
+                        Just o.bytes
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        (notices all)
+        |> Bytes.flatten
+
+
+{-| Whether `part` is in `whole`, byte for byte. -}
+contains : Bytes -> Bytes -> Bool
+contains part whole =
+    let
+        hex =
+            Bytes.toHexString { padding = False }
+    in
+    String.indices (hex part) (hex whole) |> Array.any (\i -> modBy 2 i == 0)
+
+
+control : U.Suite
+control =
+    run "Control"
+        [ { name = "a session: entered, notifications, replies, %exit, then left"
+          , test =
+                \_ ->
+                    let
+                        all =
+                            events Fixtures.floating
+                    in
+                    Expect.equal
+                        { first = Array.first all, last = Array.last all, exits = Array.length (Array.keepIf (\n -> n == Exit "") (notices all)) }
+                        { first = Just Entered, last = Just Exited, exits = 1 }
+          }
+        , { name = "every %layout-change, with 3.8's O for a modal pane"
+          , test = \_ -> Expect.equal [ "*", "*", "*O" ] (layoutFlags (events Fixtures.floating))
+          }
+        , { name = "a reply's lines, %begin to %end"
+          , test =
+                \_ ->
+                    Expect.equal [ "P %0 0 0", "P %1 0 0", "P %2 1 0", "P %3 1 1" ]
+                        (Maybe.withDefault [] (Array.findFirst (\r -> Array.length r == 4) (replies (events Fixtures.floating)) |> Maybe.map .value))
+          }
+        , { name = "%output unescaped: ESC, backslash, UTF-8 and EUC-KR's raw bytes"
+          , test =
+                \_ ->
+                    -- how tmux cuts a pane's output into lines depends on timing
+                    Expect.equal True
+                        (contains (Bytes.flatten [ Bytes.fromString "A\u{001B}[1mB\\Cé", bytes [ 0xC1, 0xD6 ], Bytes.fromString "\r\n" ])
+                            (outputOf 0 (events Fixtures.output))
+                        )
+          }
+        , { name = "%extended-output is output, its age dropped"
+          , test =
+                \_ ->
+                    Expect.equal True
+                        (Bytes.toStringLossy (outputOf 0 (events Fixtures.output)) |> String.endsWith "after\r\n$ ")
+          }
+        , { name = "a reply whose line holds a semicolon"
+          , test = \_ -> Expect.equal True (Array.member [ "a ; b" ] (replies (events Fixtures.output)))
+          }
+        , { name = "split at every byte, the floating session reads the same"
+          , test =
+                \_ ->
+                    let
+                        whole =
+                            events Fixtures.floating
+                    in
+                    Expect.equal [] (Array.keepIf (\at -> split Fixtures.floating at /= whole) (Array.range 1 (Bytes.length Fixtures.floating - 1)))
+          }
+        , { name = "split at every byte, the output session reads the same"
+          , test =
+                \_ ->
+                    let
+                        whole =
+                            events Fixtures.output
+                    in
+                    Expect.equal [] (Array.keepIf (\at -> split Fixtures.output at /= whole) (Array.range 1 (Bytes.length Fixtures.output - 1)))
+          }
+        , { name = "the terminal's bytes before and after control mode"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Outside (Bytes.fromString "hello\u{001B}[1m"), Entered, Notice (Exit ""), Exited, Outside (Bytes.fromString "bye") ]
+                        (events (Bytes.fromString "hello\u{001B}[1m\u{001B}P1000p%exit\r\n\u{001B}\\bye"))
+          }
+        , { name = "ESC P 1000 p split over two reads"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString "ab\u{001B}P10") Control.reader
+
+                        second =
+                            Control.feed (Bytes.fromString "00p%sessions-changed\n") first.reader
+                    in
+                    Expect.equal [ Outside (Bytes.fromString "ab"), Entered, Notice SessionsChanged ] (first.events ++ second.events)
+          }
+        , { name = "an ESC P that is not control mode is the terminal's"
+          , test =
+                \_ ->
+                    Expect.equal [ Outside (Bytes.fromString "\u{001B}P1q") ] (merged (events (Bytes.fromString "\u{001B}P1q")))
+          }
+        , { name = "a line tmux 3.8 does not send is Unknown, and reading goes on"
+          , test =
+                \_ ->
+                    Expect.equal [ Notice (Unknown "%frobnicate @1"), Notice SessionsChanged ]
+                        (events (Bytes.fromString "\u{001B}P1000p%frobnicate @1\r\n%sessions-changed\r\n") |> Array.dropFirst 1)
+          }
+        , { name = "unescape: three octal digits, and a backslash without them kept"
+          , test =
+                \_ ->
+                    Expect.equal (bytes [ 0x61, 0x0D, 0x5C, 0x5C, 0x39, 0x62 ]) (Control.unescape (Bytes.fromString "a\\015\\134\\9b"))
+          }
+        ]
+
+
+layout : U.Suite
+layout =
+    run "Layout"
+        [ { name = "the old form: two panes side by side"
+          , test =
+                \_ ->
+                    Expect.equal
+                        (Ok [ { id = 0, w = 40, h = 24, x = 0, y = 0, active = False, z = Nothing }, { id = 1, w = 39, h = 24, x = 41, y = 0, active = False, z = Nothing } ])
+                        (Layout.parse "8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1}" |> Result.map Layout.panes)
+          }
+        , { name = "the old form nested: a column beside a pane"
+          , test =
+                \_ ->
+                    Expect.equal (Ok [ 0, 2, 1 ])
+                        (Layout.parse "abcd,80x24,0,0{40x24,0,0[40x12,0,0,0,40x11,0,13,2],39x24,41,0,1}" |> Result.map (Layout.panes >> Array.map .id))
+          }
+        , { name = "3.8's form: tiled panes, and floating ones bottom first"
+          , test =
+                \_ ->
+                    let
+                        text =
+                            "{\"V\":2,\"L\":{\"t\":\"h\",\"w\":80,\"h\":24,\"x\":0,\"y\":0,\"c\":[{\"t\":\"p\",\"w\":40,\"h\":24,\"x\":0,\"y\":0,\"l\":2,\"i\":0,\"I\":\"%0\"},{\"t\":\"p\",\"w\":39,\"h\":24,\"x\":41,\"y\":0,\"l\":1,\"i\":1,\"I\":\"%1\"},{\"t\":\"p\",\"w\":40,\"h\":6,\"x\":4,\"y\":2,\"l\":0,\"i\":2,\"z\":1,\"I\":\"%2\"},{\"t\":\"p\",\"w\":28,\"h\":6,\"x\":8,\"y\":4,\"a\":true,\"i\":3,\"z\":0,\"I\":\"%3\"}]}}"
+                    in
+                    Expect.equal
+                        (Ok { tiled = [ 0, 1 ], floating = [ 2, 3 ], active = [ 3 ] })
+                        (Layout.parse text
+                            |> Result.map
+                                (\c ->
+                                    { tiled = Array.map .id (Layout.tiled c)
+                                    , floating = Array.map .id (Layout.floating c)
+                                    , active = Layout.panes c |> Array.keepIf .active |> Array.map .id
+                                    }
+                                )
+                        )
+          }
+        , { name = "every layout in the floating session parses"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (notices (events Fixtures.floating)
+                            |> Array.mapAndKeepJust
+                                (\n ->
+                                    when n is
+                                        LayoutChange l ->
+                                            when Layout.parse l.layout is
+                                                Ok _ ->
+                                                    Nothing
+
+                                                Err why ->
+                                                    Just why
+
+                                        _ ->
+                                            Nothing
+                                )
+                        )
+          }
+        , { name = "a broken layout is an error, not a crash"
+          , test = \_ -> Expect.equal False (Result.isOk (Layout.parse "8205,80x24,0,0{40x24"))
+          }
+        ]
+
+
+command : U.Suite
+command =
+    run "Command"
+        [ { name = "send-keys -H, the pane quoted"
+          , test = \_ -> Expect.equal [ "send-keys -t '%3' -H 61 1b 0d" ] (Command.sendBytes 3 (bytes [ 0x61, 0x1B, 0x0D ]))
+          }
+        , { name = "a long paste in commands of 256 bytes"
+          , test = \_ -> Expect.equal 2 (Array.length (Command.sendBytes 0 (Bytes.fromString (String.repeat 300 "x"))))
+          }
+        , { name = "nothing to send, no command"
+          , test = \_ -> Expect.equal [] (Command.sendBytes 0 Bytes.empty)
+          }
+        , { name = "a quote in a word"
+          , test = \_ -> Expect.equal "'it'\\''s'" (Command.quote "it's")
+          }
+        ]

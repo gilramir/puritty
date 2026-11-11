@@ -1,7 +1,8 @@
 """Record a tmux control-mode (-CC) session: each argument is a command
 sent on its own line, or "SLEEP s" to stop reading for s seconds. The raw
 bytes go to the first argument's file. Runs on its own socket and kills
-that server at the end (docs/tmux.md TM3).
+that server at the end (docs/tmux.md TM3). Each command is marked in the
+file with a ">>> command" line, unless BARE is set.
 
     TMUX_BIN=/path/to/tmux python3 record.py out.raw 'split-window -h' ...
 """
@@ -12,7 +13,9 @@ out = open(sys.argv[1], "wb")
 pid, fd = pty.fork()
 if pid == 0:
     os.environ["TERM"] = "xterm-256color"
-    os.execv(TMUX, [TMUX, "-L", SOCK, "-f", "/dev/null", "-CC", "new-session", "-x", "80", "-y", "24", "sh"])
+    os.environ["PS1"] = "$ "
+    os.environ.pop("ENV", None)
+    os.execv(TMUX, [TMUX, "-L", SOCK, "-f", os.environ.get("TMUX_CONF", "/dev/null"), "-CC", "new-session", "-x", "80", "-y", "24", "sh"])
 def drain(t):
     end = time.time() + t
     while time.time() < end:
@@ -22,12 +25,13 @@ def drain(t):
             except OSError: return
             out.write(d)
 def cmd(c, t=0.4):
-    out.write(b"\n>>> " + c.encode() + b"\n")
+    if not os.environ.get("BARE"):
+        out.write(b"\n>>> " + c.encode() + b"\n")
     os.write(fd, c.encode() + b"\n"); drain(t)
 drain(1.0)
 for c in sys.argv[2:]:
     if c.startswith('SLEEP'):
-        out.write(b'\n>>> '+c.encode()+b'\n'); time.sleep(float(c.split()[1]))
+        time.sleep(float(c.split()[1]))
     else:
         cmd(c)
 cmd("kill-server", 1.0)
