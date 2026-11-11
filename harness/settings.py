@@ -49,10 +49,10 @@ HOSTS = '# my hosts\n[hosts.box]   # the build box\nhost = "b.example.com"\nuser
 # name, the file before (None: none), the keys, and what else is done
 CASES = [
     ("size-typed", None, [DOWN, ENTER, BACKSPACE, BACKSPACE, ("type", "14"), ENTER]),
-    ("bold-toggled", None, [DOWN, DOWN, DOWN, DOWN, ENTER]),
+    ("bold-toggled", None, [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
     ("reset", '[font]\nsize = 13\n\n[colours]\nbackground = "#102030"\n', [DOWN, "Delete"]),
-    ("comments-kept", "# mine\n[window]\ncolumns = 100 # wide\n", [DOWN, DOWN, DOWN, DOWN, ENTER]),
-    ("undo", None, [DOWN, DOWN, DOWN, DOWN, ENTER, "ctrl+z"]),
+    ("comments-kept", "# mine\n[window]\ncolumns = 100 # wide\n", [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
+    ("undo", None, [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER, "ctrl+z"]),
     ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, ENTER]),
     # a font chosen from the system's, offered as its name is typed
     ("font-chosen", None, [ENTER] + [BACKSPACE] * 16 + [("type", "fira"), DOWN, ENTER]),
@@ -60,7 +60,7 @@ CASES = [
     # the window reads an edit by hand: bold, turned on by hand, is turned
     # off by Enter; had the window not read it, Enter would turn it on
     ("hand-edit", "[font]\nsize = 13\n", [("hand", "[font]\nsize = 13\n\n[colours]\nbold_is_bright = true\n"),
-                                          DOWN, DOWN, DOWN, DOWN, ENTER]),
+                                          DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
     # hosts (ST25): the Hosts page is the last; a new host and its fields,
     # a host removed, one renamed with the table under it, one copied
     ("host-new", None, TO_HOSTS + [DOWN, ENTER, ("type", "lab"), ENTER, ENTER] + [BACKSPACE] * 3
@@ -74,10 +74,10 @@ CASES = [
     # line is 17 pixels, the list begins at 51 and a setting is 68 tall, a
     # value's box begins at x 469 and the reset mark at 706, and the side
     # bar's pages are 32 tall from 51.
-    ("click-value", None, [("click", 489, 357, 1)]),
-    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 716, 357, 1)]),
+    ("click-value", None, [("click", 489, 425, 1)]),
+    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 716, 425, 1)]),
     ("click-page-and-value", None, [("click", 50, 99, 1), ("click", 489, 85, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
-    ("terminal-follows", None, [DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
+    ("terminal-follows", None, [DOWN, DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]
 
 

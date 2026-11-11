@@ -68,7 +68,26 @@ decoded text =
 schema : U.Suite
 schema =
     run "Schema"
-        [ { name = "an empty file is the defaults"
+        [ { name = "a colour scheme sets the foreground, the background and the 16 (ST29)"
+          , test =
+                \_ ->
+                    Expect.equal { fg = 0xBBBBBB, bg = 0, red = Just 0xBB0000, n = 16 }
+                        ((\c -> { fg = c.foreground, bg = c.background, red = Array.get 1 c.palette, n = Array.length c.palette }) (decoded "[colours]\nscheme = \"putty\"\n"))
+          }
+        , { name = "a colour written beside a scheme wins over it, before it or after"
+          , test =
+                \_ ->
+                    Expect.equal [ 0x123456, 0x123456 ]
+                        [ (decoded "[colours]\nscheme = \"putty\"\nforeground = \"#123456\"\n").foreground
+                        , (decoded "[colours]\nforeground = \"#123456\"\nscheme = \"putty\"\n").foreground
+                        ]
+          }
+        , { name = "a scheme puritty does not have is reported, and the colours are left"
+          , test =
+                \_ ->
+                    Expect.equal { reports = 1, fg = Config.defaults.foreground } { reports = Array.length (reported "[colours]\nscheme = \"neon\"\n"), fg = (decoded "[colours]\nscheme = \"neon\"\n").foreground }
+          }
+        , { name = "an empty file is the defaults"
           , test = \_ -> Expect.equal { config = Config.defaults, reports = [] } (Result.withDefault { config = Config.defaults, reports = [ { line = 0, message = "not TOML" } ] } (Schema.decode ""))
           }
         , { name = "the example decodes with nothing reported"
@@ -639,13 +658,13 @@ window =
                 \_ ->
                     let
                         r =
-                            after [ k.down, k.down, k.down, k.down, k.enter ]
+                            after [ k.down, k.down, k.down, k.down, k.down, k.enter ]
                     in
                     Expect.equal { said = [ "colours.bold_is_bright = true" ], marked = True }
                         { said = r.said, marked = changedRow "colours.bold_is_bright" r.model }
           }
         , { name = "Delete resets a setting to its default"
-          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ k.down, k.down, k.down, k.down, k.enter, k.delete ]).said
+          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ k.down, k.down, k.down, k.down, k.down, k.enter, k.delete ]).said
           }
         , { name = "a search lists the matches of every page, and the pages count them"
           , test =
@@ -833,19 +852,19 @@ window =
           , test = \_ -> Expect.equal [ "connect to a@b" ] (onHostsPage False (typeIn "a@b" ++ [ k.enter ])).said
           }
         , { name = "a click on a value changes it, as Enter does"
-          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true" ] (after [ click (SettingsWindow.OnValue 4) 1 ]).said
+          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true" ] (after [ click (SettingsWindow.OnValue 5) 1 ]).said
           }
         , { name = "a click on the reset mark resets"
           , test =
                 \_ ->
-                    Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ click (SettingsWindow.OnValue 4) 1, click (SettingsWindow.OnReset 4) 1 ]).said
+                    Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ click (SettingsWindow.OnValue 5) 1, click (SettingsWindow.OnReset 5) 1 ]).said
           }
         , { name = "a click on a label only moves to it"
           , test =
                 \_ ->
                     let
                         r =
-                            after [ click (SettingsWindow.OnRow 4) 1 ]
+                            after [ click (SettingsWindow.OnRow 5) 1 ]
                     in
                     Expect.equal { said = [], focused = "colours.bold_is_bright" } { said = r.said, focused = focusedKey r.model }
           }

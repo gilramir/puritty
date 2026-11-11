@@ -918,3 +918,31 @@ platform's default: the built-in client on Windows (Gilbert,
 setting like the others: read with its line reported when it is neither,
 on the Hosts page as **Client**, written back by the host's form, and in
 `Schema.example`.
+
+## ST29 · Colour schemes built in (2026-11-11)
+
+*Gilbert, 2026-11-11:* predefined palettes copying popular terminals, after
+tmux control mode. `[colours] scheme = "NAME"` gives a foreground, a
+background and the 16 named colours (`app/src/Palettes.geng`); the
+settings window offers it as a choice on the Appearance page, above the
+colours. Each is copied from the terminal's own source where puritty has
+it: Ghostty (`src/config/Config.zig`, `src/terminal/color.zig`), Alacritty
+(`alacritty/src/config/color.rs`, whose default is now base16's default
+dark, not the Tomorrow Night it once had), PuTTY (`settings.c`, its
+`Colour0` to `Colour21`), the Windows Terminal schemes (`defaults.json`:
+Campbell, Vintage, One Half dark and light, Solarized dark and light, Tango
+dark and light, Dark+), and xterm (the `XTerm-color` app-defaults in
+nixpkgs' xterm 411, black text on white). `puritty` is today's look and the
+default.
+
+**A colour written beside the scheme wins over it.** `decode` applies the
+keys of a file in the order of its table's keys, which is alphabetical, so
+a `scheme` applied as a key would land after `background` and
+`foreground`. It is applied to the defaults first, before any key, and the
+`scheme` setting only records the name. A file that names no scheme is
+decoded as before.
+
+Tested: app tests (a scheme sets the colours; a foreground beside it wins,
+written before it or after; an unknown name is reported and leaves the
+colours; 102); the settings gate and the window's model tests moved down a
+row for the new one on the Appearance page (19 of 19).

@@ -1,0 +1,146 @@
+module Palettes exposing (Scheme, all, names, find, apply)
+
+{-| Colour schemes built in (`docs/settings.md` ST29), each a foreground,
+a background and the 16 named colours, copied from the terminal named:
+from its own source where puritty has it (Ghostty, Alacritty, PuTTY and
+Windows Terminal are vendored for the surveys; xterm's from its
+`XTerm-color` app-defaults in its nixpkgs package). `[colours] scheme`
+picks one; a `foreground`, `background` or `palette` written beside it
+wins over it.
+-}
+
+import Config exposing (Config)
+
+
+type alias Scheme =
+    { name : String
+    , label : String
+    , foreground : Int
+    , background : Int
+    , palette : Array Int
+    }
+
+
+all : Array Scheme
+all =
+    [ -- puritty's own: Ghostty's 16 colours on the Tomorrow Night foreground and background
+      { name = "puritty"
+      , label = "puritty"
+      , foreground = 0xC5C8C6
+      , background = 0x1D1F21
+      , palette = [ 0x1D1F21, 0xCC6666, 0xB5BD68, 0xF0C674, 0x81A2BE, 0xB294BB, 0x8ABEB7, 0xC5C8C6, 0x666666, 0xD54E53, 0xB9CA4A, 0xE7C547, 0x7AA6DA, 0xC397D8, 0x70C0B1, 0xEAEAEA ]
+      }
+    , -- Ghostty's defaults: src/config/Config.zig, src/terminal/color.zig
+      { name = "ghostty"
+      , label = "Ghostty"
+      , foreground = 0xFFFFFF
+      , background = 0x282C34
+      , palette = [ 0x1D1F21, 0xCC6666, 0xB5BD68, 0xF0C674, 0x81A2BE, 0xB294BB, 0x8ABEB7, 0xC5C8C6, 0x666666, 0xD54E53, 0xB9CA4A, 0xE7C547, 0x7AA6DA, 0xC397D8, 0x70C0B1, 0xEAEAEA ]
+      }
+    , -- Alacritty's defaults: alacritty/src/config/color.rs
+      { name = "alacritty"
+      , label = "Alacritty"
+      , foreground = 0xD8D8D8
+      , background = 0x181818
+      , palette = [ 0x181818, 0xAC4242, 0x90A959, 0xF4BF75, 0x6A9FB5, 0xAA759F, 0x75B5AA, 0xD8D8D8, 0x6B6B6B, 0xC55555, 0xAAC474, 0xFECA88, 0x82B8C8, 0xC28CB8, 0x93D3C3, 0xF8F8F8 ]
+      }
+    , -- PuTTY's defaults: settings.c
+      { name = "putty"
+      , label = "PuTTY"
+      , foreground = 0xBBBBBB
+      , background = 0x000000
+      , palette = [ 0x000000, 0xBB0000, 0x00BB00, 0xBBBB00, 0x0000BB, 0xBB00BB, 0x00BBBB, 0xBBBBBB, 0x555555, 0xFF5555, 0x55FF55, 0xFFFF55, 0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF ]
+      }
+    , -- xterm's defaults: the XTerm-color app-defaults, black text on white
+      { name = "xterm"
+      , label = "xterm"
+      , foreground = 0x000000
+      , background = 0xFFFFFF
+      , palette = [ 0x000000, 0xCD0000, 0x00CD00, 0xCDCD00, 0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5, 0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF ]
+      }
+    , -- Windows Terminal's default: defaults.json
+      { name = "campbell"
+      , label = "Campbell (Windows Terminal)"
+      , foreground = 0xCCCCCC
+      , background = 0x0C0C0C
+      , palette = [ 0x0C0C0C, 0xC50F1F, 0x13A10E, 0xC19C00, 0x0037DA, 0x881798, 0x3A96DD, 0xCCCCCC, 0x767676, 0xE74856, 0x16C60C, 0xF9F1A5, 0x3B78FF, 0xB4009E, 0x61D6D6, 0xF2F2F2 ]
+      }
+    , -- Windows Terminal's Vintage: defaults.json
+      { name = "vintage"
+      , label = "Vintage (Windows console)"
+      , foreground = 0xC0C0C0
+      , background = 0x000000
+      , palette = [ 0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xC0C0C0, 0x808080, 0xFF0000, 0x00FF00, 0xFFFF00, 0x0000FF, 0xFF00FF, 0x00FFFF, 0xFFFFFF ]
+      }
+    , -- Windows Terminal's One Half Dark: defaults.json
+      { name = "one-half-dark"
+      , label = "One Half Dark"
+      , foreground = 0xDCDFE4
+      , background = 0x282C34
+      , palette = [ 0x282C34, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xDCDFE4, 0x5A6374, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xDCDFE4 ]
+      }
+    , -- Windows Terminal's One Half Light: defaults.json
+      { name = "one-half-light"
+      , label = "One Half Light"
+      , foreground = 0x383A42
+      , background = 0xFAFAFA
+      , palette = [ 0x383A42, 0xE45649, 0x50A14F, 0xC18301, 0x0184BC, 0xA626A4, 0x0997B3, 0xFAFAFA, 0x4F525D, 0xDF6C75, 0x98C379, 0xE4C07A, 0x61AFEF, 0xC577DD, 0x56B5C1, 0xFFFFFF ]
+      }
+    , -- Windows Terminal's Solarized Dark: defaults.json
+      { name = "solarized-dark"
+      , label = "Solarized Dark"
+      , foreground = 0x839496
+      , background = 0x002B36
+      , palette = [ 0x002B36, 0xDC322F, 0x859900, 0xB58900, 0x268BD2, 0xD33682, 0x2AA198, 0xEEE8D5, 0x073642, 0xCB4B16, 0x586E75, 0x657B83, 0x839496, 0x6C71C4, 0x93A1A1, 0xFDF6E3 ]
+      }
+    , -- Windows Terminal's Solarized Light: defaults.json
+      { name = "solarized-light"
+      , label = "Solarized Light"
+      , foreground = 0x657B83
+      , background = 0xFDF6E3
+      , palette = [ 0x002B36, 0xDC322F, 0x859900, 0xB58900, 0x268BD2, 0xD33682, 0x2AA198, 0xEEE8D5, 0x073642, 0xCB4B16, 0x586E75, 0x657B83, 0x839496, 0x6C71C4, 0x93A1A1, 0xFDF6E3 ]
+      }
+    , -- Windows Terminal's Tango Dark: defaults.json
+      { name = "tango-dark"
+      , label = "Tango Dark"
+      , foreground = 0xD3D7CF
+      , background = 0x000000
+      , palette = [ 0x000000, 0xCC0000, 0x4E9A06, 0xC4A000, 0x3465A4, 0x75507B, 0x06989A, 0xD3D7CF, 0x555753, 0xEF2929, 0x8AE234, 0xFCE94F, 0x729FCF, 0xAD7FA8, 0x34E2E2, 0xEEEEEC ]
+      }
+    , -- Windows Terminal's Tango Light: defaults.json
+      { name = "tango-light"
+      , label = "Tango Light"
+      , foreground = 0x555753
+      , background = 0xFFFFFF
+      , palette = [ 0x000000, 0xCC0000, 0x4E9A06, 0xC4A000, 0x3465A4, 0x75507B, 0x06989A, 0xD3D7CF, 0x555753, 0xEF2929, 0x8AE234, 0xFCE94F, 0x729FCF, 0xAD7FA8, 0x34E2E2, 0xEEEEEC ]
+      }
+    , -- Windows Terminal's Dark+: defaults.json
+      { name = "dark-plus"
+      , label = "Dark+ (VS Code)"
+      , foreground = 0xCCCCCC
+      , background = 0x1E1E1E
+      , palette = [ 0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5, 0x666666, 0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xE5E5E5 ]
+      }
+    ]
+
+
+names : Array String
+names =
+    Array.map .name all
+
+
+find : String -> Maybe Scheme
+find name =
+    Array.findFirst (\s -> s.name == name) all |> Maybe.map .value
+
+
+{-| A config with a scheme's colours, or as it is for a name puritty does
+not have (the setting's own check reports it). -}
+apply : String -> Config -> Config
+apply name c =
+    when find name is
+        Just s ->
+            { c | scheme = name, foreground = s.foreground, background = s.background, palette = s.palette }
+
+        Nothing ->
+            c

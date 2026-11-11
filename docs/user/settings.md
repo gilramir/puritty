@@ -56,6 +56,29 @@ paste_button = "middle"     # or "right"
 osc52_read = "deny"         # or "allow"
 ```
 
+## Colour schemes
+
+`scheme` under `[colours]` copies another terminal's colours:
+
+| `scheme` | from |
+|---|---|
+| `puritty` | puritty's own, the default |
+| `ghostty`, `alacritty`, `putty`, `xterm` | those terminals' defaults |
+| `campbell`, `vintage` | Windows Terminal's default, and the old Windows console's |
+| `one-half-dark`, `one-half-light` | One Half |
+| `solarized-dark`, `solarized-light` | Solarized |
+| `tango-dark`, `tango-light` | Tango |
+| `dark-plus` | VS Code's Dark+ |
+
+```toml
+[colours]
+scheme = "solarized-dark"
+background = "#001820"     # wins over the scheme's
+```
+
+A `foreground`, `background` or `palette` you write beside it wins over
+the scheme's, wherever it is in the file.
+
 ## Hosts
 
 Hosts are kept in the same file. `puritty --host NAME` connects to one, in

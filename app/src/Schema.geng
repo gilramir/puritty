@@ -23,6 +23,7 @@ holds to it.
 
 -}
 
+import Palettes
 import Config exposing (Config)
 import Dict exposing (Dict)
 import Toml
@@ -250,6 +251,19 @@ settings =
       , get = \c -> Colour c.foreground
       , set = \v c -> when v is
             Colour n -> { c | foreground = n }
+            _ -> c
+      }
+    , { key = [ "colours", "scheme" ]
+      , kind = OneOf Palettes.names
+      , optional = False
+      , label = "Colour scheme"
+      , description = "Colours copied from another terminal: Ghostty, Alacritty, PuTTY, xterm, Windows Terminal's. A foreground, background or palette set here wins over it."
+      , words = [ "theme", "colors", "palette", "ghostty", "alacritty", "putty", "xterm", "solarized", "tango" ]
+      , page = Appearance
+      , applies = AtOnce
+      , get = \c -> Text c.scheme
+      , set = \v c -> when v is
+            Text t -> { c | scheme = t }
             _ -> c
       }
     , { key = [ "colours", "background" ]
@@ -510,12 +524,38 @@ decode text =
                             , integer = \path -> Toml.Decode.fromDocument (Toml.Decode.at path Toml.Decode.int) doc |> Result.mapError (\_ -> "too large a number")
                             }
 
+                        -- the scheme first, so that a colour the file sets
+                        -- beside it wins whatever the keys' order (ST29)
+                        start =
+                            when schemeIn table is
+                                Just name ->
+                                    Palettes.apply name Config.defaults
+
+                                Nothing ->
+                                    Config.defaults
+
                         found =
                             Dict.foldl (\section value acc -> top at section value acc)
-                                { config = Config.defaults, reports = [] }
+                                { config = start, reports = [] }
                                 (Toml.Table.entries table)
                     in
                     Ok { found | reports = Array.sortBy .line found.reports }
+
+
+{-| `[colours] scheme`, if the file names one. -}
+schemeIn : Toml.Table.Table -> Maybe String
+schemeIn table =
+    when Dict.get "colours" (Toml.Table.entries table) is
+        Just (Toml.Table.TableValue colours) ->
+            when Dict.get "scheme" (Toml.Table.entries colours) is
+                Just (Toml.Table.StringValue name) ->
+                    Just name
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 {-| Where in the file: the line of a key, and the integer at it, which
@@ -1478,6 +1518,10 @@ example =
     glyph_cache_mb = 8            # the glyphs kept (V37), 4 or more
 
     [colours]
+    scheme = "puritty"            # or "ghostty", "alacritty", "putty", "xterm",
+                                  # "campbell", "solarized-dark", ...: colours
+                                  # copied from another terminal; the keys
+                                  # below win over it
     foreground = "#c5c8c6"
     background = "#1d1f21"
     bold_is_bright = false
