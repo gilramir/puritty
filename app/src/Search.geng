@@ -1,0 +1,100 @@
+module Search exposing (State, start, find, backFor)
+
+{-| Scrollback search (`docs/phase3-select.md` §23): the query as typed,
+and the match shown, found row by row in the scrollback and the screen,
+ignoring case. A match is found within one row; its columns count each
+character's cells, so a match after wide characters is where it shows.
+-}
+
+import Vt
+import Vt.Width as Width
+
+
+type alias State =
+    { query : String
+    , match : Maybe { start : Vt.Point, end : Vt.Point }
+    , failed : Bool
+    }
+
+
+start : State
+start =
+    { query = "", match = Nothing, failed = False }
+
+
+{-| The first row, from `from` on, going older (`older`) or newer, that
+holds the query, and where in it: the first occurrence in the row. Rows
+are absolute, as `Vt.Point`s are. -}
+find : String -> Bool -> Int -> Vt.Term -> Maybe { start : Vt.Point, end : Vt.Point }
+find query older from t =
+    let
+        q =
+            String.toLower query
+
+        oldest =
+            Vt.rowsPushed t - Vt.scrollbackRows t
+
+        newest =
+            Vt.rowsPushed t + t.rows - 1
+    in
+    if q == "" then
+        Nothing
+
+    else
+        findFrom q older (clamp oldest newest from) oldest newest t
+
+
+findFrom : String -> Bool -> Int -> Int -> Int -> Vt.Term -> Maybe { start : Vt.Point, end : Vt.Point }
+findFrom q older row oldest newest t =
+    if row < oldest || row > newest then
+        Nothing
+
+    else
+        let
+            text =
+                Vt.selectionText { row = row, col = 0 } { row = row, col = t.cols - 1 } t
+        in
+        when String.firstIndexOf q (String.toLower text) is
+            Just i ->
+                let
+                    before =
+                        cells (String.takeFirst i text)
+
+                    within =
+                        cells (String.slice i (i + String.count q) text)
+                in
+                Just { start = { row = row, col = before }, end = { row = row, col = before + max 1 within - 1 } }
+
+            Nothing ->
+                findFrom q older (if older then row - 1 else row + 1) oldest newest t
+
+
+{-| The cells a piece of text takes. -}
+cells : String -> Int
+cells text =
+    String.foldl
+        (\c n ->
+            let
+                cp =
+                    Char.toCode c
+            in
+            -- the table answers from 0x80 up; below, a character is a cell
+            n + (if cp < 0x80 then 1 else Width.width cp)
+        )
+        0
+        text
+
+
+{-| How far back the view goes to show a row near its middle, or not at
+all when it is on the screen already. -}
+backFor : Int -> Int -> Vt.Term -> Int
+backFor row back t =
+    let
+        top =
+            Vt.rowsPushed t - back
+    in
+    if row >= top && row < top + t.rows then
+        back
+
+    else
+        clamp 0 (Vt.scrollbackRows t) (Vt.rowsPushed t - row + t.rows // 2)

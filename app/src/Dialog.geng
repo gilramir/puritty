@@ -1,4 +1,4 @@
-module Dialog exposing (Dialog, draw)
+module Dialog exposing (Dialog, draw, searchBar, scrollbar, scrollbarHit)
 
 {-| A question asked over the terminal (`docs/ssh-client.md` SC23), as
 ChromeOS's Terminal asks for a password: a box in the middle of the
@@ -136,3 +136,136 @@ draw size d =
             Nothing ->
                 { x = (bx + pad) // max 1 size.cellWidth, y = baseline 0 // max 1 size.cellHeight }
     }
+
+
+
+{-| The search bar (`docs/phase3-select.md` §23): a field at the window's
+top right with the query and a caret, and under it a note (no match, or
+the keys). -}
+searchBar : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { query : String, note : String, failed : Bool } -> { list : Bytes, spot : { x : Int, y : Int } }
+searchBar size b =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px n =
+            max 1 (Math.round (toFloat n * k))
+
+        body =
+            px 13
+
+        small =
+            px 11
+
+        bw =
+            min (w - px 16) (px 380)
+
+        bh =
+            px 64
+
+        bx =
+            w - bw - px 14
+
+        by =
+            px 8
+
+        field =
+            { x = bx + px 10, y = by + px 8, w = bw - px 20, h = px 28 }
+
+        typedW =
+            Text.width body b.query
+
+        caretX =
+            field.x + px 8 + min typedW (field.w - px 16)
+    in
+    { list =
+        Bytes.flatten
+            [ framed { x = bx, y = by, w = bw, h = bh, r = px 8, color = look.bg, border = look.fieldLine }
+            , framed { x = field.x, y = field.y, w = field.w, h = field.h, r = px 4, color = look.field, border = if b.failed then look.error else look.accent }
+            , clip { x = field.x + 1, y = field.y, w = field.w - 2, h = field.h }
+            , text { x = field.x + px 8, y = field.y + field.h // 2 + body // 3, size = body, color = if b.query == "" then look.dim else look.strong, text = if b.query == "" then "Search" else b.query }
+            , box { x = caretX, y = field.y + px 6, w = 1, h = field.h - px 12, r = 0, color = look.strong }
+            , noClip
+            , text { x = field.x, y = by + bh - px 10, size = small, color = if b.failed then look.error else look.dim, text = fit small field.w b.note }
+            ]
+    , spot = { x = caretX // max 1 size.cellWidth, y = field.y // max 1 size.cellHeight }
+    }
+
+
+{-| The scrollbar (`docs/phase3-select.md` §23): a thumb at the window's
+right edge, as tall as the view is of all there is and as far down as the
+view is, for a view `back` rows up of `most`. -}
+scrollbar : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { back : Int, most : Int } -> Bytes
+scrollbar size v =
+    let
+        g =
+            barGeometry size v
+    in
+    if v.most <= 0 then
+        Bytes.empty
+
+    else
+        box { x = g.x, y = g.thumbY, w = g.width, h = g.thumbH, r = g.width // 2, color = 0x7A7A7A }
+
+
+{-| Where the scrollbar's column is, and how far back a pointer at pixel
+`y` of it puts the view: the thumb's middle at the pointer. `Nothing` when
+the pointer is not in the column. -}
+scrollbarHit : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { back : Int, most : Int } -> { x : Int, y : Int } -> Maybe Int
+scrollbarHit size v p =
+    let
+        g =
+            barGeometry size v
+
+        room =
+            max 1 (g.track - g.thumbH)
+    in
+    if v.most <= 0 || p.x < g.x - g.width then
+        Nothing
+
+    else
+        -- the thumb's top at the pointer less half the thumb, as a share of
+        -- the track: 0 at the top is all the way back
+        Just (clamp 0 v.most (v.most - (v.most * (p.y - g.top - g.thumbH // 2)) // room))
+
+
+barGeometry : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { back : Int, most : Int } -> { x : Int, width : Int, top : Int, track : Int, thumbY : Int, thumbH : Int }
+barGeometry size v =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        h =
+            size.rows * size.cellHeight
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px n =
+            max 1 (Math.round (toFloat n * k))
+
+        width =
+            px 6
+
+        top =
+            px 4
+
+        track =
+            h - 2 * top
+
+        all =
+            max 1 (v.most + size.rows)
+
+        thumbH =
+            max (px 24) (track * size.rows // all)
+
+        room =
+            max 0 (track - thumbH)
+
+        thumbY =
+            top + room - (room * clamp 0 v.most v.back) // max 1 v.most
+    in
+    { x = w - width - px 3, width = width, top = top, track = track, thumbY = thumbY, thumbH = thumbH }

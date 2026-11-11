@@ -51,6 +51,7 @@ import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSe
 import Outbox exposing (Outbox)
 import Console
 import Dialog
+import Search
 import Dict exposing (Dict)
 import Int64
 import Keys
@@ -154,6 +155,10 @@ type alias Model =
       -- whether the last frame had a question's box over it, so that the
       -- frame it comes or goes in draws every cell (docs/ssh-client.md SC23)
     , overlaid : Bool
+      -- scrollback search, while its bar is open, and a drag of the
+      -- scrollbar's thumb going on (docs/phase3-select.md §23)
+    , search : Maybe Search.State
+    , barDrag : Bool
     }
 
 
@@ -691,6 +696,8 @@ run imeLog shotPath charset config cell remote settings problems opener =
                                     config.remote
                             , tmux = TmuxMode.idle {}
                             , overlaid = False
+                            , search = Nothing
+                            , barDrag = False
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -1981,6 +1988,14 @@ handleOne remote ms rest ev m =
                         Nothing ->
                             handle remote ms rest m
 
+                  else if m.search /= Nothing && k.action /= 0 && not (isCopyKey k) then
+                    -- the search bar takes the keys while it is open (§23),
+                    -- but Ctrl+Shift+C, which copies the match
+                    handle remote ms rest (searchKey k m)
+
+                  else if isSearchKey k && not (TmuxMode.isOn m.tmux) then
+                    handle remote ms rest { m | search = Just Search.start, urgent = True }
+
                   else if isSettingsKey k then
                     -- Ctrl+Comma: the settings window (docs/settings.md ST9),
                     -- which raises one already open
@@ -2393,6 +2408,16 @@ pointer ms p m =
                 , toOwn = Maybe.map (\t -> { which = Window.Primary, text = t }) r.own
                 , toPaste = if r.paste then Just Window.Primary else m.toPaste
             }
+
+    else if m.barDrag || (p.action == 0 && p.button == 1 && barShown m && Dialog.scrollbarHit (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term } { x = p.x, y = p.y } /= Nothing) then
+        -- the scrollbar: a press puts the thumb at the pointer, a drag moves
+        -- it, letting go ends the drag (§23)
+        let
+            back =
+                Dialog.scrollbarHit (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term } { x = 1000000, y = p.y }
+                    |> Maybe.withDefault m.back
+        in
+        { m | held = held, back = back, barDrag = held /= 0, urgent = True }
 
     else if modes.tracking == Mouse.none && wheel && p.action == 0 then
         wheelStep p.button { m | held = held }
@@ -2829,6 +2854,104 @@ isPasteKey k =
         Nothing
 
 
+{-| Ctrl+Shift+F: the search bar (docs/phase3-select.md §23). -}
+isSearchKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+isSearchKey k =
+    k.action == 1 && Bitwise.and k.mods 15 == 3 && (k.sym == 0x46 || k.sym == 0x66)
+
+
+{-| A key while the search bar is open: Esc closes it; Enter finds the
+next match older, Shift+Enter newer; Backspace and typed text change the
+query, which is looked for again from the bottom of the view up. -}
+searchKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Model
+searchKey k m =
+    when m.search is
+        Nothing ->
+            m
+
+        Just s ->
+            let
+                viewBottom =
+                    Vt.rowsPushed m.term - viewBack m + m.term.rows - 1
+
+                typed =
+                    Bytes.toStringLossy k.text
+
+                ctrl =
+                    Bitwise.and k.mods 2 /= 0
+            in
+            if k.sym == 0xFF1B then
+                { m | search = Nothing, urgent = True }
+
+            else if k.sym == 0xFF0D || k.sym == 0xFF8D then
+                let
+                    older =
+                        Bitwise.and k.mods 1 == 0
+
+                    from =
+                        when s.match is
+                            Just mt ->
+                                if older then mt.start.row - 1 else mt.start.row + 1
+
+                            Nothing ->
+                                viewBottom
+                in
+                found s (Search.find s.query older from m.term) m
+
+            else if k.sym == 0xFF08 then
+                let
+                    query =
+                        String.dropLast 1 s.query
+                in
+                found { s | query = query } (Search.find query True viewBottom m.term) m
+
+            else if typed /= "" && not ctrl && Array.all (\c -> Char.toCode c >= 0x20) (String.toArray typed) then
+                let
+                    query =
+                        s.query ++ typed
+                in
+                found { s | query = query } (Search.find query True viewBottom m.term) m
+
+            else
+                m
+
+
+{-| A search's match shown: the view scrolled to it, and it selected, so it
+is highlighted and a copy takes it. -}
+found : Search.State -> Maybe { start : Vt.Point, end : Vt.Point } -> (taken m : Model) -> Model
+found s match m =
+    when match is
+        Just mt ->
+            let
+                sel =
+                    { anchor = mt.start, head = mt.end, first = mt.start, last = mt.end, mode = 0, moved = True, made = True, alt = m.term.alt, hashes = Dict.empty }
+
+                hashes =
+                    rowHashes sel m.term
+
+                back =
+                    Search.backFor mt.start.row m.back m.term
+            in
+            { m | search = Just { s | match = Just mt, failed = False }, selection = Just { sel | hashes = hashes }, back = back, urgent = True }
+
+        Nothing ->
+            { m | search = Just { s | failed = s.query /= "" }, urgent = True }
+
+
+{-| What puritty draws over the cells is sized by: the window in cells and
+a cell in pixels. -}
+overlaySize : Model -> { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int }
+overlaySize m =
+    { cols = m.term.cols, rows = m.term.rows, cellWidth = m.term.config.cellWidth, cellHeight = m.term.config.cellHeight }
+
+
+{-| Whether the scrollbar shows: while the view is scrolled back or the
+search bar is open, on puritty's terminal, not its own screen or tmux's. -}
+barShown : Model -> Bool
+barShown m =
+    not (TmuxMode.isOn m.tmux) && not (ownScreenUp m) && Vt.scrollbackRows m.term > 0 && (viewBack m > 0 || m.search /= Nothing)
+
+
 {-| Ctrl+Shift+C, pressed: the copy key (docs/user/copy-and-paste.md). -}
 isCopyKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
 isCopyKey k =
@@ -2950,16 +3073,37 @@ draw ms m =
             else
                 Nothing
 
-        -- every cell drawn in the frame a box comes or goes in
+        -- the scrollbar and the search bar (docs/phase3-select.md §23)
+        bar =
+            if barShown m then
+                Dialog.scrollbar (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term }
+
+            else
+                Bytes.empty
+
+        searchDrawn =
+            if ownUp || tmuxOn then
+                Nothing
+
+            else
+                Maybe.map
+                    (\s -> Dialog.searchBar (overlaySize m) { query = s.query, note = if s.failed then "No match" else "Enter: older    Shift+Enter: newer    Esc: close", failed = s.failed })
+                    m.search
+
+        -- every cell drawn while anything is over them, and in the frame
+        -- the last of it goes: a scroll's copy would carry it along
+        over =
+            boxed || not (Bytes.isEmpty bar) || searchDrawn /= Nothing
+
         shadow0 =
-            if boxed /= m.overlaid then
+            if over || m.overlaid then
                 View.shadow m.term.cols m.term.rows
 
             else
                 m.shadow
 
         boxDrawn =
-            Maybe.map (Dialog.draw { cols = m.term.cols, rows = m.term.rows, cellWidth = m.term.config.cellWidth, cellHeight = m.term.config.cellHeight }) dialog
+            Maybe.map (Dialog.draw (overlaySize m)) dialog
 
         tmuxOn =
             TmuxMode.isOn m.tmux
@@ -3031,8 +3175,8 @@ draw ms m =
                         else
                             View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw (Bytes.flatten [ f.list, Maybe.withDefault Bytes.empty (Maybe.map .list boxDrawn) ])
-        |> Task.andThen (\up -> Window.spot (Maybe.withDefault spot (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
+    Window.draw (Bytes.flatten [ f.list, bar, Maybe.withDefault Bytes.empty (Maybe.map .list searchDrawn), Maybe.withDefault Bytes.empty (Maybe.map .list boxDrawn) ])
+        |> Task.andThen (\up -> Window.spot (Maybe.withDefault (Maybe.withDefault spot (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 (if title /= m.title then
@@ -3055,7 +3199,7 @@ draw ms m =
                             { m
                                 | shadow = shadow
                                 , tmux = tmux
-                                , overlaid = boxed
+                                , overlaid = over
                                 , last = ms
                                 , pending = -1
                                 , urgent = again

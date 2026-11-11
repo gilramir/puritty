@@ -1081,3 +1081,40 @@ select 4 of 4, charset 17 lines, keys 300,000, mouse 200,000, paste
 100,000, perf within its record and budgets, the differential fuzzer clean
 for 10 minutes (coverage 6,452, no findings), pixels 36 of 36, pointer 51
 of 51, IME 14 of 14.
+
+## 23. Scrollback search and the scrollbar (2026-11-11)
+
+*Gilbert, 2026-11-11:* the scrollbar and search (`feature-plan.md` §2's
+two medium gaps).
+
+**Search.** Ctrl+Shift+F opens a bar at the window's top right. What is
+typed is looked for at once, from the bottom of the view up; Enter finds the
+next match older, Shift+Enter newer; Backspace shortens the query; Esc
+closes the bar, leaving the view and the match where they are. The bar takes
+every key but Ctrl+Shift+C, which copies the match: no key reaches the
+program while it is open. Matching (`app/src/Search.geng`) is row by row
+over the scrollback and the screen, ignoring case, each row's text read
+with `Vt.selectionText`; the first occurrence in a row is the row's match,
+and its columns count each character's cells (`Vt.Width`), so a match after
+Korean text is where it shows. A match is made the selection, which draws
+its highlight (§14) and is what a copy takes, and the view goes back far
+enough to show its row near the middle. A match across two rows is not
+found. On puritty's own terminal only, not in tmux's panes.
+
+**The scrollbar** is a thumb at the right edge, shown while the view is
+scrolled back or the search bar is open: as tall as the screen is of the
+scrollback and the screen together, as far down as the view is. A press in
+its column puts the thumb's middle at the pointer, a drag moves it, letting
+go ends it; a press elsewhere is as before.
+
+**Drawing.** Both are interface records after the cells, as SC23's box is
+(`Dialog.searchBar`, `Dialog.scrollbar`). While anything is drawn over the
+cells, every frame draws every cell, with no scroll copied: a `CopyArea`
+would carry the thumb's pixels along with the rows. It costs a full frame
+only while the bar, the search or a question's box is up; the frame the
+last of them goes in draws every cell too.
+
+**Tested:** the pointer gate's `search-copy` (the bar opened, `needle`
+typed, Enter, Ctrl+Shift+C: the clipboard holds `needle`, and the program
+was sent no byte); `bench/search/show.py` shows the match as typed and then
+the older one, the bar's note, and a drag of the thumb.

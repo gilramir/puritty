@@ -89,6 +89,10 @@ CASES = [
     ("select-double-drag", "", "move:58,8 click:1 down:1 move:130,8 up:1 primary", TEXT),
     ("select-triple", "", "move:40,25 triple:1 primary", TEXT),
     ("select-copy", "", "move:4,8 down:1 move:40,8 up:1 key:ctrl+shift+c clipboard primary", TEXT),
+    # scrollback search (docs/phase3-select.md §23): the bar takes the keys
+    # (the program gets none), Enter finds an older match, Ctrl+Shift+C copies it
+    ("search-copy", "", "key:ctrl+shift+f key:n key:e key:e key:d key:l key:e key:Return key:ctrl+shift+c sleep:0.3 clipboard key:Escape",
+     "printf 'an old needle\\r\\n'; seq 1 40; printf 'a newer needle\\r\\n'"),
     ("select-to-clipboard", "", "move:4,8 down:1 move:40,8 up:1 sleep:0.3 clipboard primary", TEXT,
      '[selection]\ncopy_to_clipboard = true\n'),
     ("select-not-to-clipboard", "", "move:4,8 down:1 move:40,8 up:1 sleep:0.3 clipboard primary", TEXT),
