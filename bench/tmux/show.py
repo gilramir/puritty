@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -82,6 +82,9 @@ def main():
             return
         if a.scenario == "tabs":
             tabs(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "safety":
+            safety(a, env, tmux, xdo, snap, cli)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -318,6 +321,49 @@ def tabs(a, env, tmux, xdo, snap, cli):
         snap("tabs-renamed")
         cli("kill-server")
         time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+def safety(a, env, tmux, xdo, snap, cli):
+    """Slow links and safety (docs/tmux.md TM19): a pane paused by tmux is
+    continued and made again, so a line written while it was paused shows;
+    `tmux -CC` inside a pane is detached with a note; a detach says why on
+    the terminal left behind."""
+    cli("new-session", "-d", "-s", "p", "-x", "100", "-y", "29")
+    sh = subprocess.Popen(["sh"], stdin=subprocess.PIPE, env=env)   # unused; keeps the shape of the others
+    sh.stdin.close()
+    sh.wait()
+    # puritty runs a shell, and tmux -CC from it, so that its terminal is
+    # there to say why when control mode ends
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            "sh", "-c", " ".join(tmux) + " -CC attach -t p; echo; echo back in the shell; exec sh"],
+                           env=env, stdout=subprocess.DEVNULL, stderr=open(WORK / "stderr.txt", "w"))
+    q = lambda *args: subprocess.run([*tmux, *args], env=env, capture_output=True, text=True).stdout.strip()
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
+        time.sleep(2)
+        client = q("list-clients", "-F", "#{client_name} #{client_control_mode}").split()[0]
+        cli("refresh-client", "-t", client, "-A", "%0:pause")
+        time.sleep(0.3)
+        cli("send-keys", "-t", "%0", "echo written while paused", "Enter")
+        time.sleep(1.0)
+        print("pane %0 after the pause, as tmux has it:", repr(q("capture-pane", "-p", "-t", "%0").strip().splitlines()[-2:]))
+        snap("after-pause")
+        cli("send-keys", "-t", "%0", " ".join(tmux).replace(SOCK, "puritty-bench-inner") + " -CC new-session", "Enter")
+        time.sleep(2.0)
+        print("inner clients after the nested -CC:", repr(subprocess.run([*tmux[:1], "-L", "puritty-bench-inner", "list-clients"],
+                                                                         env=env, capture_output=True, text=True).stdout.strip()))
+        snap("nested")
+        subprocess.run([*tmux[:1], "-L", "puritty-bench-inner", "kill-server"], env=env, stderr=subprocess.DEVNULL)
+        cli("detach-client", "-t", client)
+        time.sleep(1.5)
+        snap("detached")
+        cli("kill-server")
+        time.sleep(0.5)
     finally:
         app.terminate()
         app.wait()

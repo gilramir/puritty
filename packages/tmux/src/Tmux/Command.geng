@@ -2,6 +2,7 @@ module Tmux.Command exposing
     ( sendBytes
     , size
     , clientFlags
+    , continuePane
     , quote
     , listPanes
     )
@@ -51,11 +52,20 @@ size s =
     "refresh-client -C " ++ String.fromInt (max 1 s.cols) ++ "x" ++ String.fromInt (max 1 s.rows)
 
 
-{-| The flags puritty sets on attach: 3.8's layouts with floating panes;
-an older tmux ignores a name it does not know (TM5.5). -}
+{-| The flags puritty sets on attach: 3.8's layouts with floating panes
+(an older tmux ignores a name it does not know, TM5.5), and `pause-after`:
+a pane whose output puritty has not read for five seconds is paused and
+its backlog dropped, rather than the client being ended as "too far
+behind" after five minutes (TM5.7, TM19). -}
 clientFlags : String
 clientFlags =
-    "refresh-client -f new-layouts"
+    "refresh-client -f new-layouts,pause-after=5"
+
+
+{-| A paused pane continued: its output again from now (TM5.7). -}
+continuePane : Int -> String
+continuePane pane =
+    "refresh-client -A " ++ quote ("%" ++ String.fromInt pane ++ ":continue")
 
 
 {-| Each pane of the session's current window and its state, one line a

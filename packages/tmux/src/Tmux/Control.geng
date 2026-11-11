@@ -6,6 +6,7 @@ module Tmux.Control exposing
     , Notice(..)
     , feed
     , unescape
+    , startsControl
     )
 
 {-| tmux's control mode (`tmux -CC`), read from the bytes the terminal
@@ -520,6 +521,29 @@ unescapeFrom bytes from slash pieces =
         else
             -- a `\` not followed by three octal digits stays as it is
             unescapeFrom bytes slash (indexOf 0x5C (slash + 1) bytes) pieces
+
+
+{-| Whether bytes hold `ESC P 1000 p`, tmux control mode starting: as a
+pane's output, a `tmux -CC` run inside a pane. -}
+startsControl : Bytes -> Bool
+startsControl bytes =
+    startsFrom bytes 0
+
+
+startsFrom : Bytes -> Int -> Bool
+startsFrom bytes at =
+    let
+        esc =
+            indexOf 0x1B at bytes
+    in
+    if esc < 0 then
+        False
+
+    else if Bytes.slice esc (esc + 7) bytes == entry then
+        True
+
+    else
+        startsFrom bytes (esc + 1)
 
 
 {-| The first index of byte `b` at or after `from`, or -1. -}

@@ -763,3 +763,34 @@ made 1:logs active and showed its pane; `+` made a third and showed it;
 Ctrl+PgUp went back to 1; Ctrl+Shift+T made a fourth; a rename from
 another client showed on its tab. The mouse and select scenarios, moved
 down a row, pass as before.
+
+## TM19 · Step 4.5: slow links and safety (2026-11-11)
+
+- **`pause-after=5`** is set with `new-layouts` on attach: a pane whose
+  output puritty has not read for five seconds is paused by tmux and its
+  backlog dropped, where without it tmux ends a client five minutes behind
+  as "too far behind" (TM5.7). On `%pause`, puritty sends one line,
+  `refresh-client -A '%N:continue'`, the pane's state and both its
+  captures (TM15's line), so the pane is made again from one moment and
+  goes on from there: what the paused pane printed shows, and nothing is
+  drawn twice.
+- **`tmux -CC` inside a pane** (tmux does not refuse it for a control
+  client, TM5.1): when a pane's output starts control mode, puritty sends
+  the pane an empty line, which detaches that inner client, reads the rest
+  of its output with a `Tmux.Control` reader of its own, so that the inner
+  client's lines are dropped until its `ESC \`, and writes a line in the
+  pane saying why.
+- **When control mode ends with a reason**, `%exit REASON` (as "too far
+  behind"), puritty writes it on the terminal it goes back to. Measured: a
+  detach gives a bare `%exit`, then ST, so nothing is said for one.
+
+**Checked** (`bench/tmux/show.py --scenario safety`): a pane paused by
+another client's `refresh-client -t CLIENT -A '%0:pause'`, then given a
+command, showed `written while paused`, as tmux's own capture of it ends;
+`tmux -CC new-session` on another socket, run in the pane, left the inner
+server with no client, and the pane only the note and its prompt; a
+detach gave the shell its terminal back.
+
+With this, TM13's step 4 is done. Left for later: dragging the line
+between tiled panes, colours for the tab bar and the dividers, and `%exit`
+reasons for a detach, which tmux does not send.
