@@ -839,3 +839,103 @@ pieces:
 
 The Windows build reads `app/icon/puritty.rc` from there (`windres
 -I ../icon`), and the exe still carries all twelve sizes.
+
+## WS26 · Drawing at 4K: is a GPU renderer needed? (2026-11-10)
+
+Gilbert asked whether puritty on Windows needs a version that draws with
+the GPU. WS3 chose drawing with FreeType and HarfBuzz into a bitmap in
+memory, copied to the window: one renderer for both platforms, held to
+one picture by the pixels gate. Its copy was measured at 0.39 ms for a
+1178×544 window. The case not measured was the worst one: a window
+maximized on beelink1's 3840×2160 screen at 150%, with the whole screen
+changing.
+
+**How it was measured** (`bench/windows/`):
+
+- **`blast.exe`** runs inside the terminal being measured. It waits 4 s
+  for the window to be maximized, then writes a file to its console in
+  64 KB writes, or 300 frames of coloured text the console's size, and
+  times the writes. The files are three of the throughput inputs
+  (`gitlog`, 25.8 MB; `vte-scrolling` and `vte-unicode`, 8 MB each).
+- **`render-4k.ps1`** runs each workload three times, in puritty,
+  Windows Terminal and the classic console, each maximized, in Gilbert's
+  desktop session. The classic console did not maximize (it stayed
+  120×30), so its numbers are left out.
+- **`PURITTY_STATS`** now also gives the copies to the window (`paints`,
+  `copy`), and the draw calls with the time inside them and between them.
+- **`conpty-drain.exe`** runs a program under the system's ConPTY with no
+  terminal, reading its output as fast as it comes. With
+  `CONPTY_CAPTURE` it keeps that output.
+
+**What was measured** (median of three; puritty at 295×79 cells, Windows
+Terminal at 270×72, the same screen in its font):
+
+| workload | puritty | ConPTY alone, 295×79 | Windows Terminal |
+|---|---|---|---|
+| git log, 25.8 MB | 6.1 s | 6.0 s | 0.46 s |
+| scrolling, 8 MB | 24 s | 25–29 s | 0.95 s |
+| unicode, 8 MB | 56 s | 0.5 s | 0.16 s |
+| 300 full screens | 46 ms | – | 47 ms |
+
+**The drawing is not the limit.** In the git log run puritty drew 379
+frames, about 60 a second. Each took 3.7 ms in the renderer and 4.4 ms
+to copy the whole 3835×2054 bitmap to the window, about 8 ms of a
+frame's 16. The copy matches the estimate from the small window.
+
+**For the git log and the scrolling, ConPTY is the limit.** The system's
+ConPTY alone, with nothing drawing, takes as long as puritty does.
+Windows Terminal is faster because it ships its own ConPTY (OpenConsole,
+from its own repository), not the system's.
+
+**For the unicode, puritty was the limit, and it was a quadratic.**
+
+- **Where.** ConPTY passed the stream on in 0.5 s, but puritty took 56 s,
+  and its draw calls covered only 6.9 s of that: 51 s went between them,
+  about 180 ms a frame. The core takes the 18 MB that ConPTY writes in
+  38 ms on Linux and 64 ms on Windows (`core-bench`). Building frames
+  with `Vt.View` after every 64 KB read (`harness/view/core-view`) took
+  4.5 ms a frame at 160×50 but 38 ms at 295×79: 8.4 times the time for
+  3.8 times the cells. `perf` put 92% of it in `View.evict` and
+  `View.frameOn`.
+- **The cause.** When a frame finds a cell changed, it forgets the cell's
+  word, the cells around it up to a blank, and queues each of them.
+  Every queued cell then found its word again, scanning to both ends,
+  and walked it again. A word of n cells cost n² steps. ConPTY writes
+  the unicode input as rows with no blank, words a row long, so a 295
+  column row cost 87,000 steps.
+- **The fix.** The work now marks the cells whose word is forgotten
+  already, and a marked cell skips the scan (`Vt.View.Work.worded`). The
+  display lists are byte for byte the same: the view gate passes, 345
+  of 345, and the pixels gate 41 of 41.
+- **The result.** `core-view` at 295×79 takes 0.40 s where it took
+  10.7 s, and at 160×50 0.13 s where it took 1.27 s. puritty on beelink1
+  takes the unicode workload in 8.7 s, against 56. The git log (5.9 s)
+  and the scrolling (24 s) are unchanged, as ConPTY bounds them.
+
+**What is left of the unicode run's 8.7 s:** 7.3 s in the renderer,
+about 25 ms a frame shaping and drawing 295×79 cells of mixed scripts,
+1.2 s of copies and 5.5 s between the draws. A frame takes longer than
+16 ms, so puritty draws after every read (283 frames), where Linux, whose
+frames are cheaper, reads on and drew 13. Drawing less often when frames
+are slow would cut that.
+
+**Answer: no GPU renderer.** Nothing measured is the drawing's limit:
+
+- the copy is 4.4 ms at 4K;
+- the renderer's frame is 4 to 25 ms;
+- a full screen redrawn 300 times took as long as Windows Terminal's GPU
+  (46 ms against 47).
+
+The two levers that are left:
+
+1. **ConPTY.** OpenConsole's ConPTY instead of the system's, as Windows
+   Terminal does: `conpty.dll` and `OpenConsole.exe` from
+   `microsoft/terminal` (MIT) beside `puritty.exe`, with
+   `CreatePseudoConsole` taken from that DLL when it is there. It would
+   bound the git log at about 0.5 s instead of 6.0, and the scrolling at
+   about 1 s instead of 25. The built-in ssh client does not go through
+   ConPTY at all, so a remote session's output is not bounded by it.
+2. **Fewer frames when a frame is slow:** the next frame due after the
+   last one's own time, not only 16 ms.
+
+Both are proposals for Gilbert, not built.

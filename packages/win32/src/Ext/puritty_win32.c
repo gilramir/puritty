@@ -477,6 +477,13 @@ geng_cancel puritty_win32_fonts(geng_wait *wait) {
 /* THE TARGET */
 
 static CRITICAL_SECTION paint;
+/* the copies to the window and their time, for PURITTY_STATS */
+static long paints;
+static long long paint_ticks;
+/* the draws' time inside this call and between calls (the program's own
+ * work: reading, the core, the frame's list), for PURITTY_STATS */
+static long draws;
+static long long draw_in_ticks, draw_gap_ticks, draw_wait_ticks, draw_last;
 static uint32_t *pixels;
 static int pw, ph;
 static uint32_t margin_rgb;
@@ -1294,7 +1301,12 @@ static void paint_window(HWND h) {
         bi.bmiHeader.biPlanes = 1;
         bi.bmiHeader.biBitCount = 32;
         bi.bmiHeader.biCompression = BI_RGB;
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
         SetDIBitsToDevice(dc, 0, 0, (DWORD) pw, (DWORD) ph, 0, 0, 0, (UINT) ph, pixels, &bi, DIB_RGB_COLORS);
+        QueryPerformanceCounter(&t1);
+        paints++;
+        paint_ticks += t1.QuadPart - t0.QuadPart;
     }
     uint32_t m = margin_rgb;
     int w = pw, hh = ph;
@@ -1525,7 +1537,15 @@ static char *string_of(void *bytes) {
 static int write_shot(const char *path);
 
 static void at_exit(void) {
-    if (getenv("PURITTY_STATS")) pt_stats("win32");
+    if (getenv("PURITTY_STATS")) {
+        pt_stats("win32");
+        /* the copies to the window, WM_PAINT's (docs/windows.md WS26) */
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        fprintf(stderr, "win32: paints %ld, copy %.2f ms, window %dx%d\n", paints, paint_ticks * 1000.0 / (double) f.QuadPart, pw, ph);
+        fprintf(stderr, "win32: draws %ld, in the call %.2f ms (waiting for the paint lock %.2f ms), between calls %.2f ms\n", draws,
+                draw_in_ticks * 1000.0 / (double) f.QuadPart, draw_wait_ticks * 1000.0 / (double) f.QuadPart, draw_gap_ticks * 1000.0 / (double) f.QuadPart);
+    }
     const char *path = getenv("PURITTY_SHOT");
     if (path && pixels) write_shot(path);
     /* the window kept on the screen a while, its thread still painting,
@@ -1598,7 +1618,12 @@ geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_
 geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
     geng_bytes *b = list;
     PtFrame frame;
+    LARGE_INTEGER t0, t1, t2;
+    QueryPerformanceCounter(&t0);
+    if (draw_last) draw_gap_ticks += t0.QuadPart - draw_last;
     EnterCriticalSection(&paint);
+    QueryPerformanceCounter(&t1);
+    draw_wait_ticks += t1.QuadPart - t0.QuadPart;
     pt_frame(b->data, (size_t) b->length, &frame);
     uint32_t bg = pt_default_bg();
     int margins = frame.sized || bg != margin_rgb;
@@ -1619,6 +1644,10 @@ geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
     a->block = NULL;
     a->data[0] = IsWindow(win) ? 0 : 1;
     if (inklen) memcpy(a->data + 1, ink, (size_t) inklen);
+    QueryPerformanceCounter(&t2);
+    draws++;
+    draw_in_ticks += t2.QuadPart - t0.QuadPart;
+    draw_last = t2.QuadPart;
     geng_succeed(wait, geng_slot_P(a));
     return (geng_cancel) {0};
 }

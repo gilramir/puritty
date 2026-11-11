@@ -878,11 +878,17 @@ the old ink of a cell drawn reached, which still shows it; and so on, the
 cells forgotten in the shadow so that the diff draws them. -}
 spread : (s : Screen) -> Cursor -> (rows : Int where rows <= s.rows) -> (cols : Int where 1 <= cols) -> (taken sh : Shadow) -> Shadow
 spread s cursor rows cols sh =
-    { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [] }) }
+    { sh | cells = spreadWork s rows cols sh.inked sh.ink (collect s cursor 0 rows cols { cells = sh.cells, work = [], worded = Builder.fromArray (Array.repeat (cols * rows) False) }) }
 
 
+{-| The cells forgotten, the queue of those whose word and ink are still to
+be followed, and the cells whose word is forgotten already: each word is
+walked once, however many of its cells are queued, where walking it again
+for each made a frame cost the square of a word's length (a row of 295
+cells with no blank in it, as ConPTY writes them; puritty
+`docs/windows.md` WS26). -}
 type alias Work =
-    { cells : Builder Int64, work : Array Int }
+    { cells : Builder Int64, work : Array Int, worded : Builder Bool }
 
 
 {-| Every changed cell, queued. -}
@@ -905,7 +911,7 @@ collectRow s cursor o ext y x cols w =
         w
 
     else if differs s cursor o ext y cols x w.cells then
-        collectRow s cursor o ext y (x + 1) cols { cells = w.cells, work = Array.pushLast (y * cols + x) w.work }
+        collectRow s cursor o ext y (x + 1) cols { w | work = Array.pushLast (y * cols + x) w.work }
 
     else
         collectRow s cursor o ext y (x + 1) cols w
@@ -990,22 +996,28 @@ spreadWork s rows cols inked0 ink w =
                     ext =
                         extentAt o s
 
-                    l =
-                        if inWord s o ext y cols x w.cells then
-                            wordLeft s o ext y cols x w.cells
+                    -- the word's ends, read before the cells are written;
+                    -- none when its word is forgotten already
+                    span =
+                        if Builder.get j w.worded == Just True then
+                            Nothing
+
+                        else if inWord s o ext y cols x w.cells then
+                            Just { l = wordLeft s o ext y cols x w.cells, r = wordRight s o ext y cols x w.cells }
 
                         else
-                            x
+                            Just { l = x, r = x + 1 }
 
-                    r =
-                        if inWord s o ext y cols x w.cells then
-                            wordRight s o ext y cols x w.cells
-
-                        else
-                            x + 1
+                    popped =
+                        { w | cells = Builder.set j unknown w.cells, work = Array.dropLast 1 w.work }
 
                     worded =
-                        forgetWord (y * cols + l) (y * cols + r) j { cells = Builder.set j unknown w.cells, work = Array.dropLast 1 w.work }
+                        when span is
+                            Just ends ->
+                                forgetWord (y * cols + ends.l) (y * cols + ends.r) j popped
+
+                            Nothing ->
+                                popped
                 in
                 spreadWork s
                     rows
@@ -1030,7 +1042,11 @@ forgetWord i end j w =
         w
 
     else
-        forgetWord (i + 1) end j (evict i (i /= j) w)
+        let
+            marked =
+                evict i (i /= j) w
+        in
+        forgetWord (i + 1) end j { marked | worded = Builder.set i True marked.worded }
 
 
 {-| The neighbour of `j` in `d` forgotten if its ink reaches `j`. -}
@@ -1058,7 +1074,7 @@ already. -}
 evict : Int -> Bool -> (taken w : Work) -> Work
 evict n there w =
     if there && Builder.get n w.cells /= Just unknown then
-        { cells = Builder.set n unknown w.cells, work = Array.pushLast n w.work }
+        { w | cells = Builder.set n unknown w.cells, work = Array.pushLast n w.work }
 
     else
         w
