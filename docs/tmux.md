@@ -818,3 +818,14 @@ bold text (234 on 214); the lines between tiled panes a quiet grey (240);
 a floating pane's box grey (245), and the active pane's box amber (214), so
 the pane the keys go to is seen at once. They are fixed colours for now;
 a light look, or a palette of the user's, may want them from the look.
+
+## TM22 · The tab bar at the bottom, by default (2026-11-11)
+
+*Gilbert, 2026-11-11, using tmux 3.8 with `-CC`:* the bar used to be at the
+bottom, where tmux's status line is. `[tmux] tabs = "bottom"` (the default)
+or `"top"` places it; the settings window has it on the Window page. At the
+bottom, tmux's rows are the window's from the top, and the bar is the last
+row; at the top, the panes are drawn a row down as in TM18. Only where the
+panes are drawn, where the bar is drawn and clicked, and `move-pane -Y`
+follow it; tmux is told a row less either way. The show.py scenarios now
+click their tabs on the bottom row, and pass.

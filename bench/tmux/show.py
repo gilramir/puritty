@@ -161,7 +161,8 @@ def attach(a, env, tmux, xdo, snap, cli):
 CW, CH = 9, 17   # the pixel gate's font at 96 dpi: a cell's size
 
 
-BAR = 1          # puritty's tab bar, above tmux's rows (docs/tmux.md TM18)
+BAR = 0          # rows above tmux's: the tab bar is at the bottom by default (TM22)
+TABROW = 29      # the tab bar's row, the window's last of 30
 
 
 def at(col, row):
@@ -303,13 +304,13 @@ def tabs(a, env, tmux, xdo, snap, cli):
         time.sleep(2)
         print("attached:", state())
         snap("tabs-attached")
-        # the tabs are " 0:editor │ 1:logs │ + │"
-        x, y = at(13, 0)
+        # the tabs are " 0:editor │ 1:logs │ + │", on the bottom row
+        x, y = at(13, TABROW)
         xd("mousemove", x, y, "click", "1")
         time.sleep(0.6)
         print("a click on the second tab:", state())
         snap("tabs-second")
-        x, y = at(20, 0)
+        x, y = at(20, TABROW)
         xd("mousemove", x, y, "click", "1")
         time.sleep(0.8)
         print("a click on +:", state())

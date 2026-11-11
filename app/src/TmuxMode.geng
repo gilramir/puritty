@@ -8,6 +8,7 @@ module TmuxMode exposing
     , encodeKey
     , activeMode
     , pointer
+    , setBar
     , scrollKey
     , tabKey
     , selectedText
@@ -76,6 +77,9 @@ type alias State =
       -- panes in which a `tmux -CC` was started, each read as control mode
       -- so that its lines are dropped until it ends (TM19)
     , nested : Dict Int Control.Reader
+      -- the tab bar at the window's top, or at its bottom where tmux's
+      -- status line was (`[tmux] tabs`, TM22)
+    , barTop : Bool
     }
 
 
@@ -161,6 +165,7 @@ idle _ =
     , clicks = { at = -1000, count = 0, pane = -1, point = { row = 0, col = 0 } }
     , tabs = []
     , nested = Dict.empty
+    , barTop = False
     }
 
 
@@ -217,17 +222,27 @@ tabsQuery =
     "list-windows -F " ++ Command.quote "T #{window_id} #{window_index} #{window_name}"
 
 
-{-| The rows of puritty's window above tmux's: the tab bar. -}
+{-| The tab bar at the top (`True`) or the bottom of the window. -}
+setBar : Bool -> (taken s : State) -> State
+setBar top s =
+    { s | barTop = top }
+
+
+{-| The rows of puritty's window that are not tmux's: the tab bar. -}
 bar : Int
 bar =
     1
 
 
 {-| A pane of the layout where it is drawn in puritty's window: below the
-tab bar. -}
-down : Layout.Pane -> Layout.Pane
-down p =
-    { p | y = p.y + bar }
+tab bar when the bar is at the top, where tmux has it when at the bottom. -}
+down : Bool -> Layout.Pane -> Layout.Pane
+down top p =
+    if top then
+        { p | y = p.y + bar }
+
+    else
+        p
 
 
 {-| The size tmux is told: puritty's window less the tab bar. -}
@@ -755,13 +770,16 @@ paint s =
         Just cell ->
             let
                 tiled =
-                    Array.map down (Layout.tiled cell)
+                    Array.map (down s.barTop) (Layout.tiled cell)
 
                 floating =
-                    Array.map down (Layout.floating cell)
+                    Array.map (down s.barTop) (Layout.floating cell)
+
+                barRow =
+                    if s.barTop then 0 else s.canvas.rows - 1
 
                 tabBar =
-                    tabsOf cols s
+                    tabsOf cols barRow s
 
                 active =
                     s.active
@@ -804,7 +822,7 @@ paint s =
                         |> Vt.invert tiledSpans
                         |> drawText lineColour lines
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColour else boxColour) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
-                        |> drawText barColour [ { row = 0, col = 0, text = String.padRight cols ' ' tabBar.text } ]
+                        |> drawText barColour [ { row = barRow, col = 0, text = String.padRight cols ' ' tabBar.text } ]
                         |> drawText activeTabColour tabBar.active
                         |> Vt.feed (Bytes.fromString cursor)
             in
@@ -1059,7 +1077,7 @@ pointer how p s =
 
                 -- the topmost pane first: floating ones top down, then tiled
                 order =
-                    Array.map down (Array.reverse (Layout.floating cell) ++ Layout.tiled cell)
+                    Array.map (down s.barTop) (Array.reverse (Layout.floating cell) ++ Layout.tiled cell)
 
                 inside q =
                     col >= q.x && col < q.x + q.w && row >= q.y && row < q.y + q.h
@@ -1089,9 +1107,12 @@ pointer how p s =
                     else
                         Nothing
 
+                barRow =
+                    if s.barTop then 0 else p.height // max 1 p.cellHeight - 1
+
                 tabHit =
-                    if row < bar && p.action == 0 && p.button == 1 && s.drag == Nothing && s.grab == Nothing then
-                        Array.findFirst (\h -> col >= h.from && col <= h.to) (tabsOf (p.width // max 1 p.cellWidth) s).hits |> Maybe.map .value
+                    if row == barRow && p.action == 0 && p.button == 1 && s.drag == Nothing && s.grab == Nothing then
+                        Array.findFirst (\h -> col >= h.from && col <= h.to) (tabsOf (p.width // max 1 p.cellWidth) barRow s).hits |> Maybe.map .value
 
                     else
                         Nothing
@@ -1346,8 +1367,8 @@ extended boundaries at sel s =
 {-| The tab bar: a tab for each window, ` 1:name `, between `│`s, the
 active one inverse, then ` + `, cut at the window's width; and which
 columns each tab and the `+` cover, `-1` for the `+`. -}
-tabsOf : Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
-tabsOf cols s =
+tabsOf : Int -> Int -> State -> { text : String, active : Array { row : Int, col : Int, text : String }, hits : Array { from : Int, to : Int, window : Int } }
+tabsOf cols row s =
     let
         labels =
             Array.map (\t -> { window = t.id, text = " " ++ String.fromInt t.index ++ ":" ++ t.name ++ " " }) s.tabs
@@ -1372,7 +1393,7 @@ tabsOf cols s =
     , active =
         laid.hits
             |> Array.keepIf (\h -> h.window == s.window && h.window >= 0 && h.from < cols)
-            |> Array.map (\h -> { row = 0, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
+            |> Array.map (\h -> { row = row, col = h.from, text = String.slice h.from (min cols (h.to + 1)) laid.text })
     , hits = laid.hits
     }
 
@@ -1517,6 +1538,9 @@ each time the pointer reaches a new cell. -}
 dragged : Int -> Int -> Bool -> Drag -> (taken s : State) -> { state : State, commands : Array String }
 dragged col row released d s =
     let
+        top =
+            s.barTop
+
         dx =
             col - d.col
 
@@ -1540,7 +1564,7 @@ dragged col row released d s =
             else if d.kind == 0 then
                 -- `d.y` is where it is drawn, below the tab bar; tmux's rows
                 -- start under it
-                "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (d.y - bar - 1 + dy)
+                "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (d.y - (if top then bar else 0) - 1 + dy)
 
             else
                 -- a floating pane's size, as resize-pane takes it, counts its
