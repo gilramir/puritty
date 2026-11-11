@@ -104,3 +104,32 @@ colleague coming from Terminator meets first:
 *Leaning:* 1 now-ish, as the next feature after tmux, since it is most of
 what "tab management" means and serves the Windows product; 2 and 3
 together after it; 4 with reconnect; 5 not unless asked. Not started.
+
+## TA4 · How the colleague uses it (2026-11-11)
+
+*Gilbert, 2026-11-11, from the colleague's screen:* 10 to 20 tabs in one
+window, each renamed to a name of one or two letters (`a`, `b`, `c`, `d`,
+`dm`, `e`); some tabs run tmux (inside the tab, not as control mode) and
+many do not; the tabs are cycled from the keyboard.
+
+What it says for puritty's local tabs, beside the survey's ranking
+(`docs/research/reports/Terminal tabs survey.md`):
+
+- **Rename is used all the time**, not occasionally: one keystroke away
+  from a short name (the survey's must-do 5), and a user's name kept over
+  whatever the program sets as its title, since a tab named `dm` running
+  tmux would otherwise show tmux's title.
+- **Tabs as wide as their names**, not dividing the window's width: twenty
+  one-letter tabs then fit on one bar with no overflow, and each is found
+  by its letter at a glance. This argues for natural-width tabs by default
+  (the survey's should-do 7), and against full-width tabs.
+- **Keyboard cycling is the main way between tabs**: next and previous
+  (Ctrl+PgUp/PgDn, Terminator's defaults) must work without the mouse and
+  without the bar's help. With names like these, jumping to a tab by its
+  name (type `d`, go to `d`) may be worth more than jumping by number;
+  that is a question for him, not settled here.
+- **tmux runs inside some tabs**, so the tab keys must not take tmux's
+  (his prefix, and Ctrl+PgUp/PgDn if he binds them in tmux); every tab key
+  rebindable and removable (must-do 1) covers it.
+- Splits and broadcast were not seen in use; worth asking him whether he
+  uses them, before they are ranked above restore or colours.
