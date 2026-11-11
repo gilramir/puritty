@@ -1433,6 +1433,18 @@ feed remote chunk ms m =
         |> Task.map (\fed -> sendRaw (commandLines r.commands) fed)
 
 
+{-| Whether a private mode is set for what keys and pastes reach: the
+terminal's program, or under tmux control mode the active pane's
+(docs/tmux.md TM16). -}
+modeOn : Int -> Model -> Bool
+modeOn mode m =
+    if TmuxMode.isOn m.tmux then
+        TmuxMode.activeMode mode m.tmux == Just True
+
+    else
+        Dict.get mode m.term.modes == Just True
+
+
 {-| tmux commands as the lines written to it. -}
 commandLines : Array String -> Bytes
 commandLines commands =
@@ -1948,7 +1960,7 @@ handleOne remote ms rest ev m =
                 Window.Focus on ->
                     let
                         report =
-                            if Dict.get 1004 m.term.modes == Just True then
+                            if modeOn 1004 m then
                                 if on then
                                     Bytes.fromString "\u{001B}[I"
 
@@ -2190,7 +2202,7 @@ pasteIn more text m =
             m.pasting == Nothing
 
         bracketed =
-            Maybe.withDefault (Dict.get 2004 m.term.modes == Just True) m.pasting
+            Maybe.withDefault (modeOn 2004 m) m.pasting
 
         empty =
             first && not more && Bytes.isEmpty text
@@ -2261,7 +2273,15 @@ pointer ms p m =
         taken =
             Bitwise.and p.mods 1 /= 0 && not wheel && (p.action /= 2 || held /= 0)
     in
-    if modes.tracking == Mouse.none && wheel && p.action == 0 then
+    if TmuxMode.isOn m.tmux && not taken then
+        -- tmux's panes take the mouse, but Shift (docs/tmux.md TM16)
+        let
+            r =
+                TmuxMode.pointer held p m.tmux
+        in
+        sendRaw (commandLines r.commands) { m | held = held, tmux = r.state, urgent = True }
+
+    else if modes.tracking == Mouse.none && wheel && p.action == 0 then
         wheelStep p.button { m | held = held }
 
     else if modes.tracking == Mouse.none || taken then
@@ -2644,8 +2664,13 @@ lowestHeld held i =
 key : Backend -> Int -> Array Window.Event -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
 key remote ms rest k m =
     let
+        -- under tmux control mode, by the active pane's modes (docs/tmux.md TM16)
         bytes =
-            Keys.encode m.term k
+            if TmuxMode.isOn m.tmux then
+                Maybe.withDefault Bytes.empty (TmuxMode.encodeKey k m.tmux)
+
+            else
+                Keys.encode m.term k
 
         blinkAt =
             if blinking m then

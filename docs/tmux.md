@@ -666,3 +666,37 @@ Shown with `bench/tmux/show.py --scenario attach`: a session made before
 attaching, with history and colours in one pane, `less` on the alternate
 screen in another and a floating pane, came back as it was, and `less`
 scrolled correctly after.
+
+## TM16 · Step 4.2: the mouse on panes, and keys by the active pane (2026-11-11)
+
+- **A click** makes the pane under the pointer active (`select-pane`),
+  the topmost first: floating panes top down, then the tiled ones.
+- **A floating pane's box**: a press on its top edge and a drag moves it,
+  with `move-pane -t %N -X x -Y y`, the box's top left, border included,
+  as tmux takes it (`cmd-join-pane.c`, `cmd_join_pane_move`); a press on
+  its other edges resizes it, with `resize-pane -x -y`, whose sizes for a
+  floating pane count the border's two lines (measured: `new-pane -x 30
+  -y 6` makes a 28 by 4 pane, and a resize without the 2 grew a drag of
+  6 by 2 by 4 by 0). Each is sent when the pointer reaches a new cell;
+  tmux's `%layout-change` then moves the box.
+- **A program that asked for the mouse** gets the event in its pane's own
+  cells, encoded by its own modes (`Vt.Mouse.encode` over the pane's
+  terminal), sent as `send-keys -H`; the pane a press began in keeps the
+  mouse until every button is let go. Shift takes the mouse back for
+  puritty, as without tmux.
+- **Keys** are encoded by the active pane's modes (DECCKM, the keypad, the
+  kitty flags, modifyOtherKeys), and bracketed paste and focus reports
+  follow the active pane's 2004 and 1004: they had followed puritty's own
+  terminal, which tmux's panes never set.
+- **Every command puritty sends is queued** for its reply, `select-pane`
+  and the drags included, so that the captures' replies keep their places.
+
+**Checked against tmux** (`bench/tmux/show.py --scenario mouse`, reading
+tmux's own state after each action): a click in the right pane made `%1`
+active; a drag of the floating pane's top edge by 10 by 5 moved it from
+4,2 to 14,7; a drag of its corner by 6 by 2 made it 34 by 6 from 28 by 4;
+a click in the left pane, whose `cat -v` had set 1000, 1006 and DECCKM,
+gave it `ESC [<0;6;26M` and `ESC [<0;6;26m` for the cell clicked, and Up
+then gave `ESC O A`.
+
+Not done here: dragging the line between tiled panes to resize them.

@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -73,6 +73,9 @@ def main():
     try:
         if a.scenario == "attach":
             attach(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "mouse":
+            mouse(a, env, tmux, xdo, snap, cli)
             return
         app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
                                 *tmux, "-CC", "new-session"], env=env, stdout=subprocess.DEVNULL,
@@ -136,6 +139,71 @@ def attach(a, env, tmux, xdo, snap, cli):
         time.sleep(0.3)
         subprocess.run([xdo, "type", "--delay", "40", "jjjj"], env=env, check=True)
         snap("less-scrolled")
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+CW, CH = 9, 17   # the pixel gate's font at 96 dpi: a cell's size
+
+
+def at(col, row):
+    """A cell's centre, in the window's pixels."""
+    return str(col * CW + CW // 2), str(row * CH + CH // 2)
+
+
+def mouse(a, env, tmux, xdo, snap, cli):
+    """The mouse on tmux's panes (docs/tmux.md TM16), read back from tmux:
+    a click makes a pane active, a drag of a floating pane's top edge moves
+    it and of its corner resizes it, a program that asked for the mouse
+    gets its click at its own cell, and a key goes out by the active pane's
+    DECCKM."""
+    cli("new-session", "-d", "-s", "m", "-x", "100", "-y", "30")
+    cli("send-keys", "-t", "%0", "printf '\\033[?1h\\033[?1000h\\033[?1006h'; stty raw -echo; cat -v", "Enter")
+    cli("split-window", "-h", "-t", "%0")
+    cli("new-pane", "-t", "m", "-x", "30", "-y", "6")
+    time.sleep(1.0)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *tmux, "-CC", "attach", "-t", "m"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    q = lambda *args: subprocess.run([*tmux, *args], env=env, capture_output=True, text=True).stdout.strip()
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
+        time.sleep(2)
+        geom = lambda: q("display-message", "-p", "-t", "%2", "#{pane_left},#{pane_top} #{pane_width}x#{pane_height}")
+        print("floating before:", geom(), "| active:", q("display-message", "-p", "#{pane_id}"))
+        snap("mouse-attached")
+        x, y = at(80, 20)
+        subprocess.run([xdo, "mousemove", x, y, "click", "1"], env=env, check=True)
+        time.sleep(0.5)
+        print("after a click in the right pane, active:", q("display-message", "-p", "#{pane_id}"))
+        left, top = map(int, geom().split()[0].split(","))
+        x0, y0 = at(left + 3, top - 1)
+        x1, y1 = at(left + 13, top + 4)
+        subprocess.run([xdo, "mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) + 30), y0,
+                        "mousemove", x1, y1, "mouseup", "1"], env=env, check=True)
+        time.sleep(0.6)
+        print("floating after moving its top edge by 10,5:", geom())
+        left, top = map(int, geom().split()[0].split(","))
+        w, h = map(int, geom().split()[1].split("x"))
+        x0, y0 = at(left + w, top + h)
+        x1, y1 = at(left + w + 6, top + h + 2)
+        subprocess.run([xdo, "mousemove", x0, y0, "mousedown", "1", "mousemove", x1, y1, "mouseup", "1"], env=env, check=True)
+        time.sleep(0.6)
+        print("floating after dragging its corner by 6,2:", geom())
+        snap("mouse-moved")
+        x, y = at(5, 25)
+        subprocess.run([xdo, "mousemove", x, y, "click", "1"], env=env, check=True)
+        time.sleep(0.4)
+        subprocess.run([xdo, "key", "Up"], env=env, check=True)
+        time.sleep(0.6)
+        print("active:", q("display-message", "-p", "#{pane_id}"), "| the left pane's program got:",
+              repr(q("capture-pane", "-p", "-t", "%0").split("cat -v")[-1].strip()[:80]))
+        snap("mouse-left")
         cli("kill-server")
         time.sleep(1)
     finally:

@@ -5,6 +5,9 @@ module TmuxMode exposing
     , read
     , paint
     , keys
+    , encodeKey
+    , activeMode
+    , pointer
     , resized
     , title
     )
@@ -22,10 +25,13 @@ The panes' terminals answer nothing: tmux answered their programs already.
 import Array.Builder as Builder exposing (Builder)
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
+import Keys
 import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
 import Vt
+import Vt.Mouse as Mouse
+import Window
 
 
 type alias State =
@@ -48,6 +54,26 @@ type alias State =
     , expecting : Array Expect
       -- what tmux said of each pane on attach, for its capture
     , info : Dict Int PaneInfo
+      -- a floating pane being moved or resized by its box, and the pane a
+      -- press began in, which keeps the mouse until it is let go
+    , drag : Maybe Drag
+    , grab : Maybe Int
+    , mouseLast : Maybe Mouse.Cell
+    }
+
+
+{-| A drag of a floating pane's box: from where, the box as it was, and
+what was last sent, so that a motion within a cell sends nothing. -}
+type alias Drag =
+    { pane : Int
+    , move : Bool
+    , col : Int
+    , row : Int
+    , x : Int
+    , y : Int
+    , w : Int
+    , h : Int
+    , sent : { col : Int, row : Int }
     }
 
 
@@ -91,6 +117,9 @@ idle _ =
     , canvas = blank 1 1
     , expecting = []
     , info = Dict.empty
+    , drag = Nothing
+    , grab = Nothing
+    , mouseLast = Nothing
     }
 
 
@@ -659,10 +688,251 @@ keys bytes s =
         sent (Command.sendBytes s.active bytes) s
 
 
+{-| `n` more replies to read and drop. -}
+waitingFor : Int -> (taken s : State) -> State
+waitingFor n s =
+    { s | expecting = s.expecting ++ Array.repeat n ForNothing }
+
+
 {-| Commands whose replies say nothing puritty reads, sent. -}
 sent : Array String -> (taken s : State) -> { state : State, commands : Array String }
 sent commands s =
     { state = { s | expecting = s.expecting ++ Array.map (\_ -> ForNothing) commands }, commands = commands }
+
+
+{-| What a key sends the active pane's program, by that pane's modes
+(DECCKM, keypad, the kitty flags, modifyOtherKeys); `Nothing` when no pane
+is active yet. -}
+encodeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> State -> Maybe Bytes
+encodeKey k s =
+    withPane s.active s (\t -> Keys.encode t k)
+
+
+{-| Whether a private mode is set in the active pane, as bracketed paste
+(2004) and focus reports (1004) are asked. -}
+activeMode : Int -> State -> Maybe Bool
+activeMode mode s =
+    withPane s.active s (\t -> Dict.get mode t.modes == Just True)
+
+
+{-| What a pane's terminal answers, looked at in place. -}
+withPane : Int -> State -> (Vt.Term -> a) -> Maybe a
+withPane pane s f =
+    when Array.findFirst (\i -> i == pane) s.ids is
+        Just found ->
+            when Builder.get found.index s.panes is
+                Just t ->
+                    Just (f t)
+
+                Nothing ->
+                    Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| A pointer event in the window (docs/tmux.md TM16): a press on a floating
+pane's top edge moves it and on its bottom or right edge resizes it, tmux
+told as the pointer reaches each new cell; a press elsewhere makes the pane
+under it active. A pane whose program asked for the mouse gets the event as
+its own, in its own cells; the pane a press began in keeps the mouse until
+it is let go. `held` is the buttons held after the event. -}
+pointer : Int -> Window.PointerEvent -> (taken s : State) -> { state : State, commands : Array String }
+pointer held p s =
+    when s.layout is
+        Nothing ->
+            { state = s, commands = [] }
+
+        Just cell ->
+            let
+                col =
+                    p.x // max 1 p.cellWidth
+
+                row =
+                    p.y // max 1 p.cellHeight
+
+                -- the topmost pane first: floating ones top down, then tiled
+                order =
+                    Array.reverse (Layout.floating cell) ++ Layout.tiled cell
+
+                inside q =
+                    col >= q.x && col < q.x + q.w && row >= q.y && row < q.y + q.h
+
+                onBox q =
+                    q.z /= Nothing && col >= q.x - 1 && col <= q.x + q.w && row >= q.y - 1 && row <= q.y + q.h && not (inside q)
+
+                under =
+                    Array.findFirst (\q -> inside q || onBox q) order |> Maybe.map .value
+            in
+            when s.drag is
+                Just d ->
+                    dragged col row (p.action == 1) d s
+
+                Nothing ->
+                    if p.action == 0 && p.button == 1 then
+                        when under is
+                            Just q ->
+                                let
+                                    select =
+                                        selected q.id s
+                                in
+                                if onBox q then
+                                    -- the top edge moves the box; the others resize it
+                                    sent select { s | drag = Just { pane = q.id, move = row == q.y - 1, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } }
+
+                                else
+                                    let
+                                        reported =
+                                            report held p q { s | grab = Just q.id }
+                                    in
+                                    -- what each sends waits for nothing, so their
+                                    -- entries' order does not matter, only that
+                                    -- there is one for each
+                                    { state = waitingFor (Array.length select) reported.state, commands = select ++ reported.commands }
+
+                            Nothing ->
+                                { state = s, commands = [] }
+
+                    else
+                        let
+                            target =
+                                when s.grab is
+                                    Just g ->
+                                        Array.findFirst (\q -> q.id == g) order |> Maybe.map .value
+
+                                    Nothing ->
+                                        under
+
+                            released =
+                                if held == 0 then
+                                    { s | grab = Nothing }
+
+                                else
+                                    s
+                        in
+                        when target is
+                            Just q ->
+                                report held p q released
+
+                            Nothing ->
+                                { state = released, commands = [] }
+
+
+{-| `select-pane` when the pane is not already the active one. -}
+selected : Int -> State -> Array String
+selected pane s =
+    if pane == s.active then
+        []
+
+    else
+        [ "select-pane -t " ++ Command.quote ("%" ++ String.fromInt pane) ]
+
+
+{-| A drag of a box going on: `move-pane -X -Y`, the box's new top left (its
+border's, as tmux takes it with the border's lines), or `resize-pane -x -y`,
+each time the pointer reaches a new cell. -}
+dragged : Int -> Int -> Bool -> Drag -> (taken s : State) -> { state : State, commands : Array String }
+dragged col row released d s =
+    let
+        dx =
+            col - d.col
+
+        dy =
+            row - d.row
+
+        moved =
+            col /= d.sent.col || row /= d.sent.row
+
+        target =
+            Command.quote ("%" ++ String.fromInt d.pane)
+
+        command =
+            if d.move then
+                "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (d.y - 1 + dy)
+
+            else
+                -- a floating pane's size, as resize-pane takes it, counts its
+                -- border's lines: `new-pane -x 30 -y 6` makes a 28 by 4 pane
+                "resize-pane -t " ++ target ++ " -x " ++ String.fromInt (max 4 (d.w + 2 + dx)) ++ " -y " ++ String.fromInt (max 3 (d.h + 2 + dy))
+
+        after =
+            if released then
+                Nothing
+
+            else
+                Just { d | sent = { col = col, row = row } }
+
+        commands =
+            if moved then
+                [ command ]
+
+            else
+                []
+
+        s2 =
+            { s | drag = after }
+    in
+    if moved then
+        sent commands s2
+
+    else
+        { state = s2, commands = [] }
+
+
+{-| A pointer event as the pane's program asked for it, if it did: encoded
+by the pane's mouse modes, at the pane's own cells, sent as its keys. -}
+report : Int -> Window.PointerEvent -> Layout.Pane -> (taken s : State) -> { state : State, commands : Array String }
+report held p q s =
+    let
+        encoded =
+            withPane q.id s
+                (\t ->
+                    let
+                        modes =
+                            Vt.mouseModes t
+                    in
+                    if modes.tracking == Mouse.none then
+                        Nothing
+
+                    else
+                        Just
+                            (Mouse.encode
+                                { tracking = modes.tracking
+                                , format = modes.format
+                                , size =
+                                    { screenWidth = q.w * p.cellWidth
+                                    , screenHeight = q.h * p.cellHeight
+                                    , cellWidth = p.cellWidth
+                                    , cellHeight = p.cellHeight
+                                    , padTop = 0
+                                    , padBottom = 0
+                                    , padRight = 0
+                                    , padLeft = 0
+                                    }
+                                , anyButtonPressed = held /= 0
+                                , track = True
+                                , last = s.mouseLast
+                                }
+                                { action = p.action
+                                , button = p.button
+                                , mods = p.mods
+                                , x = p.x - q.x * p.cellWidth
+                                , y = p.y - q.y * p.cellHeight
+                                }
+                            )
+                )
+                |> Maybe.andThen identity
+    in
+    when encoded is
+        Just r ->
+            if Bytes.isEmpty r.bytes then
+                { state = { s | mouseLast = r.last }, commands = [] }
+
+            else
+                sent (Command.sendBytes q.id r.bytes) { s | mouseLast = r.last }
+
+        Nothing ->
+            { state = s, commands = [] }
 
 
 {-| The window at a new size: the canvas, and tmux told. -}
