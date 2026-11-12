@@ -378,3 +378,59 @@ reconnecting, so the natural start is from the host list, opening the
 chosen hosts each in a window. C1 stays possible later and would not
 undo C2's protocol. The DPI change on Windows is worth doing first,
 whatever is chosen, since it is met with any second monitor.
+
+## BC10 · A process per session, as Chrome splits it: a discussion point
+
+*Gilbert, 2026-11-12, asked whether other terminals' users wish for tabs
+torn out into windows of their own, how puritty holds its tabs, and
+whether Chrome's tabs are each a process. Recorded as a discussion
+point; **undecided**, nothing built.*
+
+**Tear-out is asked for.** The tabs survey (`research/research_notes/
+Terminal tabs survey/`): Tabby's "Drag Tabs to New Window" (#581, 54 👍,
+open since 2018) and "Detachable tabs" (#4264), ConEmu since 2015, Rio
+(#1656) and Wave (#3127) in 2026; Terminator added it on a 2020 request,
+and iTerm2, Konsole, GNOME Terminal, Ptyxis and Xfce Terminal have it.
+Windows Terminal shipped it and kept meeting bugs (#18561, 2025: a tab
+dragged out closed Terminal). TB1 left tear-off out as hard to do in one
+process, not as unwanted.
+
+**puritty today** (BC9): a window's tabs are one process, each tab's
+terminal, pty and built-in ssh session inside it; each window is another
+process; the window packages hold their window in file-level globals.
+
+**Chrome's split** (its documented architecture, not measured here): one
+browser process owns every window, tab strip and the routing of input;
+pages run in renderer processes, roughly one per site rather than strictly
+per tab; drawing and the network have processes of their own. Tearing a
+tab out moves no process: the browser process shows that renderer in
+another of its windows.
+
+**The same split for puritty:** a *session process* per tab holding the
+pty or ssh session and the terminal's state, and a *window process* that
+draws and takes keys, joined over a local socket or named pipe (C2's
+connection, BC9).
+
+- **What it gives.** Tear-out and moving a tab for every kind of tab,
+  built-in ssh included, with no reconnect: the session joins another
+  window. C3's hard half disappears, since the pty, ConPTY's handle and
+  the ssh cipher state never leave the session process. Broadcast is a
+  window sending one key to several sessions, which may be shown in
+  several windows on several monitors. A crashing session takes no other
+  tab with it.
+- **What it costs.** Every key and every screen update crosses a process:
+  a little latency and a copy, on the path puritty has worked hardest on.
+  A window joining a session needs its screen and scrollback, as a
+  snapshot or a replay. Two programs and a protocol: versions that must
+  match, the same-user check, a rule for sessions whose window is gone
+  (end, or wait for one to join, as tmux does).
+- **Several windows in one process is not required.** Chrome's browser
+  process owns many windows (C1's rework of the globals); a window per
+  process with sessions apart (C2's shape) keeps the window packages as
+  they are, and moving a tab is starting a window process and handing it
+  the session's connection.
+
+This goes one step past C2: not only broadcast targets but every tab in a
+process of its own. It is a change to puritty's structure, so a measure
+comes before a choice: a key's round trip and a full screen's update
+across a local socket and a named pipe, against today's in-process path.
