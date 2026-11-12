@@ -88,7 +88,7 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
 **Termius**
 - Ctrl/Cmd+T opens a New Tab. Dragging one connection onto another's tab creates a "workspace" in Split view (up to 16 terminals), and Ctrl/Cmd+Shift+M toggles it with Focus mode. — [Termius workspaces docs](https://docs.termius.com/terminal/workspaces)
 - Broadcast sends to "all active terminals in the workspace" (Ctrl+Alt+B).
-- Workspace templates save connections, tab names, layout, working directories and running commands, and a grey dot marks unsaved changes.
+- Workspace templates save connections, tab names, layout, working directories and running commands, and a gray dot marks unsaved changes.
 - "Rename" on a tab "does not change the original hostname".
 - Tab status colors: green means unread output, yellow means input is needed, red means an error or failed connection.
 - (The last four items are from the same [Termius workspaces docs](https://docs.termius.com/terminal/workspaces).)
@@ -96,7 +96,7 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
 
 **Tabby (formerly Terminus; v1.0.238, 2026-10-07; 75k stars)**
 - The README lists "Tabs on any side of the window", "Multiple nested split panes", "Remembers your tabs", an "SSH2 client with a connection manager", and "Neither is it lightweight". — [Tabby README](https://github.com/Eugeny/tabby)
-- 1.0.206 made the behaviour on disconnect configurable (close, keep or reconnect, #8206) and added a hotkey to reconnect the current tab (#8201). — [Softpedia Tabby changelog](https://www.softpedia.com/progChangelog/Terminus-Pankov-Changelog-257708.html)
+- 1.0.206 made the behavior on disconnect configurable (close, keep or reconnect, #8206) and added a hotkey to reconnect the current tab (#8201). — [Softpedia Tabby changelog](https://www.softpedia.com/progChangelog/Terminus-Pankov-Changelog-257708.html)
 - A third-party plugin, tabby-tmux-restore, re-attaches tmux sessions after an ssh reconnect. — [plugin README](https://cdn.jsdelivr.net/npm/tabby-tmux-restore@1.3.1/README.md)
 
 **ConEmu / Cmder**
@@ -146,7 +146,7 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
 - MobaXterm's tab-color setting is confirmed by the changelog, but no official doc says where it is set. A 2023 Reddit mirror says Bookmark settings.
 - Royal TS has no confirmed "open all in folder" action.
 - I found no Cmder-specific tab features.
-- Xshell 8's tab color and detach behaviour was not confirmed beyond the 7.0 changelog.
+- Xshell 8's tab color and detach behavior was not confirmed beyond the 7.0 changelog.
 
 ## What users praise and complain about
 
@@ -235,7 +235,7 @@ SecureCRT, Termius and Royal TS:
 ## Why PuTTY users move, and what they miss
 
 ### Takeaway
-Tabs and a host list are the main reasons people leave. PuTTY's "lack of tabs … too cumbersome … with multiple sessions" is the stock complaint, and MobaXterm is the most-suggested replacement. On Windows they get MobaXterm's tree, tabs and X server, or SecureCRT's scripting. What they lose is PuTTY's lightness and freedom from a licence: MobaXterm caps the free edition, SecureCRT and Xshell cost money, Tabby is Electron, and Termius syncs credentials to the cloud.
+Tabs and a host list are the main reasons people leave. PuTTY's "lack of tabs … too cumbersome … with multiple sessions" is the stock complaint, and MobaXterm is the most-suggested replacement. On Windows they get MobaXterm's tree, tabs and X server, or SecureCRT's scripting. What they lose is PuTTY's lightness and freedom from a license: MobaXterm caps the free edition, SecureCRT and Xshell cost money, Tabby is Electron, and Termius syncs credentials to the cloud.
 
 ### Cited Findings
 - "PuTTY is the smoothest for SSH but the lack of tabs means it's too cumbersome for me when working with multiple sessions." — [The Register forum](https://forums.theregister.com/forum/all/2020/08/27/windows_terminal_update/) (2020)

@@ -3,7 +3,7 @@
 Inputs, and the prefixes used to cite them (for example "G§8.4" is §8.4 of the Ghostty
 doc):
 
-| Prefix | Doc | Source analysed |
+| Prefix | Doc | Source analyzed |
 |---|---|---|
 | A | [`alacritty.md`](alacritty.md) | Alacritty @ `54214706`, 2026-10-16 |
 | G | [`ghostty.md`](ghostty.md) | Ghostty @ `d8619f1bc`, 2026-10-18 |
@@ -84,7 +84,7 @@ requirements make central:
 4. **CJK and Thai need clusters, shaping, fitting and IME work from the start.**
    Thai stacked marks need GPOS shaping and overflow above the cell; conjoining Hangul
    needs GSUB; Han characters need a language setting to pick Japanese vs Chinese vs
-   Korean glyph forms; CJK glyphs need scaling and centring in two cells; Korean IME
+   Korean glyph forms; CJK glyphs need scaling and centering in two cells; Korean IME
    ordering is a classic bug source. Alacritty doesn't shape at all, and each of the
    others gets only part of it right (C§0, C§1). These choices shape the cell model,
    the renderer and the damage tracking, so they can't be retrofitted.
@@ -215,7 +215,7 @@ You need three backends:
 
 **Linux** needs only the first two. SSH is just a program running in the PTY, as in
 any other terminal. OpenSSH already handles config, agents, keys, `ProxyJump`, and
-`ControlMaster`, and Linux users expect exactly that behaviour.
+`ControlMaster`, and Linux users expect exactly that behavior.
 
 **Windows** is where the embedded SSH client pays for itself (§10.1).
 
@@ -408,7 +408,7 @@ Storage:
 - **Compress cold lines.** WezTerm stores lines that scroll off as one string plus
   attribute runs (W§6.2). Cheap and effective even with page-based storage.
 - **Offsets instead of pointers** inside a block, for cheap clone, snapshot,
-  compression, and serialisation (G§4.2).
+  compression, and serialization (G§4.2).
 - Set the scrollback limit in **bytes**. Don't use 16-bit row counts (WT caps at
   32 767 rows, T§4.4).
 - **Tracked positions** ("pins") with generation counters (G§4.5).
@@ -513,14 +513,14 @@ Rules for this backend:
 - **Adaptive frame pacing.** Cap the rate according to how fast the X server consumes
   requests. "Latest frame wins": drop intermediate states, never queue them (G§5.4).
   WezTerm's mux protocol shows the failure mode of not doing this (§8.1).
-- Glyph rasterisation stays local. Only glyph bitmaps cross the wire, once. Color
+- Glyph rasterization stays local. Only glyph bitmaps cross the wire, once. Color
   emoji need ARGB glyphsets, which XRender supports.
 - **Bound server-side glyph sets** with an LRU and `RenderFreeGlyphs`. CJK text puts
   thousands of distinct glyphs on screen (C§6).
 - **Damage must include overhang.** Glyphs aren't clipped to their cells (Thai marks
   rise above the row; SARA AM overhangs the previous cell). When a row is repainted,
-  its background fill erases neighbours' overhanging ink, so track each row's ink
-  extent (as WT does) and repaint affected neighbours (C§4.3).
+  its background fill erases neighbors' overhanging ink, so track each row's ink
+  extent (as WT does) and repaint affected neighbors (C§4.3).
 - MIT-SHM, DRI3, and Present are local-only. Use them when local; never depend on
   them.
 
@@ -532,7 +532,7 @@ Copy the proven pieces:
   are ~20 B).
 - **Procedurally drawn** box-drawing, block, Powerline, braille, and legacy-computing
   glyphs, so lines join exactly at any cell size. Every modern reference does this.
-  The X11 backend can reuse the same rasteriser.
+  The X11 backend can reuse the same rasterizer.
 - **GL minimum around 3.3 core or GLES 3.0** on Linux, with Alacritty's fallback ladder
   and robust-context reset recovery (A§5.2, A§6.1). Ghostty's GL 4.3 floor rules out
   some hardware (G§5.4).
@@ -591,17 +591,17 @@ Details in [`cjk-and-thai.md`](cjk-and-thai.md) §4–§5.
   Alacritty use only the OS locale. Plus per-script or per-range font overrides
   (Ghostty's `font-codepoint-map`) (C§5.2).
 - **Wide glyph fit:** scale fallback fonts so their ideograph width matches the primary
-  font (Ghostty's `ic_width`, measured on 水), centre in the 2-cell box, align on the
+  font (Ghostty's `ic_width`, measured on 水), center in the 2-cell box, align on the
   Latin baseline, shrink only on overflow. Draw a glyph that the font makes wide but
   the terminal says is narrow compressed (PuTTY's "narrow" trick) (C§4.4).
 - Cell height comes from the primary font in every reference. Offer automatic ascent
   headroom for Thai fallback fonts as well as manual line height.
 - **Synthetic bold and italic, for fallback fonts too.** Ghostty and WezTerm
-  synthesise only for the primary font, so bold CJK from auto-fallback comes out
+  synthesize only for the primary font, so bold CJK from auto-fallback comes out
   regular (inferred).
 - **Bundle or recommend a fallback set that includes CJK and Thai** (e.g. Noto Sans
   Mono CJK, Noto Sans Thai). No reference bundles one.
-- With the X11 backend, glyph upload is an X request, so cache both rasterised
+- With the X11 backend, glyph upload is an X request, so cache both rasterized
   bitmaps and server-side glyph ids.
 - On Windows, convert to UTF-16 with surrogate pairs. WezTerm's DirectWrite fallback
   truncates codepoints above U+FFFF (C§5.3).
@@ -720,7 +720,7 @@ client are in §10.2.
 
 | Concern | What the references do | Recommendation |
 |---|---|---|
-| Remote lacks your terminfo | Alacritty uses `TERM=alacritty` only if the entry exists locally. Ghostty's `+ssh` installs terminfo remotely or falls back to `xterm-256color` (A§2.1, G§2.6) | Default to `xterm-256color`-compatible behaviour. Ship an install helper. Answer XTGETTCAP. On Windows, set `TERM` per host in `pty-req` |
+| Remote lacks your terminfo | Alacritty uses `TERM=alacritty` only if the entry exists locally. Ghostty's `+ssh` installs terminfo remotely or falls back to `xterm-256color` (A§2.1, G§2.6) | Default to `xterm-256color`-compatible behavior. Ship an install helper. Answer XTGETTCAP. On Windows, set `TERM` per host in `pty-req` |
 | Clipboard from remote vim/tmux | OSC 52. Alacritty: copy-only by default. Ghostty: write allowed, read asks (A§7.4, G§7.5) | Write allowed with a size cap, read asks |
 | Query latency | Alacritty routes replies via the UI thread | Reply from the IO thread directly (§3.3) |
 | Paste over SSH | Both strip ESC in bracketed paste. Ghostty warns on newline or `ESC[201~` (A§7.3, G§7.5) | Do both. Paste in slices with backpressure (§4) |
@@ -896,7 +896,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
   - Manually pinned keys hard-fail without a prompt.
   - Prefer host key types already cached; support safe key rotation
     (`UpdateHostKeys` or cross-certification).
-  - Honour `StrictHostKeyChecking`. Never skip verification when no known_hosts file
+  - Honor `StrictHostKeyChecking`. Never skip verification when no known_hosts file
     exists, as WezTerm's libssh2 path does (W§3.3).
   - Structure dialog text so the GUI and any CLI tool render it their own way.
 - **Anti-spoofing** (P§5.5). When the app draws prompts inside the terminal, a
@@ -931,7 +931,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 ### 10.3 Rendering, windowing, fonts
 
 - **D3D11 renderer, using AtlasEngine as the blueprint** (T§5.2):
-  - instanced quads; one BGRA atlas rasterised by D2D `DrawGlyphRun`; DirectWrite
+  - instanced quads; one BGRA atlas rasterized by D2D `DrawGlyphRun`; DirectWrite
     fallback via `IDWriteFontFallbackBuilder`;
   - cluster advances snapped to cells; dual-source ClearType blending with
     gamma/contrast in the shader; procedural box/block/Powerline glyphs;
@@ -960,7 +960,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 
 ## 11. Testing and tooling to build early
 
-1. **Replay tests:** record raw bytes and compare serialised grid state (A§9). Extend
+1. **Replay tests:** record raw bytes and compare serialized grid state (A§9). Extend
    to tmux control-mode recordings and ConPTY sessions (conhost's TraceLogging
    provider can capture them, T§10).
 2. **Conformance:** run esctest2 against the headless core (G§10). WT doesn't; you

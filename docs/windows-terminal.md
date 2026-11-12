@@ -1,6 +1,6 @@
 # Windows Terminal / OpenConsole: architecture and lessons for a new terminal
 
-Source analysed: `vendor/terminal` (microsoft/terminal) at commit `9e6cf223d`
+Source analyzed: `vendor/terminal` (microsoft/terminal) at commit `9e6cf223d`
 (2026-10-19). This one repository contains conhost/OpenConsole, the ConPTY
 API (`conpty.dll`), and the Windows Terminal app.
 
@@ -11,7 +11,7 @@ commit. Anything not read directly in code is marked **inference** or
 
 This is the main reference for puritty's Windows side. Section 2 (ConPTY) is
 the most important part. It corrects some things that S§10 and A§2.3 took
-from older ConPTY behaviour.
+from older ConPTY behavior.
 
 ---
 
@@ -55,7 +55,7 @@ from older ConPTY behaviour.
   (`src/winconpty/winconpty.cpp:395-431`, `7fd9c5c78`). Older inbox
   kernel32 builds wait `INFINITE` for conhost to exit, which deadlocks if
   nobody is draining the output pipe. That is the A§2.3/S§10 drop-order
-  issue. Code for both behaviours.
+  issue. Code for both behaviors.
 - **The connection abstraction is small:** `Initialize(bag)`, `Start`,
   `WriteInput(UTF-16)`, `Resize(rows, cols)`, `Close`, a `TerminalOutput(UTF-16)`
   event, a `StateChanged` event and `State`
@@ -74,7 +74,7 @@ from older ConPTY behaviour.
   Direct2D fallback for WARP and old GPUs.
   - Glyphs are shaped with DirectWrite **on the CPU while the lock is held**,
     then cached per row.
-  - Each glyph is rasterised by D2D into a single BGRA atlas texture. When the
+  - Each glyph is rasterized by D2D into a single BGRA atlas texture. When the
     atlas fills, it is **cleared entirely** (no LRU).
   - It draws instanced quads with a dual-source-blend pixel shader that also
     does ClearType.
@@ -188,7 +188,7 @@ closing just breaks the signal pipe. Conhost's `PtySignalInputThread::_Shutdown`
 `CTRL_CLOSE_EVENT` to the clients (`PtySignalInputThread.cpp:322-326`,
 `VtIo.cpp:300-322`). Exit is detected when the output pipe reads EOF or
 `ERROR_BROKEN_PIPE`. **Rule for puritty:** keep the output reader running
-until EOF regardless; then either OS behaviour is safe.
+until EOF regardless; then either OS behavior is safe.
 
 **Flags** (`conpty-static.h:26-38`). Only these four exist at this commit:
 
@@ -223,7 +223,7 @@ they are synchronous on both ends. That is why Alacritty needs helper threads
 - `conpty.dll` looks for `OpenConsole.exe` **next to itself** first, then in
   an arch subfolder, and falls back to inbox conhost (`winconpty.cpp:49-99`).
   If you ship `conpty.dll` but forget OpenConsole.exe, you silently get the
-  inbox conhost and its old behaviour.
+  inbox conhost and its old behavior.
 - WT links the static lib and does not dllimport anything
   (`TerminalConnection.vcxproj:84-96`).
 - **Why bundle at all.** Inbox conhost before 24H2 still has VtEngine and its
@@ -271,7 +271,7 @@ they are synchronous on both ends. That is why Alacritty needs helper threads
 
   **Consequence:** the old VtEngine could drop intermediate frames. The new
   design forwards every byte, so a terminal that reads slowly now
-  back-pressures the client application. That is the Unix behaviour.
+  back-pressures the client application. That is the Unix behavior.
 
 ### 2.4 The output path: what passes through, what is rewritten
 
@@ -324,7 +324,7 @@ API call runs:
 | `SetConsoleCursorInfo` | DECTCEM | |
 | `SetConsoleMode` output | DECAWM for `ENABLE_WRAP_AT_EOL_OUTPUT` | (`getset.cpp:455-463`) |
 | `SetConsoleMode` input | `CSI ?1003;1006h/l` when `ENABLE_MOUSE_INPUT` changes | Quick-edit interplay, GH#9970 (`getset.cpp:367-387`) |
-| `SetConsoleTitle` | `OSC 0;…ST` | Control chars sanitised |
+| `SetConsoleTitle` | `OSC 0;…ST` | Control chars sanitized |
 | `WriteConsoleOutput` / `FillConsoleOutput*` | CUP + text + SGR per run (`WriteInfos`) | **UCS-2 only, 16 colors, DBCS halves fixed up** (`VtIo.cpp:771-834`). Full-screen space fill becomes `CSI H CSI 2J CSI 3J` (`_output.cpp:455-475`) |
 | `ScrollConsoleScreenBuffer` | Full-width vertical scroll: `DECSC; SGR; CSI H; CSI n L/M; DECRC`. Otherwise **DECCRA/DECFRA if the terminal's DA1 lists rectangular ops (28)**. Otherwise read back the cells and rewrite them | `getset.cpp:1034-1110`. cmd `cls` shim → clear screen (GH#3126) |
 | `SetConsoleActiveScreenBuffer` / closing a secondary buffer | Full repaint of the new buffer, main then alt (`WriteScreenInfo`, `VtIo.cpp:836-882`) | "destroys surrogate pairs and extended (VT) attributes" (#17510) |
@@ -333,7 +333,7 @@ API call runs:
 Because the DA1 reply decides between DECCRA and readback, conhost's
 **lazily-learned terminal capabilities** matter. They are parsed from the first
 DA1 reply on the input pipe (`InputStateMachineEngine.cpp:482-509`). A
-terminal that wants good `ScrollConsoleScreenBuffer` behaviour (PowerShell's
+terminal that wants good `ScrollConsoleScreenBuffer` behavior (PowerShell's
 PSReadLine, `cls`, TUI apps using the Console API) should **answer DA1 with
 `;28`**.
 
@@ -355,7 +355,7 @@ PSReadLine, `cls`, TUI apps using the Console API) should **answer DA1 with
     `ReadConsoleInput`).
   - The parser's parameter max was raised to 65535 for it (GH#12977,
     `stateMachine.hpp:25`).
-- **Decoding without win32-input-mode.** Conhost synthesises key events from
+- **Decoding without win32-input-mode.** Conhost synthesizes key events from
   legacy VT: arrows, F-keys, SGR mouse, `ESC x` meaning Alt+x, and so on
   (`InputStateMachineEngine.cpp:261-530`). Information is lost: there is no
   key-up, and Ctrl/Alt combos are guessed.
@@ -425,7 +425,7 @@ PSReadLine, `cls`, TUI apps using the Console API) should **answer DA1 with
   `CSI J` until after reflow (`9d0180a55`, #17668).
 - **0×0.** `CreatePseudoConsole` rejects 0×0 (`winconpty.cpp:130`), and
   `ResizeWindow` ignores sizes ≤ 0 (`outputStream.cpp:375-378`). Still filter
-  minimise-sized resizes yourself (A§2.3).
+  minimize-sized resizes yourself (A§2.3).
 
 **Cursor inheritance** (`PSEUDOCONSOLE_INHERIT_CURSOR`):
 - Conhost sends `CSI 6n` *before* DA1. It then waits up to 1 s for DA1,
@@ -457,7 +457,7 @@ Current OSS ConPTY. Inbox ConPTY before 24H2 is much worse.
 The #13000 spec's long-term fix is an **in-process ConPTY**: ship the console
 server as a library and let the terminal implement `IApiRoutines` directly on
 its own buffer. Only "Goal 1" (remove VtEngine) is done at this commit. The
-`Server` library and productisation are not (**unverified beyond spec status
+`Server` library and productization are not (**unverified beyond spec status
 and the absence of an in-proc path in `TerminalConnection`**).
 
 **For puritty** this all supports S§3.2: route SSH sessions around ConPTY with
@@ -581,7 +581,7 @@ interface ITerminalConnection {
   - `HardResetWithoutErase` clears modes but keeps the text.
   - The new connection uses `inheritCursor=true`
     (`TerminalPage.cpp:4005-4024, 1664-1704`).
-- **Session restore.** On exit, each pane's main buffer is serialised to
+- **Session restore.** On exit, each pane's main buffer is serialized to
   `buffer_{sessionGuid}.txt` (UTF-16 + SGR) by `TextBuffer::SerializeTo`. On
   start it is replayed through the VT parser, a `[Restored …]` banner is
   added, and then `Start()` is called with cursor inheritance
@@ -619,7 +619,7 @@ avoid:
   set-window-owner, show/hide (ConPTY), reconnect (SSH), pane-ID (tmux).
 - **Resize.** Units differ per backend: ConPTY takes cells, SSH
   `window-change` takes cells *and* pixels, tmux works at window level. Azure
-  shows resize can be an asynchronous RPC with no acknowledgement. Design it
+  shows resize can be an asynchronous RPC with no acknowledgment. Design it
   as fire-and-forget with "latest size wins".
 - **Swappability.** Keep WT's "swap connection under a persistent screen"
   property. It gives restart, SSH reconnect and tmux reattach for free.
@@ -650,7 +650,7 @@ avoid:
   `src/types/utils.cpp:1141+`) finds the next C0/DEL/C1, and the whole
   printable run goes to `PrintString` in one call
   (`stateMachine.cpp:1977-2026`).
-- **C1** is honoured only when `AcceptC1` is set: DECAC1/S8C1T for output,
+- **C1** is honored only when `AcceptC1` is set: DECAC1/S8C1T for output,
   always for input. The reason given is that codepage-mapped stray bytes
   would otherwise trigger controls (`stateMachine.cpp:1856-1870`).
   Unhandled C0 codes are dropped, not stored (GH#1825).
@@ -863,7 +863,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   D2D; FL < 11_0 without compute-shader support → D2D; else D3D11.
 - The README describes D2D as "for low latency remote desktop and
   older/no GPUs". **No RDP detection exists** (no `SM_REMOTESESSION` in `src/`;
-  **unverified** beyond grep). Behaviour over RDP depends only on the adapter
+  **unverified** beyond grep). Behavior over RDP depends only on the adapter
   reported.
 
 **D3D11 backend** (`BackendD3D.*`):
@@ -907,7 +907,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   (`_drawGlyphAtlasAllocate`, `.cpp:1706-1721`).
 - **Size:** about `min(2×target area, max(95 cells, 2×current))`,
   power-of-two dimensions, max D3D10 dimension (`:752-825`).
-- **Rasterisation:** D2D `DrawGlyphRun` per glyph. A manual
+- **Rasterization:** D2D `DrawGlyphRun` per glyph. A manual
   `IDWriteGlyphRunAnalysis` path is kept under `#if 0`; D2D was "roughly 2x
   faster" (`:1343-1409`).
 - **Color glyphs:** `TranslateColorGlyphRun` (COLR/SVG/PNG/…), drawn layer by
@@ -934,7 +934,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 - **Cell metrics:**
   - Width is the advance of `'0'`; height is ascent+descent+lineGap.
     Both can be overridden with CSS-like lengths.
-  - Baseline centres extra leading.
+  - Baseline centers extra leading.
   - `thinLineWidth = max(1, round(max(w/16, h/32)))`
     (`AtlasEngine.api.cpp:734-874`).
 
@@ -994,7 +994,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   (`BackendD3D.cpp:366-557, 2407-2409`).
 
 **D2D backend** (`BackendD2D.*`):
-- Redraws everything each frame: a stretched nearest-neighbour background
+- Redraws everything each frame: a stretched nearest-neighbor background
   bitmap, then one `DrawGlyphRun` per color run, with D2D's glyph cache.
 - Builtin glyphs are drawn through a cached sprite batch.
 - It still uses the same swap chain and Present1 path.
@@ -1033,7 +1033,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
     and only the present is partial (**inference**; RDP's own encoder likely
     diffs the frame).
   - Detect `SM_REMOTESESSION` and prefer a GDI-like or D2D path in RDP
-    sessions, the Windows analogue of S§6's remote-X11 backend.
+    sessions, the Windows analog of S§6's remote-X11 backend.
 
 ---
 
@@ -1073,7 +1073,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
     salted with elevation, exe-path hash and SID hash, so elevated and normal
     instances are separate processes (`WindowEmperor.cpp:149-197, 482-535`).
   - The Monarch/Peasant spec `doc/specs/#5000` is historical (`8bbf00e05`).
-  - Tab tear-out serialises content to actions. `ContentManager` keeps
+  - Tab tear-out serializes content to actions. `ContentManager` keeps
     `ControlCore`s by GUID so a core can move between windows without
     restarting its connection.
 - **Panes:**
@@ -1085,20 +1085,20 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   - `WM_SIZING` snaps the window so **every** pane fits whole cells
     (`Pane::CalcSnappedDimension`, `IslandWindow.cpp:246-300`).
   - Puritty's tmux layouts are n-ary trees (`%layout-change`). WT's binary
-    tree would need an n-ary generalisation.
+    tree would need an n-ary generalization.
 - **XAML Islands cost.** Many workarounds are needed:
   - Keys XAML swallows (F7, Alt-up, Alt+Space) are intercepted in the
     message loop (GH#638/#6421/#7125).
   - A child "drag bar" window takes NC hit-testing back from the island,
     with fake `HTMAXBUTTON` for Snap Layouts (GH#9443).
-  - The top pixel row is unclickable when maximised (GH#7422).
+  - The top pixel row is unclickable when maximized (GH#7422).
   - Alt+Numpad is re-implemented by hand.
   - `TerminateProcess` on exit avoids XAML teardown crashes (GH#15410).
 
   Puritty has no XAML, and this list is a good argument for staying with
   plain Win32 plus your own title bar or the native one.
 - **DPI:** a PerMonitorV2 manifest. `WM_DPICHANGED` just applies the suggested
-  rect. The control re-rasterises on CompositionScale changes, whose event
+  rect. The control re-rasterizes on CompositionScale changes, whose event
   ordering is documented at `TermControl.cpp:2375-2411`.
 - **Keyboard** (`src/terminal/input/terminalInput.cpp`, `TermControl.cpp:1531-1873`):
   - **Key and char events are split.** XAML KeyDown is refused by
@@ -1123,7 +1123,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   - `GetStatus` returns `TS_SS_TRANSITORY`, which enables CUAS and gives up
     reconversion. The comment says this is "the primary reason why we cannot
     use the WinRT CoreTextServices APIs".
-  - Finalised text is sent to the PTY.
+  - Finalized text is sent to the PTY.
   - The composition preview and its attributes are written into the render
     data and **drawn inline by the Renderer** into a scratch row at the
     cursor (`renderer.cpp:1160-1230, 1683-1760`).
@@ -1220,7 +1220,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
    - Send ShowHide/Reparent so `GetConsoleWindow()` behaves.
    - Map "clear scrollback" to `ConptyClearPseudoConsole`.
    - Never send 0×0.
-4. **Write close and exit code for both OS behaviours.** Treat
+4. **Write close and exit code for both OS behaviors.** Treat
    `ClosePseudoConsole` as possibly blocking, as on old inbox kernel32. Call
    it from a thread that isn't the output reader, or after the reader is
    done. Detect exit by output EOF, then `GetExitCodeProcess` (§2.1, §3.2).
@@ -1247,7 +1247,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
    (SSH `window-change`).
 8. WT's `SshHostGenerator` is a minimum bar for the Windows UX:
    auto-populate hosts from `~/.ssh/config`. Do it properly: follow `Include`,
-   honour `Match`/wildcards for defaults, and use the same parser as the
+   honor `Match`/wildcards for defaults, and use the same parser as the
    embedded client's config handling (S§10).
 
 **Core**
@@ -1278,7 +1278,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 
 12. **Use AtlasEngine as the blueprint for the D3D11 backend:**
     - instanced quads (about 20 B per instance);
-    - one BGRA atlas rasterised by D2D `DrawGlyphRun`;
+    - one BGRA atlas rasterized by D2D `DrawGlyphRun`;
     - DirectWrite fallback via `IDWriteFontFallbackBuilder` plus system
       fallback;
     - cluster advances snapped to cells;

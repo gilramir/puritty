@@ -1,5 +1,5 @@
 # puritty alone over the four workloads of render-4k.ps1, three times each,
-# maximised (docs/windows.md WS26)
+# maximized (docs/windows.md WS26)
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Remove-Item "$dir\p-*.tsv", "$dir\p-stats-*.txt", "$dir\p-done.txt" -ErrorAction SilentlyContinue
 Add-Type @"

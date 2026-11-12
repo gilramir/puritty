@@ -1,6 +1,6 @@
 # tmux and puritty: a survey of tmux 3.8 (2026-11-11)
 
-Gilbert, 2026-11-11: analyse the latest tmux and survey what puritty's
+Gilbert, 2026-11-11: analyze the latest tmux and survey what puritty's
 integration with it could be. tmux control mode is already phase 4 and the
 headline feature (`feature-plan.md` §1, `geng-plan.md` phase 4), and
 `synthesis.md` §7 planned it from WezTerm's and Ghostty's code. That plan
@@ -396,7 +396,7 @@ Beyond phase 4's tabs and splits, each built on TM5:
   quick-connect list. A host entry's `command = "tmux new -A -s main"`
   (`settings.md` ST23) becomes a control-mode attach.
 - **Reconnect is reattach.** When the ssh connection drops, the window
-  keeps its tabs greyed, reconnects, and `attach -t` brings the panes back
+  keeps its tabs grayed, reconnects, and `attach -t` brings the panes back
   through TM5.8's capture. On Windows that is the PuTTY replacement's
   reconnect (`feature-plan.md` §2 item 6).
 - **Per-pane prompt marks and progress** from OSC 133 and OSC 9;4 in
@@ -799,7 +799,7 @@ reasons for a detach, which tmux does not send.
 
 A press on the line right of a tiled pane, outside every pane and box, and
 a drag resize that pane's width, `resize-pane -t %N -x`; on the line below
-it, its height, `-y`; tmux takes the room from the neighbour. A tiled
+it, its height, `-y`; tmux takes the room from the neighbor. A tiled
 pane's size, unlike a floating one's, counts no border. `Drag` has a kind
 now: the box moved, the box resized, the line right, the line below.
 
@@ -814,8 +814,8 @@ high from 14 and the one below 11.
 What puritty draws around tmux's panes is written into the canvas in
 color from the 256 (`drawText`, with autowrap off so nothing moves): the
 tab bar a dark band (250 on 236), its active tab puritty's amber with dark
-bold text (234 on 214); the lines between tiled panes a quiet grey (240);
-a floating pane's box grey (245), and the active pane's box amber (214), so
+bold text (234 on 214); the lines between tiled panes a quiet gray (240);
+a floating pane's box gray (245), and the active pane's box amber (214), so
 the pane the keys go to is seen at once. They are fixed colors for now;
 a light look, or a palette of the user's, may want them from the look.
 
@@ -961,7 +961,7 @@ the mouse itself (TM16).
   sends keys to the pane as before TM23 on an older tmux; the prefix there
   says `tmux's key bindings under -CC need tmux 3.4 (send-keys -K)`.
   Measured on 3.3a (nixpkgs 23.05): typing had also been lost on it, since
-  its layouts do not mark the active pane and puritty never learnt it; the
+  its layouts do not mark the active pane and puritty never learned it; the
   window query now asks `#{pane_id}` with the window.
 
 **Checked:** packages/tmux 37 tests (Bindings 11: the escaped key, `-r`,
@@ -1195,7 +1195,7 @@ and `-y`: `P` the pane's left with the menu's last row on the pane's last,
 `W` at the window's tab, beside the bar, `M` at the clicked cell, `C` the
 middle, `R` the right, a number as given; kept inside the panes' rows.
 `[tmux] look = "tmux"`: single lines, the title in the middle of the top
-edge, grey on dark, the chosen item black on yellow (`menu-selected-style`);
+edge, gray on dark, the chosen item black on yellow (`menu-selected-style`);
 `"puritty"`: the view's amber box, the chosen item amber.
 
 **Keys:** an item's own key runs it; Up, k, BTab and Down, j, Tab move;
@@ -1256,7 +1256,7 @@ digit and two rows up, in `display-panes-color` (blue) or
 `display-panes-active-color` (red) for the active pane, with the pane's
 size (`50x29`) at its top right in the same color; a pane too small for
 the digits gets the index as text in its middle. `[tmux] look =
-"puritty"`: the same digits, grey and the active pane's amber, without the
+"puritty"`: the same digits, gray and the active pane's amber, without the
 size.
 
 **Checked:** packages/tmux 55 tests (Syntax 16: the default template; `-N
@@ -1314,7 +1314,7 @@ attributes on and off, a format's runs, `default` as the base's, strip).
 second; in tmux's look a click on `0:first-` selects it. The tabs, prompts
 and menus scenarios give what they gave.
 
-**Not yet:** `status-justify` (centred or right window lists),
+**Not yet:** `status-justify` (centered or right window lists),
 `status-position`, more than one status line (`status 2`) and `status off`
 are not read: the bar stays where `[tmux] tabs` puts it; a wide character
 counts one cell in the line's layout.

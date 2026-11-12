@@ -39,7 +39,7 @@ A de-facto common core has emerged across almost all of them: **Ctrl+Shift+T new
 - No splits, no broadcast (none in schema or README).
 
 **Konsole** (KDE)
-- Menu/defaults: New Tab Ctrl+Shift+T; Clone Tab (no key); Close Session Ctrl+Shift+W; Copy Input To → All Tabs in Current Window / Select Tabs… (Ctrl+Shift+.) / None (Ctrl+Shift+/); Configure Tab Settings… (Ctrl+Alt+S) sets "the name format, remote tab title format, and current tab color"; Split View Left/Right Ctrl+(, Top/Bottom Ctrl+); Expand/Shrink View Ctrl+Shift+] / [; toggle maximize view Ctrl+Shift+E; equalize Ctrl+Shift+\; Detach Current Tab Ctrl+Shift+L; Detach Current View Ctrl+Shift+H; Save/Load tab layout; Monitor for Activity Ctrl+Shift+A, Silence Ctrl+Shift+I, Prompt Ctrl+Shift+R, Process Finishing; Next/Previous Tab Shift+Right/Left; Move Tab Ctrl+Alt+Left/Right; Tab Bar/Splitters settings page for visibility, placement and behaviour — https://docs.kde.org/stable_kf6/en/konsole/konsole/commandreference.html
+- Menu/defaults: New Tab Ctrl+Shift+T; Clone Tab (no key); Close Session Ctrl+Shift+W; Copy Input To → All Tabs in Current Window / Select Tabs… (Ctrl+Shift+.) / None (Ctrl+Shift+/); Configure Tab Settings… (Ctrl+Alt+S) sets "the name format, remote tab title format, and current tab color"; Split View Left/Right Ctrl+(, Top/Bottom Ctrl+); Expand/Shrink View Ctrl+Shift+] / [; toggle maximize view Ctrl+Shift+E; equalize Ctrl+Shift+\; Detach Current Tab Ctrl+Shift+L; Detach Current View Ctrl+Shift+H; Save/Load tab layout; Monitor for Activity Ctrl+Shift+A, Silence Ctrl+Shift+I, Prompt Ctrl+Shift+R, Process Finishing; Next/Previous Tab Shift+Right/Left; Move Tab Ctrl+Alt+Left/Right; Tab Bar/Splitters settings page for visibility, placement and behavior — https://docs.kde.org/stable_kf6/en/konsole/konsole/commandreference.html
 - 22.12: split views got headers with drag-and-drop and a maximize toggle, and the tab bar is shown only when needed by default — https://konsole.kde.org/changelog.html (via search summary)
 - Saved tab layouts to .json and reopening them from the command line; layout-automation work blogged 2024–2025 — https://blogs.kde.org/2024/06/11/konsole-layout-automation-part-1/ ; https://blogs.kde.org/2025/04/02/konsole-layout-automation-part-2 ; https://planet.kde.org/akseli-lahtinen-aks-2025-05-18-my-changes-to-saving-konsole-tab-layouts
 - Tab color derived from remote host name requested since 2011 (ASSIGNED) — https://bugs.kde.org/show_bug.cgi?id=278699
@@ -64,8 +64,8 @@ A de-facto common core has emerged across almost all of them: **Ctrl+Shift+T new
 - Tab bar (`app/tabbar.cpp`): double-click renames inline, middle button handled on press, wheel cycles tabs, drag-move reordering; config has `ShowTabBar`, `DynamicTabTitles` — Yakuake clone
 
 **Tilda** (drop-down, GTK3; 2.0.0 released 2024-02-16 after 1.5.0 in 2020 — GitHub releases API)
-- `src/configsys.c` (clone b6a2ca2): add tab Ctrl+Shift+T, close Ctrl+Shift+W, prev/next Ctrl+PgUp/PgDn, move Ctrl+Shift+PgUp/PgDn; `tab_pos`, `expand_tabs` false, `show_single_tab` false, `insert_tab_after_current` false, `title_max_length 25`, `title_behaviour`, `inherit_working_dir true`, `confirm_close_tab true`, `show_title_tooltip`
-- No rename-tab action found in source (only title length/behaviour settings) — `grep -i rename tilda/src` finds no tab-rename action; the request "Rename Tab Functionality?" is open since 2015-03-31 (20 comments, 6 👍) — https://github.com/lanoxx/tilda/issues/134
+- `src/configsys.c` (clone b6a2ca2): add tab Ctrl+Shift+T, close Ctrl+Shift+W, prev/next Ctrl+PgUp/PgDn, move Ctrl+Shift+PgUp/PgDn; `tab_pos`, `expand_tabs` false, `show_single_tab` false, `insert_tab_after_current` false, `title_max_length 25`, `title_behavior`, `inherit_working_dir true`, `confirm_close_tab true`, `show_title_tooltip`
+- No rename-tab action found in source (only title length/behavior settings) — `grep -i rename tilda/src` finds no tab-rename action; the request "Rename Tab Functionality?" is open since 2015-03-31 (20 comments, 6 👍) — https://github.com/lanoxx/tilda/issues/134
 
 ### Inferences
 - The libadwaita terminals (GNOME Terminal's port, Console, Ptyxis) converge on: tab overview grid (Ctrl+Shift+O), Alt+N, Ctrl+(Shift+)PgUp/PgDn, and in Ptyxis undo-close-tab and session restore. xfce4-terminal and Ptyxis both have undo-close-tab — a cheap feature worth copying.
@@ -73,7 +73,7 @@ A de-facto common core has emerged across almost all of them: **Ctrl+Shift+T new
 - Middle-click on a tab is contested: closes in Terminator, Ptyxis (default, configurable to paste/nothing), xfce4-terminal (option); explicitly suppressed in GNOME Terminal.
 
 ### Gaps
-- Exact overflow behaviour (shrink vs scroll vs menu) for Konsole, xfce4-terminal, Guake and Tilda with many tabs was not verified from source or docs.
+- Exact overflow behavior (shrink vs scroll vs menu) for Konsole, xfce4-terminal, Guake and Tilda with many tabs was not verified from source or docs.
 - Whether GNOME Terminal's GTK4 port (3.97.x) has shipped in a stable distro release, and when "Set Title" returned to it, not verified.
 - Konsole's tab-title format placeholders and middle-click/close-button options were not read from source.
 - Konsole session restore relies on KDE session management; not verified beyond the bug below.
@@ -139,7 +139,7 @@ The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021
 - "(Re-)attaching tabs does not work on Wayland, even when using single-process mode" (2021-05-11, CONFIRMED, 9 CC, last change 2026-11-08) — https://bugs.kde.org/show_bug.cgi?id=436914
 - "No obvious way to return detached tab to window with other tabs when tab bar is hidden" (2018, CONFIRMED) — https://bugs.kde.org/show_bug.cgi?id=395294
 - "Konsole forget the open tabs" (2026-05-17, UNCONFIRMED) — https://bugs.kde.org/show_bug.cgi?id=520295 ; restored tabs lose env/aliases (2025-01-10) — https://bugs.kde.org/show_bug.cgi?id=498452
-- Split-view redesign controversy (2019): splits became subordinate to tabs; requests to restore the 18.12 behaviour where split views shared tabs — https://bugs.kde.org/show_bug.cgi?id=413586 ; https://bugs.kde.org/show_bug.cgi?id=453218 ; https://invent.kde.org/utilities/konsole/-/issues/29 ; older complaint that splits were "different views on the same terminal" (pre-2019 behaviour, since changed) — https://lwn.net/Articles/751092/ (via search summary)
+- Split-view redesign controversy (2019): splits became subordinate to tabs; requests to restore the 18.12 behavior where split views shared tabs — https://bugs.kde.org/show_bug.cgi?id=413586 ; https://bugs.kde.org/show_bug.cgi?id=453218 ; https://invent.kde.org/utilities/konsole/-/issues/29 ; older complaint that splits were "different views on the same terminal" (pre-2019 behavior, since changed) — https://lwn.net/Articles/751092/ (via search summary)
 - Tab bar color customization via GUI wishlist (2024-12-31) — https://bugs.kde.org/show_bug.cgi?id=498082 ; "Always open new tabs instead of new windows" (2023) — https://bugs.kde.org/show_bug.cgi?id=473907 ; "RFE: add more options for tab/window naming" (2012) — https://bugs.kde.org/show_bug.cgi?id=294686
 
 **Tilix**

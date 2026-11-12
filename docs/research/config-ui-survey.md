@@ -64,7 +64,7 @@ This part is easy to get wrong, and hand-editing users will notice.
 1. **Its own window**, as in Zed and the Windows Terminal spec: a search box at the top and categories on the left (General, Appearance, Profiles, SSH Hosts, Keyboard, Advanced). On the right, one scrolling page per category with clear section headings, not dozens of small tabs as in PuTTY.
 2. **One schema drives everything.** Each setting has a key, type, default, label, description, keywords for search, and whether it applies per profile or per host. The UI, TOML validation, docs and search all come from that schema.
 3. **Every row looks the same:** label, short description, control, a "modified" marker, and a reset button. Hovering shows the TOML key (e.g. `font.size`) so people can find it in the file.
-4. **Inheritance in three layers:** Defaults → Group → Host/Profile. A field you haven't overridden shows the inherited value in grey with "from Defaults" or "from group *prod*". Typing in it creates an override.
+4. **Inheritance in three layers:** Defaults → Group → Host/Profile. A field you haven't overridden shows the inherited value in gray with "from Defaults" or "from group *prod*". Typing in it creates an override.
 5. **Live preview** of a sample terminal while you change appearance settings.
 6. **Changes apply as you make them**, with an Undo bar. Windows Terminal uses Save/Discard instead. Pick one model and use it everywhere. My suggestion is to apply at once: it fits live preview and avoids "did I save?" doubts.
 7. **"Open config.toml"** is always visible, and saves preserve the file as described above.

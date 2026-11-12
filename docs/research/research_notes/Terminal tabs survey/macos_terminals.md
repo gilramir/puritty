@@ -1,6 +1,6 @@
 # macOS terminals: iTerm2 (incl. tmux -CC) and Terminal.app — tab features and user sentiment
 
-Researched 2026-11-11. iTerm2's current stable line is **3.7.x** (3.7 announced ~Sep 2026; 3.7.7 built 2026-11-03), not 3.5/3.6 as the brief assumed; tab groups, pinned tabs and floating panes are 3.7 features. Note: several WebFetch extractions were summarised by a helper model; quotes below are as returned.
+Researched 2026-11-11. iTerm2's current stable line is **3.7.x** (3.7 announced ~Sep 2026; 3.7.7 built 2026-11-03), not 3.5/3.6 as the brief assumed; tab groups, pinned tabs and floating panes are 3.7 features. Note: several WebFetch extractions were summarized by a helper model; quotes below are as returned.
 
 ## 1. iTerm2 local tab features
 
@@ -42,7 +42,7 @@ iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tea
 
 **Indicators**
 - "A blue dot means new input was received"; an activity indicator spins while output arrives; an end-of-session icon appears when the session ends — [General usage](https://iterm2.com/documentation-general-usage.html). Each indicator toggle ("Show activity indicator", "Show new-output indicator" for unseen output in non-selected tabs) is in Appearance — [Appearance](https://iterm2.com/documentation-preferences-appearance.html)
-- Older (2.x) docs describe activity coloring of tab labels (new output / stale / ended-grey) — [2.1 general usage](https://iterm2.com/documentation/2.1/documentation-general-usage.html)
+- Older (2.x) docs describe activity coloring of tab labels (new output / stale / ended-gray) — [2.1 general usage](https://iterm2.com/documentation/2.1/documentation-general-usage.html)
 - A progress ring around a tab exists (3.7.5 fixed it missing on first/last tab on Tahoe) — [downloads](https://iterm2.com/downloads)
 - 3.7: Claude Code session status shown "on tabs as a custom subtitle, color, and dot icon", so you see "which Claude Code instance is waiting for attention" — [AlternativeTo, 2026-09-10](https://alternativeto.net/news/2026/9/iterm2-3-7-released-with-ios-companion-app-claude-code-integration-tab-groups-and-more/); 3.7.7 fixed that status not reappearing after window restoration — [downloads](https://iterm2.com/downloads)
 
@@ -102,13 +102,13 @@ Each tmux window is a native tab (or window), each tmux pane a native split; nat
 - Third-party: tab titles in -CC show the same title for many Claude Code sessions and tmux renames don't carry over — [claudeissues #55397](https://claudeissues.com/issue/55397-feature-include-session-name-in-terminal-title-critical-for-tmux-cc-iterm2)
 
 ### Inferences
-- Lessons for puritty's tmux tabs: (1) make Close offer Kill / Hide / Detach explicitly (iTerm2 users asked for detach on the dialog); (2) persist tab-local state (titles, colors, grouping) in tmux user options so reattach restores it; (3) track window switches/new windows made by other clients; (4) honour `new-window -d` as background tab; (5) handle tab-bar show/hide resizing; (6) be explicit about the common-size constraint (gutters) — it is the most persistent complaint.
+- Lessons for puritty's tmux tabs: (1) make Close offer Kill / Hide / Detach explicitly (iTerm2 users asked for detach on the dialog); (2) persist tab-local state (titles, colors, grouping) in tmux user options so reattach restores it; (3) track window switches/new windows made by other clients; (4) honor `new-window -d` as background tab; (5) handle tab-bar show/hide resizing; (6) be explicit about the common-size constraint (gutters) — it is the most persistent complaint.
 - Mixing local and tmux panes in one tab is forbidden in iTerm2; puritty can adopt the same rule simply.
 
 ### Gaps
 - Could not fetch the GitLab "tmux Integration Best Practices" wiki (empty page body).
 - Did not confirm whether the kill/hide dialog now includes Detach.
-- Status of #7821/#7970 unknown; tmux ≥2.9 `window-size` behaviour vs iTerm2 "variable window sizes" not verified.
+- Status of #7821/#7970 unknown; tmux ≥2.9 `window-size` behavior vs iTerm2 "variable window sizes" not verified.
 
 ## 3. Terminal.app
 
@@ -131,7 +131,7 @@ Terminal.app has basic tabs (Cmd-T with default or current profile, profile subm
 ## 4. User sentiment (praise / complaints)
 
 ### Takeaway
-Praise centres on tmux -CC (native tabs for remote tmux), broadcast input, scripting, and restore-on-relaunch; complaints are about tmux sizing and close semantics, attach hangs, titles not being what users set, and (in competitors) the absence of iTerm2-style restore. Direct Reddit threads were not found by search.
+Praise centers on tmux -CC (native tabs for remote tmux), broadcast input, scripting, and restore-on-relaunch; complaints are about tmux sizing and close semantics, attach hangs, titles not being what users set, and (in competitors) the absence of iTerm2-style restore. Direct Reddit threads were not found by search.
 
 ### Cited Findings
 - Users leaving iTerm2 for Ghostty: exceptions are those depending on "-CC integration, broadcast input, or the scripting API" — [tslateman comparison](https://tslateman.github.io/tutor/how/terminal-emulators)

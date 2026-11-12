@@ -231,7 +231,7 @@ checker, D863), and `Bytes.Transient` is written in place (affine, D921).
 A parser of packets from a hostile server cannot read out of bounds.
 
 **Constant time: nothing promises it.** Geng compiles to C through passes
-that inline and specialise; nothing says a branch-free Geng function stays
+that inline and specialize; nothing says a branch-free Geng function stays
 branch-free, and `Bytes` equality is a `memcmp` that stops early (assumed;
 `primEq`). Secret-dependent table lookups, AES's classic tables, are out in
 any language.
@@ -290,7 +290,7 @@ thread and a post (D897), as font fallback does (`geng-plan.md` §3.1).
 
 **Libraries** (nixpkgs at puritty's pin, built for Linux):
 
-| | version | licence | `.so` | C lines in `src/` | crypto from |
+| | version | license | `.so` | C lines in `src/` | crypto from |
 |---|---|---|---:|---:|---|
 | libssh2 | 1.11.1 | BSD-3-Clause | 336 KB | 45,271 | OpenSSL, mbedTLS, libgcrypt, WinCNG, OS/400 |
 | libssh | 0.12.2 | LGPL-2.1 | 702 KB | 81,435 | OpenSSL, mbedTLS or libgcrypt, plus its own 25519, ChaCha, Poly1305, ML-KEM, sntrup |
@@ -968,7 +968,7 @@ checks the two check words, and has PuTTY make its key of the private part
 and of the passphrase it was handed; Geng holds a handle. `sign` signs on
 a thread, as the server's algorithm asks (`rsa-sha2-512` or `-256` for an
 RSA key); `forget` frees the key and PuTTY clears its numbers, after any
-signature in flight. A cancelled signature still hands its work back, so
+signature in flight. A canceled signature still hands its work back, so
 the key is freed and cleared on the program's thread. Ed25519, ECDSA
 P-256, P-384 and P-521 and RSA; FIDO keys and PEM files not yet.
 `ssh-crypto-tests`' 14 `keyload` vectors (`ssh-keygen` files of each type,
@@ -1288,7 +1288,7 @@ Answers, not built:
   window, over its text. puritty can do the same: the renderer's UI
   records (rounded boxes, text, text in a named font, clipping;
   `settings-gui.md`) already draw the settings window, so the password
-  question (SC20's bullets) can become a centred box with a field and a
+  question (SC20's bullets) can become a centered box with a field and a
   show button, drawn over the terminal, with the terminal's line kept
   as a record of what was asked.
 - **Windows has windows with no title bar** (`WS_POPUP`), so a separate

@@ -1,4 +1,4 @@
-# One workload in puritty, maximised, with PURITTY_STATS (docs/windows.md
+# One workload in puritty, maximized, with PURITTY_STATS (docs/windows.md
 # WS26): render-one.ps1 NAME BLAST-ARGS... (run in the desktop session)
 param([string]$Name, [string]$Mode, [string]$Arg)
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path

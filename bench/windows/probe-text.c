@@ -1,11 +1,11 @@
 /* puritty's Windows survey (docs/windows.md): puritty's Linux text path,
  * FreeType and HarfBuzz, on Windows' own font files. Shapes one line in
  * four faces (Fira Code with its ligatures, Malgun Gothic for Hangul,
- * Leelawadee UI for Thai, Segoe UI Emoji in color), rasterises it into a
+ * Leelawadee UI for Thai, Segoe UI Emoji in color), rasterizes it into a
  * buffer as puritty's renderer does, and writes probe-text.ppm and
  * probe-text.log beside the program: FreeType's version, each face's
  * glyphs and advances, the emoji's glyph format (BGRA when its color
- * table is drawn), and the time to shape and rasterise. No window: the
+ * table is drawn), and the time to shape and rasterize. No window: the
  * picture is what matters, and the window probe shows how it reaches the
  * screen. */
 
@@ -82,7 +82,7 @@ static int run(const char *path, int index, const char *text, int px, int x, int
             }
         x += pos[i].x_advance >> 6;
     }
-    fprintf(out, "; rasterised in %.3f ms\n", now_ms() - t1);
+    fprintf(out, "; rasterized in %.3f ms\n", now_ms() - t1);
     hb_buffer_destroy(buf);
     hb_font_destroy(font);
     return x;

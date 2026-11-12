@@ -38,7 +38,7 @@ static size_t strip_resizes(const uint8_t *data, size_t n, const int *cols,
 }
 
 /* The dump with its history taken out: the `history` line and every row
- * labelled `h`, with the style lines under them. In place. */
+ * labeled `h`, with the style lines under them. In place. */
 static size_t drop_history(char *d, size_t n) {
   size_t o = 0;
   int in_history = 0;

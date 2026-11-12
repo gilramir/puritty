@@ -99,7 +99,7 @@ A volume setting can come later if the clicks are too loud.
 - **ETX on RHEL8.** puritty runs on the VM there, so sound would play on the
   VM and probably not reach Gilbert's speakers. Check whether ETX forwards
   audio; if it doesn't, the feature is for Mint (and later Windows) only.
-- **Licence.** The two files are Q10 Editor's. Using them in Gilbert's own
+- **License.** The two files are Q10 Editor's. Using them in Gilbert's own
   builds is one thing; shipping them in a released puritty needs Q10's
   author's permission, or replacement sounds that puritty owns.
   `assets/sounds/` is the place for either.

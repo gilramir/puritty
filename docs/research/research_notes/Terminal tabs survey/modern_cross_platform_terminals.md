@@ -112,7 +112,7 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
 - **X11 workaround.** Alacritty supports XEmbed (`--embed`), so suckless `tabbed` can host it. — [alacritty#3129 (kchibisov, 2019-12-29)](https://github.com/alacritty/alacritty/issues/3129#issuecomment-569515292)
 
 #### foot (no tabs by design)
-- "Tabs have intentionally not been supported since the beginning. This will not change, sorry." (dnkl, 2024-02-05.) The issue is labelled `wontfix`. — [foot#1539](https://codeberg.org/dnkl/foot/issues/1539#issuecomment-1550224)
+- "Tabs have intentionally not been supported since the beginning. This will not change, sorry." (dnkl, 2024-02-05.) The issue is labeled `wontfix`. — [foot#1539](https://codeberg.org/dnkl/foot/issues/1539#issuecomment-1550224)
 - Later requests are closed as duplicates of #1539. For example, [foot#2326](https://codeberg.org/dnkl/foot/issues/2326) (2026-04-19) was closed within 22 minutes.
 - foot has a server mode (`foot --server` with `footclient`) and new windows on ctrl+shift+n, but no tab or split UI. — [foot wiki](https://codeberg.org/dnkl/foot/wiki)
 
@@ -187,7 +187,7 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
 - Whether kitty's tab-drag PR #9296 merged, and its final option name, is not confirmed.
 - Hyperia's current tab features were not examined.
 - Ghostty's tab bar overflow on GTK with many tabs (libadwaita scrolls the bar) was not documented from a source.
-- Warp close-confirmation behaviour and Linux drag-out support were not stated on the docs page.
+- Warp close-confirmation behavior and Linux drag-out support were not stated on the docs page.
 - Alacritty's macOS tab-action names (e.g. `CreateNewTab`) were not verified.
 
 ## Q2. "Tabs in the terminal" versus "use tmux or the window manager"
@@ -258,7 +258,7 @@ Then come vertical tabs (Warp 236, Ghostty 78, WezTerm 46) and per-tab color or 
 - **WezTerm.**
   - Open since 2021–2024: drag reorder [#549](https://github.com/wezterm/wezterm/issues/549) (133 +1), side tab bar [#3537](https://github.com/wezterm/wezterm/issues/3537) (46), tab min width [#5035](https://github.com/wezterm/wezterm/issues/5035) (38), drag reorder again [#6527](https://github.com/wezterm/wezterm/issues/6527) (38), "stretch tabs to fill tab bar" [#1914](https://github.com/wezterm/wezterm/issues/1914) (29), "SpawnTab next to current tab" [#909](https://github.com/wezterm/wezterm/issues/909) (21), centered tab bar [#2167](https://github.com/wezterm/wezterm/issues/2167) (19), vertical tab bar [#7574](https://github.com/wezterm/wezterm/issues/7574) (2026).
   - A freeze when closing a tab after a long session: [#6190](https://github.com/wezterm/wezterm/issues/6190).
-  - Praise centres on the fancy bar, [#1180](https://github.com/wezterm/wezterm/issues/1180) (closed, 37), and on Lua-programmable titles (see Q1).
+  - Praise centers on the fancy bar, [#1180](https://github.com/wezterm/wezterm/issues/1180) (closed, 37), and on Lua-programmable titles (see Q1).
 - **kitty.** Requests are few and mostly shipped: side tab bar ([#2305](https://github.com/kovidgoyal/kitty/issues/2305), [#9855](https://github.com/kovidgoyal/kitty/pull/9855)), tab color ([#1287](https://github.com/kovidgoyal/kitty/issues/1287)), close confirmation ([#734](https://github.com/kovidgoyal/kitty/issues/734)), an option to disable double-click rename ([#9774](https://github.com/kovidgoyal/kitty/issues/9774), 2026), and tabs following light/dark mode ([#10782](https://github.com/kovidgoyal/kitty/issues/10782), 2026). All closed.
   - Native macOS tabs ([#2946](https://github.com/kovidgoyal/kitty/issues/2946), 14 +1) were refused.
 - **Warp.** The most-wanted tab items all shipped (Q1). A 2025 redesign drew backlash: "Bring back the prev tab bar style / highlight active tabs" (48 comments, 46 reactions, closed). — [Warp#6629](https://github.com/warpdotdev/Warp/issues/6629)

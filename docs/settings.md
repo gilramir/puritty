@@ -102,7 +102,7 @@ even one whose cursor does not blink. Leaning: the change wait.
 | frame interval, sync timeout | the model | |
 | word boundaries, paste button, OSC 52 read | the model | |
 | font size | `Window.zoom` | |
-| font family, fallback language | the faces opened again | `Window.setFont`, `zoom` generalised |
+| font family, fallback language | the faces opened again | `Window.setFont`, `zoom` generalized |
 | glyph cache | the cache begun again at its new size | part of `setFont` |
 | charset | a new decoder and encoder at the next read | |
 | scrollback | kept to the new bound as it next grows; a smaller one drops the oldest rows | a `Vt` call |
@@ -478,7 +478,7 @@ with nothing reported, it names every setting in its table, its values
 are read).
 
 **Held by:** `app/tests` (gren-unit-node on node, `app/linux`'s
-`Platform`), 19 of 19: the defaults, the example, a misspelt key and
+`Platform`), 19 of 19: the defaults, the example, a misspelled key and
 table with their nearest, a key with nothing near, values out of bounds,
 of the wrong kind, a bad color, a choice not offered, a palette too
 long, a line after a value that runs on, reports in the file's order, a
@@ -721,7 +721,7 @@ title. `start = "hosts"` opens a shell, with a notice that the host list
 is step 7b's, until it is built.
 
 **Held by** `app/tests`, 59 of 59 (hosts read whole, one without a host,
-a misspelt host key, a port out of range, a name with a space, `start`'s
+a misspelled host key, a port out of range, a name with a space, `start`'s
 values, the ssh command, a jump through another host, an alias, quick
 connect's forms, a session's settings), and **the hosts gate**,
 `harness/hosts.py`, 8 of 8: a stand-in `ssh` first on PATH writes what it
@@ -981,3 +981,16 @@ the app's 112; the Windows build compiles. The store gate had been running
 a binary from 11-10: `harness/store` stopped building when `Words` took
 `gren-i18next`, which its manifest now lists; built again, its writes are
 as pinned, `[colors]` and all.
+
+**And every other British spelling** (*Gilbert, 2026-11-12:* "Yes", to
+sweeping the rest): initialize, rasterize, synthesize, normalize,
+serialize, recognize and the other *-ize* verbs, behavior, neighbor
+(`neighborId`), gray, center, canceled, labeled, misspelled, honor,
+license, flavor, favor, analog, armor (`dearmor`), millimeter, signaling,
+learned, defense, acknowledgment: 351 lines in 56 files, and the replay
+case `dcs-cancelled` renamed `dcs-canceled`. Left as they are: the PuTTY
+code vendored in `packages/ssh-crypto/src/Ext/putty/` and its `LICENCE`,
+the patches against other projects (`harness/oracle/patches`,
+`packages/x11/patches`), tmux's `align=centre`, PuTTY's identifiers
+quoted in `putty.md`, quotations in the research notes, URLs,
+EndeavourOS, and `font.sise`, the misspelling the tests make on purpose.

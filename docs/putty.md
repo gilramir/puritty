@@ -1,6 +1,6 @@
 # PuTTY: architecture analysis for a new terminal emulator
 
-Source analysed: `vendor/putty` at commit `7507c54b` (2026-10-14, "Stop treating
+Source analyzed: `vendor/putty` at commit `7507c54b` (2026-10-14, "Stop treating
 U+2028 and U+2029 as newlines"). `LATEST.VER` is `0.85`, so this is the post-0.85
 development tree. Unless noted, paths are relative to `vendor/putty/`. Line numbers
 come from that snapshot and will drift. Anything not read directly in code is marked
@@ -11,7 +11,7 @@ Windows-native terminal with a **built-in SSH client**, and it sets what Windows
 users expect. That covers the host-key dialog, Pageant, saved sessions, "Restart
 Session", and plink/pscp/psftp. Its code is old-style C, but the architecture
 underneath is carefully layered and transfers well to any language. This document
-reads it for both behaviour and structure.
+reads it for both behavior and structure.
 
 Contents:
 
@@ -39,7 +39,7 @@ Contents:
   protocol (SSH, bare ssh-connection, Telnet, Rlogin, SUPDUP, Raw, serial, and the
   `pty`/`conpty` local backends in pterm) implements one `BackendVtable`
   (`putty.h:703`). The terminal, line discipline and window know nothing about
-  which backend they're talking to. This is the closest existing analogue to
+  which backend they're talking to. This is the closest existing analog to
   puritty's "PTY / tmux pane / SSH channel" backend interface.
 - **The backend talks *up* through a `Seat`** (`putty.h:1088`), a vtable of about 30
   methods. It carries session output (with a returned backlog for flow control), EOF,
@@ -148,7 +148,7 @@ language with interfaces or traits maps onto this directly.
 
 `BackendVtable` (`putty.h:703–760`):
 
-| Method | Meaning | puritty analogue |
+| Method | Meaning | puritty analog |
 |---|---|---|
 | `init(vt, seat, &backend, logctx, conf, host, port, &realhost, nodelay, keepalive)` | Start connecting, **asynchronously**. Returns an error string or NULL; the connection completes later | `open()` |
 | `free` | Tear down | `close()` |
@@ -208,7 +208,7 @@ into groups:
   `get_window_pixel_size`, `get_display`/`get_windowid` (for X11 forwarding),
   `get_cursor_position`.
 - **Security UX:** `set_trust_status(bool)`, `can_set_trust_status()`,
-  `stripctrl_new()` (a sanitiser for untrusted text such as banners and server
+  `stripctrl_new()` (a sanitizer for untrusted text such as banners and server
   prompt strings), and `has_mixed_input_stream()` (plink: are prompts and session
   input on the same stream?).
 - **Misc:** `set_busy_status` (hourglass cursor during KEX), `update_specials_menu`,
@@ -237,7 +237,7 @@ and trust changes, then flushes them when the seat is returned
 - **TermWin** (`putty.h:1606`) is everything the Terminal needs from a window:
   `setup_draw_ctx`/`draw_text`/`draw_cursor`/`draw_trust_sigil`/`free_draw_ctx`,
   `char_width`, `set_scrollbar`, `bell`, `clip_write`/`clip_request_paste`,
-  `request_resize`, title, minimise/maximise/move/z-order, palette, `unthrottle`.
+  `request_resize`, title, minimize/maximize/move/z-order, palette, `unthrottle`.
   Draw calls are bracketed by a draw context, so a GDI DC or a Cairo context is
   acquired once per paint.
 
@@ -284,7 +284,7 @@ subtleties:
 
 - The timeout drops to zero if a callback is pending.
 - After each wait it drains Windows messages until it has seen at least one
-  *non*-`WM_NETEVENT`, because Windows prioritises those and a flood would otherwise
+  *non*-`WM_NETEVENT`, because Windows prioritizes those and a flood would otherwise
   starve input (`windows/window.c:853–872`). Only then does it run one top-level
   callback.
 
@@ -465,7 +465,7 @@ each algorithm is asked about once (`transport2.c:156, 2527–2536`).
 **Settings migration** is a detail worth copying. Each algorithm table entry says
 *where to insert it relative to another entry* if a saved list predates it
 (`putty.h:517–556`). New algorithms (ML-KEM, ed448) therefore slot sensibly into
-users' customised lists, and untouched old defaults get silently upgraded
+users' customized lists, and untouched old defaults get silently upgraded
 (`settings.c:888–931`). An app that persists user crypto preferences must solve this
 somehow; this is a clean way.
 
@@ -653,7 +653,7 @@ Details that matter for UX:
   per-use confirmation (**unverified**; not found).
 - **Agent forwarding:** `auth-agent-req@openssh.com`, requested only if enabled and
   an agent exists (`connection2.c:1610`). `ssh/agentf.c` relays each forwarded
-  request asynchronously to the local agent, and synthesises `SSH_AGENT_FAILURE` if
+  request asynchronously to the local agent, and synthesizes `SSH_AGENT_FAILURE` if
   the agent gives no reply.
 
 puritty on Windows should try, in order, the OpenSSH agent pipe and the Pageant pipe
@@ -672,7 +672,7 @@ The threat: a malicious or compromised server prints text that *looks like* the
 client's own UI ("Host key changed, enter passphrase:", "Access granted"). The user
 then hands over a secret, or believes they're on a safe host. Because PuTTY renders
 both its own prompts *and* server output in the same terminal, it built layered
-defences:
+defenses:
 
 1. **Trust sigil** (§8.8):
    - Text generated by PuTTY is written while `seat_set_trust_status(true)`.
@@ -689,7 +689,7 @@ defences:
      from server:" … "End of keyboard-interactive prompts from server"
      (`:2154–2177`).
    - Every prompt records `from_server` (`putty.h:925–935`).
-3. **Sanitising:**
+3. **Sanitizing:**
    - Banners and server prompt strings pass through `StripCtrlChars` (via
      `seat_stripctrl_new`), which removes escape sequences and bounds line length.
    - Banners are capped at 128 KiB (`userauth2-client.c:19`).
@@ -714,7 +714,7 @@ defences:
 pane overlay or dialog drawn by the app, never by VT text). That gives the trust
 distinction structurally. If prompts are rendered in-terminal for keyboard flow,
 adopt PuTTY's per-line trust bit plus an unforgeable margin glyph. Either way, frame
-and sanitise server-supplied banner and KI text.
+and sanitize server-supplied banner and KI text.
 
 ---
 
@@ -793,7 +793,7 @@ VcXsrv/Xming, reached over TCP.
 
 Proxy types (`putty.h:415–418`): SOCKS4, SOCKS5, HTTP CONNECT, Telnet (a scripted
 "proxy command" string sent over a TCP connection), local command (`PROXY_CMD`,
-like OpenSSH `ProxyCommand`), and three SSH flavours: `PROXY_SSH_TCPIP`
+like OpenSSH `ProxyCommand`), and three SSH flavors: `PROXY_SSH_TCPIP`
 (`direct-tcpip`, like `ProxyJump`), `PROXY_SSH_EXEC` and `PROXY_SSH_SUBSYSTEM`.
 
 - Proxies are **Sockets wrapping Sockets**, so every backend gets them for free.
@@ -971,7 +971,7 @@ puritty's remote-X11 renderer.
 4. Changed cells are grouped into runs of identical attributes, and `draw_text` is
    called only for dirty runs. Expose/WM_PAINT goes through `term_paint` (`:6529`):
    it invalidates the rectangle and paints.
-5. **There is no scroll-blit optimisation.** No ScrollWindow/XCopyArea in
+5. **There is no scroll-blit optimization.** No ScrollWindow/XCopyArea in
    `terminal.c` or `windows/window.c` (**inference** from grep), so a full-screen
    scroll repaints every changed row.
 
@@ -997,7 +997,7 @@ puritty's remote-X11 renderer.
 - Shift overrides mouse reporting. Copy can carry RTF (colors and attributes) on
   Windows.
 - **Paste** (`term_do_paste`, `:7124`):
-  - Newlines are normalised to CR.
+  - Newlines are normalized to CR.
   - All C0/C1 controls except CR/LF/TAB/BS are **stripped by default**
     (`paste_controls` off).
   - In bracketed mode the ESC that would form `ESC[201~` is dropped.
@@ -1022,7 +1022,7 @@ puritty's remote-X11 renderer.
 ### 9.1 Process model
 
 - **One process per window**, on both platforms.
-  - Windows "Duplicate Session" serialises the Conf into a file mapping and launches
+  - Windows "Duplicate Session" serializes the Conf into a file mapping and launches
     a new process with `&R<handle>` (`windows/window.c:~2276–2297`).
   - GTK passes it over a pipe (`unix/main-gtk-simple.c:150–188`).
 - **No tabs.** An unfinished GtkApplication variant exists for macOS
@@ -1047,7 +1047,7 @@ puritty's remote-X11 renderer.
   - `ExtTextOutW` with an explicit per-character advance array (`lpDx`) forces
     glyphs onto the cell grid; wide chars get double advance (`:3760–3827`).
   - Surrogate pairs and variation selectors are kept together.
-  - Variable-pitch fonts are drawn glyph-by-glyph, centred.
+  - Variable-pitch fonts are drawn glyph-by-glyph, centered.
   - Combining chars are overprinted.
   - RTL runs use glyph-index output so Windows doesn't apply a second bidi pass on
     top of PuTTY's own (`:1262–1299`). Other runs use plain `ExtTextOutW`, so GDI
@@ -1055,7 +1055,7 @@ puritty's remote-X11 renderer.
 - **DPI:** the manifest declares PerMonitorV2 (`windows/putty.mft:24–32`).
   `WM_DPICHANGED` resets fonts and applies the suggested rect (`:3119–3124`).
 - **Resize policy** (`CONF_resize_action`):
-  - Change rows/cols, change font size, "either" (font when maximised or with Alt
+  - Change rows/cols, change font size, "either" (font when maximized or with Alt
     held), or disabled.
   - `WM_SIZING` snaps to whole cells and shows a size tooltip (`sizetip.c`).
   - The **backend is told only when the drag ends** (`need_backend_resize`,
@@ -1081,7 +1081,7 @@ puritty's remote-X11 renderer.
 - **Arrows:** Ctrl toggles normal/application mode, or a modifier bitmap
   `ESC[1;mA` is sent.
 - **Other options:** Backspace ^? vs ^H, rxvt Home/End, NetHack keypad, "Ctrl+Alt is
-  AltGr", disable application keypad/cursor switching, Alt+F4/Alt+Space behaviour,
+  AltGr", disable application keypad/cursor switching, Alt+F4/Alt+Space behavior,
   compose key.
 - **Not supported:** kitty keyboard protocol, `modifyOtherKeys`.
 - `doc/udp.but:301` sets a principle worth adopting: **keystrokes go to the server
@@ -1207,7 +1207,7 @@ possible.
 
 | Tool | What it does |
 |---|---|
-| `test/testcrypt.c` + `testcrypt.py` | A half-duplex line protocol on stdin/stdout exposing every crypto primitive, mp_int op, key format and KEX to Python (`testcrypt.c:1–25`). It is a subprocess, not an extension module, so it can run under a debugger, sanitisers or valgrind, and other languages can drive it |
+| `test/testcrypt.c` + `testcrypt.py` | A half-duplex line protocol on stdin/stdout exposing every crypto primitive, mp_int op, key format and KEX to Python (`testcrypt.c:1–25`). It is a subprocess, not an extension module, so it can run under a debugger, sanitizers or valgrind, and other languages can drive it |
 | `test/cryptsuite.py` | Thousands of assertions in classes `mpint`, `ecc`, `keygen`, `ntru`, `crypt`, `standard_test_vectors` (`cryptsuite.py:166–3599`) |
 | `test/testsc.c` + `test/sclog/` | Runs each primitive with different secrets under a DynamoRIO instrumentation library. It logs control flow and memory addresses and asserts the traces are identical, giving **side-channel freedom by test** (`testsc.c:1–60`) |
 | `test/dsa_nonce_recover.py` | Recovers DSA/ECDSA nonces from signatures, given the key, to eyeball their distribution. This came after the P-521 biased-nonce disaster (§12) |
@@ -1246,7 +1246,7 @@ knowledge of PuTTY's advisories and are marked **unverified** here.
 | **Window-title query → fake keystrokes** | Title reporting returns an empty string by default (`doc/config.but:883–900`, `settings.c:945–958`) | Never echo attacker-settable strings back as input |
 | **Paste with embedded escapes** | Strip C0/C1 except CR/LF/TAB/BS by default; drop the ESC of `ESC[201~` (`terminal.c:7124`) | Same as synthesis §8 |
 | **Combining-char memory DoS** | `CC_LIMIT` = 32 per cell (`terminal.h:494`) | Cap every per-cell unbounded structure |
-| **OSC run-on** | 2048-byte cap; CR/LF aborts OSC (`terminal.c:5335–5368`) | Bound and resynchronise string states |
+| **OSC run-on** | 2048-byte cap; CR/LF aborts OSC (`terminal.c:5335–5368`) | Bound and resynchronize string states |
 | **Side channels** | `testsc` DynamoRIO trace comparison for all crypto | Covered by a vetted library |
 | **SSH-1 CRC32 compensation attack** | `ssh/crc-attack-detector.c` | Historical; don't ship SSH-1 |
 | **Latest commits** | "Fix null dereference on a spurious remote port open", "Complain if CHANNEL_DATA received after CHANNEL_EOF" (git log, 2026-10-12) | Protocol state machines stay a source of bugs decades in. Fuzz them |
@@ -1353,7 +1353,7 @@ knowledge of PuTTY's advisories and are marked **unverified** here.
    - Load OpenSSH keys natively.
 10. **Anti-spoofing.** Render client prompts out-of-band (overlay or dialog), or, if
     in-band, with a per-line trust bit and an unforgeable margin glyph. Frame and
-    sanitise server banners and keyboard-interactive text. Show hop announcements.
+    sanitize server banners and keyboard-interactive text. Show hop announcements.
     This matters more for a terminal that embeds SSH than for one that runs `ssh` in
     a PTY, because the app *is* the trusted party.
 11. **Keepalives that detect death.** Use `keepalive@openssh.com`-style requests with

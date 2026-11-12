@@ -786,7 +786,7 @@ Ghostty by new replay cases and to esctest: 297 → 307 → 323 → 334.
   foreground, background and cursor. A query answers `rgb:` with 16 bits a
   channel, all of one request's answers in one reply, ended with BEL or ST
   as the request was. The core keeps only what was set (`colors`) and
-  computes the rest: libghostty-vt's palette (its 16, the cube, the grey
+  computes the rest: libghostty-vt's palette (its 16, the cube, the gray
   ramp), and no foreground or background until one is set, as
   libghostty-vt has none unless its embedder gives one; the cursor's is the
   foreground's when it has none. A color is parsed as Ghostty parses it,
@@ -1068,7 +1068,7 @@ tests Ghostty passes and the core does not are §VC9's, the ones that resize.
 
 **v1.4.0's two parser changes** (§VC9 had registered them) are that a
 stream's continuation restarts at a C1 introducer, which is a snapshot's
-export and changes no screen, and that a cancelled or aborted APC is thrown
+export and changes no screen, and that a canceled or aborted APC is thrown
 away, which the core, running no APC, did already. A case probing them
 (`apc-aborted`) found something else: **an 8-bit C1 control inside a
 sequence**, `ESC _ hi 0x9B 32m`, which Ghostty ends the APC at and starts a
@@ -1308,7 +1308,7 @@ Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
   takes two. A DCS's header skips a control, DEL or high byte, and a colon
   or a misplaced parameter byte makes it ignored (`dcs-header-bytes`); CAN
   and SUB end a DCS dispatched, as leaving Ghostty's DCS state unhooks it
-  (`dcs-cancelled`). A high byte in a string that is not UTF-8 stands as
+  (`dcs-canceled`). A high byte in a string that is not UTF-8 stands as
   0x01, where it stood as `?`, which OSC 4 and 10 read as a query. OSC 4's
   indexes 256 to 260 are Ghostty's special colors, passed over
   (`osc-color-edges`).
@@ -2220,7 +2220,7 @@ first while it is set. Found as a 0xFF byte (U+FFFD) printed after
 
 **DECECM.** DECRQM for private mode 117 is answered 4, permanently reset:
 Ghostty's erases always take the current background, which is DECECM
-reset, and the core's do too. It was answered 0, not recognised.
+reset, and the core's do too. It was answered 0, not recognized.
 
 **CHA and HPA in origin mode.** Ghostty's `setCursorCol` sets the column
 through `setCursorPos` with the row as CUP reads it back
@@ -2583,7 +2583,7 @@ off, 100,000 lines, 706 → 719 ms; the same dumps. Narrowing 100,000
 unwrapped lines still costs about 350 ms a resize; a bytes version of that
 cut would bring it down.
 
-**One behaviour changes: a narrowing past the limit prunes** (until V21,
+**One behavior changes: a narrowing past the limit prunes** (until V21,
 §VC32, which counts the limit in bytes, so that a narrowing keeps its rows). V10 and V16
 left a narrowed page at its width, so a narrowing could leave the
 scrollback holding far more rows than it keeps: `m3` (§VC7's) narrowed to
@@ -2610,7 +2610,7 @@ After all of it: replay 323 of 323, esctest2 392 (Ghostty 388).
 
 ## VC32. A scrollback limit in bytes (V21)
 
-§VC31's one change of behaviour is that a narrowing past the limit prunes.
+§VC31's one change of behavior is that a narrowing past the limit prunes.
 Gilbert: a window narrowed to 7 columns is likely to be widened again soon,
 and the lines it dropped were wanted; a limit that waits (a time) was one
 idea. This section measures what a narrowing costs in memory, which is what
@@ -4203,7 +4203,7 @@ tested inline before the call (a run that ends at once paying a load and
 two compares): `vte-scrolling_top_region` +0.9% in cycles,
 `vte-light_cells` +23.0%, `vte-scrolling_fullscreen` +16.4%, `ls` +6.7%.
 The primitive is a function of its own so that the parser's one large
-function does not compile it by its neighbours (geng-lang
+function does not compile it by its neighbors (geng-lang
 `m3-bytes-access.md` §BA19), and an inline prelude undid that.
 
 **Profile-guided, on top of §VC55** (`harness/bench/pgo.sh`, then

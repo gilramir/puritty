@@ -87,7 +87,7 @@ frame after it nothing more if the view keeps the decoded pages it
 showed last. The pages change only at a page-out or a resize, which say
 so.
 
-The rest is behaviour to decide (§10): how far a notch scrolls (Ghostty:
+The rest is behavior to decide (§10): how far a notch scrolls (Ghostty:
 3 rows for a wheel, 1 for a precise device), what the alternate screen does
 with the wheel (Ghostty's default sets 1007, which sends arrow keys; the
 core sets it by default as Ghostty does), and what new output does to a
@@ -851,7 +851,7 @@ were.
 `gitlog.txt`, the X side's statistics (`X11_STATS`) for ten zooms a step
 at a time against none: 4.15 ms of drawing in all against 0.39 ms, so
 about 0.4 ms a zoom for its frames, the glyph set begun again each time
-(`resets 10`) and every glyph rasterised at its new size. Summing a
+(`resets 10`) and every glyph rasterized at its new size. Summing a
 stroke's steps saves a few of these, not a stall.
 
 **The pointer gate** gains two cases, with SGR mouse reports on: two

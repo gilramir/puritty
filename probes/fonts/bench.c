@@ -8,7 +8,7 @@
  *   bench fit             the ideograph width of each CJK face against the
  *                         primary font's cell
  *   bench han             which face and glyph 直 骨 返 刃 get per language
- *   bench raster          FreeType rasterising 4,000 ideographs per load mode
+ *   bench raster          FreeType rasterizing 4,000 ideographs per load mode
  *   bench ink TEXT...     each text shaped in the face fontconfig gives it,
  *                         and how far its ink goes past the primary cell
  *
@@ -323,7 +323,7 @@ static void cmd_ink(int argc, char **argv) {
     }
 }
 
-/* FreeType's rasterising of 4,000 ideographs at the size the probe draws
+/* FreeType's rasterizing of 4,000 ideographs at the size the probe draws
  * them, under each load mode. */
 static void cmd_raster(void) {
     FcInit();

@@ -825,7 +825,7 @@ static void set_title(const uint8_t *text, int n) {
  * the resources the desktop set on the root window, which its scale
  * setting writes and GTK, Qt and Xft size their fonts by; else the primary
  * monitor's size from RandR; else 96. The X screen's own size in
- * millimetres is the server's arithmetic for 96, and says nothing. */
+ * millimeters is the server's arithmetic for 96, and says nothing. */
 static int screen_dpi(void) {
     const char *forced = getenv("PURITTY_DPI");
     if (forced && atoi(forced) > 0) return atoi(forced);

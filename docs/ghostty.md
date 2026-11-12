@@ -1,6 +1,6 @@
 # Ghostty: architecture analysis for a new terminal emulator
 
-Source analysed: `vendor/ghostty` at commit `d8619f1bc` (2026-10-18, "gtk: keep IME
+Source analyzed: `vendor/ghostty` at commit `d8619f1bc` (2026-10-18, "gtk: keep IME
 cursor location updated during preedit on Wayland"), version 1.3.x-dev. Unless noted,
 paths are relative to `vendor/ghostty/`. Line numbers come from that snapshot and will drift.
 
@@ -114,7 +114,7 @@ short-lived warmup threads (`App.zig:80-110`).
 
 ### 1.2 Threads, mailboxes and wakeups
 
-All event loops are **libxev** (`global.xev`). Cross-thread signalling always pairs a
+All event loops are **libxev** (`global.xev`). Cross-thread signaling always pairs a
 bounded queue with an `xev.Async` wakeup.
 
 | Channel | Type | Producer → consumer | Notes |
@@ -255,7 +255,7 @@ program that links against it. What CI tests on Windows (`.github/workflows/test
   because Zig's default GNU ABI emits COMDAT sections that the MSVC linker rejects with
   LNK1143 (`src/build/Config.zig:100-111`).
 - **MSVC-specific workarounds:**
-  - DllMain initialises the MSVC C runtime (`src/main_c.zig:179-212`, regression test
+  - DllMain initializes the MSVC C runtime (`src/main_c.zig:179-212`, regression test
     in `test/windows/test_dll_init.c`);
   - `_fltused` is exported for static builds (`src/lib_vt.zig:170-186`);
   - the stack protector is disabled in the static lib, and ubsan runtime bundling is
@@ -327,7 +327,7 @@ to end. Use MinGW only if the whole application is MinGW-built. Don't mix the tw
   - Reason: "Ghostty is UTF-8 only, and DCS payloads carry UTF-8 text (e.g. tmux
     control mode pane content)". A C1 byte is indistinguishable from a UTF-8
     continuation byte.
-  - 8-bit C1 controls are not honoured in ground state either; they go through UTF-8
+  - 8-bit C1 controls are not honored in ground state either; they go through UTF-8
     decoding.
 
 ### 3.2 `Stream` and its fast paths (`stream.zig`, 5.7 kLOC)
@@ -431,7 +431,7 @@ Unknown OSCs are captured with a size cap (`unknown_max_bytes`).
   (`graphics_command.zig:506-585`); storage limit `image-storage-limit = 320 MB`
   (`Config.zig:2522`).
 - a `glyph` APC (`terminal/apc/glyph.zig`), which looks Ghostty-specific (custom
-  glyph protocol). I did not analyse it.
+  glyph protocol). I did not analyze it.
 
 **Kitty extras**: keyboard protocol (`terminal/kitty/key.zig`), clipboard (OSC 5522,
 with password "grants"), DnD, color (OSC 21), and text sizing (OSC 66).
@@ -834,7 +834,7 @@ A cursor move dirties both the old and the new row, because the cursor splits sh
   - Build order (`SharedGridSet.zig:155-391`): configured fonts, synthetic styles,
     embedded **JetBrains Mono** (variable), embedded **Symbols Nerd Font**, then embedded
     **Noto Color Emoji** and **Noto Emoji** (Apple Color Emoji on macOS).
-  - Fallback faces are size-normalised like CSS `font-size-adjust`, by ic-width by default.
+  - Fallback faces are size-normalized like CSS `font-size-adjust`, by ic-width by default.
   - **Synthetic bold** uses `FT_Outline_Embolden`; **synthetic italic** uses a 12° skew.
 - **CodepointResolver** (`CodepointResolver.zig:120-228`) looks up in this order:
   `font-codepoint-map`, sprite face, collection (respecting emoji vs text presentation),
@@ -861,7 +861,7 @@ A cursor move dirties both the old and the new row, because the cursor splits sh
   - The run hash is position-independent. The shaper cache is 256×8 LRU, and a comment
     notes shaping was once 96% of frame time.
   - HarfBuzz shaping takes the grid's exclusive lock, because FreeType faces aren't
-    thread-safe, so surfaces sharing a grid serialise their shaping.
+    thread-safe, so surfaces sharing a grid serialize their shaping.
 - **Sprite font** (`font/sprite/draw/*`): procedurally drawn (z2d) glyphs for:
   - box drawing U+2500–257F, blocks U+2580–259F, braille;
   - some geometric shapes;
@@ -964,7 +964,7 @@ A cursor move dirties both the old and the new row, because the cursor splits sh
   or work in progress.
 - `renderer_health` is in GTK's unimplemented action list.
 
-**Likely behaviour over `ssh -X`.** This is inference, not tested:
+**Likely behavior over `ssh -X`.** This is inference, not tested:
 
 1. `renderDeviceOptions` (`class/surface.zig:1771-1793`) passes
    `gdk_x11_display_get_egl_display()`. For a remote display this may be NULL (GDK fell
@@ -1008,7 +1008,7 @@ or at least damage-aware presentation. Ghostty provides neither.
    4. `encodeKey` (`Surface.zig:3306`);
    5. `queueIo(write_small…)` to the io-writer thread;
    6. scroll to bottom and clear selection.
-5. A pressed key is remembered (`pressed_key`) so a release can be synthesised on focus
+5. A pressed key is remembered (`pressed_key`) so a release can be synthesized on focus
    loss (`Surface.zig` fields).
 
 ### 7.2 Encoding (`src/input/key_encode.zig`, 2.9 kLOC)
@@ -1092,7 +1092,7 @@ only a build-info flag, `GHOSTTY_BUILD_INFO_TMUX_CONTROL_MODE`
 
 ### 8.2 Build gating
 
-- `terminal_options.tmux_control_mode` is **synthesised from the `oniguruma` option**
+- `terminal_options.tmux_control_mode` is **synthesized from the `oniguruma` option**
   (`src/terminal/build_options.zig:296`), because the control parser uses Oniguruma
   regexes.
 - The GUI build has oniguruma on (`src/build/Config.zig:714`).
@@ -1396,7 +1396,7 @@ The hard GUI and plumbing half is not built yet.
   (`terminal/render.zig:20-62`).
 - **`std.debug.assert` not optimized away** in ReleaseFast (Zig 0.15.2), costing 15–20%
   in hot loops. Ghostty uses its own inline assert (`src/quirks.zig:32-44`).
-  `quirks.zig` also centralises font-specific hacks, e.g. disabling default features
+  `quirks.zig` also centralizes font-specific hacks, e.g. disabling default features
   for certain faces.
 - **GtkGLArea** main-thread-only lifecycle: replaced by an EGL offscreen and DMA-BUF
   widget (`render_surface.zig:20-44`).
@@ -1437,8 +1437,8 @@ The hard GUI and plumbing half is not built yet.
   (including Windows), fuzzed, esctest-checked, and includes key, mouse and paste
   encoders and a render-state API. The cost is an unstable API and a Zig toolchain.
   Either way, its design is the benchmark to compare against.
-- **Use fixed-size, offset-addressed, zero-initialised pages** (~400 KiB each). Clone,
-  compress, snapshot and serialise all become `memcpy`. Steady-state scrolling recycles
+- **Use fixed-size, offset-addressed, zero-initialized pages** (~400 KiB each). Clone,
+  compress, snapshot and serialize all become `memcpy`. Steady-state scrolling recycles
   the oldest page and allocates nothing.
 - **Use 8-byte cells.** Keep styles in a per-page ref-counted set, and graphemes and
   hyperlinks in side maps keyed by cell offset. Keep "row might have X" flags so plain
@@ -1531,7 +1531,7 @@ The hard GUI and plumbing half is not built yet.
   `performable:`/`unconsumed:` semantics. These solve real conflicts with TUI apps.
 - **Clipboard and paste safety:**
   - OSC 52 read asks by default and write is allowed;
-  - bracketed-paste sanitising;
+  - bracketed-paste sanitizing;
   - an unsafe-paste prompt.
 - **SSH UX:** ship a terminfo-install helper (`+ssh` with a cache), or fall back to
   `xterm-256color` and forward `COLORTERM`/`TERM_PROGRAM`. Remote hosts lacking your

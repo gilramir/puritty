@@ -25,7 +25,7 @@ in C, the encoding in Geng (V30), a frame at once after a key (V31).
 | Do the IMEs order a commit and the key that ended it as S§9 needs? | **Yes, every IME, in every case tried**: Return, Left and Ctrl+C after a syllable, a syllable split by its next vowel. The commit comes before the key given back. The two frameworks disagree on whether the preedit ends before or after the commit | 3.2 |
 | What does XIM cost a key? | **Locally 0.15–1.6 ms. Over `ssh -X` from gmktec7, 16–24 ms a key event**, against a 5 ms ping: xcb-imdkit's client makes five or six blocking round trips for each, four of them avoidable. A key without the IME was one round trip (phase 2 §14.3) | 3.3 |
 | What does the kitty encoder need from the C? | Ghostty's encoder takes **a physical key, press, repeat or release, sided modifiers with the locks, the modifiers the layout consumed, the text, and the unshifted code point**. The C sends a keysym, four modifiers and text. libghostty-vt's key, mouse and paste encoders are an oracle for a gate | 4 |
-| Does a paste fit the loop? | **No, as the loop is written.** A pty takes 15–37 KB and then stops until the program reads; a program that echoes stops reading until puritty reads. Main waits for each write, so a paste of more than that into `cat` hangs the window. A write raced and cancelled cannot say how much it wrote: a gap in `os` | 5 |
+| Does a paste fit the loop? | **No, as the loop is written.** A pty takes 15–37 KB and then stops until the program reads; a program that echoes stops reading until puritty reads. Main waits for each write, so a paste of more than that into `cat` hangs the window. A write raced and canceled cannot say how much it wrote: a gap in `os` | 5 |
 | What does an EUC-KR decoder in Geng cost? | **+12–15% on `gitlog`, +72% on Korean text**, beside the core. Geng is near C's floor on ASCII and 4× it on Korean, because user code has no byte writer | 6 |
 | Where should the font's size come from? | **`Xft.dpi`, then the monitor's size from RandR, then 96.** Gilbert's desktop says 192, its monitors are 163 dpi, and the X screen says 96 | 7 |
 
@@ -227,7 +227,7 @@ The way out is a write the loop can race with its read, as the read is
 raced now. That is where `os` falls short:
 
 - `Os.File.write` answers `{}` when every byte is written. A write that
-  loses a race is cancelled (`pending_stop` in `geng_os_file.c`) and says
+  loses a race is canceled (`pending_stop` in `geng_os_file.c`) and says
   nothing of the bytes it had written. Written again, the paste doubles
   them; not written again, it loses the rest.
 - This is D1045's question for reads (`m3-os.md` §OS27), the other way
@@ -235,7 +235,7 @@ raced now. That is where `os` falls short:
 
 Two shapes would do. **A write that answers how much it wrote** and never
 waits, with a separate wait for the handle to take bytes again that the
-loop races; or **D1045's give-back for writes**, a cancelled write
+loop races; or **D1045's give-back for writes**, a canceled write
 answering the count it reached. The first is simpler to reason about and
 is what bracketed paste's slicing wants anyway: the loop hands the pty one
 slice at a time and keeps the rest in its model.
@@ -318,7 +318,7 @@ the display's server, so they are the desktop's, as they should be.
   own, and a read needs a setting (S§9).
 - **The preedit drawn**: shaped, wrapped, clause styles, as an overlay in
   the display list (C§7.4).
-- **The keymap race** from `renderer.md` §R18, the time to rasterise a
+- **The keymap race** from `renderer.md` §R18, the time to rasterize a
   screen of new ideographs in daily use (V27), and per-range font settings
   (V42): all phase 3's exit, measured as they are built.
 - **The IMEs on a real desktop and on ETX** (phase 6, with ibus 1.5.19).
@@ -566,7 +566,7 @@ The pixel gate passes 36 of 36 with the new `packages/x11`.
 
 `open` connects to the display before it loads a face, and sizes every face
 at the screen's resolution: `Xft.dpi` from the root's `RESOURCE_MANAGER`,
-else the primary monitor's width over its millimetres from RandR (1.5's
+else the primary monitor's width over its millimeters from RandR (1.5's
 `GetMonitors`), else 96; `PURITTY_DPI` sets it outright. `X11_STATS`
 prints it. A fallback face is sized as before, from the primary cell.
 

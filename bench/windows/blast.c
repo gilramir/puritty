@@ -6,7 +6,7 @@
  *                              the top left, sized to the console
  *
  * It waits START seconds (third argument's fourth, default 4) so that the
- * window can be maximised first, enables VT processing, then writes in
+ * window can be maximized first, enables VT processing, then writes in
  * 64 KB writes and appends to RESULT a line: the mode, the bytes, the
  * console's columns and rows, and the milliseconds the writes took.
  * Built with the Windows toolchain: x86_64-w64-mingw32-clang -O2. */

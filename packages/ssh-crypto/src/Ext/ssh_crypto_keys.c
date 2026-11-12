@@ -56,8 +56,8 @@ static int b64_value(int c) {
     return -1;
 }
 
-/* The binary between OpenSSH's armour lines, in a strbuf, or NULL. */
-static strbuf *dearmour(ptrlen text) {
+/* The binary between OpenSSH's armor lines, in a strbuf, or NULL. */
+static strbuf *dearmor(ptrlen text) {
     static const char begin[] = "-----BEGIN OPENSSH PRIVATE KEY-----", end[] = "-----END OPENSSH PRIVATE KEY-----";
     const char *s = text.ptr, *limit = s + text.len;
     const char *b = NULL;
@@ -148,7 +148,7 @@ static ptrlen blob_type(ptrlen blob) {
  * encrypted, then the public key blob; empty for a file that is not one
  * this client reads. */
 void *ssh_crypto_keyFileInfo(void *text) {
-    strbuf *binary = dearmour(pl(text));
+    strbuf *binary = dearmor(pl(text));
     if (binary == NULL) return bytes_of(NULL, 0);
     key_file f;
     int problem = read_file(ptrlen_from_strbuf(binary), &f);
@@ -300,7 +300,7 @@ static geng_task *load_stop(void *env) {
 /* A key file's private key, decrypted with the passphrase (ignored for one
  * not encrypted), on a thread. */
 geng_cancel ssh_crypto_loadKey(void *text, void *passphrase, geng_wait *wait) {
-    strbuf *binary = dearmour(pl(text));
+    strbuf *binary = dearmor(pl(text));
     if (binary == NULL) {
         fail(wait, NOT_A_KEY_FILE);
         return (geng_cancel) {0};
@@ -370,7 +370,7 @@ geng_cancel ssh_crypto_forgetKey(void *handle, geng_wait *wait) {
 
 /* SIGNING */
 
-/* A signature in flight. `cancelled`: its task was cancelled, and the
+/* A signature in flight. `canceled`: its task was canceled, and the
  * answer is dropped when it comes. The post stays open until then, so the
  * thread always hands the signing back and the key's box is always
  * released on the program's thread. */
@@ -378,7 +378,7 @@ typedef struct {
     geng_post *post;
     key_box *box;
     unsigned flags;
-    int cancelled;
+    int canceled;
     strbuf *data;
     strbuf *signature;
 } signing;
@@ -405,7 +405,7 @@ static void sign_finished(signing *s) {
 static void signed_(void *env, void *message) {
     signing *s = message;
     geng_post_close(s->post);
-    if (!s->cancelled) geng_succeed(env, geng_slot_P(bytes_of(s->signature->u, s->signature->len)));
+    if (!s->canceled) geng_succeed(env, geng_slot_P(bytes_of(s->signature->u, s->signature->len)));
     sign_finished(s);
 }
 
@@ -413,7 +413,7 @@ static void sign_dropped(void *message) { sign_finished(message); }
 
 static geng_task *sign_stop(void *env) {
     signing *s = env;
-    s->cancelled = 1;
+    s->canceled = 1;
     return NULL;
 }
 

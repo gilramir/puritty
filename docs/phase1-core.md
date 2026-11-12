@@ -36,7 +36,7 @@ Two probe cores in [`../probes/geng/core/`](../probes/geng/core/), built by
 runs each, least and most. Each reads its file, then feeds it in 64 KB reads
 as Alacritty's pty loop does, between two readings of `Time.monotonic`; the
 times leave out start-up and the file read, which `cores.sh`'s include (a few
-ms), so the comparison is slightly in the probes' favour.
+ms), so the comparison is slightly in the probes' favor.
 
 What both do, from the same parser: a resumable state machine (a CSI, an
 escape or a UTF-8 sequence cut by a read is picked up from the state the read

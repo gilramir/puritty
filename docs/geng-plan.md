@@ -543,7 +543,7 @@ into instanced quads. That gives:
 
 Glyphs (V34, `renderer.md` §R7): the display list carries clusters and
 resolved colors (V35), and C shapes each run with HarfBuzz as it draws it
-(V24), picks the fallback face (V26), rasterises with FreeType and uploads
+(V24), picks the fallback face (V26), rasterizes with FreeType and uploads
 into the X server's GlyphSet or the GPU atlas, so bitmaps and glyph ids
 never cross into Geng. C keeps the glyph cache; the server's glyph set is
 bounded by a reset past a cap (V37, S§6.2). Earlier this said HarfBuzz
@@ -800,7 +800,7 @@ EUC-KR filter pair.
 
 Exit: **Gilbert uses it as his daily terminal on Mint.** The IME matrix (fcitx5-hangul,
 ibus-hangul, Mozc, a pinyin IME) passes its scripted tests, and the EUC-KR corpus
-(C§10.5) passes. The time to rasterise a screen of ideographs not seen
+(C§10.5) passes. The time to rasterize a screen of ideographs not seen
 before, 25–40 ms in phase 2's survey, is measured in that daily use, and a
 C thread for it is decided then (V27, `phase2-window.md` §13).
 puritty's own font settings for a script or range (C§9 rule 7), above
@@ -900,7 +900,7 @@ The main risk is a crash, and the plan attacks it on several fronts:
   crash reports, regressions and the tmux and IME recordings S§11 asks for. tvision
   got the same thing from "the port boundary is total".
 - **Gates**, in this repository's `harness/`, in geng-lang's style:
-  - replay corpus: bytes in, serialised grid out;
+  - replay corpus: bytes in, serialized grid out;
   - esctest2, headless;
   - differential against libghostty-vt;
   - fuzzing: parser, OSC/DCS, tmux lines, EUC-KR decoder, full stream;

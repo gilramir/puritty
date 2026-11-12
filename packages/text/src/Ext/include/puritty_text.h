@@ -1,7 +1,7 @@
 /* puritty's text renderer (docs/windows.md V52, docs/renderer.md): what
  * the platforms' windows share. It decodes a frame's display list
  * (`Vt.View`'s comment is its definition), chooses each cluster's face,
- * shapes runs with HarfBuzz, rasterises glyphs with FreeType, draws box
+ * shapes runs with HarfBuzz, rasterizes glyphs with FreeType, draws box
  * drawing itself and measures each cell's ink (V40); and it draws through
  * the calls below that a platform gives it, so that X11 and Windows draw
  * the same pixels from the same code.
@@ -82,7 +82,7 @@ typedef struct {
     int x, y, w, h;
 } PtRect;
 
-/* A glyph rasterised: `height` rows of `width` bytes of coverage, `stride`
+/* A glyph rasterized: `height` rows of `width` bytes of coverage, `stride`
  * apart (a multiple of 4), its left edge `left` pixels right of its pen and
  * its top `top` above the baseline, and the advance its pen is moved by
  * when glyphs are drawn one after another. */

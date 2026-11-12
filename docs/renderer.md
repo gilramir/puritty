@@ -53,7 +53,7 @@ fonts) and S§6.2, the probes lack:
 | | what | where it is said |
 |---|---|---|
 | colors | the core's styles: a style id picks one of 16 fixed colors in C; no 256-color, truecolor, reverse, dim, hidden | `probe_x11.c` header |
-| attributes | bold, italic, underline (its styles and color), strikethrough, overline; synthesised bold and italic for fallback faces | §13.10 |
+| attributes | bold, italic, underline (its styles and color), strikethrough, overline; synthesized bold and italic for fallback faces | §13.10 |
 | the cursor | none drawn: block, underline, bar, hollow when unfocused, blink | §5.1 |
 | a size | 160×50, fixed: no resize (ConfigureNotify → `Vt.resize` and the pty's), no DPI from RandR | §5.1 |
 | events | an expose and keys only: no focus (and mode 1004), no close (`WM_DELETE_WINDOW`), no title (OSC 0/2 → `_NET_WM_NAME`), no bell | §5.1 |
@@ -72,7 +72,7 @@ places differ, and the renderer has to follow one or the other:
    returns glyph ids, clusters and offsets to Geng as `Bytes`, and Geng
    keeps the cache keys, the LRU and the eviction decisions. The probe, as
    V24–V26 describe it: the display list carries clusters, and C shapes
-   them, picks the face, rasterises and caches. Shaping every run every
+   them, picks the face, rasterizes and caches. Shaping every run every
    frame (V24) in C and sending the glyphs back to Geng would cross twice
    a frame to carry what Geng then hands straight back; nothing Geng
    decides needs the glyph ids.
@@ -166,7 +166,7 @@ What each step needs decided is in brackets.
    the synchronized-output timeout, config through TOML and
    `gren-argparse`.
 5. **The pixel gate** [§R5.5], and what it finds: box drawing, ink extents,
-   synthesised bold and italic.
+   synthesized bold and italic.
 6. **The exit**: a shell on this desktop (Gilbert's session), and over
    `ssh -X` from gmktec7, with the bytes per update recorded by xtrace for
    `tail -f`, `htop` and a vim scroll.
@@ -353,7 +353,7 @@ none:
   makes a round trip before it leaves;
 - `cjk.txt` fed a screen at a time (§R4): at the 8 MB cap, 6,094 glyphs
   held in 2,076,676 bytes, 341 a glyph, and no reset; at a cap of 200 KB,
-  596 resets in 601 frames and 7.3 s rasterising, since every screen
+  596 resets in 601 frames and 7.3 s rasterizing, since every screen
   passes the cap; the last screen's pixels the same in both. A cap under
   one screen's glyphs (a screen of new ideographs is some 2.7 MB) makes
   every frame upload its glyphs again; the app's config should not allow
@@ -432,7 +432,7 @@ program runs:
 | blink | `?12h` | the cursor shown, hidden, shown at 0.6, 1.1, 1.6 s |
 | close | `sleep 7.25`, then `WM_DELETE_WINDOW` | exits 0, and the `sleep` is gone |
 | resize | 40×5, the window made 360×170 | `stty size` reads 5 40, then 10 40 |
-| a misspelt key | `colums = 40` | `…: at window: "colums" is not a key here; the keys are columns, rows, title`, exit 2 |
+| a misspelled key | `colums = 40` | `…: at window: "colums" is not a key here; the keys are columns, rows, title`, exit 2 |
 
 Not checked: typing into a shell (the key path is the probe's, measured in
 phase2 §14, with DECCKM added); a desktop's window manager; `ssh -X`. Those
@@ -559,15 +559,15 @@ What it found:
    sat in one cell and left two empty after it, and 🇯🇵 in two of its four.
    Fixed: a merged cluster takes the cells of every cluster merged into it
    (C§9 rule 4). The same rule moves Thai's น้ำ, whose SARA AM has a cell
-   of its own (rule 3), 2 pixels right, centred on its two cells. Gaps
+   of its own (rule 3), 2 pixels right, centered on its two cells. Gaps
    narrower than a cell stay where a glyph is narrower than its cells (the
    half form न् in its own cell): legacy widths on a grid.
-3. **Bold and italic were not synthesised** for a face without them: CJK,
+3. **Bold and italic were not synthesized** for a face without them: CJK,
    Thai and Devanagari from fallback faces, and Fira Code's italic (it has
    none, so fontconfig gives its regular), drew upright and regular. Built
    (C§9 rule 6): a face's own bold and italic are known from which faces
    fontconfig gave the four variants, and what a style asks of a face that
-   is not of itself is synthesised when its glyph is uploaded, an italic
+   is not of itself is synthesized when its glyph is uploaded, an italic
    slanted by 0.2 as fontconfig's oblique matrix, a bold widened by a 24th
    of the em, as `FT_GlyphSlot_Embolden`, but not made taller, since a CJK
    glyph fills its cell's height and a taller one bled a pixel into the
@@ -577,8 +577,8 @@ What it found:
    reaches a pixel into the next cell, กี้'s tone mark a pixel above its
    row, a fallback CJK glyph's top a pixel above its row; drawn once, all
    of it shows, since nothing is clipped and rows are drawn top to bottom.
-   A later frame that redraws a neighbouring cell fills its background over
-   that ink and does not draw the neighbour again. Measured, a case drawn
+   A later frame that redraws a neighboring cell fills its background over
+   that ink and does not draw the neighbor again. Measured, a case drawn
    in two frames against the same in one: `ink-italic` loses 5 pixels at
    11 points and 7 at 22, `ink-thai` 3 and 5, `ink-fallback` 5 and 4. The
    gate's three `ink-` cases pin the loss as it is now (§R14.1).
@@ -594,24 +594,24 @@ What it found:
 
 ## R14. For Gilbert: ink, box drawing, the CJK region
 
-1. **Ink extents** (§R13.4). Leaning: **the view redraws a neighbour whose
+1. **Ink extents** (§R13.4). Leaning: **the view redraws a neighbor whose
    ink reaches into a redrawn cell.** `X11.draw` answers, for the cells it
    drew, which edges each one's ink crossed (left, right, up, down, a
    nibble a cell, only for cells that did); `Vt.View` keeps them in its
    shadow, and when it redraws a cell, it adds to the frame the
-   neighbours whose ink reaches into it, so they are drawn again over the
+   neighbors whose ink reaches into it, so they are drawn again over the
    new background. C still keeps no table between frames (V35): the table
    is the view's, beside what it already keeps of each cell. The cost is a
    few bytes back from a draw and a few cells more in a frame beside
    italics, Thai and CJK. The alternatives: clip each glyph to its cells,
    as xterm and st do, which loses the overhangs every time (rule 5 says
    no clipping); C remembering the overhangs itself, which it cannot act
-   on without the neighbours' contents; or accept the loss, a few pixels
+   on without the neighbors' contents; or accept the loss, a few pixels
    a case until the row is drawn again.
 2. **Procedural box drawing** (§R13.5; plan S§6.3, phase 2's list).
    Leaning: **build it before the exit**, for the box-drawing and block
    elements (U+2500–U+259F): lines drawn by the C on whole pixels at the
-   cell's centre, in 1 and 2 pixels by weight, so they are crisp and join
+   cell's center, in 1 and 2 pixels by weight, so they are crisp and join
    whatever the font, and blocks and shades filled. tmux's and vim's
    borders are what a daily terminal draws most of, and the exit is
    Gilbert looking at them. Braille and Powerline stay the font's until
@@ -627,10 +627,10 @@ What it found:
 
 Gilbert took §R14's three leanings.
 
-**V40 · Ink is drawn whole: the view redraws a neighbour whose ink
+**V40 · Ink is drawn whole: the view redraws a neighbor whose ink
 reaches into a redrawn cell.** "We need to render the glyphs properly.
 Especially Thai." `X11.draw` answers which edges each drawn cell's ink
-crossed; `Vt.View` keeps them in its shadow and adds those neighbours to
+crossed; `Vt.View` keeps them in its shadow and adds those neighbors to
 the frame when it redraws a cell they reach into.
 
 **V41 · Box drawing and blocks are drawn by the C**, U+2500–U+259F, on
@@ -645,7 +645,7 @@ it is registered with C§9 rule 7's per-range font settings in phase 3
 
 **What the C does.** A frame is drawn in three passes, every run's
 backgrounds, then every run's glyphs, then every run's lines, so that a
-glyph's ink reaching into a neighbouring row is not filled over by that
+glyph's ink reaching into a neighboring row is not filled over by that
 row's run; the window takes a row more above and below what was drawn.
 Each glyph's bitmap box is kept beside its advance when it is uploaded,
 and `X11.draw` answers, for each cell it drew whose cluster's ink crossed
@@ -659,12 +659,12 @@ changed cell is queued, and a cell taken from it is forgotten in the
 shadow, so the diff draws it, with
 
 - its **word**, the cells around it with a glyph in what the core holds or
-  in what was drawn, since a shaper chooses a glyph by its neighbours and
+  in what was drawn, since a shaper chooses a glyph by its neighbors and
   shapes only the cells a run gives it (Fira Code's arrows, a Devanagari
   conjunct); typing `>` after `-` draws the arrow;
-- every neighbour whose ink reaches into it, whose ink its background
+- every neighbor whose ink reaches into it, whose ink its background
   would fill over;
-- every neighbour its old ink reached, which still shows that ink, and
+- every neighbor its old ink reached, which still shows that ink, and
   would otherwise take a new glyph's ink over it twice;
 
 each queued in turn. A scroll's band copies its pixels and no more, so the
@@ -691,7 +691,7 @@ two Thai marks drew three boxes across three cells).
 
 **Shaping stops at an empty cell**, and **V43**: spaces no longer join
 two runs of one fallback face (V24's join). Both made a word shape one
-way drawn beside its neighbours and another drawn alone: two lone ि with
+way drawn beside its neighbors and another drawn alone: two lone ि with
 empty cells between shaped as one run and drew nothing, and a space
 joining ि to the cluster before it dropped its dotted circle. The join
 saved 3–4 ms of shaping over the whole of `thai.txt` and moved neither
@@ -706,7 +706,7 @@ makes random screens (italic, Thai, CJK, Devanagari, Fira Code's
 ligatures typed a character a frame, cursor moves, erases, insertions,
 scroll regions, reverse index; half in Fira Code) and holds each the same
 way, minimizing what differs. It found, in turn: the gap merge; a
-redrawn cell's old ink left in a neighbour; the corner; ink composited
+redrawn cell's old ink left in a neighbor; the corner; ink composited
 twice and out of order (the reading-order frame); a row of `.notdef`
 boxes; and the shaping across empty cells and spaces. On the final code,
 13,000 screens draw the same in frames as at once; the measurement of
@@ -745,7 +745,7 @@ and the cost it saves is bytes, not correctness.
 ## R17. V41 built: box drawing and blocks drawn by the C (2026-11-02)
 
 U+2500 to U+259F are no font's: a cluster of one of them is drawn by the C,
-which rasterises it once into a bitmap of its cells, the first time it is
+which rasterizes it once into a bitmap of its cells, the first time it is
 drawn at that width, and uploads it to the glyph set as any glyph is
 (under a face number of its own), so it is drawn in its style's color by
 the same requests, and is reset with the glyph set (V37).
@@ -754,8 +754,8 @@ the same requests, and is reset with the glyph set (V37).
   table of each one's four arms, light, heavy or double, which the
   characters' Unicode names were checked against (all 128 agree). A light
   line is a ninth of the cell's width, rounded, at least a pixel (1 at 11
-  points), a heavy one twice that, on whole pixels at the cell's centre and
-  running to its edges, so a line joins its neighbours in any font; the
+  points), a heavy one twice that, on whole pixels at the cell's center and
+  running to its edges, so a line joins its neighbors in any font; the
   widest arm across decides where the others stop, so a corner is filled.
   A double arm is two lines a line apart, each stopping at the corner it
   meets (╔, ╬, ╣), and a single arm meeting a double one runs to its far

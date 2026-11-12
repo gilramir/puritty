@@ -28,7 +28,7 @@ a fill, and glyph masks drawn in a color (`pt_glyphs_draw`). Both are
 enough for a modern flat look, so the platforms need no new drawing:
 
 - **Text at a pixel**, in the *interface font* at a size and a color:
-  shaped by HarfBuzz and rasterised by FreeType as the terminal's text is,
+  shaped by HarfBuzz and rasterized by FreeType as the terminal's text is,
   each code point the interface font lacks found by the same fallback
   (`pt_fallback_file`), so Hangul comes from the system's Korean font.
   The interface font is Segoe UI on Windows and the system's `sans-serif`
@@ -89,7 +89,7 @@ rather than a separate `Ui` module; steps 1, 2 and 5 are not.
 
 - **Drawn.** Pictures were taken on Xvfb, English and Korean, and on
   beelink1, which shows Korean in Segoe UI with Hangul from the system's
-  fallback. The header is three lines tall, the search field centred in
+  fallback. The header is three lines tall, the search field centered in
   it, so the list starts on the window's fourth line. `SettingsWindow`'s
   `bodyRows` is the window's rows less five, which keeps scrolling in step
   with what is drawn. A label or description too long for its column
@@ -205,7 +205,7 @@ Sans Mono 11 pt that is 756 by 646 pixels, a ratio of 1.17 where it was
 - A setting is four lines tall (`SettingsWindow.linesPerRow`), so its
   description wraps to two lines (`wrapTwo`, broken at spaces, the second
   line ending in "…" when the rest does not fit). The label and the
-  description are centred in the row (`labelled`).
+  description are centered in the row (`labeled`).
 - The wheel moves one setting a step.
 - The text view the app tests read has four lines a row too, and its
   tests' line numbers moved with it.

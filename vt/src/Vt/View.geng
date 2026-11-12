@@ -38,18 +38,18 @@ of code points below them, its style id in 2 bytes, and its code points in
 3 bytes each: its cluster's, up to 63, §13). A run is a stretch of
 changed cells, and never starts on a wide character's tail or ends on its
 head. (Runs once took in gaps of fewer than four unchanged cells, so that
-a glyph overhanging into its neighbour was redrawn with it, S§6.2; the
+a glyph overhanging into its neighbor was redrawn with it, S§6.2; the
 ink below does that, and a gap's cells, drawn again unasked, would fill
 over ink it did not know to redraw.)
 
 **Ink** (`docs/renderer.md` V40): a glyph is not clipped to its cells, and
 an italic's hook, a Thai tone mark or a CJK glyph's top reaches into a
-neighbouring cell. Whatever executes the list answers, for the cells it
+neighboring cell. Whatever executes the list answers, for the cells it
 drew, which edges each one's ink crossed, and [`inked`](#inked) keeps them
 in the shadow. When a frame redraws a cell, it fills its background over
 whatever ink lay there, so it redraws too every cell whose ink reaches
 into it, and every cell whose ink reaches into one of those; and a cell
-it redraws whose old ink reached its neighbours redraws them, since they
+it redraws whose old ink reached its neighbors redraws them, since they
 still show that ink. A scroll's
 `CopyArea` copies the band's pixels and no more, so the cells at its edges
 whose ink crossed them, and the cells next to it whose ink did, are drawn
@@ -677,7 +677,7 @@ rowStart y cols =
 
 
 {-| Whether a cell is in a word: it has a glyph in what the core holds, or
-in what was drawn there. A shaper chooses a glyph by its neighbours (a
+in what was drawn there. A shaper chooses a glyph by its neighbors (a
 ligature, a Devanagari conjunct, Fira Code's arrows) and shapes only the
 cells a run gives it, so a cell is drawn with its whole word (see
 [`spread`](#spread)). -}
@@ -793,7 +793,7 @@ inkRecords b at cols rows stamp drawnIn r =
             inkRecords b next cols rows stamp drawnIn r
 
 
-{-| The neighbours after a cell in reading order: to its right, and in the
+{-| The neighbors after a cell in reading order: to its right, and in the
 row below. -}
 later : Array Dir
 later =
@@ -804,13 +804,13 @@ later =
     ]
 
 
-{-| The neighbour of `i` in `d` forgotten if `i`'s ink reaches it, it holds
+{-| The neighbor of `i` in `d` forgotten if `i`'s ink reaches it, it holds
 a glyph, and this frame did not draw it. -}
 overlap : Int -> Int -> Int -> Int -> Int -> Builder Int -> Dir -> (taken r : Inking) -> Inking
 overlap rows cols i bits stamp drawnIn d r =
     let
         n =
-            neighbour rows cols i d
+            neighbor rows cols i d
     in
     if n >= 0 && hasAll d.out bits && Builder.get n drawnIn /= Just stamp && hasGlyph (Maybe.withDefault unknown (Builder.get n r.cells)) then
         { r | cells = Builder.set n unknown r.cells, pending = True }
@@ -976,9 +976,9 @@ differs s cursor o ext y cols x cells =
     drawnAs s cursor o ext (rowStart y cols) x /= Maybe.withDefault unknown (Builder.get (rowStart y cols + x) cells)
 
 
-{-| A neighbour of a cell: where it is, the edges a cell's ink crosses to
+{-| A neighbor of a cell: where it is, the edges a cell's ink crosses to
 reach it (two of them for a corner, which the ink's box covers when it
-crosses both), and the edges the neighbour's ink crosses to reach the
+crosses both), and the edges the neighbor's ink crosses to reach the
 cell. -}
 type alias Dir =
     { dx : Int, dy : Int, out : Int, back : Int }
@@ -997,9 +997,9 @@ dirs =
     ]
 
 
-{-| The neighbour of cell `i` in `d`, or -1 off the screen. -}
-neighbour : Int -> Int -> Int -> Dir -> Int
-neighbour rows cols i d =
+{-| The neighbor of cell `i` in `d`, or -1 off the screen. -}
+neighbor : Int -> Int -> Int -> Dir -> Int
+neighbor rows cols i d =
     let
         x =
             modBy cols i + d.dx
@@ -1020,7 +1020,7 @@ hasAll mask bits =
 
 
 {-| The queue, a cell at a time: the cell forgotten, and with it its word
-and the cells its ink and its neighbours' ink tie it to, each queued. -}
+and the cells its ink and its neighbors' ink tie it to, each queued. -}
 spreadWork : Screen -> Int -> (cols : Int where 1 <= cols && cols <= 1000) -> Bool -> Builder Int -> (taken w : Work) -> Builder Int64
 spreadWork s rows cols inked0 ink w =
     when Array.last w.work is
@@ -1103,22 +1103,22 @@ forgetWord i end j w =
         forgetWord (i + 1) end j { marked | worded = Builder.set i True marked.worded }
 
 
-{-| The neighbour of `j` in `d` forgotten if its ink reaches `j`. -}
+{-| The neighbor of `j` in `d` forgotten if its ink reaches `j`. -}
 pullDir : Int -> Int -> Builder Int -> Int -> Dir -> (taken w : Work) -> Work
 pullDir rows cols ink j d w =
     let
         n =
-            neighbour rows cols j d
+            neighbor rows cols j d
     in
     evict n (n >= 0 && hasAll d.back (inkAt n ink)) w
 
 
-{-| The neighbour of `i` in `d` forgotten if `i`'s ink, `bits`, reaches it. -}
+{-| The neighbor of `i` in `d` forgotten if `i`'s ink, `bits`, reaches it. -}
 evictDir : Int -> Int -> Int -> Int -> Dir -> (taken w : Work) -> Work
 evictDir rows cols i bits d w =
     let
         n =
-            neighbour rows cols i d
+            neighbor rows cols i d
     in
     evict n (n >= 0 && hasAll d.out bits) w
 

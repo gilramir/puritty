@@ -1,6 +1,6 @@
 # Alacritty: architecture and lessons for a new terminal
 
-Source analysed: `vendor/alacritty` at commit `54214706` (2026-10-16), version
+Source analyzed: `vendor/alacritty` at commit `54214706` (2026-10-16), version
 `0.18.0-dev` (`alacritty_terminal 0.26.1-dev`). Dependency sources were read
 from `~/.cargo/registry` (fetched with `cargo fetch --locked`): `vte 0.15.0`,
 `crossfont 0.8.1`, `glutin 0.32.3`, `winit 0.30.x`.
@@ -248,7 +248,7 @@ Unix and Windows.
   `GetExitCodeProcess` → mpsc + `poller.post(CompletionPacket)`
   (`child.rs:33-52`).
 - **Resize:** `ResizePseudoConsole(COORD{cols, rows})` (`conpty.rs:303`).
-  There are no pixel sizes. Zero-size resizes (window minimised) are filtered
+  There are no pixel sizes. Zero-size resizes (window minimized) are filtered
   out in the UI (`event.rs:1958-1965`) "to avoid issues with Winit and the
   ConPTY".
 - **Drop-order deadlock:** `ClosePseudoConsole` blocks until conout is
@@ -405,7 +405,7 @@ pub struct Cell {
     pub fg: Color,                     // vte::ansi::Color: Named | Spec(Rgb) | Indexed
     pub bg: Color,
     pub flags: Flags,                  // u16 bitflags
-    pub extra: Option<Arc<CellExtra>>, // 8 B, null-pointer optimised
+    pub extra: Option<Arc<CellExtra>>, // 8 B, null-pointer optimized
 }
 struct CellExtra {
     zerowidth: ArrayVec<char, 9>,
@@ -475,7 +475,7 @@ Fields: `cursor`, `saved_cursor` (each a `Cursor { point, template: Cell,
 charsets, input_needs_wrap }`), `raw: Storage`, `columns`, `lines`,
 `display_offset` (scrollback viewing position), `max_scroll_limit`. The doc
 comment at `grid/mod.rs:84-108` has a diagram of regions: visible, scroll-up,
-resize buffer, uninitialised.
+resize buffer, uninitialized.
 
 **Scrolling** (`scroll_up`, line 252):
 
@@ -655,7 +655,7 @@ it builds a **per-font fallback list** from fontconfig (`ft/mod.rs:364-408`)
 with charset coverage. `face_for_glyph` picks the first face that has the
 char. Hinting, antialias, rgba and lcd filter come from fontconfig patterns.
 
-**No shaping.** Every cell is rasterised independently from a single `char`.
+**No shaping.** Every cell is rasterized independently from a single `char`.
 There is no HarfBuzz, so there are no ligatures, no complex-script shaping, no
 kerning across cells, and grapheme clusters are not composed.
 
@@ -765,7 +765,7 @@ Facts from the code:
   each frame is rendered on the CPU and pushed to the remote X server as an
   image. Because Alacritty **redraws and swaps the full window every frame**
   (§5.5), each update sends a full window of pixels. `glFinish` after swap
-  (§5.1 step 7) then serialises on that. **Inference:** this is usable but
+  (§5.1 step 7) then serializes on that. **Inference:** this is usable but
   bandwidth-heavy and latency-sensitive, and Alacritty has no mitigations
   (no partial swap on X11, no XRender/core-X text path).
 - Monitor refresh rate can be missing or odd on remote displays; the code
@@ -793,7 +793,7 @@ Facts from the code:
   reported by XRandr".
 - Cell size is derived from font metrics plus `font.offset`
   (`compute_cell_size`). With `window.resize_increments`, the WM is asked to
-  resize in whole cells. `dynamic_padding` centres the grid.
+  resize in whole cells. `dynamic_padding` centers the grid.
 
 ### 6.5 IME
 
@@ -931,7 +931,7 @@ cooldown (`BELL_CMD_COOLDOWN`).
 | Tearing / partial frames from apps | Mode 2026 byte buffering in vte (150 ms timeout, 2 MiB cap). An older DCS-based sync variant was removed (CHANGELOG 0.13: "Synchronized updates now use `CSI 2026` instead of legacy `DCS` variant"). |
 | Input latency | Vsync off plus a custom frame timer, `glFinish` on X11, `Frame` events bypass batching, all window events per wake processed under one lock. CHANGELOG: "Increased input latency due to vsync behavior on X11", "IME input lagging behind on X11". |
 | Many windows on one thread | No blocking swap (vsync off). Each window has its own frame timer. Occluded windows are skipped. |
-| Scrolling cost | O(1) ring rotation for full-screen scroll, `Row::occ` to minimise resets, lazy scrollback allocation in 1000-row chunks. |
+| Scrolling cost | O(1) ring rotation for full-screen scroll, `Row::occ` to minimize resets, lazy scrollback allocation in 1000-row chunks. |
 | Cell memory | 24-byte `Cell`, rare data in `Option<Arc<CellExtra>>` shared via the template's Arc. |
 | DoS by escape sequences | Caps: 9 zero-width chars/cell, kitty stack 4096, title stack 4096, 32 CSI params, sync buffer 2 MiB, search DFA cache bounds. |
 | Wide chars at line end | `LEADING_WIDE_CHAR_SPACER` cells, carried through reflow both directions (`grid/resize.rs`). |
@@ -939,7 +939,7 @@ cooldown (`BELL_CMD_COOLDOWN`).
 | Paste injection | Strip ESC and `\x03` inside bracketed paste. |
 | OSC 52 abuse | Default copy-only, ignored when unfocused. |
 | GPU reset / context loss | Robust context and recreate renderer + glyph cache (`display/mod.rs:556-605`). |
-| Box drawing alignment | Built-in rasteriser for box, block and powerline glyphs. |
+| Box drawing alignment | Built-in rasterizer for box, block and powerline glyphs. |
 | Minimum cursor contrast | Invert cursor colors if contrast < 1.5 (`MIN_CURSOR_CONTRAST`, `content.rs:24`). |
 | ConPTY deadlocks / old ConPTY | Field drop order, explicit `Processor` drop, optional `conpty.dll`. CHANGELOG: "Deadlock on Windows during high frequency output". |
 | Linux EIO on child exit | Ignore EIO and wait for SIGCHLD (`event_loop.rs:283-291`). |
@@ -1011,7 +1011,7 @@ means "use your WM or tmux".
 │     term.lock(); RenderableContent iter (skip empty cells, resolve colors, cursor, selection, hints)        │
 │     Vec<RenderableCell>; Term::damage() → DamageTracker; reset; DROP LOCK                                    │
 │     make_current; glClear(full)                                                                              │
-│     GlyphCache.get(char,font) ─miss─► crossfont rasterise ─► Atlas (1024² shelves, grows)                    │
+│     GlyphCache.get(char,font) ─miss─► crossfont rasterize ─► Atlas (1024² shelves, grows)                    │
 │     Text batches: GLSL3 instanced quads (bg pass + text pass, dual-source blend) | GLES2 4 verts/glyph       │
 │     Rect pass: underlines/undercurl/strike/cursor/bell/bars                                                  │
 │     swap_buffers (+damage rects on Wayland EGL); glFinish on X11                                             │
@@ -1032,7 +1032,7 @@ means "use your WM or tmux".
   selection, search. Have it talk to the UI only through an event trait and
   a write/resize sink. Alacritty's `alacritty_terminal` is reused by other
   projects, and its ref-test replay harness (record PTY bytes, compare the
-  serialised grid) is cheap and catches regressions. Copy that idea.
+  serialized grid) is cheap and catches regressions. Copy that idea.
 - **One I/O thread per PTY, one UI thread** works well. Snapshot the viewport
   under the lock and render without it. Use a lease/fair-lock scheme like
   `FairMutex` so neither side starves, and let the reader keep buffering
@@ -1089,7 +1089,7 @@ means "use your WM or tmux".
   reset recovery. Also copy the instanced-quad text pipeline with a background
   pass and dual-source subpixel blending.
 - Frame pacing: Alacritty disabled vsync and uses its own refresh-phase timer
-  so that many windows on one thread don't serialise on swap, and calls
+  so that many windows on one thread don't serialize on swap, and calls
   `glFinish` on X11 to avoid a one-frame lag. Use Wayland frame callbacks
   there. Skip occluded windows.
 - A glyph atlas with no eviction is simple but grows forever. Add an LRU or

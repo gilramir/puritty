@@ -7,7 +7,7 @@ moves, erases, insertions and deletions, scroll regions and reverse
 index, with frames drawn at random points; draws each in its frames and in
 one frame with harness/pixels/core-pixels; and demands the same pixels.
 What a later frame draws over, it must draw again, and a word it draws must
-be shaped as it is beside its neighbours.
+be shaped as it is beside its neighbors.
 
 A case that differs is minimized (a token at a time taken out while it
 still differs) and left in .harness-work/pixels/fuzz/ as a case for

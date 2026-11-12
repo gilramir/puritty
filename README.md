@@ -239,7 +239,7 @@ It runs on Linux under X11, locally or over `ssh -X`.
 
 ---
 
-## Acknowledgements
+## Acknowledgments
 
 puritty learned from the terminals that came before it. Its design started
 from close readings of Alacritty, Ghostty, WezTerm, Windows Terminal and

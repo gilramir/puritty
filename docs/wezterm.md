@@ -1,6 +1,6 @@
 # WezTerm: architecture analysis for a new terminal emulator
 
-Source analysed: `vendor/wezterm` at commit `e2a98e1b8` (2026-10-10). The last tagged
+Source analyzed: `vendor/wezterm` at commit `e2a98e1b8` (2026-10-10). The last tagged
 release in `docs/changelog.md` is `20240203-110809-5046fc22`; everything after that
 is "Continuous/Nightly" (`docs/changelog.md:15-22`). So the code read here is about
 2.5 years of unreleased work past the last stable build.
@@ -68,7 +68,7 @@ puritty's Windows product. Section references like "A§5" and "G§8" point into
   Each frame rebuilds every quad, with per-line vertex caches. There is no
   damage-limited present. On X11 it uses **EGL only** and RENDER only for cursors,
   so nothing helps the remote-X case. Fonts use HarfBuzz with ligatures on,
-  FreeType rasterising everywhere, DirectWrite/fontconfig/CoreText for discovery,
+  FreeType rasterizing everywhere, DirectWrite/fontconfig/CoreText for discovery,
   and asynchronous fallback lookup.
 - **Windows**: ConPTY with a **sideloaded `conpty.dll` + `OpenConsole.exe`** and
   win32-input-mode; ConPTY quirks are special-cased in the terminal model. SSH panes
@@ -95,7 +95,7 @@ The workspace has roughly 60 crates. The ones that matter architecturally:
 | Mux | `codec`, `wezterm-client`, `wezterm-mux-server-impl`, `wezterm-mux-server` | 1.3 + 4.4 + 1.7 | Mux wire protocol, client domain and `ClientPane`, server session handler, server binary |
 | SSH | `wezterm-ssh` | 7.9 | SSH client over libssh/libssh2, `ssh_config` parser, SFTP |
 | GUI | `window` | 22.9 | Own windowing layer: X11 (XCB), Wayland, Win32, macOS; GL context creation |
-| GUI | `wezterm-font` | 10.3 | Font location, HarfBuzz shaping, FreeType rasterising, fallback |
+| GUI | `wezterm-font` | 10.3 | Font location, HarfBuzz shaping, FreeType rasterizing, fallback |
 | GUI | `wezterm-gui` | ~37 (+140 generated Unicode names) | `TermWindow`, render passes, glyph cache, overlays (copy mode, quick select, launcher), Lua GUI API |
 | Infra | `promise`, `filedescriptor`, `config`, `luahelper` | | Main-thread executor, portable fds/poll/socketpair, Lua config |
 
@@ -339,7 +339,7 @@ Windows reliability" (:1826). Pick one SSH implementation.
 
 ### 3.2 `ssh_config` parsing (`wezterm-ssh/src/config.rs`)
 
-WezTerm parses OpenSSH config itself, so `wezterm ssh host` and SSH domains honour
+WezTerm parses OpenSSH config itself, so `wezterm ssh host` and SSH domains honor
 the user's existing files.
 
 - **Files:** `~/.ssh/config`, `/etc/ssh/ssh_config`, and on Windows
@@ -409,7 +409,7 @@ the user's existing files.
   `userauth_public_key_auto` (agent + identity files, passphrase via callback),
   keyboard-interactive, password. Partial success loops again, so MFA chains work
   (`auth.rs:132-253`). There are `.unwrap()`s and `answers.remove(0)` on the reply
-  path (`auth.rs:151-156, 233-238`): a cancelled prompt can **panic** the SSH thread.
+  path (`auth.rs:151-156, 233-238`): a canceled prompt can **panic** the SSH thread.
 - **libssh2 order:** agent (skipped if `identitiesonly`), identity files (try without
   passphrase, then prompt), password, keyboard-interactive (`auth.rs:256-364`).
 - **Agent:** `IdentityAgent` defaults to `$SSH_AUTH_SOCK`, and the agent socket is
@@ -489,13 +489,13 @@ the blocking-mode switch at `:644-650`.
 - **Disconnect:** channel errors close the channel's fds, the pane sees EOF and exit
   code 1. `docs/ssh.md:19-20` says ad-hoc SSH tabs die on a network drop.
 - **Reconnect:** none for panes. If the session is dead, the *next* spawn in the
-  domain starts a fresh session (`mux/src/ssh.rs:737-745`). The SSH flavour of the
+  domain starts a fresh session (`mux/src/ssh.rs:737-745`). The SSH flavor of the
   mux client domain is explicitly not reconnectable because "we need to grow some
   smarts about whether the disconnect was because we sent CTRL-D … or whether it was
   a network level disconnect, because we will otherwise throw up authentication
   dialogs" (`wezterm-client/src/client.rs:639-643`). TLS mux domains do reconnect.
 
-### 3.8 Connection sharing and the two SSH domain flavours
+### 3.8 Connection sharing and the two SSH domain flavors
 
 | | `multiplexing = "None"` (`wezterm ssh`, `SSH:host`) | `multiplexing = "WezTerm"` (default for configured domains, `SSHMUX:host`) |
 |---|---|---|
@@ -503,11 +503,11 @@ the blocking-mode switch at `:644-650`.
 | Remote requirement | any sshd | `wezterm` installed remotely |
 | Panes | `LocalPane` + `SshPty`; terminal emulated locally | `ClientPane`; terminal emulated on the remote mux server |
 | Sharing | one session; each new tab/split = new channel, no re-auth (`mux/src/ssh.rs:702-754`) | one exec channel running `wezterm cli proxy` carries the whole mux protocol (`wezterm-client/src/client.rs:677-729`) |
-| Survives disconnect | no | panes survive on server; client must reattach manually (SSH flavour not auto-reconnect) |
+| Survives disconnect | no | panes survive on server; client must reattach manually (SSH flavor not auto-reconnect) |
 | Auth UI | in the pane | separate ConnectionUI window |
 
-The `None` flavour is the right model for puritty's Windows SSH backend: one
-transport per host, one channel per pane. The `WezTerm` flavour is the "mosh-like"
+The `None` flavor is the right model for puritty's Windows SSH backend: one
+transport per host, one channel per pane. The `WezTerm` flavor is the "mosh-like"
 option that needs a server-side component; tmux `-CC` gives similar persistence
 without installing anything new.
 
@@ -586,7 +586,7 @@ Hybrid push and poll, carrying **whole lines**:
   `dirty_lines: Vec<Range<StableRowIndex>>`, and `bonus_lines`: the **full
   serialized contents of the dirty lines inside the viewport** plus the cursor line
   (`:104-128`). Dirty scrollback rows are sent as ranges only. Lines are compressed
-  with `compress_for_scrollback` before serialising (§6.3), and the whole PDU is
+  with `compress_for_scrollback` before serializing (§6.3), and the whole PDU is
   zstd'd.
 - **Poll:** the GUI's `get_changed_since` triggers `GetPaneRenderChanges` at most
   one-in-flight, with an interval starting at 20 ms and doubling to 30 s when idle
@@ -713,7 +713,7 @@ the GUI thread. There is no per-request timeout (`client.rs:1304-1312`).
 - Commands implement `TmuxCommand { get_command() -> String; process_result(&Guarded) }`
   (`mux/src/tmux_commands.rs:20-23`). **One in flight**, FIFO-matched, no check of the
   `%begin` number (`mux/src/tmux.rs:239-259, 92-109`). `Resize` emits two commands in
-  one string and so two replies, which can desynchronise the FIFO
+  one string and so two replies, which can desynchronize the FIFO
   (`tmux_commands.rs:933-948`).
 - **Attach sequence:** `%session-changed` → `list-commands` (feature detection) →
   `list-windows -F …` → `sync_window_state` creates one tab per tmux window and
@@ -793,7 +793,7 @@ The parser thread collects `Vec<Action>` and hands it to
 `Terminal::perform_actions`. Compared with Ghostty's direct dispatch from the state
 machine into handler calls, this allocates per sequence (boxed OSC, strings for
 prints). The changelog records several rounds of "reduced overhead of parsing
-output" (`docs/changelog.md:1279`). The benefit is that `Action` is a serialisable
+output" (`docs/changelog.md:1279`). The benefit is that `Action` is a serializable
 value type, useful for tests and for replaying (termwiz also uses it to *generate*
 output).
 
@@ -811,7 +811,7 @@ output).
 - **Scrollback compression:** when a line scrolls off the top it is converted to
   `ClusteredLine`: one `String` for the text plus runs of (width, attributes)
   (`clusterline.rs:18-35`; triggered in `term/src/screen.rs:690-693`). Any later
-  mutation re-materialises the `Vec<Cell>`. That's a cheap version of Ghostty's
+  mutation re-materializes the `Vec<Cell>`. That's a cheap version of Ghostty's
   "cold pages" idea, applied per line.
 - **`Screen`** = `VecDeque<Line>` with capacity for scrollback + viewport, and
   `stable_row_index_offset` for `StableRowIndex` (`term/src/screen.rs:16-46`).
@@ -821,7 +821,7 @@ output).
 ### 6.3 Graphemes and width
 
 Printable characters are buffered and segmented with `finl_unicode` grapheme
-clusters, optionally NFC-normalised, then each cluster's width is computed with
+clusters, optionally NFC-normalized, then each cluster's width is computed with
 `grapheme_column_width` against a configurable Unicode version
 (`term/src/terminalstate/performer.rs:117-224`). Zero-width clusters are dropped
 unless they are White_Space (with links to #1422 and #6637 explaining why). The
@@ -835,7 +835,7 @@ instead.
 `Screen::resize` (`term/src/screen.rs:193-322`) rewraps the **whole** primary screen
 plus scrollback when the column count changes (`rewrap_lines`, :101-190); the alt
 screen is truncated or invalidated, never rewrapped. Trailing blank lines below the
-cursor are pruned first so repeated maximise/restore doesn't grow scrollback
+cursor are pruned first so repeated maximize/restore doesn't grow scrollback
 (:215-223). With ConPTY, resize keeps scrollback "immutable", because ConPTY's own
 redraws otherwise move the cursor too high and erase output (comment at :265-287).
 The same ConPTY quirk mode refuses to mark a line as wrapped when its last cell is
@@ -876,11 +876,11 @@ reverted (`docs/config/lua/config/front_end.md`).
 | Front end | Implementation | Notes |
 |---|---|---|
 | OpenGL | glium 0.35; shaders tried as GLSL `330 core`, `330`, `320 es`, `300 es` (`wezterm-gui/src/renderstate.rs:679`) | X11 and Wayland via **EGL only** (no GLX); Windows via WGL by default, ANGLE EGL optional; macOS EGL (ANGLE) then CGL 3.2 |
-| WebGpu | wgpu 25 with `Backends::all()` (`wezterm-gui/src/termwindow/webgpu.rs:226-230`); Vulkan/Metal/DX12/GL | `PresentMode::Fifo` hard-coded (:367). No automatic fallback to OpenGL if it fails (`termwindow/mod.rs:859-864`). Changelog has a DX12 crash on Windows 11 (#4279) and a panic on minimise |
+| WebGpu | wgpu 25 with `Backends::all()` (`wezterm-gui/src/termwindow/webgpu.rs:226-230`); Vulkan/Metal/DX12/GL | `PresentMode::Fifo` hard-coded (:367). No automatic fallback to OpenGL if it fails (`termwindow/mod.rs:859-864`). Changelog has a DX12 crash on Windows 11 (#4279) and a panic on minimize |
 | Software | **not** a CPU renderer of wezterm's own. Sets `prefer_swrast()` (`window/src/configuration.rs:1-12`) | Linux: sets `LIBGL_ALWAYS_SOFTWARE=true` for Mesa llvmpipe (`window/src/egl.rs:434-441`). Windows: loads a **bundled Mesa `opengl32.dll`** from `<exe>\mesa` (`window/src/os/windows/wgl.rs:94-110`, `assets/windows/mesa/`) |
 
 History worth knowing: WezTerm *had* its own basic CPU renderer and removed it in
-2020 in favour of Mesa llvmpipe "which has improved visuals"
+2020 in favor of Mesa llvmpipe "which has improved visuals"
 (`docs/changelog.md:2242-2250`). Fallbacks: on Linux, if every EGL config fails it
 retries with swrast forced (`egl.rs:435-479`). On Windows an **RDP session forces
 software rendering** because "Using OpenGL in RDP has problematic behavior upon
@@ -960,7 +960,7 @@ WezTerm has nothing for the remote-X case:
   "X11: EGL is the only way to use the GPU"). Over `ssh -X` there is no usable EGL
   display on the remote X server, so it ends up on Mesa's software EGL on the
   client side, which presents finished frames as images. That is the full-frame
-  llvmpipe path S§6.1 warns about. **Inference** about the Mesa behaviour; wezterm's
+  llvmpipe path S§6.1 warns about. **Inference** about the Mesa behavior; wezterm's
   code just requests EGL.
 - The RENDER extension is used **only for cursors** (`window/src/os/x11/cursor.rs:193-331`).
   No XRender glyph sets, no `XCopyArea` scrolling, no MIT-SHM path.
@@ -1032,7 +1032,7 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
   changelog entry preferring ANGLE disagree with the code.
 - Bundled alternatives: ANGLE `libEGL.dll`/`libGLESv2.dll` (EGL over D3D11) and Mesa
   `opengl32.dll` (software). WebGpu gives DX12/Vulkan.
-- Fonts: DirectWrite for discovery and fallback, FreeType for rasterisation (§7.4).
+- Fonts: DirectWrite for discovery and fallback, FreeType for rasterization (§7.4).
   No DirectWrite rendering.
 
 ---
@@ -1062,7 +1062,7 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
 | Release cadence | Last tagged release Feb 2024; everything since is nightly | `docs/changelog.md:15-22, 364` |
 | Two SSH libraries | Duplicated connect/auth/host-key code; features only on one backend (keepalive, agent forwarding, signals); default switched to libssh | §3.1 |
 | SSH config fidelity | Token expansion bugs repeatedly (#2448, #3437), `Match` partly implemented, typo disables `UserKnownHostsFile` expansion, ProxyJump unsupported | §3.2 |
-| SSH lifecycle | fd leaks (#2466), hangs on auth (#2194), endless loop after drop (#857), deadlock on detach after timeout (#6749), panics on cancelled prompts | §3.4, §3.11 |
+| SSH lifecycle | fd leaks (#2466), hangs on auth (#2194), endless loop after drop (#857), deadlock on detach after timeout (#6749), panics on canceled prompts | §3.4, §3.11 |
 | Windows sockets | First char after keyboard-interactive swallowed (#771); writer swap workaround | `mux/src/ssh.rs:1108-1119` |
 | Mux protocol | Exact version match; whole-line deltas; unbounded send queue; id translation bugs on reconnect (#781, #2614, #2616, #2759); images unusable over mux until #1237; lost updates race #5981 | §4 |
 | Local echo | Password heuristic is a substring test for "sword"; vim normal mode unsolved | `wezterm-client/src/pane/renderable.rs:148-163` |
@@ -1070,9 +1070,9 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
 | Synchronized output | Hold has no timeout | §1.3 |
 | ConPTY | Needed sideloaded OpenConsole for mouse; resize and wrap quirks special-cased in the model | §9.1 |
 | GPU | WebGpu as default was reverted; DX12 crash on Win11 (#4279); RDP forces software GL; EGL vs WGL trade-off on Windows | §7.1, §9.3 |
-| CPU renderer | Own CPU renderer removed in favour of llvmpipe | `docs/changelog.md:2242-2250` |
+| CPU renderer | Own CPU renderer removed in favor of llvmpipe | `docs/changelog.md:2242-2250` |
 | Fonts | Memory blow-up loading system fallback fonts (#559); slow fontconfig fallback, fixed by async fallback and coverage caching | `docs/changelog.md:1905, 2058` |
-| Flicker | Unsynchronised TUIs tear; 3 ms coalesce delay added (#2443) | §1.3 |
+| Flicker | Unsynchronized TUIs tear; 3 ms coalesce delay added (#2443) | §1.3 |
 | Wayland | Being reimplemented as of this commit | `docs/changelog.md:30` |
 | Docs drift | `prefer_egl` default, tmux DCS final byte, "multiplexing is young" | §5.4, §9.3 |
 
@@ -1133,7 +1133,7 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
     fallback; decide per host. Send `TERM` in `pty-req` and choose it per host
     (S§8).
 12. **Verify host keys strictly from day one.** WezTerm's libssh2 path skips
-    verification when no known_hosts file exists. Honour `StrictHostKeyChecking`,
+    verification when no known_hosts file exists. Honor `StrictHostKeyChecking`,
     `UserKnownHostsFile` (all entries), and `GlobalKnownHostsFile`.
 
 ### 12.3 Multiplexing over slow links
@@ -1198,4 +1198,4 @@ and WezTerm's code confirms it works in practice. AF_UNIX sockets on Windows
 27. **ConPTY:** if you support local shells, sideload a recent `conpty.dll`/OpenConsole,
     consider `PSEUDOCONSOLE_PASSTHROUGH_MODE` on new enough builds (WezTerm never
     enabled it), implement win32-input-mode, and expect to special-case resize and
-    soft-wrap behaviour in the model as WezTerm does.
+    soft-wrap behavior in the model as WezTerm does.

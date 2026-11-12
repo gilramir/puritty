@@ -179,14 +179,14 @@ blank lines. The rules on top:
 
 Today a key puritty doesn't know makes the whole file an error, so that a
 misspelling is never silently ignored, and puritty exits with a message. The
-survey says a settings UI must keep keys it doesn't recognise. *Gilbert,
+survey says a settings UI must keep keys it doesn't recognize. *Gilbert,
 2026-11-06: report them, and start anyway.* The strictness stays, the exit
 goes:
 
 - Unknown keys are reported, by name and line, with a suggestion when one is
   close (`font.sise` → did you mean `font.size`?).
 - puritty starts with the settings it does know.
-- The settings window shows the unknown keys in an **"Not recognised in your
+- The settings window shows the unknown keys in an **"Not recognized in your
   file"** section, each with a remove button, and never drops them on save.
 - A known key with a bad value (`font.size = 2`, below its bound) is reported
   the same way and its default is used, so a typo in one setting never costs
@@ -200,7 +200,7 @@ puritty started from a desktop launcher has no stderr anyone sees.
 
 With one flat config there is nothing to inherit yet. Hosts and profiles come
 with the Windows product, in three layers: **Defaults → group → host**. A
-field you haven't overridden shows the value it inherits in grey with where
+field you haven't overridden shows the value it inherits in gray with where
 it comes from ("from Defaults", "from group *prod*"); typing in it makes an
 override, and reset removes it. The row design above already has room for
 that line, so nothing needs to change when it arrives.

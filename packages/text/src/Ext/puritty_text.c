@@ -13,7 +13,7 @@
  *   - a run's clusters are shaped by HarfBuzz in the face that has them
  *     (V24, V34): the primary font in the weight and slant the style asks
  *     for, else the first loaded face with the whole cluster, else the one
- *     the platform finds (V26); a glyph is rasterised by FreeType and given
+ *     the platform finds (V26); a glyph is rasterized by FreeType and given
  *     to the platform to keep the first time it is drawn, a color one as
  *     an ARGB picture (§13.10);
  *   - past `glyph_cap` bytes kept, the glyphs are begun again (V37). The
@@ -22,7 +22,7 @@
  *
  * Styles come resolved in each frame's style records (V35) and are kept
  * only for that frame's runs. Bold and italic come from the primary font's
- * own faces; a fallback face draws them as its regular (synthesising them
+ * own faces; a fallback face draws them as its regular (synthesizing them
  * is docs/renderer.md §R6 step 5's), and blinking text is drawn steady. */
 #define _GNU_SOURCE
 #include <ft2build.h>
@@ -302,7 +302,7 @@ static void reset_glyphs(void) {
  * moves by it inside an element, whatever the run asks. The first use
  * chooses it; a glyph placed elsewhere starts a new element. A glyph alone
  * in a cluster narrower than its cells is uploaded a second time with its
- * centring in its bearing (`shift`), so a line of them stays in one
+ * centering in its bearing (`shift`), so a line of them stays in one
  * element; one wider than the one cell the core gives it a third way,
  * squeezed to the cell (`squeeze`, 16.16; PuTTY's narrow trick, C§4.4). */
 static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squeeze, int synth) {
@@ -338,16 +338,16 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
     /* An embedded bitmap may be 1 bit a pixel (AR PL UMing's strikes, the
      * Han that Debian and Mint fall back to, §R18): converted to a byte a
      * pixel, its levels spread to 0..255, as the glyph set takes them. */
-    FT_Bitmap grey;
-    FT_Bitmap_Init(&grey);
-    if (b->pixel_mode != FT_PIXEL_MODE_GRAY && FT_Bitmap_Convert(library, b, &grey, 1) == 0) {
-        int levels = grey.num_grays > 1 ? grey.num_grays - 1 : 1;
-        for (unsigned y = 0; y < grey.rows; y++)
-            for (unsigned x = 0; x < grey.width; x++) {
-                unsigned char *v = grey.buffer + y * (unsigned) grey.pitch + x;
+    FT_Bitmap gray;
+    FT_Bitmap_Init(&gray);
+    if (b->pixel_mode != FT_PIXEL_MODE_GRAY && FT_Bitmap_Convert(library, b, &gray, 1) == 0) {
+        int levels = gray.num_grays > 1 ? gray.num_grays - 1 : 1;
+        for (unsigned y = 0; y < gray.rows; y++)
+            for (unsigned x = 0; x < gray.width; x++) {
+                unsigned char *v = gray.buffer + y * (unsigned) gray.pitch + x;
                 *v = (unsigned char) (*v * 255 / levels);
             }
-        b = &grey;
+        b = &gray;
     }
     int stride = ((int) b->width + 3) & ~3;
     size_t size = (size_t) stride * b->rows;
@@ -356,7 +356,7 @@ static uint32_t upload(int f, uint32_t g, int advance, int shift, FT_Fixed squee
     PtGlyph glyph = {.width = (int) b->width, .height = (int) b->rows, .stride = stride,
                      .left = F->ft->glyph->bitmap_left + shift, .top = F->ft->glyph->bitmap_top, .advance = advance, .data = data};
     pt_glyph_add(id, &glyph);
-    FT_Bitmap_Done(library, &grey);
+    FT_Bitmap_Done(library, &gray);
     int16_t *ink = F->ink + (size_t) k * 4;
     ink[0] = (int16_t) glyph.left;
     ink[1] = (int16_t) glyph.top;
@@ -552,7 +552,7 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
         int box = (L->cell + L->width - C->cell) * pt_cw;
         if (box < C->width * pt_cw) box = C->width * pt_cw;
         if (faces[f].color) {
-            /* Placed by its cells, centred: the strike's advances are its
+            /* Placed by its cells, centered: the strike's advances are its
              * own size's, not the cell's. */
             for (unsigned k = g; k < e; k++) {
                 ColorGlyph *P = color_glyph(f, gi[k].codepoint, box);
@@ -563,7 +563,7 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
             g = e;
             continue;
         }
-        /* Centred in its cells if it is narrower than them (a wide glyph
+        /* Centered in its cells if it is narrower than them (a wide glyph
          * from a fallback face); left where it is wider. */
         int pad = box > (adv >> 6) ? (box - (adv >> 6)) / 2 : 0;
         int pen = 0;
@@ -594,10 +594,10 @@ static int primary_for(int style) {
 
 /* BOX DRAWING (V41, renderer.md §R17)
  *
- * U+2500 to U+259F are drawn here, not by a font: each is rasterised once
+ * U+2500 to U+259F are drawn here, not by a font: each is rasterized once
  * into a bitmap of its cells and uploaded to the glyph set as any glyph is,
  * so it is drawn in its style's color by the same requests. Lines lie on
- * whole pixels at the cell's centre and run to its edges, so they join
+ * whole pixels at the cell's center and run to its edges, so they join
  * whatever the font; arcs and diagonals are anti-aliased; shades are flat
  * alpha. Nothing reaches past its cells, so a box glyph has no ink to
  * answer. */
@@ -751,7 +751,7 @@ static void draw_box(uint32_t cp, int w, int h) {
     }
     if (a[0] == 'a') {
         /* A quarter circle from the middle of one edge to the middle of
-         * the next, joining the straight lines of its neighbours. */
+         * the next, joining the straight lines of its neighbors. */
         double lx = (w - t) / 2 + t / 2.0, ly = (h - t) / 2 + t / 2.0;
         double r = lx < ly ? lx : ly;
         int sx = cp == 0x256D || cp == 0x2570 ? 1 : -1, sy = cp == 0x256D || cp == 0x256E ? 1 : -1;
@@ -784,7 +784,7 @@ static void draw_box(uint32_t cp, int w, int h) {
     draw_lines_box(a, w, h, t, heavy);
 }
 
-/* Places a box-drawing character's glyph, rasterised and uploaded the
+/* Places a box-drawing character's glyph, rasterized and uploaded the
  * first time it is drawn at that width. */
 static void place_box(uint32_t cp, int cell, int y, int cells, int style) {
     if (nplaced == 8192) return;
@@ -862,7 +862,7 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
     }
     /* Spaces once joined two runs of one fallback face (V24); a run is now
      * shaped from no more than its own cells, since a word drawn alone
-     * must shape as it does beside its neighbours (V43, renderer.md §R16). */
+     * must shape as it does beside its neighbors (V43, renderer.md §R16). */
     int from = 0;
     for (int i = 1; i <= ncl; i++)
         /* A segment is one face's, and stops at an empty cell: shaping
@@ -934,7 +934,7 @@ static void draw_lines(int y, int x, int n, int style) {
 
 /* A run record, in one of a frame's three passes: 0 its backgrounds, 1 its
  * glyphs, 2 its lines. Every run's backgrounds are filled before any
- * glyph is drawn, so that a glyph's ink reaching into a neighbouring row
+ * glyph is drawn, so that a glyph's ink reaching into a neighboring row
  * is not filled over by that row's run (V40). Answers past its last cell. */
 static const uint8_t *draw_run(const uint8_t *p, const uint8_t *end, int pass) {
     int y = (p[1] << 8) | p[2], x = (p[3] << 8) | p[4], n = (p[5] << 8) | p[6];
@@ -1104,7 +1104,7 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
 
 /* THE INTERFACE (docs/settings-gui.md SG2): what the settings window draws
  * besides cells, at pixels: text in the interface font, shaped and
- * rasterised as the terminal's is, a code point it lacks found by the same
+ * rasterized as the terminal's is, a code point it lacks found by the same
  * fallback; rounded boxes, their corners glyph masks the renderer makes;
  * and a clip. A frame of these is drawn in order, each glyph run drawn as
  * it is placed, so a box drawn after text covers it. Text can also be in a
@@ -1362,7 +1362,7 @@ static uint32_t ui_corner(int r, int q) {
             int in = 0;
             for (int a = 0; a < 4; a++)
                 for (int b = 0; b < 4; b++) {
-                    /* the sample's distance from the circle's centre */
+                    /* the sample's distance from the circle's center */
                     double px = (q & 1) ? j + (b + 0.5) / 4 : r - (j + (b + 0.5) / 4);
                     double py = (q & 2) ? i + (a + 0.5) / 4 : r - (i + (a + 0.5) / 4);
                     if (px * px + py * py <= (double) r * r) in++;

@@ -209,7 +209,7 @@ TABROW = 29      # the tab bar's row, the window's last of 30
 
 
 def at(col, row):
-    """A cell's centre, in the window's pixels."""
+    """A cell's center, in the window's pixels."""
     return str(col * CW + CW // 2), str(row * CH + CH // 2)
 
 

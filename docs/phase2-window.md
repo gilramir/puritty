@@ -94,7 +94,7 @@ is too slow.
 through `rowOffset` and `extentAt`, compares each cell with the shadow's,
 and writes a run for each stretch of changed cells, gaps of fewer than four
 unchanged cells merged in so that an overhanging glyph is redrawn with its
-neighbour. The list is `Bytes`: a run is its row, column and length and each
+neighbor. The list is `Bytes`: a run is its row, column and length and each
 cell's code point and style id, five bytes a cell; a scroll is its band and
 shift. *Since §13 a cell carries its width state and its cluster's code
 points.*
@@ -230,7 +230,7 @@ makes a pixmap of the same size, an A8 glyph set and a RENDER picture on the
 pixmap. `X.draw` executes a display list into the pixmap: a scroll is one
 `CopyArea` within it, a run one `RenderFillRectangles` for its background
 and one `RenderCompositeGlyphs32` for each stretch of one foreground color,
-and a glyph not seen before is rasterised and sent with `RenderAddGlyphs`,
+and a glyph not seen before is rasterized and sent with `RenderAddGlyphs`,
 its id its code point. Then one `CopyArea` puts the rows the frame touched
 on the window, so an expose needs no redraw (S§6.2's retained pixmap). It
 flushes and drains events, and waits on no reply.
@@ -472,8 +472,8 @@ instructions and 8% of the wall time. Each branch priced on it, three runs
 | (`read`, no race) | | 737–750 |
 
 The race's own processes cost the most, a process a branch spawned and
-cancelled each turn; the X wait and the timer, a `poll` entry and a heap
-entry made and cancelled each turn, the rest. A slower loop reads less
+canceled each turn; the X wait and the timer, a `poll` entry and a heap
+entry made and canceled each turn, the rest. A slower loop reads less
 often and more each time, so the reads fall to half. The byte counts are
 the same in every run.
 
@@ -589,7 +589,7 @@ per code point from one face. Two probes now measure it:
 
 - `probes/fonts/bench`, C alone: fontconfig's matching, HarfBuzz over the
   throughput inputs, each CJK face's ideograph width, the Han forms per
-  language, ink extents, and FreeType's rasterising;
+  language, ink extents, and FreeType's rasterizing;
 - the x11 probe, drawing as the plan says. `Vt.View`'s run record now
   carries each cell's width state and all its code points (a cluster's,
   up to 63), and a run never starts on a wide character's tail or ends on
@@ -601,7 +601,7 @@ per code point from one face. Two probes now measure it:
   - clusters in one face are one HarfBuzz run, each code point's cluster
     its cell, so glyphs go back to cells by the core's widths;
   - a face with 水 is sized so 水 fills two cells without its ink leaving
-    the primary cell, and a wide glyph is centred.
+    the primary cell, and a wide glyph is centered.
 
   `PROBE_SHAPE=0` keeps §5's drawing in the same binary, and
   `PROBE_STATS`/`PROBE_SHOT` print counts and save the pixmap.
@@ -648,10 +648,10 @@ Two of the probe's own bugs were found and fixed on the way:
   computes it. An `n` uploaded with one cell's advance put its mark in the
   next cell, and the same bug dropped a Thai vowel: ภาษาไทย was drawn
   ภษไทย. A glyph placed anywhere but the pen now starts a new element.
-- **An element per CJK glyph.** A centred wide glyph never sat where the
+- **An element per CJK glyph.** A centered wide glyph never sat where the
   last one's advance left the pen, so every one was its own element, 12
   bytes a glyph and not 4. A glyph alone in a cluster narrower than its
-  cells is now uploaded with its centring in its bearing: 11,702 CJK
+  cells is now uploaded with its centering in its bearing: 11,702 CJK
   glyphs went from 11,702 elements to 174.
 
 ### 13.2 The Han forms come from the shaper's language
@@ -701,7 +701,7 @@ of one, once a script.
 - **The loop.** Three runs each on `race`, the same binary with and
   without shaping:
 
-| input | wall: §5's | shaped | instructions: §5's | shaped | shape | rasterise |
+| input | wall: §5's | shaped | instructions: §5's | shaped | shape | rasterize |
 |---|---|---|---|---|---|---|
 | `gitlog` | 221–244 ms | 212–220 | 4.47–4.80 G | 4.68–4.80 | 0.8–0.9 ms | 0.3 ms |
 | `vte-scrolling` | 806–822 | 767–790 | 10.5–11.6 G | 11.0–11.1 | 0.06 | 0.03 |
@@ -712,17 +712,17 @@ of one, once a script.
 - **Thai.** It costs about 10%: each word is a segment of its own (a space
   is the primary face's), so it is shaped as 28,846 runs of a word each.
 - **CJK.** §5's column drew `.notdef`, and its whole cost is
-  rasterising (§13.5).
+  rasterizing (§13.5).
 
 ### 13.5 A screen of new ideographs costs a frame and more
 
-- **Per glyph.** FreeType takes about 6 µs to rasterise an ideograph of
+- **Per glyph.** FreeType takes about 6 µs to rasterize an ideograph of
   Noto Sans Mono CJK at the probe's size: 6.07 µs hinted, 6.09 light,
   5.59 unhinted, and 3.01 to load the outline alone. Hinting is not the
   cost. In the probe, with the copy and the request, it is 7–10 µs a
   glyph.
 - **Per screen.** A screen of 80×50 new ideographs is 4,000 glyphs:
-  25–40 ms of rasterising, over G7's 16 ms.
+  25–40 ms of rasterizing, over G7's 16 ms.
 - **Afterwards.** The glyph is the server's, and costs 4 bytes a use.
 - **On the wire.** 299 bytes of A8 bitmap an ideograph: `cjk.txt` sent
   1,615,036 bytes for 4,576 glyphs over 4 frames. Each glyph is sent once
@@ -745,7 +745,7 @@ anchors, so each one is an element of its own.
   but its glyphs are CBDT bitmaps (`FT_LOAD_COLOR`, a 109 px strike)
   that need an ARGB32 glyph set and scaling to the cell; the probe draws
   nothing for them. *Built: §13.10.*
-- **Bold and italic.** Synthesised bold and italic for fallback
+- **Bold and italic.** Synthesized bold and italic for fallback
   faces are not measured.
 - **Box drawing.** It is the font's, not drawn procedurally. Across rows,
   its gaps are not looked at.
@@ -756,7 +756,7 @@ anchors, so each one is an element of its own.
 - **Ink outside the run.** A row's ink extents beyond its run are not
   tracked. Noto Sans Thai's tallest stack rises 0.8 px above DejaVu's
   ascent at 11 points, and its lowest mark stays inside the descent, so a
-  neighbour's repaint cuts less than a pixel.
+  neighbor's repaint cuts less than a pixel.
 
 ### 13.7 Ligatures: Fira Code
 
@@ -803,9 +803,9 @@ time, 222–231 ms against 215–231 unshaped, is within the spread.
    asked first, cached by code point; move it to a C thread (G5) only if
    a font set is measured slow. A cluster with emoji presentation asks for
    color.
-4. **Rasterising a screen of new ideographs.** The cost is 25–40 ms, once
+4. **Rasterizing a screen of new ideographs.** The cost is 25–40 ms, once
    per glyph. Leaning: register it and measure it in daily use (phase 3).
-   The fix, if it is needed, is to rasterise on a C thread and draw the
+   The fix, if it is needed, is to rasterize on a C thread and draw the
    frame when the glyphs come, which latest-frame-wins pacing allows. It
    is the only frame-budget miss found.
 5. **Ligatures on, by the font's `calt`, reshaped as a row.** The cost is
@@ -836,8 +836,8 @@ first, then fontconfig, the answer cached by code point. A cluster that
 asks for emoji presentation asks for a color face (§13.3). A C thread
 (G5) is for a font set measured slow.
 
-**V27 · The cost of rasterising new ideographs is registered** (§13.5).
-It is measured in phase 3's daily use, and a C thread that rasterises
+**V27 · The cost of rasterizing new ideographs is registered** (§13.5).
+It is measured in phase 3's daily use, and a C thread that rasterizes
 while the frame waits is decided then (`geng-plan.md` §6, phase 3).
 
 **V28 · Ligatures are on, from the font's `calt`.** A changed cell redraws
@@ -874,7 +874,7 @@ Built in the x11 probe:
   two cells of its head, which the core's legacy width places
   followed by its other members' cells.
 - **Narrow compression** (C§4.4, PuTTY's). A glyph alone in a one-cell
-  cluster, whose advance is wider than the cell, is rasterised squeezed
+  cluster, whose advance is wider than the cell, is rasterized squeezed
   to the cell by an `FT_Set_Transform` and uploaded as a third form of
   that glyph. ① ② ★ from the fallback face no longer cover the space
   after them: 3 glyphs squeezed in C§9's text in DejaVu Sans Mono, 4 in
@@ -884,7 +884,7 @@ Built in the x11 probe:
   time (154–172 ms) and instructions (3.24–3.33 G, against 3.30–3.37) do
   not move beyond the spread.
 
-What §13.6 left that is still open: synthesised bold and italic for
+What §13.6 left that is still open: synthesized bold and italic for
 fallback faces, procedural box drawing, and ink extents tracked per row.
 
 ---

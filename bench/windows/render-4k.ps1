@@ -1,6 +1,6 @@
 # The 4K worst case (docs/windows.md WS26): each workload run by blast.exe
 # in puritty, Windows Terminal and the classic console, each window
-# maximised, three times; blast's own timings go to results.tsv, and
+# maximized, three times; blast's own timings go to results.tsv, and
 # puritty's PURITTY_STATS (its drawing, and its copies to the window) to
 # stats-*.txt. Run in the user's desktop session (harness/windows/inSession.ps1).
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -39,7 +39,7 @@ foreach ($w in $work) {
         if (-not $p.WaitForExit(180000)) { Log "puritty $($w.name) did not end"; Stop-Process -Id $p.Id }
         Log "puritty $($w.name) $i"
         Get-Process blast -ErrorAction SilentlyContinue | Stop-Process -Force
-        # Windows Terminal, a window of its own, maximised
+        # Windows Terminal, a window of its own, maximized
         $a = @("--maximized", "-w", "new", "$dir\blast.exe") + (Blast-Args $w "$dir\r-wt-$($w.name).tsv")
         Start-Process -FilePath "wt.exe" -ArgumentList $a
         Wait-Blast 180

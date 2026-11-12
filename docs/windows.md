@@ -23,7 +23,7 @@ Geng side is small and portable; the C does five things:
 | part | on X11 | what of it is X11's |
 |---|---|---|
 | the window | an X window, a retained pixmap the size of the cells, rows copied to the window, a scroll as one copy | the window and the copies |
-| text | runs shaped by HarfBuzz, glyphs rasterised by FreeType, color glyphs as ARGB, a fallback face found by fontconfig, uploaded to the server with XRender | XRender's glyph set and composites; fontconfig |
+| text | runs shaped by HarfBuzz, glyphs rasterized by FreeType, color glyphs as ARGB, a fallback face found by fontconfig, uploaded to the server with XRender | XRender's glyph set and composites; fontconfig |
 | box drawing | lines and blocks drawn by the C into a canvas | nothing |
 | ink | which cell edges a glyph's pixels crossed (V40) | nothing |
 | events | keys through XKB (V47), an IME through XIM (V46), the pointer, the size, the focus, the close, selections and paste | all of it |
@@ -52,7 +52,7 @@ Windows 11 25H2 (build 26200), PowerShell 5.1 over ssh.
 
 **FreeType and HarfBuzz on Windows' own fonts** (`bench/windows/probe-text.c`):
 FreeType 2.14.3 and HarfBuzz 13.2.1, the versions nixpkgs pins, shape and
-rasterise one line in four faces as puritty's renderer does, picture below
+rasterize one line in four faces as puritty's renderer does, picture below
 the table. Fira Code's ligatures (`->`, `=>`, `!=`, `0x`), Hangul in Malgun
 Gothic, Thai in Leelawadee UI, and Segoe UI Emoji's color glyphs, which
 FreeType draws from the font's color table as BGRA: 😀 and the
@@ -83,7 +83,7 @@ uploads glyphs to the server and composites them with XRender. On Windows
 the same code draws into a 32-bit DIB section the size of the cells, the
 retained pixmap's twin, and the rows a frame touched are copied to the window
 with `BitBlt`, which measured 0.4 ms for a whole window. Shaping, the face
-lookup, rasterising, color glyphs, box drawing and ink are the X11 C's as
+lookup, rasterizing, color glyphs, box drawing and ink are the X11 C's as
 they are; only the glyph set and the composite become a blend into memory.
 
 Against **Direct2D and DirectWrite**: they are COM interfaces, written for
@@ -379,7 +379,7 @@ Linux**: `harness/pixels.py --windows beelink1` draws every case with
 
 **`packages/text`** (`puritty-text`) is the X11 C's drawing, moved: the
 display list's decoding, the faces, HarfBuzz's shaping, FreeType's
-rasterising, color glyphs, box drawing and ink. Its header
+rasterizing, color glyphs, box drawing and ink. Its header
 (`src/Ext/include/puritty_text.h`) says what it gives a platform (`pt_open`,
 `pt_frame`, `pt_zoom`, the ink) and what a platform gives it: a fill, a
 glyph kept under an id, the placed glyphs drawn, a color picture, a target

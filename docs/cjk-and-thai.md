@@ -20,10 +20,10 @@ pinned versions.
 ## 0. TL;DR
 
 - **No reference terminal gets all of this right.** Each gets different parts right:
-  - Ghostty: grapheme clustering, fallback-font size normalisation, IME ordering fixes.
+  - Ghostty: grapheme clustering, fallback-font size normalization, IME ordering fixes.
   - WezTerm: shaping whole clusters across font fallback, per-pane width settings.
   - Windows Terminal: the TSF IME, streaming re-measurement of the previous cell.
-  - PuTTY (GTK): centring wide glyphs, the "narrow" trick for ambiguous characters.
+  - PuTTY (GTK): centering wide glyphs, the "narrow" trick for ambiguous characters.
   - Alacritty does no shaping at all: Thai marks collide and conjoining Hangul jamo
     render as garbage.
 - **Shaping is mandatory** for Thai (stacked vowels and tone marks need GPOS mark
@@ -34,7 +34,7 @@ pinned versions.
   ascent, and SARA AM's ring overhangs the previous cell. Draw all backgrounds, then
   all glyphs. Ghostty, WezTerm and WT do this; PuTTY clips and cuts marks off. With
   damage-limited redraw (the X11 backend), this means tracking each row's **ink
-  extent** so the overhang is repainted when a neighbouring row changes (§4.3).
+  extent** so the overhang is repainted when a neighboring row changes (§4.3).
 - **Han unification needs a language setting.** The same codepoint (直, 骨, 返) has
   different correct shapes for Japanese, Simplified Chinese, Traditional Chinese and
   Korean. Most references rely on the OS locale; WezTerm hard-codes HarfBuzz language
@@ -42,8 +42,8 @@ pinned versions.
   language that feeds font fallback *and* shaping (§5.2).
 - **Wide glyphs need deliberate fitting.** CJK glyphs are 1 em wide; a 2-cell box in a
   typical Latin mono font is ~1.2 em. Options: left-aligned at natural size
-  (Alacritty, WT), centred (PuTTY GTK), or fallback fonts scaled to match the primary
-  font's ideograph width (Ghostty's `ic_width`). Use Ghostty's scaling plus centring.
+  (Alacritty, WT), centered (PuTTY GTK), or fallback fonts scaled to match the primary
+  font's ideograph width (Ghostty's `ic_width`). Use Ghostty's scaling plus centering.
 - **The width model must be per pane.** tmux panes have to use tmux's (wcwidth-style)
   widths or the cursor drifts. Local panes can use grapheme widths (mode 2027). WT and
   Ghostty make the choice global; WezTerm and PuTTY get closer.
@@ -77,7 +77,7 @@ pinned versions.
 | Shaper language | n/a | none set (guessed) | **hard-coded `en`** | OS user locale | Pango context language (GTK) |
 | Fallback language | locale via fontconfig default substitution | locale via fontconfig default substitution (inferred) | **none**; DirectWrite locale `""` | OS user locale | locale (GTK); GDI font linking (Windows) |
 | Fallback size matching | none | **scaled to match primary's 水 width** | per-font manual `scale`; cap-height option for non-default styles only | none | none |
-| Wide glyph placement | natural size, left-aligned | natural size, centred by face width difference | width-fit: shrink if wider than 2.25 cells | natural size, left-aligned, advance snapped | GTK centred; Windows left-aligned |
+| Wide glyph placement | natural size, left-aligned | natural size, centered by face width difference | width-fit: shrink if wider than 2.25 cells | natural size, left-aligned, advance snapped | GTK centered; Windows left-aligned |
 | Glyph clipping | none | none | none (`TODO: clipping`) | none | **clipped to cell** |
 | Synthetic bold for fallback CJK | — | **no** (inferred) | **no** for auto-discovered fonts (inferred) | DirectWrite simulations | — |
 | Atlas when full | grows forever | doubles forever, no cap | clear, then double; cap at GPU max | **clear everything**, maybe grow | n/a (GDI/Pango) |
@@ -178,7 +178,7 @@ Consequences:
 ### 3.2 Streaming
 
 Terminal output arrives in arbitrary chunks, often with escape sequences between a
-base and its marks. The references show three behaviours:
+base and its marks. The references show three behaviors:
 
 - **Re-open the previous cell.** Ghostty re-feeds the previous cell's codepoints into
   the break state machine before testing the new one (`src/terminal/Terminal.zig:1330-1351`).
@@ -225,7 +225,7 @@ rather than a small mark count.
 
 | | Ghostty | WezTerm | WT (DirectWrite) |
 |---|---|---|---|
-| Run boundaries | row, style, selection edge, **cursor**, font change | attributes, presentation, whitespace (cache optimisation), bidi run; **not** cursor or selection | row, bold/italic, builtin glyph; **not** color |
+| Run boundaries | row, style, selection edge, **cursor**, font change | attributes, presentation, whitespace (cache optimization), bidi run; **not** cursor or selection | row, bold/italic, builtin glyph; **not** color |
 | Script | guessed once per run | guessed | `AnalyzeScript` over the whole line, shaped per script run |
 | Font for a cluster | one face that covers the **whole cluster** | shape with font 0; clusters with missing glyphs move **as a unit** to font N+1, re-shaped with the full run as context | `MapCharacters` per segment |
 | Map back to cells | cluster index = cell | uses stored cell widths to correct HarfBuzz cluster boundaries | cluster advance snapped to its column span |
@@ -238,7 +238,7 @@ Lessons:
   covering the whole cluster) and WezTerm (move the whole cluster to the fallback
   font) both do this.
 - **Shape across cells in the same font.** Thai SARA AM reordering and cross-cell
-  context need neighbours in the same run.
+  context need neighbors in the same run.
 - **Don't split runs at the cursor or on color changes.** Splitting breaks shaping
   context. WezTerm slices the glyph's quad by pixel range for the cursor and
   selection; WT looks color up per glyph. Both are better than Ghostty's split.
@@ -269,7 +269,7 @@ Lessons:
   overhanging marks of row N+1, so row N+1's glyphs (or at least the overhanging ones)
   must be redrawn too. The same applies horizontally for SARA AM's overhang. This
   affects the X11 backend directly: the damage region sent to the server must include
-  the neighbours' overhang.
+  the neighbors' overhang.
 - Offer an automatic "ascent headroom" option that grows the cell height when a
   Thai fallback font needs it, in addition to manual line height.
 
@@ -280,7 +280,7 @@ DejaVu Sans Mono ≈0.6, Consolas 0.55, Iosevka 0.5), so two cells are 1.0–1.2
 (general knowledge). Strategies seen:
 
 1. **Natural size, left-aligned:** Alacritty, WT, PuTTY on Windows. Looks lopsided.
-2. **Natural size, centred** in the 2-cell box: PuTTY GTK; Ghostty centres by the face
+2. **Natural size, centered** in the 2-cell box: PuTTY GTK; Ghostty centers by the face
    width difference.
 3. **Scale the fallback font to match the primary font:** Ghostty scales each fallback
    face so its 水 (U+6C34) advance matches the primary font's ideograph width
@@ -290,14 +290,14 @@ DejaVu Sans Mono ≈0.6, Consolas 0.55, Iosevka 0.5), so two cells are 1.0–1.2
 4. **Shrink only glyphs that overflow:** WezTerm scales a glyph down if it's wider than
    2.25 cells.
 
-For puritty: Ghostty's ideograph-width scaling, then centre horizontally in the 2-cell
+For puritty: Ghostty's ideograph-width scaling, then center horizontally in the 2-cell
 box, align on the Latin baseline, and shrink only if it still overflows. Plus:
 
 - **PuTTY's "narrow" trick:** when the terminal says a character is 1 cell but the
   font draws it 2 cells wide (typically an ambiguous character in a CJK font), draw
   it compressed (`terminal/terminal.c:6220-6231`).
-- **Synthesise bold and italic for fallback fonts.** Ghostty and WezTerm only
-  synthesise for the primary font, so bold CJK text from auto-fallback renders
+- **Synthesize bold and italic for fallback fonts.** Ghostty and WezTerm only
+  synthesize for the primary font, so bold CJK text from auto-fallback renders
   regular (inferred in both).
 
 ---
@@ -361,7 +361,7 @@ UTF-16 must emit surrogate pairs.
 - Alacritty and Ghostty grow forever; Ghostty doubles with no cap against the GPU
   maximum texture size and re-uploads everything on growth.
 - WezTerm starts at 128×128, clears the atlas when full, then doubles. Every overflow
-  re-rasterises everything visible.
+  re-rasterizes everything visible.
 - WT sizes the atlas at about twice the swap chain area and clears it entirely when
   full, flushing queued quads mid-frame. If one screen's unique glyphs exceed the
   atlas (tall fallback glyphs, emoji), it would clear every frame (inferred).
@@ -477,9 +477,9 @@ Nobody does this fully right:
 5. **No clipping; track ink extents per row** so damage-limited redraw (X11 backend,
    partial GPU redraw) repaints overhangs correctly. Optional automatic ascent
    headroom.
-6. **Wide glyph fit:** ideograph-width scaling of fallback fonts, centred, Latin
+6. **Wide glyph fit:** ideograph-width scaling of fallback fonts, centered, Latin
    baseline, shrink only on overflow; compress "narrow" glyphs drawn wide by the font;
-   synthesise bold/italic for fallback fonts.
+   synthesize bold/italic for fallback fonts.
 7. **CJK language setting** per profile, defaulting from the OS locale, feeding
    fontconfig `lang`, DirectWrite locale and shaper language; per-script/range font
    overrides.
@@ -541,7 +541,7 @@ General knowledge; check against the WHATWG Encoding Standard and glibc's charma
 - **CP949** (Unified Hangul Code, Windows code page 949) is a superset. It adds the
   other 8,822 syllables, with lead bytes 0x81–0xFE and trail bytes 0x41–0x5A,
   0x61–0x7A and 0x81–0xFE.
-  - Text from Korean Windows users is CP949 even when it is labelled EUC-KR, and
+  - Text from Korean Windows users is CP949 even when it is labeled EUC-KR, and
     WHATWG decodes the label `euc-kr` as CP949.
   - glibc's `ko_KR.euckr` locale is strict EUC-KR, so programs on RHEL8 can't handle
     the extra syllables (for example 똠).
@@ -575,7 +575,7 @@ General knowledge; check against the WHATWG Encoding Standard and glibc's charma
    - **The decoder keeps state across reads,** since a lead byte can end one read and
      its trail byte start the next.
    - **A lead byte followed by an invalid trail byte** produces U+FFFD, and the second
-     byte is processed again on its own (WHATWG behaviour), so a stray lead byte can't
+     byte is processed again on its own (WHATWG behavior), so a stray lead byte can't
      swallow an ESC.
    - **The decoder never produces C1 controls.**
    - **Always decode the CP949 superset,** even when the setting is EUC-KR. Accepting
@@ -612,7 +612,7 @@ General knowledge; check against the WHATWG Encoding Standard and glibc's charma
 8. **Windows ConPTY panes should not need the filter.** ConPTY emits UTF-8 VT
    whatever the console code page (inferred from T§2.4; check with `chcp 949`).
 9. **One portable converter on both platforms,** driven by the WHATWG EUC-KR index, so
-   behaviour is identical everywhere. Don't use `MultiByteToWideChar` on Windows and
+   behavior is identical everywhere. Don't use `MultiByteToWideChar` on Windows and
    iconv on Linux. iconv, ICU and most language ecosystems implement the index. glibc
    iconv's `EUC-KR` is strict; its CP949 converter is `UHC` (general knowledge).
 
