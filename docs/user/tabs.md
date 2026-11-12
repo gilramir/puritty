@@ -1,10 +1,10 @@
 # Tabs
 
-*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6, TB9, TB10):
-several sessions in one window, the keys and your own choice of them, the
-bar and its marks, renaming, asking before closing a busy tab, a new tab in
-the same directory, tab colors, a host's or your own, and the tabs opened
-again when puritty starts.*
+*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6, TB9, TB10,
+TB11): several sessions in one window, the keys and your own choice of
+them, the bar and its marks, renaming, asking before closing a busy tab, a
+new tab in the same directory, tab colors, a host's or your own, the tabs
+opened again when puritty starts, and a closed tab opened again.*
 
 A puritty window can hold several sessions, each in its own tab: a local
 shell, or an ssh session to one of your hosts. Every tab keeps its own
@@ -81,6 +81,21 @@ The tab shown is drawn in its full color with a line along its top; the
 others are darker. A colored tab that rang the bell has a red dot at its
 end (and `!` before its name), and one that printed a dot in its text's
 color.
+
+## Opening a closed tab again
+
+**Ctrl+Alt+Shift+T**, or **Reopen closed tab** in the menu (Ctrl and the
+right button, or the right button on a tab), opens again the tab you
+closed last: its screen and everything scrolled back, its name and color,
+with a new shell in the directory its shell was in, or for an ssh tab a
+new session to its host. Press it again for the one closed before that.
+A dim line, *(closed, and opened again)*, marks where the old session
+ended.
+
+The program that ran in the tab ended when you closed it, as before:
+reopening starts a new one, and does not bring back a `vim` or a build.
+puritty keeps the last five tabs closed in a window, each for ten minutes.
+A tab whose shell you ended with `exit` can be opened again too.
 
 ## Opening your tabs again when puritty starts
 
@@ -179,6 +194,7 @@ punctuation character. The entries:
 | `close_tab` | Ctrl+Shift+W |
 | `rename_tab` | Ctrl+Shift+R |
 | `color_tab` | none (the tab's menu has it) |
+| `reopen_tab` | Ctrl+Alt+Shift+T |
 | `next_tab`, `previous_tab` | Ctrl+PageDown, Ctrl+PageUp |
 | `next_tab_always`, `previous_tab_always` | Ctrl+Alt+PageDown, Ctrl+Alt+PageUp (also from a tmux tab) |
 | `move_tab_right`, `move_tab_left` | Ctrl+Shift+PageDown, Ctrl+Shift+PageUp |

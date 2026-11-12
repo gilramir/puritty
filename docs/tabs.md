@@ -242,6 +242,7 @@ colleague's tmux prefix, loses nothing to puritty.
 | `close_tab` | Ctrl+Shift+W | |
 | `rename_tab` | Ctrl+Shift+R | |
 | `color_tab` | none | TB9: the tab's menu has it |
+| `reopen_tab` | Ctrl+Alt+Shift+T | TB11; with nothing to reopen, the program's |
 | `next_tab`, `previous_tab` | Ctrl+PageDown, Ctrl+PageUp | tmux's windows under `tmux -CC`; the program's with one tab |
 | `next_tab_always`, `previous_tab_always` | Ctrl+Alt+PageDown, Ctrl+Alt+PageUp | puritty's tabs from any tab |
 | `move_tab_right`, `move_tab_left` | Ctrl+Shift+PageDown, Ctrl+Shift+PageUp | |
@@ -526,3 +527,59 @@ having printed (TB1 item 3): fifteen restored tabs would open fifteen
 dots. For the first three seconds of a restored window, what its tabs
 print does not mark them (`quietUntil`); a bell still does. The Windows
 picture before showed a dot on the hidden `win` tab, and after, none.
+
+## TB11 · Opening a closed tab again (2026-11-12, Dnene51)
+
+The survey's third item after the first version: "Reopen closed tab ...
+keeping its scrollback for a short window", as Ptyxis and xfce4-terminal
+(Ctrl+Shift+Alt+T, Ctrl+Shift+D), Warp (60 s) and iTerm2 (5 s) do it; the
+requests are "mostly to get back lost scrollback rather than the
+directory". Gilbert, 2026-11-12: "work on reopening a closed tab".
+
+**Dnene51: the program ends on close; the tab's screen is kept.** Two
+models exist. iTerm2, Warp and Ghostty's undo keep the closed tab's
+program running, hidden, for some seconds, and undo brings the live
+session back. xfce and Ptyxis start a new session where the tab was. The
+first means a close does not close: a `vim` with changes, a build, an ssh
+session the user meant to end keep running, and get their hangup later,
+when the user has moved on. puritty takes the second, with what the
+requests ask for added: closing ends the program at once, as before, and
+keeps the tab itself, its terminal with its screen and scrollback, its
+name and color, and, for a local tab, the directory its shell was in,
+read before the kill. Reopening starts a new program there (a host's tab:
+a new session to the host) under the old screen.
+
+**Kept: the last five, for ten minutes each.** A tab's scrollback is up
+to `[scrollback] lines` of it, so the kept tabs are bounded in number
+(`closedSlots`, the oldest giving way to a sixth) and in time
+(`closedKeepMs`): the window wakes when the first kept tab's ten minutes
+are up and lets it go. Ten minutes is longer than Warp's minute, since
+the loss is noticed when the scrollback is wanted, not at once. Tabs
+closed by Ctrl+Shift+W, the middle button or a dropped ssh tab's Enter,
+and tabs whose program ended (`exit`), shown or not, are kept; the last
+tab's close ends the window, which keeps nothing.
+
+**The key and the menu.** `[keys] reopen_tab`, Ctrl+Alt+Shift+T by
+default, as Ptyxis binds it, a chord no program is likely to want; with
+nothing to reopen, the key goes to the program. The menu has **Reopen
+closed tab** after Tab color…, which moves the hosts gate's menu case a
+row down again.
+
+**The reopened tab** (`reopened`): the kept terminal, brought out of what
+its program left it in by feeding it the sequences that leave the
+alternate screen, stop mouse reports (1000, 1002, 1003, 1006, 1015), focus
+reports and bracketed paste, and DECSTR; then a dim line, *(closed, and
+opened again)*, and the new program's output after it. Its session fields
+(the ssh screen, tmux control mode, the outbox, selection, search) are a
+new tab's. It opens after the last tab, shown, by `openTabWith` with the
+kept tab.
+
+**Measured,** `bench/tabs/reopen.py` on Xvfb: three tabs in three
+directories, the one in `dirs/one` closed, then the one in `dirs/two`:
+the shell left wrote `dirs/three`, Ctrl+Alt+Shift+T's tab wrote
+`dirs/two`, the next `dirs/one`. A tab with `seq 1 300` behind it and
+`vi` up, closed and reopened: the picture shows 282 to 300 and `$ vi`
+above the note, `vi`'s screen gone, and the new shell wrote its directory.
+From the menu: the same. A host's tab of the built-in client against the
+local sshd, closed and reopened: connected again, its shell wrote its
+file. App tests 116.

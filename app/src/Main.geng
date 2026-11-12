@@ -190,6 +190,19 @@ type alias Model =
     , saving : { dir : Maybe Path.Path, window : Maybe Restore.Window, written : String, at : Int }
     , byButton : Bool
     , quietUntil : Int
+      -- tabs closed lately, to open again (docs/tabs.md TB11): five
+      -- slots, each a tab as it was with where it was and when it closed
+    , closedTabs : Builder (Maybe Closed)
+    }
+
+
+{-| A tab closed, kept to open again (docs/tabs.md TB11): the tab as it
+was, its program gone; the directory its shell was in, when it was read
+before the close; and when it closed. -}
+type alias Closed =
+    { tab : Tab
+    , directory : Maybe Path.Path
+    , at : Int
     }
 
 
@@ -907,6 +920,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
                             , byButton = False
                             , quietUntil = -1
+                            , closedTabs = Builder.empty closedSlots
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -1027,7 +1041,7 @@ nextAt m =
             else
                 -1
     in
-    soonest (soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at
+    soonest (soonest (soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)
 
 
 {-| The sooner of two times, -1 standing for none. -}
@@ -1155,7 +1169,7 @@ restoreInto restoring m =
                     clamp 0 (Array.length c.state.tabs - 1) c.state.shown
             in
             Array.foldl
-                (\t acc -> acc |> Task.andThen (openTabWith { directory = Just (Maybe.map Path.fromString t.directory), name = t.name, color = t.color }))
+                (\t acc -> acc |> Task.andThen (openTabWith { directory = Just (Maybe.map Path.fromString t.directory), name = t.name, color = t.color, kept = Nothing }))
                 (Task.succeed named)
                 (Array.dropFirst 1 c.state.tabs)
                 |> Task.map (\opened -> showTab shownId opened)
@@ -1472,7 +1486,7 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (blink ms (tmuxTick ms m)) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
+                                                reloadIfDue ms (expireClosed ms (blink ms (tmuxTick ms m))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -1860,6 +1874,7 @@ type MenuDoes
     = Starts (Array String)
     | Renames
     | Colors
+    | Reopens
 
 
 {-| The menu's items: the settings window, the host list, a window of its
@@ -1871,12 +1886,13 @@ menuItems config =
     , { label = "New window", does = Starts [ "shell" ] }
     , { label = "Rename tab…", does = Renames }
     , { label = "Tab color…", does = Colors }
+    , { label = "Reopen closed tab", does = Reopens }
     ]
         ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
 
 
 {-| What a chosen item does. -}
-menuDo : MenuItem -> (taken m : Model) -> Task x Model
+menuDo : MenuItem -> (taken m : Model) -> Task Error Model
 menuDo item m =
     when item.does is
         Starts args ->
@@ -1887,6 +1903,9 @@ menuDo item m =
 
         Colors ->
             Task.succeed (startColoring m)
+
+        Reopens ->
+            reopenTab m
 
 
 {-| The menu at the pointer: the platform's own when it shows one
@@ -1910,7 +1929,7 @@ openMenu p m =
 
 {-| An item chosen in a menu the platform showed: the pop-up's (0) or the
 system menu's (1), whose items are the menu's always. -}
-menuChosen : { menu : Int, index : Int } -> (taken m : Model) -> Task x Model
+menuChosen : { menu : Int, index : Int } -> (taken m : Model) -> Task Error Model
 menuChosen c m =
     let
         items =
@@ -1968,7 +1987,7 @@ menuPaints menu cols rows =
 
 {-| A key while the menu is open: Up and Down move the mark, Enter starts
 what it marks, Esc closes it; any other key closes it too. -}
-menuKey : Int -> Menu -> (taken m : Model) -> Task x Model
+menuKey : Int -> Menu -> (taken m : Model) -> Task Error Model
 menuKey sym menu m =
     let
         count =
@@ -1994,7 +2013,7 @@ menuKey sym menu m =
 
 {-| A press while the menu is open: on an item, what it says is started;
 anywhere else the menu closes. -}
-menuPress : Window.PointerEvent -> Menu -> (taken m : Model) -> Task x Model
+menuPress : Window.PointerEvent -> Menu -> (taken m : Model) -> Task Error Model
 menuPress p menu m =
     let
         box =
@@ -3985,6 +4004,7 @@ type TabAction
     | MoveLeft
     | RenameTab
     | ColorTab
+    | ReopenTab
 
 
 {-| The tab keys, as the `[keys]` table names them (docs/tabs.md TB1,
@@ -4025,6 +4045,9 @@ tabAction k m =
 
     else if on keys.keyColorTab then
         Just ColorTab
+
+    else if on keys.keyReopenTab && closedWaiting m then
+        Just ReopenTab
 
     else if others && on keys.keyNextTabAlways then
         Just NextTab
@@ -4074,6 +4097,9 @@ tabDo action m =
 
         ColorTab ->
             Task.succeed (startColoring m)
+
+        ReopenTab ->
+            reopenTab m
 
 
 tabCount : Model -> Int
@@ -4295,6 +4321,13 @@ or before it at the end; every tab given the window's rows when the bar
 goes. -}
 dropShown : (taken m : Model) -> Task Error Model
 dropShown m =
+    dropShownFrom Nothing m
+
+
+{-| `dropShown`, the tab gone kept to open again (TB11), with the directory
+its shell was in when that was read. -}
+dropShownFrom : Maybe Path.Path -> (taken m : Model) -> Task Error Model
+dropShownFrom dir m =
     let
         at =
             shownAt m
@@ -4317,10 +4350,14 @@ dropShown m =
             when out.old |> Maybe.andThen identity is
                 Just t ->
                     let
+                        r =
+                            swapTab t { m | tabs = out.builder }
+
                         next =
-                            (swapTab t { m | tabs = out.builder }).model
+                            r.model
                     in
-                    relayout cols (afterSwitch { next | order = Array.keepIf (\id -> id /= gone) next.order })
+                    now
+                        |> Task.andThen (\ms -> relayout cols (afterSwitch (keepClosed { tab = r.old, directory = dir, at = ms } { next | order = Array.keepIf (\id -> id /= gone) next.order })))
 
                 Nothing ->
                     Task.succeed { m | tabs = out.builder }
@@ -4337,9 +4374,15 @@ closeShown m =
         Task.succeed { m | closed = True }
 
     else
-        m.remote.kill
-            |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "kill", path = Nothing, detail = why })
-            |> Task.andThen (\_ -> dropShown m)
+        -- where its shell is, read while it runs, to open it there again
+        -- (TB11); none for a host's tab
+        (if m.tab.hostName == Nothing then m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing) else Task.succeed Nothing)
+            |> Task.andThen
+                (\dir ->
+                    m.remote.kill
+                        |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "kill", path = Nothing, detail = why })
+                        |> Task.andThen (\_ -> dropShownFrom dir m)
+                )
 
 
 {-| A terminal for a new tab, at a size, as the window's first was made. -}
@@ -4391,13 +4434,14 @@ a tab of a session to a host, another session to the same host. A program
 that does not start is said on standard error, and nothing changes. -}
 openTab : (taken m : Model) -> Task Error Model
 openTab m =
-    openTabWith { directory = Nothing, name = "", color = HostsColor } m
+    openTabWith { directory = Nothing, name = "", color = HostsColor, kept = Nothing } m
 
 
 {-| A new tab, shown, as `openTab` opens one, named and colored; a local
 one in `directory` when given (a restored tab, TB10), else in the shown
-tab's. -}
-openTabWith : { directory : Maybe (Maybe Path.Path), name : String, color : TabColor } -> (taken m : Model) -> Task Error Model
+tab's; and a closed tab's screen and scrollback over its new program, when
+one is `kept` (TB11). -}
+openTabWith : (taken with : { directory : Maybe (Maybe Path.Path), name : String, color : TabColor, kept : Maybe Tab }) -> (taken m : Model) -> Task Error Model
 openTabWith with m =
     let
         cols =
@@ -4445,23 +4489,12 @@ openTabWith with m =
                                 freeSlot m
 
                             tab =
-                                { info = { id = id, name = with.name, host = host, hostName = m.tab.hostName, color = with.color, bells = 0, bell = False, activity = False }
-                                , remote = remote
-                                , term = freshTerm m.config m.term cols rows
-                                , charset = if host == Nothing then m.starter.charset else m.charset
-                                , decoder = Charset.decoder
-                                , replaced = 0
-                                , out = Outbox.empty
-                                , back = 0
-                                , selection = Nothing
-                                , pasting = Nothing
-                                , clips = []
-                                , clipRead = Nothing
-                                , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-                                , tmux = TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {}))
-                                , search = Nothing
-                                , syncSince = -1
-                                }
+                                when with.kept is
+                                    Just k ->
+                                        reopened k id remote host m
+
+                                    Nothing ->
+                                        freshTab id remote host with.name with.color cols rows m
 
                             r =
                                 swapTab tab { m | nextTabId = id + 1, order = Array.pushLast id m.order }
@@ -4484,6 +4517,213 @@ openTabWith with m =
                                 }
                             )
             )
+
+
+{-| A new tab's record: its program's backend, a fresh terminal, and the
+session's fields as a new tab has them. -}
+freshTab : Int -> Backend -> Maybe Config.Host -> String -> TabColor -> Int -> Int -> Model -> Tab
+freshTab id remote host name color cols rows m =
+    { info = { id = id, name = name, host = host, hostName = m.tab.hostName, color = color, bells = 0, bell = False, activity = False }
+    , remote = remote
+    , term = freshTerm m.config m.term cols rows
+    , charset = if host == Nothing then m.starter.charset else m.charset
+    , decoder = Charset.decoder
+    , replaced = 0
+    , out = Outbox.empty
+    , back = 0
+    , selection = Nothing
+    , pasting = Nothing
+    , clips = []
+    , clipRead = Nothing
+    , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+    , tmux = TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {}))
+    , search = Nothing
+    , syncSince = -1
+    }
+
+
+{-| A closed tab opened again (TB11): its terminal, with its screen and
+scrollback, its name and color, over a new program's backend; the rest of
+its session as a new tab's. The terminal is brought out of what its old
+program left it in (the alternate screen, mouse reports, bracketed paste,
+the modes DECSTR resets), and a dim line says where the old session
+ended. -}
+reopened : (taken k : Tab) -> Int -> Backend -> Maybe Config.Host -> Model -> Tab
+reopened k id remote host m =
+    let
+        info =
+            k.info
+
+        bells =
+            k.term.bells
+    in
+    { k
+        | info = { info | id = id, bell = False, activity = False, bells = bells }
+        , remote = remote
+        , term = Vt.feed (Bytes.fromString reopenedNote) k.term
+        , charset = if host == Nothing then m.starter.charset else m.charset
+        , decoder = Charset.decoder
+        , replaced = 0
+        , out = Outbox.empty
+        , back = 0
+        , selection = Nothing
+        , pasting = Nothing
+        , clips = []
+        , clipRead = Nothing
+        , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+        , tmux = TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {}))
+        , search = Nothing
+        , syncSince = -1
+    }
+
+
+reopenedNote : String
+reopenedNote =
+    "\u{001B}[?1049l\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l\u{001B}[?1015l\u{001B}[?1004l\u{001B}[?2004l\u{001B}[!p\u{001B}[0m"
+        ++ "\r\n\u{001B}[2m(closed, and opened again)\u{001B}[0m\r\n"
+
+
+-- CLOSED TABS (docs/tabs.md TB11)
+
+
+{-| How many closed tabs are kept, and for how long. -}
+closedSlots : Int
+closedSlots =
+    5
+
+
+closedKeepMs : Int
+closedKeepMs =
+    10 * 60 * 1000
+
+
+{-| A closed tab kept: in a free slot, else in the oldest's place. -}
+keepClosed : (taken c : Closed) -> (taken m : Model) -> Model
+keepClosed c m =
+    let
+        slot =
+            closedSlotFor 0 { at = -1, oldest = 0, oldestAt = -1 } m
+    in
+    if slot < Builder.length m.closedTabs then
+        { m | closedTabs = Builder.set slot (Just c) m.closedTabs }
+
+    else
+        { m | closedTabs = Builder.pushLast (Just c) m.closedTabs }
+
+
+{-| The slot a closed tab goes in: the first free one; one past the last
+while there are fewer than `closedSlots`; else the oldest. -}
+closedSlotFor : Int -> { at : Int, oldest : Int, oldestAt : Int } -> Model -> Int
+closedSlotFor i best m =
+    if i >= Builder.length m.closedTabs then
+        if Builder.length m.closedTabs < closedSlots then Builder.length m.closedTabs else best.oldest
+
+    else
+        when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
+            Nothing ->
+                i
+
+            Just at ->
+                closedSlotFor (i + 1) (if best.oldestAt < 0 || at < best.oldestAt then { best | oldest = i, oldestAt = at } else best) m
+
+
+{-| The slot of the closed tab closed last, if any. -}
+newestClosed : Model -> Maybe Int
+newestClosed m =
+    newestFrom 0 Nothing -1 m
+
+
+newestFrom : Int -> Maybe Int -> Int -> Model -> Maybe Int
+newestFrom i best bestAt m =
+    if i >= Builder.length m.closedTabs then
+        best
+
+    else
+        when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
+            Just at ->
+                if at > bestAt then newestFrom (i + 1) (Just i) at m else newestFrom (i + 1) best bestAt m
+
+            Nothing ->
+                newestFrom (i + 1) best bestAt m
+
+
+{-| Whether a closed tab waits to be opened again. -}
+closedWaiting : Model -> Bool
+closedWaiting m =
+    newestClosed m /= Nothing
+
+
+{-| When the oldest closed tab is let go, -1 for none. -}
+closedDue : Model -> Int
+closedDue m =
+    closedDueFrom 0 -1 m
+
+
+closedDueFrom : Int -> Int -> Model -> Int
+closedDueFrom i due m =
+    if i >= Builder.length m.closedTabs then
+        due
+
+    else
+        closedDueFrom (i + 1)
+            (when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
+                Just at ->
+                    soonest due (at + closedKeepMs)
+
+                Nothing ->
+                    due
+            )
+            m
+
+
+{-| The closed tabs kept ten minutes let go, their memory with them. -}
+expireClosed : Int -> (taken m : Model) -> Model
+expireClosed ms m =
+    expireFrom 0 ms m
+
+
+expireFrom : Int -> Int -> (taken m : Model) -> Model
+expireFrom i ms m =
+    if i >= Builder.length m.closedTabs then
+        m
+
+    else if (Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map (\c -> ms >= c.at + closedKeepMs)) == Just True then
+        expireFrom (i + 1) ms { m | closedTabs = Builder.set i Nothing m.closedTabs }
+
+    else
+        expireFrom (i + 1) ms m
+
+
+{-| Ctrl+Alt+Shift+T, or the menu's Reopen closed tab: the tab closed last
+opened again, shown, after the last; a local one in the directory its shell
+was in, else in the shown tab's; a host's, a new session to the host. -}
+reopenTab : (taken m : Model) -> Task Error Model
+reopenTab m =
+    when newestClosed m is
+        Just slot ->
+            let
+                out =
+                    Builder.swap slot Nothing m.closedTabs
+            in
+            when out.old |> Maybe.andThen identity is
+                Just c ->
+                    let
+                        name =
+                            c.tab.info.name
+
+                        color =
+                            c.tab.info.color
+
+                        directory =
+                            Maybe.map Just c.directory
+                    in
+                    openTabWith { directory = directory, name = name, color = color, kept = Just c.tab } { m | closedTabs = out.builder }
+
+                Nothing ->
+                    Task.succeed { m | closedTabs = out.builder }
+
+        Nothing ->
+            Task.succeed m
 
 
 {-| Every tab at `cols` by the window's rows, less the bar's while it shows,
@@ -4619,9 +4859,14 @@ endTab id kill m =
             in
             when out.old |> Maybe.andThen identity is
                 Just t ->
-                    (if kill then t.remote.kill else t.remote.waitForExit |> Task.map (\_ -> {}))
+                    let
+                        ending =
+                            if kill then t.remote.kill else t.remote.waitForExit |> Task.map (\_ -> {})
+                    in
+                    ending
                         |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })
-                        |> Task.andThen (\_ -> relayout cols rest)
+                        |> Task.andThen (\_ -> now)
+                        |> Task.andThen (\ms -> relayout cols (keepClosed { tab = t, directory = Nothing, at = ms } rest))
 
                 Nothing ->
                     Task.succeed rest

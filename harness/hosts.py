@@ -70,11 +70,11 @@ CASES = [
     ("start-hosts", 'start = "hosts"', [], ("puritty hosts", [])),
     # from the settings window, a session opens a window of its own and the
     # settings window stays
-    # the menu (ST26): Ctrl+right-click in a terminal, the sixth item (after
-    # the tab's name and color, docs/tabs.md TB9), the
-    # first host, started in a window of its own
+    # the menu (ST26): Ctrl+right-click in a terminal, the seventh item (after
+    # the tab's name and color, TB9, and reopening one, docs/tabs.md TB11),
+    # the first host, started in a window of its own
     ("menu-connects", None, ["--title", "term", "--", "sh", "-c", "exec sleep 600"],
-     ("term", ["ctrl+button3", "Down", "Down", "Down", "Down", "Down", "Return"])),
+     ("term", ["ctrl+button3", "Down", "Down", "Down", "Down", "Down", "Down", "Return"])),
     # a double click on a host in the settings window (ST27): the Hosts page
     # clicked, then the first host's row twice, at pixels of the drawn
     # window (settings.py's click cases say where things are)
