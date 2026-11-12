@@ -1336,3 +1336,35 @@ Tested: the pixel gate has `ui-over-cells` (`over`, a mode of its own:
 text, then records drawn over its cells in a frame of every cell, as
 `Main` draws one), 42 of 42; `harness/sshwindow.py --shots` saves the
 window as each question is asked.
+
+## SC24 · A key's thread read what it had handed over (2026-11-11)
+
+*Gilbert, 2026-11-11, after geng-lang's §OS34 (a name lookup's cancel
+read freed memory):* "if we made the mistake once, we might have made it
+again." Every thread puritty and geng-lang start, and every handover to
+one, was read: `geng_thread_start`'s six callers, the runtime's own
+threads (the program's, Windows' timer, `thread_main`), Windows' thread
+pool (`QueueUserWorkItem` for a console's close, `RegisterWaitForSingleObject`
+for a child's exit), and every `geng_post_send`.
+
+Two had the fault's other side, in `ssh-crypto`'s `load_run` (a key file
+loaded) and `sign_run` (a signature made): the thread sends its struct to
+the program thread, which frees it when it takes the message, and then
+read `l->post` / `s->post` from it for `geng_post_done`. Probed: with a
+20 ms sleep after the send, the old code's read differed from the post
+every time, ten times in one run of the suite, sometimes a misaligned word
+(`0x7f50fc016`, as §OS34's), sometimes a pointer into other memory, where
+`geng_post_done`'s write would have gone unseen. Both now read the post
+before the send; `loadKey` returns its cancel from a local too, though
+`l` cannot be freed before it returns there. The others hand over nothing
+they touch again: the window thread is given `NULL`, the console's close a
+handle's value, the exit wait an operation only the program thread ends,
+and `thread_main` copies its start before freeing it.
+
+**The rule, for every thread start and every send:** read what you need
+from the handed-over struct into locals first; once the thread is started
+or the send has answered 1, the struct is not yours.
+
+Held by `ssh-crypto`'s `keyload` (14) and the ssh gate (the transport, 25
+scripted cases, the fuzzers, known-hosts 34, config 30), and the probe
+above, not kept.

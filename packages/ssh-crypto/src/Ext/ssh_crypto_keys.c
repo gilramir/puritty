@@ -248,17 +248,19 @@ static void load_now(loading *l) {
     l->passphrase = NULL;
 }
 
+/* Once the send answers 1, `l` is the program thread's, which frees it
+ * when it takes the message, maybe before this thread runs on: the post is
+ * read before the send, never from `l` after it. */
 static void *load_run(void *arg) {
     loading *l = arg;
     load_now(l);
-    if (!geng_post_send(l->post, l)) {
+    geng_post *post = l->post;
+    if (!geng_post_send(post, l)) {
         if (l->key != NULL) ssh_key_free(l->key);
         strbuf_free(l->binary);
-        geng_post_done(l->post);
         free(l);
-        return NULL;
     }
-    geng_post_done(l->post);
+    geng_post_done(post);
     return NULL;
 }
 
@@ -318,11 +320,12 @@ geng_cancel ssh_crypto_loadKey(void *text, void *passphrase, geng_wait *wait) {
     l->passphrase = safemalloc(p.len ? p.len : 1, 1, 0);
     memcpy(l->passphrase, p.ptr, p.len);
     l->passphrase_len = p.len;
-    l->post = geng_post_open(loaded, dropped, wait);
-    if (l->post == NULL || geng_thread_start(load_run, l) != 0) {
-        if (l->post != NULL) {
-            geng_post_close(l->post);
-            geng_post_done(l->post);
+    geng_post *post = geng_post_open(loaded, dropped, wait);
+    l->post = post;
+    if (post == NULL || geng_thread_start(load_run, l) != 0) {
+        if (post != NULL) {
+            geng_post_close(post);
+            geng_post_done(post);
         }
         smemclr(l->passphrase, l->passphrase_len);
         sfree(l->passphrase);
@@ -331,7 +334,10 @@ geng_cancel ssh_crypto_loadKey(void *text, void *passphrase, geng_wait *wait) {
         fail(wait, NO_MEMORY);
         return (geng_cancel) {0};
     }
-    return (geng_cancel) {load_stop, l->post};
+    /* `l` is the thread's now (it is freed once its message is taken, on
+     * this thread, so not before this returns); the post is read from a
+     * local all the same, as every thread start reads what it hands over */
+    return (geng_cancel) {load_stop, post};
 }
 
 /* The key's public blob, which a userauth request and an agent name it by. */
@@ -381,8 +387,10 @@ static void *sign_run(void *arg) {
     signing *s = arg;
     s->signature = strbuf_new();
     ssh_key_sign(s->box->key, ptrlen_from_strbuf(s->data), s->flags, BinarySink_UPCAST(s->signature));
-    if (!geng_post_send(s->post, s)) geng_crash("ssh-crypto: a signature could not be handed back");
-    geng_post_done(s->post);
+    /* `s` is the program thread's once sent, as `load_run`'s is */
+    geng_post *post = s->post;
+    if (!geng_post_send(post, s)) geng_crash("ssh-crypto: a signature could not be handed back");
+    geng_post_done(post);
     return NULL;
 }
 
