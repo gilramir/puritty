@@ -77,8 +77,10 @@ CASES = [
     # a double click on a host in the settings window (ST27): the Hosts page
     # clicked, then the first host's row twice, at pixels of the drawn
     # window (settings.py's click cases say where things are)
-    ("double-click-host", None, ["settings"], ("puritty settings", ["click 50 289 1", "click 300 221 2"])),
-    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 7 + ["Right", "Down", "Down", "Return"])),
+    # the Hosts page is the sidebar's ninth since the Keys page (puritty
+    # docs/tabs.md TB6): eight Downs, and its row's middle at 321
+    ("double-click-host", None, ["settings"], ("puritty settings", ["click 50 321 1", "click 300 221 2"])),
+    ("settings-connects", None, ["settings"], ("puritty settings", ["Tab", "Tab"] + ["Down"] * 8 + ["Right", "Down", "Down", "Return"])),
 ]
 
 

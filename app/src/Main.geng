@@ -177,7 +177,7 @@ type alias Model =
     , starter : Starter
     , windowRows : Int
     , renaming : Maybe { id : Int, typed : String }
-    , closing : Maybe { id : Int, why : String }
+    , closing : Maybe { id : Int, why : String, window : Bool }
     , barClick : { at : Int, id : Int }
     }
 
@@ -1946,7 +1946,9 @@ sshKey remote k m =
                             |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
 
                     else if (screen.failed /= Nothing && enter) || escape then
-                        Task.succeed { m | closed = True }
+                        -- this tab's session given up: the tab closed, and
+                        -- the window only with its last tab
+                        closeShown m
 
                     else
                         Task.succeed m
@@ -2197,7 +2199,7 @@ handleOne remote ms rest ev m =
                   else if ownScreenUp m then
                     -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
                     (if k.action /= 0 then sshKey remote k m else Task.succeed m)
-                        |> Task.andThen (\next -> handle remote ms rest next)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
 
                   else if m.menu /= Nothing && k.action /= 0 then
                     -- the menu takes the keys while it is open
@@ -2320,7 +2322,8 @@ handleOne remote ms rest ev m =
                     handle remote ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
 
                 Window.Close ->
-                    Task.succeed { m | closed = True }
+                    -- asked first when a tab is busy (docs/tabs.md TB7)
+                    askCloseWindow m |> Task.andThen (\next -> if next.closed then Task.succeed next else handle next.remote ms rest next)
 
                 Window.MenuChosen c ->
                     menuChosen c m |> Task.andThen (\next -> handle remote ms rest next)
@@ -4142,9 +4145,32 @@ tabLabel info title =
                         h.name
 
                     Nothing ->
-                        if title /= "" then String.takeFirst 24 title else "shell"
+                        if title /= "" then String.takeFirst 24 (shortTitle title) else "shell"
     in
     (if info.bell then "! " else "") ++ base
+
+
+{-| A title that begins with a Windows program's path, as `cmd.exe`'s does
+(`C:\WINDOWS\system32\cmd.exe`, and `... - ping -n 30 127.0.0.1` while a
+command runs), with the path cut to the program's name: `cmd`, `cmd - ping
+-n 30 127.0.0.1`. Any other title as it is. -}
+shortTitle : String -> String
+shortTitle title =
+    let
+        parts =
+            String.split " - " title
+
+        first =
+            Maybe.withDefault title (Array.first parts)
+
+        name =
+            Maybe.withDefault first (Array.last (String.split "\\" first))
+    in
+    if String.contains "\\" first && String.endsWith ".exe" (String.toLower first) then
+        String.join " - " ([ String.dropLast 4 name ] ++ Array.dropFirst 1 parts)
+
+    else
+        title
 
 
 {-| The bar's tabs in its order, where each is in pixels, and how it is
@@ -4384,7 +4410,7 @@ askClose m =
     else
         when open is
             Just host ->
-                Task.succeed { m | closing = Just { id = id, why = "Its ssh session to " ++ cleanText host ++ " is open." }, urgent = True }
+                Task.succeed { m | closing = Just { id = id, why = "Its ssh session to " ++ cleanText host ++ " is open.", window = False }, urgent = True }
 
             Nothing ->
                 busy
@@ -4399,27 +4425,37 @@ askClose m =
                                 Ok (Just name) ->
                                     Task.succeed
                                         { m
-                                            | closing = Just { id = id, why = (if name == "" then "A program" else cleanText name) ++ " is running in it." }
+                                            | closing = Just { id = id, why = (if name == "" then "A program" else cleanText name) ++ " is running in it.", window = False }
                                             , urgent = True
                                         }
 
                                 Err e ->
                                     Task.succeed
                                         { m
-                                            | closing = Just { id = id, why = "puritty could not tell whether a program runs in it: " ++ Os.Error.toString e }
+                                            | closing = Just { id = id, why = "puritty could not tell whether a program runs in it: " ++ Os.Error.toString e, window = False }
                                             , urgent = True
                                         }
                         )
 
 
 {-| The question before closing a busy tab. -}
-closeBox : { id : Int, why : String } -> Dialog.Dialog
+closeBox : { id : Int, why : String, window : Bool } -> Dialog.Dialog
 closeBox c =
-    { title = "Close this tab?"
-    , lines = [ c.why, "Closing the tab ends it." ]
-    , field = Nothing
-    , hint = "Enter: close it    Esc: keep it"
-    }
+    if c.window then
+        { title = "Close the window?"
+        , lines =
+            String.split "\n" c.why
+                ++ [ if String.contains "\n" c.why then "Closing the window ends them." else "Closing the window ends it." ]
+        , field = Nothing
+        , hint = "Enter: close it    Esc: keep it"
+        }
+
+    else
+        { title = "Close this tab?"
+        , lines = [ c.why, "Closing the tab ends it." ]
+        , field = Nothing
+        , hint = "Enter: close it    Esc: keep it"
+        }
 
 
 {-| A key while the question is up: Enter or Y closes the tab asked about,
@@ -4432,7 +4468,10 @@ closeKey k m =
             Task.succeed m
 
         Just c ->
-            if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+            if (k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59) && c.window then
+                Task.succeed { m | closing = Nothing, closed = True }
+
+            else if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
                 if c.id == m.tab.id then
                     closeShown { m | closing = Nothing, urgent = True }
 
@@ -4444,3 +4483,77 @@ closeKey k m =
 
             else
                 Task.succeed m
+
+
+{-| The window's close button, or the system closing it (docs/tabs.md
+TB7): asked first when any tab, shown or not, is busy, as closing one tab
+is (TB4), naming each busy tab and what runs in it; at once otherwise, and
+with `[tabs] ask_before_closing` off. -}
+askCloseWindow : (taken m : Model) -> Task Error Model
+askCloseWindow m =
+    if not m.config.tabsAskBeforeClosing then
+        Task.succeed { m | closed = True }
+
+    else
+        let
+            shown =
+                { label = tabLabel m.tab m.term.title, ssh = m.ssh, remote = m.remote }
+
+            all =
+                [ shown ] ++ busyCandidates 0 m []
+        in
+        Array.foldl
+            (\t acc -> acc |> Task.andThen (\soFar -> busyWhy t |> Task.map (\why -> soFar ++ Array.mapAndKeepJust identity [ Maybe.map (\w -> cleanText t.label ++ ": " ++ w) why ])))
+            (Task.succeed [])
+            all
+            |> Task.map
+                (\busy ->
+                    if Array.isEmpty busy then
+                        { m | closed = True }
+
+                    else
+                        let
+                            shownLines =
+                                Array.takeFirst 6 busy
+                                    ++ (if Array.length busy > 6 then [ "and " ++ String.fromInt (Array.length busy - 6) ++ " more" ] else [])
+                        in
+                        { m | closing = Just { id = -1, why = String.join "\n" shownLines, window = True }, urgent = True }
+                )
+
+
+{-| What each tab not shown needs for the window's question. -}
+busyCandidates : Int -> Model -> Array { label : String, ssh : Maybe SshScreen, remote : Backend } -> Array { label : String, ssh : Maybe SshScreen, remote : Backend }
+busyCandidates i m acc =
+    if i >= Builder.length m.tabs then
+        acc
+
+    else
+        busyCandidates (i + 1)
+            m
+            (when Builder.get i m.tabs |> Maybe.andThen identity is
+                Just t ->
+                    Array.pushLast { label = tabLabel t.info t.term.title, ssh = t.ssh, remote = t.remote } acc
+
+                Nothing ->
+                    acc
+            )
+
+
+{-| Why closing a tab would end something, or `Nothing` for an idle shell:
+an open ssh session, a program in front of the shell, or that puritty
+could not tell. -}
+busyWhy : { label : String, ssh : Maybe SshScreen, remote : Backend } -> Task x (Maybe String)
+busyWhy t =
+    when t.ssh is
+        Just screen ->
+            if screen.started && screen.exitStatus == Nothing && screen.failed == Nothing then
+                Task.succeed (Just ("the ssh session to " ++ cleanText screen.host ++ " is open"))
+
+            else
+                Task.succeed Nothing
+
+        Nothing ->
+            t.remote.busy
+                |> Task.map (Maybe.map (\name -> (if name == "" then "a program" else cleanText name) ++ " is running"))
+                |> Task.onError (\e -> Task.succeed (Just ("puritty could not tell what runs: " ++ Os.Error.toString e)))
+

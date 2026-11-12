@@ -57,6 +57,8 @@ def main():
             print(f"{n:02d}-{name}.png")
 
     xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    # the close button's request, as a window manager sends it
+    wmclose = lambda w: subprocess.run([sys.executable, str(Path(__file__).parent / "wmclose.py"), w], env=env, check=True)
     app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tabs-show"], env=env,
                            stdout=subprocess.DEVNULL, stderr=open(WORK / "stderr.txt", "w"))
     said = lambda name: (WORK / name).read_text().strip() if (WORK / name).exists() else "(none)"
@@ -123,6 +125,25 @@ def main():
         time.sleep(0.4)
         typed(f"echo kept > {WORK}/g.txt")
         print("after Esc to the question, the tab's shell wrote:", said("g.txt"))
+        # the window's close button asks when a tab, shown or not, is busy
+        xd("key", "ctrl+Next")
+        time.sleep(0.4)
+        xd("type", "--delay", "10", "sleep 30")
+        xd("key", "Return")
+        time.sleep(0.4)
+        xd("key", "ctrl+Prior")
+        time.sleep(0.4)
+        wmclose(win)
+        snap("window-close-asked")
+        xd("key", "Escape")
+        time.sleep(0.5)
+        print("after the window's close and Esc, puritty:", "ended" if app.poll() is not None else "still running")
+        xd("key", "ctrl+Next")
+        time.sleep(0.4)
+        xd("key", "ctrl+c")
+        time.sleep(0.4)
+        xd("key", "ctrl+Prior")
+        time.sleep(0.4)
         xd("key", "ctrl+shift+w")
         time.sleep(0.8)
         snap("closed")
@@ -136,6 +157,18 @@ def main():
         typed("exit")
         time.sleep(1.0)
         print("puritty after the last tab's exit:", "ended" if app.poll() is not None else "still running")
+        # an idle window closes at once
+        idle = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tabs-idle"], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        w2 = subprocess.run([xdo, "search", "--sync", "--name", "tabs-idle"], env=env, capture_output=True, text=True,
+                            timeout=20).stdout.split()[0]
+        time.sleep(1.5)
+        wmclose(w2)
+        time.sleep(1.0)
+        print("an idle window's close:", "ended" if idle.poll() is not None else "still running")
+        if idle.poll() is None:
+            idle.terminate()
+            idle.wait()
     finally:
         if app.poll() is None:
             app.terminate()

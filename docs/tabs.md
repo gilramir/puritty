@@ -281,3 +281,42 @@ bound, went back. With the defaults, `bench/tabs/show.py` and
 `bench/search/show.py` (Ctrl+Shift+F, Ctrl+Shift+C) are unchanged; the
 app's tests are 110 with `Chord`'s six; settings 20, keys, paste, select
 and pointer pass.
+
+## TB7 · Step 2's loose ends (2026-11-11)
+
+**Closing the window asks too.** The close button, or the system closing
+the window (`Window.Close`: X11's `WM_DELETE_WINDOW`, Windows' `WM_CLOSE`),
+now asks as Ctrl+Shift+W does (TB4), over every tab, shown or not: each
+busy tab is a line of the question, its label and what runs in it
+("dm: sleep is running", "box: the ssh session to box is open"), six at
+most and "and N more". With no tab busy, or `[tabs] ask_before_closing`
+off, the window closes at once. `busyWhy` is the one test for a tab, shown
+or hidden.
+
+**A failed ssh tab's Esc closes the tab, not the window.** On the ssh
+screen, Esc, or Enter after a failure, set the window's `closed`, which
+with tabs ended every other tab too. It is `closeShown` now: that tab
+goes, and the window only with its last. The loop goes on with the
+backend of the tab then shown, not the one that went.
+
+**A Windows program's path in a title is cut to its name.** `cmd.exe`
+titles itself with its path (`C:\WINDOWS\system32\cmd.exe`, and
+`... - ping -n 30 127.0.0.1` while a command runs), which the bar cut to
+24 characters of the path. `shortTitle` puts the program's name for a
+first part that is a path ending in `.exe`: `cmd`, `cmd - ping -n 30
+127.0.`. Other titles are as they were.
+
+**A regression from step 3, found here.** The hosts gate's two cases that
+reach the Hosts page by its place in the settings window's sidebar
+(`double-click-host`, `settings-connects`) failed since the Keys page
+(TB6) moved it a row down; the gate was not run then. They now take eight
+Downs and click at 321, and pass (13).
+
+**Measured.** `bench/tabs/show.py`: with `sleep 30` in a tab not shown,
+the window's close request (`bench/tabs/wmclose.py`, the client message a
+window manager sends, since Xvfb has none and xdotool's `windowquit` asks
+one) brought "Close the window? dm: sleep is running", Esc kept it; a
+second puritty with an idle shell closed at once. On Windows (beelink1,
+PowerShell's `CloseMainWindow`): "cmd - ping -n 30 127.0.: PING.EXE is
+running", the bar reading `cmd - ping -n 30 127.0.` and `cmd`, and Esc
+kept the window. sshwindow 9, hosts 13, events 13, the app's 110 tests.
