@@ -3,6 +3,7 @@ module TmuxMode exposing
     , idle
     , isOn
     , read
+    , diagnose
     , paint
     , keys
     , typed
@@ -46,6 +47,7 @@ import Tmux.Syntax as Syntax
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Layout as Layout
 import Vt
+import Vt.Width as Width
 import Vt.Mouse as Mouse
 import Window
 
@@ -151,7 +153,41 @@ type alias Tree =
     , template : String
     , pane : Int
     , zoom : Bool
+    , preview : Preview
     }
+
+
+{-| The tree's preview of its chosen row, as tmux draws it below the list
+(TM35): a window's panes where they are in it, or a session's windows side
+by side, each with what it shows. `serial` counts the questions asked, so
+that a reply to one for a row since left is dropped; `target` is the row
+asked about (`@2`, `$1`, empty for none). -}
+type alias Preview =
+    { serial : Int
+    , target : String
+    , session : Bool
+    , items : Array PreviewItem
+    }
+
+
+{-| A pane of the window previewed, or a window of the session: tmux's id
+for it, its label, where it is in the window (a session's windows are each
+at 0, 0), whether it is the active one, and the lines it shows. -}
+type alias PreviewItem =
+    { id : String
+    , label : String
+    , x : Int
+    , y : Int
+    , w : Int
+    , h : Int
+    , active : Bool
+    , lines : Array String
+    }
+
+
+noPreview : Preview
+noPreview =
+    { serial = 0, target = "", session = False, items = [] }
 
 
 {-| A row of the tree: a session (its id) or a window (its id and its
@@ -323,6 +359,8 @@ type Expect
     | ForCopy
     | ForTreeSessions
     | ForTreeWindows
+    | ForPreviewList Int
+    | ForPreviewCapture { serial : Int, index : Int }
     | ForDayTime
     | ForPanesTime
     | ForMenuTitle Int
@@ -417,21 +455,340 @@ title s =
 
 {-| A read's bytes: the terminal's own (`outside`, for its core), and
 what tmux said, done to the panes. `commands` are tmux commands to write,
-each a line. -}
-read : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String }
+each a line; `trace` is what tmux said, for the diagnostic log
+(`docs/diagnostics.md` DG2): each notification and reply a line, a pane's
+output counted, never shown. -}
+read : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String }
 read size bytes s =
     let
         fed =
             Control.feed bytes s.reader
 
         done =
-            Array.foldl (event size) { state = { s | reader = fed.reader }, outside = [], commands = [] } fed.events
+            Array.foldl (\e a -> event size e (traced e a)) { state = { s | reader = fed.reader }, outside = [], commands = [], trace = [], run = Nothing } fed.events
+                |> endRun
     in
-    { state = done.state, outside = Bytes.flatten done.outside, commands = done.commands }
+    { state = done.state, outside = Bytes.flatten done.outside, commands = done.commands, trace = done.trace }
 
 
+{-| What a read did: the state, the terminal's own bytes, the commands to
+write, and the log's lines with a run of one pane's output being counted. -}
 type alias Acc =
-    { state : State, outside : Array Bytes, commands : Array String }
+    { state : State, outside : Array Bytes, commands : Array String, trace : Array String, run : Maybe { pane : Int, count : Int, bytes : Int } }
+
+
+{-| An event's line in the log, before the event is done: a reply is
+named by what puritty waits for from it, the first of `expecting`. -}
+traced : Event -> (taken acc : Acc) -> Acc
+traced e acc =
+    when e is
+        Notice (Output o) ->
+            let
+                n =
+                    Bytes.length o.bytes
+            in
+            when acc.run is
+                Just r ->
+                    if r.pane == o.pane then
+                        { acc | run = Just { r | count = r.count + 1, bytes = r.bytes + n } }
+
+                    else
+                        { (endRun acc) | run = Just { pane = o.pane, count = 1, bytes = n } }
+
+                Nothing ->
+                    { acc | run = Just { pane = o.pane, count = 1, bytes = n } }
+
+        _ ->
+            let
+                next =
+                    Array.first acc.state.expecting
+
+                line =
+                    describe next e
+            in
+            { (endRun acc) | trace = acc.trace ++ line }
+
+
+{-| A run of output counted into the log, and ended. -}
+endRun : (taken acc : Acc) -> Acc
+endRun acc =
+    when acc.run is
+        Just r ->
+            { acc | trace = Array.pushLast ("output %" ++ String.fromInt r.pane ++ " " ++ String.fromInt r.bytes ++ " bytes" ++ (if r.count > 1 then " in " ++ String.fromInt r.count ++ " lines" else "")) acc.trace, run = Nothing }
+
+        Nothing ->
+            acc
+
+
+{-| An event other than a pane's output, as the log says it. -}
+describe : Maybe Expect -> Event -> Array String
+describe next e =
+    let
+        cut n text =
+            if String.count text > n then
+                String.takeFirst n text ++ "…"
+
+            else
+                text
+    in
+    when e is
+        Outside b ->
+            if Bytes.isEmpty b then [] else [ "outside control mode " ++ String.fromInt (Bytes.length b) ++ " bytes" ]
+
+        Entered ->
+            [ "control mode began" ]
+
+        Exited ->
+            [ "control mode ended" ]
+
+        Notice n ->
+            [ noticeLine n ]
+
+        Reply r ->
+            let
+                total =
+                    Array.foldl (\l t -> t + Bytes.length l) 0 r.lines
+
+                whose =
+                    if r.flags == 0 then
+                        "not puritty's command"
+
+                    else
+                        "for " ++ Maybe.withDefault "nothing waited for" (Maybe.map expectName next)
+
+                head =
+                    "reply #" ++ String.fromInt r.number ++ (if r.ok then " ok" else " ERROR") ++ ", " ++ String.fromInt (Array.length r.lines) ++ " lines, " ++ String.fromInt total ++ " bytes, " ++ whose
+
+                -- the lines of puritty's own questions, which say nothing
+                -- typed or shown; an error's first line, which is tmux's
+                shown =
+                    if not r.ok then
+                        Array.takeFirst 1 r.lines
+
+                    else
+                        when next is
+                            Just ForWindow -> Array.takeFirst 3 r.lines
+                            Just ForPrefixes -> Array.takeFirst 3 r.lines
+                            Just ForModes -> Array.takeFirst 8 r.lines
+                            Just ForCopy -> Array.takeFirst 3 r.lines
+                            Just ForPanesTime -> Array.takeFirst 1 r.lines
+                            Just ForDayTime -> Array.takeFirst 1 r.lines
+                            _ -> []
+            in
+            Array.pushFirst head (Array.map (\l -> "  | " ++ cut 160 (Bytes.toStringLossy l)) shown)
+
+
+noticeLine : Notice -> String
+noticeLine n =
+    let
+        pane p =
+            "%" ++ String.fromInt p
+
+        window w =
+            "@" ++ String.fromInt w
+
+        session x =
+            "$" ++ String.fromInt x
+
+        cut text =
+            if String.count text > 120 then String.takeFirst 120 text ++ "…" else text
+    in
+    when n is
+        Output o ->
+            "output " ++ pane o.pane ++ " " ++ String.fromInt (Bytes.length o.bytes) ++ " bytes"
+
+        Pause p ->
+            "pause " ++ pane p
+
+        Continue p ->
+            "continue " ++ pane p
+
+        LayoutChange l ->
+            "layout-change " ++ window l.window ++ (if l.flags == "" then "" else " flags " ++ l.flags)
+
+        WindowAdd w ->
+            "window-add " ++ window w
+
+        WindowClose w ->
+            "window-close " ++ window w
+
+        WindowRenamed r ->
+            "window-renamed " ++ window r.window
+
+        UnlinkedWindowAdd w ->
+            "unlinked-window-add " ++ window w
+
+        UnlinkedWindowClose w ->
+            "unlinked-window-close " ++ window w
+
+        UnlinkedWindowRenamed r ->
+            "unlinked-window-renamed " ++ window r.window
+
+        WindowPaneChanged c ->
+            "window-pane-changed " ++ window c.window ++ " " ++ pane c.pane
+
+        SessionChanged c ->
+            "session-changed " ++ session c.session
+
+        ClientSessionChanged c ->
+            "client-session-changed " ++ session c.session
+
+        SessionRenamed r ->
+            "session-renamed " ++ session r.session
+
+        SessionsChanged ->
+            "sessions-changed"
+
+        SessionWindowChanged c ->
+            "session-window-changed " ++ session c.session ++ " " ++ window c.window
+
+        PaneModeChanged p ->
+            "pane-mode-changed " ++ pane p
+
+        ClientDetached _ ->
+            "client-detached"
+
+        SubscriptionChanged c ->
+            "subscription-changed " ++ c.name
+
+        PasteBufferChanged _ ->
+            "paste-buffer-changed"
+
+        PasteBufferDeleted _ ->
+            "paste-buffer-deleted"
+
+        Message m ->
+            "message " ++ cut m
+
+        ConfigError m ->
+            "config-error " ++ cut m
+
+        Exit m ->
+            "exit " ++ cut m
+
+        Unknown m ->
+            "unknown notification " ++ cut (String.takeFirst 40 m)
+
+
+expectName : Expect -> String
+expectName x =
+    when x is
+        ForWindow -> "the window"
+        ForTabs -> "the tabs"
+        ForPanes -> "the panes"
+        ForInfo p -> "pane %" ++ String.fromInt p ++ "'s info"
+        ForSaved p -> "pane %" ++ String.fromInt p ++ "'s saved screen"
+        ForCapture p -> "pane %" ++ String.fromInt p ++ "'s capture"
+        ForKeys -> "the key bindings"
+        ForPrefixes -> "the prefixes"
+        ForModes -> "the panes' modes"
+        ForLabel -> "a prompt's label"
+        ForInput -> "a prompt's answer"
+        ForRan -> "a command run"
+        ForCondition c -> "a condition in pane %" ++ String.fromInt c.pane
+        ForNumbers -> "the panes' numbers"
+        ForCopy -> "copy mode's state"
+        ForTreeSessions -> "the tree's sessions"
+        ForTreeWindows -> "the tree's windows"
+        ForPreviewList _ -> "the tree preview's panes or windows"
+        ForPreviewCapture c -> "the tree preview's capture " ++ String.fromInt c.index
+        ForDayTime -> "the time of day"
+        ForPanesTime -> "display-panes-time"
+        ForMenuTitle _ -> "a menu's title"
+        ForMenuName _ -> "a menu item's name"
+        ForMenuCommand _ -> "a menu item's command"
+        ForNothing -> "nothing (a reply not read)"
+
+
+{-| A pane's line in a mark. -}
+paneSaid : State -> Int -> String
+paneSaid s id =
+    let
+        yes b =
+            if b then "on" else "off"
+
+        term =
+            withPane id s
+                (\t ->
+                    "paste-brackets "
+                        ++ yes (Dict.get 2004 t.modes == Just True)
+                        ++ ", focus-reports "
+                        ++ yes (Dict.get 1004 t.modes == Just True)
+                        ++ ", mouse "
+                        ++ yes ((Vt.mouseModes t).tracking /= Mouse.none)
+                        ++ ", alt-screen "
+                        ++ yes t.alt
+                        ++ ", app-cursor "
+                        ++ yes (Dict.get 1 t.modes == Just True)
+                        ++ ", size "
+                        ++ String.fromInt t.cols
+                        ++ "x"
+                        ++ String.fromInt t.rows
+                )
+                |> Maybe.withDefault "no terminal"
+
+        extra =
+            [ when Dict.get id s.paneModes is
+                Just mode -> if mode == "" then "" else ", mode " ++ mode
+                Nothing -> ""
+            , when Dict.get id s.modes is
+                Just table -> if table == "" then "" else ", key table " ++ table
+                Nothing -> ""
+            , when Dict.get id s.back is
+                Just b -> if b == 0 then "" else ", view scrolled back " ++ String.fromInt b
+                Nothing -> ""
+            , if Dict.member id s.copy then ", copy mode" else ""
+            , if Dict.member id s.nested then ", NESTED control mode (output dropped)" else ""
+            ]
+    in
+    "  pane %" ++ String.fromInt id ++ (if id == s.active then " (active)" else "") ++ ": " ++ term ++ String.join "" extra
+
+
+{-| Each pane's line in a mark, walked so that nothing captures the state. -}
+panesSaid : Array Int -> State -> Array String
+panesSaid ids s =
+    when Array.first ids is
+        Just id ->
+            Array.pushFirst (paneSaid s id) (panesSaid (Array.dropFirst 1 ids) s)
+
+        Nothing ->
+            []
+
+
+{-| What the diagnostic log's mark says of control mode
+(`docs/diagnostics.md` DG3): the panes, each with the modes that decide
+where keys, pastes and the mouse go, and what puritty waits for. -}
+diagnose : State -> Array String
+diagnose s =
+    let
+        yes b =
+            if b then "on" else "off"
+
+        open =
+            [ if s.asking /= Nothing then "a prompt" else ""
+            , if s.menu /= Nothing then "a menu" else ""
+            , if s.numbers /= Nothing then "pane numbers" else ""
+            , if s.view /= Nothing then "a view" else ""
+            , if s.tree /= Nothing then "the tree" else ""
+            , if s.drag /= Nothing then "a drag" else ""
+            ]
+                |> Array.keepIf (\x -> x /= "")
+    in
+    if not s.on then
+        [ "tmux control mode: off" ]
+
+    else
+        [ "tmux control mode: on, window @" ++ String.fromInt s.window ++ ", active pane %" ++ String.fromInt s.active ++ (if s.modal then ", a modal pane" else "")
+        , "  key table " ++ s.keys.table ++ (if s.keys.byTable then ", keys by table (send-keys -K)" else ", keys as bytes (tmux before 3.4)")
+        , "  waiting for " ++ String.fromInt (Array.length s.expecting) ++ " replies" ++ (if Array.isEmpty s.expecting then "" else ": " ++ String.join "; " (Array.map expectName (Array.takeFirst 6 s.expecting)))
+        , "  open: " ++ (if Array.isEmpty open then "nothing" else String.join ", " open)
+        , "  selection " ++ (when s.selection is
+                Just sel -> "made in pane %" ++ String.fromInt sel.pane
+                Nothing -> "none") ++ (when s.grab is
+                Just g -> ", pointer held by pane %" ++ String.fromInt g
+                Nothing -> "")
+        ]
+            ++ panesSaid s.ids s
 
 
 windowQuery : String
@@ -966,7 +1323,7 @@ replied expect ok lines acc =
                 more =
                     runLine ctx c.after ran.state
             in
-            { state = more.state, outside = acc.outside, commands = acc.commands ++ ran.commands ++ more.commands }
+            { state = more.state, outside = acc.outside, commands = acc.commands ++ ran.commands ++ more.commands, trace = acc.trace, run = acc.run }
 
         ForTreeSessions ->
             let
@@ -995,7 +1352,7 @@ replied expect ok lines acc =
                         )
                         lines
             in
-            { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | sessions = sessions, loaded = t.loaded + 1 }) st.tree } }
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | sessions = sessions, loaded = t.loaded + 1 }) st.tree } }
 
         ForTreeWindows ->
             let
@@ -1021,7 +1378,64 @@ replied expect ok lines acc =
                         )
                         lines
             in
-            { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+
+        ForPreviewList serial ->
+            -- the panes or windows of the row previewed, each then captured
+            let
+                items =
+                    Array.mapAndKeepJust previewItem lines |> Array.takeFirst 12
+
+                current =
+                    Maybe.map (\t -> t.preview.serial) acc.state.tree
+            in
+            if current /= Just serial || not ok then
+                acc
+
+            else
+                let
+                    st =
+                        acc.state
+                in
+                when st.tree is
+                    Just t ->
+                        let
+                            pv =
+                                t.preview
+                        in
+                        ask
+                            (Array.indexedMap (\i item -> { command = "capture-pane -p -t " ++ Command.quote item.id, expect = ForPreviewCapture { serial = serial, index = i } }) items)
+                            { acc | state = { st | tree = Just { t | preview = { pv | items = items } } } }
+
+                    Nothing ->
+                        { acc | state = st }
+
+        ForPreviewCapture c ->
+            let
+                shown =
+                    Array.map Bytes.toStringLossy lines |> trimBlank
+
+                current =
+                    Maybe.map (\t -> t.preview.serial) acc.state.tree
+            in
+            if current /= Just c.serial || not ok then
+                acc
+
+            else
+                let
+                    st =
+                        acc.state
+                in
+                when st.tree is
+                    Just t ->
+                        let
+                            pv =
+                                t.preview
+                        in
+                        { acc | state = { st | tree = Just { t | preview = { pv | items = Array.update c.index (\item -> { item | lines = shown }) pv.items } } } }
+
+                    Nothing ->
+                        { acc | state = st }
 
         ForDayTime ->
             let
@@ -1880,7 +2294,7 @@ typed k bytes ms s =
         -- where copy mode is after the key, asked behind it (TM31)
         let
             asked =
-                askCopy pane { state = r.state, outside = [], commands = [] }
+                askCopy pane { state = r.state, outside = [], commands = [], trace = [], run = Nothing }
         in
         { state = asked.state, commands = r.commands ++ asked.commands }
 
@@ -1910,7 +2324,7 @@ typedHere k bytes ms s =
             { asking = Nothing, menu = Nothing, numbers = Nothing, view = Nothing } ->
                 when s.tree is
                     Just t ->
-                        treeKey k t { s | clock = ms }
+                        previewAfter (treeKey k t { s | clock = ms })
 
                     Nothing ->
                         keyByTable k bytes ms { s | clock = ms }
@@ -3438,7 +3852,7 @@ runLine ctx line s =
                                             [ { command = "list-sessions -F " ++ Command.quote "S #{session_id} #{session_attached} #{session_windows} #{session_name}", expect = ForTreeSessions }
                                             , { command = "list-windows -a -F " ++ Command.quote "W #{session_id} #{window_id} #{window_index} #{window_active} #{window_panes} #{window_name}", expect = ForTreeWindows }
                                             ]
-                                            { s | said = "", tree = Just { sessions = [], windows = [], loaded = 0, open = Dict.empty, selected = 0, startSessions = t.sessions, template = t.template, pane = ctx.pane, zoom = t.zoom } }
+                                            { s | said = "", tree = Just { sessions = [], windows = [], loaded = 0, open = Dict.empty, selected = 0, startSessions = t.sessions, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
 
                                     ran =
                                         runLine ctx t.after opened.state
@@ -4171,6 +4585,138 @@ treeLoaded shown t =
         }
 
 
+{-| The preview asked for in a reply's turn. -}
+previewAcc : (taken acc : Acc) -> Acc
+previewAcc acc =
+    let
+        r =
+            askPreview acc.state
+    in
+    { acc | state = r.state, commands = acc.commands ++ r.commands }
+
+
+{-| The preview asked for after a key in the tree. -}
+previewAfter : (taken r0 : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+previewAfter r0 =
+    let
+        r =
+            askPreview r0.state
+    in
+    { state = r.state, commands = r0.commands ++ r.commands }
+
+
+{-| tmux asked what the tree's chosen row shows (TM35), when that row is
+not the one already previewed: a window's panes with where they are, or a
+session's windows; each is captured when the answer comes. -}
+askPreview : (taken s : State) -> { state : State, commands : Array String }
+askPreview s =
+    when s.tree is
+        Just t ->
+            if t.loaded < 2 then
+                { state = s, commands = [] }
+
+            else
+                let
+                    row =
+                        Array.get t.selected (treeRows t)
+
+                    target =
+                        when row is
+                            Just r ->
+                                if r.window >= 0 then "@" ++ String.fromInt r.window else "$" ++ String.fromInt r.session
+
+                            Nothing ->
+                                ""
+
+                    isSession =
+                        String.startsWith "$" target
+
+                    serial =
+                        t.preview.serial + 1
+
+                    command =
+                        if isSession then
+                            "list-windows -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}"
+
+                        else
+                            "list-panes -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}"
+                in
+                if target == "" || target == t.preview.target then
+                    { state = s, commands = [] }
+
+                else
+                    sendAsking [ { command = command, expect = ForPreviewList serial } ]
+                        { s | tree = Just { t | preview = { serial = serial, target = target, session = isSession, items = [] } } }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| A line of the preview's list: `Q id x y w h active label`. -}
+previewItem : Bytes -> Maybe PreviewItem
+previewItem line =
+    when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
+        Just { first = "Q", rest = rest } ->
+            let
+                num i =
+                    Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i rest))
+            in
+            Just
+                { id = Maybe.withDefault "" (Array.get 0 rest)
+                , x = num 1
+                , y = num 2
+                , w = max 1 (num 3)
+                , h = max 1 (num 4)
+                , active = Array.get 5 rest == Just "1"
+                , label = String.join " " (Array.dropFirst 6 rest)
+                , lines = []
+                }
+
+        _ ->
+            Nothing
+
+
+{-| A capture's lines without the blank ones at its end, so that the
+preview shows where the text is, as tmux's shows around the cursor. -}
+trimBlank : Array String -> Array String
+trimBlank lines =
+    when Array.last lines is
+        Just l ->
+            if String.trim l == "" then trimBlank (Array.dropLast 1 lines) else lines
+
+        Nothing ->
+            []
+
+
+{-| A line cut to `n` cells and padded to them: a wide character (Hangul,
+Han) takes two, a control character none. -}
+clipCells : Int -> String -> String
+clipCells n text =
+    let
+        step c acc =
+            if acc.full then
+                acc
+
+            else
+                let
+                    cp =
+                        Char.toCode c
+
+                    w =
+                        if cp < 0x20 || cp == 0x7F then 0 else if cp < 0x80 then 1 else Width.width cp
+                in
+                if acc.used + w > n then
+                    { acc | full = True }
+
+                else
+                    { acc | used = acc.used + w, text = acc.text ++ String.fromChar c }
+
+        done =
+            String.foldl step { used = 0, text = "", full = False } text
+    in
+    done.text ++ String.repeat (max 0 (n - done.used)) " "
+
+
 {-| The tree's rows: each session, and an open one's windows under it. -}
 treeRows : Tree -> Array TreeRow
 treeRows t =
@@ -4306,16 +4852,49 @@ chooseRow row t s =
 {-| The tree's cells (TM32): in tmux's look as tmux's tree mode lists it,
 each row's key in brackets, `+` or `-` for a session folded or open, the
 windows under it joined by `├─>` and `└─>`, the chosen row in
-`mode-style`; in puritty's, the view's box. tmux's preview of the chosen
-item, below the list, is not drawn. -}
+`mode-style`; in puritty's, the view's box. Below the list, when there is
+room, the chosen row's preview, as tmux draws it (TM35): the list takes a
+third of the height, or less with fewer rows. -}
 drawTree : Bool -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
 drawTree tmuxLook place t =
     let
         rows =
             treeRows t
 
+        listArea =
+            if tmuxLook then
+                { x = place.x, y = place.y, w = place.w, h = place.h }
+
+            else
+                { x = place.x + 2, y = place.y + 1, w = place.w - 4, h = place.h - 2 }
+
+        withPreview =
+            t.preview.target /= "" && listArea.h >= 8 && listArea.w >= 12
+
         shownRows =
-            max 1 (if tmuxLook then place.h else place.h - 2)
+            if withPreview then
+                max 1 (min (Array.length rows) (max 3 (listArea.h // 3)))
+
+            else
+                max 1 listArea.h
+
+        previewDrawn =
+            if withPreview then
+                let
+                    sepRow =
+                        listArea.y + shownRows
+
+                    separator =
+                        if tmuxLook then
+                            { row = sepRow, col = place.x, color = lineColor, text = String.repeat place.w "─" }
+
+                        else
+                            { row = sepRow, col = place.x, color = viewEdgeColor, text = "├" ++ String.repeat (place.w - 2) "─" ++ "┤" }
+                in
+                Array.pushFirst separator (drawPreview tmuxLook { x = listArea.x, y = sepRow + 1, w = listArea.w, h = listArea.h - shownRows - 1 } t.preview)
+
+            else
+                []
 
         top =
             if t.selected < shownRows then 0 else t.selected - shownRows + 1
@@ -4368,7 +4947,7 @@ drawTree tmuxLook place t =
     in
     if tmuxLook then
         Array.range 0 (place.h - 1) |> Array.map (\r -> { row = place.y + r, col = place.x, color = "\u{001B}[0m", text = String.repeat place.w " " })
-            |> (\cleared -> cleared ++ listed)
+            |> (\cleared -> cleared ++ listed ++ previewDrawn)
 
     else
         let
@@ -4384,7 +4963,98 @@ drawTree tmuxLook place t =
         [ { row = place.y, col = place.x, color = viewEdgeColor, text = "╭" ++ String.takeFirst inner (label ++ String.repeat inner "─") ++ "╮" } ]
             ++ (Array.range 1 (place.h - 2) |> Array.mapAndFlatten (\r -> [ { row = place.y + r, col = place.x, color = viewEdgeColor, text = "│" ++ String.repeat inner " " ++ "│" } ]))
             ++ listed
+            ++ previewDrawn
             ++ [ { row = place.y + place.h - 1, col = place.x, color = viewEdgeColor, text = "╰" ++ String.takeFirst inner (foot ++ String.repeat inner "─") ++ "╯" } ]
+
+
+{-| The preview in its area (TM35): a session's windows side by side, as
+many as fit at ten cells or more; a window's panes where they are in it,
+scaled to the area. Each has a top line with its label, the active one's
+in the active color, and below it the last lines it shows, cut to its
+width by cells. -}
+drawPreview : Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
+drawPreview tmuxLook area pv =
+    let
+        text =
+            if tmuxLook then "\u{001B}[0m" else viewTextColor
+
+        edge active =
+            if tmuxLook then
+                if active then "\u{001B}[0;32m" else "\u{001B}[0m"
+
+            else if active then
+                viewEdgeColor
+
+            else
+                "\u{001B}[0;38;5;240;48;5;236m"
+
+        rects =
+            if pv.session then
+                let
+                    fit =
+                        max 1 ((area.w + 1) // 11)
+
+                    shown =
+                        Array.takeFirst fit pv.items
+
+                    n =
+                        max 1 (Array.length shown)
+
+                    cw =
+                        max 1 ((area.w - (n - 1)) // n)
+                in
+                Array.indexedMap (\i item -> { item = item, x = area.x + i * (cw + 1), y = area.y, w = cw, h = area.h }) shown
+
+            else
+                let
+                    totalW =
+                        max 1 (Array.foldl (\i m -> max m (i.x + i.w)) 1 pv.items)
+
+                    totalH =
+                        max 1 (Array.foldl (\i m -> max m (i.y + i.h)) 1 pv.items)
+                in
+                Array.map
+                    (\item ->
+                        let
+                            x0 =
+                                item.x * area.w // totalW
+
+                            x1 =
+                                (item.x + item.w) * area.w // totalW
+
+                            y0 =
+                                item.y * area.h // totalH
+
+                            y1 =
+                                (item.y + item.h) * area.h // totalH
+                        in
+                        { item = item, x = area.x + x0, y = area.y + y0, w = max 1 (x1 - x0), h = max 2 (y1 - y0) }
+                    )
+                    pv.items
+
+        drawn r =
+            let
+                label =
+                    " " ++ r.item.label ++ " "
+
+                top =
+                    clipCells r.w (String.repeat (max 0 ((r.w - String.count label) // 2)) "─" ++ label ++ String.repeat r.w "─")
+
+                body =
+                    r.h - 1
+
+                shown =
+                    Array.takeLast body r.item.lines
+
+                padded =
+                    shown ++ Array.repeat (max 0 (body - Array.length shown)) ""
+            in
+            Array.pushFirst { row = r.y, col = r.x, color = edge r.item.active, text = top }
+                (Array.indexedMap (\j line -> { row = r.y + 1 + j, col = r.x, color = text, text = clipCells r.w line }) padded)
+    in
+    Array.range 0 (area.h - 1)
+        |> Array.map (\j -> { row = area.y + j, col = area.x, color = text, text = String.repeat area.w " " })
+        |> (\cleared -> cleared ++ Array.mapAndFlatten drawn rects)
 
 
 {-| The time of day for the clock, `HH:MM`, from the loop's clock and the

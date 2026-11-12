@@ -1460,7 +1460,7 @@ answering; `C-a t` shows the time tmux gives (`14:26`) in its digits, and
 q leaves `clock-mode`; `C-a =` with a buffer is `buffer-mode`, said, and
 q leaves it. Every other scenario gives what it gave.
 
-**Not yet:** the tree's preview, tags (`t`), kill (`x`), sorting (`O`),
+**Not yet:** the tree's preview (since TM35), tags (`t`), kill (`x`), sorting (`O`),
 filters (`f`) and the panes level; choose-buffer, choose-client and
 customize-mode are only said, not drawn.
 
@@ -1515,3 +1515,49 @@ shown; their model should carry such invariants from its first line (the
 shown tab inside the list, each tab's terminal beside its id) rather than
 have them added afterwards.
 
+
+## TM35 · The tree's preview (2026-11-12)
+
+Gilbert, using `-CC` at work: "when I did prefix s to see my sessions
+there was no preview of the panes like there normally is in a non -CC
+tmux". TM32 had left it out.
+
+**What tmux draws**, below the list: for a window, its panes laid out as
+they are, each showing the part of its screen around the cursor; for a
+session, its windows side by side, each its active pane, the current one
+marked. puritty does the same with what it asks tmux.
+
+**Asked.** When the tree has loaded, and after every key in it, puritty
+looks at the chosen row; if it is not the row already previewed, it asks
+`list-panes -t @W` (each pane's id, place, size, whether active, index)
+or `list-windows -t $S` (each window's id, size, whether active, index and
+name), and on the answer `capture-pane -p -t` each of them, at most
+twelve. A window target captures its active pane, as tmux's own preview
+of a session does. Each question carries the preview's serial
+(`ForPreviewList`, `ForPreviewCapture`), so the replies for a row the user
+has moved past are dropped, however fast the keys come.
+
+**Drawn** (`drawPreview`). The list takes a third of the tree's height, or
+fewer rows when there are fewer, then a line, then the preview: a
+window's panes scaled from the window's cells to the area; a session's
+windows side by side, as many as fit at ten cells or more. Each has a top
+line with its label (the pane's index, or the window's `index:name`), the
+active one's in the active color (tmux's green in tmux's look, amber in
+puritty's), and below it the last lines of its capture with the blank
+ones at the end dropped, so the text near the prompt shows, cut to the
+width in cells (`clipCells`, with `Vt.Width`: Hangul and Han take two). A
+tree too small for it (under 8 rows or 12 columns inside) has no
+preview.
+
+**Not yet:** the panes' colors (the capture is taken without `-e`, so the
+text is drawn plain), and tmux's `v` (preview size) and its arrows across
+a session's windows when there are more than fit.
+
+**Checked:** `bench/tmux/show.py --scenario modes`, which now splits the
+first window and writes a line in each pane and in the other session:
+`C-a w` with `1: sh` chosen previews its one pane; Up to `0: first`
+previews its two panes side by side, `left pane` and `right pane`, the
+active pane's label amber; `C-a s` previews `main`'s two windows side by
+side, `0:first` (its active pane) and `1:sh`; the same in tmux's look,
+the active label green. Choosing still goes where it did (`main:0`,
+`other:0`).

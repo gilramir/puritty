@@ -19,7 +19,7 @@ IMAGES = ROOT / "docs" / "images"
 REPO = "https://github.com/gilramir/puritty/blob/main/"
 
 # the guide's order; a guide not named here comes after these
-ORDER = ["getting-started", "settings", "copy-and-paste", "tabs", "tmux"]
+ORDER = ["getting-started", "settings", "copy-and-paste", "tabs", "tmux", "diagnostics"]
 
 
 def link(m):

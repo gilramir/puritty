@@ -56,6 +56,10 @@ paste_button = "middle"     # or "right"
 
 [clipboard]
 osc52_read = "deny"         # or "allow"
+
+[debug]
+log = false                 # true: a diagnostic log for each window,
+                            # see the diagnostic log guide
 ```
 
 ## Color schemes

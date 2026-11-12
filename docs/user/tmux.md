@@ -118,7 +118,10 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 - **Choosing a session or window**: `prefix s` and `prefix w` list your
   sessions and windows; move with the arrows or `j` and `k`, open and fold
   a session with Right and Left, Enter (or a row's number) goes there,
-  Escape closes. **The clock**: `prefix t`.
+  Escape closes. Below the list, as in tmux, a preview of the row chosen:
+  a window's panes where they are in it, or a session's windows side by
+  side, each with the text it shows (without its colors). **The clock**:
+  `prefix t`.
 
 Not yet under `-CC`: the buffer list (`prefix =`), the client list
 (`prefix D`) and the options editor (`prefix C`) work as in tmux but

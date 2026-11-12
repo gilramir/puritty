@@ -7,6 +7,8 @@ gren-unit-node: the settings' table and its lenient decoder. Run with
 
 import Chord
 import Config
+import Diag
+import Bytes
 import Expect exposing (Expectation)
 import Hosts
 import I18Next
@@ -29,7 +31,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing, window, hosts, words, chords, restoring ]
+                    , suites = [ schema, writing, window, hosts, words, chords, restoring, diagnostics ]
                     }
             )
 
@@ -1174,4 +1176,32 @@ restoring =
         , { name = "a color that is not one is the host's"
           , test = \_ -> Expect.equal (Ok [ HostsColor ]) (RestoreFile.decode "columns = 80\nrows = 24\nshown = 0\n[[tabs]]\ncolor = \"red\"\n" |> Result.map (\st -> Array.map .color st.tabs))
           }
+        ]
+
+
+{-| The diagnostic log says nothing typed, pasted or shown (docs/diagnostics.md
+DG1): keys by name, tmux's bytes counted, long quoted arguments by length. -}
+diagnostics : U.Suite
+diagnostics =
+    let
+        typedKey mods sym unshifted text =
+            { action = 1, keycode = 30, mods = mods, consumed = 0, unshifted = unshifted, sym = sym, text = Bytes.fromString text }
+    in
+    run "diagnostics"
+        [ { name = "a typed letter is text, not the letter", test = \_ -> Expect.equal (Just "text") (Diag.key (typedKey 0 0x61 0x61 "a")) }
+        , { name = "a shifted letter is text", test = \_ -> Expect.equal (Just "text") (Diag.key (typedKey 1 0x41 0x61 "A")) }
+        , { name = "Ctrl+C by name", test = \_ -> Expect.equal (Just "Ctrl+C") (Diag.key (typedKey 2 0x63 0x63 "\u{0003}")) }
+        , { name = "Enter by name", test = \_ -> Expect.equal (Just "Enter") (Diag.key (typedKey 0 0xFF0D 0 "\r")) }
+        , { name = "Shift+Up", test = \_ -> Expect.equal (Just "Shift+Up") (Diag.key (typedKey 1 0xFF52 0 "")) }
+        , { name = "a release is not said", test = \_ -> Expect.equal Nothing (Diag.key { action = 0, keycode = 30, mods = 0, consumed = 0, unshifted = 0x61, sym = 0x61, text = Bytes.empty }) }
+        , { name = "a modifier alone is not said", test = \_ -> Expect.equal Nothing (Diag.key (typedKey 2 0xFFE3 0 "")) }
+        , { name = "a Hangul syllable typed is text", test = \_ -> Expect.equal (Just "text") (Diag.key (typedKey 0 0 0xD55C "한")) }
+        , { name = "send-keys bytes counted", test = \_ -> Expect.equal "send-keys -t '%3' -H <3 bytes>" (Diag.command "send-keys -t '%3' -H 70 77 64") }
+        , { name = "send-keys -K -H counted", test = \_ -> Expect.equal "send-keys -K -H <2 bytes>" (Diag.command "send-keys -K -H ed 95") }
+        , { name = "a long quoted argument by its length", test = \_ -> Expect.equal "if-shell -F -t '%1' '<45 chars>'" (Diag.command "if-shell -F -t '%1' 'select-word secret words that are on a screen'") }
+        , { name = "a format kept", test = \_ -> Expect.equal "display-message -p 'W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}'" (Diag.command "display-message -p 'W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}'") }
+        , { name = "a short command kept", test = \_ -> Expect.equal "select-pane -t '%2'" (Diag.command "select-pane -t '%2'") }
+        , { name = "lines of a paste", test = \_ -> Expect.equal [ 0, 1, 2, 2 ] [ Diag.lines (Bytes.fromString ""), Diag.lines (Bytes.fromString "a"), Diag.lines (Bytes.fromString "a\nb"), Diag.lines (Bytes.fromString "a\nb\n") ] }
+        , { name = "the clock", test = \_ -> Expect.equal "14:05:33.120" (Diag.clock (((14 * 60 + 5) * 60 + 33) * 1000 + 120)) }
+        , { name = "a line while the log is off is dropped", test = \_ -> Expect.equal [] (Diag.add 5 "key" "Enter" Diag.off).lines }
         ]

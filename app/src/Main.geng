@@ -52,6 +52,7 @@ import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSettings, settingsFile, watchSettings, overridden)
 import Outbox exposing (Outbox)
 import Console
+import Diag
 import Dialog
 import Restore
 import RestoreFile exposing (TabColor(..))
@@ -193,6 +194,13 @@ type alias Model =
       -- tabs closed lately, to open again (docs/tabs.md TB11): five
       -- slots, each a tab as it was with where it was and when it closed
     , closedTabs : Builder (Maybe Closed)
+      -- the diagnostic log (docs/diagnostics.md DG1): its lines waiting to
+      -- be written, the folder its files go in, the time of the turn the
+      -- lines are written at, and the tab last said to be shown
+    , diag : Diag.Log
+    , logDir : Maybe String
+    , turnMs : Int
+    , loggedTab : Int
     }
 
 
@@ -763,7 +771,7 @@ begin cp vars given problems locale config cell restoring =
                                                         , charset = localCharset
                                                         }
                                                 in
-                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring
+                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring (Platform.logDirectory vars)
                                             )
                                 )
 
@@ -832,8 +840,8 @@ the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Task String {}
-run imeLog shotPath charset config cell remote starter settings problems opener restoring =
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
+run imeLog shotPath charset config cell remote starter settings problems opener restoring logDir =
             -- puritty's own text (its questions, the search bar, the tab
             -- bar) in the interface font, as the settings window's is, apart
             -- from the terminal's (docs/tabs.md TB5)
@@ -921,6 +929,10 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , byButton = False
                             , quietUntil = -1
                             , closedTabs = Builder.empty closedSlots
+                            , diag = Diag.off
+                            , logDir = logDir
+                            , turnMs = t0
+                            , loggedTab = -1
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -931,7 +943,10 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
 was closed, after asking the program to end. -}
 finish : Backend -> (taken m0 : Model) -> Task String {}
 finish remote m0 =
-    savedAtEnd m0 |> Task.mapError Os.Error.toString |> Task.andThen (\m -> finishTabs remote m)
+    savedAtEnd m0
+        |> Task.andThen (\m -> writeLog True (logLine "end" (if m.lost then "the window was lost" else "the window ended") m))
+        |> Task.mapError Os.Error.toString
+        |> Task.andThen (\m -> finishTabs remote m)
 
 
 {-| What becomes of the window's saved tabs as it ends (docs/tabs.md
@@ -1041,7 +1056,7 @@ nextAt m =
             else
                 -1
     in
-    soonest (soonest (soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)
+    soonest (soonest (soonest (soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)
 
 
 {-| The sooner of two times, -1 standing for none. -}
@@ -1069,7 +1084,7 @@ send text m =
             k =
                 TmuxMode.keys text m.tmux
         in
-        sendRaw (commandLines k.commands) { m | tmux = k.state }
+        sendCommands k.commands { m | tmux = k.state }
 
     else
         sendPty text m
@@ -1084,7 +1099,7 @@ sendKey k bytes ms m =
             r =
                 TmuxMode.typed k bytes ms m.tmux
         in
-        sendRaw (commandLines r.commands) { m | tmux = r.state }
+        sendCommands r.commands { m | tmux = r.state }
 
     else
         sendPty bytes m
@@ -1351,6 +1366,8 @@ barFirst remote m =
      else
         Task.succeed m
     )
+        -- the diagnostic log begun, when the settings ask for it
+        |> Task.andThen (logTurned False)
         |> Task.andThen (loop remote)
 
 
@@ -1370,6 +1387,7 @@ loop remote m00 =
     )
         |> Task.andThen pointerShape
         |> Task.andThen clipboardRequests
+        |> Task.andThen (writeLog False)
         |> Task.andThen (flush remote)
         |> Task.andThen (\m0 -> race remote m0)
 
@@ -1471,10 +1489,10 @@ race remote m0 =
 
                                             Read (Notice told) ->
                                                 if endsSession told m.ssh then
-                                                    closeShown (sshNoticed told m) |> Task.andThen (\next -> step next.remote ms next)
+                                                    closeShown (sshNoticed told (logLine "ssh" (sshLine told) { m | turnMs = ms })) |> Task.andThen (\next -> step next.remote ms next)
 
                                                 else
-                                                    step remote ms (sshNoticed told m)
+                                                    step remote ms (sshNoticed told (logLine "ssh" (sshLine told) { m | turnMs = ms }))
 
                                             Events up ->
                                                 if not up then
@@ -1506,12 +1524,19 @@ race remote m0 =
 
 {-| A frame if one is due, then the loop again, unless the window is gone. -}
 step : Backend -> Int -> (taken m : Model) -> Task Error Model
-step remote ms m =
-    if m.closed || m.lost then
-        Task.succeed m
+step remote ms m0 =
+    if m0.closed || m0.lost then
+        Task.succeed m0
 
     else
         let
+            m =
+                if Diag.isOn m0.diag && m0.tab.id /= m0.loggedTab then
+                    { m0 | loggedTab = m0.tab.id, diag = Diag.add ms "tab" ("shown: tab " ++ String.fromInt m0.tab.id ++ " of " ++ String.fromInt (tabCount m0) ++ (if TmuxMode.isOn m0.tmux then ", under tmux -CC" else "")) m0.diag }
+
+                else
+                    m0
+
             at =
                 frameAt m
         in
@@ -1662,7 +1687,353 @@ applySettings new m =
         was =
             m.config.tabsRestore
     in
-    applyLook new m |> Task.andThen (restoreTurned was)
+    let
+        wasLogging =
+            m.config.debugLog
+    in
+    applyLook new m |> Task.andThen (restoreTurned was) |> Task.andThen (logTurned wasLogging)
+
+
+-- THE DIAGNOSTIC LOG (docs/diagnostics.md)
+
+
+{-| `[debug] log` turned on, at the start or while the window runs: a
+file begun in the logs folder, the oldest beyond twenty removed; turned
+off: the last lines written and the log ended. -}
+logTurned : Bool -> (taken m : Model) -> Task Error Model
+logTurned was m =
+    if m.config.debugLog && not was && not (Diag.isOn m.diag) then
+        beginLog m
+
+    else if was && not m.config.debugLog then
+        let
+            ended =
+                logLine "end" "the log was turned off" m
+        in
+        writeLog True ended |> Task.map (\next -> { next | diag = Diag.off })
+
+    else
+        Task.succeed m
+
+
+beginLog : (taken m : Model) -> Task Error Model
+beginLog m =
+    when m.logDir is
+        Nothing ->
+            Task.succeed m
+
+        Just dir ->
+            let
+                fs =
+                    m.settings.given.fs
+
+                folder =
+                    Path.fromString dir
+
+                header =
+                    logHeader m
+            in
+            Directory.createAll fs folder
+                |> Task.onError (\_ -> Task.succeed {})
+                |> Task.andThen (\_ -> pruneLogs fs folder)
+                |> Task.andThen (\_ -> Task.map2 (\posix zone -> { posix = posix, zone = zone }) Time.now Time.here)
+                |> Task.andThen
+                    (\t ->
+                        let
+                            dayMs =
+                                ((Time.toHour t.zone t.posix * 60 + Time.toMinute t.zone t.posix) * 60 + Time.toSecond t.zone t.posix) * 1000 + Time.toMillis t.zone t.posix
+
+                            day =
+                                String.padLeft 4 '0' (String.fromInt (Time.toYear t.zone t.posix))
+                                    ++ "-"
+                                    ++ String.padLeft 2 '0' (String.fromInt (monthNumber (Time.toMonth t.zone t.posix)))
+                                    ++ "-"
+                                    ++ String.padLeft 2 '0' (String.fromInt (Time.toDay t.zone t.posix))
+
+                            stamp =
+                                String.replace ":" "" (String.takeFirst 8 (Diag.clock dayMs))
+
+                            name =
+                                "puritty-" ++ day ++ "_" ++ stamp ++ "-" ++ String.padLeft 3 '0' (String.fromInt (modBy 1000 m.turnMs)) ++ ".log"
+
+                            path =
+                                dir ++ Platform.pathSeparator ++ name
+                        in
+                        now
+                            |> Task.map
+                                (\ms ->
+                                    { m
+                                        | diag =
+                                            Diag.start path
+                                                { ms = ms, dayMs = dayMs }
+                                                ([ "puritty diagnostic log, begun " ++ day ++ " " ++ Diag.clock dayMs ++ " local time"
+                                                 , "file " ++ path
+                                                 , "nothing typed, pasted or shown is written: keys by name, pastes and output by size"
+                                                 ]
+                                                    ++ header
+                                                )
+                                        , loggedTab = m.tab.id
+                                    }
+                                )
+                    )
+                |> Task.andThen (writeLog True)
+
+
+monthNumber : Time.Month -> Int
+monthNumber month =
+    when month is
+        Time.Jan -> 1
+        Time.Feb -> 2
+        Time.Mar -> 3
+        Time.Apr -> 4
+        Time.May -> 5
+        Time.Jun -> 6
+        Time.Jul -> 7
+        Time.Aug -> 8
+        Time.Sep -> 9
+        Time.Oct -> 10
+        Time.Nov -> 11
+        Time.Dec -> 12
+
+
+{-| The logs folder's files beyond the newest nineteen removed, so that
+with the new one twenty are kept. Their names sort by time. -}
+pruneLogs : File.Permission -> Path.Path -> Task Error {}
+pruneLogs fs folder =
+    Directory.list fs folder
+        |> Task.map
+            (\entries ->
+                entries
+                    |> Array.map .path
+                    |> Array.keepIf
+                        (\p ->
+                            let
+                                base =
+                                    Path.toString p
+                            in
+                            String.contains "puritty-" base && String.endsWith ".log" base
+                        )
+                    |> Array.sortBy Path.toString
+            )
+        |> Task.andThen
+            (\logs ->
+                Array.foldl
+                    (\p acc -> acc |> Task.andThen (\_ -> File.remove fs p |> Task.onError (\_ -> Task.succeed {})))
+                    (Task.succeed {})
+                    (Array.dropLast 19 logs)
+            )
+        |> Task.onError (\_ -> Task.succeed {})
+
+
+{-| What the log says of the window as it begins. -}
+logHeader : Model -> Array String
+logHeader m =
+    [ (embedderOf m.config).version ++ " on " ++ (if Platform.pathSeparator == "\\" then "Windows" else "Linux")
+    , "window " ++ String.fromInt m.term.cols ++ "x" ++ String.fromInt m.windowRows ++ " cells, " ++ String.fromInt (tabCount m) ++ " tabs"
+    , "paste button " ++ (if m.config.pasteButton == 2 then "right" else "middle") ++ ", tmux look " ++ m.config.tmuxLook ++ ", tmux tabs " ++ m.config.tmuxTabs
+    ]
+        ++ windowState m
+
+
+{-| A line, at this turn's time. -}
+logLine : String -> String -> (taken m : Model) -> Model
+logLine tag text m =
+    { m | diag = Diag.add m.turnMs tag text m.diag }
+
+
+{-| The waiting lines appended to the file, when they are due or `now`
+says so; a file that cannot be written loses them, said on the next. -}
+writeLog : Bool -> (taken m : Model) -> Task Error Model
+writeLog force m0 =
+    if Diag.isOn m0.diag && (force || Diag.due m0.diag >= 0) then
+        now
+            |> Task.andThen
+                (\ms ->
+                    let
+                        dueAt =
+                            Diag.due m0.diag
+                    in
+                    if dueAt < 0 || (not force && ms < dueAt) then
+                        Task.succeed m0
+
+                    else
+                        let
+                            taken =
+                                Diag.take ms m0.diag
+
+                            m =
+                                { m0 | diag = taken.log }
+                        in
+                        when taken.path is
+                            Just path ->
+                                File.appendFile m.settings.given.fs taken.bytes (Path.fromString path)
+                                    |> Task.map (\_ -> Nothing)
+                                    |> Task.onError (\e -> Task.succeed (Just (Os.Error.toString e)))
+                                    |> Task.map
+                                        (\problem ->
+                                            when problem is
+                                                Nothing ->
+                                                    m
+
+                                                Just why ->
+                                                    logLine "error" ("the log could not be written: " ++ why) m
+                                        )
+
+                            Nothing ->
+                                Task.succeed m
+                )
+
+    else
+        Task.succeed m0
+
+
+{-| A mark in the log (`[keys] mark_log`, the menu): its number, and the
+window's state as it is, written at once. -}
+markLog : (taken m : Model) -> Task Error Model
+markLog m =
+    let
+        counted =
+            Diag.nextMark m.diag
+
+        withCount =
+            { m | diag = counted.log }
+
+        n =
+            String.fromInt counted.number
+
+        lines =
+            [ "==================== MARK " ++ n ++ " ====================" ]
+                ++ windowState withCount
+                ++ TmuxMode.diagnose withCount.tmux
+                ++ [ "==================== END OF MARK " ++ n ++ " =============" ]
+    in
+    writeLog True { withCount | diag = Diag.addAll withCount.turnMs "mark" lines withCount.diag }
+
+
+{-| The window's state for a mark: what decides where keys, pastes and the
+mouse go, and what waits. -}
+windowState : Model -> Array String
+windowState m =
+    let
+        yes b =
+            if b then "on" else "off"
+
+        modes =
+            m.term.modes
+    in
+    [ "tab " ++ String.fromInt m.tab.id ++ " shown of " ++ String.fromInt (tabCount m) ++ ", " ++ (when m.tab.hostName is
+            Just h -> "host " ++ h
+            Nothing -> "no host")
+    , "focus " ++ yes m.focus.focused ++ ", buttons held " ++ String.fromInt m.held ++ ", shift " ++ yes m.shiftHeld
+    , "paste asked " ++ yes (m.toPaste /= Nothing) ++ ", paste under way " ++ (when m.pasting is
+            Just b -> "yes, " ++ (if b then "bracketed" else "plain")
+            Nothing -> "no")
+    , "waiting to be sent " ++ String.fromInt (Outbox.size m.out) ++ " bytes"
+    , "terminal: paste-brackets " ++ yes (Dict.get 2004 modes == Just True) ++ ", focus-reports " ++ yes (Dict.get 1004 modes == Just True) ++ ", mouse " ++ yes ((Vt.mouseModes m.term).tracking /= Mouse.none) ++ ", alt-screen " ++ yes m.term.alt ++ ", view scrolled back " ++ String.fromInt m.back
+    , "open: " ++ (when Array.keepIf (\x -> x /= "")
+            [ if m.menu /= Nothing then "a menu" else ""
+            , if m.renaming /= Nothing then "the rename box" else ""
+            , if m.coloring /= Nothing then "the color box" else ""
+            , if m.closing /= Nothing then "the close question" else ""
+            , if m.search /= Nothing then "the search bar" else ""
+            , if m.selection /= Nothing then "a selection" else ""
+            ] is
+                [] -> "nothing"
+                open -> String.join ", " open)
+    , "ssh: " ++ (when m.ssh is
+            Just screen -> "to " ++ screen.host ++ (if screen.started then ", started" else ", not started") ++ (if screen.asking /= Nothing then ", asking a question" else "") ++ (when screen.failed is
+                Just why -> ", failed: " ++ why
+                Nothing -> "")
+            Nothing -> "none")
+    ]
+
+
+{-| A window event as the log says it, `Nothing` for those it leaves out
+(the pointer's motions, a key's release, the preedit as it changes). -}
+eventLine : Window.Event -> Maybe { tag : String, text : String }
+eventLine ev =
+    when ev is
+        Window.Key k ->
+            Maybe.map (\t -> { tag = "key", text = t }) (Diag.key k)
+
+        Window.Pointer p ->
+            Maybe.map (\t -> { tag = "mouse", text = t }) (Diag.pointer p)
+
+        Window.Resized r ->
+            Just { tag = "window", text = "size " ++ String.fromInt r.cols ++ "x" ++ String.fromInt r.rows }
+
+        Window.Rescaled c ->
+            Just { tag = "window", text = "cell " ++ String.fromInt c.width ++ "x" ++ String.fromInt c.height ++ " (another monitor's scale)" }
+
+        Window.Focus on ->
+            Just { tag = "window", text = if on then "focus in" else "focus out" }
+
+        Window.Close ->
+            Just { tag = "window", text = "close asked" }
+
+        Window.Commit text ->
+            Just { tag = "ime", text = "commit " ++ String.fromInt (String.count (Bytes.toStringLossy text)) ++ " characters" }
+
+        Window.PreeditDone ->
+            Just { tag = "ime", text = "preedit done" }
+
+        Window.ImeReady ->
+            Just { tag = "ime", text = "ready" }
+
+        Window.SelectionLost _ ->
+            Just { tag = "select", text = "the selection was taken by another program" }
+
+        Window.Pasted more ->
+            Just { tag = "paste", text = "text came" ++ (if more then ", more to come" else "") }
+
+        Window.MenuChosen c ->
+            Just { tag = "menu", text = "chosen: menu " ++ String.fromInt c.menu ++ " item " ++ String.fromInt c.index }
+
+        _ ->
+            Nothing
+
+
+{-| What the ssh session said, as the log says it. -}
+sshLine : Session.Notice -> String
+sshLine n =
+    when n is
+        Session.Status st ->
+            "status " ++ st
+
+        Session.Asking _ ->
+            "asks a question"
+
+        Session.Banner b ->
+            "banner, " ++ String.fromInt (String.count b) ++ " characters"
+
+        Session.Started ->
+            "the session started"
+
+        Session.Output b ->
+            "output " ++ String.fromInt (Bytes.length b) ++ " bytes"
+
+        Session.Exited code ->
+            "the program exited, status " ++ String.fromInt code
+
+        Session.Failed why ->
+            "failed: " ++ why
+
+        Session.Ended ->
+            "ended"
+
+
+{-| tmux commands written, each a line in the log (redacted, `Diag.command`). -}
+sendCommands : Array String -> (taken m : Model) -> Model
+sendCommands commands m =
+    if Array.isEmpty commands then
+        m
+
+    else
+        let
+            logged =
+                { m | diag = Diag.addAll m.turnMs "tmux>" (Array.map Diag.command commands) m.diag }
+        in
+        sendRaw (commandLines commands) logged
 
 
 {-| `[tabs] restore` turned on while the window runs: its tabs are saved
@@ -1875,6 +2246,7 @@ type MenuDoes
     | Renames
     | Colors
     | Reopens
+    | Marks
 
 
 {-| The menu's items: the settings window, the host list, a window of its
@@ -1888,6 +2260,7 @@ menuItems config =
     , { label = "Tab color…", does = Colors }
     , { label = "Reopen closed tab", does = Reopens }
     ]
+        ++ (if config.debugLog then [ { label = "Mark the diagnostic log", does = Marks } ] else [])
         ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
 
 
@@ -1906,6 +2279,9 @@ menuDo item m =
 
         Reopens ->
             reopenTab m
+
+        Marks ->
+            markLog m
 
 
 {-| The menu at the pointer: the platform's own when it shows one
@@ -2094,10 +2470,20 @@ feed remote chunk ms m =
 
         on =
             TmuxMode.isOn r.state
+
+        -- what tmux said, or else the bytes read, in the log
+        traced =
+            if Array.isEmpty r.trace && not on then
+                Diag.add ms "read" (String.fromInt (Bytes.length chunk) ++ " bytes") m.diag
+
+            else
+                Diag.addAll ms "tmux<" r.trace m.diag
     in
     feedTerm remote r.outside ms
         { m
             | tmux = r.state
+            , turnMs = ms
+            , diag = traced
             , urgent = m.urgent || on
             , pending =
                 if on && m.pending < 0 then
@@ -2106,7 +2492,7 @@ feed remote chunk ms m =
                 else
                     m.pending
         }
-        |> Task.map (\fed -> sendRaw (commandLines r.commands) fed)
+        |> Task.map (\fed -> sendCommands r.commands fed)
 
 
 {-| Whether a private mode is set for what keys and pastes reach: the
@@ -2206,7 +2592,25 @@ handle remote ms evs m =
             Task.succeed m
 
         Just ev ->
-            handleOne remote ms (Array.dropFirst 1 evs) ev { m | shiftHeld = shiftAfter ev m.shiftHeld }
+            let
+                said =
+                    eventLine ev
+            in
+            handleOne remote
+                ms
+                (Array.dropFirst 1 evs)
+                ev
+                { m
+                    | shiftHeld = shiftAfter ev m.shiftHeld
+                    , turnMs = ms
+                    , diag =
+                        when said is
+                            Just l ->
+                                Diag.add ms l.tag l.text m.diag
+
+                            Nothing ->
+                                m.diag
+                }
 
 
 {-| Whether Shift is held after an event, for the pointer's shape (§21):
@@ -2753,7 +3157,7 @@ handleOne remote ms rest ev m =
                                             TmuxMode.tabKey k m.tmux
                                     in
                                     if tabbed.used then
-                                        handle remote ms rest (sendRaw (commandLines tabbed.commands) { m | tmux = tabbed.state, urgent = True })
+                                        handle remote ms rest (sendCommands tabbed.commands { m | tmux = tabbed.state, urgent = True })
 
                                     else
                                         let
@@ -2951,7 +3355,7 @@ owned remote ms rest m =
             when m.toPaste is
                 Just which ->
                     Window.paste which
-                        |> Task.andThen (\_ -> handle remote ms rest { m | toPaste = Nothing })
+                        |> Task.andThen (\_ -> handle remote ms rest (logLine "paste" ("asked from " ++ (if which == Window.Primary then "the selection (primary)" else "the clipboard")) { m | toPaste = Nothing }))
 
                 Nothing ->
                     handle remote ms rest m
@@ -3050,7 +3454,7 @@ pasteIn more text m =
     if TmuxMode.isAsking m.tmux then
         -- into tmux's prompt that puritty asks, its line ends as spaces
         -- (docs/tmux.md TM25)
-        { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
+        logLine "paste" (String.fromInt (Bytes.length text) ++ " bytes into tmux's prompt") { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
 
     else
         pasteInto more text m
@@ -3081,7 +3485,26 @@ pasteInto more text m =
     in
     send bytes
         { m
-            | pasting =
+            | diag =
+                Diag.add m.turnMs
+                    "paste"
+                    (String.fromInt (Bytes.length text)
+                        ++ " bytes, "
+                        ++ String.fromInt (Diag.lines text)
+                        ++ " lines, "
+                        ++ (if bracketed then "bracketed" else "plain")
+                        ++ (when { first = first, more = more } is
+                                { first = True, more = False } -> ", in one piece"
+                                { first = True, more = True } -> ", the first piece"
+                                { first = False, more = True } -> ", a later piece"
+                                { first = False, more = False } -> ", the last piece")
+                        ++ ", sent "
+                        ++ String.fromInt (Bytes.length bytes)
+                        ++ " bytes to "
+                        ++ (if TmuxMode.isOn m.tmux then "tmux's active pane" else "the program")
+                    )
+                    m.diag
+            , pasting =
                 if more then
                     Just bracketed
 
@@ -3141,7 +3564,7 @@ pointer ms p m =
             r =
                 TmuxMode.pointer { ms = ms, held = held, select = taken, boundaries = m.wordBoundaries, pasteButton = m.config.pasteButton } p m.tmux
         in
-        sendRaw (commandLines r.commands)
+        sendCommands r.commands
             { m
                 | held = held
                 , tmux = r.state
@@ -4011,6 +4434,7 @@ type TabAction
     | RenameTab
     | ColorTab
     | ReopenTab
+    | MarkLog
 
 
 {-| The tab keys, as the `[keys]` table names them (docs/tabs.md TB1,
@@ -4054,6 +4478,9 @@ tabAction k m =
 
     else if on keys.keyReopenTab && closedWaiting m then
         Just ReopenTab
+
+    else if on keys.keyMarkLog && Diag.isOn m.diag then
+        Just MarkLog
 
     else if others && on keys.keyNextTabAlways then
         Just NextTab
@@ -4106,6 +4533,9 @@ tabDo action m =
 
         ReopenTab ->
             reopenTab m
+
+        MarkLog ->
+            markLog m
 
 
 tabCount : Model -> Int
@@ -4762,7 +5192,7 @@ resizeShown cols rows m =
                 TmuxMode.resized { cols = cols, rows = rows } m.tmux
         in
         m.remote.resize { columns = cols, rows = rows }
-            |> Task.map (\_ -> sendRaw (commandLines told.commands) { m | term = Vt.resize cols rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing })
+            |> Task.map (\_ -> sendCommands told.commands { m | term = Vt.resize cols rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing })
 
 
 {-| `work` done on a tab not shown, as if it were (docs/tabs.md TB2): it is

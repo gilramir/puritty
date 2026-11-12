@@ -1021,3 +1021,12 @@ host's background, and the window changes to the fresh start's. Without
 the fix both fail (182,804 and 182,690 pixels differ from a fresh
 start); with it the gate passes 17 of 17, and hosts 13, sshwindow 9,
 settings 20 pass.
+
+## ST33 · `[debug] log` and `[keys] mark_log` (2026-11-12)
+
+The diagnostic log's setting (`docs/diagnostics.md` DG1), on the
+Advanced page, applied at once: each window begins or ends its file. Its
+key, `mark_log`, Ctrl+Alt+Shift+M by default, is a window key like the
+tab keys (`tabAction`), but only while the log is on, so that the program
+has the key otherwise; the menu's **Mark the diagnostic log** is there
+under the same condition. Korean words for both are in `Words`.

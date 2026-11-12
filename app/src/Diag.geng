@@ -1,0 +1,310 @@
+module Diag exposing
+    ( Log, off, start, isOn, add, addAll, due, take, nextMark
+    , clock, key, command, pointer, lines
+    )
+
+{-| The diagnostic log (`docs/diagnostics.md` DG1): what a window did, a
+line each, written to a file of its own while `[debug] log` is on, so that
+a user can find a problem's lines and quote them.
+
+Each line is its number, the local time, a tag and what happened:
+
+    000412 14:05:33.120 key    Ctrl+C
+    000413 14:05:33.121 tmux>  send-keys -t '%3' -H <1 bytes>
+
+**What is typed, pasted or shown is never written**: a key with text is
+written as `text`, a paste by its size, a tmux command's bytes by their
+count, a long quoted argument by its length. The log can then be read
+at work and its lines passed on.
+
+This module is pure: the lines wait in the `Log` until the loop appends
+them to the file (`take`), at most every quarter second.
+
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+
+
+{-| Where the lines go (`Nothing` while the log is off), the next line's
+number, the local time of day in milliseconds at `t0` of the loop's
+clock, the lines not yet written, when they were last written, and the
+marks made. -}
+type alias Log =
+    { path : Maybe String
+    , seq : Int
+    , t0 : Int
+    , dayMs : Int
+    , lines : Array String
+    , writtenAt : Int
+    , marks : Int
+    }
+
+
+off : Log
+off =
+    { path = Nothing, seq = 1, t0 = 0, dayMs = 0, lines = [], writtenAt = 0, marks = 0 }
+
+
+{-| A log begun: its file, the loop's clock and the local time of day
+now, and its first lines (`start`'s tag). -}
+start : String -> { ms : Int, dayMs : Int } -> Array String -> Log
+start path at first =
+    addAll at.ms "start" first { off | path = Just path, t0 = at.ms, dayMs = at.dayMs, writtenAt = at.ms }
+
+
+isOn : Log -> Bool
+isOn log =
+    log.path /= Nothing
+
+
+{-| A line, at the loop's time `ms`, under `tag`; nothing while the log
+is off. -}
+add : Int -> String -> String -> Log -> Log
+add ms tag text log =
+    if log.path == Nothing then
+        log
+
+    else
+        { log
+            | seq = log.seq + 1
+            , lines = Array.pushLast (pad 6 log.seq ++ " " ++ clock (log.dayMs + ms - log.t0) ++ " " ++ padRight 6 tag ++ " " ++ text) log.lines
+        }
+
+
+addAll : Int -> String -> Array String -> Log -> Log
+addAll ms tag texts log =
+    Array.foldl (\t l -> add ms tag t l) log texts
+
+
+{-| The next mark's number, counted. -}
+nextMark : Log -> { number : Int, log : Log }
+nextMark log =
+    { number = log.marks + 1, log = { log | marks = log.marks + 1 } }
+
+
+{-| When the waiting lines are to be written, -1 when none wait. -}
+due : Log -> Int
+due log =
+    if log.path == Nothing || Array.isEmpty log.lines then
+        -1
+
+    else
+        log.writtenAt + 250
+
+
+{-| The waiting lines as the file's bytes, and the log without them. -}
+take : Int -> Log -> { path : Maybe String, bytes : Bytes, log : Log }
+take ms log =
+    { path = log.path
+    , bytes = Bytes.fromString (String.join "" (Array.map (\l -> l ++ "\n") log.lines))
+    , log = { log | lines = [], writtenAt = ms }
+    }
+
+
+{-| A time of day, `HH:MM:SS.mmm`, from milliseconds since midnight. -}
+clock : Int -> String
+clock ms0 =
+    let
+        ms =
+            modBy 86400000 ms0
+    in
+    pad 2 (ms // 3600000) ++ ":" ++ pad 2 (modBy 60 (ms // 60000)) ++ ":" ++ pad 2 (modBy 60 (ms // 1000)) ++ "." ++ pad 3 (modBy 1000 ms)
+
+
+pad : Int -> Int -> String
+pad width n =
+    String.padLeft width '0' (String.fromInt n)
+
+
+padRight : Int -> String -> String
+padRight width s =
+    String.padRight width ' ' s
+
+
+{-| A key as the log says it, `Nothing` for a release: a named key or a
+chord by its name (`Enter`, `Ctrl+C`, `Shift+Up`), and a key that types
+text as `text`, never the text. -}
+key : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe String
+key k =
+    if k.action == 0 || (k.sym >= 0xFFE1 && k.sym <= 0xFFEE) then
+        -- a release, or a modifier pressed alone: the chord it makes is
+        -- said with the key that completes it
+        Nothing
+
+    else
+        let
+            ctrl =
+                Bitwise.and k.mods 2 /= 0
+
+            alt =
+                Bitwise.and k.mods 4 /= 0
+
+            super =
+                Bitwise.and k.mods 8 /= 0
+
+            shift =
+                Bitwise.and k.mods 1 /= 0
+
+            prefix =
+                (if ctrl then "Ctrl+" else "")
+                    ++ (if alt then "Alt+" else "")
+                    ++ (if super then "Super+" else "")
+
+            repeat =
+                if k.action == 2 then " (repeat)" else ""
+
+            base =
+                when named k.sym is
+                    Just name ->
+                        Just name
+
+                    Nothing ->
+                        if k.unshifted >= 0x21 && k.unshifted <= 0x7E then
+                            Maybe.map (\c -> String.toUpper (String.fromChar c)) (Char.fromCode k.unshifted)
+
+                        else
+                            Nothing
+        in
+        when { chord = ctrl || alt || super, base = base } is
+            { chord = True, base = Just b } ->
+                Just (prefix ++ (if shift then "Shift+" else "") ++ b ++ repeat)
+
+            { chord = False, base = Just b } ->
+                if named k.sym /= Nothing then
+                    Just ((if shift then "Shift+" else "") ++ b ++ repeat)
+
+                else
+                    Just ("text" ++ repeat)
+
+            { chord = _, base = Nothing } ->
+                if Bytes.isEmpty k.text then
+                    Just (prefix ++ "key " ++ String.fromInt k.keycode ++ repeat)
+
+                else
+                    Just (prefix ++ "text" ++ repeat)
+
+
+{-| X11's keysyms for the keys that type no text, by name. -}
+named : Int -> Maybe String
+named sym =
+    if sym >= 0xFFBE && sym <= 0xFFC9 then
+        Just ("F" ++ String.fromInt (sym - 0xFFBE + 1))
+
+    else
+        when sym is
+            0xFF0D -> Just "Enter"
+            0xFF8D -> Just "KeypadEnter"
+            0xFF09 -> Just "Tab"
+            0xFE20 -> Just "Tab"
+            0xFF1B -> Just "Escape"
+            0xFF08 -> Just "Backspace"
+            0xFFFF -> Just "Delete"
+            0xFF63 -> Just "Insert"
+            0xFF50 -> Just "Home"
+            0xFF57 -> Just "End"
+            0xFF55 -> Just "PageUp"
+            0xFF56 -> Just "PageDown"
+            0xFF51 -> Just "Left"
+            0xFF52 -> Just "Up"
+            0xFF53 -> Just "Right"
+            0xFF54 -> Just "Down"
+            0x20 -> Just "Space"
+            0xFFE1 -> Just "Shift"
+            0xFFE2 -> Just "Shift"
+            0xFFE3 -> Just "Ctrl"
+            0xFFE4 -> Just "Ctrl"
+            0xFFE9 -> Just "Alt"
+            0xFFEA -> Just "Alt"
+            0xFFEB -> Just "Super"
+            0xFFEC -> Just "Super"
+            _ -> Nothing
+
+
+{-| A tmux command as the log says it: the bytes `send-keys -H` carries
+counted, not shown; a quoted argument longer than 40 characters by its
+length, unless it is a format (`#{`), which is puritty's own; and the
+whole cut at 300 characters. -}
+command : String -> String
+command c =
+    let
+        redacted =
+            when String.split " -H " c is
+                [ before, after ] ->
+                    before ++ " -H <" ++ String.fromInt (Array.length (Array.keepIf (\t -> t /= "") (String.split " " after))) ++ " bytes>"
+
+                _ ->
+                    String.split "'" c
+                        |> Array.indexedMap
+                            (\i part ->
+                                if modBy 2 i == 1 && String.count part > 40 && not (String.contains "#{" part) then
+                                    "<" ++ String.fromInt (String.count part) ++ " chars>"
+
+                                else
+                                    part
+                            )
+                        |> String.join "'"
+    in
+    if String.count redacted > 300 then
+        String.takeFirst 300 redacted ++ "…"
+
+    else
+        redacted
+
+
+{-| A press or release of the pointer, `Nothing` for a motion: the button
+by Ghostty's number (1 left, 2 right, 3 middle, 4 to 7 the wheel), the
+cell, and Shift, Ctrl and Alt. -}
+pointer : { action : Int, button : Int, mods : Int, x : Int, y : Int, width : Int, height : Int, cellWidth : Int, cellHeight : Int } -> Maybe String
+pointer p =
+    if p.action == 2 then
+        Nothing
+
+    else
+        let
+            name =
+                when p.button is
+                    1 -> "left"
+                    2 -> "right"
+                    3 -> "middle"
+                    4 -> "wheel up"
+                    5 -> "wheel down"
+                    6 -> "wheel left"
+                    7 -> "wheel right"
+                    b -> "button " ++ String.fromInt b
+
+            mods =
+                (if Bitwise.and p.mods 1 /= 0 then "Shift+" else "")
+                    ++ (if Bitwise.and p.mods 2 /= 0 then "Ctrl+" else "")
+                    ++ (if Bitwise.and p.mods 4 /= 0 then "Alt+" else "")
+        in
+        Just
+            ((if p.action == 0 then "press " else "release ")
+                ++ mods
+                ++ name
+                ++ " at row "
+                ++ String.fromInt (p.y // max 1 p.cellHeight)
+                ++ " col "
+                ++ String.fromInt (p.x // max 1 p.cellWidth)
+            )
+
+
+{-| How many lines a text has, for a paste's line: its line ends counted,
+plus one when the last line has none. -}
+lines : Bytes -> Int
+lines text =
+    let
+        s =
+            Bytes.toStringLossy text
+
+        ends =
+            String.count s - String.count (String.replace "\n" "" s)
+    in
+    if String.isEmpty s then
+        0
+
+    else if String.endsWith "\n" s then
+        ends
+
+    else
+        ends + 1
