@@ -9,6 +9,7 @@ client's session; the loop in `Main` knows neither.
 import Bytes exposing (Bytes)
 import Os.Error exposing (Error)
 import Os.File as File
+import Os.Path exposing (Path)
 import Os.Process as Process
 import Process as Light
 import Source exposing (Source)
@@ -29,6 +30,11 @@ much; `writable` waits until it can take more, and the loop races it beside
 `read` (V48). `kill` ends the remote end; `waitForExit` answers its exit
 status, negative for none. `answer` and `reconnect` are the ssh session's:
 the user's answer to its question, and a new connection after one ended.
+`busy` names what runs in front of the program started, as a shell's
+command line does, for asking before a tab is closed (docs/tabs.md TB4);
+an ssh session answers `Nothing`, and `Main` asks from its own state.
+`directory` is where the program started is, as its `cd` left it, for a
+new tab opened there (TB4); an ssh session answers `Nothing`.
 -}
 type alias Backend =
     { read : Task Error Incoming
@@ -39,6 +45,8 @@ type alias Backend =
     , waitForExit : Task String Int
     , answer : Session.Answer -> Task Error {}
     , reconnect : Task Error {}
+    , busy : Task Error (Maybe String)
+    , directory : Task Error (Maybe Path)
     }
 
 
@@ -61,6 +69,8 @@ pty child =
                 , waitForExit = Process.waitForExit child
                 , answer = \_ -> Task.succeed {}
                 , reconnect = Task.succeed {}
+                , busy = Process.foreground terminal
+                , directory = Process.directory terminal
                 }
             )
 
@@ -98,6 +108,8 @@ ssh permissions options =
                             , waitForExit = Task.succeed -1
                             , answer = \a -> Source.emit sources.inputs (Session.Answered a)
                             , reconnect = Source.emit sources.inputs Session.Reconnect
+                            , busy = Task.succeed Nothing
+                            , directory = Task.succeed Nothing
                             }
                         )
             )

@@ -127,8 +127,9 @@ size record names the window's rows, not the terminal's).
 **Keys.** As TB1 lists them, with TB2's leaning taken: in a tab under
 `tmux -CC`, Ctrl+Shift+T and Ctrl+PgUp/PgDn stay tmux's, and Ctrl+Alt+
 PgUp/PgDn go to puritty's tab before and after, from any tab. With one
-tab, Ctrl+PgUp/PgDn go to the program, as before tabs. Still open for
-Gilbert until `[keys]` (step 3) makes them the user's.
+tab, Ctrl+PgUp/PgDn go to the program, as before tabs. Gilbert,
+2026-11-11: "The keys are fine for now"; `[keys]` (step 3) makes them the
+user's.
 
 **Settings.** `[tabs] bar` (`"auto"`, `"always"`), `[tabs] look`
 (`"puritty"`, `"plain"`) and `[tabs] middle_click_closes` (on), on the
@@ -151,3 +152,79 @@ tests, perf within its record, and every tmux scenario.
 
 **Not yet.** Steps 2 and 3 (rename, asking before closing, a new tab in
 the same directory, `[keys]`), and everything after the first version.
+
+## TB4 · Step 2, built (2026-11-11)
+
+TB1's items 4 to 6.
+
+**Rename.** Ctrl+Shift+R, or a second click on the same tab within half a
+second, opens a box over the screen (`Dialog`, as the ssh questions are)
+holding the tab's name; Enter names it, Esc leaves it, and an empty name
+gives the program's title back. The box takes the keys and what the IME
+commits while it is up; a name is kept to 40 characters with control
+characters dropped. The name is the tab's `TabInfo.name`, which the label
+already put before the host's and the title (TB3), so a tab named `dm`
+running tmux stays `dm`. Measured: Ctrl+Shift+R then `dm` and a double
+click on another tab then `a` gave the bar `a`, `dm`, and the named tab's
+shell took the next line.
+
+**Closing safely.** Ctrl+Shift+W and a middle click (which shows the tab
+first) ask only when it matters: an ssh tab whose session is up (started,
+not ended, not failed), or a local tab with a program in front of its
+shell, named in the question ("sleep is running in it."). An idle shell
+closes at once, as the survey asks. When puritty cannot tell, it asks and
+says why. Enter or Y closes; Esc or N keeps it. `[tabs]
+ask_before_closing` (on) turns the asking off. What runs in front comes
+from geng-lang's new `Os.Process.foreground` (`m3-os.md` §OS32,
+Dnene45): the terminal's foreground process group against its session on
+Linux, the newest running child of the shell on Windows; `Backend.busy`
+asks it, and an ssh backend answers `Nothing`. Closing the window itself
+does not ask yet.
+
+**New tab where I am.** A new local tab starts in the shown tab's
+directory: `Backend.directory`, from `Os.Process.directory` (§OS33,
+Dnene46): `/proc/SID/cwd` on Linux, the process's current directory read
+from it on Windows, so `cmd`'s `cd` counts and PowerShell's `Set-Location`
+does not (a PowerShell tab's new tab opens where it started). When it
+cannot be read, the program's own directory, as before. An ssh tab's new
+tab is another session to the host, in the host's home. OSC 7 is not read:
+the shell's own directory needs no shell setup, and OSC 7 would only add a
+remote shell's directory, which a local new tab cannot use.
+
+**Measured.** `bench/tabs/show.py`, extended: `cd /usr/share` then
+Ctrl+Shift+T, and the new tab's `pwd` said `/usr/share`; `sleep 30` then
+Ctrl+Shift+W asked "sleep is running in it.", Esc kept the tab and its
+shell took the next line after Ctrl+C, and the idle shell then closed at
+once. On Windows (beelink1, `cmd.exe`): `cd /d C:\Windows` then
+Ctrl+Shift+T, and the new tab's `cd` said `C:\Windows`; `ping -n 30` then
+Ctrl+Shift+W asked "PING.EXE is running in it.", Esc kept it, and after
+Ctrl+C the idle tab closed at once, then the last.
+
+**Seen, not done.** On Windows a `cmd.exe` tab's label is its title,
+`C:\WINDOWS\system32\cmd.exe` cut to 24 characters; a name, or the
+program's file name for a title that is a path, would read better.
+
+## TB5 · puritty's own text in the interface font (2026-11-11)
+
+*Gilbert, 2026-11-11:* the "Close this tab?" box was in the terminal's
+monospace font; puritty's own messages should be in a proportional one, as
+the settings window's are, to set them apart from the terminal's text, and
+the tab names too.
+
+Every one of them was already drawn with the settings window's text
+records (`SettingsGui.text`, `Dialog`), which ask for the *interface
+font*, but only the settings window told the renderer which font that is
+(`Text.interfaceFont`, `settings-gui.md`); in the terminal's window the
+renderer fell back to the terminal's font. The window now names it at its
+start, before anything is drawn: Segoe UI on Windows, `sans-serif` on
+Linux (`Platform.interfaceFont`). That moves all of puritty's own text over
+the terminal at once: the ssh questions and the ssh screen's box (SC23),
+the search bar, the rename box, the question before closing, tmux's
+prompts in puritty's look (TM25), and the tab bar, whose tabs were already
+measured in it (`Text.width`) and now fit their names exactly.
+
+**Measured.** `bench/tabs/show.py`'s pictures on Xvfb, and a screenshot on
+beelink1: the question and the tab names proportional, the terminal's text
+monospace. No gate moved: pixels 46, view 345, sshwindow 9, reload 15,
+hosts 13, ime 14, events 13 — none of them pictures puritty's own text in
+the terminal's window, which is why the fallback went unseen.

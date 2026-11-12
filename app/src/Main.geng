@@ -175,6 +175,9 @@ type alias Model =
     , nextTabId : Int
     , starter : Starter
     , windowRows : Int
+    , renaming : Maybe { id : Int, typed : String }
+    , closing : Maybe { id : Int, why : String }
+    , barClick : { at : Int, id : Int }
     }
 
 
@@ -217,7 +220,7 @@ type alias TabInfo =
 {-| How a tab is started: a local program at a size, with the character set
 of a local tab; or a session to a host, as the window's first was. -}
 type alias Starter =
-    { local : { columns : Int, rows : Int } -> Task String Backend
+    { local : { columns : Int, rows : Int, directory : Maybe Path.Path } -> Task String Backend
     , ssh : Config.Host -> Task String Backend
     , charset : Charset
     }
@@ -636,7 +639,7 @@ begin cp vars given problems locale config cell =
                                                             \size ->
                                                                 spawnFirst cp commands
                                                                     (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, utf8 = localCharset == Charset.Utf8 })
-                                                                        |> (\o -> { o | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
+                                                                        |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
                                                                     )
                                                                     |> Task.mapError Os.Error.toString
                                                                     |> Task.andThen
@@ -723,8 +726,12 @@ drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
 run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
 run imeLog shotPath charset config cell remote starter settings problems opener =
-            -- the system menu's items, where the platform has one (ST26)
-            Window.systemMenu (Array.map .label (menuItems config))
+            -- puritty's own text (its questions, the search bar, the tab
+            -- bar) in the interface font, as the settings window's is, apart
+            -- from the terminal's (docs/tabs.md TB5)
+            Text.interfaceFont Platform.interfaceFont
+                -- the system menu's items, where the platform has one (ST26)
+                |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
                 |> Task.andThen (\_ -> now)
                 |> Task.andThen
                     (\t0 ->
@@ -798,6 +805,9 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , nextTabId = 1
                             , starter = starter
                             , windowRows = config.rows
+                            , renaming = Nothing
+                            , closing = Nothing
+                            , barClick = { at = -1000, id = -1 }
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -2161,7 +2171,17 @@ handleOne : Backend -> Int -> Array Window.Event -> Window.Event -> (taken m : M
 handleOne remote ms rest ev m =
             when ev is
                 Window.Key k ->
-                  if ownScreenUp m then
+                  if m.closing /= Nothing then
+                    -- the question before closing takes the keys (TB4)
+                    (if k.action /= 0 then closeKey k m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                  else if m.renaming /= Nothing then
+                    -- the rename box takes the keys while it is open (TB1)
+                    (if k.action /= 0 then renameKey k m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                  else if ownScreenUp m then
                     -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
                     (if k.action /= 0 then sshKey remote k m else Task.succeed m)
                         |> Task.andThen (\next -> handle remote ms rest next)
@@ -2293,7 +2313,10 @@ handleOne remote ms rest ev m =
                     menuChosen c m |> Task.andThen (\next -> handle remote ms rest next)
 
                 Window.Commit text ->
-                  if ownScreenUp m then
+                  if m.renaming /= Nothing then
+                    handle remote ms rest (renameTyped (Bytes.toStringLossy text) m)
+
+                  else if ownScreenUp m then
                     -- what the IME commits, typed into the question
                     handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
 
@@ -2336,7 +2359,7 @@ handleOne remote ms rest ev m =
                 Window.Pointer p ->
                   if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
                     -- a press on the tab bar (docs/tabs.md TB1)
-                    barPress p m |> Task.andThen (\next -> handle next.remote ms rest next)
+                    barPress ms p m |> Task.andThen (\next -> handle next.remote ms rest next)
 
                   else if p.action == 0 && m.menu /= Nothing then
                     when m.menu is
@@ -3288,7 +3311,13 @@ draw ms m =
 
         -- a question asked in a box over puritty's screen (SC23)
         dialog =
-            if ownUp then
+            if m.closing /= Nothing then
+                Maybe.map closeBox m.closing
+
+            else if m.renaming /= Nothing then
+                Maybe.map renameBox m.renaming
+
+            else if ownUp then
                 Maybe.andThen dialogOf m.ssh
 
             else if tmuxOn then
@@ -3470,6 +3499,7 @@ type TabAction
     | PrevTab
     | MoveRight
     | MoveLeft
+    | RenameTab
 
 
 {-| The tab keys (docs/tabs.md TB1): Ctrl+Shift+T a new tab, Ctrl+Shift+W
@@ -3502,6 +3532,9 @@ tabAction k m =
     else if mods == 3 && letter 0x57 then
         Just CloseTab
 
+    else if mods == 3 && letter 0x52 then
+        Just RenameTab
+
     else if others && (k.sym == 0xFF55 || k.sym == 0xFF56) && ((mods == 2 && not tmuxOn) || mods == 6) then
         Just (if k.sym == 0xFF55 then PrevTab else NextTab)
 
@@ -3519,7 +3552,7 @@ tabDo action m =
             openTab m
 
         CloseTab ->
-            closeShown m
+            askClose m
 
         NextTab ->
             Task.succeed (showTab (neighbourId 1 m) m)
@@ -3532,6 +3565,9 @@ tabDo action m =
 
         MoveLeft ->
             Task.succeed (moveShown -1 m)
+
+        RenameTab ->
+            Task.succeed { m | renaming = Just { id = m.tab.id, typed = m.tab.name }, urgent = True }
 
 
 tabCount : Model -> Int
@@ -3859,13 +3895,18 @@ openTab m =
         host =
             m.tab.host
 
+        -- a local tab starts in the shown one's directory (TB4), or the
+        -- program's own when that cannot be read
+        here =
+            m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing)
+
         starting =
             when host is
                 Just h ->
                     m.starter.ssh h
 
                 Nothing ->
-                    m.starter.local { columns = cols, rows = rows }
+                    here |> Task.mapError Os.Error.toString |> Task.andThen (\dir -> m.starter.local { columns = cols, rows = rows, directory = dir })
     in
     starting
         |> Task.map Ok
@@ -4180,20 +4221,198 @@ tabBar m =
 
 
 {-| A press on the bar: the tab under it shown, or with the middle button
-closed. -}
-barPress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
-barPress p m =
+closed; a second press on the same tab within half a second renames it. -}
+barPress : Int -> Window.PointerEvent -> (taken m : Model) -> Task Error Model
+barPress ms p m =
     when Array.findFirst (\t -> p.x >= t.x && p.x < t.x + t.w) (barTabs m) is
         Just hit ->
             if p.button == 3 && m.config.tabsMiddleCloses then
-                if hit.value.id == m.tab.id then
-                    closeShown m
+                -- shown first, so that a question is asked over its screen
+                askClose (showTab hit.value.id m)
 
-                else
-                    endTab hit.value.id True m
+            else if p.button == 1 && hit.value.id == m.barClick.id && ms - m.barClick.at <= 500 then
+                let
+                    shown =
+                        showTab hit.value.id m
+                in
+                Task.succeed { shown | renaming = Just { id = shown.tab.id, typed = shown.tab.name }, barClick = { at = -1000, id = -1 }, urgent = True }
+
+            else if p.button == 1 then
+                let
+                    shown =
+                        showTab hit.value.id m
+                in
+                Task.succeed { shown | barClick = { at = ms, id = hit.value.id } }
 
             else
                 Task.succeed (showTab hit.value.id m)
 
         Nothing ->
             Task.succeed m
+
+
+{-| The rename box (docs/tabs.md TB1 item 4): the name typed so far. -}
+renameBox : { id : Int, typed : String } -> Dialog.Dialog
+renameBox r =
+    { title = "Rename the tab"
+    , lines = [ "An empty name gives the program's own title back." ]
+    , field = Just { typed = r.typed, hidden = False, caret = String.count r.typed }
+    , hint = "Enter: rename    Esc: cancel"
+    }
+
+
+{-| A key in the rename box: Enter names the tab, Esc leaves it, Backspace
+takes a letter back, and text is typed in. -}
+renameKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+renameKey k m =
+    when m.renaming is
+        Nothing ->
+            Task.succeed m
+
+        Just r ->
+            if k.sym == 0xFF1B then
+                Task.succeed { m | renaming = Nothing, urgent = True }
+
+            else if k.sym == 0xFF0D || k.sym == 0xFF8D then
+                nameTab r.id (String.trim r.typed) { m | renaming = Nothing, urgent = True }
+
+            else if k.sym == 0xFF08 then
+                Task.succeed { m | renaming = Just { r | typed = String.dropLast 1 r.typed }, urgent = True }
+
+            else if Bitwise.and k.mods 2 == 0 then
+                Task.succeed (renameTyped (Bytes.toStringLossy k.text) m)
+
+            else
+                Task.succeed m
+
+
+{-| Text typed or committed by the IME into the rename box; control
+characters dropped, and the name kept to 40 characters. -}
+renameTyped : String -> (taken m : Model) -> Model
+renameTyped text m =
+    when m.renaming is
+        Just r ->
+            let
+                clean =
+                    String.fromArray (Array.keepIf (\c -> Char.toCode c >= 32 && Char.toCode c /= 127) (String.toArray text))
+            in
+            { m | renaming = Just { r | typed = String.takeFirst 40 (r.typed ++ clean) }, urgent = True }
+
+        Nothing ->
+            m
+
+
+{-| The tab `id` given the user's name; an empty one gives the program's
+title back. -}
+nameTab : Int -> String -> (taken m : Model) -> Task Error Model
+nameTab id name m =
+    if id == m.tab.id then
+        let
+            info =
+                m.tab
+        in
+        Task.succeed { m | tab = { info | name = name } }
+
+    else
+        atTab id
+            (\x ->
+                let
+                    info =
+                        x.tab
+                in
+                Task.succeed { x | tab = { info | name = name } }
+            )
+            m
+
+
+{-| Closing the shown tab, asked first when it matters (docs/tabs.md TB4):
+its ssh session open, or a program running in front of its shell. An idle
+shell closes at once, and so does every tab with `[tabs]
+ask_before_closing` off. When puritty cannot tell, it asks, saying why. -}
+askClose : (taken m : Model) -> Task Error Model
+askClose m =
+    let
+        open =
+            when m.ssh is
+                Just screen ->
+                    if screen.started && screen.exitStatus == Nothing && screen.failed == Nothing then
+                        Just screen.host
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        busy =
+            m.remote.busy
+
+        id =
+            m.tab.id
+    in
+    if not m.config.tabsAskBeforeClosing then
+        closeShown m
+
+    else
+        when open is
+            Just host ->
+                Task.succeed { m | closing = Just { id = id, why = "Its ssh session to " ++ cleanText host ++ " is open." }, urgent = True }
+
+            Nothing ->
+                busy
+                    |> Task.map Ok
+                    |> Task.onError (\e -> Task.succeed (Err e))
+                    |> Task.andThen
+                        (\got ->
+                            when got is
+                                Ok Nothing ->
+                                    closeShown m
+
+                                Ok (Just name) ->
+                                    Task.succeed
+                                        { m
+                                            | closing = Just { id = id, why = (if name == "" then "A program" else cleanText name) ++ " is running in it." }
+                                            , urgent = True
+                                        }
+
+                                Err e ->
+                                    Task.succeed
+                                        { m
+                                            | closing = Just { id = id, why = "puritty could not tell whether a program runs in it: " ++ Os.Error.toString e }
+                                            , urgent = True
+                                        }
+                        )
+
+
+{-| The question before closing a busy tab. -}
+closeBox : { id : Int, why : String } -> Dialog.Dialog
+closeBox c =
+    { title = "Close this tab?"
+    , lines = [ c.why, "Closing the tab ends it." ]
+    , field = Nothing
+    , hint = "Enter: close it    Esc: keep it"
+    }
+
+
+{-| A key while the question is up: Enter or Y closes the tab asked about,
+if it is still the one shown; Esc or N keeps it; any other key is
+ignored. -}
+closeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+closeKey k m =
+    when m.closing is
+        Nothing ->
+            Task.succeed m
+
+        Just c ->
+            if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+                if c.id == m.tab.id then
+                    closeShown { m | closing = Nothing, urgent = True }
+
+                else
+                    Task.succeed { m | closing = Nothing, urgent = True }
+
+            else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+                Task.succeed { m | closing = Nothing, urgent = True }
+
+            else
+                Task.succeed m
