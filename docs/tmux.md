@@ -1678,3 +1678,128 @@ events.py 13 and the app tests 132 pass. On beelink1, GetCursorInfo over
 the window: the I-beam over text, the arrow over the tab bar. The resize
 shapes under tmux were not seen on Windows (no tmux there); they are the
 same table's other entries.
+
+## TM39 · Where puritty's -CC drawing falls short of tmux's: survey (2026-11-12)
+
+Gilbert, 2026-11-12: "We had many issues today where our tmux -CC
+rendering was missing things that regular tmux draws. … Do a survey
+looking at tmux screens, or code, and see where our -CC rendering is
+lacking." This is the survey; nothing is built.
+
+**Two halves.** *Read*: everything tmux 3.8 draws on a client that is not
+a pane's own output, from its source (`screen-redraw.c`, `status.c`,
+`menu.c`, `popup.c`, `mode-tree.c` and the four modes, `window-copy.c`,
+`window-clock.c`, `options-table.c`), each row against `TmuxMode.geng`
+and TM24–TM38. *Measured*: about 55 scenes put side by side, a plain
+client inside an outer tmux read with `capture-pane -p -e` over puritty
+-CC's frame in tmux's look, same size and server state, on 3.8 and (15
+scenes) 3.6a, which differ the same way. The notes are in
+`research/research_notes/tmux -CC survey/` (`source.md`, file:line per
+row; `measured.md`, per scene); the harness is `bench/tmux/compare/`
+(`survey.py`, its scenes in `scenes.py`/`scenes2.py`, `pair.py` stacking
+the two as one picture), writing to `.harness-work/tmux-compare/`.
+
+**Why the gaps.** Not iTerm2's model: puritty sends keys through tmux's
+tables (TM23), where iTerm2 does not. The gaps come from drawing tmux's
+UI a piece at a time, each piece to tmux's *defaults*: puritty reads 12
+formats by subscription (`statusSubscriptions`) and none of tmux's other
+drawing options, so a user's `pane-border-lines`, `message-style`,
+`status-justify` or `window-style` are not seen, and in tmux's look the
+default colors are written in.
+
+### TM39.1 · Matched
+
+Status flags and styles (`* - Z ! # M`), zoom, the clock, menus opened by
+keys, confirm and rename prompts, `display-message`, `prefix i`, prompt
+history, remain-on-exit's `Pane is dead`, synchronize-panes, copy mode's
+`[0/14]` and its selections (char, line, rectangle), border dragging,
+floating panes.
+
+### TM39.2 · The gaps, ranked for a keyboard user
+
+Gilbert drives tmux by keyboard (`prefix s`/`w`, copy mode, the status
+line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
+
+1. **Copy-mode search shows no matches** (M, R). tmux paints every match
+   (`copy-mode-match-style`), the current one apart
+   (`copy-mode-current-match-style`), and adds `(N results)`
+   (`window-copy.c:5129`). puritty moves the cursor only. The count is a
+   format (`search_count`); the highlighting means puritty searching its
+   own copy of the history with the string it sent. Also: the `(search
+   up)` and `(goto line)` prompts belong on the pane's last row, not the
+   bar.
+2. **emacs `C-r` in copy mode does not search** (M): tmux's cursor moved
+   with each character typed and stayed after Enter; under puritty it
+   did not move. A bug, not a missing drawing; first to look at.
+3. **The status window list overflows silently** (M, R). With many
+   windows puritty draws from window 0, so the current one can be off
+   the edge, with no `<`/`>` marks, and the list runs over
+   status-right. tmux scrolls to keep the current window in view.
+4. **`prefix f` (find-window) is a dead end** (R): it enters tree mode
+   with a filter (`cmd-find-window.c:107`), which puritty only says is
+   not drawn.
+5. **The tree has no pane level** (M, R): no `+` on window rows, panes
+   cannot be listed or chosen (`window-tree.c:360`).
+6. **The tree's other keys do nothing** (M, R): search `/ n N`, filter
+   `f` (and the text typed after it is dropped, so its Enter switched
+   session), kill `x` with its prompt, tags `t T C-t`, `:`, sort `O r`,
+   preview `v`, swap `S-Up S-Down` (3.6), help `C-h` (3.7). `+`/`-` fold
+   every row where tmux folds the current one.
+7. **Tree rows and preview** (M, R): no window flags or titles in rows;
+   the preview has no colors, its split is the reverse of tmux's (tmux
+   gives the list ⅔), its title lacks `(sort: …)`; 3.8 draws `→` where
+   puritty draws `─>` (3.6's `->` is closer).
+8. **`prefix =`, `prefix C`, `prefix D`** (choose-buffer, customize-mode,
+   choose-client): said, not drawn (known, TM32).
+9. **The command prompt** (R): no Tab completion, `C-p`/`C-n`, `C-y` or
+   word motions; its history is puritty's, not tmux's (known, TM25).
+   `status-keys vi`'s normal mode: Escape closes puritty's prompt (TM25.3).
+10. **Borders** (M, R): junction cells (`┼ ├ ┬ ┴`) are gaps;
+    `pane-border-lines` (double, heavy, simple, number, spaces) and
+    `pane-border-indicators` (arrows) are not read; with two panes tmux
+    colors half the divider, puritty all of it; the marked pane is a thin
+    magenta line where tmux reverses the cells; in puritty's own look
+    nothing marks a synchronized pane or one in a mode.
+11. **`display-popup` draws nothing and says nothing** (M, R). A floating
+    pane could stand in.
+12. **Pane scrollbars** (3.6+, `pane-scrollbars`): not drawn (M); the
+    pane keeps its full width where tmux gives a column.
+13. **Styles not read** (M, R): `message-style`,
+    `message-command-style`, `window-style`/`window-active-style`
+    (dimmed inactive panes), the clock's and display-panes' colors,
+    `clock-mode-style` (12-hour, seconds).
+14. **The status line's own options** (M, R): `status-justify`,
+    `status-position top`, `status 2`/off, a custom `status-format`
+    (known, TM29).
+15. **`show-messages` (`prefix ~`)** (M): the log is mostly puritty's own
+    control commands (`send-keys -K`, `refresh-client -B`, captures),
+    lines cut at the edge, tmux's `message:` lines absent. tmux's log, so
+    the fix is fewer and quieter commands, or puritty's own view of it.
+16. **Smaller** (M): an error reads `parse error: unknown command: X`
+    where tmux says `Unknown command: X`; a right press on the status
+    line gives no window or session menu; display-panes' numbers in
+    right-hand panes sit one cell left; the floating box's `[f][z][x]`
+    sit two cells short of its right edge; messages' `display-time`
+    expiry and a bell's sound in a shown pane were read (R), not seen.
+
+### TM39.3 · Differences by design
+
+- **A mouse drag in a pane** selects in puritty (TM17) and copies to the
+  system clipboard; tmux's `mouse on` enters copy mode and makes a tmux
+  buffer.
+- **Escape closes a tmux prompt** in puritty; in tmux (3.6a and 3.8,
+  measured) Escape does not cancel the emacs prompt, C-c does.
+
+### TM39.4 · What the gaps share, for Gilbert
+
+Three kinds of work, undecided:
+
+- **Read the user's options** (items 10, 12–14 and part of 3): subscribe to the
+  drawing options as the 12 status formats are (`refresh-client -B`; an
+  option's name is a format, `#{pane-border-lines}`), so a change is
+  seen when made, and draw from them instead of tmux's defaults.
+  One change reaches many rows.
+- **Finish the tree** (4–7, then 8): it is the mode Gilbert uses most;
+  the view's filter (TM36) and the tree's keys (TM37) are the start.
+- **Copy-mode search** (1, 2): the bug first, then the count, then the
+  highlighting.
