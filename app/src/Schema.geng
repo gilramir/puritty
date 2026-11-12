@@ -31,6 +31,7 @@ import Toml.Ast as Ast
 import Toml.Table
 import Toml.Decode
 import Toml.Edit
+import Chord
 import Words exposing (Message)
 
 
@@ -64,6 +65,7 @@ type Kind
     | Launch
     | HostName
     | Address
+    | KeyChord
 
 
 {-| A setting's value, of its kind: `Unset` only for an optional one. -}
@@ -87,6 +89,7 @@ type Page
     | Program
     | Advanced
     | HostsPage
+    | KeysPage
 
 
 {-| Whether a running window takes a change, or only a window opened after
@@ -105,7 +108,7 @@ type alias Report =
 
 pages : Array Page
 pages =
-    [ Appearance, WindowPage, TextAndLanguage, MouseAndSelection, Clipboard, Program, Advanced ]
+    [ Appearance, WindowPage, TextAndLanguage, MouseAndSelection, Clipboard, KeysPage, Program, Advanced ]
 
 
 pageName : Page -> String
@@ -134,6 +137,9 @@ pageName page =
 
         HostsPage ->
             "Hosts"
+
+        KeysPage ->
+            "Keys"
 
 
 {-| A key as the file and the reports write it, `font.size`. -}
@@ -528,6 +534,20 @@ settings =
             Flag b -> { c | tabsAskBeforeClosing = b }
             _ -> c
       }
+    , chordSetting "new_tab" "New tab" "A new tab, after the last, where the shown one is; in a tab under tmux -CC, tmux's new window." (\c -> c.keyNewTab) (\t c -> { c | keyNewTab = t })
+    , chordSetting "close_tab" "Close tab" "Closes the tab shown, asking first when something runs in it; with one tab, the window." (\c -> c.keyCloseTab) (\t c -> { c | keyCloseTab = t })
+    , chordSetting "rename_tab" "Rename tab" "Asks for the shown tab's name." (\c -> c.keyRenameTab) (\t c -> { c | keyRenameTab = t })
+    , chordSetting "next_tab" "Next tab" "The tab after the shown one; in a tab under tmux -CC, tmux's next window. With one tab the key goes to the program." (\c -> c.keyNextTab) (\t c -> { c | keyNextTab = t })
+    , chordSetting "previous_tab" "Previous tab" "The tab before the shown one; in a tab under tmux -CC, tmux's previous window. With one tab the key goes to the program." (\c -> c.keyPreviousTab) (\t c -> { c | keyPreviousTab = t })
+    , chordSetting "next_tab_always" "Next tab, from any tab" "puritty's next tab, also from a tab under tmux -CC." (\c -> c.keyNextTabAlways) (\t c -> { c | keyNextTabAlways = t })
+    , chordSetting "previous_tab_always" "Previous tab, from any tab" "puritty's previous tab, also from a tab under tmux -CC." (\c -> c.keyPreviousTabAlways) (\t c -> { c | keyPreviousTabAlways = t })
+    , chordSetting "move_tab_right" "Move tab right" "Moves the shown tab one place right." (\c -> c.keyMoveTabRight) (\t c -> { c | keyMoveTabRight = t })
+    , chordSetting "move_tab_left" "Move tab left" "Moves the shown tab one place left." (\c -> c.keyMoveTabLeft) (\t c -> { c | keyMoveTabLeft = t })
+    , chordSetting "copy" "Copy" "The selection to the clipboard." (\c -> c.keyCopy) (\t c -> { c | keyCopy = t })
+    , chordSetting "paste" "Paste" "The clipboard, pasted." (\c -> c.keyPaste) (\t c -> { c | keyPaste = t })
+    , chordSetting "paste_selection" "Paste the selection" "The selection (PRIMARY), pasted." (\c -> c.keyPasteSelection) (\t c -> { c | keyPasteSelection = t })
+    , chordSetting "search" "Search" "Opens the search bar over the scrollback." (\c -> c.keySearch) (\t c -> { c | keySearch = t })
+    , chordSetting "settings" "Settings" "Opens the settings window." (\c -> c.keySettings) (\t c -> { c | keySettings = t })
     , { key = [ "clipboard", "osc52_read" ]
       , kind = OneOf [ "deny", "allow" ]
       , optional = False
@@ -985,6 +1005,9 @@ read integerHere kind value =
         Address ->
             string value |> Result.andThen (\t -> if t == "" then Err "where to connect is empty" else Ok (Text t))
 
+        KeyChord ->
+            string value |> Result.andThen chordText
+
 
 {-| A check that answers a `Message`, its message in English, as the
 file's reports are (they go to the terminal with the file's line). -}
@@ -1424,6 +1447,9 @@ fromText s text0 =
             Address ->
                 if text == "" then Err (Words.message "problem.whereToConnect") else Ok (Text text)
 
+            KeyChord ->
+                chordText text |> Result.mapError (\_ -> Words.message "problem.notAChord" |> Words.with "text" text)
+
 
 {-| What `start` takes: `shell`, `hosts`, or `host:` and a host's name. -}
 launch : String -> Result Message String
@@ -1663,6 +1689,22 @@ example =
     middle_click_closes = true
     ask_before_closing = true     # when something runs in the tab
 
+    [keys]                        # "" for none, so the program has the key
+    new_tab = "Ctrl+Shift+T"
+    close_tab = "Ctrl+Shift+W"
+    rename_tab = "Ctrl+Shift+R"
+    next_tab = "Ctrl+PageDown"
+    previous_tab = "Ctrl+PageUp"
+    next_tab_always = "Ctrl+Alt+PageDown"
+    previous_tab_always = "Ctrl+Alt+PageUp"
+    move_tab_right = "Ctrl+Shift+PageDown"
+    move_tab_left = "Ctrl+Shift+PageUp"
+    copy = "Ctrl+Shift+C"
+    paste = "Ctrl+Shift+V"
+    paste_selection = "Shift+Insert"
+    search = "Ctrl+Shift+F"
+    settings = "Ctrl+Comma"
+
     [clipboard]
     osc52_read = "deny"           # or "allow": whether a program may read the
                                   # clipboard with OSC 52 (the same guide)
@@ -1684,3 +1726,31 @@ example =
     [hosts."build-box".font]
     size = 13
     """
+
+
+{-| A `[keys]` entry (docs/tabs.md TB6): the key an action of puritty's
+own is on, named as `Chord` reads it, and empty for none. Each applies at
+once, on the Keys page. -}
+chordSetting : String -> String -> String -> (Config -> String) -> (String -> Config -> Config) -> Setting
+chordSetting name label description get set =
+    { key = [ "keys", name ]
+    , kind = KeyChord
+    , optional = False
+    , label = label
+    , description = description ++ " Empty: the program gets the key."
+    , words = [ "keys", "key", "shortcut", "keyboard", "bind" ] ++ String.split "_" name
+    , page = KeysPage
+    , applies = AtOnce
+    , get = \c -> Text (get c)
+    , set = \v c -> when v is
+        Text t -> set t c
+        _ -> c
+    }
+
+
+{-| A key's name as puritty writes it, or "" for none, or why it names no
+key. -}
+chordText : String -> Result String Value
+chordText text =
+    Chord.parse text |> Result.map (\found -> Text (found |> Maybe.map Chord.show |> Maybe.withDefault ""))
+

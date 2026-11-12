@@ -1,0 +1,241 @@
+module Chord exposing (Chord, matches, parse, show)
+
+{-| A key and its modifiers as the `[keys]` table names them
+(`docs/tabs.md` TB6): `"Ctrl+Shift+T"`, `"Ctrl+PageDown"`, `"Shift+Insert"`,
+`"Ctrl+Comma"`. Modifiers are `Ctrl`, `Shift`, `Alt` and `Super`, in any
+order and any case; the key is a letter, a digit, a named key or a single
+punctuation character. An empty name is no key at all.
+-}
+
+import Bitwise
+
+
+{-| The modifiers as the window's key records carry them (Shift 1, Ctrl 2,
+Alt 4, Super 8), and the key's X keysym, a letter's in capitals. -}
+type alias Chord =
+    { mods : Int
+    , sym : Int
+    }
+
+
+{-| A chord from its name: `Nothing` for an empty name, which binds no key,
+or why the name is not one. -}
+parse : String -> Result String (Maybe Chord)
+parse text =
+    let
+        trimmed =
+            String.trim text
+    in
+    if trimmed == "" then
+        Ok Nothing
+
+    else
+        let
+            -- "Ctrl++" is Ctrl and the plus key
+            parts =
+                if String.endsWith "++" trimmed then
+                    Array.pushLast "+" (String.split "+" (String.dropLast 2 trimmed))
+
+                else
+                    String.split "+" trimmed
+
+            names =
+                Array.map String.trim parts
+        in
+        when Array.popLast names is
+            Nothing ->
+                Err ("\"" ++ text ++ "\" names no key")
+
+            Just { last, initial } ->
+                Array.foldl
+                    (\name acc ->
+                        acc
+                            |> Result.andThen
+                                (\mods ->
+                                    when modifier name is
+                                        Just bit ->
+                                            if Bitwise.and mods bit /= 0 then
+                                                Err ("\"" ++ text ++ "\" names " ++ name ++ " twice")
+
+                                            else
+                                                Ok (Bitwise.or mods bit)
+
+                                        Nothing ->
+                                            Err ("\"" ++ name ++ "\" in \"" ++ text ++ "\" is not Ctrl, Shift, Alt or Super")
+                                )
+                    )
+                    (Ok 0)
+                    initial
+                    |> Result.andThen
+                        (\mods ->
+                            when keySym last is
+                                Just sym ->
+                                    Ok (Just { mods = mods, sym = sym })
+
+                                Nothing ->
+                                    Err ("\"" ++ last ++ "\" in \"" ++ text ++ "\" is not a key puritty knows")
+                        )
+
+
+modifier : String -> Maybe Int
+modifier name =
+    when String.toLower name is
+        "ctrl" ->
+            Just 2
+
+        "control" ->
+            Just 2
+
+        "shift" ->
+            Just 1
+
+        "alt" ->
+            Just 4
+
+        "super" ->
+            Just 8
+
+        "win" ->
+            Just 8
+
+        _ ->
+            Nothing
+
+
+{-| The named keys, by their names in lower case, and their keysyms. -}
+named : Array { name : String, sym : Int }
+named =
+    [ { name = "pageup", sym = 0xFF55 }
+    , { name = "pagedown", sym = 0xFF56 }
+    , { name = "pgup", sym = 0xFF55 }
+    , { name = "pgdn", sym = 0xFF56 }
+    , { name = "home", sym = 0xFF50 }
+    , { name = "end", sym = 0xFF57 }
+    , { name = "insert", sym = 0xFF63 }
+    , { name = "delete", sym = 0xFFFF }
+    , { name = "left", sym = 0xFF51 }
+    , { name = "up", sym = 0xFF52 }
+    , { name = "right", sym = 0xFF53 }
+    , { name = "down", sym = 0xFF54 }
+    , { name = "tab", sym = 0xFF09 }
+    , { name = "enter", sym = 0xFF0D }
+    , { name = "escape", sym = 0xFF1B }
+    , { name = "esc", sym = 0xFF1B }
+    , { name = "backspace", sym = 0xFF08 }
+    , { name = "space", sym = 0x20 }
+    , { name = "comma", sym = 0x2C }
+    , { name = "period", sym = 0x2E }
+    , { name = "slash", sym = 0x2F }
+    , { name = "backslash", sym = 0x5C }
+    , { name = "minus", sym = 0x2D }
+    , { name = "plus", sym = 0x2B }
+    , { name = "equal", sym = 0x3D }
+    , { name = "semicolon", sym = 0x3B }
+    , { name = "quote", sym = 0x27 }
+    , { name = "backquote", sym = 0x60 }
+    , { name = "bracketleft", sym = 0x5B }
+    , { name = "bracketright", sym = 0x5D }
+    ]
+
+
+keySym : String -> Maybe Int
+keySym name =
+    let
+        lower =
+            String.toLower name
+
+        codes =
+            Array.map Char.toCode (String.toArray name)
+    in
+    when Array.findFirst (\n -> n.name == lower) named is
+        Just found ->
+            Just found.value.sym
+
+        Nothing ->
+            when codes is
+                [ c ] ->
+                    if c >= 0x61 && c <= 0x7A then
+                        -- a letter, as its capital
+                        Just (c - 0x20)
+
+                    else if c > 0x20 && c < 0x7F then
+                        Just c
+
+                    else
+                        Nothing
+
+                _ ->
+                    -- F1 to F24
+                    if String.startsWith "f" lower then
+                        when String.toInt (String.dropFirst 1 lower) is
+                            Just n ->
+                                if n >= 1 && n <= 24 then Just (0xFFBE + n - 1) else Nothing
+
+                            Nothing ->
+                                Nothing
+
+                    else
+                        Nothing
+
+
+{-| The chord's name as puritty writes it: modifiers in the order Ctrl,
+Alt, Shift, Super, then the key. -}
+show : Chord -> String
+show c =
+    let
+        mod bit name =
+            if Bitwise.and c.mods bit /= 0 then [ name ] else []
+
+        key =
+            when Array.findFirst (\n -> n.sym == c.sym) named is
+                Just found ->
+                    showName found.value.name
+
+                Nothing ->
+                    if c.sym >= 0xFFBE && c.sym <= 0xFFD5 then
+                        "F" ++ String.fromInt (c.sym - 0xFFBE + 1)
+
+                    else
+                        Char.fromCode c.sym |> Maybe.map String.fromChar |> Maybe.withDefault "?"
+    in
+    String.join "+" (mod 2 "Ctrl" ++ mod 4 "Alt" ++ mod 1 "Shift" ++ mod 8 "Super" ++ [ key ])
+
+
+showName : String -> String
+showName name =
+    when name is
+        "pageup" ->
+            "PageUp"
+
+        "pagedown" ->
+            "PageDown"
+
+        "bracketleft" ->
+            "BracketLeft"
+
+        "bracketright" ->
+            "BracketRight"
+
+        _ ->
+            String.toUpper (String.takeFirst 1 name) ++ String.dropFirst 1 name
+
+
+{-| Whether a key record is the chord: the same modifiers exactly, and the
+same key, a letter in either case, and a punctuation key by the key its
+unshifted character is, so that `Ctrl+Shift+Comma` is the comma key with
+Shift even where Shift makes it `<`. Insert is the keypad's Insert too. -}
+matches : Chord -> { k | mods : Int, sym : Int, unshifted : Int } -> Bool
+matches c k =
+    Bitwise.and k.mods 15 == c.mods
+        && (k.sym == c.sym
+                || (c.sym >= 0x41 && c.sym <= 0x5A && k.sym == c.sym + 0x20)
+                || (c.sym > 0x20 && c.sym < 0x7F && k.unshifted == lowerOf c.sym)
+                || (c.sym == 0xFF63 && k.sym == 0xFF9E)
+                || (c.sym == 0xFF55 && k.sym == 0xFF9A)
+                || (c.sym == 0xFF56 && k.sym == 0xFF9B)
+           )
+
+
+lowerOf : Int -> Int
+lowerOf sym =
+    if sym >= 0x41 && sym <= 0x5A then sym + 0x20 else sym

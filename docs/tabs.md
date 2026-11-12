@@ -228,3 +228,56 @@ beelink1: the question and the tab names proportional, the terminal's text
 monospace. No gate moved: pixels 46, view 345, sshwindow 9, reload 15,
 hosts 13, ime 14, events 13 — none of them pictures puritty's own text in
 the terminal's window, which is why the fallback went unseen.
+
+## TB6 · Step 3, built: the `[keys]` table (2026-11-11)
+
+TB1's item 7, the survey's first must-do: every key puritty takes for
+itself is named in `[keys]`, and an empty entry gives the key back to the
+program, so that a user whose tmux or vim wants Ctrl+PgUp, or the
+colleague's tmux prefix, loses nothing to puritty.
+
+| entry | default | |
+|---|---|---|
+| `new_tab` | Ctrl+Shift+T | tmux's new window in a tab under `tmux -CC` |
+| `close_tab` | Ctrl+Shift+W | |
+| `rename_tab` | Ctrl+Shift+R | |
+| `next_tab`, `previous_tab` | Ctrl+PageDown, Ctrl+PageUp | tmux's windows under `tmux -CC`; the program's with one tab |
+| `next_tab_always`, `previous_tab_always` | Ctrl+Alt+PageDown, Ctrl+Alt+PageUp | puritty's tabs from any tab |
+| `move_tab_right`, `move_tab_left` | Ctrl+Shift+PageDown, Ctrl+Shift+PageUp | |
+| `copy`, `paste` | Ctrl+Shift+C, Ctrl+Shift+V | |
+| `paste_selection` | Shift+Insert | |
+| `search` | Ctrl+Shift+F | |
+| `settings` | Ctrl+Comma | |
+
+Copy, paste, search and the settings are in it as well as the tabs' keys:
+they take keys from programs the same way, and the table cost nothing more
+for them.
+
+**Names.** `Chord` (`app/src/Chord.geng`) reads `Ctrl`, `Shift`, `Alt`,
+`Super` (or `Control`, `Win`) in any order and case, then a letter, a
+digit, a named key (`PageUp`/`PgUp`, `Home`, `Insert`, `Tab`, `Comma`,
+`F1` to `F24`, and the others in its table) or one punctuation character;
+`Ctrl++` is Ctrl and the plus key. It writes them back one way
+(`Ctrl+Alt+Shift+Super+Key`), which is what the settings window shows and
+writes. A key matches with exactly its modifiers; a letter in either case;
+punctuation by the key its unshifted character is, so `Ctrl+Shift+Comma`
+holds where Shift makes the comma `<`; the keypad's Insert, PageUp and
+PageDown are those keys. A name that is no key is reported with its line,
+in English and Korean, and the default kept, as every setting's is. When
+two entries name one key, the first in `tabAction`'s order has it.
+
+**The settings window** has a Keys page, between Clipboard and Program,
+each entry a text field (`Schema.KeyChord`) checked as it is typed. The
+settings gate's way to the Hosts page passes one page more, and the unit
+tests count the pages from `Schema.pages` rather than a number. A field
+that takes the key pressed, as Windows Terminal's does, would be kinder
+than typing a name; not built.
+
+**Measured.** `bench/tabs/keys.py` on Xvfb with `new_tab = "Ctrl+Alt+N"`
+and `next_tab = ""`: Ctrl+Shift+T and Ctrl+PageDown reached the shell
+(`cat -v` read `^[[116;6u^[[6;5~`, the keys as the program's), Ctrl+Alt+N
+opened a tab whose shell took the next line, and Ctrl+PageUp, still
+bound, went back. With the defaults, `bench/tabs/show.py` and
+`bench/search/show.py` (Ctrl+Shift+F, Ctrl+Shift+C) are unchanged; the
+app's tests are 110 with `Chord`'s six; settings 20, keys, paste, select
+and pointer pass.

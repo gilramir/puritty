@@ -5,6 +5,7 @@ gren-unit-node: the settings' table and its lenient decoder. Run with
 `./run.sh`. `Platform` is `app/linux`'s.
 -}
 
+import Chord
 import Config
 import Expect exposing (Expectation)
 import Hosts
@@ -27,7 +28,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing, window, hosts, words ]
+                    , suites = [ schema, writing, window, hosts, words, chords ]
                     }
             )
 
@@ -337,6 +338,9 @@ another s =
         Schema.Address ->
             Schema.Text "h.example.com"
 
+        Schema.KeyChord ->
+            Schema.Text "Ctrl+Alt+F5"
+
 
 writing : U.Suite
 writing =
@@ -555,7 +559,7 @@ onHostsPage launcher inputs =
             SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], launcher = launcher }
 
         toPage =
-            if launcher then [] else [ k.tab, k.tab ] ++ Array.repeat 7 k.down ++ [ press 0xFF53 ]
+            if launcher then [] else [ k.tab, k.tab ] ++ Array.repeat (Array.length Schema.pages) k.down ++ [ press 0xFF53 ]
 
         r =
             Screen.feedInputs (toPage ++ inputs) start
@@ -674,7 +678,7 @@ window =
                             after ([ ctrl 'f' ] ++ typeIn "euc")
                     in
                     Expect.equal
-                        { search = "euc", rows = [ "terminal.charset = (unset)" ], counts = [ 0, 0, 1, 0, 0, 0, 0 ] }
+                        { search = "euc", rows = [ "terminal.charset = (unset)" ], counts = [ 0, 0, 1, 0, 0, 0, 0, 0 ] }
                         { search = String.fromArray r.model.search
                         , rows = rowsShown r.model
                         , counts = Array.map (SettingsWindow.pageCount r.model) Schema.pages
@@ -1040,3 +1044,74 @@ words =
                         { english = (Words.words Words.English).search, korean = (Words.words Words.Korean).search }
           }
         ]
+
+
+pressed : Int -> Int -> Int -> { mods : Int, sym : Int, unshifted : Int }
+pressed mods sym unshifted =
+    { mods = mods, sym = sym, unshifted = unshifted }
+
+
+{-| The `[keys]` table's names (docs/tabs.md TB6). -}
+chords : U.Suite
+chords =
+    run "Chord"
+        [ { name = "names read in any case and order, and written one way"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Ok (Just "Ctrl+Shift+T"), Ok (Just "Ctrl+Alt+PageDown"), Ok (Just "Shift+Insert"), Ok (Just "Ctrl+Comma"), Ok (Just "Ctrl+F5"), Ok (Just "Ctrl+Plus"), Ok Nothing ]
+                        (Array.map (\t -> Chord.parse t |> Result.map (Maybe.map Chord.show))
+                            [ "shift+ctrl+t", "Ctrl+Alt+PgDn", " Shift + Insert ", "control+comma", "Ctrl+f5", "Ctrl++", "" ]
+                        )
+          }
+        , { name = "a name that is no key is refused, saying which part"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True, True ]
+                        (Array.map (\t -> when Chord.parse t is
+                            Err _ -> True
+                            Ok _ -> False)
+                            [ "Ctrl+Shift", "Hyper+T", "Ctrl+Ctrl+T", "Ctrl+F25" ]
+                        )
+          }
+        , { name = "a letter matches in either case, with exactly its modifiers"
+          , test =
+                \_ ->
+                    when Chord.parse "Ctrl+Shift+T" is
+                        Ok (Just c) ->
+                            Expect.equal [ True, True, False, False ]
+                                [ Chord.matches c (pressed 3 0x54 0x74), Chord.matches c (pressed 3 0x74 0x74), Chord.matches c (pressed 2 0x74 0x74), Chord.matches c (pressed 7 0x54 0x74) ]
+
+                        _ ->
+                            Expect.fail "not read"
+          }
+        , { name = "punctuation by its unshifted key, so Shift may change the character"
+          , test =
+                \_ ->
+                    when Chord.parse "Ctrl+Shift+Comma" is
+                        Ok (Just c) ->
+                            Expect.equal True (Chord.matches c (pressed 3 0x3C 0x2C))
+
+                        _ ->
+                            Expect.fail "not read"
+          }
+        , { name = "the keypad's Insert and PageUp are Insert and PageUp"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True ]
+                        [ Chord.parse "Shift+Insert" |> Result.map (Maybe.map (\c -> Chord.matches c (pressed 1 0xFF9E 0))) |> (==) (Ok (Just True))
+                        , Chord.parse "Ctrl+PageUp" |> Result.map (Maybe.map (\c -> Chord.matches c (pressed 2 0xFF9A 0))) |> (==) (Ok (Just True))
+                        ]
+          }
+        , { name = "a [keys] entry is read as puritty writes it, and a bad one reported with the default kept"
+          , test =
+                \_ ->
+                    Expect.equal { tab = "Ctrl+Alt+T", close = "", next = "Ctrl+PageDown", reports = 1 }
+                        ((\t -> when Schema.decode t is
+                            Ok d -> { tab = d.config.keyNewTab, close = d.config.keyCloseTab, next = d.config.keyNextTab, reports = Array.length d.reports }
+                            Err _ -> { tab = "", close = "?", next = "", reports = -1 })
+                            "[keys]\nnew_tab = \"alt+ctrl+t\"\nclose_tab = \"\"\nnext_tab = \"Ctrl+Pg\"\n"
+                        )
+          }
+        ]
+

@@ -1,9 +1,9 @@
 # Tabs
 
-*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4): several sessions in
-one window, the keys, the bar and its marks, renaming, asking before
-closing a busy tab, and a new tab in the same directory. Choosing your own
-keys comes next (TB1).*
+*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6): several
+sessions in one window, the keys and your own choice of them, the bar and
+its marks, renaming, asking before closing a busy tab, and a new tab in
+the same directory.*
 
 A puritty window can hold several sessions, each in its own tab: a local
 shell, or an ssh session to one of your hosts. Every tab keeps its own
@@ -22,6 +22,9 @@ is shown, so a long build or a log you are following goes on in its tab.
 
 With one tab, Ctrl+PgUp and Ctrl+PgDn go to the program, as they did
 before tabs, so vim and others still get them.
+
+Every one of these keys can be changed, or given back to the program:
+see [Your own keys](#your-own-keys).
 
 **In a tab running tmux control mode** (`tmux -CC`, see
 [tmux](tmux.md)), Ctrl+Shift+T and Ctrl+PgUp/PgDn work on tmux's windows,
@@ -84,3 +87,37 @@ ask_before_closing = true
 
 When a tab's program ends (`exit` in its shell), its tab closes; the
 window closes with its last tab.
+
+## Your own keys
+
+The keys puritty takes for itself, its tabs' and its copy, paste, search
+and settings, are in the settings window's **Keys** page, or the `[keys]`
+table of `config.toml`. An empty one gives the key to the program, so that
+vim or tmux can have it:
+
+```toml
+[keys]
+next_tab = "Ctrl+Tab"
+previous_tab = "Ctrl+Shift+Tab"
+new_tab = "Ctrl+Alt+N"
+move_tab_left = ""            # Ctrl+Shift+PageUp goes to the program
+```
+
+A key is its modifiers (`Ctrl`, `Shift`, `Alt`, `Super`) and a key joined
+by `+`: a letter, a digit, `PageUp`, `PageDown`, `Home`, `End`, `Insert`,
+`Delete`, `Tab`, `Enter`, `Space`, the arrows (`Left`, `Up`, ...),
+`F1` to `F24`, `Comma`, `Period`, `Slash`, `Minus`, `Plus`, or one
+punctuation character. The entries:
+
+| entry | default |
+|---|---|
+| `new_tab` | Ctrl+Shift+T |
+| `close_tab` | Ctrl+Shift+W |
+| `rename_tab` | Ctrl+Shift+R |
+| `next_tab`, `previous_tab` | Ctrl+PageDown, Ctrl+PageUp |
+| `next_tab_always`, `previous_tab_always` | Ctrl+Alt+PageDown, Ctrl+Alt+PageUp (also from a tmux tab) |
+| `move_tab_right`, `move_tab_left` | Ctrl+Shift+PageDown, Ctrl+Shift+PageUp |
+| `copy`, `paste`, `paste_selection` | Ctrl+Shift+C, Ctrl+Shift+V, Shift+Insert |
+| `search` | Ctrl+Shift+F |
+| `settings` | Ctrl+Comma |
+

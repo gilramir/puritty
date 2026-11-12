@@ -41,8 +41,9 @@ DISPLAY = ":86"
 
 DOWN, ENTER, BACKSPACE = "Down", "Return", "BackSpace"
 
-# from the first setting to the Hosts page's first row
-TO_HOSTS = ["Tab", "Tab"] + ["Down"] * 7 + ["Right"]
+# from the first setting to the Hosts page's first row, past the pages
+# before it: eight since the Keys page (docs/tabs.md TB6)
+TO_HOSTS = ["Tab", "Tab"] + ["Down"] * 8 + ["Right"]
 
 HOSTS = '# my hosts\n[hosts.box]   # the build box\nhost = "b.example.com"\nuser = "me"\n\n[hosts.box.colours]\nbackground = "#2a1010"\n'
 

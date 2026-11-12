@@ -44,6 +44,7 @@ import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Backend exposing (Backend, Incoming(..))
 import Bytes exposing (Bytes)
+import Chord
 import Config exposing (Config)
 import Hosts
 import Schema
@@ -1387,9 +1388,21 @@ refontOr new old language applied =
 {-| Ctrl+Comma, as Windows Terminal, VS Code and Ghostty open their
 settings (`settings-ui.md` §1): in the usual key encoding a program cannot
 tell it from a comma. -}
-isSettingsKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
-isSettingsKey k =
-    k.action /= 0 && Bitwise.and k.mods 15 == 2 && k.sym == 0x2C
+isSettingsKey : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+isSettingsKey config k =
+    k.action /= 0 && bound config.keySettings k
+
+
+{-| Whether a key is the one a `[keys]` entry names (docs/tabs.md TB6); an
+empty entry, or one that names no key, is no key's. -}
+bound : String -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+bound name k =
+    when Chord.parse name is
+        Ok (Just chord) ->
+            Chord.matches chord k
+
+        _ ->
+            False
 
 
 {-| The settings window started, not tied to this window; a failure said
@@ -2195,15 +2208,15 @@ handleOne remote ms rest ev m =
                         Nothing ->
                             handle remote ms rest m
 
-                  else if m.search /= Nothing && k.action /= 0 && not (isCopyKey k) then
+                  else if m.search /= Nothing && k.action /= 0 && not (isCopyKey m.config k) then
                     -- the search bar takes the keys while it is open (§23),
                     -- but Ctrl+Shift+C, which copies the match
                     handle remote ms rest (searchKey k m)
 
-                  else if isSearchKey k && not (TmuxMode.isOn m.tmux) then
+                  else if isSearchKey m.config k && not (TmuxMode.isOn m.tmux) then
                     handle remote ms rest { m | search = Just Search.start, urgent = True }
 
-                  else if isSettingsKey k then
+                  else if isSettingsKey m.config k then
                     -- Ctrl+Comma: the settings window (docs/settings.md ST9),
                     -- which raises one already open
                     openSettings m |> Task.andThen (\next -> handle remote ms rest next)
@@ -2228,12 +2241,12 @@ handleOne remote ms rest ev m =
                                     )
 
                         Nothing ->
-                            if isPasteKey k /= Nothing then
+                            if isPasteKey m.config k /= Nothing then
                                 -- Shift+Insert and Ctrl+Shift+V, the
                                 -- terminal's before the program's
-                                owned remote ms rest { m | toPaste = Maybe.map (pasteFrom m.config) (isPasteKey k) }
+                                owned remote ms rest { m | toPaste = Maybe.map (pasteFrom m.config) (isPasteKey m.config k) }
 
-                            else if isCopyKey k then
+                            else if isCopyKey m.config k then
                                 -- Ctrl+Shift+C: the selection to CLIPBOARD
                                 -- (docs/user/copy-and-paste.md), the key
                                 -- puritty's with or without one
@@ -3090,15 +3103,15 @@ pasteFrom config which =
 
 {-| The paste keys, pressed (docs/user/copy-and-paste.md): Shift+Insert
 pastes PRIMARY, Ctrl+Shift+V CLIPBOARD. -}
-isPasteKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe Window.Selection
-isPasteKey k =
+isPasteKey : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Maybe Window.Selection
+isPasteKey config k =
     if k.action /= 1 then
         Nothing
 
-    else if Bitwise.and k.mods 15 == 1 && (k.sym == 0xFF63 || k.sym == 0xFF9E) then
+    else if bound config.keyPasteSelection k then
         Just Window.Primary
 
-    else if Bitwise.and k.mods 15 == 3 && (k.sym == 0x56 || k.sym == 0x76) then
+    else if bound config.keyPaste k then
         Just Window.Clipboard
 
     else
@@ -3106,9 +3119,9 @@ isPasteKey k =
 
 
 {-| Ctrl+Shift+F: the search bar (docs/phase3-select.md §23). -}
-isSearchKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
-isSearchKey k =
-    k.action == 1 && Bitwise.and k.mods 15 == 3 && (k.sym == 0x46 || k.sym == 0x66)
+isSearchKey : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+isSearchKey config k =
+    k.action == 1 && bound config.keySearch k
 
 
 {-| A key while the search bar is open: Esc closes it; Enter finds the
@@ -3204,9 +3217,9 @@ barShown m =
 
 
 {-| Ctrl+Shift+C, pressed: the copy key (docs/user/copy-and-paste.md). -}
-isCopyKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
-isCopyKey k =
-    k.action == 1 && Bitwise.and k.mods 15 == 3 && (k.sym == 0x43 || k.sym == 0x63)
+isCopyKey : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bool
+isCopyKey config k =
+    k.action == 1 && bound config.keyCopy k
 
 
 {-| The keys that move a view of the scrollback (docs/phase3-select.md
@@ -3502,17 +3515,20 @@ type TabAction
     | RenameTab
 
 
-{-| The tab keys (docs/tabs.md TB1): Ctrl+Shift+T a new tab, Ctrl+Shift+W
-the shown one closed, Ctrl+PgUp and Ctrl+PgDn the tab before and after,
-Ctrl+Shift+PgUp and Ctrl+Shift+PgDn the shown tab moved. Under tmux control
-mode, Ctrl+Shift+T and Ctrl+PgUp/PgDn are tmux's windows' (TM18), and
-Ctrl+Alt+PgUp/PgDn go between puritty's tabs. With one tab, a key that
-needs another goes on to the program. -}
+{-| The tab keys, as the `[keys]` table names them (docs/tabs.md TB1,
+TB6), by default Ctrl+Shift+T a new tab, Ctrl+Shift+W the shown one
+closed, Ctrl+Shift+R renamed, Ctrl+PgUp and Ctrl+PgDn the tab before and
+after, Ctrl+Shift+PgUp and Ctrl+Shift+PgDn the shown tab moved. Under tmux
+control mode, `new_tab`, `next_tab` and `previous_tab` are tmux's windows'
+(TM18), and `next_tab_always` and `previous_tab_always` (Ctrl+Alt+PgUp
+and PgDn) go between puritty's tabs. With one tab, a key that needs
+another goes on to the program; so does a key whose entry is empty. When
+two entries name one key, the first in this order has it. -}
 tabAction : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Model -> Maybe TabAction
 tabAction k m =
     let
-        mods =
-            Bitwise.and k.mods 15
+        keys =
+            m.config
 
         tmuxOn =
             TmuxMode.isOn m.tmux
@@ -3520,26 +3536,38 @@ tabAction k m =
         others =
             tabCount m > 1
 
-        letter c =
-            k.sym == c || k.sym == c + 0x20
+        on name =
+            bound name k
     in
     if k.action /= 1 then
         Nothing
 
-    else if mods == 3 && letter 0x54 && not tmuxOn then
+    else if on keys.keyNewTab && not tmuxOn then
         Just NewTab
 
-    else if mods == 3 && letter 0x57 then
+    else if on keys.keyCloseTab then
         Just CloseTab
 
-    else if mods == 3 && letter 0x52 then
+    else if on keys.keyRenameTab then
         Just RenameTab
 
-    else if others && (k.sym == 0xFF55 || k.sym == 0xFF56) && ((mods == 2 && not tmuxOn) || mods == 6) then
-        Just (if k.sym == 0xFF55 then PrevTab else NextTab)
+    else if others && on keys.keyNextTabAlways then
+        Just NextTab
 
-    else if others && (k.sym == 0xFF55 || k.sym == 0xFF56) && mods == 3 then
-        Just (if k.sym == 0xFF55 then MoveLeft else MoveRight)
+    else if others && on keys.keyPreviousTabAlways then
+        Just PrevTab
+
+    else if others && not tmuxOn && on keys.keyNextTab then
+        Just NextTab
+
+    else if others && not tmuxOn && on keys.keyPreviousTab then
+        Just PrevTab
+
+    else if others && on keys.keyMoveTabRight then
+        Just MoveRight
+
+    else if others && on keys.keyMoveTabLeft then
+        Just MoveLeft
 
     else
         Nothing
