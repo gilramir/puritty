@@ -98,6 +98,8 @@ static xcb_window_t window;
 /* The pointer over the window: the theme's I-beam over text, and its arrow
  * while the program takes the mouse (docs/phase3-select.md §21). */
 static xcb_cursor_t pointer_text, pointer_arrow;
+/* the shapes for what is dragged, Window.Pointer's 2 to 6 */
+static xcb_cursor_t pointer_drag[5];
 static xcb_pixmap_t pixmap;
 static xcb_gcontext_t gc;
 static xcb_render_picture_t target;
@@ -900,10 +902,23 @@ static void pointers_setup(void) {
         if (pointer_text == XCB_CURSOR_NONE) pointer_text = xcb_cursor_load_cursor(ctx, "xterm");
         pointer_arrow = xcb_cursor_load_cursor(ctx, "default");
         if (pointer_arrow == XCB_CURSOR_NONE) pointer_arrow = xcb_cursor_load_cursor(ctx, "left_ptr");
+        /* the CSS names first, then the X core ones themes alias */
+        static const char *names[5][2] = {
+            {"ew-resize", "sb_h_double_arrow"}, {"ns-resize", "sb_v_double_arrow"},
+            {"nwse-resize", "bottom_right_corner"}, {"nesw-resize", "bottom_left_corner"}, {"move", "fleur"}};
+        for (int i = 0; i < 5; i++) {
+            pointer_drag[i] = xcb_cursor_load_cursor(ctx, names[i][0]);
+            if (pointer_drag[i] == XCB_CURSOR_NONE) pointer_drag[i] = xcb_cursor_load_cursor(ctx, names[i][1]);
+        }
         xcb_cursor_context_free(ctx);
     }
     if (pointer_text == XCB_CURSOR_NONE) pointer_text = font_cursor(152);
     if (pointer_arrow == XCB_CURSOR_NONE) pointer_arrow = font_cursor(68);
+    /* the cursor font's: sb_h_double_arrow, sb_v_double_arrow,
+     * bottom_right_corner, bottom_left_corner, fleur */
+    static const uint16_t glyphs[5] = {108, 116, 14, 12, 52};
+    for (int i = 0; i < 5; i++)
+        if (pointer_drag[i] == XCB_CURSOR_NONE) pointer_drag[i] = font_cursor(glyphs[i]);
     xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &pointer_text);
 }
 
@@ -1467,9 +1482,10 @@ geng_cancel puritty_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-/* The pointer over the window: 0 the I-beam, 1 the arrow. */
+/* The pointer over the window: 0 the I-beam, 1 the arrow, 2 to 6 the
+ * shapes for what is dragged (Window.Pointer). */
 geng_cancel puritty_x11_pointer(int32_t arrow, geng_wait *wait) {
-    xcb_cursor_t c = arrow ? pointer_arrow : pointer_text;
+    xcb_cursor_t c = arrow >= 2 && arrow <= 6 ? pointer_drag[arrow - 2] : arrow ? pointer_arrow : pointer_text;
     xcb_change_window_attributes(conn, window, XCB_CW_CURSOR, &c);
     xcb_flush(conn);
     geng_succeed(wait, geng_slot_I4(0));

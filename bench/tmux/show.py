@@ -36,7 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy", "modes"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy", "modes", "pointers"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -88,6 +88,9 @@ def main():
             return
         if a.scenario == "lines":
             lines(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "pointers":
+            pointers(a, env, tmux, xdo, snap, cli)
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
@@ -1086,6 +1089,104 @@ def lines(a, env, tmux, xdo, snap, cli):
         time.sleep(0.6)
         print("the horizontal line dragged 3 down:", sizes())
         snap("lines-dragged")
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+# the cursor font's glyphs (X11/cursorfont.h), the shapes puritty shows
+# when no cursor theme answers (packages/x11, docs/tmux.md TM38)
+GLYPHS = {"text": 152, "arrow": 68, "width": 108, "height": 116, "down-right": 14, "down-left": 12, "move": 52}
+
+
+def pointers(a, env, tmux, xdo, snap, cli):
+    """The pointer's shape over what can be dragged (docs/tmux.md TM38): with
+    no cursor theme, the window's cursor read through XFixes and named by
+    the cursor font's glyph it matches, with the pointer over a pane, the
+    lines between tiled panes, each edge of a floating pane's box and the
+    tab bar, and during a drag; then a box's right, bottom and left edges
+    dragged, read back from tmux."""
+    from Xlib import X, display
+    env = dict(env, XCURSOR_PATH=str(WORK / "no-cursor-themes"))
+    d = display.Display(env["DISPLAY"])
+    d.xfixes_query_version()
+    root = d.screen().root
+
+    def image():
+        r = d.xfixes_get_cursor_image(root)
+        return (r.width, r.height, r.xhot, r.yhot, tuple(r.cursor_image))
+
+    # each glyph's image, on a window of this script's own
+    probe = root.create_window(1000, 600, 50, 50, 0, d.screen().root_depth, X.InputOutput, X.CopyFromParent)
+    probe.map()
+    font = d.open_font("cursor")
+    known = {}
+    for name, g in GLYPHS.items():
+        probe.change_attributes(cursor=font.create_glyph_cursor(font, g, g + 1, (0, 0, 0), (65535, 65535, 65535)))
+        root.warp_pointer(1020, 620)
+        d.sync()
+        time.sleep(0.2)
+        known[image()] = name
+    probe.unmap()
+    d.sync()
+    shape = lambda: known.get(image(), "unknown")
+
+    cli("new-session", "-d", "-s", "p", "-x", "100", "-y", "29")
+    cli("split-window", "-h", "-t", "%0")
+    cli("split-window", "-v", "-t", "%1")
+    cli("new-pane", "-t", "p", "-x", "30", "-y", "8")
+    time.sleep(1.0)
+    app = subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                            *tmux, "-CC", "attach", "-t", "p"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=open(WORK / "stderr.txt", "w"))
+    q = lambda *args: subprocess.run([*tmux, *args], env=env, capture_output=True, text=True).stdout.strip()
+    xd = lambda *args: subprocess.run([xdo, *args], env=env, check=True)
+    geom = lambda: q("display-message", "-p", "-t", "%3", "#{pane_left},#{pane_top} #{pane_width}x#{pane_height}")
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        xd("windowfocus", "--sync", win)
+        time.sleep(2)
+        w0 = int(q("display-message", "-p", "-t", "%0", "#{pane_width}"))
+        left1 = int(q("display-message", "-p", "-t", "%1", "#{pane_left}"))
+        h1 = int(q("display-message", "-p", "-t", "%1", "#{pane_height}"))
+        (fx, fy), (fw, fh) = [tuple(map(int, v.split(c))) for v, c in zip(geom().split(), (",", "x"))]
+        print("floating:", geom())
+        spots = [
+            ("in the left pane", 3, 20), ("the line right of the left pane", w0, 26),
+            ("the line below the top right pane", left1 + 40, h1),
+            ("the box's top edge", fx + 5, fy - 1), ("the box's right edge", fx + fw, fy + 2),
+            ("the box's bottom edge", fx + 5, fy + fh), ("the box's bottom right corner", fx + fw, fy + fh),
+            ("the box's bottom left corner", fx - 1, fy + fh), ("the box's left edge", fx - 1, fy + 2),
+            ("inside the box", fx + 3, fy + 2),
+        ]
+        for label, col, row in spots:
+            xd("mousemove", *at_t(col, row))
+            time.sleep(0.5)
+            print(f"{label}: {shape()}")
+        xd("mousemove", *at(10, TABROW))
+        time.sleep(0.5)
+        print(f"the tab bar: {shape()}")
+        # a drag keeps its shape off the line
+        x0, y0 = at_t(w0, 26)
+        xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) - 20), str(int(y0) - 40))
+        time.sleep(0.5)
+        print(f"dragging the line, the pointer off it: {shape()}")
+        xd("mouseup", "1")
+        time.sleep(0.6)
+        # the box's edges, each resizing as its shape says
+        edges = {"right": lambda: (fx + fw, fy + 2), "bottom": lambda: (fx + 5, fy + fh), "left": lambda: (fx - 1, fy + 2)}
+        for edge, dcol, drow in [("right", 5, 0), ("bottom", 0, 2), ("left", -2, 0)]:
+            (fx, fy), (fw, fh) = [tuple(map(int, v.split(c))) for v, c in zip(geom().split(), (",", "x"))]
+            col, row = edges[edge]()
+            x0, y0 = at_t(col, row)
+            x1, y1 = at_t(col + dcol, row + drow)
+            xd("mousemove", x0, y0, "mousedown", "1", "mousemove", x1, y1, "mouseup", "1")
+            time.sleep(0.7)
+            print(f"the box's {edge} edge dragged by {dcol},{drow}: {geom()}")
+        snap("pointers")
         cli("kill-server")
         time.sleep(1)
     finally:

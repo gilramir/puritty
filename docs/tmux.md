@@ -801,7 +801,8 @@ A press on the line right of a tiled pane, outside every pane and box, and
 a drag resize that pane's width, `resize-pane -t %N -x`; on the line below
 it, its height, `-y`; tmux takes the room from the neighbor. A tiled
 pane's size, unlike a floating one's, counts no border. `Drag` has a kind
-now: the box moved, the box resized, the line right, the line below.
+now: the box moved, the box resized, the line right, the line below. (Since TM38 each edge of
+a box resizes only its own way, and the pointer shows it.)
 
 **Checked against tmux** (`bench/tmux/show.py --scenario lines`): with the
 window split left and right and the right split again, the line right of
@@ -1621,3 +1622,59 @@ does, in brackets and padded; puritty's in a column at the row's left
 fourteen sessions: in each look `C-a s 1` goes to `k01:0` and
 `C-a s M-c` to `main:0`, tmux says; the pictures show the keys, tmux's
 look as tmux draws it.
+
+## TM38 · The pointer's shape over what can be dragged (2026-11-12)
+
+*Gilbert, 2026-11-12, on Windows:* dragging the lines between panes works,
+but the pointer stayed an I-beam over them, so nothing said a line could
+be taken. The pointer should give that feedback.
+
+**The shapes.** `Window.Pointer` had two, the I-beam and the arrow
+(phase3-select.md §21). It has five more: a width resized, a height, both
+(down and right, down and left) and a move. On Windows they are
+`IDC_SIZEWE`, `IDC_SIZENS`, `IDC_SIZENWSE`, `IDC_SIZENESW` and
+`IDC_SIZEALL`; on X the theme's `ew-resize`, `ns-resize`, `nwse-resize`,
+`nesw-resize` and `move`, or their older names (`sb_h_double_arrow` and
+so on), or the cursor font's glyphs when no theme answers, as the I-beam
+and the arrow already were.
+
+**Where.** `TmuxMode.pointerShape` answers by the same tests a press
+makes: over the line right of a tiled pane, a width; below one, a height;
+over a floating pane's box, the top edge (its corners too) a move, the
+right and left edges a width, the bottom a height, the bottom corners
+both; during a drag, the drag's, wherever the pointer is. The arrow over
+tmux's tab bar, a menu, the tree, and a pane whose program takes the
+mouse (Shift held gives the I-beam back); the I-beam over the rest of a
+pane. Outside tmux, `Main.pointerShape` gives the arrow over puritty's
+tab bar, the scroll bar, a menu and a question (the close question's
+buttons, TB12).
+
+**Motion for it.** The window sent motion with no button held only while
+a program asked for every motion (mode 1003). It now sends it too while a
+shape can change under a still button (`Main.hoverShapes`: tmux control
+mode, the tab bar, the scroll bar, a menu or a question); such a motion
+only moves `hover`, the pointer's place, and goes nowhere else, so what a
+program or tmux is told is as before.
+
+**The box's edges.** A box's right, bottom and left edges all resized
+both its width and height, from its bottom right, and its left edge the
+wrong way. A two-headed pointer there would have said otherwise, so each
+edge now does what its shape says: the right edge the width, the bottom
+the height, the left edge the width with the box's left following the
+pointer (`move-pane -X` and `resize-pane -x` in one line), the bottom
+corners both. The kinds are in `Drag`'s comment (4 to 7).
+
+**Checked:** `bench/tmux/show.py --scenario pointers` on Xvfb with no
+cursor theme reads the window's cursor through XFixes and names it by the
+cursor-font glyph it matches: the left pane `text`, the line right of it
+`width`, the line below the top right pane `height`, the box's top edge
+`move`, right `width`, bottom `height`, bottom right corner `down-right`,
+bottom left `down-left`, left `width`, inside it `text`, the tab bar
+`arrow`, and a line's drag with the pointer off the line `width`. The
+box's right edge dragged 5 right: `28x6` to `33x6`; its bottom 2 down:
+`33x8`; its left 2 left: `4,2 33x8` to `2,2 35x8`. The `mouse` and `lines`
+scenarios give what they gave; harness/pointer.py 54, mouse.py, select.py,
+events.py 13 and the app tests 132 pass. On beelink1, GetCursorInfo over
+the window: the I-beam over text, the arrow over the tab bar. The resize
+shapes under tmux were not seen on Windows (no tmux there); they are the
+same table's other entries.

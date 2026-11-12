@@ -113,9 +113,12 @@ type alias Model =
     , held : Int
     , mouseLast : Maybe Mouse.Cell
     , allMotion : Bool
-      -- the pointer shown, the arrow while the program takes the mouse, and
-      -- whether Shift is held, which takes it back (docs/phase3-select.md §21)
-    , arrowPointer : Bool
+      -- the pointer shown (the arrow while the program takes the mouse, a
+      -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
+      -- last place over the window, and whether Shift is held, which takes
+      -- the mouse back (docs/phase3-select.md §21)
+    , pointerShown : Window.Pointer
+    , hover : Maybe Window.PointerEvent
     , shiftHeld : Bool
       -- how many rows the view is scrolled back, 0 at the bottom
       -- (docs/phase3-select.md §11)
@@ -889,7 +892,8 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , held = 0
                             , mouseLast = Nothing
                             , allMotion = False
-                            , arrowPointer = False
+                            , pointerShown = Window.TextPointer
+                            , hover = Nothing
                             , shiftHeld = False
                             , back = 0
                             , selection = Nothing
@@ -1375,9 +1379,10 @@ loop : Backend -> (taken m00 : Model) -> Task Error Model
 loop remote m00 =
     let
         -- every motion from X only while the program asks for any motion
-        -- (mode 1003, docs/phase3-select.md §4)
+        -- (mode 1003, docs/phase3-select.md §4), or while there is
+        -- something the pointer's shape tells of (`hoverShapes`)
         all =
-            (Vt.mouseModes m00.term).tracking == Mouse.any
+            (Vt.mouseModes m00.term).tracking == Mouse.any || hoverShapes m00
     in
     (if all == m00.allMotion then
         Task.succeed m00
@@ -1394,26 +1399,54 @@ loop remote m00 =
 
 {-| The pointer's shape (docs/phase3-select.md §21): the arrow while the
 program takes the mouse and Shift is not held to take it back, the I-beam
-otherwise, as Alacritty and Ghostty show them. X is told only when it
-changes. -}
+otherwise, as Alacritty and Ghostty show them. Over what a press would
+drag or click it says so (docs/tmux.md TM38): under tmux control mode the
+lines between panes and a floating pane's edges (`TmuxMode.pointerShape`),
+and the arrow over the tab bar, the scroll bar, a menu and a question. The
+window is told only when it changes. -}
 pointerShape : (taken m : Model) -> Task Error Model
 pointerShape m =
     let
-        arrow =
-            (Vt.mouseModes m.term).tracking /= Mouse.none && not m.shiftHeld
+        program =
+            if (Vt.mouseModes m.term).tracking /= Mouse.none && not m.shiftHeld then
+                Window.ArrowPointer
+
+            else
+                Window.TextPointer
+
+        shape =
+            if m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
+                Window.ArrowPointer
+
+            else
+                when m.hover is
+                    Just p ->
+                        if m.barDrag || (barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight) then
+                            Window.ArrowPointer
+
+                        else if barShown m && Dialog.scrollbarHit (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term } { x = p.x, y = p.y } /= Nothing then
+                            Window.ArrowPointer
+
+                        else
+                            TmuxMode.pointerShape m.shiftHeld p m.tmux |> Maybe.withDefault program
+
+                    Nothing ->
+                        program
     in
-    if arrow == m.arrowPointer then
+    if shape == m.pointerShown then
         Task.succeed m
 
     else
-        Window.setPointer
-            (if arrow then
-                Window.ArrowPointer
+        Window.setPointer shape
+            |> Task.map (\_ -> { m | pointerShown = shape })
 
-             else
-                Window.TextPointer
-            )
-            |> Task.map (\_ -> { m | arrowPointer = arrow })
+
+{-| Whether the pointer's shape can change as it moves with no button held,
+so that the window sends every motion: under tmux control mode, with the tab
+bar or the scroll bar shown, or a menu or a question up. -}
+hoverShapes : Model -> Bool
+hoverShapes m =
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
 
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
@@ -3278,7 +3311,17 @@ handleOne remote ms rest ev m =
                         |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
-                  if m.closing /= Nothing then
+                  if p.action == 2 && m.held == 0 && (Vt.mouseModes m.term).tracking /= Mouse.any then
+                    -- a motion with no button held that nothing asked for,
+                    -- sent for the pointer's shape alone (TM38)
+                    handle remote ms rest { m | hover = Just p }
+
+                  else if m.hover /= Just p then
+                    -- the pointer's place kept for its shape, and the event
+                    -- then taken as before
+                    handle remote ms (Array.pushFirst (Window.Pointer p) rest) { m | hover = Just p }
+
+                  else if m.closing /= Nothing then
                     -- the close question takes the pointer: its buttons
                     -- answer it, and nothing reaches the terminal (TB12)
                     (if p.action == 0 then closePress p m else Task.succeed m)

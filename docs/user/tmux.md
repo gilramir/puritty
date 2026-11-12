@@ -58,7 +58,9 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 - **The mouse**: click a pane to make it the active one (its box, if it
   floats, turns amber). Drag a floating pane by its top edge to move it,
   by its other edges to resize it, and drag the line between two panes to
-  give one more room. Programs that use the mouse, such as vim or htop,
+  give one more room. The pointer shows what a press there would do: a
+  two-headed arrow over a line or an edge that resizes, a four-headed one
+  over a box's top edge, the plain arrow over the tab bar. Programs that use the mouse, such as vim or htop,
   get it in their own pane; hold **Shift** to select over them instead.
 - **Scrollback and selection, pane by pane**: the wheel or
   **Shift+PgUp/PgDn** scroll the pane under the pointer or the active one;

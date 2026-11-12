@@ -1158,7 +1158,15 @@ static void wheel(HWND h, int *sum, int delta, int up, int down, LPARAM lp) {
     for (; *sum <= -WHEEL_DELTA; *sum += WHEEL_DELTA) pointer_record(0, down, p.x, p.y);
 }
 
-static void set_pointer_shape(void) { SetCursor(LoadCursorW(NULL, (LPCWSTR) (pointer_arrow ? IDC_ARROW : IDC_IBEAM))); }
+/* pointer_arrow is the shape asked for: 0 the I-beam, 1 the arrow, 2 a
+ * width resized, 3 a height, 4 both down and right, 5 down and left, 6 a
+ * move (Window.Pointer). */
+static void set_pointer_shape(void) {
+    static const LPCWSTR shapes[] = {(LPCWSTR) IDC_IBEAM, (LPCWSTR) IDC_ARROW, (LPCWSTR) IDC_SIZEWE, (LPCWSTR) IDC_SIZENS,
+                                     (LPCWSTR) IDC_SIZENWSE, (LPCWSTR) IDC_SIZENESW, (LPCWSTR) IDC_SIZEALL};
+    LONG k = pointer_arrow;
+    SetCursor(LoadCursorW(NULL, shapes[k >= 0 && k <= 6 ? k : 0]));
+}
 
 /* THE IME (WS6) */
 
@@ -1879,11 +1887,11 @@ geng_cancel puritty_win32_title(void *text, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-/* The pointer over the window: 0 the I-beam, 1 the arrow; the window's
- * thread sets it at once when the pointer is over the window. */
+/* The pointer over the window, a shape of set_pointer_shape's; the
+ * window's thread sets it at once when the pointer is over the window. */
 geng_cancel puritty_win32_pointer(int32_t arrow, geng_wait *wait) {
-    if ((arrow != 0) != (pointer_arrow != 0)) {
-        InterlockedExchange(&pointer_arrow, arrow != 0);
+    if (arrow != pointer_arrow) {
+        InterlockedExchange(&pointer_arrow, arrow);
         if (win) PostMessageW(win, WM_APP_POINTER, 0, 0);
     }
     geng_succeed(wait, geng_slot_I4(0));
