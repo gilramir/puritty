@@ -129,8 +129,9 @@ change. A tab's screen and scrollback are not kept, only where it was.
 
 Closing a tab ends what runs in it, so when something is running puritty
 asks first, naming it: a program in front of the tab's shell (a build,
-`vim`, `ssh`), or the tab's ssh session while it is open. Enter closes it,
-Esc keeps it. An idle shell closes without asking. Closing the whole
+`vim`, `ssh`), or the tab's ssh session while it is open. Enter or the
+**Close** button closes it; Esc or **Keep it** keeps it, so a click on
+the window's close button can be answered with the mouse too. An idle shell closes without asking. Closing the whole
 window asks the same way, listing every busy tab, shown or not. `[tabs]
 ask_before_closing = false` never asks.
 

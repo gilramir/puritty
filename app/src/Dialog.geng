@@ -1,4 +1,4 @@
-module Dialog exposing (Dialog, Swatch, contrast, draw, swatchAt, searchBar, scrollbar, scrollbarHit)
+module Dialog exposing (Dialog, Swatch, Button, contrast, draw, swatchAt, buttonAt, searchBar, scrollbar, scrollbarHit)
 
 {-| A question asked over the terminal (`docs/ssh-client.md` SC23), as
 ChromeOS's Terminal asks for a password: a box in the middle of the
@@ -6,7 +6,8 @@ window, in the settings window's look, drawn with the renderer's interface
 records after the terminal's cells, so nothing of the terminal lies over
 it. A title, lines of text, a field with what is typed (bullets for a
 secret) and a caret, a row of colors to choose from (`docs/tabs.md`
-TB9), and a line of the keys that answer.
+TB9), and a line of the keys that answer, with buttons beside it for a
+mouse (`docs/tabs.md` TB12).
 -}
 
 import Bitwise
@@ -22,6 +23,15 @@ type alias Dialog =
     , field : Maybe { typed : String, hidden : Bool, caret : Int }
     , swatches : Array Swatch
     , hint : String
+    , buttons : Array Button
+    }
+
+
+{-| A button on the box's last row, at its right: the first is the
+answer Enter gives, filled in the accent color. -}
+type alias Button =
+    { label : String
+    , primary : Bool
     }
 
 
@@ -51,6 +61,9 @@ type alias Layout =
     , swatch : Int
     , swatchGap : Int
     , fieldY : Int
+    , buttonH : Int
+    , buttonY : Int
+    , buttonXs : Array { x : Int, w : Int }
     }
 
 
@@ -97,6 +110,22 @@ layout size d =
         swatchRow =
             if count == 0 then 0 else px 8 + swatch
 
+        -- the last row: the hint, and the buttons at its right
+        buttonH =
+            px 30
+
+        rowH =
+            if Array.isEmpty d.buttons then lineH else max lineH buttonH
+
+        buttonWs =
+            Array.map (\b -> Text.width (px 14) b.label + 2 * px 16) d.buttons
+
+        buttonGap =
+            px 8
+
+        buttonsW =
+            Array.foldl (+) 0 buttonWs + max 0 (Array.length buttonWs - 1) * buttonGap
+
         bh =
             pad
                 + lineH
@@ -110,7 +139,7 @@ layout size d =
                         0
                   )
                 + px 12
-                + lineH
+                + rowH
                 + pad
 
         bx =
@@ -121,6 +150,13 @@ layout size d =
 
         swatchY =
             by + pad + (1 + Array.length d.lines) * lineH + px 8
+
+        buttonXs =
+            Array.foldl
+                (\bw0 acc -> { x = acc.x + bw0 + buttonGap, placed = Array.pushLast { x = acc.x, w = bw0 } acc.placed })
+                { x = bx + bw - pad - buttonsW, placed = [] }
+                buttonWs
+                |> .placed
     in
     { px = px
     , body = px 14
@@ -137,7 +173,24 @@ layout size d =
     , swatch = swatch
     , swatchGap = swatchGap
     , fieldY = swatchY - px 8 + swatchRow + px 8
+    , buttonH = buttonH
+    , buttonY = by + bh - pad - buttonH
+    , buttonXs = buttonXs
     }
+
+
+{-| The button under a point, by its place in the row. -}
+buttonAt : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> { x : Int, y : Int } -> Maybe Int
+buttonAt size d p =
+    let
+        l =
+            layout size d
+    in
+    if p.y >= l.buttonY && p.y < l.buttonY + l.buttonH then
+        Array.findFirst (\b -> p.x >= b.x && p.x < b.x + b.w) l.buttonXs |> Maybe.map .index
+
+    else
+        Nothing
 
 
 {-| The swatch under a point, by its place in the row. -}
@@ -255,7 +308,34 @@ draw size d =
             bx + pad + px 10 + min typedW (inner - px 20)
 
         hintY =
-            by + bh - pad - lineH // 2 + small // 3
+            if Array.isEmpty d.buttons then
+                by + bh - pad - lineH // 2 + small // 3
+
+            else
+                l.buttonY + l.buttonH // 2 + small // 3
+
+        hintW =
+            when Array.first l.buttonXs is
+                Just first ->
+                    max 0 (first.x - px 12 - (bx + pad))
+
+                Nothing ->
+                    inner
+
+        buttonRecords =
+            Array.indexedMap
+                (\i b ->
+                    when Array.get i l.buttonXs is
+                        Just at ->
+                            Bytes.flatten
+                                [ framed { x = at.x, y = l.buttonY, w = at.w, h = l.buttonH, r = px 5, color = if b.primary then look.accent else look.field, border = if b.primary then look.accent else look.fieldLine }
+                                , text { x = at.x + (at.w - Text.width body b.label) // 2, y = l.buttonY + l.buttonH // 2 + body // 3, size = body, color = if b.primary then contrast look.accent else look.strong, text = b.label }
+                                ]
+
+                        Nothing ->
+                            Bytes.empty
+                )
+                d.buttons
 
         records =
             [ framed { x = bx, y = by, w = bw, h = bh, r = px 10, color = look.bg, border = look.fieldLine }
@@ -275,7 +355,8 @@ draw size d =
                         Nothing ->
                             []
                    )
-                ++ [ text { x = bx + pad, y = hintY, size = small, color = look.dim, text = fit small inner d.hint } ]
+                ++ [ text { x = bx + pad, y = hintY, size = small, color = look.dim, text = fit small hintW d.hint } ]
+                ++ buttonRecords
     in
     { list = Bytes.flatten records
     , spot =

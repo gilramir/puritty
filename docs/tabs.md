@@ -583,3 +583,26 @@ above the note, `vi`'s screen gone, and the new shell wrote its directory.
 From the menu: the same. A host's tab of the built-in client against the
 local sshd, closed and reopened: connected again, its shell wrote its
 file. App tests 116.
+
+## TB12 · The close question takes the mouse (2026-11-12)
+
+Gilbert: "when I click close on the terminal, a Close the window?
+dialogue comes up. It needs a clickable button too. I used the mouse to
+click on the window decorations close button, so my mouse is in hand and
+I want to confirm the Close the window? question with my mouse."
+
+`Dialog` boxes can now have buttons (`Dialog.Button`), drawn at the right
+of the last row beside the keys' hint, the first filled in the accent
+color as the answer Enter gives; `Dialog.buttonAt` says which one a point
+is on. The close question, for a tab (TB4) and for the window (TB7), has
+**Close** and **Keep it**; `closeAnswer` is what Enter or Y, Esc or N, and
+the buttons all do. While the question is up it takes the pointer: a
+left press on a button answers it, and no press reaches the terminal under
+it (before, a click there went to the terminal or the program). The other
+boxes (the ssh client's questions, rename, color) have none yet.
+
+**Checked:** on Xvfb, a tab running `sleep 1000`, Ctrl+Shift+W: the box
+shows its two buttons; a click on Keep it leaves the window and `sleep`
+running; Ctrl+Shift+W again and a click on Close ends the window, status
+0. App tests 132; the settings, hosts, reload, events, ime, sshwindow and
+pointer gates as before.

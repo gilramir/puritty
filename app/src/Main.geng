@@ -2878,11 +2878,12 @@ dialogOf screen =
                                 ++ (if Array.isEmpty k.knownTypes then [] else [ "It is known by its " ++ String.join ", " k.knownTypes ++ " key, not this one." ])
                         , field = Nothing
                         , swatches = []
+                        , buttons = []
                         , hint = "A: trust and remember    O: trust once    Esc: don't connect"
                         }
 
                 Session.Password p ->
-                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: log in    Esc: do not use a password" }
+                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: log in    Esc: do not use a password", buttons = [] }
 
                 Session.Passphrase p ->
                     let
@@ -2893,7 +2894,7 @@ dialogOf screen =
                         name =
                             String.split "/" file |> Array.last |> Maybe.withDefault file |> String.split "\\" |> Array.last |> Maybe.withDefault file
                     in
-                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: unlock the key    Esc: skip this key" }
+                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: unlock the key    Esc: skip this key", buttons = [] }
 
                 Session.Responses r ->
                     when Array.get (Array.length asking.given) r.prompts is
@@ -2903,6 +2904,7 @@ dialogOf screen =
                                 , lines = (if r.instruction == "" then [] else [ cleanText r.instruction ]) ++ [ cleanText prompt.text ]
                                 , field = Just { typed = asking.typed, hidden = not prompt.echo, caret = String.count asking.typed }
                                 , swatches = []
+                                , buttons = []
                                 , hint = "Enter: answer    Esc: do not answer"
                                 }
 
@@ -2912,7 +2914,7 @@ dialogOf screen =
         Nothing ->
             when screen.failed is
                 Just why ->
-                    Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again" }
+                    Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
 
                 Nothing ->
                     Nothing
@@ -3261,7 +3263,13 @@ handleOne remote ms rest ev m =
                         |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
-                  if m.coloring /= Nothing then
+                  if m.closing /= Nothing then
+                    -- the close question takes the pointer: its buttons
+                    -- answer it, and nothing reaches the terminal (TB12)
+                    (if p.action == 0 then closePress p m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                  else if m.coloring /= Nothing then
                     -- the color box takes the presses while it is open (TB9)
                     (if p.action == 0 then colorPress p m else Task.succeed m)
                         |> Task.andThen (\next -> handle next.remote ms rest next)
@@ -4260,6 +4268,7 @@ draw ms m =
                             , lines = []
                             , field = if p.field then Just { typed = p.typed, hidden = False, caret = p.caret } else Nothing
                             , swatches = []
+                            , buttons = []
                             , hint = p.hint
                             }
                         )
@@ -5661,6 +5670,7 @@ colorBox m =
                 [ "A color for this tab in the bar." ]
     , field = Nothing
     , swatches = Array.map swatch (colorChoices m)
+    , buttons = []
     , hint =
         if info.hostName /= Nothing then
             "1–8: a color    0: none    H: the host's    Esc: cancel"
@@ -5764,6 +5774,7 @@ renameBox r =
     , lines = [ "An empty name gives the program's own title back." ]
     , field = Just { typed = r.typed, hidden = False, caret = String.count r.typed }
     , swatches = []
+    , buttons = []
     , hint = "Enter: rename    Esc: cancel"
     }
 
@@ -5901,6 +5912,7 @@ closeBox c =
                 ++ [ if String.contains "\n" c.why then "Closing the window ends them." else "Closing the window ends it." ]
         , field = Nothing
         , swatches = []
+        , buttons = closeButtons
         , hint = "Enter: close it    Esc: keep it"
         }
 
@@ -5909,8 +5921,63 @@ closeBox c =
         , lines = [ c.why, "Closing the tab ends it." ]
         , field = Nothing
         , swatches = []
+        , buttons = closeButtons
         , hint = "Enter: close it    Esc: keep it"
         }
+
+
+{-| The close question's buttons, for a hand on the mouse (TB12): Close,
+as Enter, then Keep it, as Escape. -}
+closeButtons : Array Dialog.Button
+closeButtons =
+    [ { label = "Close", primary = True }, { label = "Keep it", primary = False } ]
+
+
+{-| A press while the close question is up: on Close, the tab or window
+closed; on Keep it, the question gone; anywhere else, nothing, so that a
+click cannot reach the terminal under the question. -}
+closePress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
+closePress p m =
+    let
+        hit =
+            if p.button == 1 then
+                Maybe.andThen (\c -> Dialog.buttonAt (overlaySize m) (closeBox c) { x = p.x, y = p.y }) m.closing
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            closeAnswer True m
+
+        Just _ ->
+            closeAnswer False m
+
+        Nothing ->
+            Task.succeed m
+
+
+{-| The close question answered: yes closes the window, or the tab asked
+about if it is still the one shown; no keeps them. -}
+closeAnswer : Bool -> (taken m : Model) -> Task Error Model
+closeAnswer yes m =
+    when m.closing is
+        Nothing ->
+            Task.succeed m
+
+        Just c ->
+            if yes && c.window then
+                Task.succeed { m | closing = Nothing, closed = True, byButton = True }
+
+            else if yes then
+                if c.id == m.tab.id then
+                    closeShown { m | closing = Nothing, urgent = True }
+
+                else
+                    Task.succeed { m | closing = Nothing, urgent = True }
+
+            else
+                Task.succeed { m | closing = Nothing, urgent = True }
 
 
 {-| A key while the question is up: Enter or Y closes the tab asked about,
@@ -5922,19 +5989,12 @@ closeKey k m =
         Nothing ->
             Task.succeed m
 
-        Just c ->
-            if (k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59) && c.window then
-                Task.succeed { m | closing = Nothing, closed = True, byButton = True }
-
-            else if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
-                if c.id == m.tab.id then
-                    closeShown { m | closing = Nothing, urgent = True }
-
-                else
-                    Task.succeed { m | closing = Nothing, urgent = True }
+        Just _ ->
+            if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+                closeAnswer True m
 
             else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
-                Task.succeed { m | closing = Nothing, urgent = True }
+                closeAnswer False m
 
             else
                 Task.succeed m
