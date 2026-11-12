@@ -10,7 +10,7 @@ Inputs, in WORK (default ../../.harness-work/euckr):
                 as '?'; gitlog.utf8 the same text decoded again, the bytes
                 the core is fed after the filter
   ko.euckr      Korean ls-like lines: words of KS X 1001 syllables, a few
-                Hanja and symbols, SGR colours; ko.utf8 the same in UTF-8
+                Hanja and symbols, SGR colors; ko.utf8 the same in UTF-8
 """
 import random, sys, pathlib
 

@@ -156,7 +156,7 @@ it is run.
 - `ls`: §1's workload 1, byte for byte: 200,000 `ls`-like lines with two SGR
   sequences each, 24.3 MB.
 - `cup`: §1's workload 2: 2,000,000 single cells, each after a CUP, 18.3 MB.
-- `gitlog`: real text with colour, `git log -p --color=always` of the vendored
+- `gitlog`: real text with color, `git log -p --color=always` of the vendored
   Ghostty, 2,000 commits back from `d8619f1bc`, 25.8 MB.
 - `vte-*`: vtebench's ten benchmarks, run in a 160×50 pty and captured as the
   terminal would read them, each repeated to 8–11 MB.
@@ -202,7 +202,7 @@ vtebench in each terminal, its defaults (10 s a benchmark, samples of at least
 | scrolling_top_small_region | **129** (77) | 160 (63) | 143 (70) | 168 (60) |
 | unicode | **7** (1,309) | 17 (600) | 495 (18) | 11 (170) |
 
-¹ vtebench's `dense_cells` asks for 256-colour indices up to 355. st rejects each
+¹ vtebench's `dense_cells` asks for 256-color indices up to 355. st rejects each
 one and writes a line to stderr, 162 MB of them in the run, so its number
 measures that.
 
@@ -373,7 +373,7 @@ vtebench, the median ms a sample and the number of samples:
 | scrolling_top_small_region | **112** (90) | 146 (70) | 147 (69) | 152 (66) |
 | unicode | **4** (2,383) | 7 (1,190) | 170 (59) | 6 (318) |
 
-¹ As in §1.2: st wrote 497 MB of rejected colour indices to its log in the run.
+¹ As in §1.2: st wrote 497 MB of rejected color indices to its log in the run.
 
 **The Geng probes on this machine**, against this budget:
 
@@ -527,7 +527,7 @@ place (tvision `docs/native.md`). The same idea works one level down. Each frame
 computes a display list from the previous frame and the current snapshot:
 
 ```
-begin(damage rows, scroll ops) · fill(rect, colour) · glyphs(run of (glyph id, x, y), colour)
+begin(damage rows, scroll ops) · fill(rect, color) · glyphs(run of (glyph id, x, y), color)
 · copy(rect, dy) · cursor(…) · end
 ```
 
@@ -542,7 +542,7 @@ into instanced quads. That gives:
   redraw.
 
 Glyphs (V34, `renderer.md` §R7): the display list carries clusters and
-resolved colours (V35), and C shapes each run with HarfBuzz as it draws it
+resolved colors (V35), and C shapes each run with HarfBuzz as it draws it
 (V24), picks the fallback face (V26), rasterises with FreeType and uploads
 into the X server's GlyphSet or the GPU atlas, so bitmaps and glyph ids
 never cross into Geng. C keeps the glyph cache; the server's glyph set is

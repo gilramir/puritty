@@ -2,7 +2,7 @@
  * (docs/windows.md WS26). Run in the terminal being measured:
  *
  *   blast dump FILE RESULT     write FILE to the console as it comes
- *   blast frames N RESULT      N whole screens of coloured text, each from
+ *   blast frames N RESULT      N whole screens of colored text, each from
  *                              the top left, sized to the console
  *
  * It waits START seconds (third argument's fourth, default 4) so that the
@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
         if (fread(buf, 1, len, f) != len) return 1;
         fclose(f);
     } else {
-        /* each frame: home, then every row: a colour, then letters that
+        /* each frame: home, then every row: a color, then letters that
          * change frame to frame, so that every cell is drawn again */
         int n = atoi(argv[2]);
         size_t cap = (size_t) n * (size_t) rows * ((size_t) cols + 24) + 64;

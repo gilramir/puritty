@@ -57,8 +57,8 @@ type Kind
     = WholeIn { low : Int, high : Int, unit : String }
     | AnyText
     | OnOff
-    | OneColour
-    | ColourList { most : Int }
+    | OneColor
+    | ColorList { most : Int }
     | OneOf (Array String)
     | FontFamily
     | Command
@@ -73,8 +73,8 @@ type Value
     = Whole Int
     | Text String
     | Flag Bool
-    | Colour Int
-    | Colours (Array Int)
+    | Color Int
+    | Colors (Array Int)
     | Words (Array String)
     | Unset
 
@@ -259,24 +259,24 @@ settings =
             Whole n -> { c | glyphCacheMb = n }
             _ -> c
       }
-    , { key = [ "colours", "foreground" ]
-      , kind = OneColour
+    , { key = [ "colors", "foreground" ]
+      , kind = OneColor
       , optional = False
       , label = "Foreground"
-      , description = "The colour of text with no colour of its own."
-      , words = [ "text colour", "color", "fg" ]
+      , description = "The color of text with no color of its own."
+      , words = [ "text color", "color", "fg" ]
       , page = Appearance
       , applies = AtOnce
-      , get = \c -> Colour c.foreground
+      , get = \c -> Color c.foreground
       , set = \v c -> when v is
-            Colour n -> { c | foreground = n }
+            Color n -> { c | foreground = n }
             _ -> c
       }
-    , { key = [ "colours", "scheme" ]
+    , { key = [ "colors", "scheme" ]
       , kind = OneOf Palettes.names
       , optional = False
-      , label = "Colour scheme"
-      , description = "Colours copied from another terminal: Ghostty, Alacritty, PuTTY, xterm, Windows Terminal's. A foreground, background or palette set here wins over it."
+      , label = "Color scheme"
+      , description = "Colors copied from another terminal: Ghostty, Alacritty, PuTTY, xterm, Windows Terminal's. A foreground, background or palette set here wins over it."
       , words = [ "theme", "colors", "palette", "ghostty", "alacritty", "putty", "xterm", "solarized", "tango" ]
       , page = Appearance
       , applies = AtOnce
@@ -285,24 +285,24 @@ settings =
             Text t -> { c | scheme = t }
             _ -> c
       }
-    , { key = [ "colours", "background" ]
-      , kind = OneColour
+    , { key = [ "colors", "background" ]
+      , kind = OneColor
       , optional = False
       , label = "Background"
-      , description = "The colour behind text with no colour of its own."
+      , description = "The color behind text with no color of its own."
       , words = [ "color", "bg" ]
       , page = Appearance
       , applies = AtOnce
-      , get = \c -> Colour c.background
+      , get = \c -> Color c.background
       , set = \v c -> when v is
-            Colour n -> { c | background = n }
+            Color n -> { c | background = n }
             _ -> c
       }
-    , { key = [ "colours", "bold_is_bright" ]
+    , { key = [ "colors", "bold_is_bright" ]
       , kind = OnOff
       , optional = False
       , label = "Bold is bright"
-      , description = "Bold text in one of the first eight colours is drawn in its bright one."
+      , description = "Bold text in one of the first eight colors is drawn in its bright one."
       , words = [ "bold", "bright", "color" ]
       , page = Appearance
       , applies = AtOnce
@@ -311,17 +311,17 @@ settings =
             Flag b -> { c | boldIsBright = b }
             _ -> c
       }
-    , { key = [ "colours", "palette" ]
-      , kind = ColourList { most = 16 }
+    , { key = [ "colors", "palette" ]
+      , kind = ColorList { most = 16 }
       , optional = False
       , label = "Palette"
-      , description = "The 16 named colours, from 0, as many as given; the defaults for the rest."
+      , description = "The 16 named colors, from 0, as many as given; the defaults for the rest."
       , words = [ "ansi", "colors", "theme", "scheme" ]
       , page = Appearance
       , applies = AtOnce
-      , get = \c -> Colours c.palette
+      , get = \c -> Colors c.palette
       , set = \v c -> when v is
-            Colours p -> { c | palette = p }
+            Colors p -> { c | palette = p }
             _ -> c
       }
     , { key = [ "cursor", "blink_ms" ]
@@ -537,6 +537,7 @@ settings =
     , chordSetting "new_tab" "New tab" "A new tab, after the last, where the shown one is; in a tab under tmux -CC, tmux's new window." (\c -> c.keyNewTab) (\t c -> { c | keyNewTab = t })
     , chordSetting "close_tab" "Close tab" "Closes the tab shown, asking first when something runs in it; with one tab, the window." (\c -> c.keyCloseTab) (\t c -> { c | keyCloseTab = t })
     , chordSetting "rename_tab" "Rename tab" "Asks for the shown tab's name." (\c -> c.keyRenameTab) (\t c -> { c | keyRenameTab = t })
+    , chordSetting "color_tab" "Tab color" "Asks for the shown tab's color; none by default, as the menu and a right click on the tab ask too." (\c -> c.keyColorTab) (\t c -> { c | keyColorTab = t })
     , chordSetting "next_tab" "Next tab" "The tab after the shown one; in a tab under tmux -CC, tmux's next window. With one tab the key goes to the program." (\c -> c.keyNextTab) (\t c -> { c | keyNextTab = t })
     , chordSetting "previous_tab" "Previous tab" "The tab before the shown one; in a tab under tmux -CC, tmux's previous window. With one tab the key goes to the program." (\c -> c.keyPreviousTab) (\t c -> { c | keyPreviousTab = t })
     , chordSetting "next_tab_always" "Next tab, from any tab" "puritty's next tab, also from a tab under tmux -CC." (\c -> c.keyNextTabAlways) (\t c -> { c | keyNextTabAlways = t })
@@ -635,7 +636,7 @@ decode text =
                             , integer = \path -> Toml.Decode.fromDocument (Toml.Decode.at path Toml.Decode.int) doc |> Result.mapError (\_ -> "too large a number")
                             }
 
-                        -- the scheme first, so that a colour the file sets
+                        -- the scheme first, so that a color the file sets
                         -- beside it wins whatever the keys' order (ST29)
                         start =
                             when schemeIn table is
@@ -653,12 +654,12 @@ decode text =
                     Ok { found | reports = Array.sortBy .line found.reports }
 
 
-{-| `[colours] scheme`, if the file names one. -}
+{-| `[colors] scheme`, if the file names one. -}
 schemeIn : Toml.Table.Table -> Maybe String
 schemeIn table =
-    when Dict.get "colours" (Toml.Table.entries table) is
-        Just (Toml.Table.TableValue colours) ->
-            when Dict.get "scheme" (Toml.Table.entries colours) is
+    when Dict.get "colors" (Toml.Table.entries table) is
+        Just (Toml.Table.TableValue colors) ->
+            when Dict.get "scheme" (Toml.Table.entries colors) is
                 Just (Toml.Table.StringValue name) ->
                     Just name
 
@@ -792,7 +793,7 @@ hostName name =
 
 hostKeys : Array String
 hostKeys =
-    [ "host", "user", "port", "identity", "jump", "command", "charset", "title", "client", "colours", "font" ]
+    [ "host", "user", "port", "identity", "jump", "command", "charset", "title", "client", "colors", "font" ]
 
 
 hostKey : At -> Array String -> String -> String -> Toml.Table.Value -> { host : Config.Host, reports : Array Report } -> { host : Config.Host, reports : Array Report }
@@ -866,7 +867,7 @@ hostKey at here named key value r =
             Err why ->
                 bad why
 
-    else if key == "colours" || key == "font" then
+    else if key == "colors" || key == "font" then
         when value is
             Toml.Table.TableValue inner ->
                 Dict.foldl (\k v acc -> hostLook at path (named ++ "." ++ key) key k v acc) r (Toml.Table.entries inner)
@@ -878,7 +879,7 @@ hostKey at here named key value r =
         { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ " is not a host's setting" ++ suggest key hostKeys } r.reports }
 
 
-{-| A host's look over the settings': its colours and its font. -}
+{-| A host's look over the settings': its colors and its font. -}
 hostLook : At -> Array String -> String -> String -> String -> Toml.Table.Value -> { host : Config.Host, reports : Array Report } -> { host : Config.Host, reports : Array Report }
 hostLook at here named table key value r =
     let
@@ -892,19 +893,32 @@ hostLook at here named table key value r =
             { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ ": " ++ why ++ "; it is left out" } r.reports }
 
         allowed =
-            if table == "colours" then [ "foreground", "background", "palette" ] else [ "family", "size" ]
+            if table == "colors" then [ "foreground", "background", "tab", "palette" ] else [ "family", "size" ]
     in
     if not (Array.member key allowed) then
         { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ " is not a host's setting" ++ suggest key allowed } r.reports }
+
+    else if table == "colors" && key == "tab" then
+        -- the host's tabs' color (docs/tabs.md TB9), which the settings
+        -- have none of
+        when read (\_ -> at.integer path) OneColor value is
+            Ok (Color n) ->
+                { r | host = { h | tab = Just n } }
+
+            Ok _ ->
+                r
+
+            Err why ->
+                bad why
 
     else
         when find [ table, key ] is
             Just s ->
                 when read (\_ -> at.integer path) s.kind value is
-                    Ok (Colour n) ->
+                    Ok (Color n) ->
                         { r | host = if key == "foreground" then { h | foreground = Just n } else { h | background = Just n } }
 
-                    Ok (Colours p) ->
+                    Ok (Colors p) ->
                         { r | host = { h | palette = Just p } }
 
                     Ok (Text t) ->
@@ -957,10 +971,10 @@ read integerHere kind value =
                 _ ->
                     Err "not true or false"
 
-        OneColour ->
-            string value |> Result.andThen (inEnglish colour) |> Result.map Colour
+        OneColor ->
+            string value |> Result.andThen (inEnglish color) |> Result.map Color
 
-        ColourList r ->
+        ColorList r ->
             when value is
                 Toml.Table.ArrayValue items ->
                     if Array.length items > r.most then
@@ -968,10 +982,10 @@ read integerHere kind value =
 
                     else
                         Array.foldl
-                            (\item acc -> Result.map2 Array.pushLast (string item |> Result.andThen (inEnglish colour)) acc)
+                            (\item acc -> Result.map2 Array.pushLast (string item |> Result.andThen (inEnglish color)) acc)
                             (Ok [])
                             items
-                            |> Result.map Colours
+                            |> Result.map Colors
 
                 _ ->
                     Err "not a list of colors"
@@ -1036,9 +1050,9 @@ string value =
             Err "not a string"
 
 
-{-| A colour as `#rrggbb`. -}
-colour : String -> Result Message Int
-colour text =
+{-| A color as `#rrggbb`. -}
+color : String -> Result Message Int
+color text =
     let
         digits =
             String.dropFirst 1 text
@@ -1108,10 +1122,10 @@ shown s v =
         Flag b ->
             if b then "true" else "false"
 
-        Colour n ->
+        Color n ->
             "\"" ++ hex n ++ "\""
 
-        Colours p ->
+        Colors p ->
             "[" ++ String.join ", " (Array.map (\n -> "\"" ++ hex n ++ "\"") p) ++ "]"
 
         Words w ->
@@ -1280,9 +1294,9 @@ hostFields name =
                 _ ->
                     Nothing
 
-        colourOf v =
+        colorOf v =
             when v is
-                Colour n ->
+                Color n ->
                     Just n
 
                 _ ->
@@ -1297,10 +1311,11 @@ hostFields name =
     , field [ "charset" ] (OneOf [ "utf-8", "euc-kr", "cp949" ]) True "Character set" "The host's; the settings' when unset." (\h -> text h.charset) (\v h -> { h | charset = textOf v })
     , field [ "title" ] AnyText True "Title" "The window's title; the host's name when unset." (\h -> text h.title) (\v h -> { h | title = textOf v })
     , field [ "client" ] (OneOf [ "openssh", "built-in" ]) True "Client" "Which ssh connects: OpenSSH's on the terminal, or puritty's own; when unset, puritty's own on Windows and OpenSSH's on Linux." (\h -> text h.client) (\v h -> { h | client = textOf v })
-    , field [ "colours", "foreground" ] OneColour True "Foreground" "The colour of text, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Colour h.foreground)) (\v h -> { h | foreground = colourOf v })
-    , field [ "colours", "background" ] OneColour True "Background" "The colour behind text, over the settings'; a red one for production is the usual." (\h -> Maybe.withDefault Unset (Maybe.map Colour h.background)) (\v h -> { h | background = colourOf v })
-    , field [ "colours", "palette" ] (ColourList { most = 16 }) True "Palette" "The 16 named colours, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Colours h.palette)) (\v h -> { h | palette = when v is
-                Colours p -> Just p
+    , field [ "colors", "foreground" ] OneColor True "Foreground" "The color of text, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Color h.foreground)) (\v h -> { h | foreground = colorOf v })
+    , field [ "colors", "background" ] OneColor True "Background" "The color behind text, over the settings'; a red one for production is the usual." (\h -> Maybe.withDefault Unset (Maybe.map Color h.background)) (\v h -> { h | background = colorOf v })
+    , field [ "colors", "tab" ] OneColor True "Tab" "The color of its tabs in the bar, until a tab is given its own; none when unset." (\h -> Maybe.withDefault Unset (Maybe.map Color h.tab)) (\v h -> { h | tab = colorOf v })
+    , field [ "colors", "palette" ] (ColorList { most = 16 }) True "Palette" "The 16 named colors, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Colors h.palette)) (\v h -> { h | palette = when v is
+                Colors p -> Just p
                 _ -> Nothing })
     , field [ "font", "family" ] FontFamily True "Font" "The font, over the settings'." (\h -> text h.font) (\v h -> { h | font = textOf v })
     , field [ "font", "size" ] (WholeIn { low = 4, high = 200, unit = "pt" }) True "Font size" "In points, over the settings'." (\h -> Maybe.withDefault Unset (Maybe.map Whole h.points)) (\v h -> { h | points = wholeOf v })
@@ -1339,7 +1354,7 @@ renameHost from to doc =
 
 
 {-| A setting's value as the settings window edits it: a number as its
-digits, a colour as `#rrggbb`, a palette as its colours joined by commas,
+digits, a color as `#rrggbb`, a palette as its colors joined by commas,
 a command as its words, quoted where one holds a space; unset as nothing. -}
 toText : Value -> String
 toText v =
@@ -1353,10 +1368,10 @@ toText v =
         Flag b ->
             if b then "true" else "false"
 
-        Colour n ->
+        Color n ->
             hex n
 
-        Colours p ->
+        Colors p ->
             String.join ", " (Array.map hex p)
 
         Words w ->
@@ -1413,10 +1428,10 @@ fromText s text0 =
                 else
                     Err (Words.message "problem.notTrueOrFalse")
 
-            OneColour ->
-                colour text |> Result.map Colour
+            OneColor ->
+                color text |> Result.map Color
 
-            ColourList r ->
+            ColorList r ->
                 let
                     parts =
                         if text == "" then [] else Array.map String.trim (String.split "," text)
@@ -1425,8 +1440,8 @@ fromText s text0 =
                     Err (Words.message "problem.tooManyColors" |> Words.with "n" (String.fromInt (Array.length parts)) |> Words.with "most" (String.fromInt r.most))
 
                 else
-                    Array.foldl (\part acc -> Result.map2 Array.pushLast (colour part) acc) (Ok []) parts
-                        |> Result.map Colours
+                    Array.foldl (\part acc -> Result.map2 Array.pushLast (color part) acc) (Ok []) parts
+                        |> Result.map Colors
 
             OneOf names ->
                 if Array.member text names then
@@ -1556,10 +1571,10 @@ editValue v =
         Flag b ->
             Toml.Edit.bool b
 
-        Colour n ->
+        Color n ->
             Toml.Edit.string (hex n)
 
-        Colours p ->
+        Colors p ->
             Toml.Edit.array (Array.map (\n -> Toml.Edit.string (hex n)) p)
 
         Words w ->
@@ -1635,16 +1650,16 @@ example =
     ligatures = true              # the font's (Fira Code's != and ..)
     glyph_cache_mb = 8            # the glyphs kept (V37), 4 or more
 
-    [colours]
+    [colors]
     scheme = "puritty"            # or "ghostty", "alacritty", "putty", "xterm",
-                                  # "campbell", "solarized-dark", ...: colours
+                                  # "campbell", "solarized-dark", ...: colors
                                   # copied from another terminal; the keys
                                   # below win over it
     foreground = "#c5c8c6"
     background = "#1d1f21"
     bold_is_bright = false
     palette = ["#1d1f21", "#cc6666"]
-                                  # the 16 named colours from 0, as many as
+                                  # the 16 named colors from 0, as many as
                                   # given; libghostty-vt's for the rest
 
     [cursor]
@@ -1693,6 +1708,7 @@ example =
     new_tab = "Ctrl+Shift+T"
     close_tab = "Ctrl+Shift+W"
     rename_tab = "Ctrl+Shift+R"
+    color_tab = ""               # none: the menu and a right click on a tab
     next_tab = "Ctrl+PageDown"
     previous_tab = "Ctrl+PageUp"
     next_tab_always = "Ctrl+Alt+PageDown"
@@ -1720,8 +1736,9 @@ example =
     title = "build"
     client = "built-in"           # or "openssh": which ssh connects
 
-    [hosts."build-box".colours]   # this host's look, over the settings'
+    [hosts."build-box".colors]   # this host's look, over the settings'
     background = "#2a1010"
+    tab = "#c62828"               # its tabs' color in the bar
 
     [hosts."build-box".font]
     size = 13

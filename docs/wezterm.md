@@ -804,7 +804,7 @@ output).
   (`wezterm-cell/src/lib.rs:561-729, 1032-1036`). So a whole grapheme cluster lives in
   the cell, inline for almost all text. `CellAttributes` holds a 32-bit flag word,
   two `SmallColor`s, and `Option<Box<FatAttributes>>` for hyperlink, image
-  placements, underline colour and true-colour fg/bg (`:58-104`).
+  placements, underline color and true-color fg/bg (`:58-104`).
 - **`Line`** = `CellStorage` (`V(Vec<Cell>)` or `C(ClusteredLine)`), semantic zones,
   `seqno`, bits (wrapped, double-width/height, bidi)
   (`wezterm-surface/src/line/line.rs:46-54`, `storage.rs:7-12`).

@@ -7,7 +7,7 @@ Compiled 2026-11-11. Reaction and upvote counts were read from the GitHub REST a
 ### Takeaway
 Every terminal here that has tabs covers the same core: new tab after the current one, inheriting the working directory; switching by key and index; rename; and confirmation on close keyed to "is a non-shell process running". They differ on five things:
 - dragging (to reorder, or out into a new window);
-- per-tab colour;
+- per-tab color;
 - activity and bell marks;
 - whether the tab bar is native or drawn by the terminal;
 - scripting the tabs.
@@ -44,9 +44,9 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
   - Users report a prompt on a fresh tab with nothing running: [discussion #3070](https://github.com/ghostty-org/ghostty/discussions/3070) (2024-12-22, 38 up, open).
 - **Bell.** `bell-features` includes `title` (default on): it prepends 🔔 to the title of the alerted surface, so the mark shows in the tab label. `border` draws a border (1.2.0). There is no separate activity indicator. — Config.zig:3270-3318
   - A request for a "visual indicator on tabs that need user attention" is open: [discussion #10692](https://github.com/ghostty-org/ghostty/discussions/10692) (2026-02-12, 21 up).
-- **Tab colour and renaming (1.3.0):**
-  - Right-click a tab to set its colour (macOS only). Double-click a tab to rename it inline (macOS). Close-tabs-to-the-right and two-finger swipe on GTK also arrived. — [1.3.0 release notes](https://ghostty.org/docs/install/release-notes/1-3-0)
-  - GTK still lacks per-tab colour: [discussion #14978](https://github.com/ghostty-org/ghostty/discussions/14978) (2026-10-31), [discussion #14964](https://github.com/ghostty-org/ghostty/discussions/14964).
+- **Tab color and renaming (1.3.0):**
+  - Right-click a tab to set its color (macOS only). Double-click a tab to rename it inline (macOS). Close-tabs-to-the-right and two-finger swipe on GTK also arrived. — [1.3.0 release notes](https://ghostty.org/docs/install/release-notes/1-3-0)
+  - GTK still lacks per-tab color: [discussion #14978](https://github.com/ghostty-org/ghostty/discussions/14978) (2026-10-31), [discussion #14964](https://github.com/ghostty-org/ghostty/discussions/14964).
 - **Splits.** Ghostty has splits. On macOS 1.3.0 a split can be dragged to reorder it, or out into a new tab or window. GTK "is planned". — [1.3.0 notes](https://ghostty.org/docs/install/release-notes/1-3-0)
   - Split dragging is reported for 1.4. — [OMG! Ubuntu 1.4](https://www.omgubuntu.co.uk/2026/10/ghostty-1-4-released)
 - **Broadcast input: none.** [Discussion #3227](https://github.com/ghostty-org/ghostty/discussions/3227) "Send input to multiple panes" is open, with 415 upvotes (2024-12-27).
@@ -79,7 +79,7 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
   - A mouse tab-drag PR for reordering and detaching, [kitty#9296](https://github.com/kovidgoyal/kitty/pull/9296), was closed 2026-02-22. Kovid asked for an `enable_tab_drag x y` option, where x is the drag threshold and y the distance out of the bar that detaches. Whether it merged under that name was not verified.
 - **Close confirmation.** `confirm_os_window_close` (default `-1`) asks when closing an OS window or tab holding at least N kitty windows. A negative value with shell integration counts only windows running a command; `count-background` adds background jobs. — [kitty.conf](https://sw.kovidgoyal.net/kitty/conf/)
   - Kovid in 2018: "If I ask a terminal emulator to do something, I dont want it to ask me if I'm sure", but an option was accepted. — [kitty#734](https://github.com/kovidgoyal/kitty/issues/734)
-- **Remote control.** `kitten @` has `close-tab`, `detach-tab`, `focus-tab`, `set-tab-color`, `set-tab-title`, plus `launch --type=tab`. Per-tab colour is therefore settable from scripts. — [kitty.conf / remote control index](https://sw.kovidgoyal.net/kitty/conf/)
+- **Remote control.** `kitten @` has `close-tab`, `detach-tab`, `focus-tab`, `set-tab-color`, `set-tab-title`, plus `launch --type=tab`. Per-tab color is therefore settable from scripts. — [kitty.conf / remote control index](https://sw.kovidgoyal.net/kitty/conf/)
 - **No native macOS tabs.** "I'm afraid I have no interest in implementing OS native tabs" (Kovid, 2020-09-01). — [kitty#2946](https://github.com/kovidgoyal/kitty/issues/2946)
 - **Splits.** Kitty's splits are "windows" inside a tab, arranged by layouts; "Move window to another tab" was asked in 2019. — [kitty#1310](https://github.com/kovidgoyal/kitty/issues/1310)
   - New tab in the same folder (`new_tab_with_cwd`) was asked in [kitty#692](https://github.com/kovidgoyal/kitty/issues/692) (2018, 29 comments, closed).
@@ -94,7 +94,7 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
   - `mouse_wheel_scrolls_tabs` (default true).
   - `switch_to_last_active_tab_when_closing_tab` (default false; when false the tab to the left is activated).
   - `prefer_to_spawn_tabs`, and `wezterm start --new-tab`.
-- **Titles and indicators.** The Lua `format-tab-title` event computes each title and colour. `PaneInformation.has_unseen_output` lets a config colour tabs with unseen output; there is no built-in activity mark. — `vendor/wezterm/docs/config/lua/PaneInformation.md:69-90`
+- **Titles and indicators.** The Lua `format-tab-title` event computes each title and color. `PaneInformation.has_unseen_output` lets a config color tabs with unseen output; there is no built-in activity mark. — `vendor/wezterm/docs/config/lua/PaneInformation.md:69-90`
   - The default tab bar animates a spinner on ConEmu-style progress (OSC 9;4). — `vendor/wezterm/docs/changelog.md:154`
 - **Keys and navigator.** `ActivateTab`, `ActivateTabRelative`, `ActivateTabRelativeNoWrap`, `ActivateLastTab`, `MoveTab`, `MoveTabRelative`, `SpawnTab`, `CloseCurrentTab`. `ShowTabNavigator` shows a list overlay. — `vendor/wezterm/docs/config/lua/keyassignment/`
 - **Close confirmation.** `window_close_confirmation` (`AlwaysPrompt`/`NeverPrompt`) and `skip_close_confirmation_for_processes_named` ("stateless" process names such as bash that close without prompting). — `vendor/wezterm/docs/config/lua/config/skip_close_confirmation_for_processes_named.md`
@@ -132,7 +132,7 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
 - **Features** — [Warp docs: Tabs](https://docs.warp.dev/terminal/windows/tabs):
   - New tabs default to the active tab's working directory.
   - Double-click to rename.
-  - Colour by right-click or `/set-tab-color`.
+  - Color by right-click or `/set-tab-color`.
   - Drag or Ctrl+Shift+←/→ to reorder.
   - Drag a tab out to a new window, or onto another window's tab bar (macOS and Windows per the page).
   - Tab groups (collapsible) and pinned tabs.
@@ -178,7 +178,7 @@ Kitty and WezTerm draw their own tab bars and can be scripted fully (`kitten @`,
 
 ### Inferences
 - **The baseline every tabbed terminal ships.** New tab after the current one, with the current tab's cwd; index switching (Ctrl/Cmd+1-9) and next/previous/last; rename that overrides OSC titles; close confirmation that is skipped when only a shell runs; a bell mark on the tab.
-- **The next tier**, which users file the most-reacted issues about when it is missing: drag reorder, drag out to a new window or between windows, per-tab colour, undo close, and session restore.
+- **The next tier**, which users file the most-reacted issues about when it is missing: drag reorder, drag out to a new window or between windows, per-tab color, undo close, and session restore.
 - **Native tab widgets bring drag and overview cheaply but cap the design.** Ghostty cannot do side tabs on libadwaita and has a long tail of macOS 27 tab-bar breakage. Self-drawn bars (kitty, WezTerm) allow vertical bars, templates and filters, but have to build drag themselves; WezTerm still lacks it after five years.
 - **Scripting tabs is an expectation among power users.** kitty and WezTerm have it, Ghostty's 263-upvote request is unmet off macOS, and Wave users file for it. For puritty, a CLI or socket for "new tab to host X" or "set tab title or colour" would fit its ssh-session role.
 
@@ -230,11 +230,11 @@ The most-reacted tab complaints, across all these projects, are four:
 - **restore:** sessions and layouts (Ghostty 689 for a session manager);
 - **broadcast input:** to many panes (Ghostty 415).
 
-Then come vertical tabs (Warp 236, Ghostty 78, WezTerm 46) and per-tab colour or attention marks. Ghostty's native-widget approach draws a separate class of complaints about platform look and OS-update breakage.
+Then come vertical tabs (Warp 236, Ghostty 78, WezTerm 46) and per-tab color or attention marks. Ghostty's native-widget approach draws a separate class of complaints about platform look and OS-update breakage.
 
 ### Cited Findings
 - **Ghostty: naming and switching.** "Naming Tabs and Displaying Tab Name/Number on Switch" (2024-12-28, 140 up) was closed 2026-02-26 once rename shipped. — [discussion #3709](https://github.com/ghostty-org/ghostty/discussions/3709)
-  - "Ability to set title and colour of a tab" (2024, 76 +1) is closed; colour shipped on macOS only in 1.3. — [ghostty#2509](https://github.com/ghostty-org/ghostty/issues/2509)
+  - "Ability to set title and colour of a tab" (2024, 76 +1) is closed; color shipped on macOS only in 1.3. — [ghostty#2509](https://github.com/ghostty-org/ghostty/issues/2509)
   - "Keybind to swap to last active tab" is open (2024-06-08, 39 +1); 1.4's `last_tab` means the *last-positioned* tab. — [ghostty#1844](https://github.com/ghostty-org/ghostty/issues/1844); Binding.zig:568-569
   - "Stack-like ctrl-tab" (MRU) is open, at 46 up. — [discussion #2393](https://github.com/ghostty-org/ghostty/discussions/2393)
 - **Ghostty: layout and grouping.**
@@ -252,14 +252,14 @@ Then come vertical tabs (Warp 236, Ghostty 78, WezTerm 46) and per-tab colour or
   - Libadwaita looks "really out of place on DEs like KDE" (r/linux launch thread, Dec 2024). — [r/linux mirror](https://reddit.birdcat.cafe/r/linux/comments/1hmxpg1/ghostty_terminal_is_out/m3y2o85/?context=3)
   - "Chonky libadwaita titlebars that need to be disabled via config" (r/commandline, Jan 2025). — [r/commandline mirror](https://pol1.lr.ggtyler.dev/r/commandline/comments/1htimkk/kitty_vs_ghostty_terminal_emulators/m5ym6tr/?context=3)
   - "Native look and feel on KDE Plasma" (36 up). — [discussion #3663](https://github.com/ghostty-org/ghostty/discussions/3663)
-  - Tab-bar colour configuration (16 up, 2026). — [discussion #10475](https://github.com/ghostty-org/ghostty/discussions/10475)
+  - Tab-bar color configuration (16 up, 2026). — [discussion #10475](https://github.com/ghostty-org/ghostty/discussions/10475)
   - Korean IME composition is lost on tab switch (2026-11-04). — [discussion #15064](https://github.com/ghostty-org/ghostty/discussions/15064)
-- **Ghostty praise.** 1.3 was covered as "The Terminal Emulator That Listens to Its Users" for adding tab rename, colours and swipe. — [lavx news](https://news.lavx.hu/article/ghostty-1-3-0-the-terminal-emulator-that-listens-to-its-users)
+- **Ghostty praise.** 1.3 was covered as "The Terminal Emulator That Listens to Its Users" for adding tab rename, colors and swipe. — [lavx news](https://news.lavx.hu/article/ghostty-1-3-0-the-terminal-emulator-that-listens-to-its-users)
 - **WezTerm.**
   - Open since 2021–2024: drag reorder [#549](https://github.com/wezterm/wezterm/issues/549) (133 +1), side tab bar [#3537](https://github.com/wezterm/wezterm/issues/3537) (46), tab min width [#5035](https://github.com/wezterm/wezterm/issues/5035) (38), drag reorder again [#6527](https://github.com/wezterm/wezterm/issues/6527) (38), "stretch tabs to fill tab bar" [#1914](https://github.com/wezterm/wezterm/issues/1914) (29), "SpawnTab next to current tab" [#909](https://github.com/wezterm/wezterm/issues/909) (21), centered tab bar [#2167](https://github.com/wezterm/wezterm/issues/2167) (19), vertical tab bar [#7574](https://github.com/wezterm/wezterm/issues/7574) (2026).
   - A freeze when closing a tab after a long session: [#6190](https://github.com/wezterm/wezterm/issues/6190).
   - Praise centres on the fancy bar, [#1180](https://github.com/wezterm/wezterm/issues/1180) (closed, 37), and on Lua-programmable titles (see Q1).
-- **kitty.** Requests are few and mostly shipped: side tab bar ([#2305](https://github.com/kovidgoyal/kitty/issues/2305), [#9855](https://github.com/kovidgoyal/kitty/pull/9855)), tab colour ([#1287](https://github.com/kovidgoyal/kitty/issues/1287)), close confirmation ([#734](https://github.com/kovidgoyal/kitty/issues/734)), an option to disable double-click rename ([#9774](https://github.com/kovidgoyal/kitty/issues/9774), 2026), and tabs following light/dark mode ([#10782](https://github.com/kovidgoyal/kitty/issues/10782), 2026). All closed.
+- **kitty.** Requests are few and mostly shipped: side tab bar ([#2305](https://github.com/kovidgoyal/kitty/issues/2305), [#9855](https://github.com/kovidgoyal/kitty/pull/9855)), tab color ([#1287](https://github.com/kovidgoyal/kitty/issues/1287)), close confirmation ([#734](https://github.com/kovidgoyal/kitty/issues/734)), an option to disable double-click rename ([#9774](https://github.com/kovidgoyal/kitty/issues/9774), 2026), and tabs following light/dark mode ([#10782](https://github.com/kovidgoyal/kitty/issues/10782), 2026). All closed.
   - Native macOS tabs ([#2946](https://github.com/kovidgoyal/kitty/issues/2946), 14 +1) were refused.
 - **Warp.** The most-wanted tab items all shipped (Q1). A 2025 redesign drew backlash: "Bring back the prev tab bar style / highlight active tabs" (48 comments, 46 reactions, closed). — [Warp#6629](https://github.com/warpdotdev/Warp/issues/6629)
 - **Hyper.** The early-life complaints went unfixed: tab dragging (2016, ~130 reactions each) and titles not reflecting cwd or process. The project is now archived. — [hyper#39](https://github.com/vercel/hyper/issues/39), [hyper#911](https://github.com/vercel/hyper/issues/911), [hyper#1188](https://github.com/vercel/hyper/issues/1188)
@@ -270,7 +270,7 @@ Then come vertical tabs (Warp 236, Ghostty 78, WezTerm 46) and per-tab colour or
 - For a puritty local-tab design, the highest-value set is:
   - new tab after the current one, cwd- or host-inheriting;
   - rename that sticks and is restored;
-  - per-tab colour, valuable for telling production hosts from others in an ssh client;
+  - per-tab color, valuable for telling production hosts from others in an ssh client;
   - bell and activity marks;
   - drag reorder and drag to a new window;
   - MRU switching;

@@ -172,7 +172,7 @@ def main():
 
 def attach(a, env, tmux, xdo, snap, cli):
     """A session made and filled before puritty attaches (docs/tmux.md
-    TM15): history and colours in one pane, less on the alternate screen in
+    TM15): history and colors in one pane, less on the alternate screen in
     another, a floating pane; then `tmux -CC attach`, and keys typed."""
     cli("new-session", "-d", "-s", "work", "-x", "100", "-y", "29")
     cli("send-keys", "-t", "%0", "seq 1 60; printf '\\033[1;33mbefore attach\\033[0m 한글\\n'", "Enter")

@@ -1,9 +1,9 @@
 # Tabs
 
-*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6): several
+*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6, TB9): several
 sessions in one window, the keys and your own choice of them, the bar and
-its marks, renaming, asking before closing a busy tab, and a new tab in
-the same directory.*
+its marks, renaming, asking before closing a busy tab, a new tab in the
+same directory, and tab colors, a host's or your own.*
 
 A puritty window can hold several sessions, each in its own tab: a local
 shell, or an ssh session to one of your hosts. Every tab keeps its own
@@ -37,7 +37,8 @@ While there are two tabs or more, the window's last row is the tab bar
 (`[tabs] bar = "always"` shows it with one tab too). Each tab is as wide
 as its name, so many short-named tabs fit:
 
-- the tab shown is amber (light grey in the plain look);
+- the tab shown is amber (light gray in the plain look), unless it has a
+  color (see [Tab colors](#tab-colors));
 - a tab whose program **rang the bell** while you were elsewhere is red,
   with `!` before its name;
 - a tab that **printed something** while you were elsewhere has its name
@@ -53,6 +54,32 @@ keeps what you typed; Esc leaves the name as it was. A name of one or two
 letters makes the tab one or two letters wide. Your name stays when a
 program (tmux, vim, a shell's prompt) sets a title; give an empty name to
 see the program's title again.
+
+## Tab colors
+
+A host can give its tabs a color, so that a production server's tabs are
+red wherever they are in the bar:
+
+```toml
+[hosts.prod.colors]
+tab = "#c62828"
+```
+
+or **Tab** in the host's page of the settings window. Every tab of that
+host, the first and those Ctrl+Shift+T opens, takes it, and a change in
+the settings recolors them at once.
+
+Any tab can be given a color of its own: **right-click** the tab and
+choose **Tab color…**, or Ctrl and the right button in the terminal for
+the same menu. The box offers eight colors, keys **1** to **8**, **0** for
+none, and in a host's tab **H** for the host's own again; a click on a
+color chooses it too. There is no key for it unless you give it one,
+`color_tab` in [Your own keys](#your-own-keys).
+
+The tab shown is drawn in its full color with a line along its top; the
+others are darker. A colored tab that rang the bell has a red dot at its
+end (and `!` before its name), and one that printed a dot in its text's
+color.
 
 ## Closing a busy tab
 
@@ -121,6 +148,7 @@ punctuation character. The entries:
 | `new_tab` | Ctrl+Shift+T |
 | `close_tab` | Ctrl+Shift+W |
 | `rename_tab` | Ctrl+Shift+R |
+| `color_tab` | none (the tab's menu has it) |
 | `next_tab`, `previous_tab` | Ctrl+PageDown, Ctrl+PageUp |
 | `next_tab_always`, `previous_tab_always` | Ctrl+Alt+PageDown, Ctrl+Alt+PageUp (also from a tmux tab) |
 | `move_tab_right`, `move_tab_left` | Ctrl+Shift+PageDown, Ctrl+Shift+PageUp |

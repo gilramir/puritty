@@ -10,9 +10,9 @@
  *     fills the margins past it;
  *   - a fill sets pixels; a scroll moves rows within the bitmap;
  *   - a glyph is kept here, a byte of coverage a pixel, and drawn over the
- *     bitmap in its colour with the arithmetic XRender's software
+ *     bitmap in its color with the arithmetic XRender's software
  *     renderer (pixman) uses for OVER through an A8 mask, so that a frame's
- *     pixels are X11's; a colour glyph is kept as premultiplied ARGB and
+ *     pixels are X11's; a color glyph is kept as premultiplied ARGB and
  *     drawn OVER likewise;
  *   - a face is found among Windows' fonts by its family, from the names
  *     the registry gives the installed fonts, or among the font files of
@@ -118,7 +118,7 @@ static char *narrow(const wchar_t *w) {
 
 typedef struct {
     char *file, *family, *style;
-    int index, colour, mono;
+    int index, color, mono;
 } Entry;
 
 static Entry *entries;
@@ -386,13 +386,13 @@ static int entry_covers(int e, const uint32_t *cps, int n) {
     return all;
 }
 
-static int try_family(const char *family, const uint32_t *cps, int n, int colour) {
+static int try_family(const char *family, const uint32_t *cps, int n, int color) {
     int e = find_face(family, 0);
-    if (e < 0 || entries[e].colour != colour) return -1;
+    if (e < 0 || entries[e].color != color) return -1;
     return entry_covers(e, cps, n) ? e : -1;
 }
 
-char *pt_fallback_file(const uint32_t *cps, int n, int colour, const char *lang, int *index) {
+char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, int *index) {
     /* Hangul is asked for in Korean, as fontconfig's coverage of a
      * language chooses a Korean face for it */
     const char *want = lang;
@@ -407,16 +407,16 @@ char *pt_fallback_file(const uint32_t *cps, int n, int colour, const char *lang,
                 if (!colon || !want) continue;
                 *colon = 0;
                 if (!same(item, want)) continue;
-                found = try_family(colon + 1, cps, n, colour);
+                found = try_family(colon + 1, cps, n, color);
             } else if (!colon)
-                found = try_family(item, cps, n, colour);
+                found = try_family(item, cps, n, color);
         }
         free(list);
     }
     if (found < 0) {
         scan_everything();
         for (int e = 0; e < nentries && found < 0; e++)
-            if (entries[e].colour == colour && (entries[e].index >> 16) == 0 && entry_covers(e, cps, n)) found = e;
+            if (entries[e].color == color && (entries[e].index >> 16) == 0 && entry_covers(e, cps, n)) found = e;
     }
     if (found < 0) return NULL;
     *index = entries[found].index;
@@ -457,13 +457,13 @@ static geng_bytes *family_lines(char **names, int n) {
 
 /* The families of the monospace fonts Windows has, for the settings
  * window (docs/settings.md ST8): every face read (or PURITTY_FONT_DIRS's),
- * those FreeType says are fixed-width and are not colour, each once. */
+ * those FreeType says are fixed-width and are not color, each once. */
 geng_cancel puritty_win32_fonts(geng_wait *wait) {
     scan_everything();
     char **names = NULL;
     int n = 0;
     for (int i = 0; i < nentries; i++) {
-        if (!entries[i].mono || entries[i].colour || !entries[i].family[0]) continue;
+        if (!entries[i].mono || entries[i].color || !entries[i].family[0]) continue;
         int seen = 0;
         for (int k = 0; k < n && !seen; k++) seen = same(names[k], entries[i].family);
         if (seen) continue;

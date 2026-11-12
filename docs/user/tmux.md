@@ -27,7 +27,7 @@ panes are, and puritty draws them:
   ones, the topmost last. They stay inside the window, as tmux keeps them.
 - **What you type** goes to tmux's active pane, and when you resize the
   window, tmux lays its panes out again for the new size.
-- **Colours, Korean and other wide characters, and every other escape** a
+- **Colors, Korean and other wide characters, and every other escape** a
   program writes are drawn by puritty's own terminal for each pane.
 
 `-CC` belongs to the client: your tmux server and sessions are as they
@@ -47,7 +47,7 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 ### What you can do
 
 - **Attach to a session that's already running**: every pane comes back as
-  it was, its history, colours and cursor, and a program like `less` or
+  it was, its history, colors and cursor, and a program like `less` or
   vim on its own screen.
 - **Tabs**: the bottom row shows the session's windows, where tmux's
   status line was (`tabs = "top"` under `[tmux]` in the settings puts it
@@ -103,7 +103,7 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 - **The status line**: tmux's `status-right` (the host and the time, by
   default) shows at the tab bar's right. With `look = "tmux"` the whole bar
   is tmux's status line, with your `status-left`, `status-right`, window
-  formats and colours; click a window's name to go to it.
+  formats and colors; click a window's name to go to it.
 - **Marks, titles and alerts**: the marked pane (`prefix m`) is framed in
   magenta; with `set -g pane-border-status top` (or `bottom`) each pane's
   title is on its border, as tmux draws it; a window that rang its bell
@@ -130,8 +130,8 @@ why in the tab bar, since tmux would then take no more keys from puritty.
 tmux asks the terminal it runs in what it can do, and turns its features on
 from the answers. puritty answers:
 
-- its **colours**, so tmux knows whether your background is dark or light
-  and picks its own colours to match (tmux 3.8's themes). If you change
+- its **colors**, so tmux knows whether your background is dark or light
+  and picks its own colors to match (tmux 3.8's themes). If you change
   puritty's background in the settings, tmux hears about it at once;
 - that it has **left and right margins** and **OSC 52 clipboard writes**;
 - its name and version, `puritty 0.1.0`.
@@ -153,7 +153,7 @@ set -g extended-keys on
 
 - `extkeys` and `extended-keys on`: keys such as Ctrl+Shift+letter and
   Ctrl+Enter reach programs inside tmux as themselves.
-- `usstyle`: curly, dotted and coloured underlines (spelling and lint marks
+- `usstyle`: curly, dotted and colored underlines (spelling and lint marks
   in nvim).
 - `overline`: lines over text.
 

@@ -39,7 +39,7 @@ from older ConPTY behaviour.
   - LF→CRLF translation applies when the client hasn't set
     `DISABLE_NEWLINE_AUTO_RETURN`.
   - Conhost injects `?1004h`/`?9001h` after RIS and mode resets.
-  - Console-API output is lossy: 16 colours, UCS-2, `SGR 0` before every
+  - Console-API output is lossy: 16 colors, UCS-2, `SGR 0` before every
     attribute change.
   - Conhost and the terminal **reflow separately on resize**, and conhost
     keeps **no scrollback**, so buffer and cursor state can drift. Conhost
@@ -320,12 +320,12 @@ API call runs:
 |---|---|---|
 | `WriteConsole` without VT processing (`WriteCharsLegacy`) | Text, CR/LF, OEM glyphs for control chars | Control chars become CP437 glyphs (☺ ♥ …) or are expanded. Tabs become spaces (`_stream.cpp:188-376`). **A delayed EOL wrap is forced with `\r\n`, which breaks reflow** (`_stream.cpp:207-225`; acknowledged in #17510) |
 | `SetConsoleCursorPosition` | CUP | |
-| `SetConsoleTextAttribute` | `SGR 0;…` | **Always starts with SGR 0** and has only 16 colours (`formatAttributes`, `VtIo.cpp:336-376`) |
+| `SetConsoleTextAttribute` | `SGR 0;…` | **Always starts with SGR 0** and has only 16 colors (`formatAttributes`, `VtIo.cpp:336-376`) |
 | `SetConsoleCursorInfo` | DECTCEM | |
 | `SetConsoleMode` output | DECAWM for `ENABLE_WRAP_AT_EOL_OUTPUT` | (`getset.cpp:455-463`) |
 | `SetConsoleMode` input | `CSI ?1003;1006h/l` when `ENABLE_MOUSE_INPUT` changes | Quick-edit interplay, GH#9970 (`getset.cpp:367-387`) |
 | `SetConsoleTitle` | `OSC 0;…ST` | Control chars sanitised |
-| `WriteConsoleOutput` / `FillConsoleOutput*` | CUP + text + SGR per run (`WriteInfos`) | **UCS-2 only, 16 colours, DBCS halves fixed up** (`VtIo.cpp:771-834`). Full-screen space fill becomes `CSI H CSI 2J CSI 3J` (`_output.cpp:455-475`) |
+| `WriteConsoleOutput` / `FillConsoleOutput*` | CUP + text + SGR per run (`WriteInfos`) | **UCS-2 only, 16 colors, DBCS halves fixed up** (`VtIo.cpp:771-834`). Full-screen space fill becomes `CSI H CSI 2J CSI 3J` (`_output.cpp:455-475`) |
 | `ScrollConsoleScreenBuffer` | Full-width vertical scroll: `DECSC; SGR; CSI H; CSI n L/M; DECRC`. Otherwise **DECCRA/DECFRA if the terminal's DA1 lists rectangular ops (28)**. Otherwise read back the cells and rewrite them | `getset.cpp:1034-1110`. cmd `cls` shim → clear screen (GH#3126) |
 | `SetConsoleActiveScreenBuffer` / closing a secondary buffer | Full repaint of the new buffer, main then alt (`WriteScreenInfo`, `VtIo.cpp:836-882`) | "destroys surrogate pairs and extended (VT) attributes" (#17510) |
 | `ShowWindow(GetConsoleWindow())` | `CSI 1t` / `CSI 2t` (`InteractivityFactory.cpp:505-516`) | Focus-loop avoidance, #17829 |
@@ -444,7 +444,7 @@ Current OSS ConPTY. Inbox ConPTY before 24H2 is much worse.
 | 1 | Invalid UTF-8 from the child becomes U+FFFD | UTF-16 round trip (§2.4) | Low (but binary-ish output differs) |
 | 2 | LF→CRLF unless the child set `DISABLE_NEWLINE_AUTO_RETURN` | `WriteUTF16TranslateCRLF`; may corrupt DCS payloads containing LF | Medium for sixel/DCS-heavy apps |
 | 3 | Child cannot turn off focus events or win32-input-mode in the terminal | Injections (§2.4) | Low (terminal hides it) |
-| 4 | Console-API apps lose truecolor, 256-colour and surrogates, and every attribute change resets SGR | `formatAttributes`, `WriteInfos` | Only for legacy apps |
+| 4 | Console-API apps lose truecolor, 256-color and surrogates, and every attribute change resets SGR | `formatAttributes`, `WriteInfos` | Only for legacy apps |
 | 5 | Delayed-wrap CRLF breaks reflow of mixed API/VT output | `_stream.cpp:207-225` | Medium |
 | 6 | Conhost buffer ≠ terminal buffer after resize. Apps that read the console (PSReadLine, `GetConsoleScreenBufferInfo`) see stale positions; a CPR round trip papers over it | §2.6 | Medium–high for PowerShell |
 | 7 | Focus and visibility VT injected "without checking whether the VT output is currently in a ground state" | #17510 unresolved list | Low, but can corrupt a long DCS |
@@ -681,7 +681,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   (mode 69), DECOM, IRM, LNM.
 - **Rectangular:** DECCARA, DECRARA, DECCRA, DECFRA, DECERA, DECSERA,
   DECSACE. DECRQCRA sits behind a feature flag.
-- **SGR:** colon sub-params; underline styles 1–5; underline colour;
+- **SGR:** colon sub-params; underline styles 1–5; underline color;
   XTPUSHSGR/XTPOPSGR; DECSCA; DECDWL/DECDHL.
 - **Reports:**
   - DA1 `?61;4;6;7;14;21;22;23;24;28;32;42[;52]c` (`adaptDispatch.cpp:1435-1462`),
@@ -693,7 +693,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   (sixel display), 117, 1000/1002/1003/1004/1005/1006/1007, **1049 only** (no
   47/1047/1048), 2004, **2026** synchronized output, 2027 (reports
   permanently set or reset per the measurement mode), 9001. **No 1015/1016.**
-- **Sixel:** `SixelParser`, up to 256 colours, virtual cell 10×20 (VT340-like),
+- **Sixel:** `SixelParser`, up to 256 colors, virtual cell 10×20 (VT340-like),
   so images are scaled to font cells.
   - Stored as per-row `ImageSlice` RGBA buffers that move with text through
     scroll and reflow (`src/buffer/out/ImageSlice.hpp`, `textBuffer.cpp:2848`).
@@ -703,7 +703,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
   of the visible viewport), **macros** (DECDMAC/DECINVM, 256 KiB), **DECPS**
   (MIDI notes), VT52 mode, charsets (SCS/LS/SS/DOCS).
 - **OSC:**
-  - Titles 0/1/2/21; palette 4/104; dynamic colours 10/11/12/17 and
+  - Titles 0/1/2/21; palette 4/104; dynamic colors 10/11/12/17 and
     resets.
   - **7** and **9;9** (cwd); **8** hyperlinks; **9;4** progress;
     **52 set only** (queries ignored; needs focus and permission); **133**
@@ -869,14 +869,14 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 **D3D11 backend** (`BackendD3D.*`):
 - **Instancing:**
   - One unit quad, instanced. `QuadInstance` is about 20 bytes: shading type,
-    rendition scale, i16 position, u16 size, u16 texcoord, u32 colour
+    rendition scale, i16 position, u16 size, u16 texcoord, u32 color
     (`BackendD3D.h:87-100`).
   - One `DrawIndexedInstanced` per batch into a dynamic `WRITE_DISCARD`
     buffer.
   - A comment benchmarks compute shaders, geometry shaders and vertex pulling;
     instancing won by about 50% on Nvidia (`.cpp:1016-1033`).
 - **Shading types:** background (sampled from a cells-sized RGBA texture),
-  grayscale text, ClearType text, builtin glyph, passthrough (colour
+  grayscale text, ClearType text, builtin glyph, passthrough (color
   emoji/sixel), dotted/dashed/curly/solid lines, cursor, filled rect
   (`shader_ps.hlsl:36-218`).
 - **ClearType in the shader.** **Dual-source blending**
@@ -887,7 +887,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 - **When ClearType is disabled.** It is forced to grayscale when the
   background is transparent or a custom shader is active
   (`AtlasEngine.api.cpp:510-527`).
-- **Background upload.** The background colour plane is uploaded only when its
+- **Background upload.** The background color plane is uploaded only when its
   generation changes; this "halves (!) the GPU load" (`.cpp:1072-1106`).
 
 **Glyph atlas:**
@@ -910,11 +910,11 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 - **Rasterisation:** D2D `DrawGlyphRun` per glyph. A manual
   `IDWriteGlyphRunAnalysis` path is kept under `#if 0`; D2D was "roughly 2x
   faster" (`:1343-1409`).
-- **Colour glyphs:** `TranslateColorGlyphRun` (COLR/SVG/PNG/…), drawn layer by
-  layer (`Backend.cpp:31-51`). **Inference:** foreground-coloured layers are
+- **Color glyphs:** `TranslateColorGlyphRun` (COLR/SVG/PNG/…), drawn layer by
+  layer (`Backend.cpp:31-51`). **Inference:** foreground-colored layers are
   baked white in the atlas.
-- **Ligatures across colour changes:** `overlapSplit` cuts wide glyph quads
-  at cell boundaries where the foreground colour changes (`:1236-1325`).
+- **Ligatures across color changes:** `overlapSplit` cuts wide glyph quads
+  at cell boundaries where the foreground color changes (`:1236-1325`).
 
 **DirectWrite** (`AtlasEngine.cpp:820-1185`, `AtlasEngine.api.cpp:616-876`):
 - **Font list and fallback:**
@@ -995,7 +995,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 
 **D2D backend** (`BackendD2D.*`):
 - Redraws everything each frame: a stretched nearest-neighbour background
-  bitmap, then one `DrawGlyphRun` per colour run, with D2D's glyph cache.
+  bitmap, then one `DrawGlyphRun` per color run, with D2D's glyph cache.
 - Builtin glyphs are drawn through a cached sprite batch.
 - It still uses the same swap chain and Present1 path.
 
@@ -1189,7 +1189,7 @@ Broad DEC coverage, largely the work of j4james's VT conformance effort:
 | Renderer | Packaged fonts break after app update (DirectWrite cache) | GH#9375 |
 | UI | XAML Islands key/mouse/NC workarounds | §7 |
 | Input | AltGr heuristics, touch keyboard scancode 0 (GH#7495), AutoHotKey vkeys (GH#7064) | §7 |
-| IME | Korean interim chars, edit-session ordering (GH#20244), buggy IME colour attributes | `src/tsf/Implementation.cpp` |
+| IME | Korean interim chars, edit-session ordering (GH#20244), buggy IME color attributes | `src/tsf/Implementation.cpp` |
 | Startup | Single-process model to fix startup speed and threading bugs; NVIDIA loader-lock stall workaround (GH#20348) | `8bbf00e05`, `WindowEmperor.cpp:547-550` |
 
 ---

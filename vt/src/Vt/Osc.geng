@@ -6,20 +6,20 @@ module Vt.Osc exposing
     , oscNumber
     , keepByte
     , oscDispatch
-    , paletteColours
-    , dynamicColours
+    , paletteColors
+    , dynamicColors
     , nextDynamic
     , withAnswers
     , resetPalette
     , digits
     , rgb16
-    , parseColour
+    , parseColor
     , scaledHex
     , intensity
     , semanticPrompt
     )
 
-{-| OSC strings' dispatch: the colours, the clipboard and the semantic
+{-| OSC strings' dispatch: the colors, the clipboard and the semantic
 prompts (`docs/vt-core.md` §VC45). -}
 
 import Array.Builder as Builder exposing (Builder)
@@ -172,7 +172,7 @@ oscDispatch end t0 =
             taken.term
 
         -- text that is not UTF-8 is still read, a high byte as one no
-        -- command or colour has, as Ghostty reads the bytes (§VC16)
+        -- command or color has, as Ghostty reads the bytes (§VC16)
         text =
             when Bytes.toString (Bytes.fromUInt8s taken.text) is
                 Just decoded ->
@@ -203,7 +203,7 @@ oscDispatch end t0 =
             { t | title = rest }
 
         Just 4 ->
-            paletteColours end (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
+            paletteColors end (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
 
         Just 104 ->
             resetPalette (Array.dropFirst 1 parts) t
@@ -221,11 +221,11 @@ oscDispatch end t0 =
 
         Just c ->
             if c >= 10 && c <= 19 then
-                dynamicColours end c (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
+                dynamicColors end c (Array.keepIf (\w -> w /= "") (Array.dropFirst 1 parts)) "" t
 
             else if c >= 110 && c <= 112 && Array.all (\w -> w == "") (Array.dropFirst 1 parts) then
                 -- an empty parameter is none: Ghostty's words skip them
-                { t | colours = Dict.remove (dynamicKey (c - 100)) t.colours }
+                { t | colors = Dict.remove (dynamicKey (c - 100)) t.colors }
 
             else
                 t
@@ -234,28 +234,28 @@ oscDispatch end t0 =
             t
 
 
-{-| OSC 4: pairs of an index and a colour or `?`, each set or answered in
+{-| OSC 4: pairs of an index and a color or `?`, each set or answered in
 order, the answers in one reply ended as the request was; the first pair
 that does not parse ends it, as in Ghostty (§VC12). An index of 256 to 260
-is one of Ghostty's special colours (OSC 5's), which it passes over: a
-query or a colour that parses goes on to the next pair (§VC17). -}
-paletteColours : String -> Array String -> String -> (taken t : Term) -> Term
-paletteColours end words answers t =
+is one of Ghostty's special colors (OSC 5's), which it passes over: a
+query or a color that parses goes on to the next pair (§VC17). -}
+paletteColors : String -> Array String -> String -> (taken t : Term) -> Term
+paletteColors end words answers t =
     when { i = Maybe.andThen digits (Array.get 0 words), spec = Array.get 1 words } is
         { i = Just i, spec = Just spec } ->
-            if i >= 256 && i <= 260 && (spec == "?" || parseColour spec /= Nothing) then
-                paletteColours end (Array.dropFirst 2 words) answers t
+            if i >= 256 && i <= 260 && (spec == "?" || parseColor spec /= Nothing) then
+                paletteColors end (Array.dropFirst 2 words) answers t
 
             else if i < 0 || i > 255 then
                 withAnswers answers t
 
             else if spec == "?" then
-                paletteColours end (Array.dropFirst 2 words) (answers ++ "\u{001B}]4;" ++ String.fromInt i ++ ";" ++ rgb16 (paletteColour i t) ++ end) t
+                paletteColors end (Array.dropFirst 2 words) (answers ++ "\u{001B}]4;" ++ String.fromInt i ++ ";" ++ rgb16 (paletteColor i t) ++ end) t
 
             else
-                when parseColour spec is
+                when parseColor spec is
                     Just c ->
-                        paletteColours end (Array.dropFirst 2 words) answers { t | colours = Dict.set i c t.colours }
+                        paletteColors end (Array.dropFirst 2 words) answers { t | colors = Dict.set i c t.colors }
 
                     Nothing ->
                         withAnswers answers t
@@ -264,17 +264,17 @@ paletteColours end words answers t =
             withAnswers answers t
 
 
-{-| OSC 10 to 19: colours or `?` for the dynamic colours from `c` on, each
+{-| OSC 10 to 19: colors or `?` for the dynamic colors from `c` on, each
 the next's. The foreground (10), background (11) and cursor (12) are kept;
 the rest are passed over, as Ghostty passes them. -}
-dynamicColours : String -> Int -> Array String -> String -> (taken t : Term) -> Term
-dynamicColours end c words answers t =
+dynamicColors : String -> Int -> Array String -> String -> (taken t : Term) -> Term
+dynamicColors end c words answers t =
     when Array.first words is
         Just spec ->
             if spec == "?" then
                 let
                     more =
-                        when dynamicColour c t is
+                        when dynamicColor c t is
                             Just v ->
                                 answers ++ "\u{001B}]" ++ String.fromInt c ++ ";" ++ rgb16 v ++ end
 
@@ -284,10 +284,10 @@ dynamicColours end c words answers t =
                 nextDynamic end c words more t
 
             else
-                when parseColour spec is
+                when parseColor spec is
                     Just v ->
                         if c <= 12 then
-                            nextDynamic end c words answers { t | colours = Dict.set (dynamicKey c) v t.colours }
+                            nextDynamic end c words answers { t | colors = Dict.set (dynamicKey c) v t.colors }
 
                         else
                             nextDynamic end c words answers t
@@ -299,7 +299,7 @@ dynamicColours end c words answers t =
             withAnswers answers t
 
 
-{-| The next dynamic colour's word, or the end after OSC 19's. A function of
+{-| The next dynamic color's word, or the end after OSC 19's. A function of
 its own, not a local one handed the term: a term handed to a function value
 is kept by every path of the parser, and each update of it copies (§VC7). -}
 nextDynamic : String -> Int -> Array String -> String -> (taken t : Term) -> Term
@@ -308,7 +308,7 @@ nextDynamic end c words answers t =
         withAnswers answers t
 
     else
-        dynamicColours end (c + 1) (Array.dropFirst 1 words) answers t
+        dynamicColors end (c + 1) (Array.dropFirst 1 words) answers t
 
 
 withAnswers : String -> (taken t : Term) -> Term
@@ -322,7 +322,7 @@ withAnswers answers t =
 
 {-| OSC 104: the palette entries named set back, or every one when none is
 named. As in Ghostty, a name counts when it is a palette index or one of
-the five special colours after it (256 to 260), which the core does not
+the five special colors after it (256 to 260), which the core does not
 keep; any other is passed over, and if every one is, the whole palette is
 set back (§VC20). -}
 resetPalette : Array String -> (taken t : Term) -> Term
@@ -332,13 +332,13 @@ resetPalette words t =
             Array.keepIf (\i -> i <= 260) (Array.mapAndKeepJust digits (Array.keepIf (\w -> w /= "") words))
     in
     if Array.isEmpty named then
-        { t | colours = Dict.keepIf (\k _ -> k > 255) t.colours }
+        { t | colors = Dict.keepIf (\k _ -> k > 255) t.colors }
 
     else
-        { t | colours = Array.foldl Dict.remove t.colours named }
+        { t | colors = Array.foldl Dict.remove t.colors named }
 
 
-{-| A colour's index: decimal digits only, no sign, as Ghostty's
+{-| A color's index: decimal digits only, no sign, as Ghostty's
 `parseInt` for an unsigned type takes it (§VC18). One too big for any
 index is 99999, which none has. -}
 digits : String -> Maybe Int
@@ -363,7 +363,7 @@ digits w =
         Nothing
 
 
-{-| A colour as xterm reports one: `rgb:` and each channel in 16 bits. -}
+{-| A color as xterm reports one: `rgb:` and each channel in 16 bits. -}
 rgb16 : Int -> String
 rgb16 c =
     let
@@ -373,12 +373,12 @@ rgb16 c =
     "rgb:" ++ channel (Bitwise.shiftRightZfBy 16 c) ++ "/" ++ channel (Bitwise.shiftRightZfBy 8 c) ++ "/" ++ channel c
 
 
-{-| A colour as XParseColor reads one, as Ghostty reads it: `#` and 1 to 4
+{-| A color as XParseColor reads one, as Ghostty reads it: `#` and 1 to 4
 hex digits a channel, 3 or 6 hex digits alone, `rgb:` and 1 to 4 a channel,
 or `rgbi:` and an intensity from 0 to 1 a channel; each scaled to 8 bits.
-X11's colour names are not taken (§VC12). -}
-parseColour : String -> Maybe Int
-parseColour spec0 =
+X11's color names are not taken (§VC12). -}
+parseColor : String -> Maybe Int
+parseColor spec0 =
     let
         spec =
             String.trim spec0

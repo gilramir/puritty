@@ -69,24 +69,24 @@ decoded text =
 schema : U.Suite
 schema =
     run "Schema"
-        [ { name = "a colour scheme sets the foreground, the background and the 16 (ST29)"
+        [ { name = "a color scheme sets the foreground, the background and the 16 (ST29)"
           , test =
                 \_ ->
                     Expect.equal { fg = 0xBBBBBB, bg = 0, red = Just 0xBB0000, n = 16 }
-                        ((\c -> { fg = c.foreground, bg = c.background, red = Array.get 1 c.palette, n = Array.length c.palette }) (decoded "[colours]\nscheme = \"putty\"\n"))
+                        ((\c -> { fg = c.foreground, bg = c.background, red = Array.get 1 c.palette, n = Array.length c.palette }) (decoded "[colors]\nscheme = \"putty\"\n"))
           }
-        , { name = "a colour written beside a scheme wins over it, before it or after"
+        , { name = "a color written beside a scheme wins over it, before it or after"
           , test =
                 \_ ->
                     Expect.equal [ 0x123456, 0x123456 ]
-                        [ (decoded "[colours]\nscheme = \"putty\"\nforeground = \"#123456\"\n").foreground
-                        , (decoded "[colours]\nforeground = \"#123456\"\nscheme = \"putty\"\n").foreground
+                        [ (decoded "[colors]\nscheme = \"putty\"\nforeground = \"#123456\"\n").foreground
+                        , (decoded "[colors]\nforeground = \"#123456\"\nscheme = \"putty\"\n").foreground
                         ]
           }
-        , { name = "a scheme puritty does not have is reported, and the colours are left"
+        , { name = "a scheme puritty does not have is reported, and the colors are left"
           , test =
                 \_ ->
-                    Expect.equal { reports = 1, fg = Config.defaults.foreground } { reports = Array.length (reported "[colours]\nscheme = \"neon\"\n"), fg = (decoded "[colours]\nscheme = \"neon\"\n").foreground }
+                    Expect.equal { reports = 1, fg = Config.defaults.foreground } { reports = Array.length (reported "[colors]\nscheme = \"neon\"\n"), fg = (decoded "[colors]\nscheme = \"neon\"\n").foreground }
           }
         , { name = "an empty file is the defaults"
           , test = \_ -> Expect.equal { config = Config.defaults, reports = [] } (Result.withDefault { config = Config.defaults, reports = [ { line = 0, message = "not TOML" } ] } (Schema.decode ""))
@@ -141,7 +141,7 @@ schema =
           , test =
                 \_ ->
                     Expect.equal
-                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build", client = Just "built-in" } ]
+                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, tab = Just 0xC62828, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build", client = Just "built-in" } ]
                         (decoded Schema.example).hosts
           }
         , { name = "a host with no host is reported and left out"
@@ -158,6 +158,24 @@ schema =
                 \_ ->
                     Expect.equal { reports = [ "3: hosts.box.port: 70000 is not from 1 to 65535; it is left out" ], port = [ Nothing ] }
                         { reports = reported "[hosts.box]\nhost = \"h\"\nport = 70000\n", port = Array.map .port (decoded "[hosts.box]\nhost = \"h\"\nport = 70000\n").hosts }
+          }
+        , { name = "a host's tab color is read from its colors (docs/tabs.md TB9)"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "[hosts.box]\nhost = \"h\"\n\n[hosts.box.colors]\ntab = \"#c62828\"\n"
+                    in
+                    Expect.equal { reports = [], tab = [ Just 0xC62828 ] } { reports = reported file, tab = Array.map .tab (decoded file).hosts }
+          }
+        , { name = "a host's tab color that is no color is reported and left out"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "[hosts.box]\nhost = \"h\"\n\n[hosts.box.colors]\ntab = \"reddish\"\n"
+                    in
+                    Expect.equal { reports = 1, tab = [ Nothing ] } { reports = Array.length (reported file), tab = Array.map .tab (decoded file).hosts }
           }
         , { name = "a host's name may hold a space"
           , test = \_ -> Expect.equal [ "my box" ] (Array.map .name (decoded "[hosts.\"my box\"]\nhost = \"h\"\n").hosts)
@@ -187,10 +205,10 @@ schema =
                         { reports = reported "[font]\nsize = 2\n", points = (decoded "[font]\nsize = 2\n").points }
           }
         , { name = "a value of the wrong kind is reported"
-          , test = \_ -> Expect.equal [ "2: colours.background: not a string; \"#1d1f21\" is used" ] (reported "[colours]\nbackground = 12\n")
+          , test = \_ -> Expect.equal [ "2: colors.background: not a string; \"#1d1f21\" is used" ] (reported "[colors]\nbackground = 12\n")
           }
-        , { name = "a colour that is not #rrggbb is reported"
-          , test = \_ -> Expect.equal [ "2: colours.foreground: \"#fff\" is not a color as #rrggbb; \"#c5c8c6\" is used" ] (reported "[colours]\nforeground = \"#fff\"\n")
+        , { name = "a color that is not #rrggbb is reported"
+          , test = \_ -> Expect.equal [ "2: colors.foreground: \"#fff\" is not a color as #rrggbb; \"#c5c8c6\" is used" ] (reported "[colors]\nforeground = \"#fff\"\n")
           }
         , { name = "a choice not among a setting's is reported with them"
           , test = \_ -> Expect.equal [ "2: mouse.paste_button: \"left\" is not \"middle\" or \"right\"; \"middle\" is used" ] (reported "[mouse]\npaste_button = \"left\"\n")
@@ -198,11 +216,11 @@ schema =
         , { name = "a palette longer than 16 is reported"
           , test =
                 \_ ->
-                    Expect.equal [ "2: colours.palette: 17 colors, where the palette has 16; [] is used" ]
-                        (reported ("[colours]\npalette = [" ++ String.join ", " (Array.repeat 17 "\"#000000\"") ++ "]\n"))
+                    Expect.equal [ "2: colors.palette: 17 colors, where the palette has 16; [] is used" ]
+                        (reported ("[colors]\npalette = [" ++ String.join ", " (Array.repeat 17 "\"#000000\"") ++ "]\n"))
           }
         , { name = "a line after a value that runs on is counted"
-          , test = \_ -> Expect.equal [ "6: colours.forground is not a setting; did you mean colours.foreground?" ] (reported "[colours]\npalette = [\n  \"#000000\",\n  \"#111111\",\n]\nforground = \"#ffffff\"\n")
+          , test = \_ -> Expect.equal [ "6: colors.forground is not a setting; did you mean colors.foreground?" ] (reported "[colors]\npalette = [\n  \"#000000\",\n  \"#111111\",\n]\nforground = \"#ffffff\"\n")
           }
         , { name = "several reports come in the order of the file"
           , test = \_ -> Expect.equal [ "2: window.colums is not a setting; did you mean window.columns?", "4: font.size: 300 is not from 4 to 200; 11 is used" ] (reported "[window]\ncolums = 80\n[font]\nsize = 300\n")
@@ -317,11 +335,11 @@ another s =
         Schema.OnOff ->
             Schema.Flag (s.get Config.defaults /= Schema.Flag True)
 
-        Schema.OneColour ->
-            Schema.Colour 0x123456
+        Schema.OneColor ->
+            Schema.Color 0x123456
 
-        Schema.ColourList _ ->
-            Schema.Colours [ 0x010203, 0xFFFEFD ]
+        Schema.ColorList _ ->
+            Schema.Colors [ 0x010203, 0xFFFEFD ]
 
         Schema.OneOf names ->
             Schema.Text (Maybe.withDefault "" (Array.last names))
@@ -361,7 +379,7 @@ writing =
           , test =
                 \_ ->
                     Expect.equal sample
-                        (written sample [ { key = [ "colours", "background" ], value = Schema.Colour 0x102030 }, { key = [ "colours", "background" ], value = Schema.Colour 0x1D1F21 } ])
+                        (written sample [ { key = [ "colors", "background" ], value = Schema.Color 0x102030 }, { key = [ "colors", "background" ], value = Schema.Color 0x1D1F21 } ])
           }
         , { name = "a setting set is read back from the file"
           , test =
@@ -409,7 +427,7 @@ writing =
                     Expect.equal { set = "# my hosts\n[hosts.box]   # the build box\nhost = \"b\"\nuser = \"me\"\n", back = file }
                         { set = writtenHost file [ set (Schema.Text "me") ], back = writtenHost file [ set (Schema.Text "me"), set Schema.Unset ] }
           }
-        , { name = "a host's colour makes its table, and unset takes the table out"
+        , { name = "a host's color makes its table, and unset takes the table out"
           , test =
                 \_ ->
                     let
@@ -417,22 +435,22 @@ writing =
                             "[hosts.box]\nhost = \"b\"\n"
 
                         bg v =
-                            { key = [ "hosts", "box", "colours", "background" ], value = v }
+                            { key = [ "hosts", "box", "colors", "background" ], value = v }
                     in
-                    Expect.equal { set = "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colours]\nbackground = \"#2a1010\"\n", back = file }
-                        { set = writtenHost file [ bg (Schema.Colour 0x2A1010) ], back = writtenHost file [ bg (Schema.Colour 0x2A1010), bg Schema.Unset ] }
+                    Expect.equal { set = "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colors]\nbackground = \"#2a1010\"\n", back = file }
+                        { set = writtenHost file [ bg (Schema.Color 0x2A1010) ], back = writtenHost file [ bg (Schema.Color 0x2A1010), bg Schema.Unset ] }
           }
         , { name = "a host renamed takes the tables under it along"
           , test =
                 \_ ->
-                    Expect.equal "[hosts.lab]\nhost = \"b\"\n\n[hosts.lab.colours]\nbackground = \"#2a1010\"\n"
-                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colours]\nbackground = \"#2a1010\"\n" (Schema.renameHost "box" "lab"))
+                    Expect.equal "[hosts.lab]\nhost = \"b\"\n\n[hosts.lab.colors]\nbackground = \"#2a1010\"\n"
+                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colors]\nbackground = \"#2a1010\"\n" (Schema.renameHost "box" "lab"))
           }
         , { name = "a host removed takes the tables under it, and the others stay"
           , test =
                 \_ ->
                     Expect.equal "[hosts.other]\nhost = \"o\"\n"
-                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colours]\nbackground = \"#2a1010\"\n\n[hosts.other]\nhost = \"o\"\n" (Schema.deleteHost "box"))
+                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colors]\nbackground = \"#2a1010\"\n\n[hosts.other]\nhost = \"o\"\n" (Schema.deleteHost "box"))
           }
         , { name = "a host written whole is read back as it was"
           , test =
@@ -618,7 +636,7 @@ window =
           , test =
                 \_ ->
                     Expect.equal
-                        { search = "", modifiedOnly = False, page = 0, first = "font.family = DejaVu Sans Mono", foreground = "colours.foreground = #c5c8c6", focused = "font.family", foot = "" }
+                        { search = "", modifiedOnly = False, page = 0, first = "font.family = DejaVu Sans Mono", foreground = "colors.foreground = #c5c8c6", focused = "font.family", foot = "" }
                         { search = String.fromArray opened.search
                         , modifiedOnly = opened.modifiedOnly
                         , page = opened.page
@@ -664,11 +682,11 @@ window =
                         r =
                             after [ k.down, k.down, k.down, k.down, k.down, k.enter ]
                     in
-                    Expect.equal { said = [ "colours.bold_is_bright = true" ], marked = True }
-                        { said = r.said, marked = changedRow "colours.bold_is_bright" r.model }
+                    Expect.equal { said = [ "colors.bold_is_bright = true" ], marked = True }
+                        { said = r.said, marked = changedRow "colors.bold_is_bright" r.model }
           }
         , { name = "Delete resets a setting to its default"
-          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ k.down, k.down, k.down, k.down, k.down, k.enter, k.delete ]).said
+          , test = \_ -> Expect.equal [ "colors.bold_is_bright = true", "colors.bold_is_bright = false" ] (after [ k.down, k.down, k.down, k.down, k.down, k.enter, k.delete ]).said
           }
         , { name = "a search lists the matches of every page, and the pages count them"
           , test =
@@ -879,12 +897,12 @@ window =
           , test = \_ -> Expect.equal [ "connect to a@b" ] (onHostsPage False (typeIn "a@b" ++ [ k.enter ])).said
           }
         , { name = "a click on a value changes it, as Enter does"
-          , test = \_ -> Expect.equal [ "colours.bold_is_bright = true" ] (after [ click (SettingsWindow.OnValue 5) 1 ]).said
+          , test = \_ -> Expect.equal [ "colors.bold_is_bright = true" ] (after [ click (SettingsWindow.OnValue 5) 1 ]).said
           }
         , { name = "a click on the reset mark resets"
           , test =
                 \_ ->
-                    Expect.equal [ "colours.bold_is_bright = true", "colours.bold_is_bright = false" ] (after [ click (SettingsWindow.OnValue 5) 1, click (SettingsWindow.OnReset 5) 1 ]).said
+                    Expect.equal [ "colors.bold_is_bright = true", "colors.bold_is_bright = false" ] (after [ click (SettingsWindow.OnValue 5) 1, click (SettingsWindow.OnReset 5) 1 ]).said
           }
         , { name = "a click on a label only moves to it"
           , test =
@@ -893,7 +911,7 @@ window =
                         r =
                             after [ click (SettingsWindow.OnRow 5) 1 ]
                     in
-                    Expect.equal { said = [], focused = "colours.bold_is_bright" } { said = r.said, focused = focusedKey r.model }
+                    Expect.equal { said = [], focused = "colors.bold_is_bright" } { said = r.said, focused = focusedKey r.model }
           }
         , { name = "a click away keeps what is typed, as Enter does, and Ctrl+Z undoes it"
           , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ click (SettingsWindow.OnRow 4) 1, ctrl 'z' ])).said
@@ -1035,7 +1053,7 @@ words =
           , test = \_ -> Expect.equal "Fallback" (Words.lookup Words.Korean "page.none" "Fallback")
           }
         , { name = "English is American"
-          , test = \_ -> Expect.equal "The color of text" (Words.lookup Words.English "setting.x.label" "The colour of text")
+          , test = \_ -> Expect.equal "The color of text" (Words.lookup Words.English "setting.x.label" "The color of text")
           }
         , { name = "the window's words are found, not their keys"
           , test =

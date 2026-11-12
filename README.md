@@ -45,7 +45,7 @@ drawing. Measured over `ssh -X`:
 | `htop` updating | about 8–10 KB a second |
 
 That is level with classic core-font xterm, but with modern font
-rendering, wide characters, true colour and a modern feature set.
+rendering, wide characters, true color and a modern feature set.
 Remote X11 is a main path in puritty, not an afterthought.
 
 ### Korean, Chinese, Japanese and Thai, done properly
@@ -129,7 +129,7 @@ on standard error, at the top of a new window, and on the title until the
 file is fixed.
 
 Hosts are kept in the same file, and `puritty --host NAME` connects to one
-with OpenSSH, in the host's own colours and font:
+with OpenSSH, in the host's own colors and font:
 
 ```toml
 [hosts."build-box"]
@@ -138,7 +138,7 @@ user = "gilbert"
 jump = "bastion"                 # another host, or user@host:port
 command = "tmux new -A -s main"
 
-[hosts."build-box".colours]
+[hosts."build-box".colors]
 background = "#2a1010"
 ```
 
@@ -171,10 +171,10 @@ family = "Fira Code"        # as fontconfig names it; DejaVu Sans Mono
 size = 11                   # points
 language = "ko"             # which regional forms fallback fonts use
 
-[colours]
+[colors]
 foreground = "#c5c8c6"
 background = "#1d1f21"
-palette = ["#1d1f21", "#cc6666", "#b5bd68", "#f0c674"]   # the 16 named colours, from 0
+palette = ["#1d1f21", "#cc6666", "#b5bd68", "#f0c674"]   # the 16 named colors, from 0
 
 [terminal]
 charset = "utf-8"           # or "euc-kr", "cp949"

@@ -229,7 +229,7 @@ Mono 11 (fontconfig finds it; FreeType at 96 dpi gives a 9×17 px cell), and
 makes a pixmap of the same size, an A8 glyph set and a RENDER picture on the
 pixmap. `X.draw` executes a display list into the pixmap: a scroll is one
 `CopyArea` within it, a run one `RenderFillRectangles` for its background
-and one `RenderCompositeGlyphs32` for each stretch of one foreground colour,
+and one `RenderCompositeGlyphs32` for each stretch of one foreground color,
 and a glyph not seen before is rasterised and sent with `RenderAddGlyphs`,
 its id its code point. Then one `CopyArea` puts the rows the frame touched
 on the window, so an expose needs no redraw (S§6.2's retained pixmap). It
@@ -240,8 +240,8 @@ replies back to the pty (vim and htop ask), and draws a frame when a read
 comes 16 ms or more after the last frame, and once at the end.
 
 Left out, and so not in the numbers: shaping, fallback fonts, wide glyphs at
-two cells, the cursor, the style table's real colours (a style id picks a
-colour from a palette, which costs the same requests), events and input.
+two cells, the cursor, the style table's real colors (a style id picks a
+color from a palette, which costs the same requests), events and input.
 
 ### 5.2 Bytes per update
 
@@ -639,7 +639,7 @@ Rendered on Xvfb and read off the screenshots:
 - **Mixed text.** CJK beside Latin, fullwidth punctuation, Devanagari
   क्षि, box drawing, and combining marks (n̈, a̧, é from e + U+0301) are
   drawn.
-- **Colour emoji draw nothing** (§13.6).
+- **Color emoji draw nothing** (§13.6).
 
 Two of the probe's own bugs were found and fixed on the way:
 
@@ -679,7 +679,7 @@ punctuation in the CJK face are not.
   queries and 1.4–2.1 ms. `cjk.txt`, 4,576 distinct glyphs, took 1 query
   (0.6 ms), and `thai.txt` took 1.
 - **Two queries need more than the code points.**
-  - Colour emoji come only when asked: `monospace:charset=2764` gives
+  - Color emoji come only when asked: `monospace:charset=2764` gives
     DejaVu Sans Mono's monochrome heart, and `:color=true` (or
     `lang=und-zsye`) gives Noto Color Emoji. U+1F600 with no flag gives
     DejaVu Sans.
@@ -741,7 +741,7 @@ anchors, so each one is an element of its own.
 
 ### 13.6 Not measured
 
-- **Colour emoji.** fontconfig gives Noto Color Emoji when asked (§13.3),
+- **Color emoji.** fontconfig gives Noto Color Emoji when asked (§13.3),
   but its glyphs are CBDT bitmaps (`FT_LOAD_COLOR`, a 109 px strike)
   that need an ARGB32 glyph set and scaling to the cell; the probe draws
   nothing for them. *Built: §13.10.*
@@ -773,8 +773,8 @@ Gilbert programs in Fira Code (installed the same day, Debian's
 Every glyph has one cell's advance. The grid holds, and the probe draws
 them (→ ≠ ⇒ ≡) with nothing added. What follows from the shape:
 
-- **Colour.** A ligature takes its last cell's colour, since its ink is
-  that cell's glyph. A colour change inside one draws it in one colour.
+- **Color.** A ligature takes its last cell's color, since its ink is
+  that cell's glyph. A color change inside one draws it in one color.
 - **Redraw.** A change to one cell of a ligature must reshape and redraw
   all of its cells, or the old form and its ink stay. A run's context is
   the row's, not only the changed cells'. The probe's gap-of-four merging
@@ -802,7 +802,7 @@ time, 222–231 ms against 215–231 unshaped, is within the spread.
    measured, it is not worth a thread. Leaning: on the loop, loaded faces
    asked first, cached by code point; move it to a C thread (G5) only if
    a font set is measured slow. A cluster with emoji presentation asks for
-   colour.
+   color.
 4. **Rasterising a screen of new ideographs.** The cost is 25–40 ms, once
    per glyph. Leaning: register it and measure it in daily use (phase 3).
    The fix, if it is needed, is to rasterise on a C thread and draw the
@@ -812,10 +812,10 @@ time, 222–231 ms against 215–231 unshaped, is within the spread.
    3.3–3.7 ms of shaping over `gitlog` in Fira Code, and nothing in wall
    time. Fira Code keeps a glyph per cell (§13.7). Leaning: yes. A
    changed cell redraws the stretch of the row it is shaped with, out to
-   the nearest space on each side, and the cursor and colours apply per
+   the nearest space on each side, and the cursor and colors apply per
    glyph, not by splitting runs, as C§4.2 says. A setting turns `calt`
    off.
-6. **Next, before the renderer is written:** colour emoji (an ARGB glyph
+6. **Next, before the renderer is written:** color emoji (an ARGB glyph
    set), and the narrow compression the screenshots showed is needed.
 
 ### 13.9 Gilbert's answers (2026-11-02)
@@ -833,7 +833,7 @@ and fontconfig's `lang`, which picks the Mono face (§13.2).
 
 **V26 · Fallback is found on the loop thread.** Loaded faces are asked
 first, then fontconfig, the answer cached by code point. A cluster that
-asks for emoji presentation asks for a colour face (§13.3). A C thread
+asks for emoji presentation asks for a color face (§13.3). A C thread
 (G5) is for a font set measured slow.
 
 **V27 · The cost of rasterising new ideographs is registered** (§13.5).
@@ -842,25 +842,25 @@ while the frame waits is decided then (`geng-plan.md` §6, phase 3).
 
 **V28 · Ligatures are on, from the font's `calt`.** A changed cell redraws
 the stretch of its row it is shaped with, out to the nearest space on
-each side. The cursor and colours apply per glyph, not by splitting runs
+each side. The cursor and colors apply per glyph, not by splitting runs
 (§13.7). A setting turns `calt` off. *Amended 2026-11-11
 (`renderer.md` §R19): the cursor's cell is shaped alone, splitting the run
 there, and the setting is `[font] ligatures`.*
 
-**V29 · Colour emoji and narrow compression come before the renderer**
+**V29 · Color emoji and narrow compression come before the renderer**
 (§13.10).
 
-### 13.10 Colour emoji, narrow compression, joined runs (2026-11-02)
+### 13.10 Color emoji, narrow compression, joined runs (2026-11-02)
 
 Built in the x11 probe:
 
-- **Colour emoji** (V29). A cluster with U+FE0F, or one whose first code
+- **Color emoji** (V29). A cluster with U+FE0F, or one whose first code
   point is in U+1F300–1FAFF or a regional indicator, asks for emoji
   presentation. This is an approximation of UTS #51's
   `Emoji_Presentation`; the renderer takes the table. Such a cluster
-  skips every face that is not colour, the primary included, and its
+  skips every face that is not color, the primary included, and its
   fontconfig query adds `color=true`. A text presentation (U+FE0E) skips
-  colour faces.
+  color faces.
 
   Noto Color Emoji is CBDT bitmaps in one 136×128 strike. A glyph is
   loaded with `FT_LOAD_COLOR`, averaged down into its cells (one or two
@@ -1206,7 +1206,7 @@ one, and divides the time by N:
 | `gitlog` | 18 µs | 36 | 75 |
 | `ls` | 53 | 109 | 215 |
 | `cjk.txt` | 84 | | 328 |
-| every cell its own colour, 160 columns | 226 | | 918 |
+| every cell its own color, 160 columns | 226 | | 918 |
 
 A page-out is linear in its rows, and the worst, a page of rows styled
 cell by cell, is 0.92 ms, paid once in the read that fills a page: a
@@ -1330,7 +1330,7 @@ What the numbers say:
 - **Core-font xterm beats it on `htop`**, 4.5–5.0 KB a second to
   7.5–7.8. A core-font run is one `ImageText8`, a byte a character with
   its background in the same request; the probe's is a 28-byte fill and
-  `28 + 4n` bytes of glyphs. `htop` redraws short runs in many colours,
+  `28 + 4n` bytes of glyphs. `htop` redraws short runs in many colors,
   where that header and the 4 bytes a cell tell. §5.3's 16-bit glyph ids
   halve the cell's 4 bytes. Shaping (§13) makes the ids glyph indices,
   which fit 16 bits, so the real renderer can take them at no cost.

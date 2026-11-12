@@ -88,7 +88,7 @@ The biggest recurring complaints are:
 - titles that do not tell you which host or directory a tab is
 - getting the close confirmation wrong, in either direction
 - losing tabs on close or reboot
-- no way to colour-code production hosts
+- no way to color-code production hosts
 
 ### Cited Findings
 - **Key collisions.**
@@ -101,7 +101,7 @@ The biggest recurring complaints are:
 - **Activity, bell and "which tab needs me".**
   - Konsole has "Monitor for activity/inactivity".
   - gnome-terminal users have requested it for years (Launchpad 392175, GNOME issue 6422, Bugzilla 132173).
-  - xfce4-terminal changes the tab label colour when a background job produces output.
+  - xfce4-terminal changes the tab label color when a background job produces output.
   - Ghostty has `activity-monitor` and `activity-monitor-threshold`.
   - A Windows Terminal issue asks for a bell-style tab indicator that "stays until the user activates" the tab.
   - tmux's monitor-bell / window-bell flags are the model people cite.
@@ -127,14 +127,14 @@ The biggest recurring complaints are:
   - A 2026 PR notes WT cannot restore window geometry without also restoring all tabs.
   - Ghostty has a session-manager discussion (#3358), kitty #1197 asks for session save and restore, and WindTerm users ask for it too.
   - [MS Learn startup settings](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/startup), [WT 1.12 blog](https://devblogs.microsoft.com/commandline/windows-terminal-preview-1-12-release/), [WT PR #20283 mirror](https://gh.r-mj.com/microsoft/terminal/pull/20283), [ghostty#3358](https://github.com/ghostty-org/ghostty/discussions/3358), [WindTerm#1126](https://www.github.com/kingToolbox/WindTerm/discussions/1126)
-- **Per-host tab colours.**
-  - gnome-terminal issue 142 asks for tab header colour settable by control code, as iTerm2 allows, with a red tab for production as the use case.
-  - GNOME Console #162 asks for a different header-bar colour per ssh host.
-  - Terminator and Launchpad carry old per-tab colour-profile requests.
+- **Per-host tab colors.**
+  - gnome-terminal issue 142 asks for tab header color settable by control code, as iTerm2 allows, with a red tab for production as the use case.
+  - GNOME Console #162 asks for a different header-bar color per ssh host.
+  - Terminator and Launchpad carry old per-tab color-profile requests.
   - Windows Terminal users set `tabColor` per ssh profile, e.g. red for prod.
-  - Workarounds wrap ssh to change background colour by host regex.
-  - Royal TS colours tabs per connection or folder.
-  - [gnome-terminal#142](https://gitlab.gnome.org/GNOME/gnome-terminal/issues/142), [GNOME Console#162](https://gitlab.gnome.org/GNOME/console/-/issues/162), [bitExpert WT config](https://blog.bitexpert.de/blog/windows_terminal_config), [sshw](https://github.com/akx/sshw), [LP 1338976](https://bugs.launchpad.net/bugs/1338976), [Royal TS](https://support.royalapplications.com/support/discussions/topics/17000015003), [Coloured SSH terminals blog](https://michaelmior.is-a.dev/blog/coloured-ssh-terminals/), [zpl.fi](https://zpl.fi/distinguish-local-and-remote-terminals/)
+  - Workarounds wrap ssh to change background color by host regex.
+  - Royal TS colors tabs per connection or folder.
+  - [gnome-terminal#142](https://gitlab.gnome.org/GNOME/gnome-terminal/issues/142), [GNOME Console#162](https://gitlab.gnome.org/GNOME/console/-/issues/162), [bitExpert WT config](https://blog.bitexpert.de/blog/windows_terminal_config), [sshw](https://github.com/akx/sshw), [LP 1338976](https://bugs.launchpad.net/bugs/1338976), [Royal TS](https://support.royalapplications.com/support/discussions/topics/17000015003), [Colored SSH terminals blog](https://michaelmior.is-a.dev/blog/coloured-ssh-terminals/), [zpl.fi](https://zpl.fi/distinguish-local-and-remote-terminals/)
 - **Vertical space.** Tabs "steal a bit of screen real-estate", which is a reason people give for tmux's one-line status bar — [dev.to](https://dev.to/thermatix/devs-why-do-you-use-terminal-tabs-over-tmux-windows--51hb)
 - **Accessibility.**
   - GNOME Terminal tab labels could not be focused by keyboard, and Orca read tab labels only while cycling, not on window focus (fixed).
@@ -158,17 +158,17 @@ The requests that recur on many trackers:
 - session restore after reboot
 - reopen closed tab
 - activity and bell indicators
-- per-tab colour
+- per-tab color
 - an MRU switcher or tab search
 - vertical tabs (Windows Terminal #16387, which maintainers called sensible)
 
 ### Cited Findings
 - Vertical tabs, Windows Terminal #16387: a follow-on to #835, with a proposal to group tabs by profile. Maintainers called it sensible and proposed a setting — [microsoft/terminal#16387](https://www.github.com/microsoft/terminal/issues/16387)
 - Advanced tab switcher / tab search (WT spec #1502) shipped as the MRU overlay with a search field — [spec](https://cdn05042023.gitlink.org.cn/folkslinux/windows-terminal/src/branch/main/doc/specs/%231502%20-%20Advanced%20Tab%20Switcher/spec.md)
-- Session restore, reopen closed tab, activity monitor and tab colour are cited in §2–3 above.
+- Session restore, reopen closed tab, activity monitor and tab color are cited in §2–3 above.
 
 ### Inferences
-- For puritty the Windows audience (PuTTY/MobaXterm users) will expect a saved-session list and per-session tab colour more than vertical tabs.
+- For puritty the Windows audience (PuTTY/MobaXterm users) will expect a saved-session list and per-session tab color more than vertical tabs.
 
 ### Gaps
 - No ranked list of upvotes across trackers. Pinned tabs and tab groups were not found as terminal requests in this pass.

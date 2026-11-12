@@ -1,13 +1,15 @@
-module Dialog exposing (Dialog, draw, searchBar, scrollbar, scrollbarHit)
+module Dialog exposing (Dialog, Swatch, contrast, draw, swatchAt, searchBar, scrollbar, scrollbarHit)
 
 {-| A question asked over the terminal (`docs/ssh-client.md` SC23), as
 ChromeOS's Terminal asks for a password: a box in the middle of the
 window, in the settings window's look, drawn with the renderer's interface
 records after the terminal's cells, so nothing of the terminal lies over
 it. A title, lines of text, a field with what is typed (bullets for a
-secret) and a caret, and a line of the keys that answer.
+secret) and a caret, a row of colors to choose from (`docs/tabs.md`
+TB9), and a line of the keys that answer.
 -}
 
+import Bitwise
 import Bytes exposing (Bytes)
 import Math
 import SettingsGui exposing (box, clip, fit, framed, look, noClip, text)
@@ -18,14 +20,42 @@ type alias Dialog =
     { title : String
     , lines : Array String
     , field : Maybe { typed : String, hidden : Bool, caret : Int }
+    , swatches : Array Swatch
     , hint : String
     }
 
 
-{-| The box's records for a window of `cols` by `rows` cells, and where the
-caret is, in cells, for an input method's window. -}
-draw : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> { list : Bytes, spot : { x : Int, y : Int } }
-draw size d =
+{-| A color to choose: drawn filled, its key's name on it, and framed when
+it is the one in use. -}
+type alias Swatch =
+    { color : Int
+    , label : String
+    , marked : Bool
+    }
+
+
+{-| Where a box's parts are, in pixels, for `draw` and `swatchAt`. -}
+type alias Layout =
+    { px : Int -> Int
+    , body : Int
+    , small : Int
+    , pad : Int
+    , lineH : Int
+    , fieldH : Int
+    , bx : Int
+    , by : Int
+    , bw : Int
+    , bh : Int
+    , inner : Int
+    , swatchY : Int
+    , swatch : Int
+    , swatchGap : Int
+    , fieldY : Int
+    }
+
+
+layout : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> Layout
+layout size d =
     let
         w =
             size.cols * size.cellWidth
@@ -38,12 +68,6 @@ draw size d =
 
         px n =
             max 1 (Math.round (toFloat n * k))
-
-        body =
-            px 14
-
-        small =
-            px 12
 
         pad =
             px 22
@@ -60,10 +84,24 @@ draw size d =
         inner =
             bw - 2 * pad
 
+        -- the swatches' row: each square, as many as fit the box's width
+        swatchGap =
+            px 8
+
+        count =
+            Array.length d.swatches
+
+        swatch =
+            if count == 0 then 0 else min (px 30) ((inner - (count - 1) * swatchGap) // count)
+
+        swatchRow =
+            if count == 0 then 0 else px 8 + swatch
+
         bh =
             pad
                 + lineH
                 + Array.length d.lines * lineH
+                + swatchRow
                 + (when d.field is
                     Just _ ->
                         px 8 + fieldH
@@ -81,11 +119,112 @@ draw size d =
         by =
             max 0 ((h - bh) // 2)
 
+        swatchY =
+            by + pad + (1 + Array.length d.lines) * lineH + px 8
+    in
+    { px = px
+    , body = px 14
+    , small = px 12
+    , pad = pad
+    , lineH = lineH
+    , fieldH = fieldH
+    , bx = bx
+    , by = by
+    , bw = bw
+    , bh = bh
+    , inner = inner
+    , swatchY = swatchY
+    , swatch = swatch
+    , swatchGap = swatchGap
+    , fieldY = swatchY - px 8 + swatchRow + px 8
+    }
+
+
+{-| The swatch under a point, by its place in the row. -}
+swatchAt : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> { x : Int, y : Int } -> Maybe Int
+swatchAt size d p =
+    let
+        l =
+            layout size d
+
+        i =
+            (p.x - l.bx - l.pad) // max 1 (l.swatch + l.swatchGap)
+
+        left =
+            l.bx + l.pad + i * (l.swatch + l.swatchGap)
+    in
+    if l.swatch > 0 && p.y >= l.swatchY && p.y < l.swatchY + l.swatch && p.x >= l.bx + l.pad && p.x < left + l.swatch && i < Array.length d.swatches then
+        Just i
+
+    else
+        Nothing
+
+
+{-| The box's records for a window of `cols` by `rows` cells, and where the
+caret is, in cells, for an input method's window. -}
+draw : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> Dialog -> { list : Bytes, spot : { x : Int, y : Int } }
+draw size d =
+    let
+        l =
+            layout size d
+
+        px =
+            l.px
+
+        body =
+            l.body
+
+        small =
+            l.small
+
+        pad =
+            l.pad
+
+        lineH =
+            l.lineH
+
+        fieldH =
+            l.fieldH
+
+        bw =
+            l.bw
+
+        bh =
+            l.bh
+
+        bx =
+            l.bx
+
+        by =
+            l.by
+
+        inner =
+            l.inner
+
         baseline row =
             by + pad + row * lineH + lineH // 2 + body // 3
 
         fieldY =
-            by + pad + (1 + Array.length d.lines) * lineH + px 8
+            l.fieldY
+
+        swatchRecords =
+            Array.indexedMap
+                (\i sw ->
+                    let
+                        x =
+                            bx + pad + i * (l.swatch + l.swatchGap)
+                    in
+                    Bytes.flatten
+                        [ if sw.marked then
+                            framed { x = x - px 3, y = l.swatchY - px 3, w = l.swatch + px 6, h = l.swatch + px 6, r = px 7, color = look.bg, border = look.accent }
+
+                          else
+                            Bytes.empty
+                        , framed { x = x, y = l.swatchY, w = l.swatch, h = l.swatch, r = px 5, color = sw.color, border = look.fieldLine }
+                        , text { x = x + (l.swatch - Text.width small sw.label) // 2, y = l.swatchY + l.swatch // 2 + small // 3, size = small, color = contrast sw.color, text = sw.label }
+                        ]
+                )
+                d.swatches
 
         shown =
             when d.field is
@@ -122,7 +261,8 @@ draw size d =
             [ framed { x = bx, y = by, w = bw, h = bh, r = px 10, color = look.bg, border = look.fieldLine }
             , text { x = bx + pad, y = baseline 0, size = body, color = look.strong, text = fit body inner d.title }
             ]
-                ++ Array.indexedMap (\i l -> text { x = bx + pad, y = baseline (i + 1), size = body, color = look.text, text = fit body inner l }) d.lines
+                ++ Array.indexedMap (\i line -> text { x = bx + pad, y = baseline (i + 1), size = body, color = look.text, text = fit body inner line }) d.lines
+                ++ swatchRecords
                 ++ (when d.field is
                         Just _ ->
                             [ framed { x = bx + pad, y = fieldY, w = inner, h = fieldH, r = px 5, color = look.field, border = look.accent }
@@ -147,6 +287,22 @@ draw size d =
                 { x = (bx + pad) // max 1 size.cellWidth, y = baseline 0 // max 1 size.cellHeight }
     }
 
+
+
+{-| Dark text on a light color, white on a dark one. -}
+contrast : Int -> Int
+contrast color =
+    let
+        r =
+            Bitwise.and 0xFF (Bitwise.shiftRightZfBy 16 color)
+
+        g =
+            Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 color)
+
+        b =
+            Bitwise.and 0xFF color
+    in
+    if 299 * r + 587 * g + 114 * b > 150000 then 0x1C1C1C else 0xFFFFFF
 
 
 {-| The search bar (`docs/phase3-select.md` §23): a field at the window's

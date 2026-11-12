@@ -3,7 +3,7 @@
 
 ls.txt and cup.txt are the two workloads of geng-plan.md §1, byte for byte what
 probes/geng/grid builds: 200,000 ls-like lines with two SGR sequences each, and
-2,000,000 single cells each after a CUP. gitlog.txt is real output with colour:
+2,000,000 single cells each after a CUP. gitlog.txt is real output with color:
 `git log -p --color=always` of the vendored Ghostty, the first COMMITS commits
 back from a fixed revision.
 

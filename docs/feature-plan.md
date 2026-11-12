@@ -21,7 +21,7 @@ The survey's "biggest opening" is the work puritty already has planned.
 | Native tmux control mode on Linux; nothing but iTerm2 does it well | Phase 4, with tmux 3.8's floating panes. The survey makes this the headline feature. |
 | Clipboard across local tmux → ssh → remote tmux | OSC 52 writes are in (§16). Add a phase 4 test that copies through that whole chain. |
 | `xterm-ghostty` breaks remote hosts until terminfo is copied | Not a problem: puritty sets `TERM=xterm-256color`. Keep it that way, or fall back to it if puritty ever gets its own entry. |
-| Fast startup, low input lag, correct UTF-8, true colour | Phases 1–3, with measurements in `geng-plan.md` §1. |
+| Fast startup, low input lag, correct UTF-8, true color | Phases 1–3, with measurements in `geng-plan.md` §1. |
 | Plain-text config you can keep in git | `config.toml` already, and the settings UI keeps it (see `settings-ui.md`). |
 | No login, no telemetry | Already true. Say so in the README. |
 | Pasting many lines shouldn't run them all | Bracketed paste is in. A warning before a multi-line paste into a shell without it is a small addition (§2). |
@@ -130,7 +130,7 @@ uses tmux all the time; other users may not.
 
 | Protocol | What a program sends | Who uses it |
 |---|---|---|
-| **Sixel** (DEC, 1980s) | A palette image (usually 256 colours), six pixel rows at a time, as text | gnuplot, img2sixel, chafa, lsix. tmux 3.4+ stores and redraws Sixel itself, so it's the protocol that survives tmux. |
+| **Sixel** (DEC, 1980s) | A palette image (usually 256 colors), six pixel rows at a time, as text | gnuplot, img2sixel, chafa, lsix. tmux 3.4+ stores and redraws Sixel itself, so it's the protocol that survives tmux. |
 | **Kitty graphics** | PNG or raw pixels in chunks, or a file or shared memory; placed, layered above or below text, deleted, animated | yazi, `kitty +kitten icat`, image.nvim, timg, chafa. Ghostty and WezTerm support it. |
 | **iTerm2 inline images** (OSC 1337) | A whole PNG, JPEG or GIF file in base64 | imgcat, many scripts. WezTerm, mintty and Konsole support it. |
 
@@ -194,11 +194,11 @@ only make its pixels cheaper to send.
    region from ever being still, and Horizon re-sends still regions sharper.
 2. **Fewer frames in bursts.** Merge a flood of output into fewer updates
    (xterm's "jump scroll"): `frames.every_ms` around 33–50 instead of 16.
-3. **No ClearType.** Its coloured edges compress badly and are smeared by
-   video encoding, which keeps colour at lower resolution than brightness.
+3. **No ClearType.** Its colored edges compress badly and are smeared by
+   video encoding, which keeps color at lower resolution than brightness.
    Grayscale smoothing survives better; unsmoothed text compresses best and
    stays sharp under Horizon's lossless text mode.
-4. **Flat colours.** No transparency, background images or gradients.
+4. **Flat colors.** No transparency, background images or gradients.
 5. **Scrolling as a move.** Windows lets a program say "this region moved"
    when it presents a frame (DXGI's scroll rectangle, GDI's ScrollWindowEx),
    and passes that to screen-capture tools as a move. RDP turns moves into a

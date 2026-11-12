@@ -13,7 +13,7 @@ Two groups of clients emerge. The ssh-first clients are MobaXterm, SecureCRT, Xs
 - reconnect from the tab, with the disconnected state shown on it;
 - broadcast typing to many sessions.
 
-Windows Terminal and Tabby are terminal-first. They have strong tab mechanics (tear-out, reorder, colour, rename, restore), but Windows Terminal has a weak host list, and its broadcast stays inside one tab's panes. The PuTTY wrappers (SuperPuTTY, MTPuTTY) give tabs and send-to-many, and are stagnant. KiTTY has no tabs at all.
+Windows Terminal and Tabby are terminal-first. They have strong tab mechanics (tear-out, reorder, color, rename, restore), but Windows Terminal has a weak host list, and its broadcast stays inside one tab's panes. The PuTTY wrappers (SuperPuTTY, MTPuTTY) give tabs and send-to-many, and are stagnant. KiTTY has no tabs at all.
 
 ### Cited Findings
 
@@ -60,7 +60,7 @@ Split, MultiExec and session folders (same docs):
 - "Lock terminal title" sets the title to the session name.
 
 Changelog items about tabs (all from the [MobaXterm changelog](https://mobaxterm-en.mobatek.net/download-home-edition.html)):
-- Each tab has a colour. 23.1 fixed "the tab color selection button was hardly visible when the tab color was white". 26.0 matched the "Reattach tab" button colour to the current tab colour.
+- Each tab has a color. 23.1 fixed "the tab color selection button was hardly visible when the tab color was white". 26.0 matched the "Reattach tab" button color to the current tab color.
 - Tab text turns red for a disconnected or inactive state. 26.1 fixed "tab text remained red after selecting and unselecting an inactive tab", and 26.6 fixed a reconnected RDP tab's title no longer turning red.
 - 23.4 made the tab bar scroll with the mouse wheel and let tabs be pinned to the left. That is how it handles overflow.
 - 24.2 added right-click actions in MultiExec to activate or deactivate all terminals and to synchronize scrolling.
@@ -73,8 +73,8 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
 
 **SecureCRT (VanDyke)**
 - Tabs arrived in 5.0. Dragging tabs between windows, "Send to New Window" and "Clone to New Window" arrived in 6.0. Since 6.7 a tab double-click can be mapped to send or clone. — [VanDyke tip](https://vandyke.com/support/tips/dragouttabs.html)
-- Global tab options set status-indicator colours for connected, disconnected, new input, inactivity and locked sessions, shown as tab background or a colour rectangle. There is also a "Reconnect Tab" action. — [SecureCRT help, Global Options/Terminal/Tabs](https://documentation.help/SecureCRT/GO_Terminal_Tabs.htm) (via search snippet; the page itself returned 403)
-- The colours above are status colours, not per-session tab colours. I found no per-session tab colour. The workaround is a per-session colour scheme. — [VanDyke colour tip](https://vandyke.com/support/tips/colorconfig.html)
+- Global tab options set status-indicator colors for connected, disconnected, new input, inactivity and locked sessions, shown as tab background or a color rectangle. There is also a "Reconnect Tab" action. — [SecureCRT help, Global Options/Terminal/Tabs](https://documentation.help/SecureCRT/GO_Terminal_Tabs.htm) (via search snippet; the page itself returned 403)
+- The colors above are status colors, not per-session tab colors. I found no per-session tab color. The workaround is a per-session color scheme. — [VanDyke color tip](https://vandyke.com/support/tips/colorconfig.html)
 - Tab groups can be tiled left-to-right or top-to-bottom, and tabs move between groups. — [VanDyke video page](https://www.vandyke.com/products/securecrt/securecrt-video.html)
 - The Command window (called "Chat window" before 7.2) sends to all connected sessions, all visible sessions or selected tab groups (9.6.2). Locked sessions are skipped. — [filehorse SecureCRT changelog](https://mac.filehorse.com/download-securecrt); [VanDyke chat tip](https://www.vandyke.com/support/tips/chatsendcom.html)
 - The Session Manager has folders, and "all sessions in a particular group may be opened and manipulated at once." — [VanDyke session management](https://vandyke.com/products/securecrt/session_management.html)
@@ -83,14 +83,14 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
 **Xshell (NetSarang)**
 - Each tab belongs to a tab group, and a window holds several groups. The docs have pages for Split and Merge Tabs, Arrange Tabs and a Tab Manager tree. — [Xshell Tab Management](https://netsarang.atlassian.net/wiki/spaces/ENSUP/pages/2237304945/Tab+Management)
 - Within a group only one tab shows at a time, and with many sessions in one group some tabs are hidden from view. — [Xshell Tab Group](https://netsarang.atlassian.net/wiki/spaces/EN8/pages/2237304981/Tab+Group) (via search snippet)
-- The Compose bar and Compose pane send typed input to chosen sessions. "Send Key Input to All Sessions" has a per-session Off button. 7.0 b0098 added sending from the Compose Pane to *same-coloured tabs*, and a later 7.0 build added sending only to connected sessions. — [NetSarang KB](https://netsarang.atlassian.net/wiki/x/HoKsQg); [Softpedia Xshell changelog](https://www.softpedia.com/progChangelog/Xshell-Changelog-23416.html)
+- The Compose bar and Compose pane send typed input to chosen sessions. "Send Key Input to All Sessions" has a per-session Off button. 7.0 b0098 added sending from the Compose Pane to *same-colored tabs*, and a later 7.0 build added sending only to connected sessions. — [NetSarang KB](https://netsarang.atlassian.net/wiki/x/HoKsQg); [Softpedia Xshell changelog](https://www.softpedia.com/progChangelog/Xshell-Changelog-23416.html)
 
 **Termius**
 - Ctrl/Cmd+T opens a New Tab. Dragging one connection onto another's tab creates a "workspace" in Split view (up to 16 terminals), and Ctrl/Cmd+Shift+M toggles it with Focus mode. — [Termius workspaces docs](https://docs.termius.com/terminal/workspaces)
 - Broadcast sends to "all active terminals in the workspace" (Ctrl+Alt+B).
 - Workspace templates save connections, tab names, layout, working directories and running commands, and a grey dot marks unsaved changes.
 - "Rename" on a tab "does not change the original hostname".
-- Tab status colours: green means unread output, yellow means input is needed, red means an error or failed connection.
+- Tab status colors: green means unread output, yellow means input is needed, red means an error or failed connection.
 - (The last four items are from the same [Termius workspaces docs](https://docs.termius.com/terminal/workspaces).)
 - Workspaces arrived in 9.21.2, and 9.22.0 (June 2025) lets snippets run on several targets in a separate tab. — [Termius changelog](https://docs.termius.com/changelog)
 
@@ -123,7 +123,7 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
 
 **Royal TS**
 - Each connection gets a tab, and tabs can be grouped. Dragging the tab of an external-app connection (PuTTY, VNC) needs Shift held down. — [Royal TS panels and tabs](https://docs.royalapps.com/r2023/royalts/getting-started/panels-and-tabs.html) (via search snippet)
-- Each object has a colour, shown "in the navigation tree, the connection tab or as connection border". — [Royal TS features](https://royalapps.com/ts/win/features-all)
+- Each object has a color, shown "in the navigation tree, the connection tab or as connection border". — [Royal TS features](https://royalapps.com/ts/win/features-all)
 - The terminal plugin is PuTTY-based, updated to PuTTY 0.84 (2026-05-22), and stores its settings in the document. — [Royal TS PuTTY plugin](https://docs.royalapps.com/r2023/royalts/reference/connections/terminal-putty.html); [release notes](https://www.royalapps.com/go/kb-ts-win-v7-releasenotes)
 - A vendor reply says its UI framework "doesn't allow us to create tab groups like in mRemote." — [Royal community thread](https://community.royalapps.com/t/folder-name-in-tab-title/530) (via search snippet)
 
@@ -132,21 +132,21 @@ A user notes that MultiExec includes all open tabs by default, with a checkbox t
   - a tab is opened from a host tree or quick-connect;
   - duplicate/clone tab;
   - reconnect in place, keeping the tab;
-  - a visible disconnected state (red text in MobaXterm, a status colour in SecureCRT, a red dot in Termius);
+  - a visible disconnected state (red text in MobaXterm, a status color in SecureCRT, a red dot in Termius);
   - rename that does not rename the host;
   - opening every session in a folder;
   - broadcast input to a chosen subset.
 - Puritty lacks most of these today, outside tmux -CC.
-- **Broadcast scope differs and matters.** Windows Terminal broadcasts to the panes of one tab only. SecureCRT targets tab groups or all connected sessions. Xshell targets tabs of the same colour or connected sessions only. MobaXterm targets all tabs, with per-tab exclusion. Termius targets the workspace. Selecting targets by colour or group (Xshell, SecureCRT) fits a user with "prod in red" hosts.
-- **Two kinds of tab colour:** a per-host colour (MobaXterm, Royal TS, WT `tabColor`) and a status colour (SecureCRT, Termius). SecureCRT's users have to fake per-host colour with colour schemes.
+- **Broadcast scope differs and matters.** Windows Terminal broadcasts to the panes of one tab only. SecureCRT targets tab groups or all connected sessions. Xshell targets tabs of the same color or connected sessions only. MobaXterm targets all tabs, with per-tab exclusion. Termius targets the workspace. Selecting targets by color or group (Xshell, SecureCRT) fits a user with "prod in red" hosts.
+- **Two kinds of tab color:** a per-host color (MobaXterm, Royal TS, WT `tabColor`) and a status color (SecureCRT, Termius). SecureCRT's users have to fake per-host color with color schemes.
 - Wrapper tools that re-parent another process's window (SuperPuTTY, MTPuTTY, Royal TS with PuTTY) keep producing focus, Alt+Tab and drag bugs. A built-in ssh client avoids that whole class.
 
 ### Gaps
 - Exact current SecureCRT 9.x tab options. The documentation.help page returned 403, so the findings rely on search snippets and older help.
-- MobaXterm's tab-colour setting is confirmed by the changelog, but no official doc says where it is set. A 2023 Reddit mirror says Bookmark settings.
+- MobaXterm's tab-color setting is confirmed by the changelog, but no official doc says where it is set. A 2023 Reddit mirror says Bookmark settings.
 - Royal TS has no confirmed "open all in folder" action.
 - I found no Cmder-specific tab features.
-- Xshell 8's tab colour and detach behaviour was not confirmed beyond the 7.0 changelog.
+- Xshell 8's tab color and detach behaviour was not confirmed beyond the 7.0 changelog.
 
 ## What users praise and complain about
 
@@ -223,7 +223,7 @@ SecureCRT, Termius and Royal TS:
 - Royal TS: one user asked for the folder name in tab titles, so that same-named hosts in different folders can be told apart. — [Royal community #530](https://community.royalapps.com/t/folder-name-in-tab-title/530)
 
 ### Inferences
-- Windows Terminal's demand ranks the features as: (1) open a new tab where the current one is (OSC 7), (2) tear-out and merge, (3) restoring tabs and their buffers, (4) broadcast, (5) rename, (6) per-profile colour. All are shipped there, so a PuTTY or MobaXterm refugee will take them as the baseline.
+- Windows Terminal's demand ranks the features as: (1) open a new tab where the current one is (OSC 7), (2) tear-out and merge, (3) restoring tabs and their buffers, (4) broadcast, (5) rename, (6) per-profile color. All are shipped there, so a PuTTY or MobaXterm refugee will take them as the baseline.
 - Tear-out is the persistent open request in Tabby (2018) and ConEmu (2015). It is hard to do, and its absence is noticed.
 - WT #3656 (tmux control mode, 223 👍, open since 2019) shows demand for the feature puritty already has.
 - Focus-after-new-tab bugs (WT #13388) and window-reparenting focus bugs (SuperPuTTY) are a repeated irritation. Keyboard focus must land in the new tab's terminal.
@@ -251,7 +251,7 @@ Tabs and a host list are the main reasons people leave. PuTTY's "lack of tabs �
 - The gap puritty would fill is a native, light, free client whose built-in ssh tabs open from a host list, with these MobaXterm-class features:
   - duplicate;
   - reconnect-in-tab;
-  - per-host colour;
+  - per-host color;
   - a disconnected state on the tab;
   - open-folder;
   - broadcast to a subset.

@@ -64,8 +64,8 @@ grapheme cluster, insert mode, autowrap off, DEC special graphics and the
 British set through G0 to G3, SO/SI, LS2/LS3 and SS2/SS3 (§VC17); C0 controls; CUU to CBT, CUP/HVP with origin mode, HPA, HPR,
 VPA, VPR, CNL, CPL; ED 0–3, EL, ECH, ICH, DCH, IL, DL, SU, SD, IND, NEL, RI,
 DECSTBM, REP, DECALN, tab stops (HTS, TBC, CHT, CBT); SGR with every
-attribute Ghostty keeps, 256 and RGB colours with either separator, the
-underline's kind and colour; erases and scrolls in the background colour;
+attribute Ghostty keeps, 256 and RGB colors with either separator, the
+underline's kind and color; erases and scrolls in the background color;
 DECSC/DECRC and SCOSC/SCORC per screen; modes 4, 20, ?6, ?7, ?25, ?47,
 ?1047, ?1048, ?1049 (the alternate screen kept once made, as xterm and
 Ghostty keep it), and every other private mode recorded for DECRQM, KAM and
@@ -75,7 +75,7 @@ the printing and shows none of it, and DECECM (?117) answered as
 permanently reset, as Ghostty (§VC27); reverse wraparound, ?45 and ?1045, for BS
 and CUB; protected cells, DECSCA, SPA and EPA, against DECSED, DECSEL and in
 ISO's mode ED, EL and ECH; the palette and the foreground, background and
-cursor colours set, queried and reset (OSC 4, 10–19, 104, 110–112); left and
+cursor colors set, queried and reset (OSC 4, 10–19, 104, 110–112); left and
 right margins, ?69 and DECSLRM, for printing, every scroll, IL, DL, ICH,
 DCH, CR, the cursor's moves and reports, tabs and DECRQSS (§VC13); RIS and DECSTR; OSC 0 and 2 (the title);
 DECRQSS for `m`, `r` and ` q`; DSR 5 and 6, DECXCPR, DA1 and DECID, DA2, DA3,
@@ -163,10 +163,10 @@ A row's text is each cell to the last that has text: an empty cell before it
 is a space, a wide character's spacer and a spacer head are nothing, and a
 cluster is its code points. A written space is text and an empty cell is
 not, so `a ` and `a` differ, as they do in both cores. A style is its
-colours (`fg`, `bg`, `ulc`: a palette index, or `#rrggbb`) and then `bold`,
+colors (`fg`, `bg`, `ulc`: a palette index, or `#rrggbb`) and then `bold`,
 `faint`, `italic`, `ul=` and the underline's kind, `blink`, `inverse`,
 `invisible`, `strike`, `overline`. Ghostty keeps a cell erased in a
-background colour as a cell of that colour and no style; the oracle prints
+background color as a cell of that color and no style; the oracle prints
 it as the style `bg=`, which is what the core keeps.
 
 ---
@@ -202,10 +202,10 @@ What Ghostty taught along the way, each now a case: a backspace with a wrap
 pending moves left and clears it (`bs-at-wrap`); a tab keeps a pending wrap
 (`ht-at-wrap`); SU on the main screen with the whole screen as the region
 sends its rows to the scrollback (`scroll-su-sd`); DCH in a background
-colour fills only the columns it vacates at the row's end, and the cells
+color fills only the columns it vacates at the row's end, and the cells
 past the old extent move in empty (`bce-ech-ich-dch`); a CSI of more than 24
 parameters is ignored whole (`csi-many-params`); DECRQSS's SGR lists
-overline before blink and writes the 16 colours as `3x`/`9x`
+overline before blink and writes the 16 colors as `3x`/`9x`
 (`decrqss-sgr`); a mark with no cell before it is dropped
 (`combining-at-start`), and one after a pending wrap joins the last column
 (`combining-after-wrap`).
@@ -279,7 +279,7 @@ the pages are a ring of `scrollback / 256` (rounded up). A page is three
 
 - **text**: each row's cells as UTF-8, a cluster as its code points, an
   empty cell as a 0 byte, a spacer head as 0xFF (V9, §VC14), a cell in a
-  background colour alone as 0xFE (§VC17), a wide character's spacer as
+  background color alone as 0xFE (§VC17), a wide character's spacer as
   nothing, and a protected cell's text followed by 0xFD (§VC19);
 - **heads**: for each row a header, two bytes low first: its extent in bits
   0–13 (0–9 since §VC22, its prompt mark in 10–11), bit 14 set when every
@@ -358,7 +358,7 @@ corpus passing:
 3. **A cluster of two code points is found by an `Int64`** of both, where
    every cluster was found by its code points written as text.
 4. **SGR is a loop over five `Int`s and a `when` on the parameter**, where
-   each parameter copied the `Attrs` record; an extended colour answers one
+   each parameter copied the `Attrs` record; an extended color answers one
    `Int`, not a record.
 5. **A style is found through a cache of 512 slots** (`styleCache`, a
    `Builder Int64` in the term) from its key to its pen's id and its erase
@@ -385,7 +385,7 @@ corpus passing:
 ### At phase 1's exit
 
 Measured again once the rest was built (2026-10-30, at 69dcf7e: §VC10's
-sequences, §VC12–§VC14's wraparound, protection, colours, margins and
+sequences, §VC12–§VC14's wraparound, protection, colors, margins and
 resize, and the lazy pages of V10), the way the table above was: the CPU
 warmed by five seconds of a busy loop, then `run.sh`'s untimed run, five
 timed runs of each input, the probe measured in the same session, and
@@ -452,9 +452,9 @@ the budget. What is below is what is left beside them.
   differential against libghostty-vt is built and finds differences in
   its first second (§VC16), which are being fixed: 492 in three minutes
   after §VC17's, from 9,751 at first.
-- **X11's colour names** in OSC 4 and 10–19 (`red`, `DarkSlateGray`):
+- **X11's color names** in OSC 4 and 10–19 (`red`, `DarkSlateGray`):
   Ghostty takes several hundred, from its `x11_color.zig`; the core takes
-  none and leaves the colour as it was. No esctest test names one. A table
+  none and leaves the color as it was. No esctest test names one. A table
   generated from Ghostty's, as `Vt.Width` is from its widths (V13), is the way.
 - **The palette is only reported.** The core keeps what OSC 4 and 10–12
   set and answers for it, and draws nothing with it; the renderer reads it
@@ -585,7 +585,7 @@ not, by the features its source uses:
 - `decrqcra` and `size-report` hold the two reports to Ghostty.
 
 The other 92 are §VC9's: left and right margins, protected cells, reverse
-wraparound, resize, the colour queries.
+wraparound, resize, the color queries.
 
 ### What it cost, and what that found
 
@@ -756,7 +756,7 @@ resizes, against the core that passes 184 replay cases and esctest's 384.
 
 ---
 
-## VC12. Reverse wraparound, protected cells and the colours
+## VC12. Reverse wraparound, protected cells and the colors
 
 The three smaller of §VC10's remaining groups, in that order, each held to
 Ghostty by new replay cases and to esctest: 297 → 307 → 323 → 334.
@@ -780,16 +780,16 @@ Ghostty by new replay cases and to esctest: 297 → 307 → 323 → 334.
   DECSED and DECSEL (`CSI ?` J and K) erase only cells without it, and ED,
   EL and ECH do too in ISO's mode; DECSC saves the flag and DECSTR clears
   both. A row cleared around protected cells keeps its extent.
-- **Colours** (`osc-colours`, `osc-colours-reset`). OSC 4 sets or queries
-  palette entries in pairs, OSC 10 to 19 the dynamic colours from the one
+- **Colors** (`osc-colors`, `osc-colors-reset`). OSC 4 sets or queries
+  palette entries in pairs, OSC 10 to 19 the dynamic colors from the one
   named on, OSC 104 resets entries or all, and OSC 110 to 112 the
   foreground, background and cursor. A query answers `rgb:` with 16 bits a
   channel, all of one request's answers in one reply, ended with BEL or ST
-  as the request was. The core keeps only what was set (`colours`) and
+  as the request was. The core keeps only what was set (`colors`) and
   computes the rest: libghostty-vt's palette (its 16, the cube, the grey
   ramp), and no foreground or background until one is set, as
   libghostty-vt has none unless its embedder gives one; the cursor's is the
-  foreground's when it has none. A colour is parsed as Ghostty parses it,
+  foreground's when it has none. A color is parsed as Ghostty parses it,
   each channel's hex digits scaled to 8 bits (so `#fff` is `ffff`, where
   xterm's is `f0f0`, and esctest's `#rgb` test fails on both), with `rgb:`,
   `rgbi:` and bare hex; X11's names are §VC9's.
@@ -982,7 +982,7 @@ one passing on both sides, whole and a byte a read, two of them divergent:
 | | cases |
 |---|---|
 | rows only | `rows-grow`, `-grow-pulls-history`, `-grow-alt`, `-shrink-cursor-bottom`, `-shrink-cursor-top`, `-shrink-cursor-middle`, `-shrink-alt`, `-shrink-alt-back`, `-region-reset`, `pages-rows` |
-| a line's cells | `cols-widen-unwraps`, `-narrow-wraps`, `-trailing-blanks`, `trailing-spaces`, `empty-rows-kept`, `cols-styles`, `-erase-colour`, `-mark`, `-round-trip`, `both-shrink`, `both-grow` |
+| a line's cells | `cols-widen-unwraps`, `-narrow-wraps`, `-trailing-blanks`, `trailing-spaces`, `empty-rows-kept`, `cols-styles`, `-erase-color`, `-mark`, `-round-trip`, `both-shrink`, `both-grow` |
 | wide characters | `cols-wide-split`, `-wide-rejoin`, `-wide-one-column`, `wide-at-edge-widen` |
 | the scrollback | `cols-narrow-history`, `-widen-history`, `cursor-follows-history`, `pages-narrow`, `-widen`, `-round-trip`, `-wide-styled`, `-wide-widen` (700 and 600 lines, so pages) |
 | pages left as they are (V10) | `pages-two-widths` (pages at 10 and at 7 columns, read at 13), `-long-line` and `-long-line-open` (a line of 3,000 cells over pages and the ring), `-rows-pull` (600 rows pulled back, more than the ring holds), `-widen-pull` (a widening that leaves the ring short of the screen), `-nowrap`, `-one-column-only`, `-one-column` (the lossy two) |
@@ -1162,7 +1162,7 @@ these groups, most a few bytes long:
   than the region's rows, send more rows to the scrollback in the core.
 - **DCH between margins** clears the row's wrapped flag in Ghostty.
 - **Re-entering ?1049** on the alternate screen clears it in Ghostty.
-- **RIS keeps OSC 12's cursor colour** in Ghostty; the core resets it.
+- **RIS keeps OSC 12's cursor color** in Ghostty; the core resets it.
 - **OSC 4 queries** with a high byte in them.
 
 All of these are fixed, by Ghostty's code read for each (`stream.zig`'s
@@ -1186,11 +1186,11 @@ What the groups came to, besides the parameters (`csi-param-count`,
 
 - **SGR** (`sgr-colon-groups`): a colon group Ghostty does not know is
   skipped whole; `38`, `48` and `58` take `5` and an index (modulo 256) or
-  `2` and three colours, with colons three or four joined parameters and
+  `2` and three colors, with colons three or four joined parameters and
   any other count skipped; anything short of that passes over the `38`
   alone, so `38;5` is blink.
 - **Strings** (`strings-dcs-osc`): an OSC's text that is not UTF-8 is still
-  read, a high byte as one no command or colour has; the core had dropped
+  read, a high byte as one no command or color has; the core had dropped
   the whole string.
 - **A pending wrap** (`pending-wrap-kept`): RI keeps it when it scrolls and
   clears it when it moves up; CHT, CBT, DECSTR and ED 3 keep it.
@@ -1202,7 +1202,7 @@ What the groups came to, besides the parameters (`csi-param-count`,
   that is a DL in Ghostty (its region not the screen's top, or on the
   alternate screen not its bottom), clear it on every row of the region.
 - **?1049 again** on the alternate screen saves the cursor and erases it
-  (`alt-1049-again`); **RIS** keeps OSC 10–19's colours, as DECSTR does
+  (`alt-1049-again`); **RIS** keeps OSC 10–19's colors, as DECSTR does
   (`ris-keeps-dynamic`).
 - **VPR and HPR** move as CUP does, to the screen's edge or in origin mode
   the margins', not as CUD and CUF; VPA kept the column wrongly in origin
@@ -1310,8 +1310,8 @@ Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
   and SUB end a DCS dispatched, as leaving Ghostty's DCS state unhooks it
   (`dcs-cancelled`). A high byte in a string that is not UTF-8 stands as
   0x01, where it stood as `?`, which OSC 4 and 10 read as a query. OSC 4's
-  indexes 256 to 260 are Ghostty's special colours, passed over
-  (`osc-colour-edges`).
+  indexes 256 to 260 are Ghostty's special colors, passed over
+  (`osc-color-edges`).
 - **Character sets** (`charsets-g0-g3`): G0 to G3, LS2 and LS3 (`ESC n`,
   `ESC o`), SS2 and SS3 (`ESC N`, `ESC O`, used up by the next character,
   a mark as well), the British set; a designation Ghostty does not know
@@ -1341,7 +1341,7 @@ Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
   the end of the row above an empty cell, which a reflow keeps
   (`wide-stale-spacer-head`); `heads` says one has been written, so a
   screen without one does not pay for the test. DECALN keeps only the
-  pen's colours, and fills in them (`decaln-pen`). HPR and VPR by 0 move as
+  pen's colors, and fills in them (`decaln-pen`). HPR and VPR by 0 move as
   CUP does, to where the cursor is, which ends a pending wrap and in origin
   mode brings the cursor into the region (`hpr-vpr-zero`): V11 had them do
   nothing, which held for the rest of its list but not these two.
@@ -1362,7 +1362,7 @@ Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
   rows are added below (`resize-rows-grow-no-pull`,
   `resize-both-grow-no-pull`). The blank rows a shrink takes stop at the
   saved cursor as at the cursor (`resize-saved-stops-trim`), and a row with
-  no text is blank though its cells are coloured (`resize-trim-bg-rows`).
+  no text is blank though its cells are colored (`resize-trim-bg-rows`).
   A saved cursor never set is carried as none (`resize-none-saved`). A
   cursor whose row a shrink of the alternate screen drops goes to the top
   left, column 0 too (`resize-alt-cursor-dropped`). A wide character in one
@@ -1370,7 +1370,7 @@ Emoji_Modifier_Base, from the same UCD's `emoji-data.txt` (below).
   it copies a style (`resize-wide-one-column-style`).
 - **An empty cell is Ghostty's `isEmpty`.** A reflow drops a line's
   trailing empty cells whatever their style, but keeps a cell an erase left
-  in a background colour, which Ghostty keeps as a `bg_color` cell. Every
+  in a background color, which Ghostty keeps as a `bg_color` cell. Every
   non-zero erase cell carries `bgBit` (0x2000000) to say so, and a page
   writes such a cell as a 0xFE byte, which UTF-8 never has
   (`pages-bg-cells`). Reading a page back, a mark after a wide character
@@ -1423,7 +1423,7 @@ The fourth sample, from 492 differences in three minutes, 118 of 120 still
 differing: DECRQM for ?2, ?24, ?46 and ?104; `CSI 19 t`, `CSI 22 J`,
 `CSI > q` and `CSI = + c`; OSC 4 with an index written `+4`, and OSC 112
 then a query; SGR `CSI : ; 1 m`; SPA with the alternate screen and an
-erase in a background colour; a wide character at the last column with
+erase in a background color; a wide character at the last column with
 RI, IL, DL or SD and a resize; a wide character in one column, styled,
 widened; and DECCOLM with ?40. They are done, in §VC18.
 
@@ -1447,7 +1447,7 @@ none divergent. One more Ghostty bug is patched in the oracle (0006).
   (`da-two-intermediates`). XTVERSION's name, `puritty` against
   `libghostty`, is an identity, not a difference: `diff.h` writes the core's
   name into Ghostty's reply before it compares.
-- **OSC.** A colour's index is decimal digits only, as Ghostty's
+- **OSC.** A color's index is decimal digits only, as Ghostty's
   `parseInt` takes an unsigned one: `+1` and `-1` end OSC 4's pairs and are
   passed over by OSC 104 (`osc4-index-digits`, `osc104-index-digits`).
   OSC 110 to 112 reset with empty parameters too, as Ghostty's words skip
@@ -1479,12 +1479,12 @@ none divergent. One more Ghostty bug is patched in the oracle (0006).
   cursor is on, as Ghostty widens both, which keeps a protected character
   whole (`ech-protected-wide-whole`, `el-protected-wide-whole`). Where ECH,
   DCH, ICH or insert mode cuts a wide character, both halves are cleared in
-  the erase colour, protected or not, as Ghostty's `splitCellBoundary`
+  the erase color, protected or not, as Ghostty's `splitCellBoundary`
   does, though its own TODO says protection should count; the core copies
   it (`ech-split-protected-wide`, `insert-margins-wide-tail`).
 - **Spacer heads.** ECH, EL and DCH begin as Ghostty's `cursorResetWrap`:
   a row that wrapped is unwrapped, and a spacer head at its end becomes a
-  cell in the erase colour (`ech-reset-wrap-spacer-head`). At column 0 or
+  cell in the erase color (`ech-reset-wrap-spacer-head`). At column 0 or
   1 of a row that continues a wrapped one and starts with a wide character,
   ECH and DCH make the spacer head ending the row above such a cell, also
   when that row is the scrollback's newest, while the ring holds it
@@ -1623,7 +1623,7 @@ patch erases the history after it when the screen has none, as
 
 The protection test came first as one more test of each cell in
 `packCells`, after the four it made already (a spacer, a cluster, a spacer
-head, a background colour alone): `vte-scrolling` 1.4% more instructions,
+head, a background color alone): `vte-scrolling` 1.4% more instructions,
 `gitlog` and `ls` 0.7%. One test now finds a plain cell, the commonest: a
 mask of every bit that makes a cell more than its code point (`packSpecial`,
 the width and cluster bits, `bgBit` and `protectBit`), and anything else
@@ -1675,7 +1675,7 @@ the minimizer's two minutes) and grouped but not yet fixed (they are, in
   rows that start a column later or earlier in one than the other, and a
   history a row longer (14).
 - **The alternate screen's clears.** `?1047l` clears the alternate screen
-  in the erase colour, which `?47h` then shows; the core's rows come back
+  in the erase color, which `?47h` then shows; the core's rows come back
   without it (3).
 - **A wide character written past the right margin of a one-row screen**
   with left and right margins (2), **DL and DCH over a wide character** (1),
@@ -1696,12 +1696,12 @@ oracle (0008, 0009).
 - **The size in pixels**, V15 below (`size-report-pixels`).
 - **The alternate screen's clears are in that screen's own pen.** `?1047l`
   is Ghostty's ED 2 of the alternate screen before it switches, in the
-  current pen's background (`alt-1047-clear-erase-colour`); `?1049h` is its
+  current pen's background (`alt-1047-clear-erase-color`); `?1049h` is its
   ED 2 after the switch and before the cursor is copied, so in the pen the
   alternate screen was left with (`alt-1049-clear-own-pen`). `Term` keeps
   the hidden screen's erase cell beside its protection (`otherErase`).
 - **OSC 104** names an entry with a palette index or one of the five
-  special colours after it (256 to 260), which the core does not keep;
+  special colors after it (256 to 260), which the core does not keep;
   anything else is passed over, and when every parameter is, the whole
   palette is reset, as with none (`osc104-index-out-of-range`).
 - **Insert mode** inserts only when the character ends before the screen's
@@ -2070,7 +2070,7 @@ modules below would otherwise need from it: `fresh`, which reads
 constants of the sections still in `Vt`, `resizeTo` and `resized`, which
 set the term's state with `withScroll`, and `rectChecksum`, which reads a
 CSI's parameters. What is left in `Vt.geng`, 5,235 lines, is the parser
-and everything the dispatch does: the colours, the margins, the modes, the
+and everything the dispatch does: the colors, the margins, the modes, the
 tabs, SGR, printing, editing a row and scrolling, which call each other and
 would take a choice of seams of their own to split.
 
@@ -2442,7 +2442,7 @@ history's bound already counts rows from the headers (`boundFrom`).
 `splitLine` do now, on the packed form: a wide character that does not fit
 leaves a spacer head (0xFF) and wraps (§VC14, patches 0005, 0006); a spacer
 head is dropped when its line is joined; a mark of width 0 stays with its
-cell; a cell in a background colour alone (0xFE) and protection (0xFD)
+cell; a cell in a background color alone (0xFE) and protection (0xFD)
 travel with their cells (§VC17, §VC19); a style run is cut where its row is;
 a row cut from a line takes the prompt mark §VC22 says; a blank row that
 ends a wrapped line ends it (patch 0001); and the cursor, the saved cursor
@@ -2471,7 +2471,7 @@ one change the differential fuzzer forced (the pages' size, below).
 **V20 · A resize cuts every page again at the new width, on its bytes.**
 `Vt.Recut.recut` walks the pages line by line. A line whose cells are all
 one column wide (ASCII or a code point of width 1, protected or not, with
-no spacer head, no cell in a background colour alone and no mark of width
+no spacer head, no cell in a background color alone and no mark of width
 0) is cut without a cell record: its bytes are copied a run at a time into
 the new pages, a header written each time a row fills, its style runs
 merged and cut where its rows are, as `packCells` would have. A wrapped
@@ -2765,7 +2765,7 @@ columns is 4.05 MB, about what the build before V20 kept of `gitlog` at its
 `core-dump` and the probes give it; esctest's `core-pty` keeps its 1,000.
 
 **What is kept**, at 160 columns: `gitlog` 93,327 rows (100,000 before
-V20), `ls` 34,063 (100,000; its rows are long and coloured, 119 bytes
+V20), `ls` 34,063 (100,000; its rows are long and colored, 119 bytes
 each), `vte-scrolling` 1,350,266 (100,000; rows of a few bytes), `cup` none.
 A host that wants more of `ls`-like output sets more; the bytes are the
 limit, and the rows are what the output makes of them.
@@ -2892,7 +2892,7 @@ it from the headers (`settlePlain`): no style runs, text as many bytes as
 the extents sum to, and no row that wraps ending in a spacer head (0xFF),
 read at the offset the sum gives. With no style runs and a byte a cell, a
 cell is ASCII, an empty cell's 0, or a spacer head, which ends only a row
-that wraps; a cell in a background colour alone (0xFE) carries its colour
+that wraps; a cell in a background color alone (0xFE) carries its color
 (`eraseCell`), so it has a style run. A page `Recut` writes is `Plain`
 when every row put in it was. A first version decided it in `pageOut`, a
 row at a time: `vte-scrolling`, 2,666,667 one-character lines, cost 9.9%
@@ -2924,7 +2924,7 @@ at 10,000 rows, and of the short lines', is the ring's reflow, about a
 millisecond a resize whatever the scrollback holds: its rows are cells in
 arrays, cut a cell at a time (`splitLine`), and §VC30 left them so. The
 short lines gain because their pages are plain too, a line a span.
-`gitlog`'s pages are not plain, since its lines have colour, and it is cut
+`gitlog`'s pages are not plain, since its lines have color, and it is cut
 as before.
 
 **With the default limit** (4.05 MB, §VC32), `drag 20 80 50`, the dumps the
@@ -3100,7 +3100,7 @@ on all five:
 | `gitlog.txt` | 72.4 ms | 114 ms | 131 | 206 | 0.64 | 0.61 |
 
 The core is now faster than Ghostty's on 10,000 short lines too, and
-only the 10,000-row line is slower, by a third. `gitlog`, whose lines have colour
+only the 10,000-row line is slower, by a third. `gitlog`, whose lines have color
 and so are not plain, is where it was: §VC34's note on what V22 costs
 such lines stands.
 
@@ -3138,7 +3138,7 @@ geng-lang's `m4-free.md` measures it. The resize's dead buffers, freed by
 hand at the point an ownership proof would free them, take the 20 resizes
 from 16 ms to 11 (Ghostty 10.4) and the 100 from 46 to 33 (Ghostty 42),
 with the same dumps on all five inputs. `gitlog` does not move, since its
-time is the cut of coloured lines (§VC34). Nothing in the core changed.
+time is the cut of colored lines (§VC34). Nothing in the core changed.
 
 **How resizes are compared with Ghostty from now on** (geng-lang D1029):
 as §VC32 says, and reported as two numbers, the first 20 resizes of a
@@ -3160,7 +3160,7 @@ owned:
   `rebuild` copies them into the new ring; the nursery promotes 22 MB of
   them in 20 resizes of the 10,000-row line. Rows written straight from the
   old ring into the new would not be allocated.
-- **`gitlog`'s cut of coloured lines**, 73 ms a resize of 542,000 rows
+- **`gitlog`'s cut of colored lines**, 73 ms a resize of 542,000 rows
   without a limit, all of it work (§VC34's note on what V22 costs lines
   that are not plain).
 
@@ -3333,7 +3333,7 @@ user and system time and page faults net of the feed, and full collections
 The old pages are dropped where the resize binds its cut, so the heap is
 reused, not grown: faults and full collections fall on every input. The
 10,000 short lines spend more user time, as their instructions say, and
-win it back in system time. `gitlog`'s time is the cut of coloured lines
+win it back in system time. `gitlog`'s time is the cut of colored lines
 (§VC34), whose ranges were copied a byte at a time and are now one
 `appendTo` each; how much of its 21% that is was not measured apart from
 the drops.
@@ -3351,7 +3351,7 @@ taking it out with `Builder.swap` costs the in-place marks 312 → 29.
 ## VC40. D1030's two costs, measured after the owned pages (survey)
 
 geng-lang's D1030 registered two costs of a resize here (§VC36), for after
-the pages were owned (§VC39): `gitlog`'s cut of coloured lines, and the
+the pages were owned (§VC39): `gitlog`'s cut of colored lines, and the
 rows between the old ring and the new. This measures both on puritty
 9496e75's core, against Ghostty, and says what each would buy.
 
@@ -3378,13 +3378,13 @@ after them against 0.42. Neither cost leaves the core behind Ghostty.
 
 ### `gitlog`'s cut
 
-Its lines are coloured, so they are not on plain pages (V22, §VC33), and
+Its lines are colored, so they are not on plain pages (V22, §VC33), and
 each goes through `gather` and `fastLine`. Sampled by instructions
 (`perf record -e instructions:u`, the recut 5 times), per resize: `chunks`
 406 M (with `skipCells` and `styleCells` in it), `recut` 354 M (with
 `lines`, `gather` and `fastLine` in it), `scan` 210 M, `decodeAt` 49 M.
 
-Each byte of a coloured row is walked twice: by `scan` in `gather`, to find
+Each byte of a colored row is walked twice: by `scan` in `gather`, to find
 where the row's text ends and whether every cell is one column, and by
 `skipCells` in `chunks`, to find where each new row's text ends. `chunks`
 already finds the end by arithmetic for a row with a byte a cell, but only
@@ -3452,7 +3452,7 @@ header bit makes output pay the row-at-a-time decision anyway. C when a
 resize's collections miss G7's pause budget, since the ring's rows are
 the allocation D1030 named.
 
-## VC41. A coloured row with a byte a cell is cut by arithmetic (§VC40's A)
+## VC41. A colored row with a byte a cell is cut by arithmetic (§VC40's A)
 
 `Recut`'s `Src` has a fourth field, `narrow`: the row's text is as many
 bytes as its extent. `chunks` finds where a new row's text ends by
@@ -3484,7 +3484,7 @@ then each resize after them:
 | `ls` | 705 / 34.8 | 529 / 26.1 | |
 | one line of 10,000 rows | 9 / 0.26 | 9 / 0.26 | 9.1 / 0.42 |
 
-`ls` gains the most because its coloured names are ASCII. Every time is
+`ls` gains the most because its colored names are ASCII. Every time is
 within its budget.
 
 ## VC42. The page a push drops is freed (geng-lang D1041)
@@ -3668,7 +3668,7 @@ lower than their own so that no module imports one above it (`of`,
 | 6 | `Vt.Modes` | the modes, DECSC and DECRC, the resets, and `fresh` | 691 |
 | 7 | `Vt.Print` | printing through the character sets, the wrap, UTF-8's decoding | 628 |
 | 8 | `Vt.Dcs` | DCS strings, DECRQSS | 276 |
-| 9 | `Vt.Osc` | the OSC dispatch: colours, the clipboard, the semantic prompts | 511 |
+| 9 | `Vt.Osc` | the OSC dispatch: colors, the clipboard, the semantic prompts | 511 |
 | 10 | `Vt.Dispatch` | a CSI sequence's dispatch | 625 |
 | 11 | `Vt.Parse` | the state machine, the cycle above | 883 |
 
@@ -3877,7 +3877,7 @@ by a change that leaves no fallback to ask about:
   `0xFE`, the constructor contract geng-lang's own guide shows with this
   type, and `go` promises it of the decoder it answers, so the table read
   is `Array.getProven` and a wider lead is refused at build; `dcsHeader`'s
-  `i` is `0 <= i`; `defaultColour` answers 0 for a negative index, where it
+  `i` is `0 <= i`; `defaultColor` answers 0 for a negative index, where it
   read the palette from its end.
 
 Held to: the unit tests 68 of 68, replay 325 of 325 with `core-dump` built
@@ -3945,7 +3945,7 @@ else, through a `Task`, a `Maybe` or a fold. Two are written here:
   values with a stack of eight. `keyFlags`'s `?u` reply and `keyOptions`'s
   kitty flags read the top with `Array.getProven`.
 - `Term`'s `named : Array Int where Array.length named == 16`:
-  `paletteColour` reads it with `getProven` for an index from 0 to 15.
+  `paletteColor` reads it with `getProven` for an index from 0 to 15.
 
 Nothing else changed: `Term` is held in the app's `Model` through `Task`,
 folded over in `Dispatch`, and passed as a value, as before. geng-lang's

@@ -15,8 +15,8 @@ if pid == 0:
     os.environ["TERM"]="xterm-256color"; os.environ.pop("TMUX",None)
     os.execv(TMUX,[TMUX,"-L",SOCK,"attach"])
 basic=[(b"\x1b[c",b"\x1b[?62;22c"),(b"\x1b[>c",b"\x1b[>1;0;0c"),(b"\x1b[>q",b"\x1bP>|puritty\x1b\\"),(b"\x1b[?2026$p",b"\x1b[?2026;2$y"),(b"\x1b[18t",b"\x1b[8;24;80t"),(b"\x1b[14t",b"\x1b[4;384;800t")]
-colour=[(b"\x1b]10;?",b"\x1b]10;rgb:d8d8/d8d8/d8d8\x1b\\"),(b"\x1b]11;?",b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\"),(b"\x1b[?996n",b"\x1b[?997;1n")]
-rules = [] if mode=="silent" else basic if mode=="puritty" else basic+colour
+color=[(b"\x1b]10;?",b"\x1b]10;rgb:d8d8/d8d8/d8d8\x1b\\"),(b"\x1b]11;?",b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\"),(b"\x1b[?996n",b"\x1b[?997;1n")]
+rules = [] if mode=="silent" else basic if mode=="puritty" else basic+color
 buf=b""; seen={}
 def pump(t):
     global buf

@@ -132,4 +132,4 @@ What it says for puritty's local tabs, beside the survey's ranking
   (his prefix, and Ctrl+PgUp/PgDn if he binds them in tmux); every tab key
   rebindable and removable (must-do 1) covers it.
 - Splits and broadcast were not seen in use; worth asking him whether he
-  uses them, before they are ranked above restore or colours.
+  uses them, before they are ranked above restore or colors.

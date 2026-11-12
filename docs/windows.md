@@ -23,7 +23,7 @@ Geng side is small and portable; the C does five things:
 | part | on X11 | what of it is X11's |
 |---|---|---|
 | the window | an X window, a retained pixmap the size of the cells, rows copied to the window, a scroll as one copy | the window and the copies |
-| text | runs shaped by HarfBuzz, glyphs rasterised by FreeType, colour glyphs as ARGB, a fallback face found by fontconfig, uploaded to the server with XRender | XRender's glyph set and composites; fontconfig |
+| text | runs shaped by HarfBuzz, glyphs rasterised by FreeType, color glyphs as ARGB, a fallback face found by fontconfig, uploaded to the server with XRender | XRender's glyph set and composites; fontconfig |
 | box drawing | lines and blocks drawn by the C into a canvas | nothing |
 | ink | which cell edges a glyph's pixels crossed (V40) | nothing |
 | events | keys through XKB (V47), an IME through XIM (V46), the pointer, the size, the focus, the close, selections and paste | all of it |
@@ -54,8 +54,8 @@ Windows 11 25H2 (build 26200), PowerShell 5.1 over ssh.
 FreeType 2.14.3 and HarfBuzz 13.2.1, the versions nixpkgs pins, shape and
 rasterise one line in four faces as puritty's renderer does, picture below
 the table. Fira Code's ligatures (`->`, `=>`, `!=`, `0x`), Hangul in Malgun
-Gothic, Thai in Leelawadee UI, and Segoe UI Emoji's colour glyphs, which
-FreeType draws from the font's colour table as BGRA: 😀 and the
+Gothic, Thai in Leelawadee UI, and Segoe UI Emoji's color glyphs, which
+FreeType draws from the font's color table as BGRA: 😀 and the
 skin-toned 👍🏽 as one glyph. 🇰🇷 is the letters "KR", since Segoe UI Emoji has
 no flags; that is Windows' font, the same in every program. Shaping took
 0.05 to 0.3 ms a run; Malgun Gothic's first glyphs 13 ms, its 13 MB loaded.
@@ -64,7 +64,7 @@ no flags; that is Windows' font, the same in every program. Shaping took
 
 **GDI, for comparison** (`bench/windows/probe-window.c`): Windows' own text
 drawing found Fira Code, applied its ligatures, and fell back to Hangul, Thai
-and emoji by itself; its emoji is monochrome, since GDI draws no colour
+and emoji by itself; its emoji is monochrome, since GDI draws no color
 glyphs, and Fira Code's box-drawing glyphs do not join (puritty draws those
 itself anyway). The window as Gilbert's screen showed it (below):
 
@@ -83,14 +83,14 @@ uploads glyphs to the server and composites them with XRender. On Windows
 the same code draws into a 32-bit DIB section the size of the cells, the
 retained pixmap's twin, and the rows a frame touched are copied to the window
 with `BitBlt`, which measured 0.4 ms for a whole window. Shaping, the face
-lookup, rasterising, colour glyphs, box drawing and ink are the X11 C's as
+lookup, rasterising, color glyphs, box drawing and ink are the X11 C's as
 they are; only the glyph set and the composite become a blend into memory.
 
 Against **Direct2D and DirectWrite**: they are COM interfaces, written for
 C++, with ClearType and Windows' own font fallback. They would be a second
 text path, rendering differently from Linux, so the pixel gate (V38) could not
 hold the two to one picture, and the ink measurement would be done again.
-Against **GDI**: no colour emoji, and its own fallback.
+Against **GDI**: no color emoji, and its own fallback.
 
 What changes:
 
@@ -284,7 +284,7 @@ into `vendor/win-text` with `pkg-config` files, in 27 s:
 
 - FreeType's core, its bitmap, glyph, emboldening, box and variation
   calls, and the modules OpenType and TrueType faces need (TrueType, CFF,
-  SFNT with its colour tables, the auto-hinter, the smooth renderer), with
+  SFNT with its color tables, the auto-hinter, the smooth renderer), with
   FreeType's own copy of zlib: no libpng, bzip2 or Brotli.
 - HarfBuzz's one source file, compiled by the toolchain's `g++` with
   threads off; its object needs nothing but the C library and libgcc, so a
@@ -379,10 +379,10 @@ Linux**: `harness/pixels.py --windows beelink1` draws every case with
 
 **`packages/text`** (`puritty-text`) is the X11 C's drawing, moved: the
 display list's decoding, the faces, HarfBuzz's shaping, FreeType's
-rasterising, colour glyphs, box drawing and ink. Its header
+rasterising, color glyphs, box drawing and ink. Its header
 (`src/Ext/include/puritty_text.h`) says what it gives a platform (`pt_open`,
 `pt_frame`, `pt_zoom`, the ink) and what a platform gives it: a fill, a
-glyph kept under an id, the placed glyphs drawn, a colour picture, a target
+glyph kept under an id, the placed glyphs drawn, a color picture, a target
 of so many cells, a scroll, and the file of a font or a fallback face. Its C
 reaches the platforms' C through a Geng feature made for it: a package's
 `src/Ext/include` is on every C file's include path (geng-lang Dnene38).
@@ -392,8 +392,8 @@ with the drawing moved.
 
 **`packages/win32`** draws into memory. The target is a bitmap of 32-bit
 pixels the size of the cells; a fill sets pixels, a scroll moves rows, and
-a glyph is blended in its colour with pixman's arithmetic for OVER through
-an A8 mask, so that it is XRender's pixel; a colour glyph is premultiplied
+a glyph is blended in its color with pixman's arithmetic for OVER through
+an A8 mask, so that it is XRender's pixel; a color glyph is premultiplied
 ARGB drawn OVER. The window's `WM_PAINT` copies the bitmap with
 `SetDIBitsToDevice` and fills the margins. Fonts are found by family among
 the files the registry names (`HKLM`, `HKCU`), or among the files of the
@@ -450,10 +450,10 @@ so a picture larger than its pin is held to it cut to the pin's size.
   (`packages/win32/build-text-libs.sh`), so a user's bitmap emoji font draws
   too, and puritty is still one `.exe`. 36 of 36.
 
-**A colour face may be COLR.** The renderer took only a face of bitmap
-strikes for a colour face, so Windows' Segoe UI Emoji, colour layers over
-outlines, would have drawn emoji in one colour. A scalable face with colour
-is a colour face now, sized to the cell's height and reduced into the
+**A color face may be COLR.** The renderer took only a face of bitmap
+strikes for a color face, so Windows' Segoe UI Emoji, color layers over
+outlines, would have drawn emoji in one color. A scalable face with color
+is a color face now, sized to the cell's height and reduced into the
 cluster's box as a strike is; FreeType draws its layers into a BGRA bitmap
 (measured in WS2's text probe). The Linux gate has no such face and is
 unchanged.
@@ -603,7 +603,7 @@ platform it is on:
   none, tried in order until one is found (V54): `$SHELL` or `/bin/sh` on
   Linux; `pwsh.exe`, `powershell.exe`, then `%ComSpec%` on Windows, whose
   environment variables are looked for in any case (`ComSpec`). beelink1
-  has no PowerShell 7, and puritty ran Windows PowerShell 5.1, its colours
+  has no PowerShell 7, and puritty ran Windows PowerShell 5.1, its colors
   and a Hangul `echo` as they should be. `cmd.exe` given on the command
   line ran, and Windows' `ssh` asked its host-key question through the
   pseudo console and took the answer.
@@ -854,7 +854,7 @@ changing.
 
 - **`blast.exe`** runs inside the terminal being measured. It waits 4 s
   for the window to be maximized, then writes a file to its console in
-  64 KB writes, or 300 frames of coloured text the console's size, and
+  64 KB writes, or 300 frames of colored text the console's size, and
   times the writes. The files are three of the throughput inputs
   (`gitlog`, 25.8 MB; `vte-scrolling` and `vte-unicode`, 8 MB each).
 - **`render-4k.ps1`** runs each workload three times, in puritty,

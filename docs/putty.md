@@ -896,8 +896,8 @@ a table-driven DEC/vte parser.
 - DEC modes (`toggle_mode`, `:3068`): the usual cursor/screen modes, alt screen
   47/1047/1048/1049, mouse 1000/1002/1003/1006/1015, **2004 bracketed paste**.
   Missing: 1004 focus, 1016 SGR-pixel, **2026 synchronized output**, DECRQM.
-- SGR: bold, dim, underline, blink, reverse, strike, 256-colour and truecolour
-  (semicolon form). **No italics**, no coloured or curly underline, no overline.
+- SGR: bold, dim, underline, blink, reverse, strike, 256-color and truecolor
+  (semicolon form). **No italics**, no colored or curly underline, no overline.
 - OSC (`do_osc`, `:3204`): titles 0/1/2/21, OSC 4 query only, and PuTTY-specific
   `ESC ] P` (Linux palette) and `ESC ] W` (word-char table). **No OSC 7, 8, 52, 10/11/12
   or 133.**
@@ -911,7 +911,7 @@ a table-driven DEC/vte parser.
 ### 8.3 Cells, lines, scrollback
 
 - `termchar` (`terminal.h:26–48`) holds a 32-bit codepoint, an attribute word (9-bit
-  fg/bg palette indices plus style bits, `putty.h:211–275`), a truecolour fg/bg pair,
+  fg/bg palette indices plus style bits, `putty.h:211–275`), a truecolor fg/bg pair,
   and `cc_next`.
   - `cc_next` is a *relative index* to a combining-character chain stored past the
     visible columns of the same line, with a free list (`add_cc`, `:215`).
@@ -923,7 +923,7 @@ a table-driven DEC/vte parser.
 - Screen, alt screen and scrollback are counted 2-3-4 trees (`tree234`), giving
   O(log n) line indexing.
 - **Scrollback is compressed per line** (`:700–1010`):
-  - Four RLE streams (chars, attrs, truecolour, combining chars) with varint
+  - Four RLE streams (chars, attrs, truecolor, combining chars) with varint
     headers.
   - Lines are decompressed on demand by `lineptr()` (`:1185`).
   - The rationale is that scrollback is huge and rarely touched, so new cell
@@ -994,7 +994,7 @@ puritty's remote-X11 renderer.
 - Selection is character, word or line, linear or rectangular (Alt toggles
   rectangular; `:7400`). Word classes come from a configurable 256-entry table plus
   a Unicode class table (`wordtype`, `:6874`).
-- Shift overrides mouse reporting. Copy can carry RTF (colours and attributes) on
+- Shift overrides mouse reporting. Copy can carry RTF (colors and attributes) on
   Windows.
 - **Paste** (`term_do_paste`, `:7124`):
   - Newlines are normalised to CR.
@@ -1172,7 +1172,7 @@ shells.
 - PuTTY's config UX is widely considered dated: a modal tree of tiny panels, and
   "Load/Save" semantics that confuse users (you must click Save after editing).
   Users still value the **saved-session list** itself: named hosts, each with its
-  own key, user, port forwards and colours. puritty's equivalent is probably
+  own key, user, port forwards and colors. puritty's equivalent is probably
   `~/.ssh/config` hosts plus a light per-host profile overlay.
 
 ### 10.3 Command-line tools

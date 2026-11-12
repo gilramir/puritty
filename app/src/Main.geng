@@ -26,7 +26,7 @@ due:
 
 The settings file's directory is watched, and a change to the file is
 read and applied to the running window (`docs/settings.md` ST3, ST4): the
-colours, the font, the scrollback and the rest, all but the window's size
+colors, the font, the scrollback and the rest, all but the window's size
 in cells and the program, which are new windows'.
 
 A resize of the window is given to the core and to the terminal; the
@@ -148,7 +148,7 @@ type alias Model =
       -- the menu Ctrl+right-click opens, drawn over the screen (ST26), or
       -- the items of the one the platform shows, and of its system menu
     , menu : Maybe Menu
-    , shownItems : Array { label : String, args : Array String }
+    , shownItems : Array MenuItem
       -- the built-in ssh client's session (docs/ssh-client.md SC18): what
       -- puritty's own screen shows until the session runs, a question it
       -- asks, how the session ended
@@ -177,6 +177,7 @@ type alias Model =
     , starter : Starter
     , windowRows : Int
     , renaming : Maybe { id : Int, typed : String }
+    , coloring : Maybe Int
     , closing : Maybe { id : Int, why : String, window : Bool }
     , barClick : { at : Int, id : Int }
     }
@@ -212,6 +213,8 @@ type alias TabInfo =
     { id : Int
     , name : String
     , host : Maybe Config.Host
+    , hostName : Maybe String
+    , color : TabColor
     , bells : Int
     , bell : Bool
     , activity : Bool
@@ -243,7 +246,7 @@ type alias SshScreen =
 {-| A menu over the screen: its items, each what this program is started
 again with, where its box is, and the item marked. -}
 type alias Menu =
-    { items : Array { label : String, args : Array String }
+    { items : Array MenuItem
     , row : Int
     , col : Int
     , selected : Int
@@ -800,13 +803,14 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , search = Nothing
                             , barDrag = False
                             , remote = remote
-                            , tab = { id = 0, name = "", host = config.remote, bells = 0, bell = False, activity = False }
+                            , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
                             , tabs = Builder.empty 4
                             , order = [ 0 ]
                             , nextTabId = 1
                             , starter = starter
                             , windowRows = config.rows
                             , renaming = Nothing
+                            , coloring = Nothing
                             , closing = Nothing
                             , barClick = { at = -1000, id = -1 }
                             }
@@ -970,7 +974,7 @@ sendRaw bytes m =
 
 
 {-| What puritty says of itself to the core (`Vt.Embedder`,
-`docs/tmux.md` TM4): the look's colours, which OSC 10 and 11 answer and
+`docs/tmux.md` TM4): the look's colors, which OSC 10 and 11 answer and
 DSR 996 judges; DA1 with 21 (left and right margins) and 52 (OSC 52), which
 tmux turns its `margins` and `clipboard` on from; and XTVERSION with a
 version, as tmux matches a name followed by a space. -}
@@ -1273,7 +1277,7 @@ notice problem =
 
 {-| New settings applied to the running window (docs/settings.md ST4):
 the font opened again for a new family, language or glyph cache, or sized
-again for a new size; the colours and the palette, the scrollback's bound,
+again for a new size; the colors and the palette, the scrollback's bound,
 the charset and the word boundaries changed; every cell drawn again. What
 is read where it is used (the blink, the frames, the paste button, OSC 52,
 the title) is in `config`. The window's size in cells and the program are
@@ -1308,7 +1312,7 @@ applySettings new m =
             else
                 term0
 
-        -- the colours a program asks for, and a 997 to one that asked to
+        -- the colors a program asks for, and a 997 to one that asked to
         -- hear of the theme changing (docs/tmux.md TM4), sent at once
         told =
             if new.foreground /= old.foreground || new.background /= old.background then
@@ -1452,14 +1456,46 @@ menuAt row col m =
     }
 
 
-{-| The menu's items: each what this program is started again with. -}
-menuItems : Config -> Array { label : String, args : Array String }
+{-| A menu's item: its words, and what it does. -}
+type alias MenuItem =
+    { label : String
+    , does : MenuDoes
+    }
+
+
+{-| This program started again with these arguments, or the shown tab
+renamed or colored (docs/tabs.md TB9). -}
+type MenuDoes
+    = Starts (Array String)
+    | Renames
+    | Colors
+
+
+{-| The menu's items: the settings window, the host list, a window of its
+own, the shown tab's name and color, then each host of the settings. -}
+menuItems : Config -> Array MenuItem
 menuItems config =
-    [ { label = "Settings…", args = [ "settings" ] }
-    , { label = "Hosts…", args = [ "hosts" ] }
-    , { label = "New window", args = [ "shell" ] }
+    [ { label = "Settings…", does = Starts [ "settings" ] }
+    , { label = "Hosts…", does = Starts [ "hosts" ] }
+    , { label = "New window", does = Starts [ "shell" ] }
+    , { label = "Rename tab…", does = Renames }
+    , { label = "Tab color…", does = Colors }
     ]
-        ++ Array.map (\h -> { label = "Connect to " ++ h.name, args = [ "--host", h.name ] }) config.hosts
+        ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
+
+
+{-| What a chosen item does. -}
+menuDo : MenuItem -> (taken m : Model) -> Task x Model
+menuDo item m =
+    when item.does is
+        Starts args ->
+            spawnSelf args m
+
+        Renames ->
+            Task.succeed (startRenaming m)
+
+        Colors ->
+            Task.succeed (startColoring m)
 
 
 {-| The menu at the pointer: the platform's own when it shows one
@@ -1491,7 +1527,7 @@ menuChosen c m =
     in
     when Array.get c.index items is
         Just item ->
-            spawnSelf item.args m
+            menuDo item m
 
         Nothing ->
             Task.succeed m
@@ -1556,7 +1592,7 @@ menuKey sym menu m =
     else if sym == 0xFF0D || sym == 0xFF8D then
         when Array.get menu.selected menu.items is
             Just item ->
-                spawnSelf item.args { m | menu = Nothing, urgent = True }
+                menuDo item { m | menu = Nothing, urgent = True }
 
             Nothing ->
                 Task.succeed { m | menu = Nothing, urgent = True }
@@ -1587,7 +1623,7 @@ menuPress p menu m =
     if inside && p.button == 1 then
         when Array.get i menu.items is
             Just item ->
-                spawnSelf item.args { m | menu = Nothing, urgent = True }
+                menuDo item { m | menu = Nothing, urgent = True }
 
             Nothing ->
                 Task.succeed { m | menu = Nothing, urgent = True }
@@ -2027,11 +2063,12 @@ dialogOf screen =
                             [ "Its " ++ k.algorithm ++ " key's fingerprint:", "    " ++ k.fingerprint ]
                                 ++ (if Array.isEmpty k.knownTypes then [] else [ "It is known by its " ++ String.join ", " k.knownTypes ++ " key, not this one." ])
                         , field = Nothing
+                        , swatches = []
                         , hint = "A: trust and remember    O: trust once    Esc: don't connect"
                         }
 
                 Session.Password p ->
-                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, hint = "Enter: log in    Esc: do not use a password" }
+                    Just { title = cleanText p.prompt, lines = [], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: log in    Esc: do not use a password" }
 
                 Session.Passphrase p ->
                     let
@@ -2042,7 +2079,7 @@ dialogOf screen =
                         name =
                             String.split "/" file |> Array.last |> Maybe.withDefault file |> String.split "\\" |> Array.last |> Maybe.withDefault file
                     in
-                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, hint = "Enter: unlock the key    Esc: skip this key" }
+                    Just { title = "The passphrase for " ++ name, lines = [ file ], field = Just { typed = asking.typed, hidden = True, caret = String.count asking.typed }, swatches = [], hint = "Enter: unlock the key    Esc: skip this key" }
 
                 Session.Responses r ->
                     when Array.get (Array.length asking.given) r.prompts is
@@ -2051,6 +2088,7 @@ dialogOf screen =
                                 { title = if r.name == "" then "The server asks" else cleanText r.name
                                 , lines = (if r.instruction == "" then [] else [ cleanText r.instruction ]) ++ [ cleanText prompt.text ]
                                 , field = Just { typed = asking.typed, hidden = not prompt.echo, caret = String.count asking.typed }
+                                , swatches = []
                                 , hint = "Enter: answer    Esc: do not answer"
                                 }
 
@@ -2060,7 +2098,7 @@ dialogOf screen =
         Nothing ->
             when screen.failed is
                 Just why ->
-                    Just { title = "The session could not go on", lines = [ why ], field = Nothing, hint = "Enter: close    R: connect again" }
+                    Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again" }
 
                 Nothing ->
                     Nothing
@@ -2217,6 +2255,11 @@ handleOne remote ms rest ev m =
                     (if k.action /= 0 then renameKey k m else Task.succeed m)
                         |> Task.andThen (\next -> handle next.remote ms rest next)
 
+                  else if m.coloring /= Nothing then
+                    -- and the color box (TB9)
+                    (if k.action /= 0 then colorKey k m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
                   else if ownScreenUp m then
                     -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
                     (if k.action /= 0 then sshKey remote k m else Task.succeed m)
@@ -2353,6 +2396,10 @@ handleOne remote ms rest ev m =
                   if m.renaming /= Nothing then
                     handle remote ms rest (renameTyped (Bytes.toStringLossy text) m)
 
+                  else if m.coloring /= Nothing then
+                    -- what the IME commits is no answer to the color box
+                    handle remote ms rest m
+
                   else if ownScreenUp m then
                     -- what the IME commits, typed into the question
                     handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
@@ -2394,7 +2441,12 @@ handleOne remote ms rest ev m =
                         |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
-                  if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
+                  if m.coloring /= Nothing then
+                    -- the color box takes the presses while it is open (TB9)
+                    (if p.action == 0 then colorPress p m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                  else if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
                     -- a press on the tab bar (docs/tabs.md TB1)
                     barPress ms p m |> Task.andThen (\next -> handle next.remote ms rest next)
 
@@ -3354,6 +3406,9 @@ draw ms m =
             else if m.renaming /= Nothing then
                 Maybe.map renameBox m.renaming
 
+            else if m.coloring /= Nothing then
+                Just (colorBox m)
+
             else if ownUp then
                 Maybe.andThen dialogOf m.ssh
 
@@ -3365,6 +3420,7 @@ draw ms m =
                             { title = p.title
                             , lines = []
                             , field = if p.field then Just { typed = p.typed, hidden = False, caret = p.caret } else Nothing
+                            , swatches = []
                             , hint = p.hint
                             }
                         )
@@ -3537,6 +3593,7 @@ type TabAction
     | MoveRight
     | MoveLeft
     | RenameTab
+    | ColorTab
 
 
 {-| The tab keys, as the `[keys]` table names them (docs/tabs.md TB1,
@@ -3574,6 +3631,9 @@ tabAction k m =
 
     else if on keys.keyRenameTab then
         Just RenameTab
+
+    else if on keys.keyColorTab then
+        Just ColorTab
 
     else if others && on keys.keyNextTabAlways then
         Just NextTab
@@ -3619,7 +3679,10 @@ tabDo action m =
             Task.succeed (moveShown -1 m)
 
         RenameTab ->
-            Task.succeed { m | renaming = Just { id = m.tab.id, typed = m.tab.name }, urgent = True }
+            Task.succeed (startRenaming m)
+
+        ColorTab ->
+            Task.succeed (startColoring m)
 
 
 tabCount : Model -> Int
@@ -3693,7 +3756,7 @@ hiddenFrom i m acc =
 
 
 {-| What the bar needs of each tab not shown. -}
-labelsOf : Int -> Model -> Array { id : Int, label : String, bell : Bool, activity : Bool, lost : Bool } -> Array { id : Int, label : String, bell : Bool, activity : Bool, lost : Bool }
+labelsOf : Int -> Model -> Array { id : Int, label : String, bell : Bool, activity : Bool, lost : Bool, color : Maybe Int } -> Array { id : Int, label : String, bell : Bool, activity : Bool, lost : Bool, color : Maybe Int }
 labelsOf i m acc =
     if i >= Builder.length m.tabs then
         acc
@@ -3703,7 +3766,7 @@ labelsOf i m acc =
             m
             (when Builder.get i m.tabs |> Maybe.andThen identity is
                 Just t ->
-                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh } acc
+                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
 
                 Nothing ->
                     acc
@@ -3978,7 +4041,7 @@ openTab m =
                                 freeSlot m
 
                             tab =
-                                { info = { id = id, name = "", host = host, bells = 0, bell = False, activity = False }
+                                { info = { id = id, name = "", host = host, hostName = m.tab.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
                                 , remote = remote
                                 , term = freshTerm m.config m.term cols rows
                                 , charset = if host == Nothing then m.starter.charset else m.charset
@@ -4209,7 +4272,7 @@ shortTitle title =
 
 {-| The bar's tabs in its order, where each is in pixels, and how it is
 marked. -}
-barTabs : Model -> Array { id : Int, label : String, x : Int, w : Int, active : Bool, bell : Bool, activity : Bool, lost : Bool }
+barTabs : Model -> Array { id : Int, label : String, x : Int, w : Int, active : Bool, bell : Bool, activity : Bool, lost : Bool, color : Maybe Int }
 barTabs m =
     let
         cw =
@@ -4223,10 +4286,10 @@ barTabs m =
 
         one id =
             if id == m.tab.id then
-                Just { id = id, label = lostMark (sessionLost m.ssh) (tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh }
+                Just { id = id, label = lostMark (sessionLost m.ssh) (tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
 
             else
-                Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = lostMark f.value.lost f.value.label, active = False, bell = f.value.bell, activity = f.value.activity, lost = f.value.lost })
+                Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = lostMark f.value.lost f.value.label, active = False, bell = f.value.bell, activity = f.value.activity, lost = f.value.lost, color = f.value.color })
     in
     Array.foldl
         (\t acc ->
@@ -4235,7 +4298,7 @@ barTabs m =
                     min 400 (Text.width size t.label) + 2 * cw
             in
             { x = acc.x + w + 2
-            , out = Array.pushLast { id = t.id, label = t.label, x = acc.x, w = w, active = t.active, bell = t.bell, activity = t.activity, lost = t.lost } acc.out
+            , out = Array.pushLast { id = t.id, label = t.label, x = acc.x, w = w, active = t.active, bell = t.bell, activity = t.activity, lost = t.lost, color = t.color } acc.out
             }
         )
         { x = 2, out = [] }
@@ -4245,7 +4308,10 @@ barTabs m =
 
 {-| The bar's records (docs/tabs.md TB1): the window's last row, each tab as
 wide as its name, the shown one in puritty's amber, one that rang red, one
-that printed with its name lit. -}
+that printed with its name lit. A tab with a color (TB9) is filled with
+it, the shown one at full strength with a line along its top, the others
+darker, and its marks are a dot at its end: red ringed in white for the
+bell, its text's color for output. -}
 tabBar : Model -> Bytes
 tabBar m =
     if barRows m == 0 then
@@ -4256,11 +4322,14 @@ tabBar m =
             ch =
                 m.term.config.cellHeight
 
+            cw =
+                m.term.config.cellWidth
+
             y =
                 m.term.rows * ch
 
             width =
-                m.term.cols * m.term.config.cellWidth
+                m.term.cols * cw
 
             size =
                 max 8 (ch * 3 // 5)
@@ -4269,56 +4338,124 @@ tabBar m =
             -- (`[tabs] look`): square, a line between, the shown tab light
             plain =
                 m.config.tabsLook == "plain"
+
+            barBg =
+                if plain then 0x303030 else 0x262626
+
+            shape t fill =
+                SettingsGui.box
+                    { x = t.x
+                    , y = if plain then y else y + 1
+                    , w = if plain then t.w + 1 else t.w
+                    , h = if plain then ch else ch - 2
+                    , r = if plain then 0 else 4
+                    , color = fill
+                    }
+
+            label t color =
+                SettingsGui.text
+                    { x = t.x + cw
+                    , y = y + (ch + size) // 2 - 1
+                    , size = size
+                    , color = color
+                    , text = t.label
+                    }
+
+            plainTab t =
+                Bytes.flatten
+                    [ shape t
+                        (if t.active then
+                            if plain then 0xD0D0D0 else 0xFFAF00
+
+                         else if t.bell then
+                            0xD70000
+
+                         else if plain then
+                            0x444444
+
+                         else
+                            0x3A3A3A
+                        )
+                    , label t
+                        (if t.active && t.lost then
+                            0x8B0000
+
+                         else if t.active then
+                            0x1C1C1C
+
+                         else if t.lost then
+                            0xFF6B6B
+
+                         else if t.bell || t.activity then
+                            0xFFFFFF
+
+                         else
+                            0xBCBCBC
+                        )
+                    ]
+
+            coloredTab t c =
+                let
+                    fill =
+                        if t.active then c else mix c barBg
+
+                    ink =
+                        Dialog.contrast fill
+
+                    dot =
+                        max 5 (ch // 3)
+
+                    dotX =
+                        t.x + t.w - cw // 2 - dot // 2
+
+                    dotY =
+                        y + (ch - dot) // 2
+                in
+                Bytes.flatten
+                    [ shape t fill
+                    , if t.active then
+                        SettingsGui.box { x = t.x + (if plain then 0 else 3), y = if plain then y else y + 1, w = t.w - (if plain then 0 else 6), h = max 2 (ch // 8), r = 0, color = ink }
+
+                      else
+                        Bytes.empty
+                    , label t ink
+                    , if t.active then
+                        Bytes.empty
+
+                      else if t.bell then
+                        SettingsGui.framed { x = dotX, y = dotY, w = dot, h = dot, r = dot // 2, color = 0xD70000, border = 0xFFFFFF }
+
+                      else if t.activity then
+                        SettingsGui.box { x = dotX, y = dotY, w = dot, h = dot, r = dot // 2, color = ink }
+
+                      else
+                        Bytes.empty
+                    ]
         in
         Bytes.flatten
-            ([ SettingsGui.box { x = 0, y = y, w = width, h = ch, r = 0, color = if plain then 0x303030 else 0x262626 } ]
+            ([ SettingsGui.box { x = 0, y = y, w = width, h = ch, r = 0, color = barBg } ]
                 ++ Array.map
                     (\t ->
-                        Bytes.flatten
-                            [ SettingsGui.box
-                                { x = t.x
-                                , y = if plain then y else y + 1
-                                , w = if plain then t.w + 1 else t.w
-                                , h = if plain then ch else ch - 2
-                                , r = if plain then 0 else 4
-                                , color =
-                                    if t.active then
-                                        if plain then 0xD0D0D0 else 0xFFAF00
+                        when t.color is
+                            Just c ->
+                                coloredTab t c
 
-                                    else if t.bell then
-                                        0xD70000
-
-                                    else if plain then
-                                        0x444444
-
-                                    else
-                                        0x3A3A3A
-                                }
-                            , SettingsGui.text
-                                { x = t.x + m.term.config.cellWidth
-                                , y = y + (ch + size) // 2 - 1
-                                , size = size
-                                , color =
-                                    if t.active && t.lost then
-                                        0x8B0000
-
-                                    else if t.active then
-                                        0x1C1C1C
-
-                                    else if t.lost then
-                                        0xFF6B6B
-
-                                    else if t.bell || t.activity then
-                                        0xFFFFFF
-
-                                    else
-                                        0xBCBCBC
-                                , text = t.label
-                                }
-                            ]
+                            Nothing ->
+                                plainTab t
                     )
                     (barTabs m)
             )
+
+
+{-| A tab's color dimmed toward the bar's, for a tab not shown: three
+fifths the color. -}
+mix : Int -> Int -> Int
+mix color toward =
+    let
+        channel at =
+            (3 * Bitwise.and 0xFF (Bitwise.shiftRightZfBy at color) + 2 * Bitwise.and 0xFF (Bitwise.shiftRightZfBy at toward)) // 5
+    in
+    Bitwise.or (Bitwise.shiftLeftBy 16 (channel 16)) (Bitwise.or (Bitwise.shiftLeftBy 8 (channel 8)) (channel 0))
 
 
 {-| A press on the bar: the tab under it shown, or with the middle button
@@ -4336,7 +4473,7 @@ barPress ms p m =
                     shown =
                         showTab hit.value.id m
                 in
-                Task.succeed { shown | renaming = Just { id = shown.tab.id, typed = shown.tab.name }, barClick = { at = -1000, id = -1 }, urgent = True }
+                Task.succeed (startRenaming { shown | barClick = { at = -1000, id = -1 } })
 
             else if p.button == 1 then
                 let
@@ -4345,8 +4482,197 @@ barPress ms p m =
                 in
                 Task.succeed { shown | barClick = { at = ms, id = hit.value.id } }
 
+            else if p.button == 2 then
+                -- the right button: the menu, over the tab it was on, so
+                -- that its tab items are that tab's (TB9)
+                openMenu p (showTab hit.value.id m)
+
             else
                 Task.succeed (showTab hit.value.id m)
+
+        Nothing ->
+            Task.succeed m
+
+
+{-| The rename box opened over the shown tab. -}
+startRenaming : (taken m : Model) -> Model
+startRenaming m =
+    { m | renaming = Just { id = m.tab.id, typed = m.tab.name }, urgent = True }
+
+
+-- THE TAB'S COLOR (docs/tabs.md TB9)
+
+
+{-| A tab's color in the bar: its host's (`[hosts.NAME.colors] tab`),
+one chosen for it, or none chosen over its host's. -}
+type TabColor
+    = HostsColor
+    | Picked Int
+    | NoColor
+
+
+{-| The colors the box offers, keys 1 to 8. -}
+tabColors : Array Int
+tabColors =
+    [ 0xC62828, 0xE65100, 0xF9A825, 0x2E7D32, 0x00838F, 0x1565C0, 0x6A1B9A, 0xAD1457 ]
+
+
+{-| The color a tab is drawn in, if any: the one chosen for it, else its
+host's from the settings in force, so that a host's color changed in the
+settings window colors its tabs at once. -}
+tabColorOf : Config -> TabInfo -> Maybe Int
+tabColorOf config info =
+    when info.color is
+        Picked c ->
+            Just c
+
+        NoColor ->
+            Nothing
+
+        HostsColor ->
+            info.hostName
+                |> Maybe.andThen (\name -> Array.findFirst (\h -> h.name == name) config.hosts)
+                |> Maybe.andThen (\entry -> entry.value.tab)
+
+
+{-| The color box opened over the shown tab. -}
+startColoring : (taken m : Model) -> Model
+startColoring m =
+    { m | coloring = Just m.tab.id, urgent = True }
+
+
+{-| What each swatch of the box chooses: the eight colors, none, and the
+host's own for a tab that has a host. -}
+colorChoices : Model -> Array TabColor
+colorChoices m =
+    Array.map Picked tabColors
+        ++ [ NoColor ]
+        ++ (if m.tab.hostName /= Nothing then [ HostsColor ] else [])
+
+
+{-| The color box (docs/tabs.md TB9): the colors as swatches, the one in
+use framed. It is opened over the shown tab, and is for it. -}
+colorBox : Model -> Dialog.Dialog
+colorBox m =
+    let
+        info =
+            m.tab
+
+        hostOwn =
+            tabColorOf m.config { info | color = HostsColor }
+
+        swatch choice =
+            when choice is
+                Picked c ->
+                    { color = c, label = String.fromInt (1 + (Array.findFirst (\x -> x == c) tabColors |> Maybe.map .index |> Maybe.withDefault 0)), marked = info.color == choice }
+
+                NoColor ->
+                    { color = 0x3A3A3A, label = "0", marked = info.color == NoColor || (info.color == HostsColor && hostOwn == Nothing) }
+
+                HostsColor ->
+                    { color = Maybe.withDefault 0x3A3A3A hostOwn, label = "H", marked = info.color == HostsColor && hostOwn /= Nothing }
+    in
+    { title = "The tab's color"
+    , lines =
+        when info.hostName is
+            Just name ->
+                [ "H gives it the color of " ++ name ++ "'s tabs in the settings." ]
+
+            Nothing ->
+                [ "A color for this tab in the bar." ]
+    , field = Nothing
+    , swatches = Array.map swatch (colorChoices m)
+    , hint =
+        if info.hostName /= Nothing then
+            "1–8: a color    0: none    H: the host's    Esc: cancel"
+
+        else
+            "1–8: a color    0: none    Esc: cancel"
+    }
+
+
+{-| A key in the color box: a swatch's key chooses it, any other closes
+the box. -}
+colorKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+colorKey k m =
+    let
+        typed =
+            String.toLower (Bytes.toStringLossy k.text)
+
+        choices =
+            colorChoices m
+
+        chosen =
+            if Bitwise.and k.mods 2 /= 0 then
+                Nothing
+
+            else if typed == "0" then
+                Just NoColor
+
+            else if typed == "h" && m.tab.hostName /= Nothing then
+                Just HostsColor
+
+            else
+                String.toInt typed |> Maybe.andThen (\n -> if n >= 1 && n <= 8 then Array.get (n - 1) choices else Nothing)
+    in
+    when chosen is
+        Just choice ->
+            colorTab choice m
+
+        Nothing ->
+            -- a modifier alone, as Shift for an H, leaves the box up
+            if String.isEmpty typed && k.sym /= 0xFF1B && k.sym /= 0xFF0D && k.sym /= 0xFF8D then
+                Task.succeed m
+
+            else
+                Task.succeed { m | coloring = Nothing, urgent = True }
+
+
+{-| A press while the color box is up: on a swatch, its color; anywhere
+else the box closes. -}
+colorPress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
+colorPress p m =
+    let
+        box =
+            colorBox m
+
+        hit =
+            if p.button == 1 then
+                Dialog.swatchAt (overlaySize m) box { x = p.x, y = p.y } |> Maybe.andThen (\i -> Array.get i (colorChoices m))
+
+            else
+                Nothing
+    in
+    when hit is
+        Just choice ->
+            colorTab choice m
+
+        Nothing ->
+            Task.succeed { m | coloring = Nothing, urgent = True }
+
+
+{-| The tab the box is for given a color, and the box closed. -}
+colorTab : TabColor -> (taken m : Model) -> Task Error Model
+colorTab choice m =
+    when m.coloring is
+        Just id ->
+            if id == m.tab.id then
+                let
+                    info =
+                        m.tab
+                in
+                Task.succeed { m | tab = { info | color = choice }, coloring = Nothing, urgent = True }
+
+            else
+                atTab id
+                    (\x ->
+                        let
+                            info =
+                                x.tab
+                        in
+                        Task.succeed { x | tab = { info | color = choice } }
+                    )
+                    { m | coloring = Nothing, urgent = True }
 
         Nothing ->
             Task.succeed m
@@ -4358,6 +4684,7 @@ renameBox r =
     { title = "Rename the tab"
     , lines = [ "An empty name gives the program's own title back." ]
     , field = Just { typed = r.typed, hidden = False, caret = String.count r.typed }
+    , swatches = []
     , hint = "Enter: rename    Esc: cancel"
     }
 
@@ -4494,6 +4821,7 @@ closeBox c =
             String.split "\n" c.why
                 ++ [ if String.contains "\n" c.why then "Closing the window ends them." else "Closing the window ends it." ]
         , field = Nothing
+        , swatches = []
         , hint = "Enter: close it    Esc: keep it"
         }
 
@@ -4501,6 +4829,7 @@ closeBox c =
         { title = "Close this tab?"
         , lines = [ c.why, "Closing the tab ends it." ]
         , field = Nothing
+        , swatches = []
         , hint = "Enter: close it    Esc: keep it"
         }
 

@@ -190,7 +190,7 @@ Rules worth copying:
 
 - The core talks to the frontend only through an event/callback interface plus a
   write/resize sink.
-- Colours stay **unresolved** (palette index / named / RGB) in the grid. Resolution
+- Colors stay **unresolved** (palette index / named / RGB) in the grid. Resolution
   happens at render time, so palette changes need no grid rewrite (A§4.1).
 - Each thread gets its **own immutable copy of derived config** on reload, never a
   shared mutable config (G§9).
@@ -268,7 +268,7 @@ What the references teach about the interface's shape:
 
 ### 3.3 Query replies must not depend on the UI thread
 
-Alacritty generates DA, DSR, and OSC colour-query replies on the PTY thread but sends
+Alacritty generates DA, DSR, and OSC color-query replies on the PTY thread but sends
 them to the UI thread, which writes them back to the PTY (A§1.5). A UI thread blocked
 on an X11 round trip then delays every remote app that probes the terminal. Ghostty
 writes replies straight from the parse thread (G§2.2), and WT queues them during the
@@ -390,7 +390,7 @@ Add 2027 (grapheme) and 2048 (in-band resize) when the grid supports them.
 Ghostty's design is the best one to start from:
 
 - **8-byte cell:** content (codepoint, or a flag meaning "grapheme in side table" or
-  "bg colour only"), a 16-bit **style id**, wide-char state, and a few flag bits
+  "bg color only"), a 16-bit **style id**, wide-char state, and a few flag bits
   (G§4.3). WezTerm's 24-byte cell with an inline 7-byte cluster is a simpler middle
   ground (W§6.2).
 - **Interned styles per storage block**, ref-counted.
@@ -513,7 +513,7 @@ Rules for this backend:
 - **Adaptive frame pacing.** Cap the rate according to how fast the X server consumes
   requests. "Latest frame wins": drop intermediate states, never queue them (G§5.4).
   WezTerm's mux protocol shows the failure mode of not doing this (§8.1).
-- Glyph rasterisation stays local. Only glyph bitmaps cross the wire, once. Colour
+- Glyph rasterisation stays local. Only glyph bitmaps cross the wire, once. Color
   emoji need ARGB glyphsets, which XRender supports.
 - **Bound server-side glyph sets** with an LRU and `RenderFreeGlyphs`. CJK text puts
   thousands of distinct glyphs on screen (C§6).
@@ -580,8 +580,8 @@ Details in [`cjk-and-thai.md`](cjk-and-thai.md) §4–§5.
     (Ghostty picks a face covering the whole cluster; WezTerm re-shapes the cluster in
     the fallback font with the full run as context).
   - Runs never cross rows. Segment by font and script, but **don't split runs at the
-    cursor, selection or colour changes**; colour glyphs afterwards (WezTerm slices
-    quads by pixel range, WT colours per glyph).
+    cursor, selection or color changes**; color glyphs afterwards (WezTerm slices
+    quads by pixel range, WT colors per glyph).
   - Map glyphs back to cells with your stored widths, not the shaper's clusters.
   - Force LTR (unless bidi is added later); cache by a position-independent run hash
     (G§5.5). Shape from a snapshot, outside the lock.
@@ -812,7 +812,7 @@ What still goes wrong (T§2.7):
 - Bytes go UTF-8 → UTF-16 → UTF-8; invalid UTF-8 becomes U+FFFD.
 - LF becomes CRLF unless the client set `DISABLE_NEWLINE_AUTO_RETURN`.
 - Conhost re-injects `?1004h`/`?9001h` after RIS and after apps reset those modes.
-- Console API output is lossy: 16 colours, UCS-2, extra SGR 0s.
+- Console API output is lossy: 16 colors, UCS-2, extra SGR 0s.
 - Conhost reflows separately from the terminal on resize, then patches the cursor via
   a DSR-CPR that can block for ~500 ms. WT's own spec calls this drift unsolvable.
 - Input goes through conhost's INPUT_RECORD layer unless you use win32-input-mode.
@@ -997,7 +997,7 @@ It exists only in the Windows build. Users will compare it with OpenSSH and PuTT
 | Decision | Why it can't wait | Suggested default |
 |---|---|---|
 | Cell content model | Retrofitting broke Alacritty's ligature and emoji plans | Codepoint + grapheme side table, 8-byte cell |
-| Shaping | Changes glyph cache keys and renderer run structure | Mandatory (Thai, Hangul); whole clusters in one font; runs not split at cursor or colour; from a snapshot outside the lock |
+| Shaping | Changes glyph cache keys and renderer run structure | Mandatory (Thai, Hangul); whole clusters in one font; runs not split at cursor or color; from a snapshot outside the lock |
 | Backend interface | tmux on both platforms and SSH on Windows depend on it | Two layers; message-based; upward Seat-style events; process details as capabilities (§3.2) |
 | Renderer interface with damage + scroll deltas | Required by the X11 backend and RDP; no reference has scroll deltas | Row-granular damage plus explicit scroll ops; one seqno-based dirty mechanism |
 | GPU API | Ghostty's GL 4.3 excludes some hardware; GL on Windows is fragile | GL 3.3 core / GLES 3 on Linux; D3D11 on Windows |

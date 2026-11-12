@@ -27,7 +27,7 @@ whose screen is not the size of the last one's, a size record (`0x04`, the
 columns and rows in 2 bytes each), since the core may change its own size
 (DECCOLM); then a style record for each style id
 its runs use (`0x03`, the id in 2 bytes, then the foreground, background
-and underline colours as RGB in 3 bytes each, the style's flags in a byte
+and underline colors as RGB in 3 bytes each, the style's flags in a byte
 as `Vt.Style.Attrs` has them, and its underline's kind in a byte), so that
 whatever executes the list keeps no table between frames and resolves
 nothing (`docs/renderer.md` V35); then a scroll record (`0x01`, top, bottom,
@@ -66,30 +66,30 @@ it.
 
 **The cursor** is drawn as its cell's run, in a cursor style: the cell's
 style id with its top bit set, `0x8000 + id`, whose record this frame
-carries the cursor's colours and shape. The shape is the underline byte's
+carries the cursor's colors and shape. The shape is the underline byte's
 top four bits (1 a block, 2 an underline, 3 a bar, 4 a hollow block, which
 is any cursor while the window does not have the focus, 5 none); its bottom four
 are the underline's kind. A block's record has the cell's background as
-its foreground and the cursor's colour (OSC 12, else the cell's
-foreground) as its background; the others keep the cell's colours and
-carry the cursor's as the underline colour, which whatever executes the
+its foreground and the cursor's color (OSC 12, else the cell's
+foreground) as its background; the others keep the cell's colors and
+carry the cursor's as the underline color, which whatever executes the
 list draws the shape in. A wide character's two cells both take it. The
 shadow keeps the cursor's cells marked (their shape in bits 56 and up, which
 no cell of the core's has), so a cell the cursor leaves differs from what
 the shadow says was drawn and is drawn again, and so is one whose cursor
 changes shape. Nothing is drawn for a cursor DECTCEM hides. A blinking
 one (mode 12) while `Focus.blinkOn` is false is shape 5, which draws
-nothing and keeps the cell's colours: its cell is still the cursor's, so a
+nothing and keeps the cell's colors: its cell is still the cursor's, so a
 ligature stays broken there through the blink (`docs/renderer.md` §R19).
 Blinking is the loop's, which knows the time.
 
-A style's colours are resolved here, from the core's palette and dynamic
-colours (OSC 4, 10, 11) and the profile's `Look`: inverse and the screen's
+A style's colors are resolved here, from the core's palette and dynamic
+colors (OSC 4, 10, 11) and the profile's `Look`: inverse and the screen's
 reverse video (mode 5) swap the two, faint takes the foreground half way
 to the background, invisible makes it the background, and bold makes a
-colour of the first eight its bright one when the look says so. A cell
-whose style's colours change is not a changed cell, so when the palette,
-the dynamic colours, mode 5 or the look change, the shadow is forgotten
+color of the first eight its bright one when the look says so. A cell
+whose style's colors change is not a changed cell, so when the palette,
+the dynamic colors, mode 5 or the look change, the shadow is forgotten
 and the frame draws every cell.
 
 -}
@@ -103,7 +103,7 @@ import Vt.Cell exposing (..)
 import Vt.Term exposing (..)
 import Vt.Screen exposing (..)
 import Vt.Style exposing (Attrs, Clusters, Styles, cellPoints, styleOf)
-import Vt.Palette exposing (programColour, paletteColour)
+import Vt.Palette exposing (programColor, paletteColor)
 import Vt.Width as Width
 import Dict
 
@@ -119,7 +119,7 @@ type alias Shadow =
     , drawn : Int
     , runs : Int
     , bytes : Int
-    , colourKey : Int
+    , colorKey : Int
     , stamps : Builder Int
     , styleIds : Builder Int
     , ink : Builder Int
@@ -133,9 +133,9 @@ type alias Shadow =
     }
 
 
-{-| What a profile says of colours: the default foreground and background,
+{-| What a profile says of colors: the default foreground and background,
 which OSC 10 and 11 override, and whether bold brightens one of the first
-eight palette colours. -}
+eight palette colors. -}
 type alias Look =
     { foreground : Int
     , background : Int
@@ -368,7 +368,7 @@ shadowIn cols rows screenRows =
     , drawn = 0
     , runs = 0
     , bytes = 0
-    , colourKey = -1
+    , colorKey = -1
     , stamps = Builder.fromArray (Array.repeat 0x10000 -1)
     , styleIds = Builder.empty 64
     , ink = Builder.fromArray (Array.repeat (cols * rows) 0)
@@ -424,7 +424,7 @@ frameOn : Look -> Focus -> Preedit -> Highlight -> Screen -> Clusters -> Int -> 
 frameOn look focus preedit hl s clusters back t sh0 =
     let
         key =
-            colourKey look t
+            colorKey look t
 
         -- the window's rows, read before the shadow is taken
         windowRows =
@@ -467,12 +467,12 @@ frameOn look focus preedit hl s clusters back t sh0 =
                 }
 
         sh1 =
-            if t.cols /= sh0.cols || t.rows /= sh0.rows || key /= sh0.colourKey then
+            if t.cols /= sh0.cols || t.rows /= sh0.rows || key /= sh0.colorKey then
                 let
                     fresh =
                         shadow t.cols t.rows
                 in
-                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colourKey = key, screenRows = windowRows }
+                { fresh | frames = sh0.frames, scrolls = sh0.scrolls, moved = sh0.moved, drawn = sh0.drawn, runs = sh0.runs, bytes = sh0.bytes, colorKey = key, screenRows = windowRows }
 
             else
                 { sh0 | styleIds = Builder.empty 64, pending = False }
@@ -1317,20 +1317,20 @@ push16 v b =
     Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF (Bitwise.shiftRightZfBy 8 v))) b)
 
 
--- COLOURS
+-- COLORS
 
 
-{-| What a frame's colours are resolved from, as one number: when it
+{-| What a frame's colors are resolved from, as one number: when it
 changes, every cell is drawn again. -}
-colourKey : Look -> Term -> Int
-colourKey look t =
+colorKey : Look -> Term -> Int
+colorKey look t =
     let
         mix h v =
             Bitwise.xor (rotl h) v
     in
     Dict.foldl (\k v h -> mix (mix h k) v)
         (mix (mix (mix (if Dict.get 5 t.modes == Just True then 1 else 0) look.foreground) look.background) (if look.boldIsBright then 1 else 0))
-        t.colours
+        t.colors
 
 
 -- THE CURSOR
@@ -1429,7 +1429,7 @@ isSelected cursor i =
     cursor.selFrom >= 0 && i >= cursor.selFrom && i <= cursor.selTo
 
 
-{-| A style id's record: its colours resolved (see the module's comment);
+{-| A style id's record: its colors resolved (see the module's comment);
 for an id of `0x8000` and more, its cell's under the cursor. -}
 styleRecord : Look -> Term -> Int -> Int -> (taken b : Builder UInt8) -> Builder UInt8
 styleRecord look t shape id b =
@@ -1455,10 +1455,10 @@ styleRecord look t shape id b =
             Bitwise.and a.flags 1 /= 0
 
         fg0 =
-            colourOf look t True bold a.fg
+            colorOf look t True bold a.fg
 
         bg0 =
-            colourOf look t False False a.bg
+            colorOf look t False False a.bg
 
         swapped =
             (Bitwise.and a.flags 16 /= 0) /= (Dict.get 5 t.modes == Just True)
@@ -1488,20 +1488,20 @@ styleRecord look t shape id b =
                 fg
 
             else
-                colourOf look t True False a.ulc
+                colorOf look t True False a.ulc
 
-        cursorColour =
-            Maybe.withDefault fg (programColour 12 t)
+        cursorColor =
+            Maybe.withDefault fg (programColor 12 t)
 
         out =
             if cursorShape == 1 then
-                { fg = bg, bg = cursorColour, ulc = bg }
+                { fg = bg, bg = cursorColor, ulc = bg }
 
             else if cursorShape == 5 then
                 { fg = fg, bg = bg, ulc = ulc }
 
             else if cursorShape > 1 then
-                { fg = fg, bg = bg, ulc = cursorColour }
+                { fg = fg, bg = bg, ulc = cursorColor }
 
             else
                 { fg = fg, bg = bg, ulc = ulc }
@@ -1528,23 +1528,23 @@ preeditAttrs fb =
     }
 
 
-{-| A colour of `Attrs` as RGB: 0 the default (OSC 10 or 11, else the
+{-| A color of `Attrs` as RGB: 0 the default (OSC 10 or 11, else the
 look's), 1 to 256 a palette index and one more, or `0x1000000` and RGB. -}
-colourOf : Look -> Term -> Bool -> Bool -> Int -> Int
-colourOf look t isFg bold c =
+colorOf : Look -> Term -> Bool -> Bool -> Int -> Int
+colorOf look t isFg bold c =
     if c == 0 then
         if isFg then
-            Maybe.withDefault look.foreground (programColour 10 t)
+            Maybe.withDefault look.foreground (programColor 10 t)
 
         else
-            Maybe.withDefault look.background (programColour 11 t)
+            Maybe.withDefault look.background (programColor 11 t)
 
     else if c <= 256 then
         let
             i =
                 c - 1
         in
-        paletteColour (if bold && look.boldIsBright && i < 8 then i + 8 else i) t
+        paletteColor (if bold && look.boldIsBright && i < 8 then i + 8 else i) t
 
     else
         Bitwise.and c 0xFFFFFF

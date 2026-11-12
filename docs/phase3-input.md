@@ -257,7 +257,7 @@ module, `EucKrIndex`, which compiles with the rest in 8 s.
 
 Inputs, made by `gen.py`: `gitlog`, harness/perf.py's 25.8 MB in CP949;
 and 24 MB of Korean lines, words of KS X 1001 syllables with some Hanja,
-symbols, file names and SGR colours. Both decode to exactly what Python's
+symbols, file names and SGR colors. Both decode to exactly what Python's
 CP949 makes of them. Three runs each, in ms:
 
 | | gitlog | Korean |

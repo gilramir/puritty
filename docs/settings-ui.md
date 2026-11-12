@@ -29,7 +29,7 @@ mouse working too.
 Why:
 
 - **The terminal is the live preview.** A view inside the window would cover
-  the terminal whose colours and font you're changing. Beside it, every
+  the terminal whose colors and font you're changing. Beside it, every
   change shows in the real terminal, with no separate preview to build.
 - **No toolkit.** GTK or Qt would add a large dependency on RHEL8 and under
   ETX, where every library is pinned. Cells drawn by puritty cost nothing
@@ -38,8 +38,8 @@ Why:
   which the survey (Zed, the Windows Terminal spec) counts as essential.
 - **The same code on Windows** once the renderer runs there.
 
-What it gives up: no native widgets. A colour is a hex field with a swatch
-and the 16-colour palette beside it; a font is a filtered list from
+What it gives up: no native widgets. A color is a hex field with a swatch
+and the 16-color palette beside it; a font is a filtered list from
 fontconfig; a choice is a row of options. Those are enough for every setting
 puritty has.
 
@@ -105,7 +105,7 @@ of `Config.geng` all come from that table.
 │ Sound            │     In points.                           default: 11 │
 │ Advanced     (1) │                                                      │
 │                  │                                                      │
-│                  │  Colours                                             │
+│                  │  Colors                                             │
 │                  │   Foreground    #c5c8c6  ███                         │
 │                  │   ...                                                │
 ├──────────────────┴──────────────────────────────────────────────────────┤
@@ -132,7 +132,7 @@ The pages, for today's settings:
 
 | Page | Settings |
 |---|---|
-| Appearance | font family, size; colours, bold-is-bright, palette; cursor blink |
+| Appearance | font family, size; colors, bold-is-bright, palette; cursor blink |
 | Window | columns, rows, title |
 | Text & language | font language (for fallback fonts), remote charset |
 | Mouse & selection | paste button, word boundaries |

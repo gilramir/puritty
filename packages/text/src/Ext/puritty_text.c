@@ -14,7 +14,7 @@
  *     (V24, V34): the primary font in the weight and slant the style asks
  *     for, else the first loaded face with the whole cluster, else the one
  *     the platform finds (V26); a glyph is rasterised by FreeType and given
- *     to the platform to keep the first time it is drawn, a colour one as
+ *     to the platform to keep the first time it is drawn, a color one as
  *     an ARGB picture (§13.10);
  *   - past `glyph_cap` bytes kept, the glyphs are begun again (V37). The
  *     target keeps what was drawn with the old ones, so nothing is redrawn:
@@ -62,7 +62,7 @@ static long glyph_bytes, glyph_cap, resets;
 static void ui_reset(void);
 
 /* A style's record by its id; from 65536 on, the same style selected
- * (docs/phase3-select.md §14): its colours swapped, made when a selected
+ * (docs/phase3-select.md §14): its colors swapped, made when a selected
  * cell is drawn in it. */
 static uint32_t style_fg[131072], style_bg[131072], style_ulc[131072];
 static uint8_t style_flags[131072], style_ul[131072];
@@ -88,7 +88,7 @@ static int cell_style(int style, int y, int x) {
 uint32_t pt_default_bg(void) { return style_bg[0]; }
 
 static struct {
-    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, uploaded, colour, squeezed, clipped, boxes, frames;
+    long clusters, fallback_clusters, fc_queries, fc_failed, segments, glyphs, uploaded, color, squeezed, clipped, boxes, frames;
     double shape_ns, raster_ns, draw_ns, fc_ns;
 } st;
 
@@ -120,13 +120,13 @@ static void fill(uint32_t rgb, int x, int y, int w, int h) {
 /* The last face's number is the box drawing's (V41), whose glyphs the C
  * draws itself; it is no font. */
 #define BOX (FACES - 1)
-typedef struct ColourGlyph {
+typedef struct ColorGlyph {
     uint32_t g;
     int box;
     void *picture;
     int w, h;
-    struct ColourGlyph *next;
-} ColourGlyph;
+    struct ColorGlyph *next;
+} ColorGlyph;
 
 typedef struct {
     FT_Face ft;
@@ -134,13 +134,13 @@ typedef struct {
     char *file;
     int index;
     double scale;
-    int colour;        /* a face of colour glyphs (CBDT or COLR), drawn as pictures */
+    int color;        /* a face of color glyphs (CBDT or COLR), drawn as pictures */
     int own;           /* what the face is of itself: bold 1, italic 2 */
     int primary;       /* one of the primary font's faces */
     uint8_t *uploaded; /* a bit a glyph index and form */
     int16_t *advance;  /* the x_off each glyph was uploaded with */
     int16_t *ink;      /* each glyph's bitmap: left of its origin, top above it, width, height */
-    ColourGlyph *pictures;
+    ColorGlyph *pictures;
 } Face;
 
 static FT_Library library;
@@ -181,7 +181,7 @@ static int covers(int f, const uint32_t *cps, int n) {
  * that size, a fallback one so 水 fills two cells and its ink stays within
  * the primary cell, which the primary faces' metrics give. */
 static void size_face(Face *F) {
-    if (F->colour) {
+    if (F->color) {
         /* drawn at the cell's height and reduced into its box, as a
          * bitmap strike is */
         if (FT_IS_SCALABLE(F->ft)) FT_Set_Pixel_Sizes(F->ft, 0, (FT_UInt) (pt_ch > 0 ? pt_ch : 16));
@@ -216,12 +216,12 @@ static int load_face(const char *file, int index, int is_primary) {
     F->file = copy(file);
     F->index = index;
     F->scale = 1.0;
-    /* a face of colour bitmaps (CBDT, Noto Color Emoji), or of colour
+    /* a face of color bitmaps (CBDT, Noto Color Emoji), or of color
      * layers over outlines (COLR, Windows' Segoe UI Emoji), which FreeType
      * draws into a BGRA bitmap itself */
-    F->colour = FT_HAS_COLOR(F->ft) && (FT_IS_SCALABLE(F->ft) || F->ft->num_fixed_sizes > 0);
+    F->color = FT_HAS_COLOR(F->ft) && (FT_IS_SCALABLE(F->ft) || F->ft->num_fixed_sizes > 0);
     F->pictures = NULL;
-    if (F->colour && !FT_IS_SCALABLE(F->ft)) FT_Select_Size(F->ft, 0);
+    if (F->color && !FT_IS_SCALABLE(F->ft)) FT_Select_Size(F->ft, 0);
     F->primary = is_primary;
     size_face(F);
     F->hb = hb_ft_font_create_referenced(F->ft);
@@ -239,15 +239,15 @@ static int load_face(const char *file, int index, int is_primary) {
 static struct { uint32_t cp; int face; } fcache[FCACHE];
 
 static int fallback(const uint32_t *cps, int n) {
-    int colour = emoji(cps, n);
-    /* A cluster asking for emoji presentation takes only a colour face, and
+    int color = emoji(cps, n);
+    /* A cluster asking for emoji presentation takes only a color face, and
      * one asking for text only a face that is not. */
     for (int f = 0; f < nfaces; f++)
-        if (faces[f].colour == colour && covers(f, cps, n)) return f;
+        if (faces[f].color == color && covers(f, cps, n)) return f;
     uint32_t key = 0;
     for (int i = 0; i < n && !key; i++)
         if (!ignorable(cps[i])) key = cps[i];
-    if (colour) key |= 0x40000000;
+    if (color) key |= 0x40000000;
     unsigned h = (key * 2654435761u) % FCACHE;
     for (unsigned k = 0; k < FCACHE; k++) {
         unsigned j = (h + k) % FCACHE;
@@ -258,12 +258,12 @@ static int fallback(const uint32_t *cps, int n) {
     st.fc_queries++;
     int face = -1;
     int index = 0;
-    char *file = pt_fallback_file(cps, n, colour, lang_name, &index);
+    char *file = pt_fallback_file(cps, n, color, lang_name, &index);
     if (file) {
         int f = load_face(file, index, 0);
         if (f >= 0 && covers(f, cps, n)) face = f;
-        /* No colour face has it: the text face that does. */
-        if (face < 0 && colour)
+        /* No color face has it: the text face that does. */
+        if (face < 0 && color)
             for (int g = 0; g < nfaces; g++)
                 if (covers(g, cps, n)) { face = g; break; }
         free(file);
@@ -278,14 +278,14 @@ static int fallback(const uint32_t *cps, int n) {
 /* GLYPHS */
 
 /* The platform's glyphs forgotten and begun again (V37), every face's
- * record of what it uploaded forgotten, and its colour pictures freed. */
+ * record of what it uploaded forgotten, and its color pictures freed. */
 static uint8_t box_uploaded[512];
 
 static void reset_glyphs(void) {
     pt_glyphs_reset();
     for (int f = 0; f < nfaces; f++) {
         memset(faces[f].uploaded, 0, KEYS / 8);
-        for (ColourGlyph *c = faces[f].pictures, *next; c; c = next) {
+        for (ColorGlyph *c = faces[f].pictures, *next; c; c = next) {
             next = c->next;
             if (c->picture) pt_picture_free(c->picture);
             free(c);
@@ -448,15 +448,15 @@ static void place(int f, uint32_t g, int x, int y, int style, int advance, int s
     placed[nplaced++] = (PtPlaced) {id, x, y, style_fg[style], faces[f].advance[id & (KEYS - 1)], -1};
 }
 
-/* The colour glyph `g` of face `f` for a box of `box` pixels by a cell's
+/* The color glyph `g` of face `f` for a box of `box` pixels by a cell's
  * height: the strike's BGRA bitmap (premultiplied, as FreeType gives it)
  * reduced by averaging into the box, keeping its proportions. */
-static ColourGlyph *colour_glyph(int f, uint32_t g, int box) {
+static ColorGlyph *color_glyph(int f, uint32_t g, int box) {
     Face *F = &faces[f];
-    for (ColourGlyph *c = F->pictures; c; c = c->next)
+    for (ColorGlyph *c = F->pictures; c; c = c->next)
         if (c->g == g && c->box == box) return c;
     double t0 = ns();
-    ColourGlyph *c = calloc(1, sizeof *c);
+    ColorGlyph *c = calloc(1, sizeof *c);
     c->g = g;
     c->box = box;
     c->next = F->pictures;
@@ -551,14 +551,14 @@ static void shape_segment(const Cluster *cl, int n, int x0, int y) {
         const Cluster *L = next > c + 1 ? &cl[next - 1] : C;
         int box = (L->cell + L->width - C->cell) * pt_cw;
         if (box < C->width * pt_cw) box = C->width * pt_cw;
-        if (faces[f].colour) {
+        if (faces[f].color) {
             /* Placed by its cells, centred: the strike's advances are its
              * own size's, not the cell's. */
             for (unsigned k = g; k < e; k++) {
-                ColourGlyph *P = colour_glyph(f, gi[k].codepoint, box);
+                ColorGlyph *P = color_glyph(f, gi[k].codepoint, box);
                 if (!P->picture) continue;
                 pt_picture_draw(P->picture, (x0 + C->cell) * pt_cw + (box - P->w) / 2, y * pt_ch + (pt_ch - P->h) / 2, P->w, P->h);
-                st.colour++;
+                st.color++;
             }
             g = e;
             continue;
@@ -596,7 +596,7 @@ static int primary_for(int style) {
  *
  * U+2500 to U+259F are drawn here, not by a font: each is rasterised once
  * into a bitmap of its cells and uploaded to the glyph set as any glyph is,
- * so it is drawn in its style's colour by the same requests. Lines lie on
+ * so it is drawn in its style's color by the same requests. Lines lie on
  * whole pixels at the cell's centre and run to its edges, so they join
  * whatever the font; arcs and diagonals are anti-aliased; shades are flat
  * alpha. Nothing reaches past its cells, so a box glyph has no ink to
@@ -849,9 +849,9 @@ static void draw_glyphs(int y, int x, int n, const uint8_t *p) {
             continue;
         }
         int want = primary_for(cl[i].style);
-        int colour = emoji(cl[i].cps, cl[i].n);
-        if (faces[want].colour == colour && covers(want, cl[i].cps, cl[i].n)) cl[i].face = want;
-        else if (faces[0].colour == colour && covers(0, cl[i].cps, cl[i].n)) cl[i].face = 0;
+        int color = emoji(cl[i].cps, cl[i].n);
+        if (faces[want].color == color && covers(want, cl[i].cps, cl[i].n)) cl[i].face = want;
+        else if (faces[0].color == color && covers(0, cl[i].cps, cl[i].n)) cl[i].face = 0;
         else {
             st.fallback_clusters++;
             cl[i].face = fallback(cl[i].cps, cl[i].n);
@@ -1521,8 +1521,8 @@ const uint8_t *pt_ink(int *length) {
 void pt_stats(const char *who) {
     fprintf(stderr,
             "%s: frames %ld; clusters %ld (fallback %ld), fontconfig queries %ld (%.2f ms, %ld found none), segments %ld, "
-            "glyphs %ld; uploaded %ld (%ld bytes held), resets %ld; colour %ld, squeezed %ld, clipped %ld; shape %.2f ms, raster %.2f ms, "
+            "glyphs %ld; uploaded %ld (%ld bytes held), resets %ld; color %ld, squeezed %ld, clipped %ld; shape %.2f ms, raster %.2f ms, "
             "draw %.2f ms\n",
             who, st.frames, st.clusters, st.fallback_clusters, st.fc_queries, st.fc_ns / 1e6, st.fc_failed, st.segments, st.glyphs,
-            st.uploaded, glyph_bytes, resets, st.colour, st.squeezed, st.clipped, st.shape_ns / 1e6, st.raster_ns / 1e6, st.draw_ns / 1e6);
+            st.uploaded, glyph_bytes, resets, st.color, st.squeezed, st.clipped, st.shape_ns / 1e6, st.raster_ns / 1e6, st.draw_ns / 1e6);
 }

@@ -5,7 +5,7 @@ Researched 2026-11-11. iTerm2's current stable line is **3.7.x** (3.7 announced 
 ## 1. iTerm2 local tab features
 
 ### Takeaway
-iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tear off into a new window, middle-click close, Cmd-number), and layers on per-profile/per-session identity (title components, badge, icon, tab colour, automatic profile switching by host) plus status indicators (activity, new-output dot, session-ended icon, progress ring, and in 3.7 a custom status subtitle/colour/dot). 3.7 added Chrome-style named/coloured collapsible tab groups and pinned tabs.
+iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tear off into a new window, middle-click close, Cmd-number), and layers on per-profile/per-session identity (title components, badge, icon, tab color, automatic profile switching by host) plus status indicators (activity, new-output dot, session-ended icon, progress ring, and in 3.7 a custom status subtitle/color/dot). 3.7 added Chrome-style named/colored collapsible tab groups and pinned tabs.
 
 ### Cited Findings
 **Creating tabs**
@@ -30,7 +30,7 @@ iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tea
 - "Show tab numbers": tabs show their keyboard shortcut — [Appearance](https://iterm2.com/documentation-preferences-appearance.html)
 - Complaint: Ctrl-Tab cycles in an order not matching the visual tab order (issue #8219, v3.3.2, ~2019) — [GitLab #8219](https://gitlab.com/gnachman/iterm2/-/issues/8219); status not verified.
 
-**Titles, rename, badges, icons, colour**
+**Titles, rename, badges, icons, color**
 - Title is built from selectable components: Session Name, Profile Name, Profile & Session Name, Job, User, Host, PWD, TTY; User/Host/PWD on remote hosts need Shell Integration — [Profiles > General](https://iterm2.com/documentation-preferences-profiles-general.html)
 - Default tab label is the running job's name — [General usage](https://iterm2.com/documentation-general-usage.html)
 - Window > Tab > Edit Tab Title takes an *interpolated string* — [menu items](https://iterm2.com/documentation-menu-items.html). Right-click "Rename Tab" only arrived in 3.7.5 — [downloads](https://iterm2.com/downloads); it had been requested years earlier ([GitLab #6022](https://gitlab.com/gnachman/iterm2/-/issues/6022)). 3.7.5 also fixed a user-set tab title being "replaced by the session's name" — [downloads](https://iterm2.com/downloads)
@@ -38,11 +38,11 @@ iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tea
 - Optional basic HTML (`<b>`,`<i>`,`<u>`) in tab titles — [Appearance](https://iterm2.com/documentation-preferences-appearance.html)
 - Badge: large interpolated-string label drawn behind the text, top right, with configurable position/size/font — [Profiles > General](https://iterm2.com/documentation-preferences-profiles-general.html)
 - Icon: custom, built-in per foreground app, or none; shown in tab bar and title bar — [Profiles > General](https://iterm2.com/documentation-preferences-profiles-general.html)
-- View > Tab Color: "select a tint color for the tab, to make it easier to distinguish" — [menu items](https://iterm2.com/documentation-menu-items.html); 3.7.5 fixed the control sequence that resets tab colour to the profile's — [downloads](https://iterm2.com/downloads)
+- View > Tab Color: "select a tint color for the tab, to make it easier to distinguish" — [menu items](https://iterm2.com/documentation-menu-items.html); 3.7.5 fixed the control sequence that resets tab color to the profile's — [downloads](https://iterm2.com/downloads)
 
 **Indicators**
 - "A blue dot means new input was received"; an activity indicator spins while output arrives; an end-of-session icon appears when the session ends — [General usage](https://iterm2.com/documentation-general-usage.html). Each indicator toggle ("Show activity indicator", "Show new-output indicator" for unseen output in non-selected tabs) is in Appearance — [Appearance](https://iterm2.com/documentation-preferences-appearance.html)
-- Older (2.x) docs describe activity colouring of tab labels (new output / stale / ended-grey) — [2.1 general usage](https://iterm2.com/documentation/2.1/documentation-general-usage.html)
+- Older (2.x) docs describe activity coloring of tab labels (new output / stale / ended-grey) — [2.1 general usage](https://iterm2.com/documentation/2.1/documentation-general-usage.html)
 - A progress ring around a tab exists (3.7.5 fixed it missing on first/last tab on Tahoe) — [downloads](https://iterm2.com/downloads)
 - 3.7: Claude Code session status shown "on tabs as a custom subtitle, color, and dot icon", so you see "which Claude Code instance is waiting for attention" — [AlternativeTo, 2026-09-10](https://alternativeto.net/news/2026/9/iterm2-3-7-released-with-ios-companion-app-claude-code-integration-tab-groups-and-more/); 3.7.7 fixed that status not reappearing after window restoration — [downloads](https://iterm2.com/downloads)
 
@@ -51,7 +51,7 @@ iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tea
 - Options: show tab bar with only one tab; stretch tabs to fill bar (default on); "Tab bar scrolls when tabs don't fit" (default on; else overflow menu), works on every edge; show tab bar in fullscreen; flash tab bar when switching in fullscreen; "Preserve window size when tab bar shows or hides"; close buttons always or on hover only — [Appearance](https://iterm2.com/documentation-preferences-appearance.html)
 
 **Tab groups and pinned tabs (3.7)**
-- Right-click > Add Tab to Group > New Group (prompts for name, suggests title, assigns colour); group members "always stay contiguous"; chip menu: Rename, colour swatches/picker, Duplicate Group, Move Group to New Window, Remove All Tabs from Group, Close Group; click chip to collapse (shows count), selecting a member auto-expands; works on horizontal and vertical bars; drag chip moves whole group (also between windows); name/colour/collapsed state persist through arrangements and restarts — [Tab Groups doc](https://iterm2.com/documentation-tab-groups.html)
+- Right-click > Add Tab to Group > New Group (prompts for name, suggests title, assigns color); group members "always stay contiguous"; chip menu: Rename, color swatches/picker, Duplicate Group, Move Group to New Window, Remove All Tabs from Group, Close Group; click chip to collapse (shows count), selecting a member auto-expands; works on horizontal and vertical bars; drag chip moves whole group (also between windows); name/color/collapsed state persist through arrangements and restarts — [Tab Groups doc](https://iterm2.com/documentation-tab-groups.html)
 - Pinned tabs exist (3.7.7 fixed unpinning a non-rightmost pinned tab breaking the tab bar) — [downloads](https://iterm2.com/downloads)
 
 **Split panes, broadcast, workgroups, floating panes**
@@ -66,10 +66,10 @@ iTerm2 treats tabs like browser tabs (drag to reorder, drag between windows, tea
 - Restoration is still being fixed in 3.7.x (erased lines reappearing, SSH-integration hang, restoration lost on logout while Claude Code ran) — [downloads](https://iterm2.com/downloads)
 
 **Automatic profile switching (host-dependent look)**
-- Rules in Profiles > Advanced match user@, hostname, :/path, &job, with `*` wildcards; scoring (exact host 16, wildcard host 8, job 4, user 2, exact path 1); `!` makes a rule sticky, otherwise the session reverts when no rule matches "such as when an SSH session ends"; requires Shell Integration on each host (or a trigger workaround) — [Automatic Profile Switching](https://iterm2.com/documentation-automatic-profile-switching.html). The doc's example is background colour/encoding changing per host; it does not explicitly mention tab colour.
+- Rules in Profiles > Advanced match user@, hostname, :/path, &job, with `*` wildcards; scoring (exact host 16, wildcard host 8, job 4, user 2, exact path 1); `!` makes a rule sticky, otherwise the session reverts when no rule matches "such as when an SSH session ends"; requires Shell Integration on each host (or a trigger workaround) — [Automatic Profile Switching](https://iterm2.com/documentation-automatic-profile-switching.html). The doc's example is background color/encoding changing per host; it does not explicitly mention tab color.
 
 ### Inferences
-- Since tab colour is a profile property and APS swaps the profile, a per-host tab tint follows from APS; puritty, owning the ssh client, knows the host without shell integration and can do this more reliably.
+- Since tab color is a profile property and APS swaps the profile, a per-host tab tint follows from APS; puritty, owning the ssh client, knows the host without shell integration and can do this more reliably.
 - The 3.7 changelog shows that tab-groups/pinning interacting with move/drag commands is a bug farm; a puritty v1 can skip groups.
 - iTerm2 needed years to add right-click rename; it is cheap and expected.
 
@@ -92,7 +92,7 @@ Each tmux window is a native tab (or window), each tmux pane a native split; nat
 - Users who expect closing a tab to keep the session are surprised (issue #9731, 3.4 nightly 2021: "Is it possible to prevent tmux session to close when I close a tab") — [GitLab #9731](https://gitlab.com/gnachman/iterm2/-/issues/9731)
 - Settings > General > tmux: "When attaching, restore windows as…" (new windows vs tabs, for windows iTerm2 hasn't seen); auto-bury the client session that ran `tmux -CC`; use a "tmux" profile vs the connecting session's profile (off since 3.3); show tmux status bar content; pause panes that would take > N s to catch up (tmux ≥3.2), warn before pausing, unpause automatically — [Settings > General](https://iterm2.com/documentation-preferences-general.html)
 - Dashboard opens for sessions with many windows (option); 3.7 adds "Open tmux windows and tabs in the background?" and a setting for where a window created outside iTerm2 opens (new window, focused window, or topmost window already showing that session) — [tmux doc](https://iterm2.com/documentation-tmux-integration.html)
-- iTerm2 remembers which tmux windows were tabs together; titles and tab colours persist across detach via tmux session options `@per_tab_settings` and `@tab_colors`, but tab groups do not (issue #13167, 3.7.3, 2026, no maintainer reply seen) — [GitLab #13167](https://gitlab.com/gnachman/iterm2/-/issues/13167)
+- iTerm2 remembers which tmux windows were tabs together; titles and tab colors persist across detach via tmux session options `@per_tab_settings` and `@tab_colors`, but tab groups do not (issue #13167, 3.7.3, 2026, no maintainer reply seen) — [GitLab #13167](https://gitlab.com/gnachman/iterm2/-/issues/13167)
 - Size complaints: "Creating new tmux tabs shortens window height each time" — [GitLab #7821](https://gitlab.com/gnachman/iterm2/-/issues/7821); "variable window sizes ... both windows change size" over ssh (3.3.0beta16, 2019) — [GitLab #7970](https://gitlab.com/gnachman/iterm2/-/issues/7970); [iterm2-discuss "tmux windows changing sizes all together"](https://groups.google.com/g/iterm2-discuss/c/Cg0unhMJKf4). Status unverified.
 - Attach hangs: remote FreeBSD ([#12145](https://gitlab.com/gnachman/iterm2/-/issues/12145)), mosh ([#5924](https://gitlab.com/gnachman/iterm2/issues/5924)), remote failure ([#11131](https://gitlab.com/gnachman/iterm2/-/issues/11131))
 - 2026 fixes in 3.7.5–3.7.7 touching tabs: missed window switches by another client/script so the old tab stayed shown; `new-window -d` now opens a background tab; tmux sessions not resizing when tab bar hides/shows in fullscreen; tab shows finished title immediately on load; "Close tmux windows after detaching?" Always answer closing wrong sessions; crashes with windows left open after detach; resume tmux integration after a crash; hotkey windows moving when tmux windows open as tabs in the attaching window; tmux floating panes (tmux ≥3.7) — [downloads](https://iterm2.com/downloads). 3.6.7 fixed "tabs switching unexpectedly in tmux integration" (per search summary of the same page).
@@ -102,7 +102,7 @@ Each tmux window is a native tab (or window), each tmux pane a native split; nat
 - Third-party: tab titles in -CC show the same title for many Claude Code sessions and tmux renames don't carry over — [claudeissues #55397](https://claudeissues.com/issue/55397-feature-include-session-name-in-terminal-title-critical-for-tmux-cc-iterm2)
 
 ### Inferences
-- Lessons for puritty's tmux tabs: (1) make Close offer Kill / Hide / Detach explicitly (iTerm2 users asked for detach on the dialog); (2) persist tab-local state (titles, colours, grouping) in tmux user options so reattach restores it; (3) track window switches/new windows made by other clients; (4) honour `new-window -d` as background tab; (5) handle tab-bar show/hide resizing; (6) be explicit about the common-size constraint (gutters) — it is the most persistent complaint.
+- Lessons for puritty's tmux tabs: (1) make Close offer Kill / Hide / Detach explicitly (iTerm2 users asked for detach on the dialog); (2) persist tab-local state (titles, colors, grouping) in tmux user options so reattach restores it; (3) track window switches/new windows made by other clients; (4) honour `new-window -d` as background tab; (5) handle tab-bar show/hide resizing; (6) be explicit about the common-size constraint (gutters) — it is the most persistent complaint.
 - Mixing local and tmux panes in one tab is forbidden in iTerm2; puritty can adopt the same rule simply.
 
 ### Gaps
@@ -113,7 +113,7 @@ Each tmux window is a native tab (or window), each tmux pane a native split; nat
 ## 3. Terminal.app
 
 ### Takeaway
-Terminal.app has basic tabs (Cmd-T with default or current profile, profile submenu, Finder "New Terminal Tab at Folder") and "window groups" — saved sets of windows/tabs with their settings, optionally reopened at launch and exportable. It lacks split panes (beyond a same-session split view — uncited), tab groups, per-tab colour, and tmux integration.
+Terminal.app has basic tabs (Cmd-T with default or current profile, profile submenu, Finder "New Terminal Tab at Folder") and "window groups" — saved sets of windows/tabs with their settings, optionally reopened at launch and exportable. It lacks split panes (beyond a same-session split view — uncited), tab groups, per-tab color, and tmux integration.
 
 ### Cited Findings
 - Cmd-T opens a new tab with the default profile or the active tab's profile per "New tabs open with" in General settings; Shell > New Tab > profile list chooses a profile; Finder Services > "New Terminal Tab at Folder" — [Apple: Open new Terminal windows and tabs](https://support.apple.com/guide/terminal/open-new-terminal-windows-and-tabs-trmlb20c7888/mac)
@@ -123,7 +123,7 @@ Terminal.app has basic tabs (Cmd-T with default or current profile, profile subm
 - A 2012 HN commenter: both iTerm2 and Terminal do tabs, but tmux "decouples my workflow from the operating system" — [HN 3729527](https://news.ycombinator.com/item?id=3729527)
 
 ### Inferences
-- Terminal.app is the floor users compare against; the iTerm2-specific features (drag between windows, colours, indicators, arrangements) are what make iTerm2 "the reference".
+- Terminal.app is the floor users compare against; the iTerm2-specific features (drag between windows, colors, indicators, arrangements) are what make iTerm2 "the reference".
 
 ### Gaps
 - Could not fetch Apple pages on Move Tab to New Window, Merge All Windows, Show All Tabs, tab switching shortcuts, or close confirmation, though these menu items exist in Terminal (from prior knowledge, uncited).
@@ -142,7 +142,7 @@ Praise centres on tmux -CC (native tabs for remote tmux), broadcast input, scrip
 - Historical tab-bar visual regressions: invisible tab bar after Cmd-T in 3.2.6beta1 on High Sierra — [GitLab #7301](https://gitlab.com/gnachman/iterm2/-/issues/7301); Big Sur master issue noting tab bar changes — [GitLab #8964](https://gitlab.com/gnachman/iterm2/-/issues/8964)
 
 ### Inferences
-- For puritty local tabs, the "must" list implied by iTerm2 usage: new tab with same/default profile and directory reuse, Cmd/Ctrl-number + next/prev in visual order, drag reorder, drag between windows and tear-off, confirm only when closing multiple/running sessions, undo close, rename via context menu that sticks, per-profile/per-host tab colour, new-output dot + activity + ended indicators, scrolling overflow, and restore-on-relaunch.
+- For puritty local tabs, the "must" list implied by iTerm2 usage: new tab with same/default profile and directory reuse, Cmd/Ctrl-number + next/prev in visual order, drag reorder, drag between windows and tear-off, confirm only when closing multiple/running sessions, undo close, rename via context menu that sticks, per-profile/per-host tab color, new-output dot + activity + ended indicators, scrolling overflow, and restore-on-relaunch.
 
 ### Gaps
 - No Reddit (r/macapps, r/iterm, r/commandline) threads surfaced in search with tab-specific complaints; sentiment here comes from GitLab, Google Groups, HN mirrors and blogs.

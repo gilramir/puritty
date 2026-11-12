@@ -46,7 +46,7 @@ int pt_zoom(int points, int dpi);
  * after a change. */
 void pt_ligatures(int on);
 
-/* A target of `c` by `r` cells, all of it the colour 0: the platform's
+/* A target of `c` by `r` cells, all of it the color 0: the platform's
  * `pt_target` asked for one, and filled. */
 void pt_resize(int c, int r);
 
@@ -64,7 +64,7 @@ void pt_frame(const uint8_t *list, size_t n, PtFrame *out);
  * column in 2 bytes each and the edges crossed in 1. */
 const uint8_t *pt_ink(int *length);
 
-/* Style 0's background, the margins' colour. */
+/* Style 0's background, the margins' color. */
 uint32_t pt_default_bg(void);
 
 /* The interface's font (docs/settings-gui.md SG2), a family as the platform
@@ -92,7 +92,7 @@ typedef struct {
 } PtGlyph;
 
 /* A glyph placed, by the id `pt_glyph_add` was given it with: its pen,
- * its colour, the advance it was added with, and the clip it is drawn
+ * its color, the advance it was added with, and the clip it is drawn
  * within (an index into the clips, or -1). */
 typedef struct {
     uint32_t id;
@@ -107,11 +107,11 @@ typedef struct {
 char *pt_font_file(const char *font, int variant, int *index);
 
 /* The file of a face for the cluster `cps`, asked in `lang` (or NULL), a
- * colour one when `colour`; malloc'd, or NULL when there is none. The
+ * color one when `color`; malloc'd, or NULL when there is none. The
  * renderer checks that it has the cluster, and asks once a code point. */
-char *pt_fallback_file(const uint32_t *cps, int n, int colour, const char *lang, int *index);
+char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, int *index);
 
-/* Fills a rectangle of the target with a colour, 0xRRGGBB. */
+/* Fills a rectangle of the target with a color, 0xRRGGBB. */
 void pt_fill(uint32_t rgb, int x, int y, int w, int h);
 void pt_fill_rects(uint32_t rgb, const PtRect *rects, int n);
 
@@ -120,10 +120,10 @@ void pt_fill_rects(uint32_t rgb, const PtRect *rects, int n);
 void pt_glyph_add(uint32_t id, const PtGlyph *glyph);
 void pt_glyphs_reset(void);
 
-/* Draws placed glyphs over the target, each in its colour, in order. */
+/* Draws placed glyphs over the target, each in its color, in order. */
 void pt_glyphs_draw(const PtPlaced *placed, int n, const PtRect *clips);
 
-/* A colour glyph's picture: `w` by `h` pixels of premultiplied ARGB, one
+/* A color glyph's picture: `w` by `h` pixels of premultiplied ARGB, one
  * 32-bit word each, alpha in the top byte; a handle the platform chooses,
  * or NULL. Drawn over the target with its alpha; freed when the glyphs
  * are begun again. */

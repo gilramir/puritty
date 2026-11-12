@@ -643,15 +643,15 @@ and above the oldest row. 3 cases, 30 queries.
 highlight record (`0x05`, its first and last cell) before its runs, and
 the C draws a run's cells in that range in a copy of their style with the
 foreground and background swapped (the style table's second half, from
-65,536); a cursor's cell keeps the cursor's colours. The shadow marks a
+65,536); a cursor's cell keeps the cursor's colors. The shadow marks a
 selected cell (bit 55), so a cell the selection takes or leaves is drawn
 again. Style ids are as they were: giving a selected cell an id bit of its
 own would have halved the styles the core can hold (`styleMax`), which
 never frees one (vt-core). The view gate draws a case highlighted
 (`highlight.txt`): `view-highlight`, a highlight over a bold red word, a
 wide character and the cursor, moved, kept and taken away; 345 cases
-pass. A screenshot on Xvfb shows a red word's colours swapped and the rest
-of two rows in the default colours swapped.
+pass. A screenshot on Xvfb shows a red word's colors swapped and the rest
+of two rows in the default colors swapped.
 
 **The window**: `X11.select` gives the C the text and the window owns
 PRIMARY or CLIPBOARD from the time of the last event it had (ICCCM 2.1).
@@ -1050,30 +1050,30 @@ from Bibata-Modern-Classic, `/usr/share/icons/default`'s), where without it
 they were the cursor font's glyphs 152 and 68. The gates that run the window
 pass: pointer 51 of 51, pixels 36 of 36, IME 14 of 14.
 
-## 22. The palette's 16 colours in the settings (2026-11-04)
+## 22. The palette's 16 colors in the settings (2026-11-04)
 
 Gilbert, beside Alacritty: puritty's text was less bright. Measured from
 his screenshot, Alacritty draws `#d8d8d8` on `#181818` and puritty
 `#c5c8c6` on `#1d1f21`, libghostty-vt's defaults, which the core takes
 because Ghostty is its oracle. Foreground and background could already be
-set (`[colours]`); the 16 named colours, which tmux's status line and `ls`
+set (`[colors]`); the 16 named colors, which tmux's status line and `ls`
 draw with, could not.
 
-**`[colours] palette`**: up to 16 `#rrggbb` colours, the named ones from 0;
+**`[colors] palette`**: up to 16 `#rrggbb` colors, the named ones from 0;
 each one left out stays libghostty-vt's, and more than 16 are refused
-("17 colours, where the palette has 16").
+("17 colors, where the palette has 16").
 
 **They are the core's**, not the renderer's alone: `Term` has `named`, the
-16 colours before a program sets one, libghostty-vt's in `new` and the
+16 colors before a program sets one, libghostty-vt's in `new` and the
 embedder's after `Vt.withPalette`, which puritty calls once at start.
-`paletteColour` reads it where no OSC 4 has set the colour, so the colours
+`paletteColor` reads it where no OSC 4 has set the color, so the colors
 drawn, what OSC 4 answers and what OSC 104 and RIS go back to are the
 configured ones, as Ghostty does with its configured palette. A core made
 without `withPalette`, as every gate and the oracle make it, has
 libghostty-vt's.
 
 **Checked** in puritty on Xvfb, with `palette = ["#000000", "#ff0000"]`:
-OSC 4 asks colour 1 and is answered `rgb:ffff/0000/0000`, colour 2
+OSC 4 asks color 1 and is answered `rgb:ffff/0000/0000`, color 2
 libghostty-vt's `rgb:b5b5/bdbd/6868`; set to `#00ff00` it is answered so;
 after OSC 104 1, and after an OSC 4 to `#0000ff` and RIS, it is
 `rgb:ffff/0000/0000` again. Gates: replay 325 of 325, view 345 of 345,

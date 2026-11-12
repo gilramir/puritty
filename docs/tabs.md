@@ -19,7 +19,7 @@ from the keyboard, some running tmux), give the first version:
    the tab before and after, `Ctrl+Shift+PgUp` and `Ctrl+Shift+PgDn` move
    it. A tab whose program ends closes; the window closes with its last
    tab. Each tab keeps its own terminal, scrollback, selection, search,
-   character set and colours (an ssh host's own, `[hosts.NAME]`), and its
+   character set and colors (an ssh host's own, `[hosts.NAME]`), and its
    ssh session or tmux control mode; background tabs keep reading, so
    nothing waits behind the one shown.
 2. **The bar** (step 1). A row of the window below the terminal, shown
@@ -27,7 +27,7 @@ from the keyboard, some running tmux), give the first version:
    `"always"`). Each tab as wide as its title, which is the host's name for
    an ssh tab, else the program's title, and the user's name once renamed.
    The active tab unmistakable in both looks: puritty's (the tmux tab bar's
-   colours, TM22) and a plain one, square tabs as most terminals draw
+   colors, TM22) and a plain one, square tabs as most terminals draw
    them (`[tabs] look = "plain"`, as `[tmux] look`).
    A click selects a tab; a middle click closes it (`[tabs]
    middle_click_closes`, on).
@@ -48,7 +48,7 @@ from the keyboard, some running tmux), give the first version:
    must-do: a `[keys]` table naming each action's chord, an empty one for
    none, so that Ctrl+PgUp and the others can go back to vim or tmux.
 
-After the first version, in the survey's order: per-host tab colours,
+After the first version, in the survey's order: per-host tab colors,
 restore on restart, reopening a closed tab, broadcast to several tabs,
 dragging to reorder, the bar at the top, "move this tab to a new window"
 as a reconnect. Tear-off and tab groups are not planned (the survey's
@@ -241,6 +241,7 @@ colleague's tmux prefix, loses nothing to puritty.
 | `new_tab` | Ctrl+Shift+T | tmux's new window in a tab under `tmux -CC` |
 | `close_tab` | Ctrl+Shift+W | |
 | `rename_tab` | Ctrl+Shift+R | |
+| `color_tab` | none | TB9: the tab's menu has it |
 | `next_tab`, `previous_tab` | Ctrl+PageDown, Ctrl+PageUp | tmux's windows under `tmux -CC`; the program's with one tab |
 | `next_tab_always`, `previous_tab_always` | Ctrl+Alt+PageDown, Ctrl+Alt+PageUp | puritty's tabs from any tab |
 | `move_tab_right`, `move_tab_left` | Ctrl+Shift+PageDown, Ctrl+Shift+PageUp | |
@@ -354,3 +355,64 @@ line; a third tab's `kill -9 $PPID` drops its connection: the window stays,
 the bar reads `box` and `× box`, and R reconnects it, its shell writing
 the next file, the mark gone; `exit 5` in the last tab ends puritty with
 status 5. sshwindow 9 and hosts 13 pass, unchanged.
+
+## TB9 · Per-host tab colors (2026-11-12)
+
+The survey's first item after the first version (its "should" list, item
+1): "Per-host tab color from the host list, settable per tab at runtime",
+as MobaXterm, Royal TS and Windows Terminal's `tabColor` do it, and as
+GNOME Terminal, Konsole (since 2011) and Terminator users have asked, a
+red tab for production their usual case. Gilbert, 2026-11-12: "Next on the
+tabs survey's list is per-host tab colours"; and in American spelling
+(`settings.md` ST31).
+
+**A host's color.** `[hosts.NAME.colors] tab = "#rrggbb"`, beside the
+host's `foreground` and `background`, and **Tab** on its page of the
+settings window. Every tab of the host takes it: the window's first, and
+each Ctrl+Shift+T opens there. A tab keeps its host's name
+(`TabInfo.hostName`), from `Config.hostName`, which `Hosts.session` sets
+for any host's window whichever client connects: the built-in client's
+`config.remote` was not enough, since an OpenSSH host's window starts its
+new tabs by running its `ssh` command again and knows no host otherwise.
+The color is looked up in the settings in force each time the bar is
+drawn, so a change in the settings window recolors the tabs at once.
+
+**A tab's own.** `TabColor` is the host's, one picked, or none over the
+host's. A box asks (`Dialog`, now with a row of swatches and `swatchAt`
+for a click): eight colors on keys 1 to 8, 0 for none, H for the host's in
+a host's tab, the one in use framed; a click on a swatch picks it, Esc or
+a press elsewhere leaves. It is reached three ways:
+
+- the menu has **Rename tab…** and **Tab color…** after New window, so
+  Ctrl and the right button reach them anywhere, and the Windows system
+  menu has them too (built for Windows, not yet tried there);
+- the **right button on a tab** shows that tab and opens the menu over it;
+- `[keys] color_tab`, **empty by default**: the survey's first must-do is
+  keys not taken from programs, and Windows Terminal binds no key to its
+  color picker either.
+
+Restoring tabs (the next item) will carry the picked color with the name.
+
+**How a colored tab is drawn.** Filled with its color; the tab shown at
+full strength with a line of its text's color along its top, the others
+three fifths the color over the bar's gray. Its text is dark on a light
+color and white on a dark one (`Dialog.contrast`). Its marks move to a dot
+at its end, since a red fill would hide the bell's red tab: red ringed in
+white for the bell, the text's color for output; the `!` and `×` before
+its name stay. A tab without a color is drawn as before, in both looks.
+
+**The menu's order moved the hosts gate.** Its `menu-connects` case went
+four items down to reach the first host; with the two tab items it goes
+six (`harness/hosts.py`).
+
+**Measured,** `bench/tabs/color.py` on Xvfb, reading the bar's fills from
+the window's picture: a built-in-client host `prod` with `tab =
+"#c62828"` against the local sshd, two tabs, both red (`#c62828` shown,
+`#862727` not); the right button on the first tab, Tab color…, 4: green
+`#2e7d32`, and its shell took the next line; the key (`Ctrl+Alt+K` set
+for the run), 0: amber, as an uncolored tab shown; a bell in the red tab
+not shown: its dot; H: red again; the file's color changed to `#6a1b9a`:
+both tabs purple, without a restart; an OpenSSH host `lab` (a stand-in
+`ssh` running a shell) with `#1565c0`: its two tabs blue. App tests 112,
+with two for the host's `tab` (read; a value that is no color reported and
+left out).

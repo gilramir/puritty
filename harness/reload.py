@@ -52,8 +52,8 @@ REMOTE = "geng-probe/reload"
 DISPLAY = ":83"
 TITLE = "reload-gate"
 
-# A screen with what the settings change: the default colours, the named
-# colours (SGR 31-36, 91-96), bold (bright under bold_is_bright), a box,
+# A screen with what the settings change: the default colors, the named
+# colors (SGR 31-36, 91-96), bold (bright under bold_is_bright), a box,
 # and Han, whose forms the fallback language chooses.
 SCREEN = ("plain text 0123456789\r\n"
           "\x1b[31mred\x1b[32m green\x1b[33m yellow\x1b[34m blue\x1b[35m magenta\x1b[36m cyan\x1b[0m\r\n"
@@ -76,14 +76,14 @@ blink_ms = 0
 def cases(windows):
     other = "Consolas" if windows else "Fira Code"
     return [
-        ("colours", BASE, BASE + '\n[colours]\nforeground = "#ffffff"\nbackground = "#003040"\n', "in place", "pixels"),
-        ("colours-renamed", BASE, BASE + '\n[colours]\nforeground = "#202020"\nbackground = "#f0f0e0"\n', "rename", "pixels"),
-        ("palette-set", BASE, BASE + '\n[colours]\npalette = ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff"]\n',
+        ("colors", BASE, BASE + '\n[colors]\nforeground = "#ffffff"\nbackground = "#003040"\n', "in place", "pixels"),
+        ("colors-renamed", BASE, BASE + '\n[colors]\nforeground = "#202020"\nbackground = "#f0f0e0"\n', "rename", "pixels"),
+        ("palette-set", BASE, BASE + '\n[colors]\npalette = ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff"]\n',
          "in place", "pixels"),
         ("palette-shortened",
-         BASE + '\n[colours]\npalette = ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff"]\n',
-         BASE + '\n[colours]\npalette = ["#000000", "#ff0000"]\n', "rename", "pixels"),
-        ("bold-is-bright", BASE, BASE + "\n[colours]\nbold_is_bright = true\n", "in place", "pixels"),
+         BASE + '\n[colors]\npalette = ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff"]\n',
+         BASE + '\n[colors]\npalette = ["#000000", "#ff0000"]\n', "rename", "pixels"),
+        ("bold-is-bright", BASE, BASE + "\n[colors]\nbold_is_bright = true\n", "in place", "pixels"),
         ("font-size", BASE, BASE + "\n[font]\nsize = 15\n", "rename", "pixels"),
         ("font-family", BASE, BASE + f'\n[font]\nfamily = "{other}"\n', "rename", "pixels"),
         ("font-language", BASE + '\n[font]\nlanguage = "ko"\n', BASE + '\n[font]\nlanguage = "ja"\n', "rename", "pixels"),
@@ -94,15 +94,15 @@ def cases(windows):
         # a file that is not TOML changes nothing; a value a setting does not
         # take is its default, as a fresh start with the key left out gives
         # (a fresh start with the bad key shows the notice, docs/settings.md ST17)
-        ("not-toml", BASE + '\n[colours]\nbackground = "#003040"\n', BASE + "\n[colours]\nbackground = = 1\n",
+        ("not-toml", BASE + '\n[colors]\nbackground = "#003040"\n', BASE + "\n[colors]\nbackground = = 1\n",
          "in place", "kept"),
-        ("bad-value", BASE + '\n[colours]\nbackground = "#003040"\nforeground = "#ffffff"\n',
-         BASE + '\n[colours]\nbackground = 12\nforeground = "#ffffff"\n', "in place", "pixels",
-         BASE + '\n[colours]\nforeground = "#ffffff"\n'),
+        ("bad-value", BASE + '\n[colors]\nbackground = "#003040"\nforeground = "#ffffff"\n',
+         BASE + '\n[colors]\nbackground = 12\nforeground = "#ffffff"\n', "in place", "pixels",
+         BASE + '\n[colors]\nforeground = "#ffffff"\n'),
         # what is wrong is on the title until a read is clean
         ("title-trouble", BASE, BASE + "\n[font]\nsise = 12\n", "rename", "title-trouble"),
         ("title-clean", BASE + "\n[font]\nsise = 12\n", BASE, "rename", "title-clean"),
-        ("removed", BASE.replace("blink_ms = 0", 'blink_ms = 0\n\n[colours]\nbackground = "#003040"'), None,
+        ("removed", BASE.replace("blink_ms = 0", 'blink_ms = 0\n\n[colors]\nbackground = "#003040"'), None,
          "remove", "defaults"),
     ] + ([] if windows else [
         # the settings' title is the window's while the program has set

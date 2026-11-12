@@ -225,11 +225,11 @@ rather than a small mark count.
 
 | | Ghostty | WezTerm | WT (DirectWrite) |
 |---|---|---|---|
-| Run boundaries | row, style, selection edge, **cursor**, font change | attributes, presentation, whitespace (cache optimisation), bidi run; **not** cursor or selection | row, bold/italic, builtin glyph; **not** colour |
+| Run boundaries | row, style, selection edge, **cursor**, font change | attributes, presentation, whitespace (cache optimisation), bidi run; **not** cursor or selection | row, bold/italic, builtin glyph; **not** color |
 | Script | guessed once per run | guessed | `AnalyzeScript` over the whole line, shaped per script run |
 | Font for a cluster | one face that covers the **whole cluster** | shape with font 0; clusters with missing glyphs move **as a unit** to font N+1, re-shaped with the full run as context | `MapCharacters` per segment |
 | Map back to cells | cluster index = cell | uses stored cell widths to correct HarfBuzz cluster boundaries | cluster advance snapped to its column span |
-| Cursor/selection colouring | split runs | slice glyph quads by pixel range | colour looked up per glyph |
+| Cursor/selection coloring | split runs | slice glyph quads by pixel range | color looked up per glyph |
 
 Lessons:
 
@@ -239,9 +239,9 @@ Lessons:
   font) both do this.
 - **Shape across cells in the same font.** Thai SARA AM reordering and cross-cell
   context need neighbours in the same run.
-- **Don't split runs at the cursor or on colour changes.** Splitting breaks shaping
+- **Don't split runs at the cursor or on color changes.** Splitting breaks shaping
   context. WezTerm slices the glyph's quad by pixel range for the cursor and
-  selection; WT looks colour up per glyph. Both are better than Ghostty's split.
+  selection; WT looks color up per glyph. Both are better than Ghostty's split.
 - **Segment by script as well as font**, or let the shaper's script analysis do it
   (WT). Ghostty and WezTerm guess one script per run, which is fragile for mixed
   Thai+Latin text in one font (inferred).
@@ -473,7 +473,7 @@ Nobody does this fully right:
    กำ is two units for cursor and selection; shape both cells as one run (§2.2).
 4. **Shape everything** with HarfBuzz (Linux) or DirectWrite (Windows). Keep a cluster
    in one font; move whole clusters to fallback fonts; shape across cells; don't
-   split runs at cursor or colour changes; map back with stored widths.
+   split runs at cursor or color changes; map back with stored widths.
 5. **No clipping; track ink extents per row** so damage-limited redraw (X11 backend,
    partial GPU redraw) repaints overhangs correctly. Optional automatic ascent
    headroom.

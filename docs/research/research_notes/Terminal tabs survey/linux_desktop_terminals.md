@@ -42,7 +42,7 @@ A de-facto common core has emerged across almost all of them: **Ctrl+Shift+T new
 - Menu/defaults: New Tab Ctrl+Shift+T; Clone Tab (no key); Close Session Ctrl+Shift+W; Copy Input To → All Tabs in Current Window / Select Tabs… (Ctrl+Shift+.) / None (Ctrl+Shift+/); Configure Tab Settings… (Ctrl+Alt+S) sets "the name format, remote tab title format, and current tab color"; Split View Left/Right Ctrl+(, Top/Bottom Ctrl+); Expand/Shrink View Ctrl+Shift+] / [; toggle maximize view Ctrl+Shift+E; equalize Ctrl+Shift+\; Detach Current Tab Ctrl+Shift+L; Detach Current View Ctrl+Shift+H; Save/Load tab layout; Monitor for Activity Ctrl+Shift+A, Silence Ctrl+Shift+I, Prompt Ctrl+Shift+R, Process Finishing; Next/Previous Tab Shift+Right/Left; Move Tab Ctrl+Alt+Left/Right; Tab Bar/Splitters settings page for visibility, placement and behaviour — https://docs.kde.org/stable_kf6/en/konsole/konsole/commandreference.html
 - 22.12: split views got headers with drag-and-drop and a maximize toggle, and the tab bar is shown only when needed by default — https://konsole.kde.org/changelog.html (via search summary)
 - Saved tab layouts to .json and reopening them from the command line; layout-automation work blogged 2024–2025 — https://blogs.kde.org/2024/06/11/konsole-layout-automation-part-1/ ; https://blogs.kde.org/2025/04/02/konsole-layout-automation-part-2 ; https://planet.kde.org/akseli-lahtinen-aks-2025-05-18-my-changes-to-saving-konsole-tab-layouts
-- Tab colour derived from remote host name requested since 2011 (ASSIGNED) — https://bugs.kde.org/show_bug.cgi?id=278699
+- Tab color derived from remote host name requested since 2011 (ASSIGNED) — https://bugs.kde.org/show_bug.cgi?id=278699
 
 **Tilix** (GTK3/D)
 - "Tabs or sidebar list current sessions"; "grouping of terminals can be saved and loaded from disk"; splits "horizontally or vertically"; "Input can be synchronized between terminals" — https://github.com/gnunn1/tilix (README)
@@ -81,7 +81,7 @@ A de-facto common core has emerged across almost all of them: **Ctrl+Shift+T new
 ## What users praise about tab handling
 
 ### Takeaway
-Praise clusters on (1) splits + broadcast inside tabs (Terminator, Tilix), (2) restoring tabs across restarts (Guake, Ptyxis pinned tabs), (3) Ptyxis's searchable overview with pin/rename, and (4) Konsole's breadth (layouts, monitors, per-tab colour). First-hand Reddit/HN praise was thin in what the search tools surfaced.
+Praise clusters on (1) splits + broadcast inside tabs (Terminator, Tilix), (2) restoring tabs across restarts (Guake, Ptyxis pinned tabs), (3) Ptyxis's searchable overview with pin/rename, and (4) Konsole's breadth (layouts, monitors, per-tab color). First-hand Reddit/HN praise was thin in what the search tools surfaced.
 
 ### Cited Findings
 - Terminator broadcast: a G2 reviewer calls multiwindow and broadcast one of its best features; a Raspberry Pi user splits into four and broadcasts: "I haven't found another terminal emulator that can do this yet"; another: "love Terminator!" — https://www.g2.com/products/terminator/reviews ; https://linuxbsdos.com/?p=35812 (via search summary)
@@ -101,7 +101,7 @@ Praise clusters on (1) splits + broadcast inside tabs (Terminator, Tilix), (2) r
 ## What users complain about (issues, threads, counts)
 
 ### Takeaway
-The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021, Console still open, Tilda since 2015), **new tab doesn't open in current directory** (Console, xfce once, Yakuake Flatpak, Ptyxis tab-vs-window), **no/unreliable tab restore** (GNOME Terminal since 2010, Guake names, Ptyxis order/multi-window, Konsole), **dragging tabs between windows** (Konsole only in single-process mode and not on Wayland), **hard to tell the active tab**, **closing a tab crashes** (Yakuake with splits, Terminator), **Ctrl+Tab not bindable**, and **missing tab colours**.
+The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021, Console still open, Tilda since 2015), **new tab doesn't open in current directory** (Console, xfce once, Yakuake Flatpak, Ptyxis tab-vs-window), **no/unreliable tab restore** (GNOME Terminal since 2010, Guake names, Ptyxis order/multi-window, Konsole), **dragging tabs between windows** (Konsole only in single-process mode and not on Wayland), **hard to tell the active tab**, **closing a tab crashes** (Yakuake with splits, Terminator), **Ctrl+Tab not bindable**, and **missing tab colors**.
 
 ### Cited Findings
 
@@ -111,7 +111,7 @@ The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021
 - Ubuntu Discourse 2019: "GNOME Terminal has been losing features since 3.14"; wants the "immutable tab title prefix" ("prefix + program-defined part"); says features were removed without asking users; replies point to Konsole, Xfce-Terminal, Terminator, Tilix — https://discourse.ubuntu.com/t/gnome-terminal-removed-features-such-as-setting-immutable-tab-title/9508 ; the same request "Immutable user-defined tab title prefix" open since 2019-01-21 — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/70
 - Tab restore open since 2010 (12 notes) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/7019
 - "Allow Ctrl+Tab and Ctrl+Shift+Tab in Shortcuts" open since 2020-06-22 (4 upvotes) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/279
-- Tab header colours via control codes / tab icons (2019, closed) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/142
+- Tab header colors via control codes / tab icons (2019, closed) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/142
 - Show tab number for Alt+N in title, open since 2019 — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/193
 - Removal of `--command`/`-e` broke "opening a window with multiple tabs running commands" (open since 2018) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/58 ; docs still misleading for multi-tab invocations (2026-04-16, open) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/8144
 - Ellipsis setting for tab labels requested 2026-01-28 (open) — https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/8139
@@ -132,7 +132,7 @@ The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021
 - "terminal tab does not detach when dragged to desktop" (closed 2026-05-10) — https://gitlab.gnome.org/chergert/ptyxis/-/issues/581 ; "ptyxis crashes on tab move" (closed 2024-08-27) — https://gitlab.gnome.org/chergert/ptyxis/-/issues/199
 - Window resizes when closing a tab (closed 2025-01-06; also under niri, closed 2025-05-12) — https://gitlab.gnome.org/chergert/ptyxis/-/issues/338 , /411
 - "Closing tabs activates dGPU" (closed 2025-11-22) — https://gitlab.gnome.org/chergert/ptyxis/-/issues/514
-- Option to disable colouring the header and tabs (closed 2024-01-10, 9 notes) — https://gitlab.gnome.org/chergert/ptyxis/-/issues/71 ; vertical tabs request closed 2025-08-04 — /452 ; `--set-title` CLI request open 2026-06-03 — /585
+- Option to disable coloring the header and tabs (closed 2024-01-10, 9 notes) — https://gitlab.gnome.org/chergert/ptyxis/-/issues/71 ; vertical tabs request closed 2025-08-04 — /452 ; `--set-title` CLI request open 2026-06-03 — /585
 
 **Konsole** (KDE Bugzilla)
 - "Can only drag tabs from one window into another when using single-process mode" (2019-01-17, CONFIRMED, 22 CC, last change 2026-11-05) — https://bugs.kde.org/show_bug.cgi?id=403324
@@ -140,7 +140,7 @@ The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021
 - "No obvious way to return detached tab to window with other tabs when tab bar is hidden" (2018, CONFIRMED) — https://bugs.kde.org/show_bug.cgi?id=395294
 - "Konsole forget the open tabs" (2026-05-17, UNCONFIRMED) — https://bugs.kde.org/show_bug.cgi?id=520295 ; restored tabs lose env/aliases (2025-01-10) — https://bugs.kde.org/show_bug.cgi?id=498452
 - Split-view redesign controversy (2019): splits became subordinate to tabs; requests to restore the 18.12 behaviour where split views shared tabs — https://bugs.kde.org/show_bug.cgi?id=413586 ; https://bugs.kde.org/show_bug.cgi?id=453218 ; https://invent.kde.org/utilities/konsole/-/issues/29 ; older complaint that splits were "different views on the same terminal" (pre-2019 behaviour, since changed) — https://lwn.net/Articles/751092/ (via search summary)
-- Tab bar colour customization via GUI wishlist (2024-12-31) — https://bugs.kde.org/show_bug.cgi?id=498082 ; "Always open new tabs instead of new windows" (2023) — https://bugs.kde.org/show_bug.cgi?id=473907 ; "RFE: add more options for tab/window naming" (2012) — https://bugs.kde.org/show_bug.cgi?id=294686
+- Tab bar color customization via GUI wishlist (2024-12-31) — https://bugs.kde.org/show_bug.cgi?id=498082 ; "Always open new tabs instead of new windows" (2023) — https://bugs.kde.org/show_bug.cgi?id=473907 ; "RFE: add more options for tab/window naming" (2012) — https://bugs.kde.org/show_bug.cgi?id=294686
 
 **Tilix**
 - "Move Terminal to different Session/Tab" open since 2017 (7 comments, 4 👍) — https://github.com/gnunn1/tilix/issues/1080
@@ -170,13 +170,13 @@ The recurring complaints are: **can't rename tabs** (GNOME Terminal 2014–~2021
 - "Allow Ctrl-Tab as an accelerator" (2013, 40 comments, 23 👍, closed; now default) — https://github.com/Guake/guake/issues/152
 - "Split tabs + Shortcut keys to navigate between split tabs are not working" (2020, open, 13 👍) — https://github.com/Guake/guake/issues/1722
 - "Tab names lost after reboot…" (2022, open, 16 comments) — https://github.com/Guake/guake/issues/2072
-- Tab colour/theme requests (2015–2017, 13/11/7 👍, closed) — /625 , /853 , /1036
+- Tab color/theme requests (2015–2017, 13/11/7 👍, closed) — /625 , /853 , /1036
 
 **Yakuake**
 - Closing a tab with a split crashes (2025-01-18 CONFIRMED; 2026-06-15) and earlier crash-on-close reports 2021 (several duplicates) — https://bugs.kde.org/show_bug.cgi?id=498846 , =521507 , =442855
 - "Difficult to distinguish current/active tab (especially when only two tabs)" (2025-11-27) — https://bugs.kde.org/show_bug.cgi?id=512695
 - "After closing a tab, one of the neighbor tabs should be selected instead of the latest one" (2024-08-23) — https://bugs.kde.org/show_bug.cgi?id=492069
-- "[Flatpak] New tabs do not remember directory of current tab session" (2025-05-25); "Tabs are not renamed dynamically" (2024-04-05); "Create tab with non-default profile" (2025-07-18); "Disable mouse wheel to cycle through tabs" (2022); group/colour tabs (2021) — https://bugs.kde.org/show_bug.cgi?id=504776 , =485106 , =507206 , =451810 , =447459
+- "[Flatpak] New tabs do not remember directory of current tab session" (2025-05-25); "Tabs are not renamed dynamically" (2024-04-05); "Create tab with non-default profile" (2025-07-18); "Disable mouse wheel to cycle through tabs" (2022); group/color tabs (2021) — https://bugs.kde.org/show_bug.cgi?id=504776 , =485106 , =507206 , =451810 , =447459
 
 **Tilda**
 - "Tilda tabs are transparent in Ubuntu 16.04" (2016, open, 24 comments, 11 👍) — https://github.com/lanoxx/tilda/issues/257

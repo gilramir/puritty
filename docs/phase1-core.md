@@ -43,7 +43,7 @@ escape or a UTF-8 sequence cut by a read is picked up from the state the read
 left); a printable run written to its row at once; UTF-8 decoded with each
 codepoint's width looked up (a binary search over 480 ranges from Python's
 Unicode 15.0 tables, `gen-width.py`, for the cost only); deferred wrap; SGR's
-colours and flags interned into a style id through a `Dict`; CUP, the cursor
+colors and flags interned into a style id through a `Dict`; CUP, the cursor
 moves, ED, EL, DECSTBM, SU, SD, IL, DL and DSR 6; the alt screen of
 `?1049h`, which keeps no scrollback; and the main screen's scrollback as
 D901's pages: 256 rows trimmed of trailing blanks, a ring of 100,000 lines.

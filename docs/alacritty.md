@@ -29,7 +29,7 @@ commit. Anything not read directly in code is marked as **inference** or
   XTGETTCAP, no DECRQSS and no tmux control mode.
 - The grid is a **ring buffer of `Row<Cell>`**. Scrolling the full screen is an
   O(1) rotation of a `zero` index. A cell is 24 bytes, and rare attributes
-  (combining chars, hyperlink, underline colour) live behind
+  (combining chars, hyperlink, underline color) live behind
   `Option<Arc<CellExtra>>`. Reflow on column change rebuilds the whole buffer,
   scrollback included.
 - The renderer **clears and redraws every non-empty cell every frame**: glyphs
@@ -162,7 +162,7 @@ drains the channel into a `VecDeque` write list (`drain_recv_channel`, line 91).
 It registers write interest only while there is pending output (lines 309-316)
 and writes non-blockingly, keeping partial-write state (`Writing`).
 
-**Terminal-generated replies take a detour.** DA, DSR, OSC colour queries and
+**Terminal-generated replies take a detour.** DA, DSR, OSC color queries and
 OSC 52 reads are produced inside `Term` (on the PTY thread). They are sent as
 `Event::PtyWrite` to the **UI thread**, which writes them back through the
 `Notifier` channel to the PTY thread (`event.rs:1902-1926`). Query responses
@@ -306,10 +306,10 @@ The PTY thread owns `State { parser: ansi::Processor, .. }`
   `CSI ? u`, `= u`, `> u`, `< u`.
 - **SGR** (`attrs_from_sgr_parameters`): bold, dim, italic, underline styles
   (`4:x` single/double/curl/dotted/dashed), blink (stored, not rendered),
-  inverse, hidden, strike, 16/256/truecolor via `;` and `:`, underline colour
+  inverse, hidden, strike, 16/256/truecolor via `;` and `:`, underline color
   `58/59`.
 - **OSC** (`ansi.rs:1329+`): 0/2 title, 4 palette set/query, 8 hyperlinks,
-  10/11/12 dynamic colours set/query, 22 mouse pointer shape, 50 cursor
+  10/11/12 dynamic colors set/query, 22 mouse pointer shape, 50 cursor
   style, 52 clipboard, 104/110/111/112 resets. **No OSC 7** (cwd), **no
   OSC 133** (prompt marks) and no OSC 9/777 notifications.
 - **DECSET modes handled by `Term`** (`term/mod.rs:1934-1995`): 1 (DECCKM), 6
@@ -421,10 +421,10 @@ struct CellExtra {
   **no blink flag**: SGR 5 is parsed but not stored or rendered. WRAPLINE is a
   *cell* flag on the last column, not a row flag.
 - `extra` is copy-on-write (`Arc::make_mut`). Since the cursor template holds
-  the same `Arc`, a run of hyperlinked or underline-coloured text shares one
+  the same `Arc`, a run of hyperlinked or underline-colored text shares one
   allocation. Setting these back to `None` drops `extra` when it becomes empty
   (`set_underline_color`, `set_hyperlink`).
-- Colours are stored *unresolved* (Named/Indexed/Spec). Resolution to RGB,
+- Colors are stored *unresolved* (Named/Indexed/Spec). Resolution to RGB,
   bold-as-bright, dim, palette overrides and minimum-contrast handling all
   happen at render time (`display/content.rs:310-400`). Palette changes
   therefore need no grid rewrite.
@@ -437,7 +437,7 @@ pub struct Row<T> { inner: Vec<T>, pub(crate) occ: usize }
 
 `occ` is an upper bound on how many leading cells were modified since the last
 reset. `Row::reset` only touches `inner[..occ]`, unless the template's
-discriminant (the bg colour) changed (`row.rs:73-95`). Clearing mostly-empty
+discriminant (the bg color) changed (`row.rs:73-95`). Clearing mostly-empty
 rows is therefore cheap. There was a CHANGELOG fix for a "Performance
 bottleneck when clearing colored rows". `Storage::swap` asserts
 `size_of::<Row>() == 4 * usize`.
@@ -568,12 +568,12 @@ buffer", which came from introducing `CellExtra`.
 
 1. Under the terminal lock, `RenderableContent::new` (`display/content.rs`)
    wraps `Term::renderable_content()` (a `display_iter` over the viewport rows,
-   the cursor, the selection, colours and mode). Iterating it **skips empty
+   the cursor, the selection, colors and mode). Iterating it **skips empty
    cells and wide-char spacers** (`content.rs:161-185`). An empty cell has
    default bg, a space, no extra and no underline. For each cell it resolves
-   RGB, applies inverse/dim/bold colour rules, selection, search and hint
+   RGB, applies inverse/dim/bold color rules, selection, search and hint
    highlighting, and handles the cursor cell. A block cursor is drawn by
-   recolouring the cell.
+   recoloring the cell.
 2. It collects all cells into `grid_cells: Vec<RenderableCell>`, pulls
    `Term::damage()` into the `DamageTracker`, calls `reset_damage()`, and then
    **drops the lock** (line 815).
@@ -617,10 +617,10 @@ buffer", which came from introducing `CellExtra`.
   `GL_EXT/ARB_blend_func_extended` it renders in 2 passes. Without dual-source
   blending it uses **3 text passes** to emulate per-channel (subpixel) alpha,
   following WebRender's text-rendering doc (`gles2.rs:462-475`).
-- **Subpixel AA blending:** the fragment shader outputs colour and a
+- **Subpixel AA blending:** the fragment shader outputs color and a
   per-channel **alpha mask** (`layout(location=0, index=1) out vec4
   alphaMask`), blended with `glBlendFunc(SRC1_COLOR, ONE_MINUS_SRC1_COLOR)`
-  (`res/glsl3/text.f.glsl`, `renderer/mod.rs` `draw_rects`). Colour glyphs
+  (`res/glsl3/text.f.glsl`, `renderer/mod.rs` `draw_rects`). Color glyphs
   (emoji) are flagged `COLORED` and sampled as RGBA, with premultiplication
   undone.
 - Context loss: if `GL_KHR_robustness` reports a reset,
@@ -940,7 +940,7 @@ cooldown (`BELL_CMD_COOLDOWN`).
 | OSC 52 abuse | Default copy-only, ignored when unfocused. |
 | GPU reset / context loss | Robust context and recreate renderer + glyph cache (`display/mod.rs:556-605`). |
 | Box drawing alignment | Built-in rasteriser for box, block and powerline glyphs. |
-| Minimum cursor contrast | Invert cursor colours if contrast < 1.5 (`MIN_CURSOR_CONTRAST`, `content.rs:24`). |
+| Minimum cursor contrast | Invert cursor colors if contrast < 1.5 (`MIN_CURSOR_CONTRAST`, `content.rs:24`). |
 | ConPTY deadlocks / old ConPTY | Field drop order, explicit `Processor` drop, optional `conpty.dll`. CHANGELOG: "Deadlock on Windows during high frequency output". |
 | Linux EIO on child exit | Ignore EIO and wait for SIGCHLD (`event_loop.rs:283-291`). |
 | X11 keyboard and modifier desync | Many CHANGELOG entries (sticky modifiers, xdotool, xmodmap). Most fixes are in winit. |
@@ -1008,7 +1008,7 @@ means "use your WM or tmux".
 │     resize: Display::handle_update → Notifier.on_resize + Term::resize (reflow)                              │
 │  Wakeup ─► dirty=true; if has_frame → request_redraw                                                         │
 │  RedrawRequested ─► Display::draw:                                                                           │
-│     term.lock(); RenderableContent iter (skip empty cells, resolve colours, cursor, selection, hints)        │
+│     term.lock(); RenderableContent iter (skip empty cells, resolve colors, cursor, selection, hints)        │
 │     Vec<RenderableCell>; Term::damage() → DamageTracker; reset; DROP LOCK                                    │
 │     make_current; glClear(full)                                                                              │
 │     GlyphCache.get(char,font) ─miss─► crossfont rasterise ─► Atlas (1024² shelves, grows)                    │
@@ -1037,7 +1037,7 @@ means "use your WM or tmux".
   under the lock and render without it. Use a lease/fair-lock scheme like
   `FairMutex` so neither side starves, and let the reader keep buffering
   rather than block on the renderer.
-- Don't route terminal *query replies* (DA, DSR, colour queries) through the UI
+- Don't route terminal *query replies* (DA, DSR, color queries) through the UI
   thread the way Alacritty does. Write them directly from the parser thread so
   a slow UI or a blocking X call can't stall apps probing the terminal over
   SSH.
@@ -1062,7 +1062,7 @@ means "use your WM or tmux".
 
 - A ring buffer of rows with an O(1) rotate, lazily allocated scrollback, a
   per-row "occupied" watermark and a compact cell (≈16–24 B) with
-  out-of-line rare attributes is a proven design. Store colours unresolved
+  out-of-line rare attributes is a proven design. Store colors unresolved
   so palette changes are free.
 - Plan **grapheme clusters** from day one. Alacritty's per-codepoint width
   plus "zero-width chars attached to previous cell" breaks ZWJ emoji and

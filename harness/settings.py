@@ -45,19 +45,19 @@ DOWN, ENTER, BACKSPACE = "Down", "Return", "BackSpace"
 # before it: eight since the Keys page (docs/tabs.md TB6)
 TO_HOSTS = ["Tab", "Tab"] + ["Down"] * 8 + ["Right"]
 
-HOSTS = '# my hosts\n[hosts.box]   # the build box\nhost = "b.example.com"\nuser = "me"\n\n[hosts.box.colours]\nbackground = "#2a1010"\n'
+HOSTS = '# my hosts\n[hosts.box]   # the build box\nhost = "b.example.com"\nuser = "me"\n\n[hosts.box.colors]\nbackground = "#2a1010"\n'
 
 # name, the file before (None: none), the keys, and what else is done
 CASES = [
     ("size-typed", None, [DOWN, ENTER, BACKSPACE, BACKSPACE, ("type", "14"), ENTER]),
     ("bold-toggled", None, [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
-    ("reset", '[font]\nsize = 13\n\n[colours]\nbackground = "#102030"\n', [DOWN, "Delete"]),
+    ("reset", '[font]\nsize = 13\n\n[colors]\nbackground = "#102030"\n', [DOWN, "Delete"]),
     ("comments-kept", "# mine\n[window]\ncolumns = 100 # wide\n", [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
     ("undo", None, [DOWN, DOWN, DOWN, DOWN, DOWN, ENTER, "ctrl+z"]),
     # Enter opens a choice's list (SG13), Down picks the next, Enter takes it;
     # "paste" finds copy_to_clipboard first (WS27.2), then the paste button
     ("search-and-choice", None, ["ctrl+f", ("type", "paste"), DOWN, DOWN, ENTER, DOWN, ENTER]),
-    # the colour scheme's list left open, its picture in window.png; the file
+    # the color scheme's list left open, its picture in window.png; the file
     # is not written
     ("choice-list-open", None, [DOWN, DOWN, DOWN, ENTER, DOWN, DOWN]),
     # a font chosen from the system's, offered as its name is typed
@@ -65,7 +65,7 @@ CASES = [
     ("typed-not-taken", None, [DOWN, ENTER, BACKSPACE, BACKSPACE, ("type", "2"), ENTER, "Escape"]),
     # the window reads an edit by hand: bold, turned on by hand, is turned
     # off by Enter; had the window not read it, Enter would turn it on
-    ("hand-edit", "[font]\nsize = 13\n", [("hand", "[font]\nsize = 13\n\n[colours]\nbold_is_bright = true\n"),
+    ("hand-edit", "[font]\nsize = 13\n", [("hand", "[font]\nsize = 13\n\n[colors]\nbold_is_bright = true\n"),
                                           DOWN, DOWN, DOWN, DOWN, DOWN, ENTER]),
     # hosts (ST25): the Hosts page is the last; a new host and its fields,
     # a host removed, one renamed with the table under it, one copied
@@ -78,11 +78,11 @@ CASES = [
     # mark resets it, a click on a page shows it. Clicks are at pixels of the
     # drawn window (docs/settings-gui.md SG3, SG8): at the gate's font a
     # line is 17 pixels, the list begins at 51 and a setting is 68 tall but
-    # for the colour scheme's, whose description takes 119 (SG12), so
+    # for the color scheme's, whose description takes 119 (SG12), so
     # "bold is bright" is 442 to 510; a value's box begins at x 469 and the
     # reset mark at 706, and the side bar's pages are 32 tall from 51.
     ("click-value", None, [("click", 489, 476, 1)]),
-    ("click-reset", "[colours]\nbold_is_bright = true\n", [("click", 716, 476, 1)]),
+    ("click-reset", "[colors]\nbold_is_bright = true\n", [("click", 716, 476, 1)]),
     ("click-page-and-value", None, [("click", 50, 99, 1), ("click", 489, 85, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
     ("terminal-follows", None, [DOWN, DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]

@@ -35,10 +35,10 @@ language = "ko"             # which regional forms fallback fonts use
 ligatures = true            # the font's, as Fira Code's != and ->; the
                             # cell under the cursor is always drawn alone
 
-[colours]
+[colors]
 foreground = "#c5c8c6"
 background = "#1d1f21"
-palette = ["#1d1f21", "#cc6666", "#b5bd68", "#f0c674"]   # the 16 named colours, from 0
+palette = ["#1d1f21", "#cc6666", "#b5bd68", "#f0c674"]   # the 16 named colors, from 0
 
 [terminal]
 charset = "utf-8"           # or "euc-kr", "cp949"
@@ -58,9 +58,9 @@ paste_button = "middle"     # or "right"
 osc52_read = "deny"         # or "allow"
 ```
 
-## Colour schemes
+## Color schemes
 
-`scheme` under `[colours]` copies another terminal's colours:
+`scheme` under `[colors]` copies another terminal's colors:
 
 | `scheme` | from |
 |---|---|
@@ -74,7 +74,7 @@ osc52_read = "deny"         # or "allow"
 | `green-screen`, `amber-screen` | the green and amber phosphor screens of early terminals |
 
 ```toml
-[colours]
+[colors]
 scheme = "solarized-dark"
 background = "#001820"     # wins over the scheme's
 ```
@@ -85,7 +85,7 @@ the scheme's, wherever it is in the file.
 ## Hosts
 
 Hosts are kept in the same file. `puritty --host NAME` connects to one, in
-the host's own colours and font:
+the host's own colors and font:
 
 ```toml
 [hosts."build-box"]
@@ -97,8 +97,9 @@ jump = "bastion"                 # another host, or user@host:port
 command = "tmux -CC new -A -s main"
 charset = "euc-kr"               # this host's, over the one above
 
-[hosts."build-box".colours]
+[hosts."build-box".colors]
 background = "#2a1010"
+tab = "#c62828"                  # its tabs' color in the bar
 ```
 
 A name the file doesn't have is looked up in `~/.ssh/config`, so your

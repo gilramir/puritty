@@ -1,10 +1,10 @@
 /* puritty's Windows survey (docs/windows.md): puritty's Linux text path,
  * FreeType and HarfBuzz, on Windows' own font files. Shapes one line in
  * four faces (Fira Code with its ligatures, Malgun Gothic for Hangul,
- * Leelawadee UI for Thai, Segoe UI Emoji in colour), rasterises it into a
+ * Leelawadee UI for Thai, Segoe UI Emoji in color), rasterises it into a
  * buffer as puritty's renderer does, and writes probe-text.ppm and
  * probe-text.log beside the program: FreeType's version, each face's
- * glyphs and advances, the emoji's glyph format (BGRA when its colour
+ * glyphs and advances, the emoji's glyph format (BGRA when its color
  * table is drawn), and the time to shape and rasterise. No window: the
  * picture is what matters, and the window probe shows how it reaches the
  * screen. */
@@ -42,7 +42,7 @@ static void blend(int x, int y, int r, int g, int b, int a) {
 }
 
 /* One run of text in one face, from pen x at baseline y; answers the new x. */
-static int run(const char *path, int index, const char *text, int px, int x, int y, int colour) {
+static int run(const char *path, int index, const char *text, int px, int x, int y, int color) {
     FT_Face face;
     if (FT_New_Face(lib, path, index, &face)) {
         fprintf(out, "%s: cannot open\n", path);
@@ -65,7 +65,7 @@ static int run(const char *path, int index, const char *text, int px, int x, int
     fprintf(out, "%s: %s, color %d, %u glyphs from %zu bytes, shaped in %.3f ms; glyphs:", path, face->family_name,
             FT_HAS_COLOR(face), n, strlen(text), t1 - t0);
     for (unsigned i = 0; i < n; i++) {
-        FT_Int32 flags = colour ? FT_LOAD_COLOR : FT_LOAD_TARGET_LIGHT;
+        FT_Int32 flags = color ? FT_LOAD_COLOR : FT_LOAD_TARGET_LIGHT;
         if (FT_Load_Glyph(face, info[i].codepoint, flags)) continue;
         FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
         FT_Bitmap *bm = &face->glyph->bitmap;

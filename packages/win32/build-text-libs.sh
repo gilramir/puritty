@@ -10,7 +10,7 @@
 #
 # FreeType is its core and the modules OpenType and TrueType faces need,
 # with its own copy of zlib and with libpng, but no bzip2 or Brotli. Windows'
-# emoji font draws from its colour table (COLR), which FreeType draws itself;
+# emoji font draws from its color table (COLR), which FreeType draws itself;
 # libpng is for a bitmap emoji font (CBDT) such as Noto Color Emoji, which a
 # user may install and the pixel gate draws with (docs/windows.md WS18), and
 # it is built static with a zlib of its own, so puritty stays one .exe.

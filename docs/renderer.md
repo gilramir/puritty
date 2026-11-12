@@ -35,7 +35,7 @@ Three probes hold the renderer between them:
   file), which executes a display list. In C: the connection, a window and
   a retained pixmap (S§6.2), one A8 glyph set, FreeType and HarfBuzz with
   fallback through fontconfig and a per-code-point cache (V24–V26), CJK
-  faces fitted to two cells, colour emoji as ARGB pictures and narrow
+  faces fitted to two cells, color emoji as ARGB pictures and narrow
   compression (V29), keys through xkbcommon-x11 (V30), and an expose redrawn
   from the pixmap. It waits on the connection with `geng_io_wait` (§12).
 - **The x11 app** (`probes/geng/x11/app`, 504 lines), the loop: a program on
@@ -52,8 +52,8 @@ fonts) and S§6.2, the probes lack:
 
 | | what | where it is said |
 |---|---|---|
-| colours | the core's styles: a style id picks one of 16 fixed colours in C; no 256-colour, truecolour, reverse, dim, hidden | `probe_x11.c` header |
-| attributes | bold, italic, underline (its styles and colour), strikethrough, overline; synthesised bold and italic for fallback faces | §13.10 |
+| colors | the core's styles: a style id picks one of 16 fixed colors in C; no 256-color, truecolor, reverse, dim, hidden | `probe_x11.c` header |
+| attributes | bold, italic, underline (its styles and color), strikethrough, overline; synthesised bold and italic for fallback faces | §13.10 |
 | the cursor | none drawn: block, underline, bar, hollow when unfocused, blink | §5.1 |
 | a size | 160×50, fixed: no resize (ConfigureNotify → `Vt.resize` and the pty's), no DPI from RandR | §5.1 |
 | events | an expose and keys only: no focus (and mode 1004), no close (`WM_DELETE_WINDOW`), no title (OSC 0/2 → `_NET_WM_NAME`), no bell | §5.1 |
@@ -76,9 +76,9 @@ places differ, and the renderer has to follow one or the other:
    frame (V24) in C and sending the glyphs back to Geng would cross twice
    a frame to carry what Geng then hands straight back; nothing Geng
    decides needs the glyph ids.
-2. **Who resolves a style to colours.** The plan does not say. The probe
-   sends a style id in 2 bytes a cell and C maps it to one of 16 colours.
-   The real table (`Vt.Style`) has 256 colours, truecolour, reverse and
+2. **Who resolves a style to colors.** The plan does not say. The probe
+   sends a style id in 2 bytes a cell and C maps it to one of 16 colors.
+   The real table (`Vt.Style`) has 256 colors, truecolor, reverse and
    the rest, and a profile's palette.
 3. **How events cross, and how many packages the C is.** Plan §3.2 and §5:
    an `xcb` package whose "protocol knowledge is in Geng and the C is
@@ -116,16 +116,16 @@ and a glyph may be uploaded in up to three (§13.10).
 
 1. **Shaping, fallback and the glyph cache in C** (§R3.1). Leaning: as the
    probe and V24–V26 have it, and plan §3.4 changed to say so. The display
-   list carries clusters and colours; Geng decides what to draw and the
+   list carries clusters and colors; Geng decides what to draw and the
    profile's fonts, C turns them into glyphs. The cost is that plan §3.4's
    "Geng keeps the LRU" does not hold, and a cache policy is C code.
-2. **Styles resolved in Geng; a frame carries its colours** (§R3.2).
+2. **Styles resolved in Geng; a frame carries its colors** (§R3.2).
    Leaning: each display list starts with the styles it uses, each id with
-   its foreground, background and underline colours as RGB and its flags,
+   its foreground, background and underline colors as RGB and its flags,
    resolved in Geng from `Vt.Style` and the profile's palette (bold as
    bright or not, dim, reverse, hidden), and the cells keep their 2-byte
    ids. C keeps no table between frames. The cost is a few bytes a style a
-   frame, against 6 bytes more a cell if colours went in the cells.
+   frame, against 6 bytes more a cell if colors went in the cells.
 3. **One C package, `x11`, and events as C's own records** (§R3.3).
    Leaning: `packages/x11` holds the connection, window, events, keys
    (xkbcommon), fonts and drawing; its Geng modules are the API. Events
@@ -181,13 +181,13 @@ keep their own copy, `probes/geng/recut/vtp`, for `Vt.Recut`.)
 Gilbert took §R5's five leanings.
 
 **V34 · Shaping, fallback and the glyph cache are C's.** The display list
-carries clusters and colours; Geng decides what is drawn and the
+carries clusters and colors; Geng decides what is drawn and the
 profile's fonts, C turns them into glyphs and keeps the cache.
 `geng-plan.md` §3.4 says so now.
 
-**V35 · Styles are resolved in Geng, and a frame carries its colours.**
+**V35 · Styles are resolved in Geng, and a frame carries its colors.**
 Each display list starts with a record for each style its runs use: the
-id, foreground, background and underline colours as RGB, the flags and the
+id, foreground, background and underline colors as RGB, the flags and the
 underline's kind, resolved by `Vt.View` from `Vt.Style`, the core's
 palette and the profile's look. The cells keep their 2-byte ids, and C
 keeps no table between frames.
@@ -218,35 +218,35 @@ run records as before.
 
 **Resolving a style** (V35), in `Vt.View.styleRecord`:
 
-- a colour is the look's foreground or background for the default (OSC 10
+- a color is the look's foreground or background for the default (OSC 10
   and 11 override them), the core's palette for an index (OSC 4 overrides
   an entry), or its RGB;
 - bold makes an index of the first eight its bright one when the look's
-  `boldIsBright` says so (`defaultLook`: no, its colours the core
+  `boldIsBright` says so (`defaultLook`: no, its colors the core
   palette's white on black);
 - inverse, and the screen's reverse video (mode 5), swap the two; with
   both they cancel;
 - faint takes the foreground half way to the background, after the swap;
 - invisible makes the foreground the background; the flag goes to C too;
-- the underline colour is the foreground unless SGR 58 gives one.
+- the underline color is the foreground unless SGR 58 gives one.
 
-The palette lookups the replies used (`paletteColour`, `dynamicColour`)
+The palette lookups the replies used (`paletteColor`, `dynamicColor`)
 moved from `Vt` into `Vt.Palette`, which both read.
 
-A cell whose style's colours change is not a changed cell: the shadow
+A cell whose style's colors change is not a changed cell: the shadow
 compares cells, and a style's id stays. So `View` keeps a key of what
-colours are resolved from (the palette and dynamic colours the core holds,
+colors are resolved from (the palette and dynamic colors the core holds,
 mode 5, the look) and forgets the shadow when it changes: that frame draws
 every cell.
 
 **The probe follows.** The x11 probe's C reads the style records into a
-table for the frame and draws with their colours. Two of its shortcuts,
-harmless while colours were 16 made up ones, showed at once in a
-screenshot of a colour test (palette, cube, truecolour, inverse, faint,
+table for the frame and draws with their colors. Two of its shortcuts,
+harmless while colors were 16 made up ones, showed at once in a
+screenshot of a color test (palette, cube, truecolor, inverse, faint,
 invisible): a run was filled with its first cell's background, so it is
 now a fill for each stretch of one background; and its cache of solid
-pictures returned whatever picture was in a colour's slot, so it now
-replaces one that holds another colour.
+pictures returned whatever picture was in a color's slot, so it now
+replaces one that holds another color.
 
 **The gate.** `harness/view.py`, with its program `harness/view/core-view`.
 Every case of `corpus/replay/` (325) and of `corpus/view/cases/` (9) is
@@ -263,7 +263,7 @@ record is the answer.
 
 `corpus/view/cases/`: scrolls up, down (reverse index) and within a
 region; a palette change and its reset, reverse video, OSC 10 and 11, each
-redrawing every cell; every attribute and colour form; wide characters at
+redrawing every cell; every attribute and color form; wide characters at
 a run's edges; resizes from the host. 334 cases pass, in under 2 s; a pin
 changed by hand fails.
 
@@ -306,7 +306,7 @@ What the C draws that the probe's did not:
   `:italic` and `:bold:italic` asked of fontconfig; a font with no such
   face gives its regular, and a fallback face draws them as its regular.
 - **Lines**: the underline in each of its kinds (single, double, curly,
-  dotted, dashed) in the style's underline colour, at the font's underline
+  dotted, dashed) in the style's underline color, at the font's underline
   position and thickness; strikethrough and overline in the foreground;
   none for invisible text.
 - **The window's size.** A size record makes a pixmap of that many cells;
@@ -318,7 +318,7 @@ What the C draws that the probe's did not:
   record answers it.
 - **The glyph set's bound** (V37): past the cap the glyph set is freed and
   a new one begun, every face's record of its uploads cleared and its
-  colour pictures freed. V37 said the next frame redraws the screen; it
+  color pictures freed. V37 said the next frame redraws the screen; it
   need not, since the pixmap keeps what the old glyphs drew, so nothing is
   redrawn and glyphs are uploaded again as frames use them.
 - `WM_DELETE_WINDOW`, `WM_CLASS` `puritty`, and the focus, reported once
@@ -326,7 +326,7 @@ What the C draws that the probe's did not:
 
 **The cursor, in `Vt.View`.** C keeps nothing between frames (V35), so
 the cursor is the view's: its cell is drawn in a cursor style, id
-`0x8000` and the cell's style, whose record carries the cursor's colours
+`0x8000` and the cell's style, whose record carries the cursor's colors
 and its shape in the underline byte's top four bits (block, underline,
 bar, hollow). The shadow marks the cursor's cells, so a cell the cursor
 leaves is drawn again. `View.frame` now takes a `Focus` (has the window
@@ -334,7 +334,7 @@ the focus; is a blinking cursor in its shown half): unfocused, the cursor
 is hollow; hidden by DECTCEM, or blinking and off, it is not drawn.
 Blinking's timer is the app's (step 4). The view gate decodes the cursor
 records, checks a shape comes with a cursor id and only then, and has four
-cases more (shapes, OSC 12's colour, a wide character, unfocused): 338
+cases more (shapes, OSC 12's color, a wide character, unfocused): 338
 pass.
 
 **Checked on Xvfb**, with `probes/geng/x11/poke`, a window manager's part
@@ -384,7 +384,7 @@ puritty's devbox, and is native (`runtime = "os"`).
 the defaults. `Config.geng`'s comment lists every key: the window's
 columns, rows and title; the font's family, size, fallback language and
 glyph cache (V37, 4 MB at least, since a smaller cap than a screen's
-glyphs uploads them every frame, §R9); the default colours and whether
+glyphs uploads them every frame, §R9); the default colors and whether
 bold brightens; the cursor's blink; the frame interval and the
 synchronized-output timeout; the scrollback in lines; the program. A key
 the file does not know is refused, naming it and the keys there are, as
@@ -477,7 +477,7 @@ each.** `gilramir/gren-argparse` 3.0.0 is `runtime = "any"`, its
 the platform's function from a string to a path. Its repository holds two
 more packages beside it: `gren-argparse/node` (`node/`), node's
 `Argparse.Program` as it was, and `gren-argparse/os` (`os/`), the same
-runners and `Failure`s over `Os.Env`. The `os` runner colours and wraps
+runners and `Failure`s over `Os.Env`. The `os` runner colors and wraps
 help as node's does, and for that geng-lang's `os` gained
 `Os.Env.standardOutputTerminal` (geng-lang D1048, `m3-os.md` §OS29). Both
 runners now wrap at their 80-column fallback for a terminal that says 0
@@ -531,7 +531,7 @@ descenders; Hangul precomposed, conjoining and LV+T; 直 骨 返 刃 and four
 more under each of `ja`, `ko`, `zh-cn`, `zh-tw` and `zh-hk`; mixed CJK and
 Latin, fullwidth punctuation and ambiguous characters; ❤️ 🇯🇵 👨‍👩‍👧; क्षि),
 and screens of attributes (in DejaVu and in Fira Code), Fira Code's
-ligatures, box drawing (both fonts), the 256 colours, the four cursor
+ligatures, box drawing (both fonts), the 256 colors, the four cursor
 shapes and a wide cursor, reverse video, wide characters at edges, and
 three of ink drawn over by a later frame. The gate takes half a second;
 the pins are 232 KB. It fails when it should: each change below moved the
@@ -588,7 +588,7 @@ What it found:
    1-pixel line is drawn anti-aliased across two pixel columns, and Fira
    Code's horizontal lines are a full row and a faint one, with a pixel's
    wobble at one row (§R14.2).
-6. Nothing else was wrong. The colour emoji family's silhouettes are Noto
+6. Nothing else was wrong. The color emoji family's silhouettes are Noto
    Color Emoji 2.051's own design (PIL with raqm draws the same); the
    gaps after emoji and flags are the core's legacy widths.
 
@@ -747,7 +747,7 @@ and the cost it saves is bytes, not correctness.
 U+2500 to U+259F are no font's: a cluster of one of them is drawn by the C,
 which rasterises it once into a bitmap of its cells, the first time it is
 drawn at that width, and uploads it to the glyph set as any glyph is
-(under a face number of its own), so it is drawn in its style's colour by
+(under a face number of its own), so it is drawn in its style's color by
 the same requests, and is reset with the glyph set (V37).
 
 - **Lines** (U+2500–U+254B, U+2550–U+256C, U+2574–U+257F) come from a
@@ -768,7 +768,7 @@ the same requests, and is reset with the glyph set (V37).
   corner, anti-aliased, so a run of them joins.
 - **Blocks** (U+2580–U+259F): the halves, eighths, quadrants and edges
   filled on whole pixels; the shades ░ ▒ ▓ as flat alpha, a quarter, half
-  and three quarters of the colour, which join with no seam.
+  and three quarters of the color, which join with no seam.
 
 Nothing a box glyph draws leaves its cells, so it answers no ink (V40).
 Braille, Powerline and the geometric shapes stay the font's.
@@ -803,7 +803,7 @@ server.
 - **A shell.** puritty with no program runs gmktec7's `$SHELL` (bash),
   which titles the window `gram@gmktec7: ~/puritty-exit`; typed into
   with xdotool, `echo` and `printf` print `80x24`, `TERM=xterm-256color`,
-  an italic, a wrapped line and the prompt's colours, and `exit 7` ends
+  an italic, a wrapped line and the prompt's colors, and `exit 7` ends
   puritty, and ssh, with status 7.
 - **A resize and a close**, made by `poke`: `stty size` in the program
   reads 24 80, then 29 100 after the window is made 900×500; a close ends
@@ -883,7 +883,7 @@ splitting runs. A ligature is a spacer glyph in its first cell and a glyph
 in the last whose ink reaches back over the others (phase2-window §13.7),
 so the cursor on the first cell covered an empty glyph and hid the left
 dot drawn from the next cell, and on the second it drew the whole
-ligature's glyph in the cursor's colours, clipped to the cursor's cell.
+ligature's glyph in the cursor's colors, clipped to the cursor's cell.
 V28 also promised a setting that turns `calt` off, and none was built.
 
 **The cursor's cell is shaped alone.** `draw_glyphs` ends a segment where
@@ -894,7 +894,7 @@ when the cursor leaves, since a cell the cursor leaves is drawn again with
 its word (V40). Ghostty does the same by default (`font-shaping-break =
 cursor`, `ghostty.md`). A blinking cursor (mode 12) in the half of its
 blink that hides it is cursor shape 5 (`Vt.View`): its cell keeps its
-colours and nothing is drawn over it, but it is still the cursor's, so a
+colors and nothing is drawn over it, but it is still the cursor's, so a
 ligature does not flicker between its two shapes with the blink.
 
 **`[font] ligatures = false`** (`docs/settings.md` ST30) shapes every run

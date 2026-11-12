@@ -381,7 +381,7 @@ The stream `Action` enum (`stream.zig:36+`) covers:
 - **Margins:** DECSTBM, and DECSLRM including the `CSI s` ambiguity with SCOSC.
 - **Modes:** SM/RM/DECSET/DECRST, save/restore (XTSAVE/XTRESTORE), DECRQM.
 - **Charsets:** SCS, LS/SS.
-- **SGR**, including colon sub-params and underline styles/colours.
+- **SGR**, including colon sub-params and underline styles/colors.
 - **Protection:** DECSCA/SPA/EPA.
 - **Reports:** DA1/2/3, DSR (including color-scheme DSR 996 and CSI ? 996 n), XTVERSION,
   XTWINOPS size reports and title push/pop, `CSI 8 t` resize_window.
@@ -530,7 +530,7 @@ semantic_prompt:u2, kitty_virtual_placeholder, dirty, _pad:u23
 
 - Styles are **not** stored per cell. Each page has one ref-counted entry per unique
   style, and a cell holds a 16-bit page-local id.
-- Background-colour-only cells (erase with a coloured BG) store the colour inline and
+- Background-color-only cells (erase with a colored BG) store the color inline and
   need no style entry.
 - Graphemes (additional codepoints after the first) live in a side map keyed by cell
   offset, using a bitmap allocator with 16-byte chunks. Each cluster is capped at
@@ -747,7 +747,7 @@ A cursor move dirties both the old and the new row, because the cursor splits sh
 - **CPU-side buffers** (`renderer/cell.zig:41-200`):
   - `bg_cells`: a flat `rows*cols` array of RGBA8.
   - `fg_rows`: `rows+2` lists of `CellText`. Each entry is about 32 B: glyph rect,
-    bearings, grid pos, colour, atlas id, flags. Lists 0 and `rows+1` are the cursor
+    bearings, grid pos, color, atlas id, flags. Lists 0 and `rows+1` are the cursor
     layers (block cursor below text, other cursor shapes above).
   - Only dirty rows are rebuilt (`rebuildCells`, `generic.zig:2619-2913`).
 - **Uploads:**
@@ -756,25 +756,25 @@ A cursor move dirties both the old and the new row, because the cursor splits sh
   - When an atlas's modified counter changes, the **whole atlas** is re-uploaded, once
     per swap-chain slot (`generic.zig:1880-1896`).
 - **Passes** (`generic.zig:1903-2030`):
-  1. bg colour or bg image (full-screen triangle);
+  1. bg color or bg image (full-screen triangle);
   2. kitty images below bg;
   3. `cell_bg`: a full-screen triangle whose **fragment shader indexes an SSBO of bg
-     colours by `gl_FragCoord / cell_size`**;
+     colors by `gl_FragCoord / cell_size`**;
   4. kitty images below text;
   5. `cell_text`: **instanced quads**, one per glyph or decoration, sampling grayscale
-     or colour `sampler2DRect` atlases;
+     or color `sampler2DRect` atlases;
   6. kitty images above text (one draw per placement);
   7. inspector overlay;
   8. custom post-shaders, ping-ponging between textures.
 - **Decorations are sprite glyphs**: underline (single, double, dotted, dashed, curly),
   strikethrough, overline, and all cursor shapes.
-- Block-cursor text recolouring and `minimum-contrast` are done in the vertex shader.
+- Block-cursor text recoloring and `minimum-contrast` are done in the vertex shader.
 - **Shaders** (`renderer/shaders/glsl/*`):
   - `#version 430 core`: `common.glsl`, `bg_color`, `cell_bg`, `cell_text`, `image`,
     `bg_image`.
   - `full_screen.v.glsl` is `#version 330`.
   - Metal uses hand-written `shaders/shaders.metal`.
-- **Colour handling:** sRGB framebuffer (`GL_SRGB8_ALPHA8` plus `GL_FRAMEBUFFER_SRGB`),
+- **Color handling:** sRGB framebuffer (`GL_SRGB8_ALPHA8` plus `GL_FRAMEBUFFER_SRGB`),
   premultiplied alpha. `alpha-blending` defaults to `linear-corrected` on Linux.
 - **Custom shaders:** Shadertoy-style GLSL → **glslang** → SPIR-V → **SPIRV-Cross** →
   GLSL 430 or MSL (`renderer/shadertoy.zig:157-276`). On failure, post-shaders are
@@ -844,7 +844,7 @@ A cursor move dirties both the old and the new row, because the cursor splits sh
   - Negative results are cached.
 - **SharedGrid** (`SharedGrid.zig`):
   - Holds the codepoint→font cache, the glyph cache, and two **atlases**: grayscale R8
-    and colour BGRA, each starting at 512×512.
+    and color BGRA, each starting at 512×512.
   - Protected by an RwLock with double-checked misses.
   - **Never evicts.** A full atlas **doubles**.
   - Size or font changes build a new grid.
@@ -1175,7 +1175,7 @@ only a build-info flag, `GHOSTTY_BUILD_INFO_TMUX_CONTROL_MODE`
 ### 8.6 Format helpers (`tmux/output.zig`, 573 lines)
 
 - `Variable` is an enum of the tmux format variables Ghostty uses.
-- Pane state: `cursor_x/y`, `cursor_flag`, `cursor_shape`, `cursor_colour`,
+- Pane state: `cursor_x/y`, `cursor_flag`, `cursor_shape`, `cursor_color`,
   `cursor_blinking`.
 - Alternate screen: `alternate_on`, `alternate_saved_x/y`.
 - Modes: `insert_flag`, `wrap_flag`, `keypad_flag`, `keypad_cursor_flag`, `origin_flag`.
@@ -1322,13 +1322,13 @@ The hard GUI and plumbing half is not built yet.
 - **Themes:**
   - Looked up in `~/.config/ghostty/themes`, then in bundled themes.
   - A theme is just a restricted config file.
-  - `theme = light:X,dark:Y` switches with the system colour scheme.
+  - `theme = light:X,dark:Y` switches with the system color scheme.
 - **Conditional config** (`config/conditional.zig`, `Config.zig:4553-4596`):
   - The config records `_replay_steps`.
   - When the conditional state (light/dark, OS) changes, it replays all steps into a
     fresh config. Files are not re-read.
 - **Live reload:**
-  - Triggers: keybind (ctrl+shift+comma), SIGUSR2, or a colour-scheme change.
+  - Triggers: keybind (ctrl+shift+comma), SIGUSR2, or a color-scheme change.
   - **There is no file watching.**
   - `App.updateConfig` → each `Surface.updateConfig` (`Surface.zig:1784-1880`):
     - rebuilds a surface `DerivedConfig`;
@@ -1474,7 +1474,7 @@ The hard GUI and plumbing half is not built yet.
 **Rendering, especially for remote X11**
 
 - Ghostty's GPU path is worth copying for local use:
-  - bg colours as one SSBO read by a full-screen fragment shader;
+  - bg colors as one SSBO read by a full-screen fragment shader;
   - glyphs as instanced quads from a grow-only atlas;
   - procedural box-drawing and Powerline sprites;
   - a position-independent shaping cache;

@@ -220,12 +220,12 @@ def ui_records(body):
             font = w[1].encode() if w[0] == "textin" else b""
             k = 2 if w[0] == "textin" else 1
             x, y, px = map(int, w[k:k + 3])
-            colour = w[k + 3]
-            text = line.split(colour, 1)[1].lstrip(" ").encode()
+            color = w[k + 3]
+            text = line.split(color, 1)[1].lstrip(" ").encode()
             if w[0] == "text":
-                out += b"\x07" + u16(x) + u16(y) + bytes([px]) + rgb(colour) + u16(len(text)) + text
+                out += b"\x07" + u16(x) + u16(y) + bytes([px]) + rgb(color) + u16(len(text)) + text
             else:
-                out += b"\x09" + u16(x) + u16(y) + bytes([px]) + rgb(colour) + bytes([len(font)]) + font + u16(len(text)) + text
+                out += b"\x09" + u16(x) + u16(y) + bytes([px]) + rgb(color) + bytes([len(font)]) + font + u16(len(text)) + text
         elif w[0] == "clip":
             out += b"\x08" + b"".join(u16(int(v)) for v in w[1:5])
         elif w[0] == "noclip":
@@ -262,8 +262,8 @@ def read_png(path):
         n, = struct.unpack(">I", data[i:i + 4])
         kind, body = data[i + 4:i + 8], data[i + 8:i + 8 + n]
         if kind == b"IHDR":
-            w, h, depth, colour, _, _, lace = struct.unpack(">IIBBBBB", body)
-            if (depth, colour, lace) != (8, 2, 0):
+            w, h, depth, color, _, _, lace = struct.unpack(">IIBBBBB", body)
+            if (depth, color, lace) != (8, 2, 0):
                 raise ValueError(f"{path}: not 8-bit RGB")
         elif kind == b"IDAT":
             idat += body

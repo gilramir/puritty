@@ -9,7 +9,7 @@
  *   - a fill is a RenderFillRectangles;
  *   - a glyph is uploaded to a glyph set with RenderAddGlyphs, and the
  *     glyphs placed are drawn a RenderCompositeGlyphs32 for each stretch of
- *     one foreground; a colour glyph is an ARGB32 picture (§13.10);
+ *     one foreground; a color glyph is an ARGB32 picture (§13.10);
  *   - when the renderer begins its glyphs again (V37), the glyph set is
  *     freed and a new one begun. The pixmap keeps what was drawn with the
  *     old one, so nothing is redrawn;
@@ -117,12 +117,12 @@ static uint32_t margin_bg = 0xFFFFFFFF;
 
 static xcb_atom_t wm_protocols, wm_delete, net_wm_name, utf8_string;
 
-static xcb_render_color_t colour(uint32_t rgb) {
+static xcb_render_color_t color(uint32_t rgb) {
     return (xcb_render_color_t) {.red = (uint16_t) (((rgb >> 16) & 0xff) * 257), .green = (uint16_t) (((rgb >> 8) & 0xff) * 257),
                                  .blue = (uint16_t) ((rgb & 0xff) * 257), .alpha = 0xffff};
 }
 
-/* Solid pictures for glyphs' colours, a cache of 256 slots: a colour that
+/* Solid pictures for glyphs' colors, a cache of 256 slots: a color that
  * lands on a slot another holds replaces it. */
 static xcb_render_picture_t solid[256];
 static uint32_t solid_rgb[256];
@@ -136,7 +136,7 @@ static xcb_render_picture_t solid_of(uint32_t rgb) {
     if (solid[i] == 0) {
         solid[i] = xcb_generate_id(conn);
         solid_rgb[i] = rgb;
-        xcb_render_create_solid_fill(conn, solid[i], colour(rgb));
+        xcb_render_create_solid_fill(conn, solid[i], color(rgb));
     }
     return solid[i];
 }
@@ -202,7 +202,7 @@ static geng_bytes *family_lines(char **names, int n) {
 
 /* The families of the monospace fonts fontconfig has, for the settings
  * window (docs/settings.md ST8): spacing mono, dual (most CJK monospace
- * fonts) or charcell, each once, and not colour (an emoji font is
+ * fonts) or charcell, each once, and not color (an emoji font is
  * monospace to fontconfig, and is no terminal's font), as Windows' list. */
 geng_cancel puritty_x11_fonts(geng_wait *wait) {
     FcPattern *p = FcPatternCreate();
@@ -214,8 +214,8 @@ geng_cancel puritty_x11_fonts(geng_wait *wait) {
         int spacing;
         FcChar8 *family;
         if (FcPatternGetInteger(set->fonts[i], FC_SPACING, 0, &spacing) != FcResultMatch || spacing < FC_DUAL) continue;
-        FcBool colour;
-        if (FcPatternGetBool(set->fonts[i], FC_COLOR, 0, &colour) == FcResultMatch && colour) continue;
+        FcBool color;
+        if (FcPatternGetBool(set->fonts[i], FC_COLOR, 0, &color) == FcResultMatch && color) continue;
         if (FcPatternGetString(set->fonts[i], FC_FAMILY, 0, &family) != FcResultMatch) continue;
         int seen = 0;
         for (int k = 0; k < n && !seen; k++) seen = strcmp(names[k], (const char *) family) == 0;
@@ -236,11 +236,11 @@ static int ignorable(uint32_t cp) {
 }
 
 /* The face fontconfig gives a monospace font with the cluster, in the
- * language, colour when asked (V26). */
-char *pt_fallback_file(const uint32_t *cps, int n, int colour, const char *lang, int *index) {
+ * language, color when asked (V26). */
+char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, int *index) {
     FcPattern *p = FcNameParse((const FcChar8 *) "monospace");
     if (lang) FcPatternAddString(p, FC_LANG, (const FcChar8 *) lang);
-    if (colour) FcPatternAddBool(p, FC_COLOR, FcTrue);
+    if (color) FcPatternAddBool(p, FC_COLOR, FcTrue);
     FcCharSet *cs = FcCharSetCreate();
     for (int i = 0; i < n; i++)
         if (!ignorable(cps[i])) FcCharSetAddChar(cs, cps[i]);
@@ -264,7 +264,7 @@ char *pt_fallback_file(const uint32_t *cps, int n, int colour, const char *lang,
 
 void pt_fill(uint32_t rgb, int x, int y, int w, int h) {
     xcb_rectangle_t r = {(int16_t) x, (int16_t) y, (uint16_t) w, (uint16_t) h};
-    xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, colour(rgb), 1, &r);
+    xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, color(rgb), 1, &r);
 }
 
 void pt_fill_rects(uint32_t rgb, const PtRect *rects, int n) {
@@ -272,7 +272,7 @@ void pt_fill_rects(uint32_t rgb, const PtRect *rects, int n) {
     if (n > 4096) n = 4096;
     for (int i = 0; i < n; i++)
         rs[i] = (xcb_rectangle_t) {(int16_t) rects[i].x, (int16_t) rects[i].y, (uint16_t) rects[i].w, (uint16_t) rects[i].h};
-    xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, colour(rgb), (uint32_t) n, rs);
+    xcb_render_fill_rectangles(conn, XCB_RENDER_PICT_OP_SRC, target, color(rgb), (uint32_t) n, rs);
 }
 
 /* A glyph uploaded to the glyph set (§13.10): its advance on the server is
@@ -291,7 +291,7 @@ void pt_glyphs_reset(void) {
     xcb_render_create_glyph_set(conn, glyphs, a8);
 }
 
-/* Each stretch of one foreground colour as one CompositeGlyphs32, a new
+/* Each stretch of one foreground color as one CompositeGlyphs32, a new
  * element where a glyph is not where the last one's advance left the pen. */
 void pt_glyphs_draw(const PtPlaced *placed, int nplaced, const PtRect *clips) {
     static uint8_t buffer[65536];
@@ -331,7 +331,7 @@ void pt_glyphs_draw(const PtPlaced *placed, int nplaced, const PtRect *clips) {
     }
 }
 
-/* A colour glyph as an ARGB32 picture. */
+/* A color glyph as an ARGB32 picture. */
 void *pt_picture_add(const uint32_t *argb, int w, int h) {
     xcb_pixmap_t pm = xcb_generate_id(conn);
     xcb_create_pixmap(conn, 32, pm, window, (uint16_t) w, (uint16_t) h);

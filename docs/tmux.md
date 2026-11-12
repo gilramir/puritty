@@ -92,11 +92,11 @@ times; a lone Esc reaches the pane after:
 |---|---|---|---|
 | nothing | 507 ms | 507 ms | (empty) |
 | what puritty answers today: DA1, DA2, XTVERSION, DECRQM, 18t, 14t | 507 ms | 11–16 ms | (empty) |
-| that, plus `OSC 10/11` colours and `CSI ? 997 ; 1 n` to 996 | 16 ms | 16 ms | dark |
+| that, plus `OSC 10/11` colors and `CSI ? 997 ; 1 n` to 996 | 16 ms | 16 ms | dark |
 
 The cause is in `tty_keys_next` (`tty-keys.c:1002-1009`): while any query
 is unanswered, tmux waits 500 ms before taking an Esc as Esc, and a 5 s
-timer gives up on them (`tty.c:312-323`). tmux asks for the colours again
+timer gives up on them (`tty.c:312-323`). tmux asks for the colors again
 after a theme report and after a resize 30 s or more since the last ask
 (`tty.c:428-450`), so it is not only at attach.
 
@@ -110,7 +110,7 @@ after a theme report and after a resize 30 s or more since the last ask
 | DA2 `CSI > c` | only 77 mintty, 84 tmux, 85 rxvt (`:1652-1663`) | `CSI >1;0;0c` | none needed |
 | XTVERSION `CSI > q` | a fixed list of name prefixes: `iTerm2 `, `tmux `, `XTerm(`, `mintty `, `foot(`, `WezTerm `, `ghostty `, `Rio ` (`:1724-1739`); master adds `kitty(` | `DCS >|puritty ST` | no match, so no default feature list. Add a version (`puritty 0.1`): every prefix ends in a space or `(` |
 | DECRQM `?2026` | sync | `CSI ?2026;2$y` | none: sync is detected |
-| `OSC 10;?`, `OSC 11;?` | the background, to guess light or dark; and the Esc wait (TM3) | answered only after a program set the colour (`vt/src/Vt/Osc.geng`, `dynamicColours`) | **answer from the configured look** |
+| `OSC 10;?`, `OSC 11;?` | the background, to guess light or dark; and the Esc wait (TM3) | answered only after a program set the color (`vt/src/Vt/Osc.geng`, `dynamicColors`) | **answer from the configured look** |
 | `CSI ? 996 n`, `CSI ? 2031 h` | the theme now, and on each change | 2031 recorded; 996 not answered, 997 never sent | **answer 996, and send `CSI ? 997 ; 1/2 n` under 2031 when the look changes** |
 | `CSI 18 t`, `CSI 14 t` | cell size in pixels, for sixel | answered | none |
 | `OSC 4;N;?` | a pane's palette question | answered | none |
@@ -119,11 +119,11 @@ after a theme report and after a resize 30 s or more since the last ask
 ### TM4.2 · Features
 
 tmux turns a feature on from its table of known terminals, the
-`terminal-features` option (default `xterm*:clipboard:ccolour:cstyle:focus:title`),
+`terminal-features` option (default `xterm*:clipboard:ccolor:cstyle:focus:title`),
 terminfo, `COLORTERM`, and the replies above (`tty-features.c:509-529`,
 `tty-term.c:618-683`). With `xterm-256color` and puritty's replies,
 `client_termfeatures` was measured as
-`bpaste,ccolour,clipboard,cstyle,focus,sync,title` (with 256 and RGB from
+`bpaste,ccolor,clipboard,cstyle,focus,sync,title` (with 256 and RGB from
 terminfo and `COLORTERM`).
 
 | feature | escape | puritty supports | detected | to do |
@@ -231,7 +231,7 @@ All of 3.8's, with what they carry (`control-notify.c`, `control.c`):
   Unescape into a per-pane byte stream.
 - **tmux has already answered the program's queries** (DA, DECRQM, OSC
   10/11, …; `input.c`). The pane's terminal in puritty must not answer
-  what it sees in `%output`. Colours for a pane come from
+  what it sees in `%output`. Colors for a pane come from
   `refresh-client -r %p:<report>` (`cmd-refresh-client.c:140-173`).
 - A mode's screen (copy mode, choose-tree, display-panes) is never in
   `%output`: `%pane-mode-changed` says a mode began, `#{pane_mode}` which,
@@ -337,7 +337,7 @@ version check is needed for it.
    belonging to that command. Prefix every capture and `-F` format.
 3. **The pane terminals answer nothing.** Queries in `%output` were
    already answered by tmux. Puritty's look reaches the panes by
-   `refresh-client -r` (colours) and its theme by the client's 997 (TM4).
+   `refresh-client -r` (colors) and its theme by the client's 997 (TM4).
 4. **Flow control is `pause-after`** with a capture on `%continue`, which
    neither WezTerm nor Ghostty does.
 5. **Guard `-CC` inside tmux** (`$TMUX` set in the shell that ran it, or
@@ -374,7 +374,7 @@ pace):
   is what survives tmux too, not only Sixel.
 - **Control mode**: no new notifications or flags. `%layout-change` now
   also fires when border status or scrollbars change pane sizes
-  (ecc43170); a control client's colours start unknown rather than black,
+  (ecc43170); a control client's colors start unknown rather than black,
   which made tmux think a control client's terminal dark (e6211b41).
 - **Outer terminal**: `kitty(` joins the XTVERSION list; Kitty's keyboard
   protocol is on an unmerged branch (`kitty-keys-autodetect`), so tmux
@@ -505,17 +505,17 @@ Gilbert accepted TM10's leanings, so the five fixes are in:
   name. Without one (`ghosttyEmbedder`) every answer is libghostty-vt's as
   before, so the replay corpus and the oracle are untouched (`vt-core.md`
   V4). `Vt.withEmbedder` sets it.
-- **OSC 10, 11 and 12 `?`** answer the program's colour, else the
-  embedder's (`Palette.dynamicColour`). The renderer keeps to the colours a
-  program set (`Palette.programColour`), so a block cursor still takes the
-  colour of the text under it.
+- **OSC 10, 11 and 12 `?`** answer the program's color, else the
+  embedder's (`Palette.dynamicColor`). The renderer keeps to the colors a
+  program set (`Palette.programColor`), so a block cursor still takes the
+  color of the text under it.
 - **DSR 996** answers `CSI ? 997 ; 1 n` or `; 2 n` from the background OSC
   11 answers, light when its relative luminance is over half, and nothing
   when there is none. `withEmbedder` sends the same, unasked, under mode
   2031 when the side changes: puritty's settings reloaded with another
   background is sent at once (`applySettings`).
 - **puritty's window** (`app/src/Main.geng`, `embedderOf`) gives the
-  look's colours, DA1 `?62;21;22;52c` (21 margins, 52 OSC 52) and
+  look's colors, DA1 `?62;21;22;52c` (21 margins, 52 OSC 52) and
   XTVERSION `puritty 0.1.0`.
 - **The user guide** has `docs/user/tmux.md`, with TM4.3's line for
   `.tmux.conf` and the EUC-KR finding of TM11.
@@ -526,7 +526,7 @@ three runs each.
 
 | puritty | Esc 1 s after attach | Esc 6 s after | `client_theme` | features tmux turned on |
 |---|---|---|---|---|
-| 9dc01c1, before | 503 ms | 17 ms | (empty) | bpaste, ccolour, clipboard, cstyle, focus, RGB, sync, title |
+| 9dc01c1, before | 503 ms | 17 ms | (empty) | bpaste, ccolor, clipboard, cstyle, focus, RGB, sync, title |
 | with TM12 | 17 ms | — | dark | the same and **margins** |
 
 The core's unit tests have a suite for it (`vt/tests/src/Embedder.geng`,
@@ -615,7 +615,7 @@ floating one.
 **Not yet** (TM13 step 4): what the panes held before attaching (a
 capture), `pause-after`, the session's other windows as tabs, the mouse
 (focus by click, moving and resizing floating panes), scrollback and
-selection within a pane, colours for the dividers and the active pane's
+selection within a pane, colors for the dividers and the active pane's
 box, and puritty's own screen while tmux exits.
 
 **Decided, Gilbert, 2026-11-11: floating panes stay inside the window.**
@@ -638,7 +638,7 @@ panes (`list-panes -s`) and, for each, sends one line of three commands:
 `display-message` with the pane's size, cursor, alternate screen, scroll
 region and private modes (3.8's `#{pane_private_modes}`), `capture-pane
 -a -q` for the main screen kept behind an alternate one, and `capture-pane
--p -e -J -S - -E -` for its history and screen with their colours. The
+-p -e -J -S - -E -` for its history and screen with their colors. The
 pane's terminal is made again from them: the main screen's lines, then the
 alternate screen's after `?1049h`, then the modes, the region and the
 cursor.
@@ -663,7 +663,7 @@ cursor.
   it now (a test of its own).
 
 Shown with `bench/tmux/show.py --scenario attach`: a session made before
-attaching, with history and colours in one pane, `less` on the alternate
+attaching, with history and colors in one pane, `less` on the alternate
 screen in another and a floating pane, came back as it was, and `less`
 scrolled correctly after.
 
@@ -792,7 +792,7 @@ server with no client, and the pane only the note and its prompt; a
 detach gave the shell its terminal back.
 
 With this, TM13's step 4 is done. Left for later: dragging the line
-between tiled panes, colours for the tab bar and the dividers, and `%exit`
+between tiled panes, colors for the tab bar and the dividers, and `%exit`
 reasons for a detach, which tmux does not send.
 
 ## TM20 · The lines between tiled panes dragged (2026-11-11)
@@ -809,14 +809,14 @@ the left pane dragged 10 left made it 40 wide from 50 and the right column
 59 from 49; the line below the top right pane dragged 3 down made it 17
 high from 14 and the one below 11.
 
-## TM21 · Colours for the tab bar, the lines and the boxes (2026-11-11)
+## TM21 · Colors for the tab bar, the lines and the boxes (2026-11-11)
 
 What puritty draws around tmux's panes is written into the canvas in
-colour from the 256 (`drawText`, with autowrap off so nothing moves): the
+color from the 256 (`drawText`, with autowrap off so nothing moves): the
 tab bar a dark band (250 on 236), its active tab puritty's amber with dark
 bold text (234 on 214); the lines between tiled panes a quiet grey (240);
 a floating pane's box grey (245), and the active pane's box amber (214), so
-the pane the keys go to is seen at once. They are fixed colours for now;
+the pane the keys go to is seen at once. They are fixed colors for now;
 a light look, or a palette of the user's, may want them from the look.
 
 ## TM22 · The tab bar at the bottom, by default (2026-11-11)
@@ -1252,9 +1252,9 @@ numbers close by themselves after `-d` or `display-panes-time`:
 **Drawn** as tmux draws them, measured on 3.8 with a tmux client inside
 another tmux: each index in `window_clock_table`'s digits, five cells
 square and a cell apart, the first at the pane's middle less three cells a
-digit and two rows up, in `display-panes-colour` (blue) or
-`display-panes-active-colour` (red) for the active pane, with the pane's
-size (`50x29`) at its top right in the same colour; a pane too small for
+digit and two rows up, in `display-panes-color` (blue) or
+`display-panes-active-color` (red) for the active pane, with the pane's
+size (`50x29`) at its top right in the same color; a pane too small for
 the digits gets the index as text in its middle. `[tmux] look =
 "puritty"`: the same digits, grey and the active pane's amber, without the
 size.
@@ -1288,9 +1288,9 @@ window it is for (`-1` for none). Measured on 3.8: `status-style` is
 the formats `#I:#W#{?window_flags,#{window_flags}, }`.
 
 **Styles** (`Tmux.Style`): an option's style and a format's `#[…]` made
-into SGR: named colours, `bright…`, `colour…`, `#rrggbb`, 3.8's theme
-names as the colour they name, the attributes and their `no…`, `none`;
-`default`, alone or as a colour, is the base style's, as tmux takes a
+into SGR: named colors, `bright…`, `color…`, `#rrggbb`, 3.8's theme
+names as the color they name, the attributes and their `no…`, `none`;
+`default`, alone or as a color, is the base style's, as tmux takes a
 window's `default` style to be the status line's and `#[default]` to go
 back to it. What places text (`align`, `list`, `range`, `fill`) is left out.
 
@@ -1305,7 +1305,7 @@ the bar's right, where what tmux or puritty says (TM24) goes in its place
 until the next key.
 
 **Checked:** packages/tmux 61 tests (Control 16: a subscription's name,
-window and value; Style 5: theme, named, bright, 256 and RGB colours,
+window and value; Style 5: theme, named, bright, 256 and RGB colors,
 attributes on and off, a format's runs, `default` as the base's, strip).
 `bench/tmux/show.py --scenario status`, Gilbert's tmux.conf, each look:
 `[0] 0:first- 1:sh*` and `"nene" 13:46 11-Nov-26` as tmux shows them; then
@@ -1440,7 +1440,7 @@ chosen item, under the list, is not drawn.
 
 **The clock is drawn.** Each pane's mode is kept by name with its table
 (`modeLine`); a pane in `clock-mode` shows `HH:MM` in tmux's five-cell
-digits and colon in `clock-mode-colour` (blue; amber in puritty's look),
+digits and colon in `clock-mode-color` (blue; amber in puritty's look),
 in the pane's middle, the cursor hidden. The time of day is tmux's: on
 the first clock puritty asks `display-message -p 'D %H %M %S'` and keeps
 its distance from the loop's clock, and `dueAt` wakes the loop as each

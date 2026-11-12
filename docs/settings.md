@@ -25,7 +25,7 @@ puritty with a message. Nothing re-reads it. The config reload that
 V55) can set the title (`setTitle`), the font's size (`zoom`, V50) and the
 pointer. It cannot change the font family, the fallback language, its size
 in cells, or the glyph cache, which `open` takes once. Everything else a
-setting governs lives in `Main`'s model (colours, blink, paste button,
+setting governs lives in `Main`'s model (colors, blink, paste button,
 word boundaries, OSC 52, frame pacing) or in the core (`Vt.withPalette`).
 
 **`os` cannot watch a file.** `Os.File` has `metadata` (with the
@@ -67,7 +67,7 @@ Why:
   Windows.
 - **Every terminal is the preview, not only one.** Changes reach the
   running terminals through the file, which every terminal watches (ST3),
-  so all of Gilbert's open windows take a new colour at once. A hand edit
+  so all of Gilbert's open windows take a new color at once. A hand edit
   of `config.toml` is the same event, so there is one path, not two.
 
 The alternative, a channel from the settings process to each terminal (a
@@ -97,7 +97,7 @@ even one whose cursor does not blink. Leaning: the change wait.
 
 | setting | applied by | new |
 |---|---|---|
-| colours, palette, bold is bright | the model's `Look`, `Vt.withPalette`, a full redraw | |
+| colors, palette, bold is bright | the model's `Look`, `Vt.withPalette`, a full redraw | |
 | cursor blink | the model | |
 | frame interval, sync timeout | the model | |
 | word boundaries, paste button, OSC 52 read | the model | |
@@ -123,8 +123,8 @@ its label, its description, its search words, its page and whether it
 applies at once. The kinds are few:
 
 - an integer in a range (`font.size`, 4 to 200);
-- a colour (`#rrggbb`);
-- a list of colours (the palette);
+- a color (`#rrggbb`);
+- a list of colors (the palette);
 - one of a set (`charset`: `utf-8`, `euc-kr`, `cp949`);
 - a font family (chosen from the families the system has, ST8);
 - text (the title, the word boundaries);
@@ -159,7 +159,7 @@ frame made by `Vt.View.frame` and drawn by `Window.draw`. The difference
 is who writes into the `Term`. In a terminal it is the program on the
 pty. In the settings window it is the settings program itself: its view
 of the model is written as the bytes a full-screen text program writes
-(cursor moves, colours, text), and fed to its own `Term`.
+(cursor moves, colors, text), and fed to its own `Term`.
 
 What that gives for nothing: the renderer, the fonts and their fallbacks,
 CJK and Thai, the IME and its preedit (a host name typed in Hangul works),
@@ -173,7 +173,7 @@ and clicks and holds `Vt.dump` of its screen and the bytes of
 (`harness/settings.py`, run on Linux and, with `--windows`, on Windows).
 
 **Its own look.** The settings window does not take the user's font or
-colours: the platform's default font (`Platform.font`) at the default
+colors: the platform's default font (`Platform.font`) at the default
 size, and a fixed palette, so that a bad setting (a 4-point font, white
 on white) cannot make the window that fixes it unreadable.
 
@@ -219,12 +219,12 @@ jump = "bastion"               # another host's name, or user@host:port
 command = "tmux new -A -s main" # run there; left out: the login shell
 charset = "euc-kr"             # this host's, over the global one
 
-[hosts."build-box".colours]    # this host's look, over the global one
+[hosts."build-box".colors]    # this host's look, over the global one
 background = "#2a1010"
 ```
 
 - **A host's own settings** are the global ones with its overrides on
-  top: the look (colours, font), the charset, the title. A red background
+  top: the look (colors, font), the charset, the title. A red background
   for production is the common use. Groups, whose settings pass down to
   their hosts (`settings-ui.md` §6, Termius's model), come after.
 - **Passwords and passphrases are never in the file.** With OpenSSH, ssh
@@ -374,8 +374,8 @@ waits. A change to the file, or `Lost`, has it read again 50 ms later, so
 that an editor's save, often several writes, is read once and whole. What
 decodes is applied by difference (ST4):
 
-- the colours and the palette, with every cell drawn again;
-  `Vt.setPalette` sets the named colours over the defaults, so a palette
+- the colors and the palette, with every cell drawn again;
+  `Vt.setPalette` sets the named colors over the defaults, so a palette
   made shorter gives the rest back, where `withPalette` keeps them;
 - a new family, fallback language or glyph cache opens the faces again
   (`Window.setFont`, `pt_refont` in `packages/text`, the window kept at its
@@ -399,7 +399,7 @@ fresh puritty's with the new file, over the part both cover. The picture
 is `PURITTY_SHOT`, a file the app writes each frame to when it is set, as
 `PURITTY_IME_LOG` serves the IME gate. **12 of 12 on Linux** (Xvfb, the
 pixel gate's fonts) and **11 of 11 on Windows** (`--windows beelink1`, in
-the ssh session's window station): colours in place and by rename, the
+the ssh session's window station): colors in place and by rename, the
 palette set and shortened, bold as bright, the size, the family, the
 language (Korean to Japanese Han), a missing family, a file that does not
 decode, a file removed, and on Linux the title. The core's tests gain a
@@ -439,8 +439,8 @@ core's counts and times within their record (`perf.py`).
 ## ST17 · Step 3 built: one table of the settings, read leniently (2026-11-10)
 
 **`app/src/Schema.geng`** holds every setting once (ST5): its key, its
-kind (a whole number in a range with its unit, text, on or off, a colour,
-a list of colours, one of a set, a font family, a command), whether it may
+kind (a whole number in a range with its unit, text, on or off, a color,
+a list of colors, one of a set, a font family, a command), whether it may
 be left unset (`font.language`, `terminal.charset`), its label,
 description and search words, its page, whether it applies at once or to
 new windows, and how it reads and writes its part of a `Config` through
@@ -480,7 +480,7 @@ are read).
 **Held by:** `app/tests` (gren-unit-node on node, `app/linux`'s
 `Platform`), 19 of 19: the defaults, the example, a misspelt key and
 table with their nearest, a key with nothing near, values out of bounds,
-of the wrong kind, a bad colour, a choice not offered, a palette too
+of the wrong kind, a bad color, a choice not offered, a palette too
 long, a line after a value that runs on, reports in the file's order, a
 file that is not TOML, an optional setting left out, and each setting
 reading back what it set. The reload gate's cases for this: a file not
@@ -563,7 +563,7 @@ keys are; text is fitted to the window by cell width, as the core counts
 it (`Vt.Width`, now exposed by `vt`).
 
 `Schema` gains `toText` and `fromText`, a setting's value as the window
-edits it (a palette as colours joined by commas, a command as words
+edits it (a palette as colors joined by commas, a command as words
 quoted where they hold a space) and back, with the file's checks.
 
 **Held by** `app/tests`, 45 of 45: the settings window's 15 feed keys,
@@ -581,7 +581,7 @@ its own (V57), the same program with a first word that the terminal's
 command line does not take, so `puritty -- settings` still runs a program
 of that name. **`app/src/SettingsProgram.geng`** is the window around
 `SettingsWindow` (ST19): it opens a `Window` with its own look (V60: the
-platform's font at the default size, the default colours), feeds the
+platform's font at the default size, the default colors), feeds the
 model's screen to a `Vt.Term` of its own and draws it with `Vt.View` as
 the terminal draws, and turns the window's events into the model's
 inputs: keys (a press or a repeat), an input method's commit and its
@@ -625,7 +625,7 @@ reload 15 of 15 on Linux and 14 of 14 on Windows.
 system has, sorted, each once. On X11 it is fontconfig's list of the
 fonts whose spacing is mono, dual (most CJK monospace fonts) or charcell;
 on Windows every face `packages/win32` reads, those FreeType says are
-fixed-width and are not colour.
+fixed-width and are not color.
 
 **While a font is typed** in the settings window, the system's families
 that hold what is typed are offered beneath it, eight at a time; Up and
@@ -696,7 +696,7 @@ with the hosts (step 7) since they list them.
 **In the file.** `[hosts."name"]` tables (V61): `host` (where to connect;
 a host without one is reported and left out), `user`, `port` (1 to
 65535), `identity`, `jump`, `command`, `charset`, `title`, and two tables
-of its look, `[hosts."name".colours]` (`foreground`, `background`,
+of its look, `[hosts."name".colors]` (`foreground`, `background`,
 `palette`) and `[hosts."name".font]` (`family`, `size`) (V62). Each key is
 read as a setting is, a bad one reported at its line with the nearest
 name. `start` (V64) is the one setting outside any table, so it comes
@@ -706,7 +706,7 @@ shows a host and `start`, and its test holds them.
 **Connecting** (`app/src/Hosts.geng`): a session is OpenSSH's `ssh` on the
 terminal as any program (WS9): `-p`, `-l`, `-i` and `-J` from the host, a
 jump that names another host written as its `user@host:port`, and `-t`
-with the command when there is one. Its window takes the host's colours,
+with the command when there is one. Its window takes the host's colors,
 font, size, charset and title over the settings', and the host's name as
 its title when it gives none. A name the settings do not have is `ssh
 NAME`, for ssh to resolve, so an alias of `~/.ssh/config` connects with no
@@ -791,12 +791,12 @@ survey (begun alongside, `ssh-client.md`); key sounds last of all.
 
 **A host's fields are settings.** `Schema.hostFields name` makes each
 field of a host a `Setting` whose key is its path in the file
-(`["hosts", "box", "user"]`, `["hosts", "box", "colours", "background"]`)
+(`["hosts", "box", "user"]`, `["hosts", "box", "colors", "background"]`)
 and which reads and writes that host among the settings' hosts, so the
 window's rows, typing, live writes, reset and undo serve a host's form as
 they serve the settings: where it connects (which may not be empty), the
 user, the port, the key, the jump, the command, the charset, the title,
-its colours, palette, font and size. Unset takes a key out, and a table of
+its colors, palette, font and size. Unset takes a key out, and a table of
 the host's left empty with it (ST18's rule).
 
 **The host list** has a New host row after quick connect. On a host:
@@ -815,11 +815,11 @@ already says is not touched), `DeleteHost` and `RenameHost`.
 field changed, a field unset and where it connects kept, a host removed
 and put back, renamed, copied, an alias saved, an address not written
 empty; and in the file: a field set and unset giving the file back with
-its comments, a colour making its table and unsetting taking it out, a
+its comments, a color making its table and unsetting taking it out, a
 rename taking the tables under it, a removal leaving the others, every
 host of the example written whole and read back as it was), and the
 settings gate, **16 of 16**, with a new host given its address and user,
-one removed, one renamed with its colours' table and comment, one copied.
+one removed, one renamed with its colors' table and comment, one copied.
 The hosts gate's keys step past the new row (11 of 11), and its
 `settings-connects` case no longer pictures the session: the settings
 window and the session it starts both write `PURITTY_SHOT`'s file, so
@@ -919,13 +919,13 @@ setting like the others: read with its line reported when it is neither,
 on the Hosts page as **Client**, written back by the host's form, and in
 `Schema.example`.
 
-## ST29 · Colour schemes built in (2026-11-11)
+## ST29 · Color schemes built in (2026-11-11)
 
 *Gilbert, 2026-11-11:* predefined palettes copying popular terminals, after
-tmux control mode. `[colours] scheme = "NAME"` gives a foreground, a
-background and the 16 named colours (`app/src/Palettes.geng`); the
+tmux control mode. `[colors] scheme = "NAME"` gives a foreground, a
+background and the 16 named colors (`app/src/Palettes.geng`); the
 settings window offers it as a choice on the Appearance page, above the
-colours. Each is copied from the terminal's own source where puritty has
+colors. Each is copied from the terminal's own source where puritty has
 it: Ghostty (`src/config/Config.zig`, `src/terminal/color.zig`), Alacritty
 (`alacritty/src/config/color.rs`, whose default is now base16's default
 dark, not the Tomorrow Night it once had), PuTTY (`settings.c`, its
@@ -935,16 +935,16 @@ dark and light, Dark+), and xterm (the `XTerm-color` app-defaults in
 nixpkgs' xterm 411, black text on white). `puritty` is today's look and the
 default.
 
-**A colour written beside the scheme wins over it.** `decode` applies the
+**A color written beside the scheme wins over it.** `decode` applies the
 keys of a file in the order of its table's keys, which is alphabetical, so
 a `scheme` applied as a key would land after `background` and
 `foreground`. It is applied to the defaults first, before any key, and the
 `scheme` setting only records the name. A file that names no scheme is
 decoded as before.
 
-Tested: app tests (a scheme sets the colours; a foreground beside it wins,
+Tested: app tests (a scheme sets the colors; a foreground beside it wins,
 written before it or after; an unknown name is reported and leaves the
-colours; 102); the settings gate and the window's model tests moved down a
+colors; 102); the settings gate and the window's model tests moved down a
 row for the new one on the Appearance page (19 of 19).
 
 ## ST30 · Ligatures (2026-11-11)
@@ -954,3 +954,30 @@ are shaped without the font's `calt`, `liga` and `dlig` (`renderer.md`
 §R19). It was promised by V28 (`phase2-window.md`) and not built until
 Gilbert saw Fira Code's `..` under the cursor. It applies at once.
 
+
+## ST31 · American spelling, the file's keys too (2026-11-12, Dnene48)
+
+*Gilbert, 2026-11-12:* "Use American spelling. Color not colour", and
+"Change all of them even the toml key".
+
+The file's table is `[colors]` and a host's `[hosts.NAME.colors]`; the
+settings window's keys are `colors.*`; and the code, the documents, the
+gates and the corpus case names say *color* throughout (`osc-colors`,
+`view-cursor-color`). `Words.american`, which turned the schema's British
+into American where it was shown, is gone, having nothing left to turn.
+No old spelling is read: Geng and puritty have no users yet, so a file
+that says `[colours]` gets the usual report of a table that is not a
+setting's.
+
+Left as they are, since they are other programs' names: tmux's `colour123`
+(tmux writes it so, and `Tmux.Style` reads both spellings, as tmux does),
+PuTTY's `Colour0` to `Colour21` and its `test/colours.txt`, URLs, and
+issue titles quoted in the research notes.
+
+Every gate the rename could move passes: replay 325 (its cases renamed),
+view 345, pixels 46, settings 20, hosts 13, sshwindow 9, reload 15, events
+13, ime 14, keys, mouse, paste, select, charset; vt's tests 94, tmux's 62,
+the app's 112; the Windows build compiles. The store gate had been running
+a binary from 11-10: `harness/store` stopped building when `Words` took
+`gren-i18next`, which its manifest now lists; built again, its writes are
+as pinned, `[colors]` and all.

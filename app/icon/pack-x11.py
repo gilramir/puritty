@@ -20,8 +20,8 @@ def rgba(path):
         n, = struct.unpack(">I", data[i:i + 4])
         kind, body = data[i + 4:i + 8], data[i + 8:i + 8 + n]
         if kind == b"IHDR":
-            w, h, depth, colour, _, _, lace = struct.unpack(">IIBBBBB", body)
-            assert (depth, colour, lace) == (8, 6, 0), f"{path}: not 8-bit RGBA"
+            w, h, depth, color, _, _, lace = struct.unpack(">IIBBBBB", body)
+            assert (depth, color, lace) == (8, 6, 0), f"{path}: not 8-bit RGBA"
         elif kind == b"IDAT":
             idat += body
         i += 12 + n

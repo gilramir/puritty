@@ -5,7 +5,7 @@ OpenSSH, and the window a session gets.
 A stand-in `ssh` is put first on PATH: it writes the arguments it was
 given to a file, one a line, and waits. Each case starts app/puritty on
 Xvfb with a settings file and a command line, and holds the arguments the
-stand-in was given, the window's title, and the colour of an empty cell
+stand-in was given, the window's title, and the color of an empty cell
 of the window's picture (PURITTY_SHOT) to harness/hosts/expected/NAME.txt.
 
 usage (from puritty's devbox, after app/build.sh):
@@ -33,7 +33,7 @@ DISPLAY = ":87"
 
 SETTINGS = """start = "shell"
 
-[colours]
+[colors]
 background = "#101010"
 
 [hosts."build-box"]
@@ -44,7 +44,7 @@ jump = "bastion"
 command = "tmux new -A -s main"
 title = "build"
 
-[hosts."build-box".colours]
+[hosts."build-box".colors]
 background = "#2a1010"
 
 [hosts.bastion]
@@ -65,15 +65,16 @@ CASES = [
     ("program-over-host", None, ["--host", "build-box", "--", "sh", "-c", "exec sleep 600"]),
     # the host list (V65): quick connect and New host come first; Enter on
     # the first host makes the same window
-    # its session, so there is one window, with the host's title and colours
+    # its session, so there is one window, with the host's title and colors
     ("host-list", None, ["hosts"], ("puritty hosts", ["Down", "Down", "Return"])),
     ("start-hosts", 'start = "hosts"', [], ("puritty hosts", [])),
     # from the settings window, a session opens a window of its own and the
     # settings window stays
-    # the menu (ST26): Ctrl+right-click in a terminal, the fourth item, the
+    # the menu (ST26): Ctrl+right-click in a terminal, the sixth item (after
+    # the tab's name and color, docs/tabs.md TB9), the
     # first host, started in a window of its own
     ("menu-connects", None, ["--title", "term", "--", "sh", "-c", "exec sleep 600"],
-     ("term", ["ctrl+button3", "Down", "Down", "Down", "Return"])),
+     ("term", ["ctrl+button3", "Down", "Down", "Down", "Down", "Down", "Return"])),
     # a double click on a host in the settings window (ST27): the Hosts page
     # clicked, then the first host's row twice, at pixels of the drawn
     # window (settings.py's click cases say where things are)
@@ -146,21 +147,21 @@ def run_case(env0, name, start, args, keys=None):
         subprocess.run([XDO, "windowclose", w], env=env, capture_output=True)
     time.sleep(0.3)
     ssh = said.read_text().splitlines() if said.exists() else None
-    colour = "none"
+    color = "none"
     if args[:1] == ["settings"] or name == "menu-connects":
         # the settings window and the session it starts both write
         # PURITTY_SHOT's file, so which picture is there is a race
-        colour = "not pictured"
+        color = "not pictured"
     elif pic:
         row = pic[len(pic) * 3 // 4]
         x = (len(row) // 3) * 3 // 4
-        colour = "#" + row[x * 3:x * 3 + 3].hex()
+        color = "#" + row[x * 3:x * 3 + 3].hex()
     # the window's size, from its picture: the host list's window turns
     # into a terminal's size when a host is chosen (docs/settings-gui.md SG11)
     size = f"{len(pic[0]) // 3}x{len(pic)}" if pic and name in ("host-list", "start-hosts") else None
     return (f"ssh: {ssh if ssh is not None else 'not run'}\n"
             f"title: {title}\n"
-            f"background: {colour}\n"
+            f"background: {color}\n"
             + (f"windows: {seen}\n" if seen is not None else "")
             + (f"size: {size}\n" if size is not None else ""))
 
