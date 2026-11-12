@@ -1,0 +1,232 @@
+module Restore exposing (Window, claim, fresh, save, forget, others, waiting)
+
+{-| A window's tabs kept to restore when puritty starts (`docs/tabs.md`
+TB10), `RestoreFile` their format.
+
+One window is one process, so each running window holds files of its own
+in the state directory: `ID.toml`, its tabs, rewritten when they change,
+and `ID.lock`, locked for the window's life (geng-lang `Os.File.tryLock`,
+`m3-os.md` §OS35). A lock that can be taken says that its window is gone,
+however it ended; a starting puritty claims such a window by taking its
+lock, so that two starting at once never claim the same one.
+-}
+
+import Bytes
+import Os.Directory as Directory
+import Os.Error
+import Os.File as File exposing (Access(..), Creation(..))
+import Os.Path as Path exposing (Path)
+import Os.Random
+import RestoreFile exposing (State, decode)
+import Task exposing (Task)
+
+
+{-| A window's files: its id, and the handle whose lock it holds. -}
+type alias Window =
+    { id : String
+    , lock : File.Handle
+    }
+
+
+-- THE FILES
+
+
+lockOf : Path -> String -> Path
+lockOf dir id =
+    Path.append (Path.fromString (id ++ ".lock")) dir
+
+
+stateOf : Path -> String -> Path
+stateOf dir id =
+    Path.append (Path.fromString (id ++ ".toml")) dir
+
+
+{-| The ids of the windows that have saved their tabs. -}
+saved : File.Permission -> Path -> Task x (Array String)
+saved fs dir =
+    Directory.list fs dir
+        |> Task.map
+            (Array.mapAndKeepJust
+                (\entry ->
+                    let
+                        name =
+                            Path.filename entry.path
+                    in
+                    if String.endsWith ".toml" name then Just (String.dropLast 5 name) else Nothing
+                )
+            )
+        |> Task.onError (\_ -> Task.succeed [])
+
+
+{-| The lock of window `id` taken, if its window is gone: the handle, else
+`Nothing` with the file closed again. -}
+take : File.Permission -> Path -> String -> Task x (Maybe File.Handle)
+take fs dir id =
+    File.open fs (ForWrite CreateIfMissing) (lockOf dir id)
+        |> Task.andThen
+            (\handle ->
+                File.tryLock handle
+                    |> Task.andThen
+                        (\taken ->
+                            if taken then
+                                Task.succeed (Just handle)
+
+                            else
+                                File.close handle |> Task.map (\_ -> Nothing)
+                        )
+                    |> Task.onError (\_ -> File.close handle |> Task.map (\_ -> Nothing) |> Task.onError (\_ -> Task.succeed Nothing))
+            )
+        |> Task.onError (\_ -> Task.succeed Nothing)
+
+
+{-| The first saved window whose own is gone, claimed: its lock taken and
+its state read. One whose state cannot be read is forgotten. -}
+claim : File.Permission -> Path -> Task x (Maybe { window : Window, state : State })
+claim fs dir =
+    saved fs dir |> Task.andThen (\ids -> claimFrom fs dir ids)
+
+
+claimFrom : File.Permission -> Path -> Array String -> Task x (Maybe { window : Window, state : State })
+claimFrom fs dir ids =
+    when Array.popFirst ids is
+        Nothing ->
+            Task.succeed Nothing
+
+        Just { first, rest } ->
+            take fs dir first
+                |> Task.andThen
+                    (\got ->
+                        when got is
+                            Nothing ->
+                                claimFrom fs dir rest
+
+                            Just handle ->
+                                File.readFile fs (stateOf dir first)
+                                    |> Task.map (\bytes -> Bytes.toString bytes |> Maybe.withDefault "" |> decode)
+                                    |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+                                    |> Task.andThen
+                                        (\read ->
+                                            when read is
+                                                Ok s ->
+                                                    Task.succeed (Just { window = { id = first, lock = handle }, state = s })
+
+                                                Err _ ->
+                                                    forget fs dir { id = first, lock = handle } |> Task.andThen (\_ -> claimFrom fs dir rest)
+                                        )
+                    )
+
+
+{-| Whether another saved window waits whose own is gone: one more to
+restore. -}
+waiting : File.Permission -> Path -> Task x Bool
+waiting fs dir =
+    saved fs dir |> Task.andThen (\ids -> anyGone fs dir ids)
+
+
+anyGone : File.Permission -> Path -> Array String -> Task x Bool
+anyGone fs dir ids =
+    when Array.popFirst ids is
+        Nothing ->
+            Task.succeed False
+
+        Just { first, rest } ->
+            take fs dir first
+                |> Task.andThen
+                    (\got ->
+                        when got is
+                            Just handle ->
+                                File.close handle |> Task.onError (\_ -> Task.succeed {}) |> Task.map (\_ -> True)
+
+                            Nothing ->
+                                anyGone fs dir rest
+                    )
+
+
+{-| A new window's files: a fresh id, and its lock taken. -}
+fresh : File.Permission -> Path -> Task Os.Error.Error Window
+fresh fs dir =
+    Directory.createAll fs dir
+        |> Task.andThen (\_ -> Os.Random.bytes 8)
+        |> Task.andThen
+            (\bytes ->
+                let
+                    id =
+                        Bytes.toHexString { padding = False } bytes
+                in
+                File.open fs (ForWrite CreateIfMissing) (lockOf dir id)
+                    |> Task.andThen (\handle -> File.tryLock handle |> Task.map (\_ -> { id = id, lock = handle }))
+            )
+
+
+{-| The state written, whole or not at all: to a file beside it, then
+moved over it. -}
+save : File.Permission -> Path -> Window -> String -> Task Os.Error.Error {}
+save fs dir w text =
+    let
+        next =
+            Path.append (Path.fromString (w.id ++ ".toml.new")) dir
+    in
+    File.writeFile fs (Bytes.fromString text) next
+        |> Task.andThen (\_ -> File.move fs { from = next, to = stateOf dir w.id })
+
+
+{-| A window's files gone: it is not restored. -}
+forget : File.Permission -> Path -> Window -> Task x {}
+forget fs dir w =
+    let
+        quiet t =
+            t |> Task.map (\_ -> {}) |> Task.onError (\_ -> Task.succeed {})
+    in
+    quiet (File.remove fs (stateOf dir w.id))
+        |> Task.andThen (\_ -> quiet (File.close w.lock))
+        |> Task.andThen (\_ -> quiet (File.remove fs (lockOf dir w.id)))
+
+
+{-| Whether another window is running whose files are here: a lock this one
+cannot take. Lock files with no state, left by a window that ended between
+forgetting the two, are removed on the way. -}
+others : File.Permission -> Path -> Window -> Task x Bool
+others fs dir mine =
+    Directory.list fs dir
+        |> Task.map
+            (Array.mapAndKeepJust
+                (\entry ->
+                    let
+                        name =
+                            Path.filename entry.path
+                    in
+                    if String.endsWith ".lock" name && name /= mine.id ++ ".lock" then Just (String.dropLast 5 name) else Nothing
+                )
+            )
+        |> Task.onError (\_ -> Task.succeed [])
+        |> Task.andThen (\ids -> anyRunning fs dir ids)
+
+
+anyRunning : File.Permission -> Path -> Array String -> Task x Bool
+anyRunning fs dir ids =
+    when Array.popFirst ids is
+        Nothing ->
+            Task.succeed False
+
+        Just { first, rest } ->
+            take fs dir first
+                |> Task.andThen
+                    (\got ->
+                        when got is
+                            Nothing ->
+                                Task.succeed True
+
+                            Just handle ->
+                                File.exists fs (stateOf dir first)
+                                    |> Task.onError (\_ -> Task.succeed True)
+                                    |> Task.andThen
+                                        (\kept ->
+                                            (if kept then
+                                                File.close handle |> Task.onError (\_ -> Task.succeed {})
+
+                                             else
+                                                forget fs dir { id = first, lock = handle }
+                                            )
+                                                |> Task.andThen (\_ -> anyRunning fs dir rest)
+                                        )
+                    )

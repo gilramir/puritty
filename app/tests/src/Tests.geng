@@ -17,6 +17,7 @@ import SettingsWindow
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Toml
+import RestoreFile exposing (TabColor(..))
 import Words
 
 
@@ -28,7 +29,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing, window, hosts, words, chords ]
+                    , suites = [ schema, writing, window, hosts, words, chords, restoring ]
                     }
             )
 
@@ -1133,3 +1134,44 @@ chords =
           }
         ]
 
+
+
+restoring : U.Suite
+restoring =
+    run "RestoreFile"
+        [ { name = "a window's tabs come back as they were saved (docs/tabs.md TB10)"
+          , test =
+                \_ ->
+                    let
+                        state =
+                            { host = Nothing
+                            , columns = 120
+                            , rows = 40
+                            , shown = 1
+                            , tabs =
+                                [ { name = "dm", color = Picked 0xC62828, directory = Just "/home/me/src \"a\"" }
+                                , { name = "", color = HostsColor, directory = Just "/tmp" }
+                                , { name = "\u{D55C}", color = NoColor, directory = Nothing }
+                                ]
+                            }
+                    in
+                    Expect.equal (Ok state) (RestoreFile.decode (RestoreFile.encode state))
+          }
+        , { name = "a host's window keeps its host, and a color as #rrggbb or none"
+          , test =
+                \_ ->
+                    Expect.equal "host = \"prod\"\ncolumns = 80\nrows = 24\nshown = 0\n\n[[tabs]]\nname = \"a\"\ncolor = \"#2e7d32\"\n\n[[tabs]]\nname = \"b\"\ncolor = \"none\"\n"
+                        (RestoreFile.encode { host = Just "prod", columns = 80, rows = 24, shown = 0, tabs = [ { name = "a", color = Picked 0x2E7D32, directory = Nothing }, { name = "b", color = NoColor, directory = Nothing } ] })
+          }
+        , { name = "a saved window with no tabs, or not TOML, is none"
+          , test =
+                \_ ->
+                    Expect.equal [ False, False ]
+                        [ Result.isOk (RestoreFile.decode "columns = 80\nrows = 24\nshown = 0\ntabs = []\n")
+                        , Result.isOk (RestoreFile.decode "columns = ")
+                        ]
+          }
+        , { name = "a color that is not one is the host's"
+          , test = \_ -> Expect.equal (Ok [ HostsColor ]) (RestoreFile.decode "columns = 80\nrows = 24\nshown = 0\n[[tabs]]\ncolor = \"red\"\n" |> Result.map (\st -> Array.map .color st.tabs))
+          }
+        ]

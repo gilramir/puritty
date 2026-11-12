@@ -1,0 +1,125 @@
+module RestoreFile exposing (TabColor(..), State, SavedTab, encode, decode)
+
+{-| A window's tabs as saved to open again when puritty starts
+(`docs/tabs.md` TB10): which host its tabs are sessions to, or none for
+local tabs, its size, which tab was shown, and each tab's name, color and
+directory, in the bar's order. `Restore` keeps the files.
+-}
+
+import Schema
+import Toml.Decode as Decode exposing (Decoder)
+import Toml.Encode as Encode
+
+
+{-| A tab's color in the bar: its host's (`[hosts.NAME.colors] tab`),
+one picked for it, or none over its host's. -}
+type TabColor
+    = HostsColor
+    | Picked Int
+    | NoColor
+
+
+type alias State =
+    { host : Maybe String
+    , columns : Int
+    , rows : Int
+    , shown : Int
+    , tabs : Array SavedTab
+    }
+
+
+type alias SavedTab =
+    { name : String
+    , color : TabColor
+    , directory : Maybe String
+    }
+
+
+-- THE FILE
+
+
+{-| The state as its file's text. A color is left out for the host's, and
+is `"none"` for none. -}
+encode : State -> String
+encode s =
+    let
+        tab t =
+            [ Encode.field "name" (Encode.string t.name) ]
+                ++ (when t.color is
+                        HostsColor ->
+                            []
+
+                        Picked c ->
+                            [ Encode.field "color" (Encode.string (Schema.hex c)) ]
+
+                        NoColor ->
+                            [ Encode.field "color" (Encode.string "none") ]
+                   )
+                ++ (when t.directory is
+                        Just d ->
+                            [ Encode.field "directory" (Encode.string d) ]
+
+                        Nothing ->
+                            []
+                   )
+    in
+    Encode.toString
+        ((when s.host is
+            Just h ->
+                [ Encode.field "host" (Encode.string h) ]
+
+            Nothing ->
+                []
+         )
+            ++ [ Encode.field "columns" (Encode.int s.columns)
+               , Encode.field "rows" (Encode.int s.rows)
+               , Encode.field "shown" (Encode.int s.shown)
+               , Encode.field "tabs" (Encode.tableArray (Array.map tab s.tabs))
+               ]
+        )
+
+
+{-| The state from its file's text, or why not. A state with no tabs is
+none. -}
+decode : String -> Result String State
+decode text =
+    Decode.fromString state text
+        |> Result.mapError Decode.errorToString
+        |> Result.andThen (\s -> if Array.isEmpty s.tabs then Err "no tabs" else Ok s)
+
+
+state : Decoder State
+state =
+    Decode.succeed (\host columns rows shown tabs -> { host = host, columns = columns, rows = rows, shown = shown, tabs = tabs })
+        |> Decode.andMap (Decode.optionalField "host" Decode.string)
+        |> Decode.andMap (Decode.field "columns" Decode.int)
+        |> Decode.andMap (Decode.field "rows" Decode.int)
+        |> Decode.andMap (Decode.field "shown" Decode.int)
+        |> Decode.andMap (Decode.field "tabs" (Decode.array savedTab))
+
+
+savedTab : Decoder SavedTab
+savedTab =
+    Decode.map3 (\name color directory -> { name = name, color = color, directory = directory })
+        (Decode.optionalField "name" Decode.string |> Decode.map (Maybe.withDefault ""))
+        (Decode.optionalField "color" Decode.string |> Decode.map (Maybe.map colorOf >> Maybe.withDefault HostsColor))
+        (Decode.optionalField "directory" Decode.string)
+
+
+colorOf : String -> TabColor
+colorOf text =
+    let
+        digit c =
+            String.firstIndexOf (String.fromChar c) "0123456789abcdef0123456789ABCDEF" |> Maybe.map (modBy 16)
+
+        value =
+            String.foldl (\c acc -> Maybe.andThen (\v -> Maybe.map (\d -> v * 16 + d) (digit c)) acc) (Just 0) (String.dropFirst 1 text)
+    in
+    if text == "none" then
+        NoColor
+
+    else if String.startsWith "#" text && String.count text == 7 then
+        Maybe.map Picked value |> Maybe.withDefault HostsColor
+
+    else
+        HostsColor

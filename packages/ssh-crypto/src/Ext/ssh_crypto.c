@@ -20,6 +20,7 @@
 
 #include "ssh_crypto_config.h"
 #include "putty/ssh.h"
+#include "ssh_crypto_lock.h"
 #include "putty/mpint.h"
 
 #include "geng.h"
@@ -273,10 +274,11 @@ int32_t ssh_crypto_verify(void *algorithm, void *publicKey, void *signature, voi
     const ssh_keyalg *alg = keyalg_of(pl(algorithm));
     if (alg == NULL) return -1;
     if (!well_formed(alg, pl(publicKey), pl(signature)) || malleable(alg, pl(publicKey), pl(signature))) return 0;
+    ssh_crypto_curves_lock();
     ssh_key *k = ssh_key_new_pub(alg, pl(publicKey));
-    if (k == NULL) return 0;
-    bool ok = ssh_key_verify(k, pl(signature), pl(data));
-    ssh_key_free(k);
+    bool ok = k != NULL && ssh_key_verify(k, pl(signature), pl(data));
+    if (k != NULL) ssh_key_free(k);
+    ssh_crypto_curves_unlock();
     return ok ? 1 : 0;
 }
 

@@ -53,6 +53,8 @@ import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSe
 import Outbox exposing (Outbox)
 import Console
 import Dialog
+import Restore
+import RestoreFile exposing (TabColor(..))
 import Search
 import Dict exposing (Dict)
 import Int64
@@ -180,6 +182,14 @@ type alias Model =
     , coloring : Maybe Int
     , closing : Maybe { id : Int, why : String, window : Bool }
     , barClick : { at : Int, id : Int }
+      -- the tabs kept to restore (docs/tabs.md TB10): the state directory,
+      -- none for a window not kept; this window's files once made; what
+      -- was last written; when to look again (-1 never); and whether the
+      -- window was closed by its button, which is remembered only when
+      -- no other window is open
+    , saving : { dir : Maybe Path.Path, window : Maybe Restore.Window, written : String, at : Int }
+    , byButton : Bool
+    , quietUntil : Int
     }
 
 
@@ -298,6 +308,7 @@ type Mode
     | Shell
     | Ssh String
     | HostList
+    | RestoreOne
 
 
 cli : Argparse.Parser.Command (Array String) { config : Maybe Path.Path, title : Maybe String, host : Maybe String } Command
@@ -335,6 +346,11 @@ main =
                     -- `puritty shell`: a local shell, whatever `start` says
                     Just "shell" ->
                         terminalMain Shell { env | args = Array.dropFirst 1 env.args }
+
+                    -- `puritty restore`: one saved window opened again, or
+                    -- none when none waits (docs/tabs.md TB10)
+                    Just "restore" ->
+                        terminalMain RestoreOne { env | args = Array.dropFirst 1 env.args }
 
                     -- `puritty hosts`: the host list, which a session replaces
                     Just "hosts" ->
@@ -440,21 +456,90 @@ terminalMain mode env =
                                                 Array.isEmpty asked.program
                                                     && asked.host == Nothing
                                                     && (mode == HostList || (mode == Plain && got.config.start == "hosts"))
+
+                                            -- the state directory, for a window whose tabs can
+                                            -- be restored: not one started with a program
+                                            -- (docs/tabs.md TB10)
+                                            stateDir =
+                                                if Array.isEmpty asked.program then
+                                                    Maybe.map Path.fromString (Platform.stateDirectory ctx.vars)
+
+                                                else
+                                                    Nothing
+
+                                            -- a plain start with restoring on, or `puritty
+                                            -- restore`, claims a saved window
+                                            claiming =
+                                                when stateDir is
+                                                    Just dir ->
+                                                        if asked.host == Nothing && (mode == RestoreOne || (mode == Plain && got.config.tabsRestore)) then
+                                                            Restore.claim ctx.fs dir
+
+                                                        else
+                                                            Task.succeed Nothing
+
+                                                    Nothing ->
+                                                        Task.succeed Nothing
                                         in
-                                        if listing then
-                                            hostList ctx.cp ctx.fs ctx.vars given asked got
+                                        claiming
+                                            |> Task.andThen
+                                                (\claimed ->
+                                                    when claimed is
+                                                        Just c ->
+                                                            say got.problems
+                                                                |> Task.andThen (\_ -> start ctx.cp ctx.vars given got.problems (restoredConfig c.state got.config) { dir = stateDir, claimed = Just c })
 
-                                        else
-                                        when chosen.config is
-                                            Err why ->
-                                                Task.fail why
+                                                        Nothing ->
+                                                            if mode == RestoreOne then
+                                                                -- none waits: nothing to open
+                                                                Task.succeed {}
 
-                                            Ok config ->
-                                                Array.foldl (\p t -> t |> Task.andThen (\_ -> Console.writeErr ("puritty: " ++ p ++ "\n"))) (Task.succeed {}) (got.problems ++ chosen.problems)
-                                                    |> Task.andThen (\_ -> start ctx.cp ctx.vars given (got.problems ++ chosen.problems) config)
+                                                            else if listing then
+                                                                hostList ctx.cp ctx.fs ctx.vars given asked got
+
+                                                            else
+                                                            when chosen.config is
+                                                                Err why ->
+                                                                    Task.fail why
+
+                                                                Ok config ->
+                                                                    say (got.problems ++ chosen.problems)
+                                                                        |> Task.andThen (\_ -> start ctx.cp ctx.vars given (got.problems ++ chosen.problems) config { dir = stateDir, claimed = Nothing })
+                                                )
                                     )
                                 |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
                     }
+
+
+{-| How a window's tabs are kept to restore (docs/tabs.md TB10): the
+state directory, none for a window that is not kept, and the saved window
+this one opens again, if it does. -}
+type alias Restoring =
+    { dir : Maybe Path.Path
+    , claimed : Maybe { window : Restore.Window, state : RestoreFile.State }
+    }
+
+
+{-| The settings a restored window starts with: its host's session, as
+`--host` gives, and its size. -}
+restoredConfig : RestoreFile.State -> Config -> Config
+restoredConfig state config =
+    let
+        base =
+            when state.host is
+                Just name ->
+                    Hosts.session config
+                        (if Array.any (\h -> h.name == name) config.hosts then
+                            Hosts.named name config
+
+                         else
+                            Hosts.quick name |> Maybe.withDefault (Hosts.named name config)
+                        )
+
+                Nothing ->
+                    config
+    in
+    { base | columns = clamp 10 1000 state.columns, rows = clamp 3 1000 state.rows }
 
 
 {-| What the window runs (`docs/settings.md` ST11, V64): a program on the
@@ -501,6 +586,10 @@ choose mode asked config =
             HostList ->
                 { config = Ok config, problems = [] }
 
+            RestoreOne ->
+                -- only a claimed window starts, from its own settings
+                { config = Ok config, problems = [] }
+
 
 {-| The host list (V64, V65): the settings window on its Hosts page, whose
 Connect makes the same window the host's session, its font the host's. -}
@@ -531,7 +620,7 @@ hostList cp fs vars given asked got =
                                                         -- the session's size (SG11)
                                                         Window.resize { cols = config.columns, rows = config.rows }
                                                             |> Task.andThen (\_ -> Text.ligatures config.ligatures)
-                                                            |> Task.andThen (\_ -> begin cp vars given got.problems locale config cell)
+                                                            |> Task.andThen (\_ -> begin cp vars given got.problems locale config cell { dir = Nothing, claimed = Nothing })
 
                                                     Err why ->
                                                         Task.fail ("cannot open the host's font: " ++ why)
@@ -540,14 +629,14 @@ hostList cp fs vars given asked got =
             )
 
 
-start : Process.Permission -> Dict String String -> Given -> Array String -> Config -> Task String {}
-start cp vars given problems config =
+start : Process.Permission -> Dict String String -> Given -> Array String -> Config -> Restoring -> Task String {}
+start cp vars given problems config restoring =
     Platform.locale vars
-        |> Task.andThen (\locale -> startIn cp vars given problems locale config)
+        |> Task.andThen (\locale -> startIn cp vars given problems locale config restoring)
 
 
-startIn : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Task String {}
-startIn cp vars given problems locale config =
+startIn : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Restoring -> Task String {}
+startIn cp vars given problems locale config restoring =
     Window.open
         { cols = config.columns
         , rows = config.rows
@@ -565,14 +654,14 @@ startIn cp vars given problems locale config =
 
                     Ok cell ->
                         Text.ligatures config.ligatures
-                            |> Task.andThen (\_ -> begin cp vars given problems locale config cell)
+                            |> Task.andThen (\_ -> begin cp vars given problems locale config cell restoring)
             )
 
 
 {-| A session in the window, open with this cell: the program started on a
 terminal of its size, and the loop. -}
-begin : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Window.Cell -> Task String {}
-begin cp vars given problems locale config cell =
+begin : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Window.Cell -> Restoring -> Task String {}
+begin cp vars given problems locale config cell restoring =
                         let
                             -- the command, or the platform's programs, the
                             -- first of them that starts
@@ -584,8 +673,10 @@ begin cp vars given problems locale config cell =
                                     [ config.command ]
 
                             options =
-                                -- the pty's IUTF8 says whether the program's bytes are UTF-8
+                                -- the pty's IUTF8 says whether the program's bytes are UTF-8;
+                                -- a restored local tab in its directory (TB10)
                                 Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
+                                    |> (\o -> { o | workingDirectory = firstDirectory restoring })
 
                             charset =
                                 Charset.fromName (Maybe.withDefault locale.charset config.charset)
@@ -659,7 +750,7 @@ begin cp vars given problems locale config cell =
                                                         , charset = localCharset
                                                         }
                                                 in
-                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener
+                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring
                                             )
                                 )
 
@@ -728,8 +819,8 @@ the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Task String {}
-run imeLog shotPath charset config cell remote starter settings problems opener =
+run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Task String {}
+run imeLog shotPath charset config cell remote starter settings problems opener restoring =
             -- puritty's own text (its questions, the search bar, the tab
             -- bar) in the interface font, as the settings window's is, apart
             -- from the terminal's (docs/tabs.md TB5)
@@ -739,7 +830,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                 |> Task.andThen (\_ -> now)
                 |> Task.andThen
                     (\t0 ->
-                        barFirst remote
+                        restoreInto restoring
                             { config = config
                             , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
                             , term =
@@ -813,6 +904,9 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , coloring = Nothing
                             , closing = Nothing
                             , barClick = { at = -1000, id = -1 }
+                            , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
+                            , byButton = False
+                            , quietUntil = -1
                             }
                             |> Task.mapError Os.Error.toString
                     )
@@ -821,8 +915,39 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
 
 {-| The end: the program's exit status when it ended, 0 when the window
 was closed, after asking the program to end. -}
-finish : Backend -> Model -> Task String {}
-finish remote m =
+finish : Backend -> (taken m0 : Model) -> Task String {}
+finish remote m0 =
+    savedAtEnd m0 |> Task.mapError Os.Error.toString |> Task.andThen (\m -> finishTabs remote m)
+
+
+{-| What becomes of the window's saved tabs as it ends (docs/tabs.md
+TB10). A window lost, as at logout, keeps them, saved once more. One
+closed by its button keeps them only when no other window is open, since
+closing the last is quitting. One whose last tab ended forgets them. -}
+savedAtEnd : (taken m : Model) -> Task Error Model
+savedAtEnd m =
+    when { dir = m.saving.dir, window = m.saving.window } is
+        { dir = Just dir, window = Just w } ->
+            let
+                fs =
+                    m.settings.given.fs
+            in
+            if m.lost then
+                saveNow 0 m
+
+            else if m.byButton then
+                Restore.others fs dir w
+                    |> Task.andThen (\open -> if open then Restore.forget fs dir w |> Task.map (\_ -> m) else saveNow 0 m)
+
+            else
+                Restore.forget fs dir w |> Task.map (\_ -> m)
+
+        _ ->
+            Task.succeed m
+
+
+finishTabs : Backend -> Model -> Task String {}
+finishTabs remote m =
     let
         -- the other tabs' programs ended first (docs/tabs.md TB2)
         others =
@@ -902,7 +1027,7 @@ nextAt m =
             else
                 -1
     in
-    soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)
+    soonest (soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at
 
 
 {-| The sooner of two times, -1 standing for none. -}
@@ -999,6 +1124,207 @@ flush remote m =
         in
         remote.writeSome next.bytes
             |> Task.map (\n -> { m | out = Outbox.written n next.outbox })
+
+
+{-| A window that restores (docs/tabs.md TB10) opens its saved tabs, with
+their names and colors, and shows the one that was shown; then, when
+another saved window waits, `puritty restore` is started for it, which
+starts the next in turn. A window that saves without restoring makes its
+files. Then the loop. -}
+restoreInto : Restoring -> (taken m : Model) -> Task Error Model
+restoreInto restoring m =
+    let
+        fs =
+            m.settings.given.fs
+    in
+    (when restoring.claimed is
+        Just c ->
+            let
+                first =
+                    Array.first c.state.tabs |> Maybe.withDefault { name = "", color = HostsColor, directory = Nothing }
+
+                info =
+                    m.tab
+
+                named =
+                    { m | tab = { info | name = first.name, color = first.color }, saving = { dir = restoring.dir, window = Just c.window, written = "", at = 0 }, quietUntil = m.last + 3000 }
+
+                shownId =
+                    -- ids are given in order from 0, so the saved order's
+                    -- place is the id
+                    clamp 0 (Array.length c.state.tabs - 1) c.state.shown
+            in
+            Array.foldl
+                (\t acc -> acc |> Task.andThen (openTabWith { directory = Just (Maybe.map Path.fromString t.directory), name = t.name, color = t.color }))
+                (Task.succeed named)
+                (Array.dropFirst 1 c.state.tabs)
+                |> Task.map (\opened -> showTab shownId opened)
+                |> Task.andThen
+                    (\shown ->
+                        when restoring.dir is
+                            Just dir ->
+                                Restore.waiting fs dir
+                                    |> Task.andThen (\more -> if more then spawnSelf [ "restore" ] shown else Task.succeed shown)
+
+                            Nothing ->
+                                Task.succeed shown
+                    )
+
+        Nothing ->
+            startSaving m
+    )
+        |> Task.andThen (\next -> barFirst next.remote next)
+
+
+{-| This window's files made, when its tabs are to be restored and it has
+none yet; a failure leaves it unsaved, and says so on standard error. -}
+startSaving : (taken m : Model) -> Task Error Model
+startSaving m =
+    when m.saving.dir is
+        Just dir ->
+            if m.config.tabsRestore && not (Maybe.isJust m.saving.window) then
+                Restore.fresh m.settings.given.fs dir
+                    |> Task.map Ok
+                    |> Task.onError (\e -> Task.succeed (Err e))
+                    |> Task.andThen
+                        (\made ->
+                            when made is
+                                Ok w ->
+                                    Task.succeed { m | saving = { dir = Just dir, window = Just w, written = "", at = 0 } }
+
+                                Err e ->
+                                    Console.writeErr ("puritty: the tabs cannot be saved to restore them: " ++ Os.Error.toString e ++ "\n") |> Task.map (\_ -> m)
+                        )
+
+            else
+                Task.succeed m
+
+        Nothing ->
+            Task.succeed m
+
+
+{-| Where the first tab of a restored local window starts. -}
+firstDirectory : Restoring -> Maybe Path.Path
+firstDirectory restoring =
+    restoring.claimed
+        |> Maybe.andThen (\c -> if c.state.host == Nothing then Array.first c.state.tabs else Nothing)
+        |> Maybe.andThen .directory
+        |> Maybe.map Path.fromString
+
+
+{-| The window's tabs saved when five seconds have passed since the last
+look, and only when they changed (docs/tabs.md TB10): the shown tab's
+directory and the others' are read each time, so a `cd` is kept too. -}
+saveIfDue : Int -> (taken m : Model) -> Task Error Model
+saveIfDue ms m =
+    if m.saving.at < 0 || ms < m.saving.at then
+        Task.succeed m
+
+    else
+        saveNow ms m
+
+
+saveNow : Int -> (taken m : Model) -> Task Error Model
+saveNow ms m =
+    let
+        saving =
+            m.saving
+
+        fs =
+            m.settings.given.fs
+    in
+    when { dir = saving.dir, window = saving.window } is
+        { dir = Just dir, window = Just w } ->
+            stateOf m
+                |> Task.andThen
+                    (\state ->
+                        let
+                            text =
+                                RestoreFile.encode state
+                        in
+                        (if text == saving.written then
+                            Task.succeed saving.written
+
+                         else
+                            Restore.save fs dir w text
+                                |> Task.map (\_ -> text)
+                                |> Task.onError (\_ -> Task.succeed saving.written)
+                        )
+                    )
+                |> Task.andThen (\written -> Task.succeed { m | saving = { saving | written = written, at = ms + 5000 } })
+
+        _ ->
+            Task.succeed m
+
+
+{-| The window as it is saved: its host, its size, which tab is shown,
+and each tab's name, color and, in a local window, directory. -}
+stateOf : Model -> Task Error RestoreFile.State
+stateOf m =
+    let
+        -- the tab's own host name, which a settings reload does not
+        -- change as it changes `config` (the window's tabs are all one
+        -- host's, or all local)
+        local =
+            m.tab.hostName == Nothing
+
+        header =
+            { host = m.tab.hostName, columns = m.term.cols, rows = m.windowRows, shown = shownAt m }
+
+        directoryOf remote =
+            if local then
+                remote.directory |> Task.map (Maybe.map Path.toString) |> Task.onError (\_ -> Task.succeed Nothing)
+
+            else
+                Task.succeed Nothing
+    in
+    Array.foldl
+        (\t acc -> acc |> Task.andThen (\soFar -> directoryOf t.remote |> Task.map (\d -> Array.pushLast { name = t.name, color = t.color, directory = d } soFar)))
+        (Task.succeed [])
+        (savedTabsOf m)
+        |> Task.map (\tabs -> { host = header.host, columns = header.columns, rows = header.rows, shown = header.shown, tabs = tabs })
+
+
+{-| Each tab in the bar's order: its name, its color, its backend. -}
+savedTabsOf : Model -> Array { name : String, color : TabColor, remote : Backend }
+savedTabsOf m =
+    let
+        hidden =
+            savedHidden 0 m []
+
+        shown =
+            { name = m.tab.name, color = m.tab.color, remote = m.remote }
+
+        shownId =
+            m.tab.id
+    in
+    Array.mapAndKeepJust
+        (\id ->
+            if id == shownId then
+                Just shown
+
+            else
+                Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { name = f.value.name, color = f.value.color, remote = f.value.remote })
+        )
+        m.order
+
+
+{-| What saving needs of each tab not shown. -}
+savedHidden : Int -> Model -> Array { id : Int, name : String, color : TabColor, remote : Backend } -> Array { id : Int, name : String, color : TabColor, remote : Backend }
+savedHidden i m acc =
+    if i >= Builder.length m.tabs then
+        acc
+
+    else
+        savedHidden (i + 1)
+            m
+            (when Builder.get i m.tabs |> Maybe.andThen identity is
+                Just t ->
+                    Array.pushLast { id = t.info.id, name = t.info.name, color = t.info.color, remote = t.remote } acc
+
+                Nothing ->
+                    acc
+            )
 
 
 {-| The loop, with the first tab's terminal a row shorter when the bar
@@ -1146,7 +1472,7 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (blink ms (tmuxTick ms m)) |> Task.andThen (\next -> step remote ms next)
+                                                reloadIfDue ms (blink ms (tmuxTick ms m)) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -1285,6 +1611,38 @@ new windows' (V59). A font the system does not have is said on standard
 error, and the one in use kept. -}
 applySettings : Config -> (taken m : Model) -> Task Error Model
 applySettings new m =
+    let
+        was =
+            m.config.tabsRestore
+    in
+    applyLook new m |> Task.andThen (restoreTurned was)
+
+
+{-| `[tabs] restore` turned on while the window runs: its tabs are saved
+from now; turned off: what it saved is forgotten (docs/tabs.md TB10). -}
+restoreTurned : Bool -> (taken m : Model) -> Task Error Model
+restoreTurned was m =
+    let
+        saving =
+            m.saving
+    in
+    if m.config.tabsRestore && not was then
+        startSaving m
+
+    else if was && not m.config.tabsRestore then
+        when { dir = saving.dir, window = saving.window } is
+            { dir = Just dir, window = Just w } ->
+                Restore.forget m.settings.given.fs dir w |> Task.map (\_ -> { m | saving = { saving | window = Nothing, written = "", at = -1 } })
+
+            _ ->
+                Task.succeed m
+
+    else
+        Task.succeed m
+
+
+applyLook : Config -> (taken m : Model) -> Task Error Model
+applyLook new m =
     let
         old =
             m.config
@@ -4000,6 +4358,14 @@ a tab of a session to a host, another session to the same host. A program
 that does not start is said on standard error, and nothing changes. -}
 openTab : (taken m : Model) -> Task Error Model
 openTab m =
+    openTabWith { directory = Nothing, name = "", color = HostsColor } m
+
+
+{-| A new tab, shown, as `openTab` opens one, named and colored; a local
+one in `directory` when given (a restored tab, TB10), else in the shown
+tab's. -}
+openTabWith : { directory : Maybe (Maybe Path.Path), name : String, color : TabColor } -> (taken m : Model) -> Task Error Model
+openTabWith with m =
     let
         cols =
             m.term.cols
@@ -4013,7 +4379,12 @@ openTab m =
         -- a local tab starts in the shown one's directory (TB4), or the
         -- program's own when that cannot be read
         here =
-            m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing)
+            when with.directory is
+                Just given ->
+                    Task.succeed given
+
+                Nothing ->
+                    m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing)
 
         starting =
             when host is
@@ -4041,7 +4412,7 @@ openTab m =
                                 freeSlot m
 
                             tab =
-                                { info = { id = id, name = "", host = host, hostName = m.tab.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
+                                { info = { id = id, name = with.name, host = host, hostName = m.tab.hostName, color = with.color, bells = 0, bell = False, activity = False }
                                 , remote = remote
                                 , term = freshTerm m.config m.term cols rows
                                 , charset = if host == Nothing then m.starter.charset else m.charset
@@ -4165,14 +4536,14 @@ behind id incoming ms m =
                 endTab id False m
 
             else
-                atTab id (\one -> feed one.remote chunk ms one |> Task.map marked) { m | urgent = True }
+                atTab id (\one -> feed one.remote chunk ms one |> Task.map (marked ms)) { m | urgent = True }
 
         Notice told ->
             if endsSession told (sshOfTab id m) then
                 endTab id True m
 
             else
-                atTab id (\one -> Task.succeed (marked (sshNoticed told one))) { m | urgent = True }
+                atTab id (\one -> Task.succeed (marked ms (sshNoticed told one))) { m | urgent = True }
 
 
 {-| The ssh screen of the tab `id`, not shown. -}
@@ -4185,14 +4556,16 @@ sshOfTab id m =
 
 
 {-| A tab that printed while not shown: marked so, and as having rung when
-its terminal's bells moved. -}
-marked : (taken m : Model) -> Model
-marked m =
+its terminal's bells moved. In the first three seconds of a restored
+window, what its tabs print as they start (their prompts) is not marked,
+so that the bar does not open with every tab lit (TB10); a bell is. -}
+marked : Int -> (taken m : Model) -> Model
+marked ms m =
     let
         info =
             m.tab
     in
-    { m | tab = { info | activity = True, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
+    { m | tab = { info | activity = info.activity || ms >= m.quietUntil, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
 
 
 {-| A tab not shown gone: its program killed (`kill`) or ended, and waited
@@ -4501,14 +4874,6 @@ startRenaming m =
 
 
 -- THE TAB'S COLOR (docs/tabs.md TB9)
-
-
-{-| A tab's color in the bar: its host's (`[hosts.NAME.colors] tab`),
-one chosen for it, or none chosen over its host's. -}
-type TabColor
-    = HostsColor
-    | Picked Int
-    | NoColor
 
 
 {-| The colors the box offers, keys 1 to 8. -}
@@ -4845,7 +5210,7 @@ closeKey k m =
 
         Just c ->
             if (k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59) && c.window then
-                Task.succeed { m | closing = Nothing, closed = True }
+                Task.succeed { m | closing = Nothing, closed = True, byButton = True }
 
             else if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
                 if c.id == m.tab.id then
@@ -4868,7 +5233,7 @@ with `[tabs] ask_before_closing` off. -}
 askCloseWindow : (taken m : Model) -> Task Error Model
 askCloseWindow m =
     if not m.config.tabsAskBeforeClosing then
-        Task.succeed { m | closed = True }
+        Task.succeed { m | closed = True, byButton = True }
 
     else
         let
@@ -4885,7 +5250,7 @@ askCloseWindow m =
             |> Task.map
                 (\busy ->
                     if Array.isEmpty busy then
-                        { m | closed = True }
+                        { m | closed = True, byButton = True }
 
                     else
                         let

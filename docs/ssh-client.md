@@ -1368,3 +1368,42 @@ or the send has answered 1, the struct is not yours.
 Held by `ssh-crypto`'s `keyload` (14) and the ssh gate (the transport, 25
 scripted cases, the fuzzers, known-hosts 34, config 30), and the probe
 above, not kept.
+
+## SC25 · Two logins at once corrupted PuTTY's curves (2026-11-12)
+
+**Found** by restoring tabs (`tabs.md` TB10): a host's window with two
+tabs, restored, connects both sessions at once, and the server refused
+both logins. Its log said `Accepted key` and then `Failed publickey`: the
+key was right and the signatures wrong. Pressing R in each tab connected
+it, since by then nothing else ran.
+
+**Why.** ssh-crypto loads and signs with keys on threads of their own
+(D897, SC16), and verifies host keys and reads public keys on the
+program thread. PuTTY runs its cryptography on one thread: it makes each
+elliptic curve the first time it is used, in a static with no lock
+(`ecc-ssh.c`'s `ec_ed25519()` and six others), and each curve keeps a
+Montgomery context whose scratch numbers every multiplication on that
+curve writes. Two of those at once on one curve overwrite each other's
+numbers. Before tabs, one window held one session and never signed twice
+at a time, so it never showed.
+
+**Shown first, then fixed.** `packages/ssh-crypto/tests` gains
+`--at-once KEYFILE`: a fresh process loads an ed25519 key four times at
+once, signs with each at once, and checks every signature with `verify`.
+Before: 19 of 20 runs failed to load the keys (PuTTY checks a loaded
+key's public half against its private one) and the twentieth made four
+wrong signatures. Making every curve on the program thread before the
+first key thread was not enough: with the curves made, the loads still
+failed in 30 of 30, which is how the scratch numbers were found.
+
+The fix is one lock over PuTTY's curves (`ssh_crypto_lock.c`: a pthread
+mutex, an SRW lock on Windows), held around every call that does curve
+arithmetic: loading a key and signing (on key threads), and verifying a
+signature and reading a key's public blob (on the program thread). The
+key exchange's curve25519 is used only on the program thread and is not
+under it. The vendored PuTTY code is not touched. After: 100 of 100 runs
+load four keys and make four signatures that verify, and 20 of 20 on
+beelink1 (`tests/build.sh --windows`, the SRW lock); the vectors pass
+(2,421); `bench/tabs/restore.py` restores a host's two tabs and both log
+in. A signature waits for another's, a few milliseconds for ed25519, and
+the program thread waits as long when it verifies a host key meanwhile.

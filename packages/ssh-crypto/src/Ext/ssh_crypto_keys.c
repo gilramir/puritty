@@ -20,6 +20,7 @@
 
 #include "ssh_crypto_config.h"
 #include "putty/ssh.h"
+#include "ssh_crypto_lock.h"
 
 #include "geng.h"
 
@@ -233,7 +234,9 @@ static void load_now(loading *l) {
         const ssh_keyalg *alg = private_alg(get_string(src));
         if (alg == NULL) l->problem = UNSUPPORTED_KEY;
         else {
+            ssh_crypto_curves_lock();
             l->key = ssh_key_new_priv_openssh(alg, src);
+            ssh_crypto_curves_unlock();
             if (l->key == NULL || get_err(src)) {
                 if (l->key != NULL) ssh_key_free(l->key);
                 l->key = NULL;
@@ -348,7 +351,9 @@ geng_cancel ssh_crypto_keyPublicBlob(void *handle, geng_wait *wait) {
         return (geng_cancel) {0};
     }
     strbuf *sb = strbuf_new();
+    ssh_crypto_curves_lock();
     ssh_key_public_blob(box->key, BinarySink_UPCAST(sb));
+    ssh_crypto_curves_unlock();
     geng_succeed(wait, geng_slot_P(bytes_of(sb->u, sb->len)));
     strbuf_free(sb);
     return (geng_cancel) {0};
@@ -386,7 +391,9 @@ typedef struct {
 static void *sign_run(void *arg) {
     signing *s = arg;
     s->signature = strbuf_new();
+    ssh_crypto_curves_lock();
     ssh_key_sign(s->box->key, ptrlen_from_strbuf(s->data), s->flags, BinarySink_UPCAST(s->signature));
+    ssh_crypto_curves_unlock();
     /* `s` is the program thread's once sent, as `load_run`'s is */
     geng_post *post = s->post;
     if (!geng_post_send(post, s)) geng_crash("ssh-crypto: a signature could not be handed back");

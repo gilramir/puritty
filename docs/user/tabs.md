@@ -1,9 +1,10 @@
 # Tabs
 
-*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6, TB9): several
-sessions in one window, the keys and your own choice of them, the bar and
-its marks, renaming, asking before closing a busy tab, a new tab in the
-same directory, and tab colors, a host's or your own.*
+*Status: built ([`../tabs.md`](../tabs.md) TB3, TB4, TB6, TB9, TB10):
+several sessions in one window, the keys and your own choice of them, the
+bar and its marks, renaming, asking before closing a busy tab, a new tab in
+the same directory, tab colors, a host's or your own, and the tabs opened
+again when puritty starts.*
 
 A puritty window can hold several sessions, each in its own tab: a local
 shell, or an ssh session to one of your hosts. Every tab keeps its own
@@ -81,6 +82,34 @@ others are darker. A colored tab that rang the bell has a red dot at its
 end (and `!` before its name), and one that printed a dot in its text's
 color.
 
+## Opening your tabs again when puritty starts
+
+With **Restore tabs when puritty starts** on (the **Window** page, or
+`[tabs] restore = true`), starting `puritty` opens again the windows that
+were open when it last ended, each with its tabs in their order: the same
+host for an ssh window, which connects every tab at once, or the same
+directories for local tabs, with the names and colors you gave them, the
+same tab shown, and the window's size. It is off unless you turn it on.
+
+Which windows come back:
+
+- a window that ended with your session (logging out, shutting down) or
+  because puritty crashed: always;
+- a window you closed with its close button: only if it was the last
+  puritty window open, since closing the last one is quitting; one you
+  closed while others stayed open is not;
+- a window whose last tab you closed, or whose programs all ended: never.
+
+Only a plain `puritty` restores. `puritty --host NAME`, `puritty shell`
+and a program on the command line start what they ask for, and a window
+started with a program is not kept. When several windows come back,
+puritty opens the first and starts `puritty restore` for each of the
+others; run by hand, `puritty restore` opens one saved window, or nothing
+when none waits. What is kept is in
+`~/.local/state/puritty/windows` (`$XDG_STATE_HOME`), or on Windows
+`%LOCALAPPDATA%\puritty\windows`, rewritten within five seconds of a
+change. A tab's screen and scrollback are not kept, only where it was.
+
 ## Closing a busy tab
 
 Closing a tab ends what runs in it, so when something is running puritty
@@ -111,6 +140,7 @@ bar = "auto"                  # or "always"
 look = "puritty"              # or "plain": square tabs, as most terminals
 middle_click_closes = true
 ask_before_closing = true
+restore = false               # true: open the last session's tabs again
 ```
 
 When a tab's program ends (`exit` in its shell), its tab closes; the

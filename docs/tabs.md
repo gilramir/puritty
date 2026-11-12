@@ -416,3 +416,117 @@ both tabs purple, without a restart; an OpenSSH host `lab` (a stand-in
 `ssh` running a shell) with `#1565c0`: its two tabs blue. App tests 112,
 with two for the host's `tab` (read; a value that is no color reported and
 left out).
+
+## TB10 · Restoring tabs when puritty starts (2026-11-12, Dnene50)
+
+The survey's second item after the first version: "Restore tabs on
+restart, in order, with names and colors, by reconnecting host entries"
+(Ghostty's session manager, 689 votes; Windows Terminal's persist and
+restore, 254). Gilbert, 2026-11-12, on four questions:
+
+- **Off by default**, as Windows Terminal: `[tabs] restore = true`, on the
+  Window page, in English and Korean, applying at once (on: the window's
+  tabs are saved from then; off: what it saved is forgotten).
+- **A window closed by its button comes back only when it was the last
+  open**, since closing the last is quitting (Ptyxis, Windows Terminal).
+- **A restored ssh window connects every tab at once**, so tmux and logs
+  in background tabs run and mark the bar.
+- **Scrollback is not kept in this step**, only where each tab was; to be
+  measured before it is (Windows Terminal's 178-vote request).
+
+**One process to a window.** puritty has no process that owns every
+window, so each window keeps files of its own in the state directory
+(`$XDG_STATE_HOME/puritty/windows`, `~/.local/state/...`, or
+`%LOCALAPPDATA%\puritty\windows`): `ID.toml`, its tabs, and `ID.lock`,
+locked for the window's life with geng-lang's new `Os.File.tryLock`
+(`m3-os.md` §OS35, Dnene49). A lock that can be taken says that window is
+gone, however it ended, a crash or a kill included, with no pid to be
+reused. A plain `puritty`, with restoring on, claims the first saved
+window whose lock it can take: it keeps the lock and becomes that window,
+so two starting at once never claim the same one. When another waits, it
+starts `puritty restore`, which claims one and starts the next in turn,
+or, finding none, ends without a window. `puritty --host`, `shell`, `ssh`
+and the host list start what they ask for and do not claim; a window
+started with a program on the command line is not kept.
+
+**What is kept** (`app/src/RestoreFile.geng`, its tests in the app's
+suite): the window's host, if its tabs are sessions to one (a window's
+tabs are all one host's, or all local); its columns and rows; which tab is
+shown; and each tab's name, its color (TB9: absent for the host's, `#rrggbb`,
+or `none`) and, for a local tab, the directory its shell is in, read as
+Ctrl+Shift+T reads it (TB4). The window looks every five seconds and
+writes only when something changed, to a file beside the state and moved
+over it, so a crash leaves the last whole state. A `cd` is kept within
+five seconds; so is everything else.
+
+**How it ends** (`savedAtEnd`): a window lost, as at logout when the
+display goes, is saved once more and kept; one closed by its button (the
+window's close, or Enter on the question before closing it) keeps its
+state only when `Restore.others` finds no other window's lock held, and
+otherwise forgets it; one whose last tab ended, by `exit` or Ctrl+Shift+W,
+forgets it. Windows' logoff sends `WM_QUERYENDSESSION`, which puritty
+leaves to the system, so the process ends as killed, and is kept. A
+desktop that closes windows one by one with `WM_DELETE_WINDOW` at logout
+would keep only the last of them; none tried here does.
+
+**A restored window** starts as `--host` would for its host (its look,
+its client), at its size; its first tab in its directory; then its other
+tabs (`openTabWith`, Ctrl+Shift+T's code with a directory, name and color
+given), and shows the one that was shown.
+
+**Found on the way: two logins at once corrupted PuTTY's curves**
+(`ssh-client.md` SC25). The first restored host window failed both
+logins, the server refusing two signatures; PuTTY's elliptic curves are
+not safe to use from two threads, and ssh-crypto signs on threads. One
+lock over them fixed it.
+
+**Measured,** `bench/tabs/restore.py` on Xvfb, the state directory under
+the work directory, and only the puritty processes it started ever
+killed (each carries its `XDG_STATE_HOME`): three local tabs in three
+directories, the second `dm` and green and shown, killed with SIGKILL,
+and `puritty` again: the same three, the shown tab's shell in the second
+directory, the others in theirs, one window. Closed by its button as the
+only window: its state kept, and the next start brings it back. Every
+shell ended with `exit`: nothing kept, and the next start is one shell in
+the program's directory. Two windows, one closed by its button while the
+other runs: that one forgotten, one kept. Two killed: one start opens
+both. A host window of the built-in client, tabs `web` and `db`, killed:
+restored, both log in, and each shell writes its file. `puritty restore`
+with nothing waiting ends with status 0 and no window. App tests 116, with
+four for the file's format.
+
+On Windows (beelink1, in the desktop session, its own `LOCALAPPDATA` and
+`--config` so that nothing of the user's is touched, `cmd.exe` in each
+tab): a saved window of three tabs in `C:\Windows`, `C:\Users` and
+`C:\Windows\System32`, two of them named and colored, opened again, and
+five seconds later the window had written it back with each `cmd.exe`'s
+directory read from the process (TB4), the names, the colors and the
+shown tab as saved. Killed (puritty first, then the programs its tabs
+left): its files kept, and the next start claimed them and restored it
+again. `CloseMainWindow` with it the only window: kept, and restored on
+the next start. A first try killed the tabs' programs first; puritty saw
+every tab end and forgot the window, as it should.
+
+**A host window's host is its tabs'.** The window's host is read from
+its tab (`TabInfo.hostName`), not from the settings in force: a settings
+change reloads them from the file, which names no host, and a host's
+window saved after one was saved as local, its ssh processes' directories
+for its tabs'. The measurement edits the settings file under a host's
+window and reads the state back: still `host = "box"`.
+
+**Seen, not fixed: a settings change drops a host window's look.** The
+same reload gives the window the file's colors and font, not its host's:
+with `[hosts.box.colors] background = "#2a1010"`, the terminal's
+background is `#2a1010` before an edit of the settings file and
+`#1d1f21`, the settings' own, after. `reloadIfDue` reads the file and
+does not apply `Hosts.session` as the window's start did. Older than tabs
+(ST15); for Gilbert to place.
+
+**Not kept either:** a window that the host list turned into a session.
+
+**Seen, and changed: every restored tab lit at once.** Each restored tab
+not shown printed its prompt after it was hidden, and so was marked as
+having printed (TB1 item 3): fifteen restored tabs would open fifteen
+dots. For the first three seconds of a restored window, what its tabs
+print does not mark them (`quietUntil`); a bell still does. The Windows
+picture before showed a dot on the hidden `win` tab, and after, none.

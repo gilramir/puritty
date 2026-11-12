@@ -8,6 +8,15 @@ status 1 when any fails.
     ssh-crypto-tests [VECTORS]
     ssh-crypto-tests --bench
     ssh-crypto-tests --fuzz [COUNT]
+    ssh-crypto-tests --at-once KEYFILE
+
+`--at-once`, the first thing a fresh process does, loads an unencrypted
+key file four times at once and signs with each at once, on four key
+threads, and checks each signature is the one a key signs alone after.
+PuTTY makes each curve the first time it is used, in a static with no
+lock; before puritty made every curve on the program thread first, two
+threads making one at once gave wrong signatures (puritty `docs/tabs.md`
+TB10).
 
 `--fuzz` hands every function COUNT inputs of random lengths and bytes,
 and blobs built of the right fields with wrong lengths, and ends; a crash
@@ -46,6 +55,14 @@ main =
                 in
                 if Array.member "--bench" r.env.args then
                     bench
+
+                else if Array.member "--at-once" r.env.args then
+                    when Array.findLast (\a -> not (String.startsWith "--" a)) (Array.dropFirst 1 r.env.args) is
+                        Just found ->
+                            File.readFile r.perm (Path.fromString found.value) |> Task.mapError Os.Error.toString |> Task.andThen atOnce |> Task.onError (\why -> Console.write ("at once: " ++ why ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+
+                        Nothing ->
+                            Console.write "--at-once takes a key file\n" |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
 
                 else if Array.member "--fuzz" r.env.args then
                     fuzz (Array.findLast (\a -> String.toInt a /= Nothing) r.env.args |> Maybe.andThen (\a -> String.toInt a.value) |> Maybe.withDefault 10000)
@@ -735,3 +752,55 @@ keyTest f =
                         Nothing ->
                             wrong
                 )
+
+
+{-| Four loads at once, and four signatures at once, each checked with
+`verify` against the key's public half. -}
+atOnce : Bytes -> Task String {}
+atOnce file =
+    let
+        data =
+            Bytes.fromString "the same data, signed four times at once"
+
+        problem p =
+            "a key problem: "
+                ++ (when p is
+                        SshCrypto.NotAKeyFile ->
+                            "not a key file"
+
+                        SshCrypto.WrongPassphrase ->
+                            "wrong passphrase"
+
+                        SshCrypto.UnsupportedEncryption ->
+                            "unsupported encryption"
+
+                        SshCrypto.UnsupportedKey ->
+                            "unsupported key"
+
+                        SshCrypto.Malformed ->
+                            "malformed"
+
+                        SshCrypto.Forgotten ->
+                            "forgotten"
+
+                        SshCrypto.OutOfMemory ->
+                            "out of memory"
+                   )
+    in
+    Task.concurrent (Array.repeat 4 (SshCrypto.loadKey file Bytes.empty))
+        |> Task.mapError problem
+        |> Task.andThen
+            (\keys ->
+                Task.concurrent (Array.map (\k -> SshCrypto.sign k "ssh-ed25519" data) keys)
+                    |> Task.andThen (\signatures -> Task.map (\pub -> { pub = pub, signatures = signatures }) (Array.first keys |> Maybe.map SshCrypto.publicKeyOf |> Maybe.withDefault (Task.succeed Bytes.empty)))
+                    |> Task.mapError problem
+            )
+        |> Task.andThen
+            (\r ->
+                let
+                    good =
+                        Array.length (Array.keepIf (\sig -> SshCrypto.verify { algorithm = "ssh-ed25519", publicKey = r.pub, signature = sig, data = data }) r.signatures)
+                in
+                Console.write ("at once: 4 keys loaded, " ++ String.fromInt good ++ " of 4 signatures verify\n")
+                    |> Task.andThen (\_ -> if good == 4 then Task.succeed {} else Os.Env.exitWithCode 1)
+            )
