@@ -1407,3 +1407,50 @@ beelink1 (`tests/build.sh --windows`, the SRW lock); the vectors pass
 (2,421); `bench/tabs/restore.py` restores a host's two tabs and both log
 in. A signature waits for another's, a few milliseconds for ed25519, and
 the program thread waits as long when it verifies a host key meanwhile.
+
+## SC26 · A reconnect asked for the old size (2026-11-12)
+
+**Found** by Gilbert on Windows: a session to a Linux box with tmux,
+started on a laptop's small screen; the laptop closed, the connection
+dropped, and at a desk with two big monitors he pressed R and ran
+`tmux attach`. tmux drew the session in a small rectangle at the top
+left of the window until he changed sessions.
+
+**Why.** The terminal's size reached the server in three ways, and two
+of them lost it:
+
+- The `pty-req` asked for the size in the options, made once when the
+  window began: the settings' `columns` and `rows`. A reconnect ran the
+  same options again, whatever size the window had since.
+- A resize while the session was down went to the backend's wait for R
+  or a hang-up (`Backend.afterEnd`), which dropped it.
+- A resize before the connection existed (the key exchange, a question
+  asked: a passphrase, a host key) went to `Session.onInput`, which had
+  no connection to give it to and dropped it. A jump host drops it too
+  while it connects (`role = Forward`).
+
+The third way, `window-change` on a running session, was right, and
+`Connection.resize` already folded a size given while its channel opened
+into the `pty-req`.
+
+**Fixed** in each place. `Session.resized` puts a new size into the
+options while there is no connection, so the `pty-req` asks for it;
+`afterEnd` does the same with a resize while the session is down; and
+the reconnect is given the window's size (`Backend.reconnect size`, a
+resize before the reconnect). As a backstop for the jump hosts, `Main`
+sends the window's size when a session starts (`sshTold`); the same size
+again is a `window-change` the server takes as nothing new.
+
+**Shown first.** `harness/sshwindow.py` gains two cases, the remote
+command writing `stty size`: `resize-while-asking` resizes the window at
+the passphrase question, and `resize-then-reconnect` drops the
+connection (the command kills its sshd, so no exit status comes), resizes
+the window and presses R. Before the fix the remote side saw `24 80` in
+both, `24 80, 24 80` in the second; after, `29 100`, and `24 80, 29 100`.
+
+If tmux still draws a small rectangle after this, the other cause is
+tmux's own: the dropped connection's client can stay attached on the
+server until its TCP connection times out, and with `window-size
+smallest` (tmux before 3.1, or set so) the window keeps that client's
+size and fills the rest with dots. `tmux list-clients` shows it, and
+`tmux attach -d` detaches it.

@@ -1492,7 +1492,7 @@ race remote m0 =
                                                     closeShown (sshNoticed told (logLine "ssh" (sshLine told) { m | turnMs = ms })) |> Task.andThen (\next -> step next.remote ms next)
 
                                                 else
-                                                    step remote ms (sshNoticed told (logLine "ssh" (sshLine told) { m | turnMs = ms }))
+                                                    sshTold told (logLine "ssh" (sshLine told) { m | turnMs = ms }) |> Task.andThen (\next -> step remote ms next)
 
                                             Events up ->
                                                 if not up then
@@ -2654,6 +2654,21 @@ ownScreenUp m =
             False
 
 
+{-| A notice from the session, taken into the screen; when the session
+starts, the window's size is sent to it, since the size its terminal was
+asked with can be an old one: a jump host drops a resize made while it
+connects (docs/ssh-client.md SC26). -}
+sshTold : Session.Notice -> (taken m : Model) -> Task Error Model
+sshTold told m =
+    when told is
+        Session.Started ->
+            m.remote.resize { columns = m.term.cols, rows = m.term.rows }
+                |> Task.map (\_ -> sshNoticed told m)
+
+        _ ->
+            Task.succeed (sshNoticed told m)
+
+
 {-| A notice from the session, taken into the screen's state. A session
 that ended as it should is its callers' to close (`endsSession`), the tab
 and the window only with its last; one that failed or never started
@@ -2813,7 +2828,7 @@ sshKey remote k m =
 
                 Nothing ->
                     if screen.failed /= Nothing && letter == "r" then
-                        remote.reconnect
+                        remote.reconnect { columns = m.term.cols, rows = m.term.rows }
                             |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
 
                     else if (screen.failed /= Nothing && enter) || escape then
@@ -5261,7 +5276,7 @@ behind id incoming ms m =
                 endTab id True m
 
             else
-                atTab id (\one -> Task.succeed (marked ms (sshNoticed told one))) { m | urgent = True }
+                atTab id (\one -> sshTold told one |> Task.map (marked ms)) { m | urgent = True }
 
 
 {-| The ssh screen of the tab `id`, not shown. -}

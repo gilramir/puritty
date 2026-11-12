@@ -53,6 +53,13 @@ CASES = [
     # through a jump host (docs/ssh-client.md SC21): the host's `jump` is a
     # second sshd, its key from ~/.ssh/config's IdentityFile for it
     ("jump", "ed", "", "known", [], "stty size > {size}; exit 7"),
+    # the window resized before the session runs, or while it is down, then
+    # its terminal at the new size (docs/ssh-client.md SC26): first while
+    # the passphrase is asked; then the connection dropped (the command
+    # kills its sshd, no exit status) and a reconnect after the resize
+    ("resize-while-asking", "ecdsa521", "hunter2", "known", ["resize:900:500", "type:hunter2", "Return"], "stty size > {size}; exit 7"),
+    ("resize-then-reconnect", "ed", "", "known", ["resize:900:500", "r"],
+     "if [ -e {size} ]; then stty size >> {size}; exit 7; else stty size > {size}; kill -9 $PPID; fi"),
 ]
 
 
@@ -102,7 +109,10 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
                         reload.save_png(WORK / f"{name}-{n}.png", pic)
                 if win:
                     subprocess.run([hosts.XDO, "windowfocus", "--sync", win[0]], env=env, capture_output=True)
-                if k.startswith("type:"):
+                if k.startswith("resize:"):
+                    w, h = k.split(":")[1:]
+                    subprocess.run([hosts.XDO, "windowsize", "--sync", win[0], w, h], env=env, capture_output=True, timeout=10)
+                elif k.startswith("type:"):
                     subprocess.run([hosts.XDO, "type", "--delay", "40", k[5:]], env=env, check=True)
                 else:
                     subprocess.run([hosts.XDO, "key", k], env=env, check=True)
@@ -120,7 +130,7 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
         if bastion:
             bastion.stop()
     held = kh.exists() and " ".join(server_pub) in kh.read_text()
-    seen = size.read_text().strip() if size.exists() else "none"
+    seen = size.read_text().strip().replace("\n", ", ") if size.exists() else "none"
     return (f"titles: {titles}\n".replace(str(server.port), "PORT")
             + f"pressed: {presses}\nexit status: {status}\nknown_hosts holds the key: {'yes' if held else 'no'}\n"
             + f"the remote side's terminal: {seen}\n")

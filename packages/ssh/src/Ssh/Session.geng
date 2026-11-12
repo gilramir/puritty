@@ -8,6 +8,7 @@ module Ssh.Session exposing
     , Permissions
     , fingerprint
     , optionsFor
+    , resized
     , run
     )
 
@@ -599,7 +600,14 @@ onInput input st =
             withConnection (Connection.write bytes) st
 
         { input = Resize size } ->
-            withConnection (Connection.resize size) st
+            when st.connection is
+                Just _ ->
+                    withConnection (Connection.resize size) st
+
+                Nothing ->
+                    -- not connected yet: the size is the one the pty-req
+                    -- will ask for
+                    Task.succeed { st | options = resized size st.options }
 
         { input = Hangup } ->
             onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }
@@ -609,6 +617,17 @@ onInput input st =
 
         { input = Reconnect } ->
             Task.succeed st
+
+
+{-| The options with the terminal at a new size, for a session not yet
+connected: the size its `pty-req` asks for. -}
+resized : { columns : Int, rows : Int } -> Options -> Options
+resized size options =
+    let
+        asked =
+            options.session
+    in
+    { options | session = { asked | terminal = Maybe.map (\t -> { t | columns = size.columns, rows = size.rows }) asked.terminal } }
 
 
 withConnection : (Connection.Connection -> Connection.Step) -> State -> Task Os.Error.Error State
