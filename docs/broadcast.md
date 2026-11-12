@@ -229,3 +229,152 @@ view; never by a click on a tile.
 6. **No default key**; the menu and a `[keys]` entry.
 
 Questions for Gilbert are these six; nothing is built until he has chosen.
+Gilbert chose targets in windows of their own (C) after the mockups; BC9
+is what that takes.
+
+## BC9 · Targets in windows of their own: what it takes
+
+Gilbert, 2026-11-12, after the mockups: "somehow we're going to have to
+put each target in its own window, because many people including me, use
+multiple monitors. … by having individual windows, the user can decide by
+himself if he wants to arrange them to see them all or stack them over
+each other because he doesn't care. Investigate our technical challenges
+in doing this." So C, not B, is the view; this section is what C costs.
+Nothing is built.
+
+### What puritty is today
+
+- **A window is a process.** `New window` and each `Connect to NAME` in
+  the menu start another `puritty` (`spawnSelf`); the window packages
+  have no window handle in their API, every call meaning *the* window.
+  Their C keeps that window in file-level globals: 105 `static`
+  declarations in `packages/x11/src/Ext/puritty_x11.c` (1,578 lines: the
+  connection, the window, the picture drawn into, the glyph set, XIM's
+  context, the event buffer, the keys held, the clipboard) and 120 in
+  `packages/win32/src/Ext/puritty_win32.c` (2,074 lines: the `HWND`, the
+  pixel buffer, the event queue and its lock, the preedit, the menu).
+  Not all are per window (the font tables are not), but most are.
+- **The loop has one shown tab.** The `Model` holds the shown tab's
+  terminal, selection, scroll, search, preedit and ssh screen in its own
+  fields; the hidden tabs wait in a `Builder (Maybe Tab)` and are only
+  read from, never drawn (TB2). `Main.geng` names a `.term` 98 times.
+  Several tabs on screen at once is a new shape for the `Model`, in B as
+  in C.
+- **Processes do not talk to each other.** `Os.Net.connectLocal` connects
+  to a Unix-domain socket (ssh-agent's, Dnene42) but nothing listens on
+  one; on Windows it fails, and a named pipe is opened as a file, as a
+  client only. The only thing windows share is the restore directory,
+  and only while `[tabs] restore` is on (TB10).
+- **A tab cannot leave its process.** Its pty or ConPTY, or its built-in
+  ssh session (the socket, PuTTY's keys and sequence numbers, the
+  channels), live there (BC6).
+
+### Two ways to C
+
+**C1 · Several windows in one process.** The window packages learn to
+open more than one window: the globals that belong to a window move into
+a struct, the API takes a window, and each event names its window. X11
+and Win32 both allow it naturally (one connection or one message loop,
+many windows), so the C is a mechanical refactor of about 3,600 lines,
+tested by the pixel and input gates on both. Then the `Model`'s shown
+tab becomes a list of windows, each with its own shown tab, size, cell,
+scroll, selection, preedit and pointer: the center of `Main.geng`, and
+the ownership checker's shapes with it (each window's terminal written in
+place, taken once per turn). What it buys: a tab goes out to a window and
+comes back to the tab bar with its session alive, so a broadcast can be
+started on the tabs already open. What it costs besides the work: every
+window of the broadcast is one process, so one crash takes them all
+(the opposite of today, where a crash takes one window).
+
+**C2 · A window per process, as now, and the broadcast between
+processes.** Each target is a puritty window of its own, as `Connect to
+NAME` already makes one. The window typed in sends what is typed to the
+others over a local connection; each applies it to its shown tab as if
+typed there. Nothing in the window packages or the `Model`'s shape
+changes. What it needs:
+
+- **A local listener in Geng's `os` package**: `listenLocal` and
+  `accept` on a Unix-domain socket on Linux, and a named-pipe server on
+  Windows (`CreateNamedPipe`, `ConnectNamedPipe`). Gilbert has said Geng's stdlib may
+  grow for puritty; this is a small, general addition, its own `os` row.
+- **A registry of live windows**: each window listens on a socket named
+  by its id in a directory only its user can read (`$XDG_RUNTIME_DIR` on
+  Linux, which is that already; on Windows a pipe name with the user's
+  SID in it). A window lists the others to offer them as targets, with
+  their titles, hosts and charsets, asked over the connection.
+- **Same user only.** Whatever reaches the socket types into a shell.
+  Linux: the directory's mode, and the peer's uid checked
+  (`SO_PEERCRED`). Windows: the pipe's DACL for the user alone,
+  `PIPE_REJECT_REMOTE_CLIENTS`, and the client's token checked. The
+  `os` rows test that another user is refused.
+- **A small protocol**: join, leave, and three kinds of input, as BC2
+  decided them: a key (with its modifiers, each target encoding it for
+  its own modes), text the IME committed, and a paste (each target
+  bracketing it if its tab asked for it). The charset rule (BC6) is
+  checked at join, so text is the same bytes for all. Local sockets cost
+  microseconds, far under a keystroke.
+- **Getting the targets into windows.** Tabs already in one window cannot
+  move (BC6), so a broadcast is started on windows, not tabs. Two
+  natural starts: from the host list, choosing several hosts and opening
+  each in its own window with the broadcast on (the "broadcast and tile"
+  button a Remote Desktop Manager user asked for, BC4); or from a window,
+  joining others already open. A tab can be sent to a window of its own
+  by connecting again to its host, which is a new login, not the same
+  shell.
+
+What it buys: a crash takes one window; the window manager places each
+target on any monitor at any size; nothing about a window changes when
+the broadcast ends, since each target always was a window.
+
+**C3 · Moving a live tab into another process** is the step that would
+give C2 C1's best property. On Linux a pty's descriptor can be handed to
+another process (`SCM_RIGHTS`), with the terminal's state sent beside it;
+ConPTY's handle is a pointer into the process that made it, with no
+documented way to hand it over, and the built-in ssh session would mean handing over the
+socket and PuTTY's cipher state mid-stream. Not reasonable now; only the
+Linux pty half is.
+
+### Challenges either way
+
+- **Monitors with different scales.** Today a window takes one DPI when
+  it opens: on Windows the system's (`GetDpiForSystem`, the primary
+  monitor's), with `WM_DPICHANGED` not handled, so a window dragged to a
+  monitor of another scale keeps its old pixel size and font size; on
+  X11 `Xft.dpi` is one value for the screen, which is X's own model.
+  With targets spread over monitors this is met at once on Windows: the
+  window should open at its monitor's DPI and refont on `WM_DPICHANGED`
+  (the zoom path, `pt_zoom`, already refonts at a new size). This is a
+  bug for multi-monitor users today, broadcast or not.
+- **Placement.** The window manager places new windows; on Windows
+  puritty can place them itself. A broadcast of several new windows
+  should at least not stack them all on one spot; remembering where each
+  host's window was (per host, as restore remembers tabs) lets the user
+  arrange them once.
+- **Which window is typed in.** Any window of the broadcast, by focus, as
+  ClusterSSH: typing in web2 sends to web1, web3 and db. Each window's
+  bar says so (the C mockup), and the focused one says it is the source.
+- **IME.** Each window has its own input context already (one XIC, one
+  `HWND`); the preedit is drawn in the window typed in, and only what is
+  committed crosses. Nothing new.
+- **A target window with several tabs.** Its shown tab receives. If the
+  user shows another tab there, the tab that received is hidden, and BC4
+  says a hidden target is the accident: that window then stops receiving
+  until its first tab is shown again, and its bar says why. Membership
+  never changes by itself (BC3).
+- **Ending.** The window that started it ends it for all (its button,
+  key or menu), and so does closing it; each target's bar goes away and
+  says it has ended. A target can leave by itself (Leave out).
+- **puritty's own keys** (Ctrl+Shift+T and the rest) act on the window
+  pressed in and do not cross; nor does the mouse (BC2).
+
+### Leaning
+
+**C2**: a window per process, the broadcast over a local connection. It
+keeps puritty's shape and its crash isolation, gives the window manager
+the placement Gilbert wants, and its new parts are small and testable
+(the `os` listener with its same-user rows; a protocol; the bar). Its
+loss is that tabs already open in one window cannot join without
+reconnecting, so the natural start is from the host list, opening the
+chosen hosts each in a window. C1 stays possible later and would not
+undo C2's protocol. The DPI change on Windows is worth doing first,
+whatever is chosen, since it is met with any second monitor.
