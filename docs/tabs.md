@@ -320,3 +320,37 @@ second puritty with an idle shell closed at once. On Windows (beelink1,
 PowerShell's `CloseMainWindow`): "cmd - ping -n 30 127.0.: PING.EXE is
 running", the bar reading `cmd - ping -n 30 127.0.` and `cmd`, and Esc
 kept the window. sshwindow 9, hosts 13, events 13, the app's 110 tests.
+
+## TB8 · An ssh tab's session ending, and dropping (2026-11-11)
+
+**`exit` in an ssh tab ended the whole window.** `sshNoticed` set the
+window's `closed` when a session ended as it should, which was right with
+one session a window and wrong with tabs: `exit` typed into an ssh tab,
+shown or not, ended puritty and every other tab, with status 0. Measured
+on the code before this (`bench/tabs/ssh.py`): after `exit` in the second
+of two ssh tabs, "puritty is ended, status 0", the first tab's shell gone.
+Now the callers decide (`endsSession`): the shown tab goes by
+`closeShown`, which ends the window only with its last tab, its ssh exit
+status the window's as before; a tab not shown goes by `endTab`.
+
+**A dropped session keeps its tab** (the survey's must-do 4, and its
+must-avoid "closing an ssh tab the moment the connection drops"). A
+session ends as it should only with its shell's exit status
+(`Session.Exited`) before `Session.Ended`. One that ends without it
+dropped: the network went, the server or its session process was killed.
+It keeps its tab and its scrollback, with puritty's screen up ("The
+session could not go on", Enter to close, R to connect again), as a
+failure to connect did already. This holds with one tab too: a dropped
+connection used to close the window; it now waits for Enter or R.
+
+**The bar marks it.** A tab whose session failed or dropped shows `×`
+before its name, in red (`0xFF6B6B` on a background tab, dark red on the
+shown tab's amber), until it reconnects (`sessionLost`).
+
+**Measured,** `bench/tabs/ssh.py` against a local sshd: two ssh tabs, `exit`
+in the shown one closes it and the window stays; `exit` after `sleep 2` in
+a tab not shown closes that one, and the shown tab's shell takes the next
+line; a third tab's `kill -9 $PPID` drops its connection: the window stays,
+the bar reads `box` and `× box`, and R reconnects it, its shell writing
+the next file, the mark gone; `exit 5` in the last tab ends puritty with
+status 5. sshwindow 9 and hosts 13 pass, unchanged.

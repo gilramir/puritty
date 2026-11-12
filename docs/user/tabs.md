@@ -87,7 +87,13 @@ ask_before_closing = true
 ```
 
 When a tab's program ends (`exit` in its shell), its tab closes; the
-window closes with its last tab.
+window closes with its last tab. The same holds for an ssh tab whose
+remote shell exits.
+
+If an ssh tab's connection drops instead (the network goes, the server
+goes away), the tab stays, with its scrollback, and its name on the bar
+turns red with `×` before it. Press **R** in it to connect again, or
+Enter to close it.
 
 ## Your own keys
 

@@ -1126,7 +1126,11 @@ race remote m0 =
                                                     feed remote chunk ms m |> Task.andThen (\next -> step remote ms next)
 
                                             Read (Notice told) ->
-                                                step remote ms (sshNoticed told m)
+                                                if endsSession told m.ssh then
+                                                    closeShown (sshNoticed told m) |> Task.andThen (\next -> step next.remote ms next)
+
+                                                else
+                                                    step remote ms (sshNoticed told m)
 
                                             Events up ->
                                                 if not up then
@@ -1801,8 +1805,9 @@ ownScreenUp m =
 
 
 {-| A notice from the session, taken into the screen's state. A session
-that ended as it should ends the window, with its exit status; one that
-failed or never started leaves the screen up to say why. -}
+that ended as it should is its callers' to close (`endsSession`), the tab
+and the window only with its last; one that failed or never started
+leaves the screen up to say why. -}
 sshNoticed : Session.Notice -> (taken m : Model) -> Model
 sshNoticed told m =
     when m.ssh is
@@ -1835,19 +1840,35 @@ sshNoticed told m =
                             { screen | failed = Just (cleanText why) }
 
                         Session.Ended ->
-                            if screen.started && screen.failed == Nothing then
+                            if screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing then
                                 screen
 
                             else
+                                -- a session that ends without its shell's exit status
+                                -- dropped: its screen stays up to say so, with
+                                -- reconnect (TB8)
                                 { screen | failed = Just (Maybe.withDefault "the connection ended" screen.failed) }
 
                         Session.Output _ ->
                             screen
-
-                ended =
-                    told == Session.Ended && screen.started && screen.failed == Nothing
             in
-            { m | ssh = Just updated, urgent = True, closed = m.closed || ended }
+            { m | ssh = Just updated, urgent = True }
+
+
+{-| Whether a notice ends a session that went as it should, its shell's
+`exit`, which the server says with an exit status before the end: its tab
+then closes as a local tab's does when its program ends, and the window
+with its last tab, its exit status the window's (TB8). A session that
+failed, never started, or dropped without an exit status keeps its screen
+and its tab, to reconnect. -}
+endsSession : Session.Notice -> Maybe SshScreen -> Bool
+endsSession told ssh =
+    when ssh is
+        Just screen ->
+            told == Session.Ended && screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing
+
+        Nothing ->
+            False
 
 
 {-| Text from the server or the network made safe to show: control
@@ -3672,7 +3693,7 @@ hiddenFrom i m acc =
 
 
 {-| What the bar needs of each tab not shown. -}
-labelsOf : Int -> Model -> Array { id : Int, label : String, bell : Bool, activity : Bool } -> Array { id : Int, label : String, bell : Bool, activity : Bool }
+labelsOf : Int -> Model -> Array { id : Int, label : String, bell : Bool, activity : Bool, lost : Bool } -> Array { id : Int, label : String, bell : Bool, activity : Bool, lost : Bool }
 labelsOf i m acc =
     if i >= Builder.length m.tabs then
         acc
@@ -3682,7 +3703,7 @@ labelsOf i m acc =
             m
             (when Builder.get i m.tabs |> Maybe.andThen identity is
                 Just t ->
-                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity } acc
+                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh } acc
 
                 Nothing ->
                     acc
@@ -4084,7 +4105,20 @@ behind id incoming ms m =
                 atTab id (\one -> feed one.remote chunk ms one |> Task.map marked) { m | urgent = True }
 
         Notice told ->
-            atTab id (\one -> Task.succeed (marked (sshNoticed told one))) { m | urgent = True }
+            if endsSession told (sshOfTab id m) then
+                endTab id True m
+
+            else
+                atTab id (\one -> Task.succeed (marked (sshNoticed told one))) { m | urgent = True }
+
+
+{-| The ssh screen of the tab `id`, not shown. -}
+sshOfTab : Int -> Model -> Maybe SshScreen
+sshOfTab id m =
+    slotOf id m
+        |> Maybe.andThen (\slot -> Builder.get slot m.tabs)
+        |> Maybe.andThen identity
+        |> Maybe.andThen .ssh
 
 
 {-| A tab that printed while not shown: marked so, and as having rung when
@@ -4175,7 +4209,7 @@ shortTitle title =
 
 {-| The bar's tabs in its order, where each is in pixels, and how it is
 marked. -}
-barTabs : Model -> Array { id : Int, label : String, x : Int, w : Int, active : Bool, bell : Bool, activity : Bool }
+barTabs : Model -> Array { id : Int, label : String, x : Int, w : Int, active : Bool, bell : Bool, activity : Bool, lost : Bool }
 barTabs m =
     let
         cw =
@@ -4189,10 +4223,10 @@ barTabs m =
 
         one id =
             if id == m.tab.id then
-                Just { id = id, label = tabLabel m.tab m.term.title, active = True, bell = False, activity = False }
+                Just { id = id, label = lostMark (sessionLost m.ssh) (tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh }
 
             else
-                Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = f.value.label, active = False, bell = f.value.bell, activity = f.value.activity })
+                Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = lostMark f.value.lost f.value.label, active = False, bell = f.value.bell, activity = f.value.activity, lost = f.value.lost })
     in
     Array.foldl
         (\t acc ->
@@ -4201,7 +4235,7 @@ barTabs m =
                     min 400 (Text.width size t.label) + 2 * cw
             in
             { x = acc.x + w + 2
-            , out = Array.pushLast { id = t.id, label = t.label, x = acc.x, w = w, active = t.active, bell = t.bell, activity = t.activity } acc.out
+            , out = Array.pushLast { id = t.id, label = t.label, x = acc.x, w = w, active = t.active, bell = t.bell, activity = t.activity, lost = t.lost } acc.out
             }
         )
         { x = 2, out = [] }
@@ -4265,7 +4299,20 @@ tabBar m =
                                 , y = y + (ch + size) // 2 - 1
                                 , size = size
                                 , color =
-                                    if t.active then 0x1C1C1C else if t.bell || t.activity then 0xFFFFFF else 0xBCBCBC
+                                    if t.active && t.lost then
+                                        0x8B0000
+
+                                    else if t.active then
+                                        0x1C1C1C
+
+                                    else if t.lost then
+                                        0xFF6B6B
+
+                                    else if t.bell || t.activity then
+                                        0xFFFFFF
+
+                                    else
+                                        0xBCBCBC
                                 , text = t.label
                                 }
                             ]
@@ -4556,4 +4603,23 @@ busyWhy t =
             t.remote.busy
                 |> Task.map (Maybe.map (\name -> (if name == "" then "a program" else cleanText name) ++ " is running"))
                 |> Task.onError (\e -> Task.succeed (Just ("puritty could not tell what runs: " ++ Os.Error.toString e)))
+
+
+{-| Whether a tab's ssh session failed or dropped: its tab stays, with the
+screen that says why and offers to reconnect, and the bar marks it (TB8,
+the survey's must-do 4). -}
+sessionLost : Maybe SshScreen -> Bool
+sessionLost ssh =
+    when ssh is
+        Just screen ->
+            screen.failed /= Nothing
+
+        Nothing ->
+            False
+
+
+{-| A lost session's tab label, with `×` before it. -}
+lostMark : Bool -> String -> String
+lostMark lost label =
+    if lost then "× " ++ label else label
 
