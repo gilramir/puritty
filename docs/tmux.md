@@ -1561,3 +1561,38 @@ active pane's label amber; `C-a s` previews `main`'s two windows side by
 side, `0:first` (its active pane) and `1:sh`; the same in tmux's look,
 the active label green. Choosing still goes where it did (`main:0`,
 `other:0`).
+
+## TM36 · A filter for the views (2026-11-12)
+
+Gilbert: "A search or filter would be nice in that tmux help panel. As a
+user searches for terms, only those lines or items that have substring
+that match show up." tmux's view mode has none; puritty draws the view
+(TM26), so it can.
+
+**Keys.** `/` in a view starts the filter. What is typed keeps the lines
+that have it in them, ignoring case (`String.toLower` on both), from the
+first; Backspace takes a character back and C-u all of them; Enter keeps
+the filter and gives the keys back to moving (so `j`, Space and the rest
+scroll what is left); Escape clears it, and Escape with a filter kept
+clears it before a second closes the view. Text an input method commits,
+or a paste, goes into the filter while it is typed (`typeInto`), so Hangul
+filters too. Ctrl and Alt chords type nothing into it.
+
+**Kept.** `View` holds every line (`all`) beside the lines shown
+(`lines`), the filter and whether it is being typed; filtering is
+`filtered`, from `all` each time, so a character taken back widens it
+again.
+
+**Drawn.** In puritty's look the box keeps the size every line gives it,
+so it does not move as lines go, and its bottom edge says `/window  30 of
+89`, with `Enter: keep  Esc: clear` while typing (`q: close  /: filter`
+before). In tmux's look the same line is on the pane's last row in
+`mode-style`, where tmux puts its own search prompt, and `[N/M]` counts
+the lines kept.
+
+**Checked:** `bench/tmux/show.py --scenario views`, Gilbert's tmux.conf,
+each look: `C-a ?`, `/`, `windowx`, BackSpace shows `/window  30 of 89`
+(his configuration binds the splits without notes, so `split` keeps
+none, which a first try mistook for a fault); Enter and `j` scroll the 30;
+Escape gives the 89 back; `q` closes; nothing typed reached the pane. The
+other steps as before.

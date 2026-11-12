@@ -94,6 +94,13 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   "tmux"` they cover the active pane, with tmux's `[n/m]` at the top right,
   as tmux shows them.
 
+  **`/` filters the list**: type a few letters and only the lines that
+  have them stay, upper or lower case alike (`prefix ?` then `/window`
+  keeps the bindings about windows). Backspace takes a letter back,
+  Ctrl+U clears what is typed, Enter keeps the filter so the arrows scroll
+  what is left, and Escape clears it. Korean typed with an input method
+  filters too.
+
 - **Menus**: `prefix <` (the window's) and `prefix >` (the pane's), and,
   when tmux's `mouse` option is on, the right button's menu over a pane,
   with tmux's items for the word under the pointer. Choose with an item's

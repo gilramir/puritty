@@ -287,6 +287,9 @@ type alias View =
     { lines : Array String
     , top : Int
     , rows : Int
+    , all : Array String
+    , filter : String
+    , filtering : Bool
     }
 
 
@@ -862,6 +865,20 @@ end as a space, other control characters left out; a prompt that takes a
 key or digits takes none of it. -}
 typeInto : String -> (taken s : State) -> State
 typeInto text s =
+    when s.view is
+        Just v ->
+            if v.filtering then
+                { s | view = Just (filtered (v.filter ++ viewText (String.replace "\n" " " text)) v) }
+
+            else
+                s
+
+        Nothing ->
+            typeIntoPrompt text s
+
+
+typeIntoPrompt : String -> (taken s : State) -> State
+typeIntoPrompt text s =
     when s.asking is
         Just a ->
             when a.ask is
@@ -5226,7 +5243,26 @@ column of eight, other control characters as spaces, so that nothing
 printed is read as a terminal's sequence when it is drawn. -}
 viewOf : Array Bytes -> View
 viewOf lines =
-    { lines = Array.map (\line -> shownLine (Bytes.toStringLossy line)) lines, top = 0, rows = 1 }
+    let
+        all =
+            Array.map (\line -> shownLine (Bytes.toStringLossy line)) lines
+    in
+    { lines = all, top = 0, rows = 1, all = all, filter = "", filtering = False }
+
+
+{-| The view's lines with `filter` in them, its case aside (TM36), from
+the top. -}
+filtered : String -> View -> View
+filtered text v =
+    let
+        lower =
+            String.toLower text
+    in
+    { v
+        | filter = text
+        , lines = if text == "" then v.all else Array.keepIf (\line -> String.contains lower (String.toLower line)) v.all
+        , top = 0
+    }
 
 
 shownLine : String -> String
@@ -5250,12 +5286,62 @@ shownLine text =
 {-| A key while a view is open: q, Escape or C-c closes it; the rest move
 it as copy mode's keys do, vi's and emacs's both: a line (Up, Down, k, j,
 C-p, C-n, C-y, C-e, Enter), a page (PPage, NPage, C-b, C-f, Space), half
-a page (C-u, C-d), the top (g, Home, M-<) and the bottom (G, End, M->). -}
+a page (C-u, C-d), the top (g, Home, M-<) and the bottom (G, End, M->).
+`/` filters it (TM36): what is typed keeps the lines with it in them,
+Backspace takes a character back and C-u all of them, Enter keeps the
+filter and gives the keys back to moving, Escape clears it; Escape with a
+filter kept clears it before it closes the view. -}
 viewKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> View -> Maybe View
 viewKey k v =
     let
         name =
             Maybe.withDefault "" (lookupName k)
+    in
+    if v.filtering then
+        if name == "Escape" || name == "C-c" then
+            Just (filtered "" { v | filtering = False })
+
+        else if name == "Enter" || name == "KPEnter" || name == "C-m" then
+            Just { v | filtering = False }
+
+        else if name == "BSpace" || name == "C-h" then
+            Just (filtered (String.dropLast 1 v.filter) v)
+
+        else if name == "C-u" then
+            Just (filtered "" v)
+
+        else
+            let
+                added =
+                    viewText (Bytes.toStringLossy k.text)
+            in
+            if added /= "" && Bitwise.and k.mods 6 == 0 then
+                Just (filtered (v.filter ++ added) v)
+
+            else
+                Just v
+
+    else if name == "/" then
+        Just { v | filtering = True }
+
+    else if name == "Escape" && v.filter /= "" then
+        Just (filtered "" v)
+
+    else
+        moveView name v
+
+
+{-| Text for the filter: printable characters only. -}
+viewText : String -> String
+viewText text =
+    String.toArray text
+        |> Array.keepIf (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F)
+        |> String.fromArray
+
+
+moveView : String -> View -> Maybe View
+moveView name v =
+    let
 
         page =
             max 1 (v.rows - 2)
@@ -5339,7 +5425,20 @@ tmuxView p v =
                 else
                     []
                )
+            ++ (if v.filtering || v.filter /= "" then
+                    [ { row = p.y + p.h - 1, col = p.x, color = messageColor, text = String.takeFirst p.w (String.padRight p.w ' ' (filterLine v)) } ]
+
+                else
+                    []
+               )
     }
+
+
+{-| The filter as the view shows it: what is typed, and how many lines
+have it. -}
+filterLine : View -> String
+filterLine v =
+    "/" ++ v.filter ++ (if v.filtering then "▏" else "") ++ "  " ++ String.fromInt (Array.length v.lines) ++ " of " ++ String.fromInt (Array.length v.all) ++ (if v.filtering then "  Enter: keep  Esc: clear" else "  Esc: clear")
 
 
 {-| The view in puritty's look: a box over the panes, as wide as its
@@ -5353,14 +5452,16 @@ boxView cols rows barTop v =
         areaH =
             rows - bar
 
+        -- sized by every line, so that the box stays where it is as the
+        -- filter keeps fewer
         longest =
-            Array.foldl (\line m -> max m (String.count line)) 0 v.lines
+            Array.foldl (\line m -> max m (String.count line)) 0 v.all
 
         w =
             max 4 (min cols (max 40 (longest + 4)))
 
         h =
-            max 3 (min areaH (min 1000 (Array.length v.lines) + 2))
+            max 3 (min areaH (min 1000 (Array.length v.all) + 2))
 
         inner =
             h - 2
@@ -5389,7 +5490,13 @@ boxView cols rows barTop v =
                 ""
 
         foot =
-            String.takeFirst (w - 2) (" q: close " ++ (if shown == "" then "" else "─" ++ shown))
+            String.takeFirst (w - 2)
+                (if v.filtering || v.filter /= "" then
+                    " " ++ filterLine v ++ " "
+
+                 else
+                    " q: close  /: filter " ++ (if shown == "" then "" else "─" ++ shown)
+                )
 
         edge left mid right label =
             left ++ label ++ String.repeat (max 0 (w - 2 - String.count label)) mid ++ right
