@@ -4370,3 +4370,40 @@ reason.
 4. **The ssh client's 115** and the settings window's 90: parsing and
    protocol defaults, intended; a separate round, not on the tabs' path.
 
+
+## VC60. `perf.py --layouts`: is a jump a stack word's? (2026-11-11)
+
+Gilbert, 2026-11-11, after geng-lang's `m4-roots.md` (D915's survey): add
+the layout check. PR17.1 spent a day finding that a 12% jump in a resize
+count was a word left on the stack, which the nursery's conservative scan
+read as a pointer and pinned. `m4-roots.md` RT3 found that changing only
+the C's frames moves such words on and off.
+
+`./harness/perf.py --layouts -f CASE` builds core-bench four more times,
+at `-O1`, `-O3`, `-fno-inline-functions` and `-fno-omit-frame-pointer`
+(`GENG_CFLAGS`, which comes after the build's `-O`; `build.sh` takes
+`CORE_BENCH_OUTPUT` for where to put each), and runs each case on all five
+with `GENG_NURSERY_STATS`. The flags change the code's own instructions
+(no inlining is a third more on some programs), so instructions are not
+compared. What the nursery promotes is. All five allocate the same bytes,
+within 0.1% (`-O3` boxes 48 bytes more of 260 M), so promotions that
+differ between them are the layout's: a stack word, and a count that moved
+with it is not the code's.
+
+**Measured.** PR17.1's version A (`writeRows`' index as a `let` before
+its `if`), built for the test and put back after:
+
+| layout | allocated | promoted |
+|---|---:|---:|
+| as built | 260.4 M | **45.3 M** |
+| `-O1` | 260.4 M | 27.2 M |
+| `-O3` | 260.4 M | 27.2 M |
+| no inlining | 260.4 M | 27.2 M |
+| frame pointers | 260.4 M | **45.3 M** |
+
+"promoted moves 67% with the layout alone, on the same allocation: a word
+left on the stack." That is PR17.1's 18 MB, named in one command. The code
+as it is gives 27.2 M at every layout for `long-10000`. For
+`long-100000`, `-O1` promotes 31.3 M against 23.9 M at the others: a word
+there too, at a layout the build does not use. `perf.py` without
+`--layouts` is unchanged, and all within the record.

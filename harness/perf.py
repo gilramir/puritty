@@ -35,6 +35,17 @@ throughput one.
   ./harness/perf.py --inputs DIR          # copy the thirteen inputs in first
   ./harness/perf.py --no-times --cycles   # and the median cycles of five runs
   ./harness/perf.py --against OLD-BENCH   # this build beside another: counts and cycles
+  ./harness/perf.py --layouts -f resize/default/long-10000   # is a jump a stack word's?
+
+**--layouts** builds the same core four more times with other C frames
+(`-O1`, `-O3`, `-fno-inline-functions`, `-fno-omit-frame-pointer`, through
+GENG_CFLAGS) and runs each case named by -f on all five, with
+GENG_NURSERY_STATS. The flags change the code's own instructions, so those
+are not compared; what the nursery promotes is. All five allocate the same
+bytes, so promotions that differ between them are a word left on the stack
+that the nursery's conservative scan read as a pointer (geng-lang
+`m4-proof-report.md` PR17.1, `m4-roots.md`): a count that moved for that
+reason is the layout's, not the code's.
 
 Instructions repeat to the instruction, which is why the record holds them,
 but they are not time: a SIMD step reads 16 bytes in an instruction or two,
@@ -124,9 +135,9 @@ def cases():
     return out
 
 
-def run(args, memory="12G"):
+def run(args, memory="12G", env=None):
     cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={memory}", "-p", "MemorySwapMax=0", "--"] + args
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
     if p.returncode != 0:
         sys.exit(f"perf.py: {' '.join(args)} failed ({p.returncode}):\n{p.stdout}{p.stderr}")
     return p
@@ -203,6 +214,85 @@ def compare(other, filt):
               f" {c0 / 1e6:>9,.1f} {c1 / 1e6:>9,.1f} {100.0 * (c1 - c0) / c0:>+6.1f}%", flush=True)
 
 
+LAYOUTS = [
+    ("as built", None),
+    ("-O1", "-O1"),
+    ("-O3", "-O3"),
+    ("no inlining", "-fno-inline-functions"),
+    ("frame pointers", "-fno-omit-frame-pointer"),
+]
+
+
+def layout_benches():
+    """core-bench as built, and built again at each other layout, into
+    .harness-work/perf/layouts/."""
+    benches = []
+    for label, flags in LAYOUTS:
+        if flags is None:
+            benches.append((label, BENCH))
+            continue
+        out = WORK / "layouts" / flags.strip("-") / "core-bench"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        print(f"building core-bench with {flags} ...", flush=True)
+        env = dict(os.environ, CORE_BENCH_OUTPUT=str(out), GENG_CFLAGS=flags)
+        p = subprocess.run([str(BENCH.parent / "build.sh")], env=env, capture_output=True, text=True)
+        if p.returncode != 0:
+            sys.exit(f"perf.py: building with {flags} failed:\n{p.stdout}{p.stderr}")
+        benches.append((label, out))
+    return benches
+
+
+def nursery(bench, file, extra):
+    """What GENG_NURSERY_STATS says of one run, by name."""
+    stats = WORK / "layouts" / "stats"
+    stats.unlink(missing_ok=True)
+    run([str(bench), str(file)] + extra, env=dict(os.environ, GENG_NURSERY_STATS=str(stats)))
+    found = {}
+    for line in stats.read_text().splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            found[parts[0]] = int(parts[1])
+    return found
+
+
+def layouts(filt):
+    """Each case named by `filt` on core-bench at five layouts: what the
+    nursery promoted, beside what was allocated, and whether the layouts
+    alone moved it."""
+    if not filt:
+        sys.exit("perf.py: --layouts takes -f, the case or cases to look at")
+    chosen = [c for c in cases() if filt in c[0]]
+    if not chosen:
+        sys.exit(f"perf.py: no case's name contains {filt!r}")
+    benches = layout_benches()
+    for name, file, extra, _budget, kind in chosen:
+        if kind == "resize":
+            file = resize_input(name.split("/")[2])
+            extra = ["resizes", "20", "80", "50"] + extra
+        print(f"\n{name}")
+        print(f"  {'layout':<16} {'allocated':>12} {'promoted':>12} {'minors':>7} {'pinned':>7}")
+        seen = []
+        for label, bench in benches:
+            n = nursery(bench, file, extra)
+            seen.append(n)
+            print(f"  {label:<16} {n.get('allocated_bytes', 0) / 1e6:>10,.1f} M {n.get('promoted_bytes', 0) / 1e6:>10,.1f} M"
+                  f" {n.get('minors', 0):>7} {n.get('pinned', 0):>7}", flush=True)
+        promoted = [n.get("promoted_bytes", 0) for n in seen]
+        allocated = [n.get("allocated_bytes", 0) for n in seen]
+        low, high = min(promoted), max(promoted)
+        spread = 100.0 * (high - low) / low if low else 0.0
+        # -O3 can box a value or two differently: tens of bytes in millions
+        same = max(allocated) - min(allocated) <= max(allocated) / 1000
+        if same and spread > 2.0:
+            print(f"  promoted moves {spread:.0f}% with the layout alone, on the same allocation:"
+                  f" a word left on the stack. A count that moved with it is the layout's, not the code's.")
+        elif same:
+            print(f"  promoted moves {spread:.1f}% with the layout: no stack word of weight here."
+                  f" A count that moved is the code's.")
+        else:
+            print("  the layouts allocate differently, so promotions cannot be compared")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-f", dest="filter", default="", help="only cases whose name contains this")
@@ -212,6 +302,7 @@ def main():
     ap.add_argument("--tolerance", type=float, help="percent over the record that fails (default 1, resizes 3)")
     ap.add_argument("--cycles", action="store_true", help="also print the median cycles:u of five runs")
     ap.add_argument("--against", metavar="BENCH", help="compare with another core-bench: both builds' instructions and median cycles, no record")
+    ap.add_argument("--layouts", action="store_true", help="the -f cases at five C layouts: whether a stack word moves what the nursery promotes")
     a = ap.parse_args()
 
     if a.inputs:
@@ -226,6 +317,8 @@ def main():
 
     if a.against:
         return compare(Path(a.against), a.filter)
+    if a.layouts:
+        return layouts(a.filter)
 
     base = load_baseline()
     new = dict(base)
