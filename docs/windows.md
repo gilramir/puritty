@@ -1074,3 +1074,56 @@ Seven to 37 percent on eleven inputs, Linux's 7 to 32 (`vt-core.md` §VC56);
 the two that do not move run 12 to 22 ms, where the clock's milliseconds
 are too coarse to tell. The release exe was run on beelink1 with a scheme
 set and its picture taken.
+
+## WS30 · A window follows its monitor's scale (2026-11-12)
+
+Gilbert, after the broadcast survey (`broadcast.md` BC9) found it: "you
+mention the problem of moving any puritty window to another monitor.
+Let's address that now." The window declared per-monitor awareness (v2)
+from the start, which tells Windows the program scales itself, but it
+took the system's resolution when it opened (`GetDpiForSystem`, the
+primary monitor's) and never handled `WM_DPICHANGED`. A window on, or
+dragged to, a monitor of another scale kept its pixel size and its
+font's: the text came out too large or too small for that monitor. The
+table at the top promised `WM_DPICHANGED` "as a zoom"; it is now.
+
+**What it does.** `rescale` in `puritty_win32.c`, on the window's thread:
+the font sized again at the new resolution (`pt_zoom` with the points the
+program last asked for, under the paint lock the draw holds), and the
+window put at the corner Windows suggests with the size that holds the
+same columns and rows at the new cell, so the program is not resized; a
+maximized window takes the rectangle Windows gives, and the cells that
+fit it. The program is then told the new cell (`Rescaled`, a new event,
+record 13) and the size (`Resized`, even when it is the same), and draws
+every cell again, as after a zoom. The terminal needs only the second:
+its cell is the window's. The settings window and the host list lay their
+text out in pixels from the cell, so they keep the one `Rescaled` brings.
+When the window opens, it is drawn at the resolution of the monitor
+Windows put it on (`GetDpiForWindow`), before it is shown and before the
+program is answered its cell. The resolution and the points live under
+the paint lock (`dpi_now`, `points_now`), since a zoom or a new font from
+the program's thread and a move on the window's thread both change them.
+`PURITTY_DPI` still fixes the resolution, so the gates' pictures do not
+move with the machine's scale.
+
+X11 has no such event: one resolution serves the screen (`Xft.dpi`, V50),
+which is X's own model; `Rescaled` never comes there.
+
+**Measured on beelink1**, one 4K monitor, its scale changed from 150%
+(144 DPI) to 125% (120) and back while puritty ran (the change Windows
+sends a window moved to a monitor of another scale), the window measured
+by a per-monitor-aware probe:
+
+| | DPI | client area | cells |
+|---|---|---|---|
+| a terminal, at the start | 144 | 1040 × 624 | 80 × 24 of 13 × 26 |
+| at 125% | 120 | 880 × 504 | 80 × 24 of 11 × 21 |
+| at 150% again | 144 | 1040 × 624 | 80 × 24 |
+| the host list, at the start | 144 | 1092 × 988 | |
+| at 125% | 120 | 924 × 798 | laid out again, nothing cut |
+| at 150% again | 144 | 1092 × 988 | |
+
+A first build without `Rescaled` passed the terminal's rows and failed the
+host list's: its frame shrank at 120 and its text, laid out by the old
+cell, was cut off at the right and the bottom. No second monitor was at hand: a move
+between two is the same message with another rectangle.

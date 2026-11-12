@@ -353,7 +353,11 @@ num lock 32, and 64 to 512 for a right-hand shift, ctrl, alt or super),
 the modifiers its text consumed, its unshifted code point, its keysym and
 its text: X11's keysym for the same key, so that the encoder reads
 Windows' keys as Linux's, and the text Windows made (WS5); what it sends
-the program is Geng's to decide. -}
+the program is Geng's to decide.
+
+`Rescaled` is the window's new cell when it moved to a monitor of another
+scale, or the scale changed (`docs/windows.md` WS30); a `Resized` follows,
+with the cells that now fit. -}
 type Event
     = Key { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }
     | Resized { cols : Int, rows : Int }
@@ -367,6 +371,7 @@ type Event
     | SelectionLost Selection
     | Pasted Bool
     | MenuChosen { menu : Int, index : Int }
+    | Rescaled Cell
 
 
 {-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
@@ -461,6 +466,9 @@ decode b at acc =
 
             2 ->
                 decode b (advance b at 5) (Array.pushLast (Resized { cols = u16 1, rows = u16 3 }) acc)
+
+            13 ->
+                decode b (advance b at 5) (Array.pushLast (Rescaled { width = u16 1, height = u16 3 }) acc)
 
             3 ->
                 decode b (advance b at 2) (Array.pushLast (Focus (byte 1 == 1)) acc)

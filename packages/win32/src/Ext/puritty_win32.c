@@ -676,7 +676,12 @@ static holder *held;
 static HWND win;
 static HANDLE made;
 static wchar_t *title0;
-static int open_cols, open_rows, open_dpi;
+static int open_cols, open_rows;
+/* The resolution the font is drawn at, and its size in points: the
+ * monitor's the window is on, changed by WM_DPICHANGED (docs/windows.md
+ * WS30), and the size the program last asked for. Under the paint lock.
+ * PURITTY_DPI fixes the resolution, for the gates. */
+static int dpi_now, points_now, dpi_forced;
 /* The cell as the window thread sizes by it, under the queue's lock. */
 static int cell_w, cell_h;
 static int win_cols, win_rows, win_w, win_h, focused = -1;
@@ -1319,6 +1324,47 @@ static void paint_window(HWND h) {
     EndPaint(h, &ps);
 }
 
+/* On the window's thread: the font drawn at `dpi`, and the window put at
+ * (`x`, `y`) holding the cells it held, so that the program keeps its
+ * size; a maximized window takes `whole` (the new monitor's) and the
+ * cells that fit it. The program is told the size even when it is the
+ * same, and draws every cell again at the new cell (Main's `relayout`).
+ * Nothing changes while PURITTY_DPI fixes the resolution. */
+static void rescale(int dpi, int x, int y, const RECT *whole) {
+    if (dpi_forced || dpi <= 0) return;
+    EnterCriticalSection(&paint);
+    int changed = dpi != dpi_now && pt_zoom(points_now, dpi);
+    if (changed) dpi_now = dpi;
+    LeaveCriticalSection(&paint);
+    if (!changed) return;
+    EnterCriticalSection(&queue_lock);
+    int cols = win_cols > 0 ? win_cols : open_cols, rows = win_rows > 0 ? win_rows : open_rows;
+    cell_w = pt_cw;
+    cell_h = pt_ch;
+    LeaveCriticalSection(&queue_lock);
+    if (whole) {
+        SetWindowPos(win, NULL, whole->left, whole->top, whole->right - whole->left, whole->bottom - whole->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+        RECT r = {0, 0, cols * pt_cw, rows * pt_ch};
+        DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
+        AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi);
+        SetWindowPos(win, NULL, x, y, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    /* the program told the new cell before the size (`Rescaled`): the
+     * settings window lays its text out by it */
+    uint8_t rec[5] = {13, (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
+    record(rec, 5);
+    RECT cr;
+    GetClientRect(win, &cr);
+    EnterCriticalSection(&paint);
+    win_cols = -1;
+    size_in(cr.right - cr.left, cr.bottom - cr.top);
+    pt_resize(win_cols, win_rows);
+    LeaveCriticalSection(&paint);
+    InvalidateRect(win, NULL, FALSE);
+}
+
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_PAINT:
@@ -1329,6 +1375,15 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         size_in(LOWORD(lp), HIWORD(lp));
         return 0;
+    case WM_DPICHANGED: {
+        /* moved to a monitor of another scale, or the scale changed: the
+         * suggested rectangle's corner, Windows' choice of where the
+         * window now is, and the size of the same cells at the new
+         * resolution (docs/windows.md WS30) */
+        RECT *to = (RECT *) lp;
+        rescale((int) LOWORD(wp), to->left, to->top, IsZoomed(h) ? to : NULL);
+        return 0;
+    }
     case WM_SETFOCUS:
         focus_in(1);
         return 0;
@@ -1480,9 +1535,17 @@ static void *window_thread(void *arg) {
     RegisterClassExW(&wc);
     DWORD style = WS_OVERLAPPEDWINDOW, ex = 0;
     RECT r = {0, 0, open_cols * cell_w, open_rows * cell_h};
-    AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) open_dpi);
+    AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi_now);
     win = CreateWindowExW(ex, L"puritty", title0 ? title0 : L"puritty", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
                           r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
+    /* Windows put it on a monitor, the one it was started from: drawn at
+     * that monitor's resolution before it is seen, and before the program
+     * is answered the cell */
+    if (win) {
+        RECT at;
+        GetWindowRect(win, &at);
+        rescale((int) GetDpiForWindow(win), at.left, at.top, 0);
+    }
     SetEvent(made);
     if (!win) {
         geng_post_done(post);
@@ -1568,7 +1631,8 @@ geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_
     InitializeCriticalSection(&queue_lock);
     InitializeCriticalSection(&menu_lock);
     const char *forced = getenv("PURITTY_DPI");
-    int dpi = forced && atoi(forced) > 0 ? atoi(forced) : (int) GetDpiForSystem();
+    dpi_forced = forced && atoi(forced) > 0;
+    int dpi = dpi_forced ? atoi(forced) : (int) GetDpiForSystem();
     pt_verbose = getenv("PURITTY_STATS") != NULL;
     if (pt_verbose) fprintf(stderr, "dpi %d\n", dpi);
     FT_Init_FreeType(&ftlib);
@@ -1591,7 +1655,8 @@ geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_
     cell_h = pt_ch;
     open_cols = c;
     open_rows = r;
-    open_dpi = dpi;
+    dpi_now = dpi;
+    points_now = points;
     char *title = string_of(title_bytes);
     title0 = wide(title);
     free(title);
@@ -1750,7 +1815,10 @@ geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
     if (win && !IsZoomed(win)) {
         RECT r = {0, 0, cols * cell_w, rows * cell_h};
         DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
-        AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) open_dpi);
+        EnterCriticalSection(&paint);
+        UINT dpi = (UINT) dpi_now;
+        LeaveCriticalSection(&paint);
+        AdjustWindowRectExForDpi(&r, style, FALSE, ex, dpi);
         SetWindowPos(win, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
     geng_succeed(wait, geng_slot_I4(0));
@@ -1759,7 +1827,8 @@ geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
 
 geng_cancel puritty_win32_zoom(int32_t points, geng_wait *wait) {
     EnterCriticalSection(&paint);
-    int changed = pt_zoom(points, open_dpi);
+    int changed = pt_zoom(points, dpi_now);
+    if (changed) points_now = points;
     LeaveCriticalSection(&paint);
     if (changed) refit();
     geng_succeed(wait, geng_slot_I4(pt_cw * 65536 + pt_ch));
@@ -1772,7 +1841,8 @@ geng_cancel puritty_win32_zoom(int32_t points, geng_wait *wait) {
 geng_cancel puritty_win32_setfont(int32_t points, void *font_bytes, void *lang_bytes, int32_t cap, geng_wait *wait) {
     char *font = string_of(font_bytes), *lang = string_of(lang_bytes);
     EnterCriticalSection(&paint);
-    int done = pt_refont(font, lang, points, open_dpi, cap);
+    int done = pt_refont(font, lang, points, dpi_now, cap);
+    if (done == 0) points_now = points < 4 ? 4 : points > 200 ? 200 : points;
     LeaveCriticalSection(&paint);
     free(font);
     free(lang);
