@@ -4761,8 +4761,8 @@ treeRows t =
 {-| A key while the tree is shown, as tmux's tree mode takes it: Up, k,
 C-p and Down, j, C-n move; PPage, NPage, Home, g, End, G; Right, l opens
 a session, Left, h closes it or goes to it from a window; `+` and `-`
-open and close every one; Enter chooses; a digit chooses that row, as
-tmux numbers the first ten; q, Escape and C-c close it. -}
+open and close every one; Enter chooses; a row's key (`treeRowKey`: a
+digit, or `M-a` to `M-z`) chooses that row; q, Escape and C-c close it. -}
 treeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Tree -> (taken s : State) -> { state : State, commands : Array String }
 treeKey k t s =
     let
@@ -4842,12 +4842,26 @@ treeKey k t s =
         chooseRow at t s
 
     else
-        when String.toInt name is
-            Just d ->
-                chooseRow (Array.get d rows) t s
+        when Array.findFirst (\i -> treeRowKey i == Just name) (Array.range 0 (min count 36 - 1)) is
+            Just found ->
+                chooseRow (Array.get found.value rows) t s
 
             Nothing ->
                 { state = s, commands = [] }
+
+
+{-| A row's key, as tmux's tree mode numbers its rows: `0` to `9`, then
+`M-a` to `M-z`; the rows after the 36th have none (TM37). -}
+treeRowKey : Int -> Maybe String
+treeRowKey i =
+    if i < 10 then
+        Just (String.fromInt i)
+
+    else if i < 36 then
+        Maybe.map (\c -> "M-" ++ String.fromChar c) (Char.fromCode (0x61 + i - 10))
+
+    else
+        Nothing
 
 
 {-| A row chosen: the tree closed and its command run with the session's
@@ -4916,10 +4930,24 @@ drawTree tmuxLook place t =
         top =
             if t.selected < shownRows then 0 else t.selected - shownRows + 1
 
+        keyWidth =
+            if Array.length rows > 10 then 3 else 1
+
         lineOf i r =
             let
+                -- tmux pads each key to the longest one shown, and one
+                -- space after (measured on 3.4 and 3.8, TM37)
                 key =
-                    if i < 10 then "(" ++ String.fromInt i ++ ") " else "    "
+                    when treeRowKey i is
+                        Just k ->
+                            if tmuxLook then
+                                String.padRight (keyWidth + 2) ' ' ("(" ++ k ++ ")") ++ " "
+
+                            else
+                                String.padRight keyWidth ' ' k ++ "  "
+
+                        Nothing ->
+                            String.repeat (if tmuxLook then keyWidth + 3 else keyWidth + 2) " "
 
                 shape =
                     if r.window < 0 then
@@ -4931,7 +4959,7 @@ drawTree tmuxLook place t =
                     else
                         "├─> "
             in
-            if tmuxLook then key ++ " " ++ shape ++ r.text else (if r.window < 0 then (if Dict.get r.session t.open == Just True then "▾ " else "▸ ") else "    ") ++ r.text
+            if tmuxLook then key ++ shape ++ r.text else key ++ (if r.window < 0 then (if Dict.get r.session t.open == Just True then "▾ " else "▸ ") else "    ") ++ r.text
 
         width =
             if tmuxLook then place.w else place.w - 4
@@ -4975,7 +5003,7 @@ drawTree tmuxLook place t =
                 " choose " ++ (if t.startSessions then "a session " else "a window ")
 
             foot =
-                " Enter: go  ←→: fold  q: close "
+                " Enter or a row's key: go  ←→: fold  q: close "
         in
         [ { row = place.y, col = place.x, color = viewEdgeColor, text = "╭" ++ String.takeFirst inner (label ++ String.repeat inner "─") ++ "╮" } ]
             ++ (Array.range 1 (place.h - 2) |> Array.mapAndFlatten (\r -> [ { row = place.y + r, col = place.x, color = viewEdgeColor, text = "│" ++ String.repeat inner " " ++ "│" } ]))

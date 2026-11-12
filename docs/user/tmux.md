@@ -124,7 +124,8 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
 
 - **Choosing a session or window**: `prefix s` and `prefix w` list your
   sessions and windows; move with the arrows or `j` and `k`, open and fold
-  a session with Right and Left, Enter (or a row's number) goes there,
+  a session with Right and Left, Enter goes there, or the key shown at a
+  row's left, as tmux numbers them: `0` to `9`, then `Alt+a` to `Alt+z`.
   Escape closes. Below the list, as in tmux, a preview of the row chosen:
   a window's panes where they are in it, or a session's windows side by
   side, each with the text it shows (without its colors). **The clock**:

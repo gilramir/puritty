@@ -1433,7 +1433,8 @@ C-p, C-n, PPage, NPage, Home, End, g, G; Right and l open a session, Left
 and h fold it; `+` and `-` open and fold all; Enter, or a row's digit,
 runs the template with the row's id (`$1` a session, `@2` a window; tmux
 takes either as `switch-client`'s target, measured); q, Escape and C-c
-close it. Drawn in tmux's look as tmux lists it, `(0)` keys, `+`/`-`, the
+close it. Drawn in tmux's look as tmux lists it, `(0)` keys (since TM37 every
+row's key, in both looks), `+`/`-`, the
 windows joined by `├─>` and `└─>`, the chosen row in `mode-style`, over
 every pane for `-Z`; in puritty's, the view's box. tmux's preview of the
 chosen item, under the list, is not drawn.
@@ -1596,3 +1597,27 @@ each look: `C-a ?`, `/`, `windowx`, BackSpace shows `/window  30 of 89`
 none, which a first try mistook for a fault); Enter and `j` scroll the 30;
 Escape gives the 89 back; `q` closes; nothing typed reached the pane. The
 other steps as before.
+
+## TM37 · The tree's row keys (2026-11-12)
+
+*Gilbert, 2026-11-12:* in `prefix s` tmux shows a number at each session,
+and pressing it chooses the session; under -CC puritty did not draw them.
+
+**What was wrong.** The keys were drawn only in tmux's look; puritty's
+look, the default, had none, though the digits worked. tmux's keys go past
+nine, and puritty's did not: measured on 3.4 and 3.8, with fourteen
+sessions, through an attached client in a second tmux, tmux numbers the
+rows `0` to `9` and then `M-a` to `M-z` (36 in all, the rows after that
+have none), pads every key to the longest shown and puts one space after:
+`(0) + s00` with ten rows or fewer, `(0)   + s00` and `(M-a) + s10` with
+more. puritty's tmux look put two spaces after `(0)`.
+
+**Now.** `treeRowKey` names a row's key as tmux does, `treeKey` takes the
+digits and `M-a` to `M-z` by it, and both looks draw it: tmux's as tmux
+does, in brackets and padded; puritty's in a column at the row's left
+(`0`, `M-a`), the foot saying `Enter or a row's key: go`.
+
+**Checked:** app tests 132. `bench/tmux/show.py --scenario modes` gains
+fourteen sessions: in each look `C-a s 1` goes to `k01:0` and
+`C-a s M-c` to `main:0`, tmux says; the pictures show the keys, tmux's
+look as tmux draws it.

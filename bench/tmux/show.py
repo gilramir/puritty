@@ -567,8 +567,9 @@ def modes(a, env, tmux, xdo, snap, cli, look):
     """tmux's other modes (docs/tmux.md TM32), with Gilbert's tmux.conf, in
     each look: `C-a w` and `C-a s` shown by puritty and a window and a
     session chosen from them; the clock (`C-a t`), and a key leaving it;
-    `C-a =`, a mode puritty does not draw, said, and q leaving it. Read
-    back from tmux."""
+    `C-a =`, a mode puritty does not draw, said, and q leaving it; the
+    rows' keys, a digit and M-c, with fourteen sessions. Read back from
+    tmux."""
     conf = WORK / "prefix.conf"
     conf.write_text(PREFIX_CONF)
     t = [a.tmux, "-L", SOCK, "-f", str(conf)]
@@ -629,6 +630,21 @@ def modes(a, env, tmux, xdo, snap, cli, look):
         xd("key", "q")
         time.sleep(0.6)
         print(look, "| C-a = then q:", repr(q("display-message", "-p", "-t", "other:", "#{pane_mode}")))
+        # the rows' keys (TM37): fourteen sessions, k00 to k11 first, so
+        # rows past the tenth have M-a and on; 1 chooses k01, M-c main
+        for i in range(12):
+            cli("new-session", "-d", "-s", f"k{i:02d}")
+        xd("key", "ctrl+a", "s")
+        time.sleep(0.8)
+        snap(f"{look}-tree-keys")
+        xd("key", "1")
+        time.sleep(0.8)
+        print(look, "| C-a s 1:", where())
+        xd("key", "ctrl+a", "s")
+        time.sleep(0.8)
+        xd("key", "alt+c")
+        time.sleep(0.8)
+        print(look, "| C-a s M-c:", where())
         cli("kill-server")
         time.sleep(1)
     finally:
