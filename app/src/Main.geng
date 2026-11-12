@@ -1577,7 +1577,7 @@ reloadIfDue ms m =
                     when read is
                         Gave r ->
                             say r.problems
-                                |> Task.andThen (\_ -> applySettings r.config { quiet | troubles = r.problems, urgent = True })
+                                |> Task.andThen (\_ -> applySettings (forHost quiet r.config) { quiet | troubles = r.problems, urgent = True })
 
                         Unread why ->
                             let
@@ -1586,6 +1586,39 @@ reloadIfDue ms m =
                             in
                             say problems |> Task.map (\_ -> { quiet | troubles = problems, urgent = True })
                 )
+
+
+{-| Settings read again, for this window: a host's window takes its host's
+look over them again (its colors, font, charset and title, as
+`Hosts.session` gave them at its start), from the host as the new settings
+have it, so that a change to the settings keeps the host's look and a
+change to the host's look is seen at once. What runs in the window stays:
+its program, its ssh client, and a `--title` from the command line. The
+host is the shown tab's, as every tab of a host's window is the one host's
+(docs/tabs.md TB10). -}
+forHost : Model -> Config -> Config
+forHost m new =
+    when m.tab.hostName is
+        Just name ->
+            let
+                host =
+                    if Array.any (\h -> h.name == name) new.hosts then
+                        Hosts.named name new
+
+                    else
+                        Hosts.quick name |> Maybe.withDefault (Hosts.named name new)
+
+                session =
+                    Hosts.session new host
+            in
+            { session
+                | command = m.config.command
+                , remote = m.config.remote
+                , title = Maybe.withDefault session.title m.settings.given.title
+            }
+
+        Nothing ->
+            new
 
 
 {-| Each problem with the settings on standard error. -}

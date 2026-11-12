@@ -994,3 +994,30 @@ the patches against other projects (`harness/oracle/patches`,
 `packages/x11/patches`), tmux's `align=centre`, PuTTY's identifiers
 quoted in `putty.md`, quotations in the research notes, URLs,
 EndeavourOS, and `font.sise`, the misspelling the tests make on purpose.
+
+## ST32 · A host's window keeps its host's look through a reload (2026-11-12)
+
+**The bug** (found by `tabs.md` TB10's measurement): a host's window
+starts with its host's look over the settings (`Hosts.session`: colors,
+font, charset, title), but a reload read the settings file alone, so any
+change to the settings, even a comment, gave the window the settings' own
+look. With `[hosts.box.colors] background = "#2a1010"`, the terminal's
+background was `#2a1010` before an edit and `#1d1f21` after. Older than
+tabs: ST15's reload never knew the window was a host's.
+
+**The fix.** `forHost` applies the window's host again to the settings
+read, from the host as the new file has it, so a change to the host's own
+look is seen at once too. What runs in the window stays as it started:
+its program (the ssh command), its ssh client (`remote`), and a `--title`
+from the command line. The host is the shown tab's (`TabInfo.hostName`),
+since every tab of a host's window is that host's.
+
+**How it is held.** The reload gate gains two Linux cases, each a window
+started with `--host box` whose ssh is a stand-in that runs the gate's
+screen: `host-look-kept` changes the settings' background, and the
+window stays as a fresh `--host box` with the new file shows it, the
+host's background over the settings'; `host-look-changed` changes the
+host's background, and the window changes to the fresh start's. Without
+the fix both fail (182,804 and 182,690 pixels differ from a fresh
+start); with it the gate passes 17 of 17, and hosts 13, sshwindow 9,
+settings 20 pass.

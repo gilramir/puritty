@@ -73,6 +73,10 @@ blink_ms = 0
 """
 
 
+# a host with a look of its own, its background given by `.format`
+HOST = '\n[hosts.box]\nhost = "box.invalid"\nclient = "openssh"\n\n[hosts.box.colors]\nbackground = "{}"\n'
+
+
 def cases(windows):
     other = "Consolas" if windows else "Fira Code"
     return [
@@ -105,6 +109,13 @@ def cases(windows):
         ("removed", BASE.replace("blink_ms = 0", 'blink_ms = 0\n\n[colors]\nbackground = "#003040"'), None,
          "remove", "defaults"),
     ] + ([] if windows else [
+        # a host's window (`--host box`, its ssh a stand-in that runs the
+        # screen's program): a change to the settings keeps the host's look
+        # over them, and a change to the host's look is seen at once, each
+        # as a fresh `--host box` with the new file gives (docs/tabs.md TB10)
+        ("host-look-kept", BASE + HOST.format("#2a1010"), BASE + HOST.format("#2a1010") + '\n[colors]\nbackground = "#003040"\n',
+         "rename", "pixels-or-same"),
+        ("host-look-changed", BASE + HOST.format("#2a1010"), BASE + HOST.format("#102a10"), "rename", "pixels"),
         # the settings' title is the window's while the program has set
         # none, and on Windows the pseudo console sets one for every
         # program, its path, as it starts (docs/settings.md ST15)
@@ -179,12 +190,21 @@ def judge(held, first, got, fresh, title, said, home):
 
 # LINUX
 
-def start(env, home, name):
+def start(env, home, name, host=False):
     log = open(home / f"{name}-stderr.txt", "w")
     screen = home / "screen.txt"
     screen.write_bytes(SCREEN.encode())
-    p = subprocess.Popen([str(APP), "--", "sh", "-c", f"cat '{screen}'; exec sleep 600"], env=env,
-                         stdout=subprocess.DEVNULL, stderr=log)
+    if host:
+        # OpenSSH's ssh stood in for by the screen's program
+        bin_ = home / "bin"
+        bin_.mkdir(exist_ok=True)
+        (bin_ / "ssh").write_text(f"#!/bin/sh\ncat '{screen}'; exec sleep 600\n")
+        (bin_ / "ssh").chmod(0o755)
+        env = dict(env, PATH=f"{bin_}:{env['PATH']}")
+        args = ["--host", "box"]
+    else:
+        args = ["--", "sh", "-c", f"cat '{screen}'; exec sleep 600"]
+    p = subprocess.Popen([str(APP), *args], env=env, stdout=subprocess.DEVNULL, stderr=log)
     time.sleep(1.5)
     return p
 
@@ -226,7 +246,8 @@ def run_linux(env0, name, before, after, how, held, fresh_text=None):
     path.write_text(before)
     shot = home / "shot.ppm"
     env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), PURITTY_SHOT=str(shot))
-    p = start(env, home, "running")
+    host = name.startswith("host-")
+    p = start(env, home, "running", host)
     first = read_ppm(shot)
     write(path, after, how)
     time.sleep(1.0)
@@ -241,7 +262,7 @@ def run_linux(env0, name, before, after, how, held, fresh_text=None):
         elif after is not None:
             path.write_text(after)
         shot.unlink(missing_ok=True)
-        p = start(env, home, "fresh")
+        p = start(env, home, "fresh", host)
         fresh = read_ppm(shot)
         stop(p)
     return judge(held, first, got, fresh, title, said, home)

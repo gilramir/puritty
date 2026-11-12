@@ -514,13 +514,9 @@ window saved after one was saved as local, its ssh processes' directories
 for its tabs'. The measurement edits the settings file under a host's
 window and reads the state back: still `host = "box"`.
 
-**Seen, not fixed: a settings change drops a host window's look.** The
-same reload gives the window the file's colors and font, not its host's:
-with `[hosts.box.colors] background = "#2a1010"`, the terminal's
-background is `#2a1010` before an edit of the settings file and
-`#1d1f21`, the settings' own, after. `reloadIfDue` reads the file and
-does not apply `Hosts.session` as the window's start did. Older than tabs
-(ST15); for Gilbert to place.
+**Seen, and fixed after: a settings change dropped a host window's
+look.** The same reload gave the window the file's colors and font, not
+its host's (`settings.md` ST32).
 
 **Not kept either:** a window that the host list turned into a session.
 
