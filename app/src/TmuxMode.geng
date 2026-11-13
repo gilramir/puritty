@@ -1078,6 +1078,166 @@ others' titles are on the line between panes. A floating pane keeps its
 cell. -}
 fitted : String -> Int -> Layout.Pane -> Layout.Pane
 fitted borderStatus height p =
+    fittedTitles borderStatus height p
+
+
+{-| A pane of the layout as tmux sizes it: its title's row (`fittedTitles`)
+and, with `pane-scrollbars on`, its scrollbar's columns taken out of the
+cell, on its right or, with `pane-scrollbars-position left`, its left
+(TM53; measured: a 40-wide cell is a 39-wide pane). -}
+fittedIn : State -> Int -> Layout.Pane -> Layout.Pane
+fittedIn s height p0 =
+    let
+        p =
+            fittedTitles s.status.borderStatus height p0
+
+        sb =
+            scrollbarOf s
+    in
+    if sb.on && p.w > sb.width then
+        let
+            cut =
+                clamp 0 p.w sb.width
+        in
+        if sb.left then { p | x = min 16384 (p.x + cut), w = p.w - cut } else { p | w = p.w - cut }
+
+    else
+        p
+
+
+{-| A pane's scrollbar as `screen_redraw_draw_pane_scrollbar` draws it
+(TM53): beside the pane, in `pane-scrollbars-style`, the slider in it
+reversed; out of a mode the slider at the bottom, as tall as the screen's
+share of the screen and its history; in copy mode where the view is. None
+on the alternate screen, and with `modal` none out of a mode. -}
+scrollbarPieces : State -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
+scrollbarPieces s p =
+    let
+        sb =
+            scrollbarOf s
+
+        inMode =
+            Maybe.withDefault "" (Dict.get p.id s.paneModes) /= ""
+
+        alt =
+            withPane p.id s (\t -> t.alt) == Just True
+
+        h =
+            p.h
+
+        slider =
+            when Dict.get p.id s.copy is
+                Just c ->
+                    let
+                        total =
+                            c.hsize + h
+
+                        sliderH =
+                            max 1 ((h * h) // max 1 total)
+                    in
+                    { h = sliderH, y = min (h - 1) (((h + 1) * (c.hsize - c.scroll)) // max 1 total) }
+
+                Nothing ->
+                    let
+                        hsize =
+                            Maybe.withDefault 0 (withPane p.id s Vt.scrollbackRows)
+
+                        sliderH =
+                            max 1 ((h * h) // max 1 (h + hsize))
+                    in
+                    { h = sliderH, y = h - sliderH }
+
+        base =
+            Style.apply sb.style Style.plain
+
+        track =
+            Style.sgr base
+
+        -- the slider the track's colors swapped, as tmux draws it
+        thumb =
+            Style.sgr (Style.apply "reverse" base)
+
+        col =
+            if sb.left then p.x - sb.width else p.x + p.w
+
+        drawCol =
+            if sb.left then col else col + sb.pad
+
+        shown =
+            (sb.on || (sb.modal && inMode)) && not alt
+    in
+    if not shown || h < 1 then
+        []
+
+    else
+        Array.range 0 (h - 1)
+            |> Array.map
+                (\j ->
+                    { row = p.y + j
+                    , col = drawCol
+                    , color = if j >= slider.y && j < slider.y + slider.h then thumb else track
+                    , text = String.repeat (sb.width - sb.pad) " "
+                    }
+                )
+
+
+{-| A pane with its scrollbar's columns given back: the layout's cell,
+which tmux's borders are drawn around (TM53). -}
+withScrollbar : State -> Layout.Pane -> Layout.Pane
+withScrollbar s p =
+    let
+        sb =
+            scrollbarOf s
+
+        give =
+            clamp 0 16 sb.width
+    in
+    if sb.on then
+        if sb.left then { p | x = max 0 (p.x - give), w = min 16384 (p.w + give) } else { p | w = min 16384 (p.w + give) }
+
+    else
+        p
+
+
+{-| `pane-scrollbars` as puritty draws it: whether the panes give it
+columns (`on`), whether it shows only in a mode (`modal`), its side, its
+width with its pad (`pane-scrollbars-style`'s `width=` and `pad=`, 1 and
+0 by default), and its style. -}
+scrollbarOf : State -> { on : Bool, modal : Bool, left : Bool, width : Int, pad : Int, style : String }
+scrollbarOf s =
+    let
+        option name =
+            Maybe.withDefault "" (Dict.get name s.status.options)
+
+        style =
+            option "pane-scrollbars-style"
+
+        part key fallback =
+            String.split "," style
+                |> Array.mapAndKeepJust (\w -> if String.startsWith (key ++ "=") (String.trim w) then String.toInt (String.dropFirst (String.count key + 1) (String.trim w)) else Nothing)
+                |> Array.first
+                |> Maybe.withDefault fallback
+
+        width =
+            clamp 1 16 (part "width" 1)
+
+        pad =
+            clamp 0 16 (part "pad" 0)
+
+        mode =
+            option "pane-scrollbars"
+    in
+    { on = s.lookTmux && mode == "on"
+    , modal = s.lookTmux && mode == "modal"
+    , left = option "pane-scrollbars-position" == "left"
+    , width = width + pad
+    , pad = pad
+    , style = style
+    }
+
+
+fittedTitles : String -> Int -> Layout.Pane -> Layout.Pane
+fittedTitles borderStatus height p =
     if p.z /= Nothing || p.h < 2 then
         p
 
@@ -1106,7 +1266,7 @@ heightOf cell =
 titles, then below the bar when it is at the top. -}
 placedPanes : State -> Layout.Cell -> Array Layout.Pane -> Array Layout.Pane
 placedPanes s cell panes =
-    Array.map (\p -> down s.barTop (fitted s.status.borderStatus (heightOf cell) p)) panes
+    Array.map (\p -> down s.barTop (fittedIn s (heightOf cell) p)) panes
 
 
 {-| A pane of the layout where it is drawn in puritty's window: below the
@@ -1980,10 +2140,16 @@ notice n acc =
                 was =
                     st.status.borderStatus
 
+                barWas =
+                    scrollbarOf st
+
                 next =
                     barPlaced { st | status = subscribed sub.name sub.window sub.pane sub.value st.status }
+
+                barNow =
+                    scrollbarOf next
             in
-            if next.status.borderStatus /= was then
+            if next.status.borderStatus /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
                 -- the panes' sizes change with their titles' rows, and
                 -- tmux sends no layout for it
                 { acc | state = refit next }
@@ -2074,8 +2240,11 @@ refit s =
     when s.layout is
         Just cell ->
             let
+                boxes =
+                    Array.map (fittedIn s (heightOf cell)) (Layout.panes cell)
+
                 sized =
-                    sizeAll { ids = s.ids, panes = s.panes } (Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell))
+                    sizeAll { ids = s.ids, panes = s.panes } boxes
             in
             { s | ids = sized.ids, panes = sized.panes }
 
@@ -2352,7 +2521,7 @@ paint s =
                 -- in either look; each pane's `pane-border-format` on its
                 -- border when `pane-border-status` asks (TM30)
                 borders =
-                    paneBorders s.lookTmux cols rows active tiled floating s.status
+                    paneBorders s.lookTmux cols rows active (Array.map (withScrollbar s) tiled) tiled floating s.status
 
                 cursor =
                     when { copying = Dict.get s.active s.copy, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
@@ -2407,6 +2576,10 @@ paint s =
                 messageInk =
                     (colorsOf s.status).message
 
+                -- each pane's scrollbar (TM53)
+                scrollbars =
+                    Array.mapAndFlatten (\p -> scrollbarPieces s p) (tiled ++ floating)
+
                 -- a copy-mode search's matches (TM41)
                 tiledMarks =
                     searchMarks tiled s
@@ -2427,6 +2600,7 @@ paint s =
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColor else boxColor) (boxAround cols rows p) |> Vt.composeStyled s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawPieces floatMarks
                         |> drawPieces borders.floating
+                        |> drawPieces scrollbars
                         |> drawPieces copyMarks
                         |> drawPieces modesDrawn
                         |> drawPieces treeDrawn
@@ -4084,8 +4258,8 @@ above the pane, which tmux leaves for it; `bottom`: the row below), from
 two cells in, as tmux draws it (`screen_redraw_make_pane_status`), the
 part after `#[align=right]` at the right; the floating panes' titles, over
 their boxes, apart. -}
-paneBorders : Bool -> Int -> Int -> Int -> Array Layout.Pane -> Array Layout.Pane -> StatusLine -> { lineColor : String, tiled : Array { row : Int, col : Int, color : String, text : String }, floating : Array { row : Int, col : Int, color : String, text : String } }
-paneBorders tmuxLook cols rows active tiled floating status =
+paneBorders : Bool -> Int -> Int -> Int -> Array Layout.Pane -> Array Layout.Pane -> Array Layout.Pane -> StatusLine -> { lineColor : String, tiled : Array { row : Int, col : Int, color : String, text : String }, floating : Array { row : Int, col : Int, color : String, text : String } }
+paneBorders tmuxLook cols rows active cells tiled floating status =
     let
         base =
             Style.apply status.borderStyle Style.plain
@@ -4171,8 +4345,8 @@ paneBorders tmuxLook cols rows active tiled floating status =
         if tmuxLook then
             Borders.cells
                 -- tmux's window: the layout's size, not puritty's canvas
-                { cols = Array.foldl (\p m -> max m (p.x + p.w)) 0 tiled
-                , rows = Array.foldl (\p m -> max m (p.y + p.h)) 0 tiled
+                { cols = Array.foldl (\p m -> max m (p.x + p.w)) 0 cells
+                , rows = Array.foldl (\p m -> max m (p.y + p.h)) 0 cells
                 , active = active
                 , marked = Array.findFirst (\p -> (own p).marked) tiled |> Maybe.map (\f -> f.value.id) |> Maybe.withDefault -1
                 , paneStatus = if status.borderStatus == "" then "off" else status.borderStatus
@@ -4181,7 +4355,7 @@ paneBorders tmuxLook cols rows active tiled floating status =
                 , borderStyle = status.borderStyle
                 , activeStyle = Array.findFirst (\p -> p.id == active) tiled |> Maybe.map (\f -> (own f.value).border) |> Maybe.withDefault "fg=green"
                 }
-                (Array.keepIf (\p -> p.z == Nothing) tiled)
+                (Array.keepIf (\p -> p.z == Nothing) cells)
                 ++ Array.mapAndFlatten titleOf tiled
 
         else

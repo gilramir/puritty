@@ -2225,3 +2225,34 @@ attach and mouse.
 what the left pane's `cat -v` got after Up, now ends `^[OA`. Before TM50
 tmux dropped that Up (sent with `-K`), and the line, printed and not
 checked, showed it missing on every run.
+
+## TM53 · Pane scrollbars (2026-11-12)
+
+TM39's item 12. `pane-scrollbars` (3.6) `on` takes the scrollbar's
+columns out of each pane's layout cell (measured on 3.8: a 40-wide cell
+is a 39-wide pane; with `pane-scrollbars-position left` the pane moves
+right, and `pane-scrollbars-style`'s `width=` and `pad=` are the columns);
+`modal` leaves the pane its width and shows the bar only in a mode.
+puritty sized its panes from the cells, a column too wide, and drew no
+bar.
+
+**Now** (tmux's look): the panes are fitted as tmux fits them
+(`fittedIn`, used for both their terminals' sizes and where they are
+drawn), and refitted when the option changes; each bar is drawn as
+`screen_redraw_draw_pane_scrollbar`: the track in the style, the slider
+reversed, out of a mode at the bottom as tall as the screen's share of
+screen and history, in copy mode where the view is (from copy mode's
+`history_size` and `scroll_position`); none on the alternate screen. The
+borders are worked out around the cells, scrollbar included, as tmux's
+are (`withScrollbar`).
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`,
+`pane-scrollbars`, `pane-scrollbars2`): the left pane's slider in the same
+rows at the bottom and, in copy mode scrolled up, in the middle; the
+right panes' full sliders (tmux draws them; `capture-pane` trims the
+blank cells, so its picture leaves them out). App tests 141; `show.py`
+lines and attach unchanged.
+
+**Not matched:** out of a mode the history is puritty's own (its
+scrollback setting), which can be shorter than tmux's; 3.8's `autohide`
+is drawn as off.
