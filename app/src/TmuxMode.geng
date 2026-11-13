@@ -65,6 +65,10 @@ import Window
 type alias State =
     { reader : Control.Reader
     , on : Bool
+      -- control mode begun and tmux's reply to the command it was started
+      -- with not yet ended: what it has said meanwhile, which is an error
+      -- when it ends control mode before attaching (TM70)
+    , starting : Maybe (Array String)
       -- the tmux window shown, -1 until tmux says which
     , window : Int
     , name : String
@@ -620,6 +624,7 @@ idle : {} -> State
 idle _ =
     { reader = Control.reader
     , on = False
+    , starting = Nothing
     , window = -1
     , name = ""
     , ids = []
@@ -1494,18 +1499,86 @@ ask asked acc =
 
 event : { cols : Int, rows : Int } -> Event -> (taken acc : Acc) -> Acc
 event size e acc =
+    let
+        starting =
+            acc.state.starting
+    in
     when e is
         Outside b ->
             { acc | outside = Array.pushLast b acc.outside }
 
         Entered ->
+            -- nothing is asked until tmux's reply to the command it was
+            -- started with ends well: a mistyped command or a session that
+            -- is not there ends control mode instead, and what was asked
+            -- would reach the shell after it (TM70)
             let
                 st =
                     acc.state
             in
+            { acc | state = { st | on = True, starting = Just [], window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus } }
+
+        Exited ->
+            let
+                st =
+                    acc.state
+
+                -- control mode ended before it attached: what tmux said,
+                -- on the terminal, as tmux without -CC says it
+                said =
+                    when starting is
+                        Just lines ->
+                            Array.map (\l -> Bytes.fromString (l ++ "\r\n")) lines
+
+                        Nothing ->
+                            []
+            in
+            { acc | state = { st | on = False, starting = Nothing, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing }, outside = acc.outside ++ said }
+
+        Reply r ->
+            when starting is
+                Just lines ->
+                    if r.flags /= 0 then
+                        acc
+
+                    else
+                        let
+                            st =
+                                acc.state
+                        in
+                        if r.ok then
+                            attachQueries size { acc | state = { st | starting = Nothing } }
+
+                        else
+                            { acc | state = { st | starting = Just (lines ++ Array.map Bytes.toStringLossy r.lines) } }
+
+                Nothing ->
+                    reply r acc
+
+        Notice n ->
+            when { starting = starting, n = n } is
+                { starting = Just lines, n = Unknown line } ->
+                    let
+                        st =
+                            acc.state
+                    in
+                    { acc | state = { st | starting = Just (Array.pushLast line lines) } }
+
+                _ ->
+                    notice n acc
+
+
+{-| What puritty asks when tmux has attached: the client's flags and size,
+the commands, the window, its panes, the keys and the rest. -}
+attachQueries : { cols : Int, rows : Int } -> (taken acc : Acc) -> Acc
+attachQueries size acc =
+            let
+                clientSize =
+                    tmuxSize (statusRows acc.state) size
+            in
             ask
                 [ { command = Command.clientFlags, expect = ForNothing }
-                , { command = Command.size (tmuxSize (statusRows st) size), expect = ForNothing }
+                , { command = Command.size clientSize, expect = ForNothing }
                 , { command = "list-commands -F " ++ Command.quote "#{command_list_name} #{command_list_alias}", expect = ForCommandNames }
                 , { command = windowQuery, expect = ForWindow }
                 , { command = tabsQuery, expect = ForTabs }
@@ -1516,17 +1589,14 @@ event size e acc =
                 , { command = "display-message -p " ++ Command.quote "#{display-panes-time}", expect = ForPanesTime }
                 , { command = "display-message -p " ++ Command.quote "#{client_name}", expect = ForClientName }
                 ]
-                { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus } }
+                acc
                 |> ask (Array.map (\sub -> { command = "refresh-client -B " ++ Command.quote sub, expect = ForNothing }) statusSubscriptions)
 
-        Exited ->
-            let
-                st =
-                    acc.state
-            in
-            { acc | state = { st | on = False, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing } }
 
-        Reply r ->
+{-| A reply block: one of puritty's questions answered, or a command not
+this client's. -}
+reply : { number : Int, flags : Int, ok : Bool, lines : Array Bytes } -> (taken acc : Acc) -> Acc
+reply r acc =
             if r.flags == 0 then
                 -- a command not this client's: the one it was started
                 -- with, a hook's, or a key binding's, in whose block tmux
@@ -1576,8 +1646,6 @@ event size e acc =
                 in
                 replied expect r.ok r.lines popped
 
-        Notice n ->
-            notice n acc
 
 
 {-| The bytes of the events that are a terminal's own, outside control

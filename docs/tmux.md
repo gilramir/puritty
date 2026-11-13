@@ -3125,3 +3125,38 @@ natively and on Windows (`vt-core.md` §VC62's gate holds 160).
 **Not yet:** more than one pane or window, customize mode, choose-buffer
 and choose-client, the clock, display-panes, and the message log.
 
+
+
+## TM70 · A `tmux -CC` that never attaches: its error shown, nothing asked (2026-11-13)
+
+Gilbert, on the Windows preview, ssh'd into Linux and typed `tmux -CC
+attacth-t main`. tmux printed `refresh-client`, `display-message`,
+`list-panes` and more, and no error.
+
+**What tmux writes** (measured, 3.8 and 3.6a): control mode begun, the
+error as a bare line, `%exit`, control mode ended; no reply block:
+
+    ESC P1000p unknown command: attacth-t \r\n %exit \r\n ESC \
+
+An attach that fails as a command (`tmux -CC attach` with no server)
+writes its error in the reply to that command, then `%exit`:
+
+    ESC P1000p %begin T N 0 / no sessions / %error T N 0 / %exit / ESC \
+
+**What puritty did.** On `ESC P1000p` it sent its attach questions at
+once. tmux had already gone, so they reached the shell as typed lines,
+which is what Gilbert saw; and the error, a line outside any block, was
+read as an unknown notification and dropped.
+
+**Now.** A successful attach always begins with the reply to the command
+tmux was started with (`%begin … 0` … `%end`, measured with `attach` and
+`new-session`), so puritty asks nothing until that reply ends well
+(`starting` in `State`; `attachQueries`). Until then, lines outside a
+block and an `%error` reply's lines are kept; when control mode ends
+before attaching, they are written on the terminal, as tmux without `-CC`
+would print them. Two tests feed tmux's measured bytes and require the
+message on the terminal and nothing asked; on the code before, both fail
+with puritty's eleven questions. On Xvfb, the built app running `tmux
+-CC attacth-t main` in a shell shows `unknown command: attacth-t` and the
+shell's prompt after it; `bench/tmux/show.py` attaches to a real tmux as
+before (panes, splits, typing). App tests 162.

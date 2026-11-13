@@ -222,6 +222,22 @@ tmuxMode =
                  , { name = "every question puritty asks in the scenarios is recorded from a real tmux (TM69)"
                    , test = \_ -> Expect.equal "" unrecorded
                    }
+                 , { name = "a mistyped command ends control mode with tmux's message on the terminal, and nothing asked (TM70)"
+                   , test =
+                        \_ ->
+                            -- as tmux 3.8 and 3.6a answer `tmux -CC attacth-t main`
+                            Expect.equal
+                                { said = "unknown command: attacth-t\u{000D}\n", asked = [] }
+                                (failedStart "\u{001B}P1000punknown command: attacth-t\u{000D}\n%exit\u{000D}\n\u{001B}\\")
+                   }
+                 , { name = "an attach that fails ends control mode with tmux's error on the terminal, and nothing asked (TM70)"
+                   , test =
+                        \_ ->
+                            -- as tmux answers `tmux -CC attach` with no server
+                            Expect.equal
+                                { said = "no sessions\u{000D}\n", asked = [] }
+                                (failedStart "\u{001B}P1000p%begin 1794605254 322 0\u{000D}\nno sessions\u{000D}\n%error 1794605254 322 0\u{000D}\n%exit\u{000D}\n\u{001B}\\")
+                   }
                  ]
                     ++ Array.flatten (Array.map onVersion RealTmux.versions)
                 )
@@ -558,4 +574,15 @@ unrecorded =
             )
         |> Array.foldl (\l acc -> if Array.member l acc then acc else Array.pushLast l acc) []
         |> String.join "\n"
+
+
+{-| What puritty writes on the terminal and asks tmux when control mode
+begins and ends with these bytes. -}
+failedStart : String -> { said : String, asked : Array String }
+failedStart bytes =
+    let
+        r =
+            TmuxMode.read { cols = 80, rows = 25 } (Bytes.fromString bytes) (TmuxMode.idle {})
+    in
+    { said = Bytes.toStringLossy r.outside, asked = r.commands }
 
