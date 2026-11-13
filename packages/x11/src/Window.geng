@@ -399,6 +399,7 @@ type Event
     | Pasted Bool
     | MenuChosen { menu : Int, index : Int }
     | Rescaled Cell
+    | Note String
 
 
 {-| A press, release or motion of the pointer (`docs/phase3-select.md` §4):
@@ -540,6 +541,14 @@ decode b at acc =
 
             8 ->
                 decode b (advance b at 1) (Array.pushLast ImeReady acc)
+
+            13 ->
+                -- what the X server did with the window, for the log
+                let
+                    n =
+                        clamp 0 65535 (u16 1)
+                in
+                decode b (advance b at (3 + n)) (Array.pushLast (Note (Bytes.toStringLossy (piece 3 n))) acc)
 
             11 ->
                 decode b (advance b at 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)

@@ -175,3 +175,50 @@ as it gets there.
   (`phase3-input.md`) is what would talk to it.
 - The ETX profile (RE6's second list), until RE7 says it is needed.
 - Packaging (an RPM, or a tarball with a `.desktop` file): phase 7.
+
+---
+
+## RE9 · A blank window under ETX and xfwm4 until another click (2026-11-13)
+
+Gilbert's first run of the preview's RHEL8 build in his ETX desktop
+(xfce4's xfwm4): the window opened blank, and the shell's prompt appeared
+only when he clicked the xterm he had started it from. Clicking puritty's
+own title bar, or another xterm, did nothing; `&` and standard input and
+output sent to `/dev/null` changed nothing.
+
+What he measured, step by step:
+
+- `strace -f`: puritty's loop asleep in `ppoll` on four descriptors with
+  no timeout: the X connection (3), the settings watcher (8, inotify),
+  the terminal (9, `/dev/ptmx`) and the child-exit pipe (10, the pid
+  fallback of geng-lang Dnene53). So it waited on the right things, and
+  had no frame due: it believed it had drawn.
+- The shell (zsh, and `zsh -f` and bash the same) on its own terminal
+  (`pts/304`, `Ss+`), and its backtrace in zsh's line editor waiting for
+  a key (`zleread` → `getkeycmd` → `getbyte`): it had printed its prompt.
+- `xwininfo`: the window `IsViewable`. `xev` on it: the click brought it
+  a `FocusOut`, and no `Expose`.
+
+So puritty read the prompt, drew it, and the picture never reached the
+screen; a `FocusOut` makes puritty draw again (the cursor's shape), and
+that drawing did. The likely cause is the order: xfwm4 shows a window
+started from another one late (its focus-stealing prevention), puritty
+draws first into a window not yet shown, which an X server that keeps no
+picture of it throws away, and ETX's server then sends no `Expose` when
+it is shown (puritty repaints on `Expose`). The xterm click mattered
+only as the one that took the focus from puritty.
+
+**What changed** (`puritty_x11.c`): the whole window is drawn again from
+puritty's pixmap, which holds every frame, when the window is mapped
+(`MapNotify`), when it becomes visible (`VisibilityNotify`, now asked
+for), and on every change of focus, whatever the server sends. And the
+diagnostic log has a `window` line for each: `reparented`, `mapped`,
+`unmapped`, `visibility N` (0 unobscured, 1 partly, 2 fully), `expose
+X,Y WxH`, so a run at work says what the server did.
+
+**Checked** here under Xvfb with twm: the notes in the log in the order
+the server sent them (reparented, mapped, visibility 0, expose), the
+prompt on the screen, app tests 142, the settings gate 20 of 20, `show.py`
+mouse, menus and panes as before; the Windows build compiles. ETX itself
+is Gilbert's to try: whether the window now shows at once, and what the
+log's `window` lines say if it does not.

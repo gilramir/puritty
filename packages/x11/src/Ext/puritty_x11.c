@@ -440,7 +440,7 @@ static void at_exit(void) {
 #define BASE_EVENTS                                                                                                  \
     (XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_FOCUS_CHANGE | \
      XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |                \
-     XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_PROPERTY_CHANGE)
+     XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_VISIBILITY_CHANGE)
 static int all_motion;
 
 static uint8_t evbuf[65536];
@@ -649,6 +649,26 @@ static void record_text(uint8_t kind, const char *s, size_t n) {
     record((const uint8_t *) s, (int) n);
 }
 
+/* A line for the diagnostic log about the window (Window.Note): what the
+ * X server did with it, for a desktop where it shows late (docs/rhel8-etx.md
+ * RE9). */
+static void note(const char *fmt, int a, int b, int c, int d) {
+    char s[96];
+    int n = snprintf(s, sizeof s, fmt, a, b, c, d);
+    if (n > 0) record_text(13, s, (size_t) (n < (int) sizeof s ? n : (int) sizeof s - 1));
+}
+
+/* The whole window drawn again from the pixmap, which holds every frame:
+ * for a window shown, made visible or focused after it was drawn, which an
+ * X server that keeps nothing of an unshown window and sends no Expose for
+ * it (ETX, RE9) would otherwise leave blank. */
+static void repaint_all(void) {
+    if (!pixmap) return;
+    xcb_copy_area(conn, pixmap, window, gc, 0, 0, 0, 0, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
+    margins();
+    xcb_flush(conn);
+}
+
 /* The IME's text as UTF-8, whichever encoding it was given in; free it. */
 static char *xim_utf8(const char *s, size_t n, size_t *out) {
     if (xcb_xim_get_encoding(xim) == XCB_XIM_UTF8_STRING) {
@@ -773,8 +793,26 @@ static void drain(void) {
             last_time = mo->time;
             pointer_event(2, 0, mo->event_x, mo->event_y, mo->state);
         }
+        else if (type == XCB_MAP_NOTIFY) {
+            xcb_map_notify_event_t *mn = (xcb_map_notify_event_t *) e;
+            if (mn->window == window) {
+                note("mapped", 0, 0, 0, 0);
+                repaint_all();
+            }
+        } else if (type == XCB_UNMAP_NOTIFY) {
+            xcb_unmap_notify_event_t *un = (xcb_unmap_notify_event_t *) e;
+            if (un->window == window) note("unmapped", 0, 0, 0, 0);
+        } else if (type == XCB_REPARENT_NOTIFY) {
+            note("reparented", 0, 0, 0, 0);
+        } else if (type == XCB_VISIBILITY_NOTIFY) {
+            xcb_visibility_notify_event_t *v = (xcb_visibility_notify_event_t *) e;
+            /* 0 unobscured, 1 partly obscured, 2 fully obscured */
+            note("visibility %d", v->state, 0, 0, 0);
+            if (v->state != XCB_VISIBILITY_FULLY_OBSCURED) repaint_all();
+        }
         else if (type == XCB_EXPOSE) {
             xcb_expose_event_t *x = (xcb_expose_event_t *) e;
+            if (x->count == 0) note("expose %d,%d %dx%d", x->x, x->y, x->width, x->height);
             if (pixmap)
                 xcb_copy_area(conn, pixmap, window, gc, (int16_t) x->x, (int16_t) x->y, (int16_t) x->x, (int16_t) x->y, x->width,
                               x->height);
@@ -790,6 +828,7 @@ static void drain(void) {
                     if (type == XCB_FOCUS_IN) xcb_xim_set_ic_focus(xim, xic);
                     else xcb_xim_unset_ic_focus(xim, xic);
                 }
+                repaint_all();
                 /* keys held while the focus left are released elsewhere */
                 memset(held, 0, sizeof held);
                 right_held = 0;
