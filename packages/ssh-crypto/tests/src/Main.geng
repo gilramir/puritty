@@ -2,10 +2,12 @@ module Main exposing (main)
 
 {-| ssh-crypto's tests (puritty `docs/ssh-client.md` SC11 step 3): every
 vector in `vectors.txt` (`make-vectors.py`), checked through `SshCrypto`,
-with a count for each kind and the first failures of each. It ends with
-status 1 when any fails.
+a test for each kind of vector, run by gren-unit-node's native runner: a
+failing kind shows its counts and its first failures, and the program ends
+with status 1 when any fails. The runner's own arguments are taken too (a
+glob of tests, `-v`, `--list`, `--junit-xml PATH`).
 
-    ssh-crypto-tests [VECTORS]
+    ssh-crypto-tests [VECTORS] [RUNNER ARGUMENTS]
     ssh-crypto-tests --bench
     ssh-crypto-tests --fuzz [COUNT]
     ssh-crypto-tests --at-once KEYFILE
@@ -31,6 +33,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Console
 import Dict exposing (Dict)
+import Expect exposing (Expectation)
 import Int64
 import Os.Env
 import Os.Error
@@ -38,6 +41,8 @@ import Os.File as File
 import Os.Path as Path
 import SshCrypto exposing (Cipher(..))
 import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Test.Runner.UnitNode.Program as Program
 import Time
 import UInt8
 
@@ -69,15 +74,93 @@ main =
 
                 else
                     File.readFile r.perm (Path.fromString path)
+                        |> Task.onError (\e -> Console.write ("cannot read " ++ path ++ ": " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 2))
                         |> Task.andThen
                             (\bytes ->
-                                let
-                                    text =
-                                        Bytes.toStringLossy bytes
-                                in
-                                keyTests text |> Task.andThen (\keys -> report (Dict.set "keyload" keys (run text)))
+                                Program.runWith (withoutVectors r.env)
+                                    { name = "ssh-crypto-tests"
+                                    , version = "0.1.0"
+                                    , init = Task.succeed {}
+                                    , fileSystem = \_ -> Just r.perm
+                                    , globalSetUp = \_ -> Task.succeed {}
+                                    , globalTearDown = \_ -> Task.succeed {}
+                                    , suites = \_ -> [ vectorSuite (Bytes.toStringLossy bytes) ]
+                                    }
                             )
-                        |> Task.onError (\e -> Console.write ("cannot read " ++ path ++ ": " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 2))
+            )
+
+
+{-| The program's arguments without the vectors file's, which are the
+runner's. -}
+withoutVectors : Os.Env.Environment -> Os.Env.Environment
+withoutVectors env =
+    let
+        kept =
+            Array.map2 (\text bytes -> { text = text, bytes = bytes }) env.args env.argsAsBytes
+                |> Array.keepIf (\a -> not (String.endsWith ".txt" a.text))
+    in
+    { args = Array.map .text kept, argsAsBytes = Array.map .bytes kept }
+
+
+{-| A test for each kind of vector in the file, in the order the file first
+has them, and `keyload`'s, which reads and signs with each key. -}
+vectorSuite : String -> U.Suite
+vectorSuite text =
+    U.suite
+        { name = "Vectors"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            kindsOf text
+                |> Array.map (\kind -> U.test kind (\_ -> Task.succeed (expectTally (tallyOf kind text))))
+                |> Array.pushLast (U.test "keyload" (\_ -> keyTests text |> Task.map expectTally))
+        }
+
+
+{-| The kinds of vector a file has, `keyload` aside. -}
+kindsOf : String -> Array String
+kindsOf text =
+    String.lines text
+        |> Array.foldl
+            (\line kinds ->
+                let
+                    kind =
+                        String.words line |> Array.first |> Maybe.withDefault ""
+                in
+                if String.isEmpty line || String.startsWith "#" line || kind == "keyload" || Array.member kind kinds then
+                    kinds
+
+                else
+                    Array.pushLast kind kinds
+            )
+            []
+
+
+{-| One kind's vectors checked. -}
+tallyOf : String -> String -> Tally
+tallyOf kind text =
+    String.lines text
+        |> Array.keepIf (\line -> String.startsWith (kind ++ " ") line)
+        |> String.join "\n"
+        |> run
+        |> Dict.get kind
+        |> Maybe.withDefault { pass = 0, fail = 0, failures = [] }
+
+
+expectTally : Tally -> Expectation
+expectTally t =
+    if t.fail == 0 then
+        Expect.pass
+
+    else
+        Expect.fail
+            (String.fromInt t.pass
+                ++ " pass, "
+                ++ String.fromInt t.fail
+                ++ " fail\n"
+                ++ String.join "" (Array.map (\f -> "  FAIL " ++ f ++ "\n") t.failures)
             )
 
 
@@ -119,38 +202,6 @@ run text =
                         tallies
             )
             Dict.empty
-
-
-report : Dict String Tally -> Task x {}
-report tallies =
-    let
-        failed =
-            Dict.foldl (\_ t n -> n + t.fail) 0 tallies
-
-        text =
-            Dict.foldl
-                (\kind t acc ->
-                    acc
-                        ++ kind
-                        ++ ": "
-                        ++ String.fromInt t.pass
-                        ++ " pass, "
-                        ++ String.fromInt t.fail
-                        ++ " fail\n"
-                        ++ String.join "" (Array.map (\f -> "  FAIL " ++ f ++ "\n") t.failures)
-                )
-                ""
-                tallies
-    in
-    Console.write text
-        |> Task.andThen
-            (\_ ->
-                if failed > 0 then
-                    Os.Env.exitWithCode 1
-
-                else
-                    Task.succeed {}
-            )
 
 
 type alias Fields =

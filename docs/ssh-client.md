@@ -805,7 +805,11 @@ the file's head: Wycheproof's "acceptable" cases (x25519 254, ed25519 29,
 rsa 6), which a verifier may take either way, and 221 ECDSA signatures
 whose DER does not parse and so have no SSH form. `tests/build.sh` builds
 the runner (`--windows` for the `.exe`); `ssh-crypto-tests` reads
-`vectors.txt` and ends with status 1 on any failure.
+`vectors.txt` and ends with status 1 on any failure. Since 2026-11-13 the
+check is a suite on `gren-unit-node`'s native runner (geng-lang
+`m1b-test.md` §TS11, Dnene54): a test for each kind of vector, a failing
+one showing its counts and first failures, and the runner's arguments
+taken (`-v` for each kind's time, a glob such as `'Vectors.hmac'`).
 
 | | nene (Ryzen 9 9950X), Linux | beelink1 (Ryzen 7 5700U), Windows 11 |
 |---|---|---|
