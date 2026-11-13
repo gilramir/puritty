@@ -234,6 +234,15 @@ command c =
         escaped =
             "'\\''"
 
+        -- a paste's text, double-quoted for tmux (TM64), never shown
+        pasted =
+            when String.firstIndexOf "\"" c is
+                Just at ->
+                    if String.startsWith "set-buffer " c then Just (String.takeFirst at c ++ "<" ++ String.fromInt (String.count c - at) ++ " chars>") else Nothing
+
+                Nothing ->
+                    Nothing
+
         redacted =
             when String.split " -H " c is
                 [ before, after ] ->
@@ -253,11 +262,16 @@ command c =
                         |> String.join "'"
                         |> String.replace "\u{0001}" escaped
     in
-    if String.count redacted > 300 then
-        String.takeFirst 300 redacted ++ "…"
+    when pasted is
+        Just shown ->
+            shown
 
-    else
-        redacted
+        Nothing ->
+            if String.count redacted > 300 then
+                String.takeFirst 300 redacted ++ "…"
+
+            else
+                redacted
 
 
 {-| A quoted word the log may show: a format, a tmux id, or a key's name. -}

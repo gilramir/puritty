@@ -3599,28 +3599,38 @@ pasteInto more text m =
                     , Paste.piece bracketed text
                     , if not more && bracketed then Paste.bracketEnd else Bytes.empty
                     ]
-    in
-    send bytes
-        { m
-            | diag =
-                Diag.add m.turnMs
-                    "paste"
-                    (String.fromInt (Bytes.length text)
-                        ++ " bytes, "
-                        ++ String.fromInt (Diag.lines text)
-                        ++ " lines, "
-                        ++ (if bracketed then "bracketed" else "plain")
-                        ++ (when { first = first, more = more } is
-                                { first = True, more = False } -> ", in one piece"
-                                { first = True, more = True } -> ", the first piece"
-                                { first = False, more = True } -> ", a later piece"
-                                { first = False, more = False } -> ", the last piece")
-                        ++ ", sent "
-                        ++ String.fromInt (Bytes.length bytes)
-                        ++ " bytes to "
-                        ++ (if TmuxMode.isOn m.tmux then "tmux's active pane" else "the program")
-                    )
-                    m.diag
+
+        -- under tmux -CC, given to tmux to paste (docs/tmux.md TM64): a
+        -- tmux client turns bracketed paste on in its terminal at start
+        -- (`tty_start_tty`), so a paste reaches it encoded as a bracketed
+        -- one, its line ends `\n`, and tmux brackets it for the pane only
+        -- where the program asked; puritty encodes it so and lets tmux
+        -- bracket it, as tmux knows the pane's modes and puritty may not
+        -- (3.6, measured)
+        tmuxBytes =
+            if empty then Bytes.empty else Paste.piece True text
+
+        updated =
+            { m
+                | diag =
+                    Diag.add m.turnMs
+                        "paste"
+                        (String.fromInt (Bytes.length text)
+                            ++ " bytes, "
+                            ++ String.fromInt (Diag.lines text)
+                            ++ " lines, "
+                            ++ (if bracketed then "bracketed" else "plain")
+                            ++ (when { first = first, more = more } is
+                                    { first = True, more = False } -> ", in one piece"
+                                    { first = True, more = True } -> ", the first piece"
+                                    { first = False, more = True } -> ", a later piece"
+                                    { first = False, more = False } -> ", the last piece")
+                            ++ ", sent "
+                            ++ String.fromInt (Bytes.length bytes)
+                            ++ " bytes to "
+                            ++ (if TmuxMode.isOn m.tmux then "tmux's active pane" else "the program")
+                        )
+                        m.diag
             , pasting =
                 if more then
                     Just bracketed
@@ -3634,7 +3644,17 @@ pasteInto more text m =
                 else
                     0
             , urgent = True
-        }
+            }
+    in
+    if TmuxMode.isOn updated.tmux then
+        let
+            r =
+                TmuxMode.paste { first = first, last = not more } tmuxBytes updated.tmux
+        in
+        sendCommands r.commands { updated | tmux = r.state }
+
+    else
+        send bytes updated
 
 
 {-| A press, release or motion of the pointer (docs/phase3-select.md §4):

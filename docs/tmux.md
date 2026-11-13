@@ -1795,6 +1795,15 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
   buffer.
 - **Escape closes a tmux prompt** in puritty; in tmux (3.6a and 3.8,
   measured) Escape does not cancel the emacs prompt, C-c does.
+- **The wheel and the middle button over a pane** are puritty's (TM17),
+  measured against a normal client by `keydiff.py input` (TM64): the
+  wheel scrolls the pane's view, or sends arrows when its program is on
+  the alternate screen. A normal client with tmux's `mouse off` sends
+  arrows on either screen, because tmux puts its own terminal on the
+  alternate screen. With `mouse on` it gives the wheel to tmux's binding,
+  which sends a program on the alternate screen nothing. The middle
+  button pastes the selection, where with `mouse on` a normal client
+  runs tmux's `MouseDown2Pane` (`paste-buffer`, tmux's own buffer).
 
 ### TM39.4 · What the gaps share, for Gilbert
 
@@ -2510,7 +2519,7 @@ the attach); pastes themselves (puritty adds the brackets and sends
 bytes; a client sends its terminal's paste through tmux); focus events
 (puritty sends `\e[I`/`\e[O`; tmux sends them with `focus-events` on
 and the program asking); the wheel on the alternate screen; IME commits.
-Each wants a case in `keydiff.py`.
+Each wants a case in `keydiff.py`. (Done for all but IME commits in TM64.)
 
 ### What changes in how we work
 
@@ -2696,3 +2705,57 @@ what the scenario printed, and the first run against them failed six:
 
 After them: 138 checks in 17 scenarios, none failed. A failing check was
 seen to end the run with status 1.
+
+## TM64 · Pastes, focus and the wheel, byte for byte (2026-11-13)
+
+TM61's unchecked list, taken up. `keydiff.py input` sends, to puritty
+running a normal tmux client and to puritty in `-CC`: the clipboard by
+Ctrl+Shift+V (one line, two lines, and a line of `" $ \ #{} ~`, Korean
+and a tab), the selection by Shift+Insert and by the middle button,
+focus leaving puritty's window and coming back, and the wheel; the
+program asking for nothing, bracketed paste (2004), focus events (1004)
+or the alternate screen, each set before puritty attaches; tmux's
+`focus-events` on, its `mouse` off and on; 3.8 and 3.6a. `KD_ALL=1`
+prints every event, not only those that differ, which is how the focus
+events were seen to reach the program at all.
+
+**Found: a pasted line end.** A paste of two lines gave the program
+`line1\nline2` under a normal client and `line1\rline2` under `-CC`, on
+both versions. A tmux client turns bracketed paste on in its terminal at
+start (`tty_start_tty`, whatever the pane asks), so puritty encodes the
+paste as a bracketed one (line ends kept), and tmux writes what came to
+the pane as it is (`window_pane_paste`), leaving out the brackets the
+program did not ask for. Under `-CC` puritty encoded it by the pane's own
+mode, plain, which turns `\n` into `\r`, as xterm does.
+
+**Found: 3.6, bracketed paste asked before the attach.** TM61's known gap,
+measured: no brackets under `-CC` where a normal client had them.
+
+**The fix, one for both:** under `-CC` a paste is given to tmux to make
+(`TmuxMode.paste`, `Command.pasteBytes`): encoded as a bracketed paste,
+put in a buffer of puritty's (`set-buffer`, a double-quoted word in which
+every byte outside printable ASCII is an octal escape, so that it stays
+on the command's one line; 1024 bytes a command, `-a` after the first),
+then `paste-buffer -p -r -d` into the active pane: tmux brackets it where
+the program asked, which tmux knows on every version, keeps the line ends
+(`-r`) and drops the buffer. `PasteStart` and `PasteEnd` are no help:
+`send-keys` types them as words on both versions (measured). The
+diagnostic log shows a `set-buffer`'s text only as its length (DG5's
+rule; a test holds it).
+
+After it: every paste the same as a normal client's on 3.6a and 3.8, in
+every mode, `mouse` on and off, the odd line included; focus events the
+same on 3.8. `keydiff.py keys` and `mouse` on 3.8 still differ in
+nothing. Tests: tmux package 96, app 142.
+
+**Differences left, measured and kept:**
+- the wheel and the middle button over a pane are puritty's
+  (TM39.3, TM17);
+- **3.6: focus events for a program that asked before the attach.** A
+  control client is always focused to tmux (`CLIENT_FOCUSED`), so puritty
+  sends `\e[I` and `\e[O` itself, only where it knows the program asked.
+  3.6 has no flag that says so, and no command passes focus to tmux. Such
+  a program gets its focus events once it asks again.
+
+**Still unchecked:** IME commits (`keydiff` types Korean by keysym, not
+through an input method); `harness/ime` could drive one.

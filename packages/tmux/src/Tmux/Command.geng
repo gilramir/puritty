@@ -1,5 +1,6 @@
 module Tmux.Command exposing
     ( sendBytes
+    , pasteBytes
     , sendKey
     , sendKeyTo
     , typeText
@@ -16,6 +17,62 @@ an unquoted `%0:…` is a parse error in tmux 3.8 (TM3).
 -}
 
 import Bytes exposing (Bytes)
+import UInt8
+
+
+{-| A paste given to tmux to make (puritty `docs/tmux.md` TM64): the text
+into a buffer of puritty's (`set-buffer`, in pieces of 1024 bytes, `-a`
+after the first), then on its last piece `paste-buffer -p -r -d` into the
+pane, so that tmux brackets it where the program asked for bracketed
+paste, which tmux knows and puritty may not (3.6), keeps its line ends as
+they are (`-r`), as a tmux client passes a paste on, and drops the buffer.
+The first piece starts the buffer again; an empty paste makes nothing. -}
+pasteBytes : Int -> { first : Bool, last : Bool } -> Bytes -> Array String
+pasteBytes pane piece bytes =
+    let
+        count =
+            Bytes.length bytes
+
+        chunks =
+            Array.range 0 ((count - 1) // 1024)
+                |> Array.keepIf (\_ -> count > 0)
+                |> Array.map (\i -> Bytes.slice (i * 1024) (min count ((i + 1) * 1024)) bytes)
+
+        sets =
+            Array.indexedMap (\i chunk -> "set-buffer " ++ (if piece.first && i == 0 then "" else "-a ") ++ "-b puritty-paste " ++ quoteBytes chunk) chunks
+
+        pasted =
+            if piece.last && (not piece.first || count > 0) then
+                [ "paste-buffer -p -r -d -b puritty-paste -t " ++ quote ("%" ++ String.fromInt pane) ]
+
+            else
+                []
+    in
+    sets ++ pasted
+
+
+{-| Bytes as one double-quoted word of tmux's syntax, which keeps them on
+the command's one line: printable ASCII as it is, `"`, `\` and `$` behind a
+backslash, every other byte as an octal escape (`\012`), read back by
+tmux's parser byte for byte. -}
+quoteBytes : Bytes -> String
+quoteBytes bytes =
+    let
+        one u =
+            let
+                b =
+                    UInt8.toInt u
+            in
+            if b == 0x22 || b == 0x5C || b == 0x24 then
+                "\\" ++ String.fromChar (Char.fromCode b |> Maybe.withDefault '?')
+
+            else if b >= 0x20 && b < 0x7F then
+                String.fromChar (Char.fromCode b |> Maybe.withDefault '?')
+
+            else
+                "\\" ++ String.fromInt (b // 64) ++ String.fromInt (modBy 8 (b // 8)) ++ String.fromInt (modBy 8 b)
+    in
+    "\"" ++ String.join "" (Array.range 0 (Bytes.length bytes - 1) |> Array.mapAndKeepJust (\i -> Bytes.get i bytes) |> Array.map one) ++ "\""
 
 
 {-| `send-keys -H`: the bytes as the pane's program reads them, hex, at

@@ -21,6 +21,7 @@ module TmuxMode exposing
     , tabKey
     , newWindow
     , customize
+    , paste
     , anyMotion
     , tick
     , dueAt
@@ -3022,6 +3023,24 @@ keys bytes s =
     else
         -- a key the pane's program gets brings its view to the bottom
         sent (Command.sendBytes s.active bytes) { s | back = if Bytes.isEmpty bytes then s.back else Dict.remove s.active s.back }
+
+
+{-| A paste, or a piece of one, to the active pane by tmux's own paste
+(TM64): tmux brackets it where the program asked, which on 3.6 puritty
+cannot know for a program that asked before it attached. -}
+paste : { first : Bool, last : Bool } -> Bytes -> (taken s : State) -> { state : State, commands : Array String }
+paste piece bytes s =
+    if s.active < 0 then
+        { state = s, commands = [] }
+
+    else
+        let
+            pane =
+                s.active
+        in
+        sendAsking
+            (Array.map (\command -> { command = command, expect = ForNothing }) (Command.pasteBytes pane piece bytes))
+            { s | back = Dict.remove pane s.back }
 
 
 {-| What a typed key sends: through the client's key table, as a key

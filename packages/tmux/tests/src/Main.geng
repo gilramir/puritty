@@ -347,7 +347,34 @@ layout =
 command : U.Suite
 command =
     run "Command"
-        [ { name = "send-keys -H, the pane quoted"
+        [ { name = "a paste to tmux: quotes, $, a backslash, a line end and UTF-8 as tmux reads them, then pasted"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "set-buffer -b puritty-paste \"a\\\"b\\$\\\\\\012\\355\\225\\234\""
+                        , "paste-buffer -p -r -d -b puritty-paste -t '%3'"
+                        ]
+                        (Command.pasteBytes 3 { first = True, last = True } (Bytes.fromString "a\"b$\\\n한"))
+          }
+        , { name = "a paste in pieces: the first starts the buffer, the rest add, the last pastes"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ "set-buffer -b puritty-paste \"one\"" ], [ "set-buffer -a -b puritty-paste \"two\"" ], [ "paste-buffer -p -r -d -b puritty-paste -t '%0'" ] ]
+                        [ Command.pasteBytes 0 { first = True, last = False } (Bytes.fromString "one")
+                        , Command.pasteBytes 0 { first = False, last = False } (Bytes.fromString "two")
+                        , Command.pasteBytes 0 { first = False, last = True } Bytes.empty
+                        ]
+          }
+        , { name = "an empty paste makes nothing; a long one goes in pieces of 1024"
+          , test =
+                \_ ->
+                    Expect.equal [ 0, 3 ]
+                        [ Array.length (Command.pasteBytes 0 { first = True, last = True } Bytes.empty)
+                        , Array.length (Command.pasteBytes 0 { first = True, last = True } (Bytes.fromString (String.repeat 2000 "x")))
+                        ]
+          }
+        , { name = "send-keys -H, the pane quoted"
           , test = \_ -> Expect.equal [ "send-keys -t '%3' -H 61 1b 0d" ] (Command.sendBytes 3 (bytes [ 0x61, 0x1B, 0x0D ]))
           }
         , { name = "a long paste in commands of 256 bytes"
