@@ -1781,10 +1781,11 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
     control commands (`send-keys -K`, `refresh-client -B`, captures),
     lines cut at the edge, tmux's `message:` lines absent. tmux's log, so
     the fix is fewer and quieter commands, or puritty's own view of it.
+    puritty's own commands left out of it (TM65).
 16. **Smaller** (M): an error reads `parse error: unknown command: X`
     where tmux says `Unknown command: X`; a right press on the status
     line gives no window or session menu; display-panes' numbers in
-    right-hand panes sit one cell left; the floating box's `[f][z][x]`
+    right-hand panes sit one cell left (fixed, TM65); the floating box's `[f][z][x]`
     sit two cells short of its right edge; messages' `display-time`
     expiry and a bell's sound in a shown pane were read (R), not seen.
 
@@ -2414,7 +2415,7 @@ Session, New Window), the window menu's for the window pressed. App tests
 
 **Not done:** display-panes' digits one cell off in right-hand panes:
 3.8 draws them in a mode of its own (`window-panes.c`) with scaled
-geometry, not yet read.
+geometry, not yet read. Done (TM65).
 
 ## TM60 · The tree's swap and help (2026-11-12)
 
@@ -2432,7 +2433,7 @@ after S-Down on `0: first`, `0: two-`, `1: first*`, `2: three` on both,
 the current window at index 1 on both. App tests 141.
 
 **Not done from TM39's item 6:** 3.8's `i` (information in place of the
-preview) and `<`/`>` (scrolling the previews).
+preview) and `<`/`>` (scrolling the previews). Done (TM65).
 
 ## TM61 · How the Enter bug got through, and the same kind found (2026-11-12)
 
@@ -2676,7 +2677,7 @@ rebinding, all `same`. Tests: tmux package 93 (22 for customize), app
 - A general one this showed: tmux 3.8's theme colors (`themeyellow` and
   the rest) are drawn here as tmux sends them (RGB, the dark theme's), but
   the rest of puritty's 3.8 drawing, prompts included, still takes them
-  as the plain colors (`themeyellow` as yellow, TM47).
+  as the plain colors (`themeyellow` as yellow, TM47). Done (TM65).
 
 ## TM63 · show.py's lines are checks (2026-11-13)
 
@@ -2759,3 +2760,140 @@ nothing. Tests: tmux package 96, app 142.
 
 **Still unchecked:** IME commits (`keydiff` types Korean by keysym, not
 through an input method); `harness/ime` could drive one.
+
+## TM65 · tmux 3.8's theme colors everywhere, and three of TM39's leftovers (2026-11-13)
+
+Gilbert's list after TM64: tmux 3.8's theme colors in all of puritty's
+3.8 drawing, not customize mode's alone (TM62's last "not yet"); then
+display-panes' digits a cell off in right-hand panes on 3.8 (TM59), tmux's
+message log full of puritty's own commands (TM39 item 15), and the tree's
+`i` and `<`/`>` (TM60).
+
+**Dnene52: puritty's own commands are left out of tmux's message log as
+puritty shows it.** tmux cannot be told not to log a client's commands,
+and sending fewer would not remove the keys passed on, which are most of
+them; so puritty filters the output it draws, and only lines its own
+client wrote as `command:`, keeping the user's commands. The log in tmux
+is unchanged: `show-messages` from another client still shows all of
+them.
+
+**Theme colors.** tmux 3.8 writes its default styles with theme names
+(`message-style bg=themeyellow,fg=themeblack`, `status-style
+bg=themegreen`, `menu-style bg=themedarkgrey,fg=themewhite`). Each name is
+looked up per client (`server_client_update_theme_colours`): the `theme`
+option picks the theme (`detect` from the terminal's reported theme or its
+background, `light`, `dark`, or `terminal`, the plain ANSI colors), and
+the name's option for that theme (`dark-theme-yellow`) is expanded for
+the client, a format that gives `darkgoldenrod` to a client of 256 colors
+or more and `yellow` to one of fewer. A control client has no terminal, so
+`#{client_colours}` is empty for it: expanding `#{E:message-style}` there
+gives the plain colors, which is what puritty drew (`themeyellow` as
+yellow, TM47), where a terminal client in puritty is drawn dark gold.
+
+What puritty does (`TmuxMode.themeOf`, `withStatus`, `themeAsked`):
+
+- one more subscription, `puritty-theme`: `#{theme}` and the twenty
+  `dark-theme-*` and `light-theme-*` options as they are set, so a
+  change is seen when made; 3.6 sends nothing and nothing is asked;
+- on each change, one `display-message -p` of the twenty with
+  `#{client_colours}` written as `16777216`, as for a client of 24-bit
+  color, which puritty is; a value tmux would not take as a color, or
+  another theme name, is `default`, as tmux makes it;
+- `theme detect` follows puritty's own background (`setBackground`, from
+  the config, again on a settings reload): light when its red, green and
+  blue add to more than 382, as `colour_totheme` reads a terminal's;
+- the status line is kept as tmux sent it (`rawStatus`), and drawn
+  (`status`) with every theme name in it written as its color
+  (`Style.themed`): its formats, the windows' and panes' styles and
+  titles, and the drawing options (TM47). Customize mode's colors (TM62)
+  come from the same table, no longer from fixed dark-theme values.
+
+`Tmux.Style` also reads the X11 color names tmux knows (`colour_byname`:
+578 names, `gray0` to `gray100` rounded as tmux rounds them), generated
+into `Tmux.ColorNames` by `packages/tmux/tools/color_names.py` from
+tmux's `colour.c` (the same table in 3.6a and 3.8). Before it,
+`fg=darkgoldenrod` in a user's style drew in the terminal's own color.
+
+Three more options are read (`optionNames`): `menu-style` and
+`menu-border-style` for menus (puritty had fixed colors close to 3.8's
+defaults, so 3.6's menus were grey where 3.6 draws them in the terminal's
+colors), and `tree-mode-border-style` for the tree's box. The tree's
+preview labels take `tree-mode-preview-style`, expanded by tmux for each
+window or pane in the preview's list (`#{E:…}`), so the active one is red
+and the others blue on 3.8; before 3.8, display-panes' colors, as 3.6's
+`window_tree_draw_session` draws them.
+
+**Checked side by side** (`bench/tmux/compare`, the survey's 46 scenes on
+3.8, the cells' backgrounds compared where tmux's are RGB or 256
+colors): the prompt and messages darkgoldenrod (184,134,11), the status
+line yellowgreen, the clock skyblue3, display-panes skyblue3 and
+indianred, the menus and the tree box's edges gray15 (38,38,38), as
+tmux's client. On 3.6a the prompt is still palette yellow (3.6a sends
+`43`), display-panes as before, and the menus in the terminal's own
+colors, as 3.6a's.
+
+**display-panes on 3.8.** 3.8 draws the numbers in a mode of its own
+(`window-panes.c`), which centers them as `(width − (6·digits − 1)) / 2`
+and `(height − 5) / 2`, where 3.6's `cmd-display-panes.c` takes
+`width/2 − 3·digits` and `height/2 − 2`: a cell apart on odd widths (a
+right-hand pane of 49) and on even heights. puritty now places them by the
+version, takes 3.8's larger threshold for the big digits (seven rows, as
+`display-panes-format` takes one), and draws the letter that chooses panes
+10 to 34 under the digits, as both versions do. Checked on 3.8 and 3.6a
+(`display-panes`): the digits in the same cells as tmux's in all three
+panes.
+
+**tmux's message log.** tmux logs every command a client sends
+(`cmdq_add_message`, once its config is read), with no flag to leave a
+client out, and puritty sends many of its own: the keys it passes on
+(`send-keys -K`), its questions, captures and subscriptions. A terminal
+client sends none of them. puritty now leaves them out of `show-messages`'
+output (`ownCommandsOut`, Dnene52): it learns its client name on attach
+(`#{client_name}`), remembers the last 50 commands it ran for the user
+(those sent as `ForRan`: a prompt's command, a menu item's, a binding's
+line), and drops a line `TIME: NAME command: COMMAND` of its own unless
+the command is one of those (compared without quotes and spacing, as tmux
+prints a command its own way). Its key lines (`NAME key ~:
+show-messages`) stay, as a terminal client's do. Checked (`messages`):
+the log is the harness's commands, puritty's keys and the user's
+`display-message "hello from tmux"`, where it was two screens of
+puritty's.
+
+**The tree's `<`, `>` and `i`.** `<` and `>` move the preview along a
+session's windows when they do not all fit, as `window_tree_draw_session`
+picks them (`sessionSpan`): all when each has 24 cells, else as many as
+have, the current window among them, moved by the offset no further than
+the first and last window; `<` and `>` drawn at the sides with a line
+inside them. The offset goes back to 0 on another row, as tmux's. A
+window's preview stays puritty's (its panes where they are, TM35), so
+there they do nothing. `i` (3.8) shows the row's information in the
+preview's place, `window_tree_draw_info`'s lines (a pane's, its window's,
+its session's, as many as the row has), asked of tmux in one
+`display-message -t ROW` and drawn with their styles, a line across
+between the groups with `┼` where the labels' line meets it, and `(view:
+info)` in the box's title. `C-h` lists `<`, `>` and (3.8) `i`. Checked side
+by side (`scenes2.py`: `tree-info`, `tree-scroll`, 3.8): the session's,
+window's and pane's information line for line as tmux's; with seven
+windows, `>` shows windows 1 to 4 on both, four more `>` stop at 3 to 6,
+`<` gives 2 to 5, the arrows in the same cells.
+
+Tests: tmux package 99 (Style: X11 names and grey levels, theme names,
+what is a color), app 142. `show.py`'s 17 scenarios: 138 checks, none
+failed.
+
+**Not yet:**
+- `display-popup`'s box: tmux 3.8 draws it in `popup-style` and
+  `popup-border-style` (dark grey), puritty in its floating pane's frame
+  (TM56).
+- 3.8's display-panes mode zooms the window and draws the panes' borders
+  in `display-panes-border-style`; puritty keeps the panes' own.
+- The message log has no `message:` lines for what tmux showed puritty
+  (a control client is sent `%message`, which tmux does not log as a
+  terminal client's status message), and a prompt's command reads
+  `command:` where a terminal client's reads `key ::`.
+- The tree's questions on 3.8 (kill, filter) are asked on the status
+  line; 3.8 asks them in the pane's last row, as customize mode does
+  (TM62).
+- `<` and `>` on a window's preview: puritty draws a window's panes by
+  its layout, all of them, where tmux puts them side by side and scrolls
+  them as a session's windows.

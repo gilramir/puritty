@@ -14,6 +14,7 @@ module TmuxMode exposing
     , pointerShape
     , setBar
     , setLook
+    , setBackground
     , promptBox
     , isAsking
     , typeInto
@@ -137,8 +138,22 @@ type alias State =
     , numbers : Maybe Numbering
     , clock : Int
     , panesMs : Int
-      -- tmux's status line as it subscribes to it (TM29)
+      -- tmux's status line as it subscribes to it (TM29), tmux 3.8's
+      -- theme names in it written as the theme's colors (TM65), and as
+      -- tmux sent it
     , status : StatusLine
+    , rawStatus : StatusLine
+      -- tmux 3.8's theme colors, dark and light, in `Style.themeNames`'
+      -- order, as tmux expands them for a client of 24-bit color; the
+      -- `theme` option; whether puritty's background is light, which
+      -- `theme detect` follows (TM65)
+    , themes : { dark : Array String, light : Array String }
+      -- this client's name, as tmux's message log names it, and the
+      -- commands run for the user, the last 50 (TM65)
+    , clientName : String
+    , userRan : Array String
+    , themeChoice : String
+    , lightBackground : Bool
       -- each pane in copy mode as tmux last said it, and the panes asked
       -- about and not yet answered: `True` once something has changed
       -- since the question was sent, to ask again (TM31)
@@ -181,6 +196,8 @@ type alias Tree =
       -- rows tagged, by target (`t`); and, while the lists are asked
       -- again, the row chosen before (TM46)
     , previewMode : Int
+      -- 3.8's information shown in place of the preview (`i`, TM65)
+    , info : Bool
     , sort : Int
     , reversed : Bool
     , tagged : Array String
@@ -202,6 +219,12 @@ type alias Preview =
     , target : String
     , session : Bool
     , items : Array PreviewItem
+      -- how far `<` and `>` moved a session's windows from where they
+      -- start (TM65)
+    , offset : Int
+      -- tmux 3.8's information on the row (`i`), its lines as tmux
+      -- expands them (TM65)
+    , info : Array String
     }
 
 
@@ -217,12 +240,15 @@ type alias PreviewItem =
     , h : Int
     , active : Bool
     , lines : Array String
+      -- its label's style, tmux 3.8's tree-mode-preview-style for it
+      -- (TM65); empty before 3.8
+    , style : String
     }
 
 
 noPreview : Preview
 noPreview =
-    { serial = 0, target = "", session = False, items = [] }
+    { serial = 0, target = "", session = False, items = [], offset = 0, info = [] }
 
 
 {-| choose-buffer's or choose-client's list (TM55): which (`buffer`,
@@ -349,6 +375,9 @@ optionNames =
     , "display-panes-active-colour"
     , "clock-mode-colour"
     , "clock-mode-style"
+    , "menu-style"
+    , "menu-border-style"
+    , "tree-mode-border-style"
     ]
 
 
@@ -363,6 +392,10 @@ type alias Colors =
     , clock : String
     , panes : String
     , panesActive : String
+      -- a menu's items and its border, the tree's box (TM65)
+    , menu : String
+    , menuBorder : String
+    , treeBorder : String
     }
 
 
@@ -393,6 +426,19 @@ colorsOf status =
     , clock = colour "clock-mode-colour" "blue"
     , panes = colour "display-panes-colour" "blue"
     , panesActive = colour "display-panes-active-colour" "red"
+    , menu = styled "menu-style" "\u{001B}[0;38;5;254;48;5;235m"
+    , menuBorder =
+        when Dict.get "menu-border-style" status.options is
+            Just v ->
+                if String.trim v == "" then
+                    "\u{001B}[0;38;5;249;48;5;235m"
+
+                else
+                    Style.sgr (Style.apply v (Style.apply (Maybe.withDefault "" (Dict.get "menu-style" status.options)) Style.plain))
+
+            Nothing ->
+                "\u{001B}[0;38;5;249;48;5;235m"
+    , treeBorder = styled "tree-mode-border-style" "\u{001B}[0m"
     }
 
 
@@ -537,12 +583,15 @@ type Expect
     | ForCustomizeFilter { filter : String, ids : Array String }
     | ForCustomizeDetail { id : String, part : Int }
     | ForPreviewList Int
+    | ForTreeInfo Int
     | ForPreviewCapture { serial : Int, index : Int }
     | ForDayTime
     | ForPanesTime
     | ForMenuTitle Int
     | ForMenuName { serial : Int, item : Int }
     | ForMenuCommand { serial : Int, item : Int }
+    | ForTheme
+    | ForClientName
     | ForNothing
 
 
@@ -601,6 +650,12 @@ idle _ =
     , clock = 0
     , panesMs = 1000
     , status = noStatus
+    , rawStatus = noStatus
+    , themes = { dark = Style.darkTheme, light = Style.lightTheme }
+    , themeChoice = "detect"
+    , clientName = ""
+    , userRan = []
+    , lightBackground = False
     , copy = Dict.empty
     , copyAsked = Dict.empty
     , paneModes = Dict.empty
@@ -757,6 +812,8 @@ describe next e =
                             Just ForCopy -> Array.takeFirst 3 r.lines |> Array.map withoutSearch
                             Just ForPanesTime -> Array.takeFirst 1 r.lines
                             Just ForDayTime -> Array.takeFirst 1 r.lines
+                            Just ForTheme -> Array.takeFirst 1 r.lines
+                            Just ForClientName -> Array.takeFirst 1 r.lines
                             _ -> []
             in
             Array.pushFirst head (Array.map (\l -> "  | " ++ cut 160 (Bytes.toStringLossy l)) shown)
@@ -904,12 +961,15 @@ expectName x =
         ForCustomizeFilter _ -> "customize-mode's filter"
         ForCustomizeDetail _ -> "customize-mode's details"
         ForPreviewList _ -> "the tree preview's panes or windows"
+        ForTreeInfo _ -> "the tree's information on a row"
         ForPreviewCapture c -> "the tree preview's capture " ++ String.fromInt c.index
         ForDayTime -> "the time of day"
         ForPanesTime -> "display-panes-time"
         ForMenuTitle _ -> "a menu's title"
         ForMenuName _ -> "a menu item's name"
         ForMenuCommand _ -> "a menu item's command"
+        ForTheme -> "tmux's theme colors"
+        ForClientName -> "this client's name"
         ForNothing -> "nothing (a reply not read)"
 
 
@@ -1409,7 +1469,7 @@ askLine asked acc =
             acc.state
     in
     { acc
-        | state = { st | expecting = st.expecting ++ Array.map .expect asked }
+        | state = expected asked st
         , commands = Array.pushLast (String.join " ; " (Array.map .command asked)) acc.commands
     }
 
@@ -1422,7 +1482,7 @@ ask asked acc =
             acc.state
     in
     { acc
-        | state = { st | expecting = st.expecting ++ Array.map .expect asked }
+        | state = expected asked st
         , commands = acc.commands ++ Array.map .command asked
     }
 
@@ -1449,8 +1509,9 @@ event size e acc =
                 , { command = "display-message -p " ++ Command.quote "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
                 , { command = "list-panes -s -F " ++ Command.quote modeFormat, expect = ForModes }
                 , { command = "display-message -p " ++ Command.quote "#{display-panes-time}", expect = ForPanesTime }
+                , { command = "display-message -p " ++ Command.quote "#{client_name}", expect = ForClientName }
                 ]
-                { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus } }
+                { acc | state = { st | on = True, window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus } }
                 |> ask (Array.map (\sub -> { command = "refresh-client -B " ++ Command.quote sub, expect = ForNothing }) statusSubscriptions)
 
         Exited ->
@@ -1479,7 +1540,7 @@ event size e acc =
                                     st =
                                         acc.state
                                 in
-                                { acc | state = { st | view = Just (viewOf r.lines) } }
+                                { acc | state = { st | view = Just (viewOf (ownCommandsOut st r.lines)) } }
 
                         else
                             -- a binding's error, as tmux's status line would
@@ -1987,6 +2048,29 @@ replied expect ok lines acc =
                     Nothing ->
                         { acc | state = st }
 
+        ForTreeInfo serial ->
+            let
+                st =
+                    acc.state
+            in
+            when st.tree is
+                Just t ->
+                    if t.preview.serial /= serial || not ok then
+                        { acc | state = st }
+
+                    else
+                        let
+                            pv =
+                                t.preview
+
+                            info =
+                                Array.first lines |> Maybe.map (\l -> String.split "\t" (Bytes.toStringLossy l)) |> Maybe.withDefault []
+                        in
+                        { acc | state = { st | tree = Just { t | preview = { pv | info = info } } } }
+
+                Nothing ->
+                    { acc | state = st }
+
         ForPreviewCapture c ->
             let
                 shown =
@@ -2013,6 +2097,39 @@ replied expect ok lines acc =
 
                     Nothing ->
                         { acc | state = st }
+
+        ForClientName ->
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = { st | clientName = Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "" } }
+
+        ForTheme ->
+            let
+                st =
+                    acc.state
+
+                -- what tmux would not take as a color, or another theme
+                -- name, is the default color (`server_client_update_theme_colours`)
+                colors =
+                    when Array.first lines is
+                        Just l ->
+                            String.split "\t" (Bytes.toStringLossy l)
+                                |> Array.map (\v -> if Style.isColor v && not (String.startsWith "theme" (String.toLower v)) then v else "default")
+
+                        Nothing ->
+                            []
+            in
+            if Array.length colors == 20 then
+                let
+                    next =
+                        { st | themes = { dark = Array.takeFirst 10 colors, light = Array.dropFirst 10 colors } }
+                in
+                { acc | state = withStatus next.rawStatus next }
+
+            else
+                { acc | state = st }
 
         ForDayTime ->
             let
@@ -2358,38 +2475,42 @@ notice n acc =
             ask [ { command = "display-message -p -t " ++ Command.quote ("%" ++ String.fromInt pane) ++ " " ++ Command.quote modeFormat, expect = ForModes } ] { acc | state = st }
 
         SubscriptionChanged sub ->
-            let
-                was =
-                    st.status.borderStatus
-
-                barWas =
-                    scrollbarOf st
-
-                rowsWas =
-                    statusRows st
-
-                next =
-                    barPlaced { st | status = subscribed sub.name sub.window sub.pane sub.value st.status }
-
-                barNow =
-                    scrollbarOf next
-
-                -- `status` changed how many rows tmux's panes have: tmux
-                -- told the new size (TM54)
-                resize =
-                    if statusRows next /= rowsWas then
-                        [ Command.size (tmuxSize (statusRows next) { cols = next.canvas.cols, rows = next.canvas.rows }) ]
-
-                    else
-                        []
-            in
-            if next.status.borderStatus /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
-                -- the panes' sizes change with their titles' rows, and
-                -- tmux sends no layout for it
-                { acc | state = refit next, commands = acc.commands ++ resize }
+            if sub.name == "puritty-theme" then
+                themeAsked sub.value { acc | state = st }
 
             else
-                { acc | state = next, commands = acc.commands ++ resize }
+                let
+                    was =
+                        st.status.borderStatus
+
+                    barWas =
+                        scrollbarOf st
+
+                    rowsWas =
+                        statusRows st
+
+                    next =
+                        barPlaced (withStatus (subscribed sub.name sub.window sub.pane sub.value st.rawStatus) st)
+
+                    barNow =
+                        scrollbarOf next
+
+                    -- `status` changed how many rows tmux's panes have: tmux
+                    -- told the new size (TM54)
+                    resize =
+                        if statusRows next /= rowsWas then
+                            [ Command.size (tmuxSize (statusRows next) { cols = next.canvas.cols, rows = next.canvas.rows }) ]
+
+                        else
+                            []
+                in
+                if next.status.borderStatus /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
+                    -- the panes' sizes change with their titles' rows, and
+                    -- tmux sends no layout for it
+                    { acc | state = refit next, commands = acc.commands ++ resize }
+
+                else
+                    { acc | state = next, commands = acc.commands ++ resize }
 
         WindowRenamed r ->
             let
@@ -2654,7 +2775,7 @@ paint s =
                                 in
                                 when area is
                                     Just place ->
-                                        drawTree (colorsOf s.status) s.lookTmux s.version place t
+                                        drawTree (themeOf s) (colorsOf s.status) s.lookTmux s.version place t
 
                                     Nothing ->
                                         []
@@ -2712,7 +2833,7 @@ paint s =
                                 in
                                 when area is
                                     Just place ->
-                                        drawCustomize s.lookTmux place c
+                                        drawCustomize (themeOf s) s.lookTmux place c
 
                                     Nothing ->
                                         []
@@ -2724,7 +2845,7 @@ paint s =
                 numbersDrawn =
                     when s.numbers is
                         Just n ->
-                            Array.mapAndFlatten (\p -> paneNumber (colorsOf s.status) s.lookTmux (p.id == active) n p) (tiled ++ floating)
+                            Array.mapAndFlatten (\p -> paneNumber s.version (colorsOf s.status) s.lookTmux (p.id == active) n p) (tiled ++ floating)
 
                         Nothing ->
                             []
@@ -3784,7 +3905,23 @@ asTmuxSays text =
 {-| Commands sent, each with what its reply is for. -}
 sendAsking : Array { command : String, expect : Expect } -> (taken s : State) -> { state : State, commands : Array String }
 sendAsking list s =
-    { state = { s | expecting = s.expecting ++ Array.map .expect list }, commands = Array.map .command list }
+    { state = expected list s, commands = Array.map .command list }
+
+
+{-| Commands' replies waited for, in order; the user's own commands
+(`ForRan`) remembered, the last 50, so that tmux's message log can show
+them and not puritty's others (TM65). -}
+expected : Array { command : String, expect : Expect } -> (taken s : State) -> State
+expected list s =
+    let
+        mine =
+            Array.keepIf (\c -> c.expect == ForRan) list |> Array.map .command
+    in
+    if Array.isEmpty mine then
+        { s | expecting = s.expecting ++ Array.map .expect list }
+
+    else
+        { s | expecting = s.expecting ++ Array.map .expect list, userRan = Array.takeLast 50 (s.userRan ++ mine) }
 
 
 {-| A key as `send-keys -K` takes it (TM23): by its tmux name where it has
@@ -4903,7 +5040,104 @@ statusSubscriptions =
     , "puritty-status2::#{T:status-format[2]}"
     , "puritty-status3::#{T:status-format[3]}"
     , "puritty-status4::#{T:status-format[4]}"
+    , "puritty-theme::" ++ String.join "\t" ([ "#{theme}" ] ++ Array.map (\n -> "#{dark-theme-" ++ n ++ "}") Style.themeNames ++ Array.map (\n -> "#{light-theme-" ++ n ++ "}") Style.themeNames)
     ]
+
+
+{-| The theme colors in force (TM65): `theme`'s choice, `detect` taken
+from puritty's background as tmux takes it from a terminal's
+(`colour_totheme`). -}
+themeOf : State -> Array String
+themeOf s =
+    when s.themeChoice is
+        "terminal" ->
+            Style.terminalTheme
+
+        "light" ->
+            s.themes.light
+
+        "dark" ->
+            s.themes.dark
+
+        _ ->
+            if s.lightBackground then s.themes.light else s.themes.dark
+
+
+{-| The status line as tmux sent it, kept, and drawn with the theme's
+colors (TM65). -}
+withStatus : StatusLine -> (taken s : State) -> State
+withStatus raw s =
+    let
+        theme =
+            themeOf s
+    in
+    { s | rawStatus = raw, status = themedStatus theme raw }
+
+
+themedStatus : Array String -> StatusLine -> StatusLine
+themedStatus theme raw =
+    let
+        t =
+            Style.themed theme
+    in
+    { raw
+        | left = t raw.left
+        , right = t raw.right
+        , style = t raw.style
+        , separator = t raw.separator
+        , windows = Dict.map (\_ w -> { w | text = t w.text, style = t w.style }) raw.windows
+        , borderStyle = t raw.borderStyle
+        , panes = Dict.map (\_ q -> { q | title = t q.title, border = t q.border }) raw.panes
+        , options = Dict.map (\_ v -> t v) raw.options
+        , extra = Dict.map (\_ v -> t v) raw.extra
+    }
+
+
+{-| tmux 3.8's `theme` and its twenty colors' options, as sent (TM65):
+the colors are formats, `#{client_colours}` choosing a name by the
+client's colors, which a control client has none of; tmux is asked to
+expand them as for a client of 24-bit color, as puritty is. 3.6 sends
+nothing. -}
+themeAsked : String -> (taken acc : Acc) -> Acc
+themeAsked value acc =
+    when String.split "\t" value |> Array.popFirst is
+        Just { first, rest } ->
+            if first == "" || Array.length rest /= 20 then
+                acc
+
+            else
+                let
+                    st =
+                        acc.state
+
+                    format =
+                        Array.map (\v -> String.replace "#{client_colours}" "16777216" v |> String.replace "%" "%%") rest
+                            |> String.join "\t"
+                in
+                ask [ { command = "display-message -p " ++ Command.quote format, expect = ForTheme } ] { acc | state = withStatus st.rawStatus { st | themeChoice = first } }
+
+        Nothing ->
+            acc
+
+
+{-| puritty's background (`0xRRGGBB`), which `theme detect` follows:
+light when its red, green and blue add to more than 382, as tmux reads a
+terminal's (TM65). -}
+setBackground : Int -> (taken s : State) -> State
+setBackground rgb s =
+    let
+        light =
+            (rgb // 0x10000) + modBy 0x100 (rgb // 0x100) + modBy 0x100 rgb > 382
+    in
+    if light == s.lightBackground then
+        s
+
+    else
+        let
+            next =
+                { s | lightBackground = light }
+        in
+        withStatus next.rawStatus next
 
 
 subscribed : String -> Int -> Int -> String -> StatusLine -> StatusLine
@@ -5372,7 +5606,7 @@ runLine ctx line s =
                                     opened =
                                         sendAsking
                                             (treeQueries s.version ++ (if t.filter == "" then [] else [ filterQuery t.filter ]))
-                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, start = t.start, filter = t.filter, passing = Nothing, noMatches = False, search = "", previewMode = 1, sort = 0, reversed = False, tagged = [], reload = Nothing, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
+                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, start = t.start, filter = t.filter, passing = Nothing, noMatches = False, search = "", previewMode = 1, info = False, sort = 0, reversed = False, tagged = [], reload = Nothing, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
 
                                     ran =
                                         runLine ctx t.after opened.state
@@ -5712,14 +5946,15 @@ drawMenu colors tmuxLook place m =
         inner =
             place.w - 2
 
+        -- menu-style and menu-border-style (TM65), a disabled item dim
         edge =
-            if tmuxLook then "\u{001B}[0;38;5;249;48;5;235m" else viewEdgeColor
+            if tmuxLook then colors.menuBorder else viewEdgeColor
 
         plainColor =
-            if tmuxLook then "\u{001B}[0;38;5;254;48;5;235m" else viewTextColor
+            if tmuxLook then colors.menu else viewTextColor
 
         dimColor =
-            if tmuxLook then "\u{001B}[0;2;38;5;254;48;5;235m" else "\u{001B}[0;38;5;243;48;5;236m"
+            if tmuxLook then String.replace "\u{001B}[0" "\u{001B}[0;2" colors.menu else "\u{001B}[0;38;5;243;48;5;236m"
 
         chosenColor =
             if tmuxLook then colors.menuSelected else activeTabColor
@@ -5966,19 +6201,34 @@ cells square, a cell apart, in the middle of the pane, in
 the active pane, with the pane's size at its top right), or as text where
 the pane is too small; in puritty's look in gray and amber, without the
 size. -}
-paneNumber : Colors -> Bool -> Bool -> Numbering -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
-paneNumber colors tmuxLook isActive n p =
+paneNumber : Int -> Colors -> Bool -> Bool -> Numbering -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
+paneNumber version colors tmuxLook isActive n p =
     when Array.findFirst (\e -> e.id == p.id) n.indexes is
         Nothing ->
             []
 
         Just found ->
             let
+                index =
+                    found.value.index
+
                 digits =
-                    String.fromInt found.value.index
+                    String.fromInt index
 
                 len =
                     String.count digits
+
+                -- panes 10 to 34 are also chosen by a letter, shown by
+                -- the number
+                letter =
+                    if index > 9 && index < 35 then Maybe.withDefault "" (Maybe.map String.fromChar (Char.fromCode (0x61 + index - 10))) else ""
+
+                -- 3.8 draws them in its own mode (`window-panes.c`), 3.6
+                -- on the client (`cmd-display-panes.c`), and centers them
+                -- each its own way: a cell apart on odd widths and even
+                -- heights
+                newer =
+                    version == 0 || version >= 38
 
                 -- display-panes-colour and -active-colour (TM51)
                 block =
@@ -6001,19 +6251,51 @@ paneNumber colors tmuxLook isActive n p =
                     else
                         "\u{001B}[0;1;38;5;250m"
 
+                -- the pane's size at its top right: 3.6's, and 3.8's
+                -- display-panes-format by default
                 size =
-                    String.fromInt p.w ++ "x" ++ String.fromInt p.h
+                    let
+                        text =
+                            String.fromInt p.w ++ "x" ++ String.fromInt p.h
+                    in
+                    if tmuxLook && String.count text <= p.w then
+                        [ { row = p.y, col = p.x + p.w - String.count text, color = ink, text = text } ]
+
+                    else
+                        []
+
+                small =
+                    if newer then
+                        p.w < len * 6 - 1 || p.h < 7
+
+                    else
+                        p.w < len * 6 || p.h < 5
             in
-            if p.w < len * 6 || p.h < 5 then
-                [ { row = p.y + p.h // 2, col = p.x + max 0 ((p.w - len) // 2), color = ink, text = String.takeFirst p.w digits } ]
+            if p.w < len then
+                []
+
+            else if small then
+                let
+                    text =
+                        if letter /= "" && p.w >= len + 2 then digits ++ " " ++ letter else digits
+
+                    col =
+                        if newer then
+                            p.x + (p.w - String.count text) // 2
+
+                        else
+                            p.x + p.w // 2 - String.count text // 2
+                in
+                [ { row = p.y + p.h // 2, col = col, color = ink, text = text } ]
+                    ++ (if newer && p.h > 1 then size else [])
 
             else
                 let
                     px =
-                        p.x + p.w // 2 - len * 3
+                        if newer then p.x + (p.w - (len * 6 - 1)) // 2 else p.x + p.w // 2 - len * 3
 
                     py =
-                        p.y + p.h // 2 - 2
+                        if newer then p.y + (p.h - 5) // 2 else p.y + p.h // 2 - 2
 
                     cells =
                         String.toArray digits
@@ -6030,14 +6312,17 @@ paneNumber colors tmuxLook isActive n p =
                                 )
                             |> Array.flatten
                             |> Array.map (\cell -> { row = cell.row, col = cell.col, color = block, text = " " })
-                in
-                cells
-                    ++ (if tmuxLook && String.count size <= p.w then
-                            [ { row = p.y, col = p.x + p.w - String.count size, color = ink, text = size } ]
+
+                    letterCell =
+                        if letter == "" || p.h <= 6 then
+                            []
 
                         else
-                            []
-                       )
+                            [ { row = py + 5, col = px + len * 6 - 2, color = ink, text = letter } ]
+                in
+                cells
+                    ++ (if p.h > 6 then size else [])
+                    ++ (if tmuxLook then letterCell else [])
 
 
 {-| tmux's digits, five rows of five (`window-clock.c`). -}
@@ -7486,31 +7771,17 @@ customizeSearch forward c s =
                 { state = { s | customizing = Just c }, commands = [] }
 
 
-{-| tmux 3.8's theme colors as tmux sends them to a client that takes
-RGB, the dark theme's (`dark-theme-*`: light grey is gray70, b3b3b3). -}
-themed : String -> String
-themed spec =
-    spec
-        |> String.replace "themelightgrey" "#b3b3b3"
-        |> String.replace "themedarkgrey" "#262626"
-        |> String.replace "themeblack" "#0d0d0d"
-        |> String.replace "themewhite" "#e6e6e6"
-        |> String.replace "themegreen" "#9acd32"
-        |> String.replace "themeyellow" "#b8860b"
-        |> String.replace "themered" "#cd5c5c"
-        |> String.replace "themeblue" "#6ca6cd"
-        |> String.replace "themecyan" "#5f9ea0"
-        |> String.replace "thememagenta" "#9370db"
-
-
 {-| customize-mode's cells (TM62), as tmux's mode tree draws it: each row's
 key, its branch, `+` or `-` for a row folded or open, its name and text,
 the chosen row in mode-style (3.8's tree-mode-selection-style), the tagged
 in cyan; below, in a box under the chosen row's name, its description. In
 puritty's look, the view's colors in a box of its own. -}
-drawCustomize : Bool -> Layout.Pane -> Customizing -> Array { row : Int, col : Int, color : String, text : String }
-drawCustomize tmuxLook place c =
+drawCustomize : Array String -> Bool -> Layout.Pane -> Customizing -> Array { row : Int, col : Int, color : String, text : String }
+drawCustomize theme tmuxLook place c =
     let
+        themed =
+            Style.themed theme
+
         version =
             c.table.version
 
@@ -8173,30 +8444,180 @@ askPreview s =
 
                     command =
                         if isSession then
-                            "list-windows -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}"
+                            "list-windows -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}\t#{E:tree-mode-preview-style}"
 
                         else if String.startsWith "%" target then
                             -- a pane's row: that pane alone, filling the area
-                            "list-panes -t " ++ Command.quote target ++ " -f " ++ Command.quote ("#{==:#{pane_id}," ++ target ++ "}") ++ " -F " ++ Command.quote "Q #{pane_id} 0 0 #{pane_width} #{pane_height} 1 #{pane_index}"
+                            "list-panes -t " ++ Command.quote target ++ " -f " ++ Command.quote ("#{==:#{pane_id}," ++ target ++ "}") ++ " -F " ++ Command.quote "Q #{pane_id} 0 0 #{pane_width} #{pane_height} 1 #{pane_index}\t#{E:tree-mode-preview-style}"
 
                         else
-                            "list-panes -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}"
+                            "list-panes -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}\t#{E:tree-mode-preview-style}"
                 in
                 if target == "" || target == t.preview.target then
                     { state = s, commands = [] }
 
                 else
                     sendAsking [ { command = command, expect = ForPreviewList serial } ]
-                        { s | tree = Just { t | preview = { serial = serial, target = target, session = isSession, items = [] } } }
+                        { s | tree = Just { t | preview = { serial = serial, target = target, session = isSession, items = [], offset = 0, info = [] } } }
+                        |> (\r -> if t.info then infoAsked r else r)
 
         Nothing ->
             { state = s, commands = [] }
 
 
-{-| A line of the preview's list: `Q id x y w h active label`. -}
+{-| Which of a session's windows the preview shows, as tmux's
+`window_tree_draw_session` picks them (TM65): all when each has 24 cells,
+else as many as have, the current one among them, moved by `offset` no
+further than the first and the last; the offset as far as it went. -}
+sessionSpan : Int -> Int -> Int -> Int -> { start : Int, end : Int, offset : Int, visible : Int }
+sessionSpan width total current offset0 =
+    if total <= 0 then
+        { start = 0, end = 0, offset = 0, visible = 0 }
+
+    else
+        let
+            visible =
+                if width // total < 24 then max 1 (width // 24) else total
+
+            start0 =
+                if current < visible then
+                    0
+
+                else if current >= total - visible then
+                    total - visible
+
+                else
+                    current - visible // 2
+
+            end0 =
+                start0 + visible
+
+            offset =
+                clamp (negate start0) (total - end0) offset0
+        in
+        { start = start0 + offset, end = end0 + offset, offset = offset, visible = visible }
+
+
+{-| The index of the active item, 0 when none is. -}
+activeIndex : Array PreviewItem -> Int
+activeIndex items =
+    Array.findFirst .active items |> Maybe.map .index |> Maybe.withDefault 0
+
+
+{-| The preview's width in cells, as `drawTree` gives it, where the tree
+is shown. -}
+treePreviewWidth : State -> Tree -> Maybe Int
+treePreviewWidth s t =
+    let
+        placeWidth =
+            if t.zoom then
+                Just s.canvas.cols
+
+            else
+                when s.layout is
+                    Just cell ->
+                        Array.findFirst (\p -> p.id == t.pane) (placedPanes s cell (Layout.tiled cell) ++ placedPanes s cell (Layout.floating cell))
+                            |> Maybe.map (\found -> found.value.w)
+
+                    Nothing ->
+                        Nothing
+    in
+    Maybe.map (\w -> (if s.lookTmux then w else w - 4) - 4) placeWidth
+
+
+{-| tmux 3.8's information lines (`window-tree.c`): a pane's, its
+window's, its session's, as many as the row has; `│` where tmux draws its
+`acs` line. -}
+infoLines : { pane : Array String, window : Array String, session : Array String }
+infoLines =
+    let
+        label name =
+            "#[fg=themelightgrey]" ++ String.padRight 14 ' ' name ++ "#[#{E:tree-mode-border-style}]│#[default] "
+
+        flag name cond =
+            "#{?" ++ cond ++ ",#[fg=themegreen],#[fg=themelightgrey]}" ++ name ++ "#[default]"
+    in
+    { pane =
+        [ label "Pane" ++ "#{pane_index} #[fg=themelightgrey](#{pane_id})#[default]"
+        , label "Title" ++ "#{pane_title}"
+        , label "Command" ++ "#{pane_current_command} #[fg=themelightgrey](PID #{pane_pid})#[default]"
+        , label "Path" ++ "#{pane_current_path}"
+        , label "TTY" ++ "#{pane_tty}"
+        , label "Position" ++ "#{pane_x},#{pane_y} #{pane_width}x#{pane_height}"
+        , label "Mode" ++ "#{?pane_in_mode,#{pane_mode},none}"
+        , label "Flags" ++ String.join " " [ flag "active" "pane_active", flag "zoomed" "window_zoomed_flag", flag "marked" "pane_marked", flag "sync" "pane_synchronized", flag "dead" "pane_dead", flag "piped" "pane_pipe" ]
+        ]
+    , window =
+        [ label "Window" ++ "#{window_index}: #{window_name} #[fg=themelightgrey](#{window_id})#[default]"
+        , label "Size" ++ "#{window_width}x#{window_height}"
+        , label "Panes" ++ "#{window_panes}"
+        , label "Activity Time" ++ "#{t:window_activity} #[fg=themelightgrey](#{t/r:window_activity})#[default]"
+        , label "Sessions" ++ "#{s/,/ /:window_linked_sessions_list}"
+        , label "Flags" ++ String.join " " [ flag "active" "window_active", flag "last" "window_last_flag", flag "bell" "window_bell_flag", flag "activity" "window_activity_flag", flag "silence" "window_silence_flag", flag "zoomed" "window_zoomed_flag", flag "marked" "window_marked_flag" ]
+        ]
+    , session =
+        [ label "Session" ++ "#{session_name} #[fg=themelightgrey](#{session_id})#[default]"
+        , label "Created Time" ++ "#{t:session_created} #[fg=themelightgrey](#{t/r:session_created})#[default]"
+        , label "Activity Time" ++ "#{t:session_activity} #[fg=themelightgrey](#{t/r:session_activity})#[default]"
+        , label "Attached Time" ++ "#{?#{t:session_last_attached},#{t:session_last_attached} #[fg=themelightgrey](#{t/r:session_last_attached})#[default],never}"
+        , label "Clients" ++ "#{s/,/ /:session_attached_list}"
+        , label "Windows" ++ "#{session_windows}"
+        , label "Path" ++ "#{session_path}"
+        , label "Group" ++ "#{?session_grouped,#{session_group} (#{session_group_size}),none}"
+        , label "Flags" ++ String.join " " [ flag "attached" "session_attached", flag "grouped" "session_grouped", flag "marked" "session_marked", flag "bell" "session_bell_flag", flag "activity" "session_activity_flag", flag "silence" "session_silence_flag" ]
+        ]
+    }
+
+
+{-| tmux asked for the information on the row previewed (TM65): one
+`display-message`, its lines a tab apart, an empty line between a pane's,
+its window's and its session's. -}
+infoAsked : (taken r : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+infoAsked r =
+    when r.state.tree is
+        Just t ->
+            if t.preview.target == "" then
+                r
+
+            else
+                let
+                    target =
+                        t.preview.target
+
+                    groups =
+                        if String.startsWith "%" target then
+                            [ infoLines.pane, infoLines.window, infoLines.session ]
+
+                        else if String.startsWith "@" target then
+                            [ infoLines.window, infoLines.session ]
+
+                        else
+                            [ infoLines.session ]
+
+                    format =
+                        String.join "\t\t" (Array.map (String.join "\t") groups)
+
+                    asked =
+                        sendAsking [ { command = "display-message -p -t " ++ Command.quote target ++ " " ++ Command.quote format, expect = ForTreeInfo t.preview.serial } ] r.state
+                in
+                { state = asked.state, commands = r.commands ++ asked.commands }
+
+        Nothing ->
+            r
+
+
+{-| A line of the preview's list: `Q id x y w h active label`, a tab,
+the label's style. -}
 previewItem : Bytes -> Maybe PreviewItem
 previewItem line =
-    when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
+    let
+        parts =
+            String.split "\t" (Bytes.toStringLossy line)
+
+        style =
+            String.join "\t" (Array.dropFirst 1 parts)
+    in
+    when String.split " " (Maybe.withDefault "" (Array.first parts)) |> Array.popFirst is
         Just { first = "Q", rest = rest } ->
             let
                 num i =
@@ -8211,6 +8632,7 @@ previewItem line =
                 , active = Array.get 5 rest == Just "1"
                 , label = String.join " " (Array.dropFirst 6 rest)
                 , lines = []
+                , style = style
                 }
 
         _ ->
@@ -8562,6 +8984,38 @@ treeKey k t s =
     else if name == "v" then
         { state = { s | tree = Just { t | previewMode = if t.previewMode == 0 then 2 else if t.previewMode == 1 then 0 else 1 } }, commands = [] }
 
+    else if name == "<" || name == ">" then
+        -- a session's windows in the preview moved along by one, no
+        -- further than its first and last (TM65)
+        let
+            pv =
+                t.preview
+
+            stepped =
+                pv.offset + (if name == "<" then -1 else 1)
+
+            offset =
+                when treePreviewWidth s t is
+                    Just w ->
+                        if pv.session then (sessionSpan w (Array.length pv.items) (activeIndex pv.items) stepped).offset else 0
+
+                    Nothing ->
+                        stepped
+        in
+        { state = { s | tree = Just { t | preview = { pv | offset = offset } } }, commands = [] }
+
+    else if name == "i" && (s.version == 0 || s.version >= 38) then
+        -- 3.8's information on the row in place of its preview (TM65)
+        let
+            shown =
+                { t | info = not t.info }
+        in
+        if shown.info then
+            infoAsked { state = { s | tree = Just shown }, commands = [] }
+
+        else
+            { state = { s | tree = Just shown }, commands = [] }
+
     else if name == "O" then
         { state = { s | tree = Just (keepChosen at { t | sort = modBy (Array.length (sortNames s.version)) (t.sort + 1) }) }, commands = [] }
 
@@ -8596,7 +9050,7 @@ treeKey k t s =
 
     else if name == "C-h" && (s.version == 0 || s.version >= 37) then
         -- the keys, as mode_tree's help lists them (3.7 on)
-        { state = { s | view = Just (viewOf (Array.map Bytes.fromString treeHelp)) }, commands = [] }
+        { state = { s | view = Just (viewOf (Array.map Bytes.fromString (treeHelp s.version))) }, commands = [] }
 
     else if name == "/" || name == "?" || name == "C-s" then
         { state = { s | asking = Just (treePrompt 1 "(search) " "") }, commands = [] }
@@ -8624,8 +9078,12 @@ treeKey k t s =
 
 {-| The tree's keys as tmux's help shows them (`mode_tree_help_start`,
 `window_tree_help_lines`, `mode_tree_help_end`, 3.8). -}
-treeHelp : Array String
-treeHelp =
+treeHelp : Int -> Array String
+treeHelp version =
+    let
+        info =
+            if version == 0 || version >= 38 then [ "          i │ Toggle session, window and pane information" ] else []
+    in
     [ "      Up, k │ Move cursor up"
     , "    Down, j │ Move cursor down"
     , "          g │ Go to top"
@@ -8651,12 +9109,16 @@ treeHelp =
     , "     S-Down │ Swap current and next window"
     , "          x │ Kill selected item"
     , "          X │ Kill tagged items"
+    , "          < │ Scroll previews left"
+    , "          > │ Scroll previews right"
     , "          m │ Set the marked pane"
     , "          M │ Clear the marked pane"
-    , "          : │ Run a command for each tagged item"
-    , "          H │ Jump to the starting pane"
-    , "  q, Escape │ Exit mode"
     ]
+        ++ info
+        ++ [ "          : │ Run a command for each tagged item"
+           , "          H │ Jump to the starting pane"
+           , "  q, Escape │ Exit mode"
+           ]
 
 
 {-| A question of the tree's own, asked at the status line as tmux asks
@@ -8794,8 +9256,8 @@ windows under it joined by `├─>` and `└─>`, the chosen row in
 `mode-style`; in puritty's, the view's box. Below the list, when there is
 room, the chosen row's preview, as tmux draws it (TM35): the list takes a
 third of the height, or less with fewer rows. -}
-drawTree : Colors -> Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
-drawTree colors tmuxLook version place t =
+drawTree : Array String -> Colors -> Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
+drawTree theme colors tmuxLook version place t =
     let
         rows =
             treeRows t
@@ -8865,7 +9327,7 @@ drawTree colors tmuxLook version place t =
                     -- filter's state when there is one (`mode_tree_draw`)
                     -- 3.8 names the preview's view (TM46)
                     boxTitle =
-                        " " ++ chosenName ++ " (sort: " ++ sortName ++ (if t.reversed then ", reversed" else "") ++ ")" ++ (if version >= 38 then " (view: preview)" else "")
+                        " " ++ chosenName ++ " (sort: " ++ sortName ++ (if t.reversed then ", reversed" else "") ++ ")" ++ (if version >= 38 then (if t.info then " (view: info)" else " (view: preview)") else "")
 
                     note =
                         if t.filter /= "" then
@@ -8877,21 +9339,39 @@ drawTree colors tmuxLook version place t =
                     heading =
                         if String.count boxTitle <= inner then String.takeFirst inner (boxTitle ++ note) else ""
 
+                    -- tree-mode-border-style (3.8, TM65)
                     edge =
-                        if tmuxLook then "\u{001B}[0m" else viewEdgeColor
+                        if tmuxLook then colors.treeBorder else viewEdgeColor
+
+                    inside =
+                        if tmuxLook then "\u{001B}[0m" else viewTextColor
 
                     box =
                         [ { row = boxRow, col = listArea.x, color = edge, text = "┌" ++ String.repeat inner "─" ++ "┐" }
                         , { row = boxRow, col = listArea.x + 1, color = edge, text = heading }
                         ]
-                            ++ (Array.range 1 (boxH - 2) |> Array.map (\r -> { row = boxRow + r, col = listArea.x, color = edge, text = "│" ++ String.repeat inner " " ++ "│" }))
+                            ++ (Array.range 1 (boxH - 2)
+                                    |> Array.mapAndFlatten
+                                        (\r ->
+                                            [ { row = boxRow + r, col = listArea.x, color = edge, text = "│" }
+                                            , { row = boxRow + r, col = listArea.x + 1, color = inside, text = String.repeat inner " " }
+                                            , { row = boxRow + r, col = listArea.x + inner + 1, color = edge, text = "│" }
+                                            ]
+                                        )
+                               )
                             ++ [ { row = boxRow + boxH - 1, col = listArea.x, color = edge, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
+
+                    area =
+                        { x = listArea.x + 2, y = boxRow + 1, w = listArea.w - 4, h = boxH - 2 }
                 in
                 if boxH < 3 then
                     []
 
+                else if t.info && (version == 0 || version >= 38) then
+                    box ++ drawInfo theme colors tmuxLook area t.preview
+
                 else
-                    box ++ drawPreview tmuxLook { x = listArea.x + 2, y = boxRow + 1, w = listArea.w - 4, h = boxH - 2 } t.preview
+                    box ++ drawPreview theme colors tmuxLook area t.preview
 
             else
                 []
@@ -9032,38 +9512,91 @@ many as fit at ten cells or more; a window's panes where they are in it,
 scaled to the area. Each has a top line with its label, the active one's
 in the active color, and below it the last lines it shows, cut to its
 width by cells. -}
-drawPreview : Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
-drawPreview tmuxLook area pv =
+drawPreview : Array String -> Colors -> Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
+drawPreview theme colors tmuxLook area pv =
     let
         text =
             if tmuxLook then "\u{001B}[0m" else viewTextColor
 
-        edge active =
+        -- an item's label: tree-mode-preview-style on 3.8 (the active one
+        -- red, the others blue), display-panes' colors before it, as
+        -- tmux 3.6 draws them (TM65)
+        edge item =
             if tmuxLook then
-                if active then "\u{001B}[0;32m" else "\u{001B}[0m"
+                if item.style /= "" then
+                    Style.sgr (Style.apply (Style.themed theme item.style) Style.plain)
 
-            else if active then
+                else
+                    Style.sgr (Style.apply ("fg=" ++ (if item.active then colors.panesActive else colors.panes)) Style.plain)
+
+            else if item.active then
                 viewEdgeColor
 
             else
                 "\u{001B}[0;38;5;240;48;5;236m"
 
+        border =
+            if tmuxLook then colors.treeBorder else "\u{001B}[0;38;5;240;48;5;236m"
+
+        -- a session's windows as tmux picks them, `<` and `>` where there
+        -- are more (TM65)
+        span =
+            sessionSpan area.w (Array.length pv.items) (activeIndex pv.items) pv.offset
+
+        leftMark =
+            pv.session && span.start /= 0 && area.w > 6
+
+        rightMark =
+            pv.session && span.end /= Array.length pv.items && area.w > 6
+
+        marks =
+            (if leftMark then
+                [ { row = area.y + area.h // 2, col = area.x, color = border, text = "<" } ]
+                    ++ (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + 2, color = border, text = "│" }))
+
+             else
+                []
+            )
+                ++ (if rightMark then
+                        [ { row = area.y + area.h // 2, col = area.x + area.w - 1, color = border, text = ">" } ]
+                            ++ (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + area.w - 3, color = border, text = "│" }))
+
+                    else
+                        []
+                   )
+
         rects =
             if pv.session then
                 let
-                    fit =
-                        max 1 ((area.w + 1) // 11)
+                    room =
+                        area.w - (if leftMark then 3 else 0) - (if rightMark then 3 else 0)
+
+                    visible =
+                        max 1 (span.end - span.start)
+
+                    each =
+                        room // visible
+
+                    remaining =
+                        room - visible * each
 
                     shown =
-                        Array.takeFirst fit pv.items
-
-                    n =
-                        max 1 (Array.length shown)
-
-                    cw =
-                        max 1 ((area.w - (n - 1)) // n)
+                        Array.slice span.start span.end pv.items
                 in
-                Array.indexedMap (\i item -> { item = item, x = area.x + i * (cw + 1), y = area.y, w = cw, h = area.h }) shown
+                if each <= 0 then
+                    []
+
+                else
+                    Array.indexedMap
+                        (\i item ->
+                            { item = item
+                            , x = area.x + (if leftMark then 3 else 0) + i * each
+                            , y = area.y
+                            , w = if i == Array.length shown - 1 then each + remaining else max 1 (each - 1)
+                            , h = area.h
+                            }
+                        )
+                        shown
 
             else
                 let
@@ -9109,12 +9642,67 @@ drawPreview tmuxLook area pv =
                 padded =
                     shown ++ Array.repeat (max 0 (body - Array.length shown)) ""
             in
-            Array.pushFirst { row = r.y, col = r.x, color = edge r.item.active, text = top }
+            Array.pushFirst { row = r.y, col = r.x, color = edge r.item, text = top }
                 (Array.indexedMap (\j line -> { row = r.y + 1 + j, col = r.x, color = text, text = clipCells r.w line }) padded)
     in
     Array.range 0 (area.h - 1)
         |> Array.map (\j -> { row = area.y + j, col = area.x, color = text, text = String.repeat area.w " " })
-        |> (\cleared -> cleared ++ Array.mapAndFlatten drawn rects)
+        |> (\cleared -> cleared ++ Array.mapAndFlatten drawn rects ++ marks)
+
+
+{-| tmux 3.8's information on the row (`i`, TM65), in the preview's
+place: its lines as tmux expanded them, a line across between a pane's,
+its window's and its session's with `┼` where the labels' line meets it,
+and that line down to the foot, as `window_tree_draw_info` draws them. -}
+drawInfo : Array String -> Colors -> Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
+drawInfo theme colors tmuxLook area pv =
+    let
+        border =
+            if tmuxLook then colors.treeBorder else "\u{001B}[0;38;5;240;48;5;236m"
+
+        plain =
+            if tmuxLook then "\u{001B}[0m" else viewTextColor
+
+        lines =
+            Array.takeFirst area.h pv.info
+
+        drawnLine j line =
+            if line == "" then
+                [ { row = area.y + j, col = area.x, color = border, text = clipCells area.w (String.repeat 14 "─" ++ (if area.w > 14 then "┼" else "") ++ String.repeat area.w "─") } ]
+
+            else if tmuxLook then
+                (Array.foldl
+                    (\r acc ->
+                        let
+                            room =
+                                area.w - acc.col
+
+                            cut =
+                                clipCells (min room (cellCount r.text)) r.text
+                        in
+                        if room <= 0 then
+                            acc
+
+                        else
+                            { col = acc.col + cellCount cut, out = Array.pushLast { row = area.y + j, col = area.x + acc.col, color = Style.sgr r.style, text = cut } acc.out }
+                    )
+                    { col = 0, out = [] }
+                    (Style.runs Style.plain (Style.themed theme line))
+                ).out
+
+            else
+                [ { row = area.y + j, col = area.x, color = plain, text = clipCells area.w (Style.strip line) } ]
+
+        foot =
+            if area.w > 14 then
+                Array.range (Array.length lines) (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + 14, color = border, text = "│" })
+
+            else
+                []
+    in
+    (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x, color = plain, text = String.repeat area.w " " }))
+        ++ Array.flatten (Array.indexedMap drawnLine lines)
+        ++ foot
 
 
 {-| The time of day for the clock, `HH:MM`, from the loop's clock and the
@@ -9351,6 +9939,57 @@ copyLine bytes s =
 
 
 -- VIEWS (TM26)
+
+
+{-| tmux's message log (`show-messages`) as a terminal client's would
+read (TM65): tmux logs every command a client sends, and most of
+puritty's are its own (the keys sent on, its questions, its
+subscriptions), which a terminal client does not send. A line
+`TIME: NAME command: COMMAND` of this client's is left out unless the
+user ran the command; its keys' lines (`NAME key C-a: …`) stay. Other
+output has no such line and is left as it is. -}
+ownCommandsOut : State -> Array Bytes -> Array Bytes
+ownCommandsOut s lines =
+    if s.clientName == "" then
+        lines
+
+    else
+        let
+            marker =
+                ": " ++ s.clientName ++ " command: "
+
+            -- quotes and spacing as tmux prints a command, not as sent
+            plain text =
+                String.toArray text
+                    |> Array.keepIf (\c -> c /= '"' && c /= '\'' && c /= '\\')
+                    |> String.fromArray
+                    |> String.words
+                    |> String.join " "
+
+            ran =
+                Array.map plain s.userRan
+
+            keep line =
+                let
+                    text =
+                        Bytes.toStringLossy line
+                in
+                when String.firstIndexOf marker text is
+                    Just at ->
+                        if at > 20 then
+                            True
+
+                        else
+                            let
+                                command =
+                                    plain (String.dropFirst (at + String.count marker) text)
+                            in
+                            Array.any (\r -> String.contains command r) ran
+
+                    Nothing ->
+                        True
+        in
+        Array.keepIf keep lines
 
 
 {-| A view of lines tmux printed, at its first line: tabs to the next

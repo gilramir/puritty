@@ -5,18 +5,28 @@ module Tmux.Style exposing
     , runs
     , sgr
     , strip
+    , themeNames
+    , darkTheme
+    , lightTheme
+    , terminalTheme
+    , themed
+    , isColor
     )
 
 {-| tmux's styles (tmux(1) STYLES), as much as puritty needs to draw a
 status line as tmux does (puritty `docs/tmux.md` TM29): an option's style
 (`bg=green,fg=black`) and the `#[…]` within a format's text, made into the
 SGR that draws them. Colors by name, `brightred`, `color123`, `#rrggbb`,
-and tmux 3.8's theme names (`themegreen`, taken as `green`); the
+the X11 names tmux knows (`darkgoldenrod`, `gray70`), and tmux 3.8's
+theme names (`themegreen`), which `themed` resolves as the client's theme
+has them and are otherwise taken as the plain color (`green`); the
 attributes bold, dim, italics, underscore, blink, reverse, hidden,
 strikethrough and overline, each turned off by `no` before it; `default`
 for the colors and `none` for the attributes. What places text (`align`,
 `list`, `range`, `fill`, `push-default`, `pop-default`) is left out.
 -}
+
+import Tmux.ColorNames
 
 
 {-| A style: the foreground's and the background's SGR parameters (`31`,
@@ -133,11 +143,66 @@ attr name =
             Nothing
 
 
+{-| tmux 3.8's theme colors, in tmux's order (`colour_theme_table`):
+each is an option per theme (`dark-theme-light-grey`), and `theme`
+chooses the theme. -}
+themeNames : Array String
+themeNames =
+    [ "black", "white", "light-grey", "dark-grey", "green", "yellow", "red", "blue", "cyan", "magenta" ]
+
+
+{-| tmux 3.8's dark theme as its defaults give it to a client that takes
+256 colors or more. -}
+darkTheme : Array String
+darkTheme =
+    [ "gray5", "gray90", "gray70", "gray15", "yellowgreen", "darkgoldenrod", "indianred", "skyblue3", "cadetblue", "mediumpurple" ]
+
+
+{-| tmux 3.8's light theme, as `darkTheme`. -}
+lightTheme : Array String
+lightTheme =
+    [ "gray10", "gray95", "gray80", "gray45", "seagreen", "darkgoldenrod", "indianred4", "steelblue", "darkcyan", "purple4" ]
+
+
+{-| The theme colors under `theme terminal`: the terminal's own
+(`colour_theme_terminal_colour`). -}
+terminalTheme : Array String
+terminalTheme =
+    [ "black", "white", "white", "black", "green", "yellow", "red", "blue", "cyan", "magenta" ]
+
+
+{-| A style or a format's text with tmux 3.8's theme names
+(`themeyellow`) written as the colors `theme` gives them, in
+`themeNames`' order. -}
+themed : Array String -> String -> String
+themed theme text =
+    if String.contains "theme" text then
+        Array.indexedMap (\i name -> { from = "theme" ++ String.replace "-" "" name, to = Maybe.withDefault "default" (Array.get i theme) }) themeNames
+            |> Array.foldl (\r t -> String.replace r.from r.to t) text
+
+    else
+        text
+
+
+{-| Whether tmux takes a word as a color, other than a theme name
+(`colour_fromstring`). -}
+isColor : String -> Bool
+isColor name =
+    let
+        lower =
+            String.toLower name
+    in
+    lower == "default" || lower == "terminal" || color 30 lower /= ""
+
+
 {-| A color's SGR parameters, `base` 30 for a foreground, 40 for a
 background. -}
 color : Int -> String -> String
-color base name0 =
+color base name1 =
     let
+        name0 =
+            String.toLower name1
+
         name =
             if String.startsWith "theme" name0 then String.dropFirst 5 name0 else name0
 
@@ -191,7 +256,17 @@ color base name0 =
                 ""
 
     else
-        Maybe.map (\i -> String.fromInt (base + i)) (named name) |> Maybe.withDefault ""
+        when named name is
+            Just i ->
+                String.fromInt (base + i)
+
+            Nothing ->
+                when Tmux.ColorNames.rgb name is
+                    Just v ->
+                        String.fromInt (base + 8) ++ ";2;" ++ String.fromInt (v // 0x10000) ++ ";" ++ String.fromInt (modBy 0x100 (v // 0x100)) ++ ";" ++ String.fromInt (modBy 0x100 v)
+
+                    Nothing ->
+                        ""
 
 
 hexDigit : Char -> Maybe Int

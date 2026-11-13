@@ -104,6 +104,15 @@ SCENES = [
          steps=[("rclick", 2, 29), ("shot", "session-menu", 0.8), ("keys", "Escape"), ("rclick", 10, 29), ("shot", "window-menu", 0.8), ("keys", "Escape")]),
     dict(name="title-buttons", conf="set -g pane-border-status top\nset -g mouse on\n", setup=[("split-window", "-h", "-t", "main:0")],
          steps=[("shot", "buttons")]),
+    # TM65: 3.8's `i` information in place of the preview, and `<`/`>`
+    # moving a session's windows when more are than fit
+    dict(name="tree-info", setup=THREE + [("new-window", "-t", "main", "-n", "second"), ("select-window", "-t", "main:0")],
+         steps=[("keys", P, "s"), ("keys", "i"), ("shot", "session"), ("keys", "Right"), ("keys", "Down"), ("shot", "window"),
+                ("keys", "Right"), ("keys", "Down"), ("shot", "pane"), ("keys", "i"), ("shot", "back"), ("keys", "q")]),
+    dict(name="tree-scroll", setup=FILL + [("new-window", "-t", "main", "-n", f"w{i}") for i in range(1, 7)]
+         + [("select-window", "-t", "main:0")],
+         steps=[("keys", P, "s"), ("shot", "start"), ("keys", ">"), ("shot", "right1"), ("keys", ">"), ("keys", ">"),
+                ("keys", ">"), ("keys", ">"), ("shot", "right-end"), ("keys", "<"), ("shot", "left1"), ("keys", "q")]),
     dict(name="tree-swap", setup=FILL + [("new-window", "-t", "main", "-n", "two"), ("new-window", "-t", "main", "-n", "three"),
                                          ("select-window", "-t", "main:0")],
          steps=[("keys", P, "w"), ("keys", "S-Down"), ("shot", "swapped"),

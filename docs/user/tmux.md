@@ -149,8 +149,9 @@ runs what tmux would run when you answer.
   completes a command's name. Escape cancels. Korean typed with an input
   method, or pasted, goes in.
 - **What a command prints**: `prefix ?` (the key bindings), `prefix #`
-  (the paste buffers), `prefix ~` (tmux's messages), and anything a
-  command from `prefix :` prints, open in a view you scroll with the
+  (the paste buffers), `prefix ~` (tmux's messages, without the commands
+  puritty sends tmux for its own use, so that it reads as a plain tmux
+  client's would), and anything a command from `prefix :` prints, open in a view you scroll with the
   arrows, `j` and `k`, PgUp and PgDn, Space, `g` and `G`; `q` or Escape
   closes it. **`/` filters it**: type a few letters and only the lines
   that have them stay, upper or lower case alike; Enter keeps the filter,
@@ -164,9 +165,11 @@ runs what tmux would run when you answer.
   fold with Right and Left, Enter goes there, or press the key shown at a
   row's left (`0` to `9`, then `Alt+a` to `Alt+z`). As in tmux: `/`
   searches, `f` filters, `t` tags, `x` and `X` kill, `:` runs a command
-  for the tagged rows, `O` and `r` sort, `v` changes the preview,
-  Shift+Up and Shift+Down swap windows, `m` marks a pane, and `Ctrl+H`
-  lists the keys. Escape closes.
+  for the tagged rows, `O` and `r` sort, `v` changes the preview, `<` and
+  `>` move along a session's windows when more are than fit, Shift+Up and
+  Shift+Down swap windows, `m` marks a pane, `i` (tmux 3.8) shows the
+  row's information in place of its preview, and `Ctrl+H` lists the
+  keys. Escape closes.
 - **The buffer list** (`prefix =`): Enter pastes the chosen buffer, `d`
   deletes it, `t` tags, `P` and `D` paste or delete the tagged ones.
   **The client list** (`prefix D`): `d` detaches a client.
@@ -214,6 +217,12 @@ to have them as tmux draws them, from your own tmux options:
   border colors.
 - **Dimmed inactive panes** (`window-style`, `window-active-style`) and
   **pane scrollbars** (`pane-scrollbars`).
+- **Menus** in `menu-style` and `menu-border-style`, the tree's box in
+  `tree-mode-border-style`.
+- **tmux 3.8's theme colors** (`themeyellow` and the rest, in its default
+  styles) as tmux 3.8 draws them: its dark theme or its light one by
+  puritty's background, or by tmux's `theme` option when you set it, and
+  your own `dark-theme-*` and `light-theme-*` colors.
 
 Either look can be chosen in the settings window while puritty runs.
 
