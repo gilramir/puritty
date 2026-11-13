@@ -146,6 +146,8 @@ type alias State =
     , paneModes : Dict Int String
     , dayOffset : Maybe Int
     , tree : Maybe Tree
+      -- choose-buffer's or choose-client's list, drawn by puritty (TM55)
+    , listing : Maybe Listing
     }
 
 
@@ -215,8 +217,41 @@ noPreview =
     { serial = 0, target = "", session = False, items = [] }
 
 
-{-| A row of the tree: a session (its id) or a window (its id and its
-session's), with what it says and whether it is its session's last. -}
+{-| choose-buffer's or choose-client's list (TM55): which (`buffer`,
+`client`), its rows as tmux gives them, the chosen one, the tagged names,
+the order (`O`) and whether reversed (`r`), the preview off (0), as tmux
+draws it (1) or big (2), the chosen buffer's lines for it, the filter and
+the names it keeps, the search, the command a choice runs, whether it
+zooms, and the pane it was opened in. -}
+type alias Listing =
+    { kind : String
+    , rows : Array ListRow
+    , loaded : Bool
+    , selected : Int
+    , tagged : Array String
+    , sort : Int
+    , reversed : Bool
+    , previewMode : Int
+    , preview : { name : String, lines : Array String }
+    , filter : String
+    , passing : Maybe (Array String)
+    , noMatches : Bool
+    , search : String
+    , template : String
+    , zoom : Bool
+    , pane : Int
+    }
+
+
+{-| A buffer or a client as the list shows it: its name, tmux's text for it
+(`WINDOW_BUFFER_DEFAULT_FORMAT`, `WINDOW_CLIENT_DEFAULT_FORMAT`), and what
+it sorts by. -}
+type alias ListRow =
+    { name : String, text : String, created : Int, size : Int, activity : Int, control : Bool, seq : Int }
+
+
+{-| A row of the tree: a session, a window or a pane, its depth, name and text, and
+what its branch is drawn by (TM44). -}
 type alias TreeRow =
     { session : Int
     , window : Int
@@ -484,6 +519,9 @@ type Expect
     | ForTreeWindows
     | ForTreePanes
     | ForTreeFilter
+    | ForListRows
+    | ForListFilter
+    | ForListPreview String
     | ForPreviewList Int
     | ForPreviewCapture { serial : Int, index : Int }
     | ForDayTime
@@ -554,6 +592,7 @@ idle _ =
     , paneModes = Dict.empty
     , dayOffset = Nothing
     , tree = Nothing
+    , listing = Nothing
     }
 
 
@@ -839,6 +878,9 @@ expectName x =
         ForTreeWindows -> "the tree's windows"
         ForTreePanes -> "the tree's panes"
         ForTreeFilter -> "the tree's filter"
+        ForListRows -> "the list's rows"
+        ForListFilter -> "the list's filter"
+        ForListPreview _ -> "the list's preview"
         ForPreviewList _ -> "the tree preview's panes or windows"
         ForPreviewCapture c -> "the tree preview's capture " ++ String.fromInt c.index
         ForDayTime -> "the time of day"
@@ -919,6 +961,7 @@ diagnose s =
             , if s.numbers /= Nothing then "pane numbers" else ""
             , if s.view /= Nothing then "a view" else ""
             , if s.tree /= Nothing then "the tree" else ""
+            , if s.listing /= Nothing then "a list" else ""
             , if s.drag /= Nothing then "a drag" else ""
             ]
                 |> Array.keepIf (\x -> x /= "")
@@ -1014,7 +1057,7 @@ input method commits and what is pasted, or shows a view (TM26), which
 drops them. -}
 isAsking : State -> Bool
 isAsking s =
-    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing || s.tree /= Nothing
+    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing || s.tree /= Nothing || s.listing /= Nothing
 
 
 {-| Text from an input method or a paste, typed into the prompt: a line
@@ -1725,6 +1768,80 @@ replied expect ok lines acc =
             in
             previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
 
+        ForListRows ->
+            let
+                st =
+                    acc.state
+
+                -- `seq`: the place in tmux's answer, which lists buffers
+                -- newest first, by tmux's own order of making
+                rows =
+                    Array.indexedMap
+                        (\i line ->
+                            when String.split "\t" (Bytes.toStringLossy line) is
+                                [ "L", name, created, size, activity, text, control ] ->
+                                    Just { name = name, text = text, created = Maybe.withDefault 0 (String.toInt created), size = Maybe.withDefault 0 (String.toInt size), activity = Maybe.withDefault 0 (String.toInt activity), control = control == "1", seq = i }
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+                        |> Array.mapAndKeepJust identity
+
+                chosen =
+                    Maybe.andThen (\l -> Array.get l.selected (listRows l) |> Maybe.map .name) st.listing
+            in
+            if Array.isEmpty rows then
+                -- nothing to list: closed, as tmux's mode closes
+                { acc | state = { st | listing = Nothing } }
+
+            else
+                let
+                    updated =
+                        Maybe.map
+                            (\l ->
+                                let
+                                    next =
+                                        { l | rows = rows, loaded = True }
+                                in
+                                { next | selected = Array.findFirst (\r -> Just r.name == chosen) (listRows next) |> Maybe.map .index |> Maybe.withDefault (clamp 0 (Array.length rows - 1) l.selected) }
+                            )
+                            st.listing
+
+                    asked =
+                        listPreviewAsk { st | listing = updated }
+                in
+                { acc | state = asked.state, commands = acc.commands ++ asked.commands }
+
+        ForListFilter ->
+            let
+                st =
+                    acc.state
+
+                names =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split "\t" (Bytes.toStringLossy line) is
+                                [ "F", name ] ->
+                                    Just name
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+
+                none =
+                    not ok || Array.isEmpty names
+            in
+            { acc | state = { st | listing = Maybe.map (\l -> { l | passing = if none then Nothing else Just names, noMatches = none, selected = 0 }) st.listing } }
+
+        ForListPreview name ->
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = { st | listing = Maybe.map (\l -> if l.preview.name == name then { l | preview = { name = name, lines = Array.takeFirst 200 (Array.map Bytes.toStringLossy lines) } } else l) st.listing } }
+
         ForTreeFilter ->
             -- the panes the filter keeps; with none, or a filter tmux could
             -- not read, every row stays and the tree says so (TM45)
@@ -2410,7 +2527,7 @@ paint s =
                             []
 
                 shownCursor =
-                    when { asking = s.asking, view = s.view, menu = if s.menu /= Nothing || s.tree /= Nothing then Just {} else Nothing } is
+                    when { asking = s.asking, view = s.view, menu = if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing then Just {} else Nothing } is
                         { asking = Just _, view = _, menu = _ } ->
                             if s.lookTmux then "\u{001B}[?25h" else "\u{001B}[?25l"
 
@@ -2449,6 +2566,35 @@ paint s =
                                 when area is
                                     Just place ->
                                         drawTree (colorsOf s.status) s.lookTmux s.version place t
+
+                                    Nothing ->
+                                        []
+
+                        Nothing ->
+                            []
+
+                -- choose-buffer's or choose-client's list (TM55)
+                listingDrawn =
+                    when s.listing is
+                        Just l ->
+                            if not l.loaded then
+                                []
+
+                            else
+                                let
+                                    statusLines =
+                                        clamp 0 5 (statusRows s)
+
+                                    area =
+                                        if l.zoom then
+                                            Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines), active = True, z = Nothing }
+
+                                        else
+                                            Array.findFirst (\p -> p.id == l.pane) (tiled ++ floating) |> Maybe.map .value
+                                in
+                                when area is
+                                    Just place ->
+                                        drawListing (colorsOf s.status) s.lookTmux s.version place l
 
                                     Nothing ->
                                         []
@@ -2639,6 +2785,7 @@ paint s =
                         |> drawPieces copyMarks
                         |> drawPieces modesDrawn
                         |> drawPieces treeDrawn
+                        |> drawPieces listingDrawn
                         |> (\c ->
                                 if tmuxLook then
                                     drawPieces statusBar c
@@ -2806,11 +2953,14 @@ typedHere k bytes ms s =
                 { state = { s | view = viewKey k v, clock = ms }, commands = [] }
 
             { asking = Nothing, menu = Nothing, numbers = Nothing, view = Nothing } ->
-                when s.tree is
-                    Just t ->
+                when { tree = s.tree, listing = s.listing } is
+                    { tree = Just t, listing = _ } ->
                         previewAfter (treeKey k t { s | clock = ms })
 
-                    Nothing ->
+                    { tree = Nothing, listing = Just l } ->
+                        listPreviewAfter (listKey k l { s | clock = ms })
+
+                    { tree = Nothing, listing = Nothing } ->
                         keyByTable k bytes ms { s | clock = ms }
 
 
@@ -3300,7 +3450,11 @@ answer given a s =
         history =
             if given == "" || Array.last s.history == Just given then s.history else Array.pushLast given s.history
     in
-    if a.purpose /= 0 then
+    if a.purpose >= 11 then
+        -- a list's own question (TM55)
+        listAnswered a.purpose given { s | asking = Nothing, history = history }
+
+    else if a.purpose /= 0 then
         -- the tree's own question (TM45); a kill's y is not kept for Up
         treeAnswered a.purpose given { s | asking = Nothing, history = if a.purpose == 3 || a.purpose == 4 then s.history else history }
 
@@ -4005,7 +4159,7 @@ pointerShape select p s =
                         dragShape d.kind
 
                     Nothing ->
-                        if s.menu /= Nothing || s.tree /= Nothing || row == barRow then
+                        if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing || row == barRow then
                             Window.ArrowPointer
 
                         else
@@ -4811,8 +4965,8 @@ paneName pane =
 `if-shell -F` that chooses between commands. -}
 runsHere : String -> Bool
 runsHere line =
-    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line } is
-        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing } ->
+    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line, list = Syntax.listOf line } is
+        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing, list = Nothing } ->
             False
 
         _ ->
@@ -4885,8 +5039,11 @@ runLine ctx line s =
                         openMenu ctx m.menu m.after s
 
                     { menu = Nothing, panes = Nothing } ->
-                        when Syntax.treeOf fixed is
-                            Just t ->
+                        when { tree = Syntax.treeOf fixed, list = Syntax.listOf fixed } is
+                            { tree = Nothing, list = Just l } ->
+                                listPreviewAfter (openListing ctx l s)
+
+                            { tree = Just t, list = _ } ->
                                 let
                                     opened =
                                         sendAsking
@@ -4898,7 +5055,7 @@ runLine ctx line s =
                                 in
                                 { state = ran.state, commands = opened.commands ++ ran.commands }
 
-                            Nothing ->
+                            { tree = Nothing, list = Nothing } ->
                                 plainLines ctx fixed s
 
                     { menu = Nothing, panes = Just d } ->
@@ -5607,6 +5764,497 @@ bigDigit c =
 
         _ ->
             []
+
+
+-- CHOOSE-BUFFER AND CHOOSE-CLIENT (TM55)
+
+
+{-| A list opened for a `choose-buffer` or `choose-client` binding. -}
+openListing : Context -> { kind : String, filter : String, zoom : Bool, template : String, after : String } -> (taken s : State) -> { state : State, commands : Array String }
+openListing ctx l s =
+    let
+        opened =
+            sendAsking
+                ([ listQuery l.kind ] ++ (if l.filter == "" then [] else [ listFilterQuery l.kind l.filter ]))
+                { s
+                    | said = ""
+                    , listing =
+                        Just
+                            { kind = l.kind
+                            , rows = []
+                            , loaded = False
+                            , selected = 0
+                            , tagged = []
+                            , sort = 0
+                            , reversed = False
+                            , previewMode = 1
+                            , preview = { name = "", lines = [] }
+                            , filter = l.filter
+                            , passing = Nothing
+                            , noMatches = False
+                            , search = ""
+                            , template = l.template
+                            , zoom = l.zoom
+                            , pane = ctx.pane
+                            }
+                }
+
+        ran =
+            runLine ctx l.after opened.state
+    in
+    { state = ran.state, commands = opened.commands ++ ran.commands }
+
+
+{-| The list's rows asked of tmux, with tmux's own text for each
+(`window-buffer.c`, `window-client.c`); fields split at tabs. -}
+listQuery : String -> { command : String, expect : Expect }
+listQuery kind =
+    if kind == "buffer" then
+        { command = "list-buffers -F " ++ Command.quote "L\t#{buffer_name}\t#{buffer_created}\t#{buffer_size}\t0\t#{t/p:buffer_created}: #{buffer_sample}\t0", expect = ForListRows }
+
+    else
+        { command = "list-clients -F " ++ Command.quote "L\t#{client_name}\t#{client_created}\t#{client_width}\t#{client_activity}\t#{t/p:client_activity}: session #{session_name}\t#{client_control_mode}", expect = ForListRows }
+
+
+listFilterQuery : String -> String -> { command : String, expect : Expect }
+listFilterQuery kind filter =
+    if kind == "buffer" then
+        { command = "list-buffers -f " ++ Command.quote filter ++ " -F " ++ Command.quote "F\t#{buffer_name}", expect = ForListFilter }
+
+    else
+        { command = "list-clients -f " ++ Command.quote filter ++ " -F " ++ Command.quote "F\t#{client_name}", expect = ForListFilter }
+
+
+{-| The rows the filter keeps, in the list's order: buffers newest first,
+by name or largest first (`window_buffer_cmp`), the name breaking ties;
+clients by name, width, when made or most recently active
+(`window_client_sort_list`). -}
+listRows : Listing -> Array ListRow
+listRows l =
+    let
+        keptRows =
+            when l.passing is
+                Just names ->
+                    Array.keepIf (\r -> Array.member r.name names) l.rows
+
+                Nothing ->
+                    l.rows
+
+        flip o =
+            if l.reversed then
+                when o is
+                    LT ->
+                        GT
+
+                    GT ->
+                        LT
+
+                    EQ ->
+                        EQ
+
+            else
+                o
+
+        thenName o a b =
+            if o == EQ then compare a.name b.name else o
+
+        order a b =
+            if l.kind == "buffer" then
+                if l.sort == 1 then
+                    compare a.name b.name
+
+                else if l.sort == 2 then
+                    thenName (compare b.size a.size) a b
+
+                else
+                    compare a.seq b.seq
+
+            else if l.sort == 1 then
+                thenName (compare b.size a.size) a b
+
+            else if l.sort == 2 then
+                thenName (compare a.created b.created) a b
+
+            else if l.sort == 3 then
+                thenName (compare b.activity a.activity) a b
+
+            else
+                compare a.name b.name
+    in
+    Array.sortWith (\a b -> flip (order a b)) keptRows
+
+
+listSortNames : Int -> String -> Array String
+listSortNames version kind =
+    if kind == "buffer" then
+        [ if version >= 38 then "creation" else "time", "name", "size" ]
+
+    else
+        [ "name", "size", "creation", "activity" ]
+
+
+{-| The chosen row's buffer asked for the preview, when it is not the one
+shown; a client's list has none. -}
+listPreviewAsk : (taken s : State) -> { state : State, commands : Array String }
+listPreviewAsk s =
+    when s.listing is
+        Just l ->
+            when Array.get l.selected (listRows l) is
+                Just r ->
+                    if l.kind == "buffer" && r.name /= l.preview.name then
+                        sendAsking [ { command = "show-buffer -b " ++ Command.quote r.name, expect = ForListPreview r.name } ] { s | listing = Just { l | preview = { name = r.name, lines = [] } } }
+
+                    else
+                        { state = s, commands = [] }
+
+                Nothing ->
+                    { state = s, commands = [] }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+listPreviewAfter : (taken r0 : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+listPreviewAfter r0 =
+    let
+        r =
+            listPreviewAsk r0.state
+    in
+    { state = r.state, commands = r0.commands ++ r.commands }
+
+
+{-| Commands run on the list's rows, and the rows asked again, the chosen
+name kept where it still is. -}
+listRun : Array String -> Listing -> (taken s : State) -> { state : State, commands : Array String }
+listRun commands l s =
+    sendAsking
+        (Array.map (\c -> { command = c, expect = ForRan }) commands
+            ++ [ listQuery l.kind ]
+            ++ (if l.filter == "" then [] else [ listFilterQuery l.kind l.filter ])
+        )
+        { s | listing = Just { l | tagged = [] } }
+
+
+{-| A key while a list is shown, as `mode_tree_key`, `window_buffer_key`
+and `window_client_key` take it (TM55). -}
+listKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Listing -> (taken s : State) -> { state : State, commands : Array String }
+listKey k l s =
+    let
+        name =
+            Maybe.withDefault "" (lookupName k)
+
+        rows =
+            listRows l
+
+        count =
+            Array.length rows
+
+        at =
+            Array.get l.selected rows
+
+        moved i st =
+            { state = { st | listing = Just { l | selected = clamp 0 (max 0 (count - 1)) i } }, commands = [] }
+
+        targets =
+            l.tagged
+
+        buffer =
+            l.kind == "buffer"
+
+        chosen r st =
+            runLine { pane = l.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens l.template) [ r.name ]) { st | listing = Nothing }
+    in
+    if name == "q" || name == "Escape" || name == "C-g" then
+        { state = { s | listing = Nothing }, commands = [] }
+
+    else if name == "Up" || name == "k" || name == "C-p" then
+        moved (if l.selected == 0 then count - 1 else l.selected - 1) s
+
+    else if name == "Down" || name == "j" || name == "C-n" then
+        moved (if l.selected >= count - 1 then 0 else l.selected + 1) s
+
+    else if name == "PPage" || name == "C-b" then
+        moved (l.selected - 10) s
+
+    else if name == "NPage" || name == "C-f" then
+        moved (l.selected + 10) s
+
+    else if name == "Home" || name == "g" then
+        moved 0 s
+
+    else if name == "End" || name == "G" then
+        moved (count - 1) s
+
+    else if name == "t" then
+        when at is
+            Just r ->
+                { state = { s | listing = Just { l | tagged = if Array.member r.name l.tagged then Array.keepIf (\x -> x /= r.name) l.tagged else Array.pushLast r.name l.tagged, selected = min (count - 1) (l.selected + 1) } }, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "T" then
+        { state = { s | listing = Just { l | tagged = [] } }, commands = [] }
+
+    else if name == "C-t" then
+        { state = { s | listing = Just { l | tagged = Array.map .name rows } }, commands = [] }
+
+    else if name == "O" then
+        { state = { s | listing = Just { l | sort = modBy (Array.length (listSortNames s.version l.kind)) (l.sort + 1) } }, commands = [] }
+
+    else if name == "r" then
+        { state = { s | listing = Just { l | reversed = not l.reversed } }, commands = [] }
+
+    else if name == "v" then
+        { state = { s | listing = Just { l | previewMode = if l.previewMode == 0 then 2 else if l.previewMode == 1 then 0 else 1 } }, commands = [] }
+
+    else if name == "/" || name == "?" || name == "C-s" then
+        { state = { s | asking = Just (treePrompt 11 "(search) " "") }, commands = [] }
+
+    else if name == "n" then
+        { state = { s | listing = Just (searchListing True l) }, commands = [] }
+
+    else if name == "N" then
+        { state = { s | listing = Just (searchListing False l) }, commands = [] }
+
+    else if name == "f" then
+        { state = { s | asking = Just (treePrompt 12 "(filter) " l.filter) }, commands = [] }
+
+    else if name == "Enter" || name == "KPEnter" || name == "C-m" || (buffer && name == "p") then
+        when at is
+            Just r ->
+                chosen r s
+
+            Nothing ->
+                { state = { s | listing = Nothing }, commands = [] }
+
+    else if buffer && name == "P" then
+        listRun (Array.map (\t -> Syntax.fill (Syntax.tokens l.template) [ t ]) targets) l s
+
+    else if buffer && name == "d" then
+        when at is
+            Just r ->
+                listRun [ "delete-buffer -b " ++ Command.quote r.name ] l s
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if buffer && name == "D" then
+        listRun (Array.map (\t -> "delete-buffer -b " ++ Command.quote t) targets) l s
+
+    else if not buffer && (name == "d" || name == "x" || name == "z") then
+        when at is
+            Just r ->
+                -- a control client suspended takes no key again (TM24):
+                -- puritty's own among them
+                if name == "z" && r.control then
+                    { state = { s | said = "puritty: a control-mode client is not suspended" }, commands = [] }
+
+                else
+                    listRun [ clientCommand name r.name ] l s
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if not buffer && (name == "D" || name == "X" || name == "Z") then
+        listRun (Array.map (\t -> clientCommand (String.toLower name) t) (if name == "Z" then Array.keepIf (\t -> not (Array.any (\r -> r.name == t && r.control) rows)) targets else targets)) l s
+
+    else
+        when Array.findFirst (\i -> treeRowKey i == Just name) (Array.range 0 (min count 36 - 1)) is
+            Just found ->
+                when Array.get found.value rows is
+                    Just r ->
+                        chosen r s
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+
+{-| A client's key's command, as `window_client_do_detach`: `d` detach, `x`
+detach and kill its shell (`-P`), `z` suspend. -}
+clientCommand : String -> String -> String
+clientCommand key client =
+    if key == "x" then
+        "detach-client -P -t " ++ Command.quote client
+
+    else if key == "z" then
+        "suspend-client -t " ++ Command.quote client
+
+    else
+        "detach-client -t " ++ Command.quote client
+
+
+{-| The next row whose name or text holds the search, from the one after
+the chosen round, case ignored when it has no capitals. tmux searches a
+buffer's contents; puritty its sample. -}
+searchListing : Bool -> Listing -> Listing
+searchListing forward l =
+    let
+        rows =
+            listRows l
+
+        n =
+            Array.length rows
+
+        caseless =
+            String.toLower l.search == l.search
+
+        matches r =
+            let
+                hay =
+                    r.name ++ " " ++ r.text
+            in
+            if caseless then String.contains l.search (String.toLower hay) else String.contains l.search hay
+
+        order =
+            Array.range 1 n |> Array.map (\k -> if forward then modBy n (l.selected + k) else modBy n (l.selected - k + n))
+    in
+    if l.search == "" || n == 0 then
+        l
+
+    else
+        when Array.findFirst (\i -> Maybe.map matches (Array.get i rows) == Just True) order is
+            Just found ->
+                { l | selected = found.value }
+
+            Nothing ->
+                l
+
+
+{-| The list's own questions answered: a search (11) or a filter (12). -}
+listAnswered : Int -> String -> (taken s : State) -> { state : State, commands : Array String }
+listAnswered purpose given s =
+    when s.listing is
+        Just l ->
+            if purpose == 11 then
+                listPreviewAsk { s | listing = Just (searchListing True { l | search = given }) }
+
+            else if given == "" then
+                { state = { s | listing = Just { l | filter = "", passing = Nothing, noMatches = False } }, commands = [] }
+
+            else
+                sendAsking [ listFilterQuery l.kind given ] { s | listing = Just { l | filter = given } }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| The list's cells, as tmux's mode tree draws a flat list (TM55): each
+row's key, name and text, the chosen one in mode-style, tagged ones with a
+`*`; below, the preview's box with the chosen name and order, and a
+buffer's first lines. -}
+drawListing : Colors -> Bool -> Int -> Layout.Pane -> Listing -> Array { row : Int, col : Int, color : String, text : String }
+drawListing colors tmuxLook version place l =
+    let
+        rows =
+            listRows l
+
+        sy =
+            place.h
+
+        lineCount =
+            Array.length rows
+
+        listHeight0 =
+            if l.previewMode == 1 then
+                let
+                    twoThirds =
+                        (sy // 3) * 2
+
+                    h =
+                        if twoThirds > lineCount then sy // 2 else twoThirds
+                in
+                if h < 10 then sy else h
+
+            else if l.previewMode == 2 then
+                max 2 (min lineCount (sy // 4))
+
+            else
+                sy
+
+        listHeight =
+            if sy - listHeight0 < 2 then sy else listHeight0
+
+        keyWidth =
+            if lineCount > 10 then 3 else 1
+
+        top =
+            if l.selected < listHeight then 0 else l.selected - listHeight + 1
+
+        chosenName =
+            Array.get l.selected rows |> Maybe.map .name |> Maybe.withDefault ""
+
+        sortName =
+            Array.get l.sort (listSortNames version l.kind) |> Maybe.withDefault ""
+
+        plainInk =
+            if tmuxLook then "\u{001B}[0m" else viewTextColor
+
+        listed =
+            Array.slice top (top + listHeight) rows
+                |> Array.indexedMap
+                    (\j r ->
+                        let
+                            i =
+                                top + j
+
+                            key =
+                                when treeRowKey i is
+                                    Just k ->
+                                        String.padRight (keyWidth + 2) ' ' ("(" ++ k ++ ")") ++ " "
+
+                                    Nothing ->
+                                        String.repeat (keyWidth + 3) " "
+
+                            tag =
+                                if Array.member r.name l.tagged then "*" else ""
+                        in
+                        { row = place.y + j
+                        , col = place.x
+                        , color = if i == l.selected then (if tmuxLook then colors.mode else activeTabColor) else plainInk
+                        , text = String.padRight place.w ' ' (String.takeFirst place.w (key ++ r.name ++ tag ++ ": " ++ r.text))
+                        }
+                    )
+
+        boxRow =
+            place.y + listHeight
+
+        boxH =
+            sy - listHeight
+
+        inner =
+            place.w - 2
+
+        heading =
+            let
+                t =
+                    " " ++ chosenName ++ " (sort: " ++ sortName ++ (if l.reversed then ", reversed" else "") ++ ")"
+
+                note =
+                    if l.filter /= "" then " (filter: " ++ (if l.noMatches then "no matches" else "active") ++ ") " else " "
+            in
+            if String.count t <= inner then String.takeFirst inner (t ++ note) else ""
+
+        box =
+            if boxH < 3 || listHeight >= sy then
+                []
+
+            else
+                [ { row = boxRow, col = place.x, color = plainInk, text = "┌" ++ String.repeat inner "─" ++ "┐" }
+                , { row = boxRow, col = place.x + 1, color = plainInk, text = heading }
+                ]
+                    ++ (Array.range 1 (boxH - 2) |> Array.map (\r -> { row = boxRow + r, col = place.x, color = plainInk, text = "│" ++ String.repeat inner " " ++ "│" }))
+                    ++ [ { row = boxRow + boxH - 1, col = place.x, color = plainInk, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
+                    ++ (Array.takeFirst (boxH - 2) l.preview.lines
+                            |> Array.indexedMap (\j line -> { row = boxRow + 1 + j, col = place.x + 2, color = plainInk, text = clipCells (max 0 (place.w - 4)) (shownLine line) })
+                       )
+    in
+    (Array.range 0 (place.h - 1) |> Array.map (\r -> { row = place.y + r, col = place.x, color = plainInk, text = String.repeat place.w " " }))
+        ++ listed
+        ++ box
 
 
 -- TREE MODE, THE CLOCK AND THE OTHER MODES (TM32)

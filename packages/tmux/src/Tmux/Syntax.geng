@@ -11,6 +11,7 @@ module Tmux.Syntax exposing
     , ifFormatOf
     , panesOf
     , treeOf
+    , listOf
     , retarget
     , lines
     , fill
@@ -850,3 +851,54 @@ findFilter bools text =
 
         _ ->
             matching "pane_title"
+
+
+{-| What a binding's `choose-buffer` or `choose-client` asks (puritty
+`docs/tmux.md` TM55): which list, its filter (`-f`), whether it zooms the
+pane (`-Z`), the command a choice runs with `%%` the buffer's or the
+client's name (tmux's defaults when none is given: `paste-buffer -p -b
+'%%'`, `detach-client -t '%%'`), and the commands after it. -}
+listOf : String -> Maybe { kind : String, filter : String, zoom : Bool, template : String, after : String }
+listOf command =
+    let
+        cmds =
+            commands (tokens command)
+
+        name =
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+
+        after =
+            Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+    in
+    when Array.first cmds is
+        Just first ->
+            if name == "choose-buffer" || name == "choose-client" then
+                let
+                    args =
+                        flags "FfKOt" (Array.dropFirst 1 first)
+
+                    kind =
+                        if name == "choose-buffer" then "buffer" else "client"
+                in
+                Just
+                    { kind = kind
+                    , filter = Maybe.withDefault "" (getFlag 'f' args.values)
+                    , zoom = String.contains "Z" args.bools
+                    , template =
+                        when args.rest is
+                            [] ->
+                                if kind == "buffer" then "paste-buffer -p -b '%%'" else "detach-client -t '%%'"
+
+                            [ one ] ->
+                                if one.block then serialize (tokens one.value) else one.value
+
+                            many ->
+                                serialize many
+                    , after = after
+                    }
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing

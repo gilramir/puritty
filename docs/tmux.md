@@ -2281,3 +2281,41 @@ App tests 141; `show.py` status, tabs, mouse, menus unchanged.
 its focus (TM43 does the first line's); `#[align=right]` and `centre`
 in those lines are drawn from the left; a custom `status-format[0]` is
 still not read (TM29).
+
+## TM55 · choose-buffer and choose-client drawn by puritty (2026-11-12)
+
+TM39's item 8 (in part). `prefix =` (`choose-buffer -Z`) and `prefix D`
+(`choose-client -Z`) entered tmux's modes, which a control client does not
+see; puritty only said so. Now held like `choose-tree` (`Bindings.held`)
+and read (`Syntax.listOf`: `-f`, `-Z`, the template, tmux's defaults
+`paste-buffer -p -b '%%'` and `detach-client -t '%%'`), the list is
+puritty's (`Listing`), as tmux's mode tree draws a flat list:
+
+- rows `name: text` with tmux's own default formats
+  (`WINDOW_BUFFER_DEFAULT_FORMAT` `#{t/p:buffer_created}: #{buffer_sample}`,
+  the client's `... : session #{session_name}`), each row's key;
+- buffers newest first in tmux's own order (the order of `list-buffers`'
+  answer: their created seconds can tie), by name, by size; clients by
+  name, width, creation, activity; 3.8 calls the buffers' first order
+  `creation`, 3.6 `time`;
+- keys: the moves, row keys, `t T C-t`, `O r`, `v`, `/ n N`, `f` (tmux
+  tests the filter, `list-buffers -f`), q, Escape, C-g; buffers: Enter
+  and `p` paste and close, `P` paste the tagged, `d`/`D` delete; clients:
+  Enter the command, `d`/`x`/`z` detach, detach and kill, suspend, with
+  `D X Z` for the tagged; a control-mode client, puritty's own among them,
+  is not suspended (tmux takes no key from it again, TM24). After each the
+  list is asked again, the chosen name kept; with nothing left it closes;
+- a buffer's preview is its first lines (`show-buffer`), under ` NAME
+  (sort: ORDER)`.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `buffers`,
+`choose-client`): three buffers made in one second listed gamma, beta,
+alpha as tmux lists them; `d` on beta, the chosen row then alpha; Enter
+pasted `first text` and closed; the preview's top line and text; the
+client row's form. Tests: tmux package 70 (`listOf`), app 141.
+`show.py modes`' `C-a =` line now reads nothing for the pane's mode
+(it read `buffer-mode`): tmux no longer enters it, puritty shows the list.
+
+**Not yet:** `e` (edit a buffer), a client's preview (tmux draws its
+screen), searching a buffer's contents rather than its sample,
+customize-mode (`prefix C`).
