@@ -38,10 +38,11 @@ host = "build.example.com"
 command = "tmux -CC new -A -s main"
 ```
 
-![puritty on Windows 11, connected to a Linux host with its built-in ssh client, showing tmux 3.8 in control mode: three tiled panes and a floating pane in a box over them](../images/tmux-on-windows.png)
+![puritty on Windows 11 with three colored tabs, the first connected to Linux with puritty's own ssh client and attached to tmux 3.8 by tmux -CC: git history in the left pane, two Chinese poems and a table in the right one, and Thai in a floating pane over them](../images/tmux-on-windows.png)
 
 *On Windows 11, connected to Linux with puritty's own ssh client, running
-`tmux -CC attach`: three tiled panes, and a floating pane over them.*
+`tmux -CC attach`: tmux's windows as tabs, and below them three tabs of
+puritty's own, each in its color.*
 
 ### Which tmux
 
