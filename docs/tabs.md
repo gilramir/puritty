@@ -616,3 +616,54 @@ does (`new_tab`): a tab of puritty's after the last (`openTab`), or under
 `tmux -CC` tmux's new window (`TmuxMode.newWindow`). Checked under `-CC`
 on Xvfb with tmux 3.8: the menu's third item takes the session from one
 window to two.
+
+
+## TB14 · The tab order could keep the shown tab's place (survey, 2026-11-13)
+
+Gilbert asked to look into §VC63's note: the tab order's fallbacks run
+only when it is empty, which it never is, and no rule says so.
+
+**What there is.** `Model.order` is the tabs' ids in bar order, and the
+shown tab's place in it is searched for each time (`shownAt`, a
+`findFirst` of `m.tab.id`, `withDefault 0`), five readers: the restore
+file's `shown`, `neighborId` (Ctrl+PageUp/PageDown), moving a tab, and
+closing the shown one. Five writers: the first tab (`[ 0 ]`), a new tab
+(`pushLast`), a move (`keepIf` the shown id out, then put back at `to`),
+closing the shown tab (switch to the next, then `keepIf` the closed id
+out), and closing one not shown (`keepIf`).
+
+**Why no rule holds now.** The fact that matters is that the shown tab's
+id is in the order, and a predicate cannot say an array holds a value
+(`refinements.md`: no element predicates). A weaker one, the order not
+empty, cannot be shown either: the two closings remove with `keepIf`,
+which promises a result no longer than its array (TO21), not one shorter
+by exactly one, and nothing says the removed id was present once.
+
+**What would hold.** Keep the place, not search for it:
+
+```gren
+, order : Array Int
+, shown : Int where 0 <= shown && shown < Array.length order
+```
+
+a field predicate on `Model`, asked at each write of either:
+
+| writer | the new `shown` | how the rule is shown |
+|---|---|---|
+| first tab | `0`, order `[ 0 ]` | a literal array's length |
+| new tab, shown | `Array.length m.order`, after `pushLast` | `pushLast` adds one |
+| move by `by` | `to`, where `to = modBy n (shown + by)` | `modBy` of a nonempty length |
+| close the shown | the next's place, with the closed one removed at `shown` (`Array.remove`, which would say its length is one less) | removal at a known index |
+| close another | `shown`, less one when the removed place was before it | the same |
+
+Then `neighborId` is `Array.getProven (modBy n (m.shown + by)) m.order`
+with no default, `shownAt` goes, and the shown tab is in the order by
+construction (`order[shown]` is set where `tab` is), not by search. What
+it costs: removing by place rather than by id at the two closings (each
+already knows the place, or finds it once), and the five writers keeping
+`shown` in the same update as `order`, which the invariant enforces.
+
+**Not decided.** It would remove three `withDefault`s and a search per
+switch; the gain is the guarantee more than the count. `Array.removeAt`
+with a length contract is a `core` addition (`primRemove` has one; the
+exposed `Array.remove` would need it stated, for an index inside the array).
