@@ -4965,8 +4965,8 @@ paneName pane =
 `if-shell -F` that chooses between commands. -}
 runsHere : String -> Bool
 runsHere line =
-    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line, list = Syntax.listOf line } is
-        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing, list = Nothing } ->
+    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line, list = Syntax.listOf line, popup = Syntax.popupOf line } is
+        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing, list = Nothing, popup = Nothing } ->
             False
 
         _ ->
@@ -5039,11 +5039,14 @@ runLine ctx line s =
                         openMenu ctx m.menu m.after s
 
                     { menu = Nothing, panes = Nothing } ->
-                        when { tree = Syntax.treeOf fixed, list = Syntax.listOf fixed } is
-                            { tree = Nothing, list = Just l } ->
+                        when { tree = Syntax.treeOf fixed, list = Syntax.listOf fixed, popup = Syntax.popupOf fixed } is
+                            { tree = Nothing, list = Nothing, popup = Just pop } ->
+                                openPopup ctx pop s
+
+                            { tree = Nothing, list = Just l, popup = _ } ->
                                 listPreviewAfter (openListing ctx l s)
 
-                            { tree = Just t, list = _ } ->
+                            { tree = Just t, list = _, popup = _ } ->
                                 let
                                     opened =
                                         sendAsking
@@ -5055,7 +5058,7 @@ runLine ctx line s =
                                 in
                                 { state = ran.state, commands = opened.commands ++ ran.commands }
 
-                            { tree = Nothing, list = Nothing } ->
+                            { tree = Nothing, list = Nothing, popup = Nothing } ->
                                 plainLines ctx fixed s
 
                     { menu = Nothing, panes = Just d } ->
@@ -5764,6 +5767,72 @@ bigDigit c =
 
         _ ->
             []
+
+
+-- DISPLAY-POPUP (TM56)
+
+
+{-| A `display-popup` binding, which a control client is not shown: on
+tmux 3.8, a modal floating pane in its place (`new-pane -O`), its size,
+place, directory and command (not its title: `-T` would be the pane's
+title, which the status line shows); kept after its command ends, until a
+key, unless `-E` says to close (`-k`). Before 3.8 there are no floating
+panes, and puritty says so. -}
+openPopup : Context -> { width : String, height : String, x : String, y : String, title : String, dir : String, close : Bool, command : String, after : String } -> (taken s : State) -> { state : State, commands : Array String }
+openPopup ctx pop s =
+    let
+        winW =
+            s.canvas.cols
+
+        winH =
+            max 1 (s.canvas.rows - statusRows s)
+
+        -- a size as new-pane takes it, and in cells for placing it
+        cells size whole =
+            if String.endsWith "%" size then
+                Maybe.withDefault 50 (String.toInt (String.dropLast 1 size)) * whole // 100
+
+            else
+                Maybe.withDefault (whole // 2) (String.toInt size)
+
+        -- `C` (the middle) or anything puritty does not place: centered
+        place given size whole =
+            if String.endsWith "%" given || String.toInt given /= Nothing then
+                given
+
+            else if String.endsWith "%" size then
+                String.fromInt ((100 - Maybe.withDefault 50 (String.toInt (String.dropLast 1 size))) // 2) ++ "%"
+
+            else
+                String.fromInt (max 0 ((whole - cells size whole) // 2))
+
+        command =
+            "new-pane -O"
+                ++ (if pop.close then "" else " -k")
+                ++ " -t "
+                ++ Command.quote ("%" ++ String.fromInt ctx.pane)
+                ++ " -x "
+                ++ Command.quote pop.width
+                ++ " -y "
+                ++ Command.quote pop.height
+                ++ " -X "
+                ++ Command.quote (place pop.x pop.width winW)
+                ++ " -Y "
+                ++ Command.quote (place pop.y pop.height winH)
+                ++ (if pop.dir == "" then "" else " -c " ++ Command.quote pop.dir)
+                ++ (if pop.command == "" then "" else " " ++ Command.quote pop.command)
+
+        opened =
+            if s.version == 0 || s.version >= 38 then
+                sendAsking [ { command = command, expect = ForRan } ] { s | said = "" }
+
+            else
+                { state = { s | said = "puritty: display-popup under tmux -CC needs tmux 3.8's floating panes" }, commands = [] }
+
+        ran =
+            runLine ctx pop.after opened.state
+    in
+    { state = ran.state, commands = opened.commands ++ ran.commands }
 
 
 -- CHOOSE-BUFFER AND CHOOSE-CLIENT (TM55)

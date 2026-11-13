@@ -2319,3 +2319,28 @@ client row's form. Tests: tmux package 70 (`listOf`), app 141.
 **Not yet:** `e` (edit a buffer), a client's preview (tmux draws its
 screen), searching a buffer's contents rather than its sample,
 customize-mode (`prefix C`).
+
+## TM56 · display-popup as a modal floating pane (2026-11-12)
+
+TM39's item 11. A popup is drawn on a client's screen as an overlay,
+which a control client never gets: under `-CC` `display-popup` answers
+`ok` and nothing shows (measured on 3.8). Now its bindings are held
+(`Bindings.held`) and read (`Syntax.popupOf`: `-w`, `-h`, `-x`, `-y`,
+`-d`, `-E`, the command), and on 3.8 puritty asks tmux for a modal
+floating pane in its place (`new-pane -O`, which puritty draws, TM8):
+the popup's size (half the window by default, `N%` as tmux takes it), its
+place (`C`, the default, centered: half the space left, in `%` or cells),
+its directory and command; without `-E` the pane waits for a key once
+its command ends (`-k`), as a popup stays. The title is left out: `-T`
+would be the pane's title, which the default status line shows. Before
+3.8 there are no floating panes, and puritty says so at the bar.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `popup`: `bind p
+display-popup -E -T hello 'echo popped; sleep 4'`): the floating pane
+where tmux's popup is, about its size, showing `popped`; the window two
+panes, the second modal (`O` in its flags). Tests: tmux package 71
+(`popupOf`), app 141.
+
+**Not matched:** the popup's border styles and title, `-B` (no
+border), `-x`/`-y` given as `P`, `M`, `W`, `S` or `R` (drawn centered),
+`-e` environment, `-EE`.

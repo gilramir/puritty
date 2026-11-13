@@ -12,6 +12,7 @@ module Tmux.Syntax exposing
     , panesOf
     , treeOf
     , listOf
+    , popupOf
     , retarget
     , lines
     , fill
@@ -888,6 +889,62 @@ listOf command =
                         when args.rest is
                             [] ->
                                 if kind == "buffer" then "paste-buffer -p -b '%%'" else "detach-client -t '%%'"
+
+                            [ one ] ->
+                                if one.block then serialize (tokens one.value) else one.value
+
+                            many ->
+                                serialize many
+                    , after = after
+                    }
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| What a binding's `display-popup` (`popup`) asks (puritty `docs/tmux.md`
+TM56): its width and height (`-w`, `-h`, a number or `N%`, half the
+window when not given), its place (`-x`, `-y`: a number, `N%`, or `C`,
+the middle, as when not given), its title (`-T`), start directory
+(`-d`), whether it closes when its command ends (`-E`), its command, and
+the commands after it. -}
+popupOf : String -> Maybe { width : String, height : String, x : String, y : String, title : String, dir : String, close : Bool, command : String, after : String }
+popupOf command =
+    let
+        cmds =
+            commands (tokens command)
+
+        name =
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+
+        after =
+            Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+    in
+    when Array.first cmds is
+        Just first ->
+            if name == "display-popup" || name == "popup" then
+                let
+                    args =
+                        flags "bcdehsStTwxy" (Array.dropFirst 1 first)
+
+                    value c fallback =
+                        Maybe.withDefault fallback (getFlag c args.values)
+                in
+                Just
+                    { width = value 'w' "50%"
+                    , height = value 'h' "50%"
+                    , x = value 'x' "C"
+                    , y = value 'y' "C"
+                    , title = value 'T' ""
+                    , dir = value 'd' ""
+                    , close = String.contains "E" args.bools
+                    , command =
+                        when args.rest is
+                            [] ->
+                                ""
 
                             [ one ] ->
                                 if one.block then serialize (tokens one.value) else one.value

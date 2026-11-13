@@ -98,6 +98,8 @@ SCENES = [
                                 ("set-buffer", "-b", "gamma", "third text"), sk("main:0", "cat > /dev/null")],
          steps=[("keys", P, "="), ("shot", "list"), ("keys", "Down"), ("shot", "down"), ("keys", "d"), ("shot", "deleted"),
                 ("cli", "list-buffers", "-F", "#{buffer_name}"), ("keys", "Enter"), ("shot", "pasted"), ("q", "mode=#{pane_mode}")]),
+    dict(name="popup", conf="bind p display-popup -E -T hello 'echo popped; sleep 4'\n", setup=FILL,
+         steps=[("keys", P, "p"), ("shot", "popup", 1.0), ("q", "panes=#{window_panes}")]),
     dict(name="pane-scrollbars2", conf="set -g pane-scrollbars on\n",
          setup=THREE + [sk("main:0.0", "seq 1 100"), ("select-pane", "-t", "main:0.0")],
          steps=[("keys", P, "["), ("keys", "PPage"), ("q", CUR), ("shot", "copy-scrolled")]),
