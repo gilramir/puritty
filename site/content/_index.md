@@ -13,10 +13,11 @@ hero_caption = "On Windows 11, connected to Linux with puritty's own ssh client,
 kicker = "tmux, natively"
 title = "tmux's panes become puritty's own"
 body = """
-Run `tmux -CC` and puritty draws tmux's panes itself, each a terminal of
-its own, with tmux 3.8's **floating and modal panes** in boxes over the
-tiled ones. What you type goes to the active pane; resize the window and
-tmux lays its panes out again.
+Run `tmux -CC` and puritty draws tmux's panes itself, each a full terminal
+of its own, with tmux 3.8's **floating and modal panes** in boxes over the
+tiled ones and tmux's windows as tabs. Your prefix and key bindings work
+as in tmux, and tmux's own screens (its prompts, menus, session tree,
+copy mode, even its options editor) are drawn by puritty too.
 
 The session lives on the server. Close the window or lose the connection,
 run `tmux -CC attach` again, and the same panes come back. Until now only
@@ -24,6 +25,8 @@ iTerm2 on macOS did this well.
 """
 link = "@/guide/tmux.md"
 link_text = "tmux in puritty"
+image = "tmux-panes.png"
+alt = "puritty attached to tmux 3.8 with tmux -CC, in Ghostty's colors: two panes side by side, English in bold, italic, curly, dotted and dashed underlines and 24-bit color on the left, a Korean poem and table on the right, a floating pane of git history over both, and tmux's windows as tabs"
 
 [[extra.features]]
 kicker = "Remote X11"
