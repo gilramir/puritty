@@ -25,6 +25,7 @@ import Test.Runner.UnitNode as U
 import Toml
 import RestoreFile exposing (TabColor(..))
 import Search
+import TabOrder
 import TmuxTests
 import Vt
 import Words
@@ -34,7 +35,39 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, TmuxTests.tmuxMode ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, tabOrder, TmuxTests.tmuxMode ]
+
+
+{-| The tabs' order and the shown one's place (`docs/tabs.md` TB15), three
+tabs 10, 11, 12 with the last shown. -}
+tabOrder : U.Suite
+tabOrder =
+    run "TabOrder"
+        [ { name = "moved left, the shown tab goes before the one before it"
+          , test = \_ -> Expect.equal { order = [ 10, 12, 11 ], shown = 1 } (TabOrder.moved -1 [ 10, 11, 12 ] 2)
+          }
+        , { name = "moved right from the end, it goes round to the start"
+          , test = \_ -> Expect.equal { order = [ 12, 10, 11 ], shown = 0 } (TabOrder.moved 1 [ 10, 11, 12 ] 2)
+          }
+        , { name = "moved left from the start, it goes round to the end"
+          , test = \_ -> Expect.equal { order = [ 11, 12, 10 ], shown = 2 } (TabOrder.moved -1 [ 10, 11, 12 ] 0)
+          }
+        , { name = "the shown tab closed in the middle: the one after it shown, in its place"
+          , test = \_ -> Expect.equal { order = [ 10, 12 ], shown = 1, next = 12 } (TabOrder.closedShown [ 10, 11, 12 ] 1)
+          }
+        , { name = "the shown tab closed at the end: the one before it shown"
+          , test = \_ -> Expect.equal { order = [ 10, 11 ], shown = 1, next = 11 } (TabOrder.closedShown [ 10, 11, 12 ] 2)
+          }
+        , { name = "a tab before the shown one closed: the place moves back"
+          , test = \_ -> Expect.equal { order = [ 11, 12 ], shown = 1 } (TabOrder.removed 10 [ 10, 11, 12 ] 2)
+          }
+        , { name = "a tab after the shown one closed: the place stays"
+          , test = \_ -> Expect.equal { order = [ 10, 12 ], shown = 0 } (TabOrder.removed 11 [ 10, 11, 12 ] 0)
+          }
+        , { name = "the shown tab's id, or one not there, leaves the order"
+          , test = \_ -> Expect.equal [ { order = [ 10, 11, 12 ], shown = 2 }, { order = [ 10, 11, 12 ], shown = 2 } ] [ TabOrder.removed 12 [ 10, 11, 12 ] 2, TabOrder.removed 99 [ 10, 11, 12 ] 2 ]
+          }
+        ]
 
 
 run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite

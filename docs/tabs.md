@@ -667,3 +667,41 @@ already knows the place, or finds it once), and the five writers keeping
 switch; the gain is the guarantee more than the count. A length contract
 on `Array.remove`, for an index inside the array, is a `core` addition
 (the primitive under it, `primRemove`, already has one).
+
+
+## TB15 · The tab order keeps the shown tab's place (2026-11-13)
+
+TB14 built, as Gilbert asked. `Model` keeps `shown`, the shown tab's
+place in `order`, as a field with the rule `0 <= shown && shown <
+Array.length order`, asked at each of its writes, so the order is never
+empty and a read at a place needs no default. `shownAt` reads it rather
+than searching; `neighborId` reads the order with `Array.getProven`, its
+step one either way (`TabOrder.around` in place of `modBy`, which promises
+nothing).
+
+**The arithmetic is a module of its own,** `app/src/TabOrder.geng`, which
+the app tests reach and `Main` cannot be built into: `moved` (the shown
+tab one place along, round past the ends), `closedShown` (the next tab's
+id and place, the closed one removed at its place) and `removed` (a tab
+not shown, by its id; the place moved back when it was before). Each
+answers an order and a place inside it, by its result refinement.
+`showTab` sets the place with `core`'s new `Array.findIndex` (geng-lang
+`m4-refine-t1.md` TO22), and a new tab's place is the old length, set
+with its `pushLast`. Closing the shown tab now asks two tabs or more of
+its caller (`dropShown`), which both callers test (`tabCount`, which now
+says it is the order's length).
+
+**A mistake the checker could not see, and the tests now do.** The first
+`moved` joined its pieces with `Array.append`, which puts its first
+argument last (`append [1, 2, 3] [4, 5, 6] == [4, 5, 6, 1, 2, 3]`): the
+length was right, so every rule held, and `bench/tabs/show.py`'s picture
+showed the moved tab first instead of second. It is `Array.prepend`, and
+the tests' moves (`TabOrder`, 8) fail with `append`, with the order the
+picture showed.
+
+**Checked.** `geng checks`: 1,985 hold (1,948 before), 0 open, nothing
+new; `neighborId`'s and `shownAt`'s defaults are gone. `bench/tabs`'
+`show`, `keys`, `reopen` and `restore` as before. `reopen`'s third step,
+reopening from the menu, had pressed Down five times since TB13 put "New
+tab" above "Reopen closed tab", and reopened nothing; it presses six now.
+App tests 170 on node, natively and on Windows.

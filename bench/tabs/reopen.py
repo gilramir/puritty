@@ -163,7 +163,9 @@ def main():
         xd("keyup", "ctrl")
         time.sleep(0.6)
         snap("3-menu")
-        for _ in range(5):
+        # Reopen closed tab is the menu's seventh item since TB13 put New tab
+        # third (Main.menuItems)
+        for _ in range(6):
             xd("key", "Down")
         xd("key", "Return")
         time.sleep(1.2)

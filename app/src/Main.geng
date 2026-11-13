@@ -57,6 +57,7 @@ import Dialog
 import Restore
 import RestoreFile exposing (TabColor(..))
 import Search
+import TabOrder
 import Dict exposing (Dict)
 import Int64
 import Keys
@@ -175,13 +176,16 @@ type alias Model =
       -- the tabs (docs/tabs.md TB2): the shown one's backend and its tab's
       -- name and marks; the other tabs, each its session's fields, in slots
       -- (`Nothing` a free one) a tab is swapped in and out of; the tabs'
-      -- ids in the bar's order, the shown one's among them; the next tab's
-      -- id; how a tab is started; and the window's rows, of which the bar
-      -- takes the last while it shows
+      -- ids in the bar's order, and the shown one's place in it, kept
+      -- rather than searched for, so that the order is never empty and a
+      -- read at the place needs no default (TB15); the next tab's id; how
+      -- a tab is started; and the window's rows, of which the bar takes the
+      -- last while it shows
     , remote : Backend
     , tab : TabInfo
     , tabs : Builder (Maybe Tab)
     , order : Array Int
+    , shown : Int where 0 <= shown && shown < Array.length order
     , nextTabId : Int
     , starter : Starter
     , windowRows : Int
@@ -926,6 +930,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
                             , tabs = Builder.empty 4
                             , order = [ 0 ]
+                            , shown = 0
                             , nextTabId = 1
                             , starter = starter
                             , windowRows = config.rows
@@ -4774,7 +4779,7 @@ tabDo action m =
             markLog m
 
 
-tabCount : Model -> Int
+tabCount : (m : Model) -> (r : Int where r == Array.length m.order)
 tabCount m =
     Array.length m.order
 
@@ -4787,19 +4792,22 @@ barRows m =
 
 
 {-| Where the shown tab is in the bar's order. -}
-shownAt : Model -> Int
+shownAt : (m : Model) -> (r : Int where 0 <= r && r < Array.length m.order)
 shownAt m =
-    Array.findFirst (\id -> id == m.tab.id) m.order |> Maybe.map .index |> Maybe.withDefault 0
+    m.shown
+
+
+{-| The place `by` (one, either way) along from the shown tab, round past
+the ends. -}
+neighborAt : (by : Int where -1 <= by && by <= 1) -> (m : Model) -> (r : Int where 0 <= r && r < Array.length m.order)
+neighborAt by m =
+    TabOrder.around (Array.length m.order) (m.shown + by)
 
 
 {-| The id `by` places along from the shown tab, round past the ends. -}
-neighborId : Int -> Model -> Int
+neighborId : (by : Int where -1 <= by && by <= 1) -> Model -> Int
 neighborId by m =
-    let
-        n =
-            max 1 (Array.length m.order)
-    in
-    Array.get (modBy n (shownAt m + by)) m.order |> Maybe.withDefault m.tab.id
+    Array.getProven (neighborAt by m) m.order
 
 
 {-| The slot a tab not shown is in. -}
@@ -4954,8 +4962,9 @@ showTab id m =
                 when out.old |> Maybe.andThen identity is
                     Just t ->
                         let
+                            -- its place, set with the tab it is the place of
                             r =
-                                swapTab t { m | tabs = out.builder }
+                                swapTab t { m | tabs = out.builder, shown = max 0 (Array.findIndex (\x -> x == id) m.order) }
 
                             next =
                                 r.model
@@ -4970,45 +4979,34 @@ showTab id m =
 
 
 {-| The shown tab moved `by` places along the bar, round past the ends. -}
-moveShown : Int -> (taken m : Model) -> Model
+moveShown : (by : Int where -1 <= by && by <= 1) -> (taken m : Model) -> Model
 moveShown by m =
     let
-        at =
-            shownAt m
-
-        n =
-            Array.length m.order
-
-        to =
-            modBy (max 1 n) (at + by)
-
-        without =
-            Array.keepIf (\id -> id /= m.tab.id) m.order
+        next =
+            TabOrder.moved by m.order m.shown
     in
-    { m | order = Array.slice 0 to without ++ [ m.tab.id ] ++ Array.dropFirst to without, urgent = True }
+    { m | order = next.order, shown = next.shown, urgent = True }
 
 
 {-| The shown tab gone, its program ended or killed: the tab after it shown,
 or before it at the end; every tab given the window's rows when the bar
 goes. -}
-dropShown : (taken m : Model) -> Task Error Model
+dropShown : (taken m : Model where 2 <= Array.length m.order) -> Task Error Model
 dropShown m =
     dropShownFrom Nothing m
 
 
 {-| `dropShown`, the tab gone kept to open again (TB11), with the directory
 its shell was in when that was read. -}
-dropShownFrom : Maybe Path.Path -> (taken m : Model) -> Task Error Model
+dropShownFrom : Maybe Path.Path -> (taken m : Model where 2 <= Array.length m.order) -> Task Error Model
 dropShownFrom dir m =
     let
-        at =
-            shownAt m
-
-        gone =
-            m.tab.id
+        -- the tab after it shown, or the one before it at the end
+        closing =
+            TabOrder.closedShown m.order m.shown
 
         nextId =
-            if at + 1 < Array.length m.order then neighborId 1 m else neighborId -1 m
+            closing.next
 
         cols =
             m.term.cols
@@ -5022,14 +5020,16 @@ dropShownFrom dir m =
             when out.old |> Maybe.andThen identity is
                 Just t ->
                     let
+                        -- the closed tab out of the order by its place, and
+                        -- the next one's place as it is then, in one update
                         r =
-                            swapTab t { m | tabs = out.builder }
+                            swapTab t { m | tabs = out.builder, order = closing.order, shown = closing.shown }
 
                         next =
                             r.model
                     in
                     now
-                        |> Task.andThen (\ms -> relayout cols (afterSwitch (keepClosed { tab = r.old, directory = dir, at = ms } { next | order = Array.keepIf (\id -> id /= gone) next.order })))
+                        |> Task.andThen (\ms -> relayout cols (afterSwitch (keepClosed { tab = r.old, directory = dir, at = ms } next)))
 
                 Nothing ->
                     Task.succeed { m | tabs = out.builder }
@@ -5169,7 +5169,7 @@ openTabWith with m =
                                         freshTab id remote host with.name with.color cols rows m
 
                             r =
-                                swapTab tab { m | nextTabId = id + 1, order = Array.pushLast id m.order }
+                                swapTab tab { m | nextTabId = id + 1, order = Array.pushLast id m.order, shown = Array.length m.order }
 
                             next =
                                 r.model
@@ -5526,8 +5526,11 @@ endTab id kill m =
                 cols =
                     m.term.cols
 
+                left =
+                    TabOrder.removed id m.order m.shown
+
                 rest =
-                    { m | tabs = out.builder, order = Array.keepIf (\i -> i /= id) m.order }
+                    { m | tabs = out.builder, order = left.order, shown = left.shown }
             in
             when out.old |> Maybe.andThen identity is
                 Just t ->

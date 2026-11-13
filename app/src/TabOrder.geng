@@ -1,0 +1,73 @@
+module TabOrder exposing (around, moved, closedShown, removed)
+
+{-| The tabs' order in the bar and the shown tab's place in it
+(`docs/tabs.md` TB15): what a move, the shown tab's close and another
+tab's close make of them. Each answers an order and a place inside it,
+which `Main`'s model keeps as an invariant; they are here, apart from the
+window, so that the tests reach them. -}
+
+
+{-| The place one along from `at` among `n`, either way, round past the
+ends. -}
+around : (n : Int where 1 <= n) -> (at : Int where -1 <= at && at <= n) -> (r : Int where 0 <= r && r < n)
+around n at =
+    if at < 0 then
+        n - 1
+
+    else if at >= n then
+        0
+
+    else
+        at
+
+
+{-| The shown tab moved one place (`by`, either way) along the bar, round
+past the ends, and its place there. -}
+moved : (by : Int where -1 <= by && by <= 1) -> (order : Array Int) -> (shown : Int where 0 <= shown && shown < Array.length order) -> (r : { order : Array Int, shown : Int } where 0 <= r.shown && r.shown < Array.length r.order)
+moved by order shown =
+    let
+        id =
+            Array.getProven shown order
+
+        to =
+            around (Array.length order) (shown + by)
+
+        without =
+            Array.remove shown order
+
+        -- `prepend`, which keeps the order written; `append` puts its
+        -- first array last
+        next =
+            Array.prepend (Array.slice 0 to without) (Array.pushFirst id (Array.dropFirst to without))
+    in
+    { order = next, shown = max 0 (Array.findIndex (\x -> x == id) next) }
+
+
+{-| The shown tab closed: the one after it shown, or the one before it at
+the end, its id and the order without the closed one, with its place. -}
+closedShown : (order : Array Int) -> (shown : Int where 0 <= shown && shown < Array.length order && 2 <= Array.length order) -> (r : { order : Array Int, shown : Int, next : Int } where 0 <= r.shown && r.shown < Array.length r.order)
+closedShown order shown =
+    let
+        after =
+            if shown + 1 < Array.length order then shown + 1 else shown - 1
+    in
+    { order = Array.remove shown order
+    , shown = if after > shown then after - 1 else after
+    , next = Array.getProven after order
+    }
+
+
+{-| A tab not shown closed: out of the order, the shown one's place moved
+back when it was before it. An id not in the order, or the shown one's,
+leaves both as they were. -}
+removed : Int -> (order : Array Int) -> (shown : Int where 0 <= shown && shown < Array.length order) -> (r : { order : Array Int, shown : Int } where 0 <= r.shown && r.shown < Array.length r.order)
+removed id order shown =
+    let
+        at =
+            Array.findIndex (\x -> x == id) order
+    in
+    if at >= 0 && at /= shown then
+        { order = Array.remove at order, shown = if at < shown then shown - 1 else shown }
+
+    else
+        { order = order, shown = shown }

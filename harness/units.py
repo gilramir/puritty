@@ -78,8 +78,9 @@ SUITES = [
     Suite("tmux", 100, runs_of("packages/tmux/tests")),
     Suite(
         "app",
-        # 162 since TM70: a tmux -CC that never attaches, two
-        162,
+        # 162 since TM70: a tmux -CC that never attaches, two. 170 since
+        # TB15: the tab order's moves and closings, eight
+        170,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
