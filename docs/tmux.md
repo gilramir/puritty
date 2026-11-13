@@ -2178,8 +2178,9 @@ control client ignored `-K Down` at its trust question where a normal
 client's Down moved it. App tests 141, tmux package 69; `show.py` prefix,
 prompts, copy, modes, menus unchanged.
 
-**Open:** Gilbert read `pane_key_mode` as VT10x in the stuck pane, and a
-`send-keys Enter` from the prompt did not help there; Claude Code turns
-its key modes off and on as it runs, so the reading may have come between,
-and a Claude Code that had already lost Enters may not have been taking
-keys. A new Windows build is needed for him to confirm.
+**Confirmed by Gilbert** (2026-11-12): the pane reads `VT10x` before the
+bad state and `Ext 2` in it, as the cause says. Still open: a
+`send-keys Enter` from the prompt did not help there, though without
+`-K` tmux delivers Enter in Ext 2 here; a Claude Code that had already
+lost Enters may not have been taking keys. A new Windows build is needed
+for him to confirm the fix.
