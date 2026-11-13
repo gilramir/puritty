@@ -2186,3 +2186,18 @@ lost Enters may not have been taking keys. **The fix confirmed by
 Gilbert at work** (2026-11-12, Windows preview 2026-11-12c from
 `ace0f29`): Enter reaches Claude Code under `-CC`, and `prefix s` lists
 the sessions in the order made (TM46).
+
+## TM51 · The clock's style and color, display-panes' colors (2026-11-12)
+
+The rest of TM39's item 13's colors. From the options TM47 reads:
+`clock-mode-colour` colors the clock's blocks, `display-panes-colour`
+and `display-panes-active-colour` the panes' numbers. `clock-mode-style`
+is drawn as `window-clock.c` writes it: `24` `HH:MM`, `12` with `%l` (a
+space before a one-digit hour) and `AM`/`PM`, either `-with-seconds`;
+the big glyphs gain tmux's `:`, `A`, `P` and `M`, and with seconds the
+clock is drawn again each second rather than each minute.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `clock-12`,
+`clock-24s`, `panes-colours`): ` 9:26 PM` in green, `21:26:32` a second
+apart from tmux's capture, the numbers yellow and the active one magenta.
+App tests 141; `show.py` panes unchanged.

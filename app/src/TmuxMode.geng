@@ -315,6 +315,9 @@ type alias Colors =
     , menuSelected : String
     , match : String
     , currentMatch : String
+    , clock : String
+    , panes : String
+    , panesActive : String
     }
 
 
@@ -328,12 +331,23 @@ colorsOf status =
 
                 Nothing ->
                     fallback
+        -- a color option's value, or tmux's default
+        colour name fallback =
+            when Dict.get name status.options is
+                Just v ->
+                    if String.trim v == "" then fallback else String.trim v
+
+                Nothing ->
+                    fallback
     in
     { message = styled "message-style" messageColor
     , mode = styled "mode-style" messageColor
     , menuSelected = styled "menu-selected-style" (styled "mode-style" messageColor)
     , match = styled "copy-mode-match-style" matchColor
     , currentMatch = styled "copy-mode-current-match-style" currentMatchColor
+    , clock = colour "clock-mode-colour" "blue"
+    , panes = colour "display-panes-colour" "blue"
+    , panesActive = colour "display-panes-active-colour" "red"
     }
 
 
@@ -2242,7 +2256,7 @@ paint s =
                 numbersDrawn =
                     when s.numbers is
                         Just n ->
-                            Array.mapAndFlatten (\p -> paneNumber s.lookTmux (p.id == active) n p) (tiled ++ floating)
+                            Array.mapAndFlatten (\p -> paneNumber (colorsOf s.status) s.lookTmux (p.id == active) n p) (tiled ++ floating)
 
                         Nothing ->
                             []
@@ -5118,8 +5132,13 @@ dueAt s =
     let
         clockDue =
             if s.dayOffset /= Nothing && Array.any (\m -> m == "clock-mode") (Dict.values s.paneModes) then
-                -- the clock drawn again as the minute turns
-                s.clock + 60000 - modBy 60000 (s.clock + Maybe.withDefault 0 s.dayOffset)
+                -- the clock drawn again as the minute turns, or the second
+                -- when it shows seconds
+                let
+                    step =
+                        if String.endsWith "-with-seconds" (Maybe.withDefault "" (Dict.get "clock-mode-style" s.status.options)) then 1000 else 60000
+                in
+                s.clock + step - modBy step (s.clock + Maybe.withDefault 0 s.dayOffset)
 
             else
                 -1
@@ -5150,8 +5169,8 @@ cells square, a cell apart, in the middle of the pane, in
 the active pane, with the pane's size at its top right), or as text where
 the pane is too small; in puritty's look in gray and amber, without the
 size. -}
-paneNumber : Bool -> Bool -> Numbering -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
-paneNumber tmuxLook isActive n p =
+paneNumber : Colors -> Bool -> Bool -> Numbering -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
+paneNumber colors tmuxLook isActive n p =
     when Array.findFirst (\e -> e.id == p.id) n.indexes is
         Nothing ->
             []
@@ -5164,9 +5183,10 @@ paneNumber tmuxLook isActive n p =
                 len =
                     String.count digits
 
+                -- display-panes-colour and -active-colour (TM51)
                 block =
                     if tmuxLook then
-                        if isActive then "\u{001B}[0;41m" else "\u{001B}[0;44m"
+                        Style.sgr (Style.apply ("bg=" ++ (if isActive then colors.panesActive else colors.panes)) Style.plain)
 
                     else if isActive then
                         "\u{001B}[0;48;5;214m"
@@ -5176,7 +5196,7 @@ paneNumber tmuxLook isActive n p =
 
                 ink =
                     if tmuxLook then
-                        if isActive then "\u{001B}[0;31m" else "\u{001B}[0;34m"
+                        Style.sgr (Style.apply ("fg=" ++ (if isActive then colors.panesActive else colors.panes)) Style.plain)
 
                     else if isActive then
                         "\u{001B}[0;1;38;5;214m"
@@ -5256,6 +5276,18 @@ bigDigit c =
 
         '9' ->
             [ "11111", "10001", "11111", "00001", "11111" ]
+
+        ':' ->
+            [ "00000", "00100", "00000", "00100", "00000" ]
+
+        'A' ->
+            [ "11111", "10001", "11111", "10001", "10001" ]
+
+        'P' ->
+            [ "11111", "10001", "11111", "10000", "10000" ]
+
+        'M' ->
+            [ "10001", "11011", "10101", "10001", "10001" ]
 
         _ ->
             []
@@ -6548,13 +6580,35 @@ clockText s =
     when s.dayOffset is
         Just offset ->
             let
-                minutes =
-                    modBy 1440 ((s.clock + offset) // 60000)
+                seconds =
+                    modBy 86400 ((s.clock + offset) // 1000)
+
+                hour =
+                    seconds // 3600
+
+                minute =
+                    modBy 60 (seconds // 60)
 
                 two n =
                     String.padLeft 2 '0' (String.fromInt n)
+
+                -- clock-mode-style as window-clock.c writes it (TM51):
+                -- `24` HH:MM, `12` with `%l` (a space before one digit)
+                -- and AM or PM, either `-with-seconds`
+                style =
+                    Maybe.withDefault "24" (Dict.get "clock-mode-style" s.status.options)
+
+                withSeconds =
+                    String.endsWith "-with-seconds" style
+
+                secs =
+                    if withSeconds then ":" ++ two (modBy 60 seconds) else ""
             in
-            two (minutes // 60) ++ ":" ++ two (modBy 60 minutes)
+            if String.startsWith "12" style then
+                String.padLeft 2 ' ' (String.fromInt (if modBy 12 hour == 0 then 12 else modBy 12 hour)) ++ ":" ++ two minute ++ secs ++ " " ++ (if hour >= 12 then "PM" else "AM")
+
+            else
+                two hour ++ ":" ++ two minute ++ secs
 
         Nothing ->
             ""
@@ -6574,11 +6628,12 @@ modeOverlay colors tmuxLook isActive mode time p =
 
     else if mode == "clock-mode" then
         let
+            -- clock-mode-colour (TM51)
             block =
-                if tmuxLook then "\u{001B}[0;44m" else "\u{001B}[0;48;5;214m"
+                if tmuxLook then Style.sgr (Style.apply ("bg=" ++ colors.clock) Style.plain) else "\u{001B}[0;48;5;214m"
 
             ink =
-                if tmuxLook then "\u{001B}[0;34m" else "\u{001B}[0;1;38;5;214m"
+                if tmuxLook then Style.sgr (Style.apply ("fg=" ++ colors.clock) Style.plain) else "\u{001B}[0;1;38;5;214m"
 
             len =
                 String.count time
