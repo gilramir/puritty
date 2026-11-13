@@ -2201,3 +2201,27 @@ clock is drawn again each second rather than each minute.
 `clock-24s`, `panes-colours`): ` 9:26 PM` in green, `21:26:32` a second
 apart from tmux's capture, the numbers yellow and the active one magenta.
 App tests 141; `show.py` panes unchanged.
+
+## TM52 · window-style and window-active-style (2026-11-12)
+
+TM39's item 13: configs that dim the inactive panes. tmux gives each pane
+default colors, `window-style` and, for the active pane,
+`window-active-style` laid over it (`tty_default_colours`); a cell with
+no color of its own takes them. The terminal core's `compose` copied a
+pane's cells with the canvas's defaults, so it gains `composeStyled`
+(`compose` with no colors calls it): each place carries a foreground and
+a background that cells take where they have none, colors as the core
+holds them (`TmuxMode.vtColor` turns the SGR tmux's style parser writes
+into them). In tmux's look only.
+
+**Checked** (`bench/tmux/compare`, `window-style`, with
+`fg=colour245,bg=colour236` and an active `bg=black`): the inactive panes
+dimmed through, the active one black; tmux's capture cannot show it for
+blank cells (`capture-pane` writes no colors for them), so its picture is
+only a check on the cells with text. Core tests 94, app 141; `show.py`
+attach and mouse.
+
+**`show.py mouse` moved, and it should have earlier:** its last line,
+what the left pane's `cat -v` got after Up, now ends `^[OA`. Before TM50
+tmux dropped that Up (sent with `-K`), and the line, printed and not
+checked, showed it missing on every run.

@@ -92,6 +92,8 @@ SCENES = [
          steps=[("keys", P, "t"), ("shot", "clock")]),
     dict(name="panes-colours", conf="set -g display-panes-colour yellow\nset -g display-panes-active-colour magenta\nset -g display-panes-time 5000\n",
          setup=THREE, steps=[("keys", P, "q"), ("shot", "numbers", 0.6)]),
+    dict(name="window-style", conf="set -g window-style 'fg=colour245,bg=colour236'\nset -g window-active-style 'fg=colour250,bg=black'\n",
+         setup=THREE, steps=[("shot", "dimmed")]),
     dict(name="pane-scrollbars2", conf="set -g pane-scrollbars on\n",
          setup=THREE + [sk("main:0.0", "seq 1 100"), ("select-pane", "-t", "main:0.0")],
          steps=[("keys", P, "["), ("keys", "PPage"), ("q", CUR), ("shot", "copy-scrolled")]),

@@ -2419,12 +2419,12 @@ paint s =
                 composed =
                     s.canvas
                         |> Vt.feed (Bytes.fromString "\u{001B}[?7l\u{001B}[0m\u{001B}[H\u{001B}[2J")
-                        |> Vt.compose s.panes tiledPlaces
+                        |> Vt.composeStyled s.panes tiledPlaces
                         |> Vt.invert tiledSpans
                         |> drawText borders.lineColor (if s.lookTmux then [] else lines)
                         |> drawPieces borders.tiled
                         |> drawPieces tiledMarks
-                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColor else boxColor) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColor else boxColor) (boxAround cols rows p) |> Vt.composeStyled s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawPieces floatMarks
                         |> drawPieces borders.floating
                         |> drawPieces copyMarks
@@ -3457,17 +3457,76 @@ ownSpans q s =
             []
 
 
-placesOf : Array Layout.Pane -> State -> Array { index : Int, x : Int, y : Int, back : Int }
+placesOf : Array Layout.Pane -> State -> Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int }
 placesOf panes s =
-    Array.mapAndKeepJust (\p -> Array.findFirst (\i -> i == p.id) s.ids |> Maybe.map (\found -> { index = found.index, x = p.x, y = p.y, back = backOf p.id s })) panes
+    let
+        -- window-style for every pane, window-active-style over it for
+        -- the active one, as tmux gives a pane its default colors (TM52)
+        styleFor active =
+            let
+                option name =
+                    Maybe.withDefault "default" (Dict.get name s.status.options)
+
+                base =
+                    Style.apply (option "window-style") Style.plain
+
+                st =
+                    if active then Style.apply (option "window-active-style") base else base
+            in
+            if s.lookTmux then { fg = vtColor st.fg, bg = vtColor st.bg } else { fg = 0, bg = 0 }
+    in
+    Array.mapAndKeepJust
+        (\p ->
+            Array.findFirst (\i -> i == p.id) s.ids
+                |> Maybe.map
+                    (\found ->
+                        let
+                            colors =
+                                styleFor (p.id == s.active)
+                        in
+                        { index = found.index, x = p.x, y = p.y, back = backOf p.id s, fg = colors.fg, bg = colors.bg }
+                    )
+        )
+        panes
 
 
-eachPlaces : Array Layout.Pane -> State -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int } } -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int } }
+{-| A style's color as SGR writes it (`34`, `94`, `38;5;236`,
+`48;2;0;0;0`, and the backgrounds' `4x`, `10x`) as the terminal core
+holds one: 0 none, 1 to 256 a palette index and one more, `0x1000000` and
+the RGB value. -}
+vtColor : String -> Int
+vtColor sgr =
+    let
+        nums =
+            String.split ";" sgr |> Array.mapAndKeepJust String.toInt
+    in
+    when nums is
+        [ n ] ->
+            if (n >= 30 && n <= 37) || (n >= 40 && n <= 47) then
+                modBy 10 n + 1
+
+            else if (n >= 90 && n <= 97) || (n >= 100 && n <= 107) then
+                modBy 10 n + 9
+
+            else
+                0
+
+        [ _, 5, i ] ->
+            clamp 0 255 i + 1
+
+        [ _, 2, r, g, b ] ->
+            0x1000000 + clamp 0 255 r * 65536 + clamp 0 255 g * 256 + clamp 0 255 b
+
+        _ ->
+            0
+
+
+eachPlaces : Array Layout.Pane -> State -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int } } -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int } }
 eachPlaces panes s _ =
     Array.map (\p -> { id = p.id, places = placesOf [ p ] s }) panes
 
 
-placesIn : Int -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int } } -> Array { index : Int, x : Int, y : Int, back : Int }
+placesIn : Int -> Array { id : Int, places : Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int } } -> Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int }
 placesIn id all =
     Array.findFirst (\e -> e.id == id) all |> Maybe.map (\e -> e.value.places) |> Maybe.withDefault []
 
