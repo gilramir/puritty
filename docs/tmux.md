@@ -3028,22 +3028,33 @@ line up, 7). Writing the fake also found it, not puritty, wrong once:
 `#{pane_mode}` is `copy-mode` with vi keys too; `copy-mode-vi` is only the
 key table.
 
-**The tests** (suite `TmuxMode`, 4):
-- the fake answers as the recorded tmux 3.8 does, in all four states (24
-  answers);
-- attaching asks for nothing the fake does not know, and draws lines 177
-  to 200;
-- 30 `k`s in copy mode scroll tmux to 7 and puritty shows `line 170` at
-  the top with `[7/176]` at its right;
-- one more `k`, tmux's answer held: puritty still shows `line 170`; let
-  through: `line 169`, `[8/176]`. **With TM67's fix taken out this test
-  fails**: held, it shows `line 177`, the live screen behind `[7/176]`,
-  the ghost Gilbert saw.
+**3.6a too.** The fake is made as one version (`FakeTmux.world`'s
+`version`, `"3.8"` or `"3.6a"`, which `#{version}` gives), and
+`record-tmux.py` records both tmuxes into `RealTmux.geng`, each answer
+marked with its version (48 answers). Recorded, 3.6a differs from 3.8 in
+two of puritty's questions and nowhere else: the layout is the old form,
+`b25d,80x24,0,0,0`, its checksum tmux's `layout_checksum` (a 16-bit sum
+rotated right by one before each character), which the fake computes; and
+copy mode's cursor keeps its column when it moves (8 after 30 and 31
+`cursor-up`s, where 3.8 holds it to 7). Forcing 3.8's hold onto 3.6a makes
+the comparison fail on those two answers.
 
-App tests 146, in under a second with the rest.
+**The tests** (suite `TmuxMode`, 7):
+- the fake answers as the recorded tmux 3.8 and 3.6a do, in all four
+  states (48 answers);
+- then on each version's fake:
+  - attaching asks for nothing the fake does not know, and draws lines
+    177 to 200;
+  - 30 `k`s in copy mode scroll tmux to 7 and puritty shows `line 170` at
+    the top with `[7/176]` at its right;
+  - one more `k`, tmux's answer held: puritty still shows `line 170`; let
+    through: `line 169`, `[8/176]`. **With TM67's fix taken out this test
+    fails on both versions**: held, it shows `line 177`, the live screen
+    behind `[7/176]`, the ghost Gilbert saw.
 
-**Not yet:** the recording is of 3.8 only (3.6a's layouts are the old
-form, which the fake would need beside the JSON one); one pane only; the
+App tests 149, in under a second with the rest.
+
+**Not yet:** one pane only; the
 tree, prompts, menus, customize-mode, the message log and the status line
 are TmuxMode's that the fake does not yet answer for. Each new test widens
 the fake and adds its questions to `record-tmux.py`.

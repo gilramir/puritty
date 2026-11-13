@@ -13,7 +13,7 @@ module FakeTmux exposing
 (`docs/tmux.md` TM68): one session (`$0`, `main`) with one window (`@0`)
 and its panes, numbered from `%0` as a new server numbers them, each with its lines (history and screen) and, in copy
 mode, where the view and the cursor are. It answers the command lines
-`TmuxMode` sends as tmux 3.8 does, a `%begin`/`%end` block a command,
+`TmuxMode` sends as tmux 3.8 or 3.6a does (`version`), a `%begin`/`%end` block a command,
 expanding the `#{…}` formats it is asked for from that model, and acts on
 the commands that change it (`send-keys` in copy mode, `copy-mode`). A
 command it does not know is answered with nothing and kept in `unknown`,
@@ -23,6 +23,7 @@ It is a model, so it can be wrong where tmux is not; `known` lists what it
 answers, and each answer is checked against a real tmux's (TM68).
 -}
 
+import Bitwise
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Tmux.Syntax as Syntax
@@ -44,11 +45,13 @@ type alias Pane =
     }
 
 
-{-| The server: the window's size, its panes side by side, the active one,
-the reply count, what was asked that it does not know, the subscriptions,
-and every command answered, in order. -}
+{-| The server: the tmux it is (`"3.8"` or `"3.6a"`), the window's size,
+its panes side by side, the active one, the reply count, what was asked
+that it does not know, the subscriptions, and every command answered, in
+order. -}
 type alias World =
-    { cols : Int
+    { version : String
+    , cols : Int
     , rows : Int
     , panes : Array Pane
     , active : Int
@@ -61,10 +64,11 @@ type alias World =
 
 {-| A window of `cols` by `rows` with one pane, `%0`, showing `lines`, the
 cursor after the last of them, as a program that printed them and no last
-newline leaves it. -}
-world : { cols : Int, rows : Int, lines : Array String } -> World
+newline leaves it, on tmux `version`. -}
+world : { version : String, cols : Int, rows : Int, lines : Array String } -> World
 world w =
-    { cols = w.cols
+    { version = w.version
+    , cols = w.cols
     , rows = w.rows
     , panes = [ { id = 0, lines = w.lines, rows = w.rows, mode = "", scroll = 0, cx = 0, cy = w.rows - 1, wanted = 0 } ]
     , active = 0
@@ -325,7 +329,7 @@ sendKeys args p w =
     else
         let
             ran =
-                Array.foldl (\c acc -> copyCommand c acc) { pane = p, left = False } commandsOf
+                Array.foldl (\c acc -> copyCommand (clamps w) c acc) { pane = p, left = False } commandsOf
 
             next =
                 if ran.left then
@@ -361,12 +365,22 @@ copyTable =
         |> Dict.set "q" "cancel"
 
 
+{-| Whether this tmux holds copy mode's cursor to a line's last character
+when it moves (3.8 does, 3.6a does not: measured, TM68). -}
+clamps : World -> Bool
+clamps w =
+    w.version /= "3.6a"
+
+
 {-| One copy-mode command, as tmux moves its cursor and view. -}
-copyCommand : String -> { pane : Pane, left : Bool } -> { pane : Pane, left : Bool }
-copyCommand c acc =
+copyCommand : Bool -> String -> { pane : Pane, left : Bool } -> { pane : Pane, left : Bool }
+copyCommand clamp c acc =
     let
         p =
             acc.pane
+
+        moved q =
+            if clamp then held q else q
 
         rows =
             p.rows
@@ -399,12 +413,13 @@ copyCommand c acc =
             acc
 
 
-{-| Copy mode's cursor after a move up or down: at the column it keeps to,
-but no further than the last character of the line under it, as vi keys
-allow (measured, 3.8: from column 8 up to `line 177`, 7; on entering copy
-mode it stays where the pane's cursor was, past the end). -}
-moved : Pane -> Pane
-moved p =
+{-| Copy mode's cursor after a move up or down on 3.8: at the column it
+keeps to, but no further than the last character of the line under it, as
+vi keys allow (measured: from column 8 up to `line 177`, 7; on entering
+copy mode it stays where the pane's cursor was, past the end). 3.6a keeps
+the column (8). -}
+held : Pane -> Pane
+held p =
     let
         at =
             Array.length p.lines - p.rows - p.scroll + p.cy
@@ -468,23 +483,54 @@ subscribe sub w =
     { w = { w | subscriptions = Array.pushLast { name = name, scope = scope, format = format } w.subscriptions }, ok = True, lines = [], notices = notices }
 
 
-{-| The layout tmux 3.8 gives (its JSON form, `new-layouts`): one pane
-filling the window. -}
+{-| The layout tmux gives: one pane filling the window, in 3.8's JSON form
+(`new-layouts`), or before it as `b25d,80x24,0,0,0`, the body after its
+checksum. -}
 layout : World -> String
 layout w =
     let
         p =
             activePane w
+
+        body =
+            String.fromInt w.cols ++ "x" ++ String.fromInt w.rows ++ ",0,0," ++ String.fromInt p.id
     in
-    "{\"V\":2,\"L\":{\"t\":\"p\",\"w\":"
-        ++ String.fromInt w.cols
-        ++ ",\"h\":"
-        ++ String.fromInt w.rows
-        ++ ",\"x\":0,\"y\":0,\"a\":true,\"i\":"
-        ++ String.fromInt p.id
-        ++ ",\"I\":\"%"
-        ++ String.fromInt p.id
-        ++ "\"}}"
+    if w.version == "3.6a" then
+        hex4 (checksum body) ++ "," ++ body
+
+    else
+        "{\"V\":2,\"L\":{\"t\":\"p\",\"w\":"
+            ++ String.fromInt w.cols
+            ++ ",\"h\":"
+            ++ String.fromInt w.rows
+            ++ ",\"x\":0,\"y\":0,\"a\":true,\"i\":"
+            ++ String.fromInt p.id
+            ++ ",\"I\":\"%"
+            ++ String.fromInt p.id
+            ++ "\"}}"
+
+
+{-| tmux's layout checksum (`layout_checksum`): a 16-bit sum, rotated right
+by one before each character is added. -}
+checksum : String -> Int
+checksum text =
+    String.foldl
+        (\c sum ->
+            let
+                rotated =
+                    Bitwise.or (Bitwise.shiftRightZfBy 1 sum) (Bitwise.and 0x8000 (Bitwise.shiftLeftBy 15 sum))
+            in
+            Bitwise.and 0xFFFF (rotated + Char.toCode c)
+        )
+        0
+        text
+
+
+{-| Four hexadecimal digits, lower case, as `%04hx` writes them. -}
+hex4 : Int -> String
+hex4 n =
+    Array.map (\shift -> String.slice (Bitwise.and 15 (Bitwise.shiftRightZfBy shift n)) (Bitwise.and 15 (Bitwise.shiftRightZfBy shift n) + 1) "0123456789abcdef") [ 12, 8, 4, 0 ]
+        |> String.join ""
 
 
 {-| A format's variables for a pane, as tmux 3.8 expands them; one this
@@ -498,7 +544,7 @@ vars w p name =
         history =
             historyOf p
 
-        -- copy mode's variables are empty outside it (measured, 3.8)
+        -- copy mode's variables are empty outside it (measured, 3.8 and 3.6a)
         copying value =
             if p.mode == "" then "" else value
     in
@@ -538,7 +584,7 @@ vars w p name =
         "prefix" -> "C-b"
         "prefix2" -> "None"
         "repeat-time" -> "500"
-        "version" -> "3.8"
+        "version" -> w.version
         "display-panes-time" -> "1000"
         "client_name" -> "/dev/pts/9"
         "status" -> "on"

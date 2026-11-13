@@ -163,15 +163,25 @@ tmuxMode =
         , tearDown = U.noTearDown
         , tests =
             Array.map (\c -> U.test c.name (\_ -> Task.succeed (c.test {})))
-                [ { name = "the fake answers as a real tmux does, in every recorded state (TM68)"
-                  , test = \_ -> Expect.equal [] fakeDiffers
-                  }
-                , { name = "attaching asks for nothing the fake does not know, and draws the pane"
+                ([ { name = "the fake answers as the real tmuxes do, in every recorded state (TM68)"
+                   , test = \_ -> Expect.equal [] fakeDiffers
+                   }
+                 ]
+                    ++ Array.flatten (Array.map onVersion RealTmux.versions)
+                )
+        }
+
+
+{-| The tests that drive puritty, on one tmux version's fake. -}
+onVersion : String -> Array { name : String, test : {} -> Expectation }
+onVersion version =
+    Array.map (\c -> { c | name = c.name ++ ", tmux " ++ version })
+                [ { name = "attaching asks for nothing the fake does not know, and draws the pane"
                   , test =
                         \_ ->
                             let
                                 seen =
-                                    look (attached (FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 }))
+                                    look (attached (start version))
                             in
                             Expect.equal
                                 { unknown = [], first = "line 177", last = "line 200" }
@@ -182,7 +192,7 @@ tmuxMode =
                         \_ ->
                             let
                                 seen =
-                                    attached (FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 })
+                                    attached (start version)
                                         |> inCopyMode 0
                                         |> keys 30
                                         |> look
@@ -199,7 +209,7 @@ tmuxMode =
                             let
                                 -- k typed, tmux's answer not let through yet
                                 waiting =
-                                    attached (FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 })
+                                    attached (start version)
                                         |> inCopyMode 0
                                         |> keys 30
                                         |> typeKey "k"
@@ -216,34 +226,39 @@ tmuxMode =
                                 { waiting = before, answered = split 0 answered }
                   }
                 ]
-        }
+
+
+{-| The tests' server: one 80x24 pane that printed `line 1` to `line 200`. -}
+start : String -> World
+start version =
+    FakeTmux.world { version = version, cols = 80, rows = 24, lines = numbered 200 }
 
 
 {-| The fake in each state `record-tmux.py` recorded a real tmux in. -}
-fakeIn : String -> World
-fakeIn state =
+fakeIn : String -> String -> World
+fakeIn version state =
     let
-        start =
-            FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 }
+        server =
+            start version
 
         up n w =
             if n <= 0 then w else up (n - 1) (FakeTmux.answer "send-keys -t %0 -X cursor-up" w).world
     in
     when state is
         "attached" ->
-            start
+            server
 
         "copy mode" ->
-            (FakeTmux.enterCopy 0 start).world
+            (FakeTmux.enterCopy 0 server).world
 
         "30 up" ->
-            up 30 (FakeTmux.enterCopy 0 start).world
+            up 30 (FakeTmux.enterCopy 0 server).world
 
         "31 up" ->
-            up 31 (FakeTmux.enterCopy 0 start).world
+            up 31 (FakeTmux.enterCopy 0 server).world
 
         _ ->
-            start
+            server
 
 
 {-| The lines of the one reply in a block of the fake's. -}
@@ -256,15 +271,16 @@ replyLines text =
 
 {-| Each recorded answer, and the fake's to the same question in the same
 state, where they differ: none when the fake is honest (TM68). -}
-fakeDiffers : Array { state : String, command : String, real : Array String, fake : Array String }
+fakeDiffers : Array { version : String, state : String, command : String, real : Array String, fake : Array String }
 fakeDiffers =
     RealTmux.answers
         |> Array.map
             (\a ->
-                { state = a.state
+                { version = a.version
+                , state = a.state
                 , command = a.command
                 , real = a.lines
-                , fake = replyLines (Bytes.toStringLossy (FakeTmux.answer a.command (fakeIn a.state)).bytes)
+                , fake = replyLines (Bytes.toStringLossy (FakeTmux.answer a.command (fakeIn a.version a.state)).bytes)
                 }
             )
         |> Array.keepIf (\d -> d.real /= d.fake)

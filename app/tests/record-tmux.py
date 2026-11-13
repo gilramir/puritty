@@ -9,9 +9,11 @@ moved up 30 times, then once more. At each state every question is asked
 with tmux's own command line, and its lines recorded. Run it when tmux, a
 question or the fake changes:
 
-    app/tests/record-tmux.py [TMUX]
+    app/tests/record-tmux.py [TMUX...]
 
-TMUX defaults to the 3.8 the comparison harness uses.
+Each tmux is recorded, its answers marked with its version; by default the
+3.8 the comparison harness uses and the 3.6a beside it, the two versions
+TmuxMode answers differently (docs/tmux.md TM68).
 """
 import shlex
 import subprocess
@@ -20,7 +22,10 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TMUX = sys.argv[1] if len(sys.argv) > 1 else "/nix/store/k111lnbq1vw0k4v4cjhi1iwp5lky3ryn-tmux-3.8/bin/tmux"
+TMUXES = sys.argv[1:] or [
+    "/nix/store/k111lnbq1vw0k4v4cjhi1iwp5lky3ryn-tmux-3.8/bin/tmux",
+    "/nix/store/6lixxqgzmdvx28k5bg2r55416cy4jv64-tmux-3.6a/bin/tmux",
+]
 SOCKET = "puritty-record"
 
 # puritty's questions, as TmuxMode asks them (windowQuery, panesQuery,
@@ -36,7 +41,7 @@ QUESTIONS = [
 
 
 def tmux(*args):
-    return subprocess.run([TMUX, "-L", SOCKET, *args], capture_output=True, text=True, check=True).stdout
+    return subprocess.run([TMUX[0], "-L", SOCKET, *args], capture_output=True, text=True, check=True).stdout
 
 
 def ask(command):
@@ -44,8 +49,13 @@ def ask(command):
     return out.split("\n")[:-1] if out.endswith("\n") else out.split("\n")
 
 
-def main():
-    subprocess.run([TMUX, "-L", SOCKET, "kill-server"], capture_output=True)
+TMUX = [None]
+
+
+def recorded(binary):
+    """One tmux's version and its (state, question, lines)."""
+    TMUX[0] = binary
+    subprocess.run([binary, "-L", SOCKET, "kill-server"], capture_output=True)
     tmux("-f", "/dev/null", "new-session", "-d", "-s", "main", "-n", "sh", "-x", "80", "-y", "24",
          "sh -c \"seq -f 'line %g' 200 | head -c -1; sleep 600\"")
     time.sleep(1)
@@ -64,35 +74,42 @@ def main():
     record("30 up")
     tmux("send-keys", "-t", "%0", "-X", "cursor-up")
     record("31 up")
-    subprocess.run([TMUX, "-L", SOCKET, "kill-server"], capture_output=True)
+    subprocess.run([binary, "-L", SOCKET, "kill-server"], capture_output=True)
+    return version, steps
+
+
+def main():
+    recordings = [recorded(t) for t in TMUXES]
 
     def geng(text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     rows = []
-    for state, q, lines in steps:
-        rows.append("{ state = " + geng(state) + ", command = " + geng(q) + ", lines = [ "
-                    + ", ".join(geng(l) for l in lines) + " ] }")
+    for version, steps in recordings:
+        for state, q, lines in steps:
+            rows.append("{ version = " + geng(version) + ", state = " + geng(state) + ", command = " + geng(q) + ", lines = [ "
+                        + ", ".join(geng(l) for l in lines) + " ] }")
     out = [
-        "module RealTmux exposing (version, answers)",
+        "module RealTmux exposing (versions, answers)",
         "",
-        "{-| tmux " + version + "'s answers to puritty's questions in FakeTmux's tests'",
+        "{-| Real tmuxes' answers to puritty's questions in FakeTmux's tests'",
         "states (docs/tmux.md TM68). Written by app/tests/record-tmux.py; do not edit. -}",
         "",
         "",
-        "version : String",
-        "version =",
-        "    " + geng(version),
+        "versions : Array String",
+        "versions =",
+        "    [ " + ", ".join(geng(v) for v, _ in recordings) + " ]",
         "",
         "",
-        "answers : Array { state : String, command : String, lines : Array String }",
+        "answers : Array { version : String, state : String, command : String, lines : Array String }",
         "answers =",
         "    [ " + "\n    , ".join(rows),
         "    ]",
         "",
     ]
     (HERE / "src" / "RealTmux.geng").write_text("\n".join(out))
-    print(f"{len(steps)} answers from tmux {version}")
+    for version, steps in recordings:
+        print(f"{len(steps)} answers from tmux {version}")
 
 
 main()
