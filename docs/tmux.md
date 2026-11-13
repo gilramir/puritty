@@ -1083,8 +1083,8 @@ mode. App tests 104; every harness and tmux scenario as before.
 ### TM25.3 · Not yet
 
 - `status-keys vi`: the line edits with emacs keys only.
-- `-i` (incremental search, copy mode's emacs table) answers once, on
-  Enter, rather than on each key.
+- ~~`-i` (incremental search, copy mode's emacs table) answers once, on
+  Enter, rather than on each key.~~ Done (TM40).
 - Tab completion on the colon prompt.
 - A binding whose prompt is inside another command (`if-shell … {
   command-prompt … }`) is still held back with a message (none of tmux's
@@ -1730,7 +1730,8 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
    bar.
 2. **emacs `C-r` in copy mode does not search** (M): tmux's cursor moved
    with each character typed and stayed after Enter; under puritty it
-   did not move. A bug, not a missing drawing; first to look at.
+   did not move. A bug, not a missing drawing; first to look at. Fixed
+   (TM40).
 3. **The status window list overflows silently** (M, R). With many
    windows puritty draws from window 0, so the current one can be off
    the edge, with no `<`/`>` marks, and the list runs over
@@ -1803,3 +1804,40 @@ Three kinds of work, undecided:
   the view's filter (TM36) and the tree's keys (TM37) are the start.
 - **Copy-mode search** (1, 2): the bug first, then the count, then the
   highlighting.
+
+## TM40 · Incremental search: copy mode's emacs C-r and C-s (2026-11-12)
+
+TM39's item 2, the first of its work. tmux's copy-mode `C-r` and `C-s`
+are `command-prompt -i … { send -X search-backward-incremental -- '%%' }`
+(3.6a and 3.8 alike). puritty read the prompt without its `-i` and ran
+the command once, on Enter, with the bare line. tmux's
+`window_copy_cmd_search_backward_incremental` (`window-copy.c:2936`)
+takes the argument's first character as *which search*: `=` the line as
+it is, `-` the next match up, `+` down. `3` was read as that character,
+leaving an empty string, so nothing was searched and the cursor stayed.
+
+**Now as tmux's prompt does** (`prompt.c`, `prompt_incremental_start`
+and `prompt_key`): `Syntax.Prompt` keeps `incremental`. The command runs
+as the prompt opens, with `=` and the empty line; after every change to
+the line with `=`; on C-r with `-` and C-s with `+`, or, on an empty
+line, with `=` and the first text (`-I '#{pane_search_string}'`, the last
+search), which an incremental prompt does not put on the line. Enter
+closes it with nothing more run, the line kept for Up; Escape, C-c and
+C-g close it. Keys that move the caret run nothing (`TmuxMode.
+incrementalKey`), since the same line again would go on to the next
+match.
+
+**Checked against tmux** (`bench/tmux/compare/survey.py --scenes scenes2
+--only copy-emacs2,copy-emacs3`): the cursor after each key of `C-r 3`,
+`C-r`, `C-r`, `BSpace`, `5`, Enter, `C-r C-r` (recall), `C-r`, `C-s`,
+`C-c`, then a selection and `M-w`'s buffer, all equal to a plain
+client's on 3.8. On 3.6a the search positions are equal too; the plain
+3.6a client in that harness lost an `Up` and a `C-e` sent to it, so two
+positions after the search differ there, puritty's being the right ones.
+App tests 132, tmux package 62, `show.py` prompts, copy, prefix and modes
+unchanged.
+
+**Not matched yet:** in 3.8 the arrow keys and Page Up/Down in an
+incremental prompt go on to copy mode with the prompt left open
+(`prompt_check_move`); puritty keeps them for the line and its history.
+A paste into the prompt changes the line without running the search.

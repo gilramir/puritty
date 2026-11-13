@@ -308,6 +308,7 @@ type alias Asking =
     , chars : Array Char
     , caret : Int
     , edited : Bool
+    , recall : String
     }
 
 
@@ -1286,7 +1287,10 @@ replied expect ok lines acc =
             in
             when { asking = st.asking, text = text, ok = ok } is
                 { asking = Just a, text = Just t, ok = True } ->
-                    if a.edited then
+                    if isIncremental a then
+                        { acc | state = { st | asking = Just { a | recall = t } } }
+
+                    else if a.edited then
                         { acc | state = st }
 
                     else
@@ -2442,9 +2446,14 @@ opening : Syntax.Ask -> String -> { asking : Asking, expand : Array { command : 
 opening question after =
     let
         start =
-            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False }
+            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "" }
+
+        opened =
+            stepTo 0 [] start
     in
-    stepTo 0 [] start
+    -- an incremental prompt runs its command as it opens, with the empty
+    -- line, as tmux's does
+    { opened | expand = opened.expand ++ incrementally '=' opened.asking }
 
 
 {-| A prompt at question `step`, with the answers before it. -}
@@ -2466,9 +2475,52 @@ stepTo step answers a =
             else
                 []
     in
-    { asking = { a | step = step, answers = answers, label = q.label, chars = String.toArray q.input, caret = String.count q.input, edited = False }
-    , expand = expand q.label ForLabel ++ expand q.input ForInput
-    }
+    if isIncremental a then
+        -- the first text is not on the line but recalled by C-r or C-s on
+        -- an empty one, as tmux keeps it
+        { asking = { a | step = step, answers = answers, label = q.label, chars = [], caret = 0, edited = False, recall = q.input }
+        , expand = expand q.label ForLabel ++ expand q.input ForInput
+        }
+
+    else
+        { asking = { a | step = step, answers = answers, label = q.label, chars = String.toArray q.input, caret = String.count q.input, edited = False }
+        , expand = expand q.label ForLabel ++ expand q.input ForInput
+        }
+
+
+{-| Whether a prompt is incremental (`command-prompt -i`, copy mode's
+emacs C-r and C-s). -}
+isIncremental : Asking -> Bool
+isIncremental a =
+    when a.ask is
+        Syntax.Prompt p ->
+            p.incremental
+
+        Syntax.Confirm _ ->
+            False
+
+
+{-| An incremental prompt's command, run with the line and `prefix`
+before it: `=` for the line as it now is, `-` and `+` for the next match
+up or down (C-r, C-s). tmux's copy mode reads the first character as
+which; with none, it searched for nothing (TM39). -}
+incrementally : Char -> Asking -> Array { command : String, expect : Expect }
+incrementally prefix a =
+    when a.ask is
+        Syntax.Prompt p ->
+            when p.template is
+                Just t ->
+                    if p.incremental then
+                        [ { command = Syntax.fill t [ String.fromChar prefix ++ String.fromArray a.chars ], expect = ForNothing } ]
+
+                    else
+                        []
+
+                Nothing ->
+                    []
+
+        Syntax.Confirm _ ->
+            []
 
 
 {-| A key while a prompt is open (TM25). A confirmation takes its key, or
@@ -2538,7 +2590,10 @@ promptKey k bytes ms a s =
                         { state = next.state, commands = counted.commands ++ next.commands }
 
                 Syntax.Text ->
-                    if enter then
+                    if p.incremental then
+                        incrementalKey name text plainText enter cancel a s
+
+                    else if enter then
                         answer (String.fromArray a.chars) a s
 
                     else if cancel then
@@ -2549,6 +2604,52 @@ promptKey k bytes ms a s =
 
                     else
                         { state = { s | asking = Just (editLine name a s.history) }, commands = [] }
+
+
+{-| A key in an incremental prompt (`-i`), as tmux's: each change to the
+line runs the command with `=`; C-r and C-s run it with `-` and `+`, or
+on an empty line bring back the first text with `=`; Enter closes it
+with nothing more run, the line kept for Up, and Escape, C-c or C-g
+closes it. Keys that move the caret run nothing, since the same line
+again would go on to the next match. -}
+incrementalKey : String -> String -> Bool -> Bool -> Bool -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+incrementalKey name text plainText enter cancel a s =
+    let
+        line =
+            String.fromArray a.chars
+
+        recalled =
+            { a | chars = String.toArray a.recall, caret = String.count a.recall, edited = True }
+
+        b =
+            if plainText then insert text a else editLine name a s.history
+    in
+    if enter then
+        closePrompt [] a { s | history = if line == "" || Array.last s.history == Just line then s.history else Array.pushLast line s.history }
+
+    else if cancel then
+        closePrompt [] a s
+
+    else if (name == "C-r" || name == "C-s") && Array.isEmpty a.chars then
+        runIncremental '=' recalled s
+
+    else if name == "C-r" then
+        runIncremental '-' a s
+
+    else if name == "C-s" then
+        runIncremental '+' a s
+
+    else if b.chars == a.chars then
+        { state = { s | asking = Just b }, commands = [] }
+
+    else
+        runIncremental '=' b s
+
+
+{-| The incremental prompt `a` on screen, its command run with `prefix`. -}
+runIncremental : Char -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+runIncremental prefix a s =
+    sendAsking (incrementally prefix a) { s | asking = Just a }
 
 
 {-| Text typed at the caret. -}
