@@ -261,5 +261,13 @@ Enter's). The Windows build and the RHEL8 build compile and link;
 also shows a machine without audio is fine). App tests 142 (a page more
 counted), the settings gate 20 of 20 (Hosts one page further down).
 
+**The diagnostic log** (`[debug] log`) has a line for each bell rung:
+`bell rang: apple2, played`, or `not played` when the platform did not
+take it (no audio, or a sound still playing), or `none chosen`.
+`Window.sound` answers whether the platform took the sound. On beelink1
+(Windows 11) the Windows build, with `bell = "apple2"`, logged `rang:
+apple2, played` for each of two BELs a PowerShell program wrote; whether
+it was heard is for someone at that machine.
+
 **Not yet:** a volume setting (Gilbert, after trying it); Windows not
 heard yet (beelink1); ETX (Gilbert's test, SN4.3); SN2.2's bells.

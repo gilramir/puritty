@@ -1140,20 +1140,22 @@ geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-void puritty_sound_play(int id);
+int puritty_sound_play(int id);
 
 /* A sound (docs/sounds.md SN6): -1 the X server's own bell (`system`),
  * else one of puritty's, played by puritty_sound.c without waiting. */
 geng_cancel puritty_x11_sound(int32_t id, geng_wait *wait) {
+    int taken = 0;
     if (id < 0) {
         if (conn != NULL) {
             xcb_bell(conn, 0);
             xcb_flush(conn);
+            taken = 1;
         }
     } else {
-        puritty_sound_play(id);
+        taken = puritty_sound_play(id);
     }
-    geng_succeed(wait, geng_slot_I4(0));
+    geng_succeed(wait, geng_slot_I4(taken));
     return (geng_cancel) {0};
 }
 

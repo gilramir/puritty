@@ -1434,10 +1434,10 @@ bellRung m =
     else if total > m.bellsHeard then
         when sound is
             Just id ->
-                Window.sound id |> Task.map (\_ -> { m | bellsHeard = total })
+                Window.sound id |> Task.map (\taken -> logLine "bell" ("rang: " ++ m.config.soundBell ++ (if taken then ", played" else ", not played (no audio, or a sound still playing)")) { m | bellsHeard = total })
 
             Nothing ->
-                Task.succeed { m | bellsHeard = total }
+                Task.succeed (logLine "bell" "rang: none chosen" { m | bellsHeard = total })
 
     else
         Task.succeed { m | bellsHeard = total }
@@ -1476,7 +1476,7 @@ a key that sends nothing (a modifier alone). -}
 keySound : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Task x {}
 keySound config k bytes =
     if config.soundKeys && k.action /= 0 && not (Bytes.isEmpty bytes) then
-        Window.sound (if k.sym == 0xFF0D || k.sym == 0xFF8D then 1 else 0)
+        Window.sound (if k.sym == 0xFF0D || k.sym == 0xFF8D then 1 else 0) |> Task.map (\_ -> {})
 
     else
         Task.succeed {}
@@ -3417,7 +3417,7 @@ handleOne remote ms rest ev m =
                     -- the key path: the text as typed, never as a paste (V46)
                     -- one key sound for the commit (feature-plan.md §3)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
-                        |> Task.andThen (\_ -> if m.config.soundKeys then Window.sound 0 else Task.succeed {})
+                        |> Task.andThen (\_ -> if m.config.soundKeys then Window.sound 0 |> Task.map (\_ -> {}) else Task.succeed {})
                         |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
 
                 Window.Preedit p ->

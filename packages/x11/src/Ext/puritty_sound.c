@@ -119,9 +119,11 @@ static void *player(void *arg) {
 }
 
 /* Plays a sound (`puritty_sounds`' index), or drops it: a bell while a bell
- * plays or waits, or anything when there is no audio. */
-void puritty_sound_play(int id) {
-    if (id < 0 || id >= PURITTY_SOUND_COUNT) return;
+ * plays or waits, or anything when there is no audio. Answers 1 when it
+ * is to be played. */
+int puritty_sound_play(int id) {
+    if (id < 0 || id >= PURITTY_SOUND_COUNT) return 0;
+    int taken = 0;
     pthread_mutex_lock(&lock);
     int bell = id >= PURITTY_SOUND_FIRST_BELL;
     int busy_with_bell = playing >= PURITTY_SOUND_FIRST_BELL || wanted >= PURITTY_SOUND_FIRST_BELL;
@@ -135,6 +137,8 @@ void puritty_sound_play(int id) {
             }
         }
         pthread_cond_signal(&asked);
+        taken = !broken;
     }
     pthread_mutex_unlock(&lock);
+    return taken;
 }
