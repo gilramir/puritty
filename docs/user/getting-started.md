@@ -53,7 +53,7 @@ shell; `start = "hosts"` in the settings makes it open the list there too.
 | Ctrl+Shift+Up, Ctrl+Shift+Down | jump between shell prompts |
 | Ctrl+=, Ctrl+−, Ctrl+0, Ctrl+wheel | zoom |
 | Ctrl+Comma | the settings window |
-| Ctrl+right-click | the menu: settings, hosts, a new window |
+| Ctrl+right-click | the menu: settings, hosts, a new tab, a new window |
 
 ## Where next
 

@@ -2272,22 +2272,25 @@ type alias MenuItem =
     }
 
 
-{-| This program started again with these arguments, or the shown tab
-renamed or colored (docs/tabs.md TB9). -}
+{-| This program started again with these arguments, the shown tab
+renamed or colored (docs/tabs.md TB9), or a new tab opened. -}
 type MenuDoes
     = Starts (Array String)
     | Renames
     | Colors
     | Reopens
     | Marks
+    | OpensTab
 
 
-{-| The menu's items: the settings window, the host list, a window of its
-own, the shown tab's name and color, then each host of the settings. -}
+{-| The menu's items: the settings window, the host list, a new tab, a
+window of its own, the shown tab's name and color, then each host of the
+settings. -}
 menuItems : Config -> Array MenuItem
 menuItems config =
     [ { label = "Settings…", does = Starts [ "settings" ] }
     , { label = "Hosts…", does = Starts [ "hosts" ] }
+    , { label = "New tab", does = OpensTab }
     , { label = "New window", does = Starts [ "shell" ] }
     , { label = "Rename tab…", does = Renames }
     , { label = "Tab color…", does = Colors }
@@ -2315,6 +2318,19 @@ menuDo item m =
 
         Marks ->
             markLog m
+
+        OpensTab ->
+            -- as Ctrl+Shift+T: a tab of puritty's, or tmux's new window
+            -- under -CC
+            if TmuxMode.isOn m.tmux then
+                let
+                    r =
+                        TmuxMode.newWindow m.tmux
+                in
+                Task.succeed (sendCommands r.commands { m | tmux = r.state, urgent = True })
+
+            else
+                openTab m
 
 
 {-| The menu at the pointer: the platform's own when it shows one

@@ -15,7 +15,7 @@ is shown, so a long build or a log you are following goes on in its tab.
 
 | key | does |
 |---|---|
-| Ctrl+Shift+T | a new tab, after the last, in the shown tab's directory. In a tab of an ssh session, another session to the same host |
+| Ctrl+Shift+T, or **New tab** in the menu | a new tab, after the last, in the shown tab's directory. In a tab of an ssh session, another session to the same host |
 | Ctrl+Shift+W | closes the tab shown, ending what runs in it (asking first when something is running); with one tab, closes the window |
 | Ctrl+Shift+R | renames the tab shown |
 | Ctrl+PgUp, Ctrl+PgDn | the tab before and after the one shown, round past the ends |

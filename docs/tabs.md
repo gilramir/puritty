@@ -606,3 +606,13 @@ shows its two buttons; a click on Keep it leaves the window and `sleep`
 running; Ctrl+Shift+W again and a click on Close ends the window, status
 0. App tests 132; the settings, hosts, reload, events, ime, sshwindow and
 pointer gates as before.
+
+## TB13 · "New tab" in the menu (2026-11-12)
+
+Gilbert: the menu (Ctrl+right-click, a right-click on the tab bar, and
+on Windows the system menu) should offer "New tab" as it offers "New
+window". It is now the item before New window and does what Ctrl+Shift+T
+does (`new_tab`): a tab of puritty's after the last (`openTab`), or under
+`tmux -CC` tmux's new window (`TmuxMode.newWindow`). Checked under `-CC`
+on Xvfb with tmux 3.8: the menu's third item takes the session from one
+window to two.
