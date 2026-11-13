@@ -664,6 +664,6 @@ already knows the place, or finds it once), and the five writers keeping
 `shown` in the same update as `order`, which the invariant enforces.
 
 **Not decided.** It would remove three `withDefault`s and a search per
-switch; the gain is the guarantee more than the count. `Array.removeAt`
-with a length contract is a `core` addition (`primRemove` has one; the
-exposed `Array.remove` would need it stated, for an index inside the array).
+switch; the gain is the guarantee more than the count. A length contract
+on `Array.remove`, for an index inside the array, is a `core` addition
+(the primitive under it, `primRemove`, already has one).
