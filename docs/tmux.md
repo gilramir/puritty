@@ -2368,3 +2368,21 @@ the history's Up. App tests 141; `show.py` prompts unchanged.
 **Not yet:** C-y (tmux pastes its newest buffer, or 3.8 what C-k and
 C-w removed), completion of options and targets, the matches' menu, vi
 keys in the prompt (`status-keys vi`), tmux's own prompt history.
+
+## TM58 · The status line's right button, and run -C (2026-11-12)
+
+One of TM39's smaller items. tmux binds the right button on the status
+line: `MouseDown3Status` (a window: its menu, `-t=` that window) and
+`MouseDown3StatusLeft` (status-left: the session's menu, inside `run -C
+"display-menu ..."`). puritty ran neither. Now a right press on tmux's
+status line in tmux's look runs the binding for where it is (a window's
+target `=` made that window's id; status-left; status-right), as a held
+binding (TM27). `run -C` (and `run-shell -C`) runs its string as tmux
+commands after tmux expands it as a format, which the session menu's
+labels need (`#{?...}`); puritty has tmux expand it (`display-message
+-p`) and then runs it here, so the menu inside shows.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `status-menus`):
+the session menu's items as tmux's (Renumber, Rename, Detach, New
+Session, New Window), the window menu's for the window pressed. App tests
+141; `show.py` menus unchanged.

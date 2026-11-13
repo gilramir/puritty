@@ -523,6 +523,7 @@ type Expect
     | ForTreeFilter
     | ForListRows
     | ForCommandNames
+    | ForRunExpanded Context
     | ForListFilter
     | ForListPreview String
     | ForPreviewList Int
@@ -884,6 +885,7 @@ expectName x =
         ForTreeFilter -> "the tree's filter"
         ForListRows -> "the list's rows"
         ForCommandNames -> "tmux's commands"
+        ForRunExpanded _ -> "a run -C's commands"
         ForListFilter -> "the list's filter"
         ForListPreview _ -> "the list's preview"
         ForPreviewList _ -> "the tree preview's panes or windows"
@@ -1773,6 +1775,17 @@ replied expect ok lines acc =
                         lines
             in
             previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+
+        ForRunExpanded ctx ->
+            -- run -C's string as tmux expanded it, run here (TM58)
+            let
+                expanded =
+                    String.join "\n" (Array.map Bytes.toStringLossy lines)
+
+                r =
+                    if ok then runLine ctx expanded acc.state else { state = acc.state, commands = [] }
+            in
+            { acc | state = r.state, commands = acc.commands ++ r.commands }
 
         ForCommandNames ->
             let
@@ -4121,15 +4134,44 @@ pointer how p s =
                 -- has a program that takes the mouse
                 takesMouse =
                     not how.select && paneTakesMouse target s
+
+                -- the right button on tmux's status line: its window menu over
+                -- a window, its session menu over status-left, as tmux's
+                -- MouseDown3Status and MouseDown3StatusLeft (TM58)
+                statusMenu =
+                    if s.lookTmux && row == barRow && p.action == 0 && p.button == 2 && s.menu == Nothing && s.drag == Nothing then
+                        let
+                            hits =
+                                (tabsOf (p.width // max 1 p.cellWidth) barRow s).hits
+
+                            firstCol =
+                                Array.first hits |> Maybe.map .from |> Maybe.withDefault 0
+                        in
+                        when Array.findFirst (\h -> col >= h.from && col <= h.to) hits is
+                            Just h ->
+                                Dict.get "root MouseDown3Status" s.keys.bindings |> Maybe.map (\b -> Syntax.retarget ("@" ++ String.fromInt h.value.window) b.command)
+
+                            Nothing ->
+                                if col < firstCol then
+                                    Dict.get "root MouseDown3StatusLeft" s.keys.bindings |> Maybe.map .command
+
+                                else
+                                    Dict.get "root MouseDown3StatusRight" s.keys.bindings |> Maybe.map .command
+
+                    else
+                        Nothing
             in
-            when { drag = s.drag, tab = tabHit, menu = s.menu } is
-                { drag = _, tab = _, menu = Just m } ->
+            when { drag = s.drag, tab = tabHit, menu = s.menu, status = statusMenu } is
+                { drag = _, tab = _, menu = Just m, status = _ } ->
                     plain (menuPointer p col row m s)
 
-                { drag = Just d, tab = _, menu = Nothing } ->
+                { drag = Just d, tab = _, menu = Nothing, status = _ } ->
                     plain (dragged col row (p.action == 1) d s)
 
-                { drag = Nothing, tab = Just hit, menu = Nothing } ->
+                { drag = Nothing, tab = Nothing, menu = Nothing, status = Just binding } ->
+                    plain (runHeld { pane = s.active, mouse = Just { col = col, row = row } } "" "" binding s)
+
+                { drag = Nothing, tab = Just hit, menu = Nothing, status = _ } ->
                     -- a tab selects its window; `+` makes one
                     plain (sent [ if hit.window < 0 then "new-window" else "select-window -t " ++ Command.quote ("@" ++ String.fromInt hit.window) ] s)
 
@@ -5147,6 +5189,22 @@ runLine ctx line s =
     in
     if String.trim fixed == "" then
         { state = s, commands = [] }
+
+    else if String.startsWith "run -C " fixed || String.startsWith "run-shell -C " fixed then
+        -- `run -C` runs its string as tmux's commands, as tmux's session
+        -- menu binding does (TM58): run here, so that a menu in it shows
+        -- its string is a format, expanded before it runs: tmux expands
+        -- it for puritty first
+        when Syntax.commands (Syntax.tokens fixed) |> Array.first |> Maybe.map (Array.dropFirst 2) |> Maybe.andThen Array.first is
+            Just inner ->
+                if String.contains "#{" inner.value then
+                    sendAsking [ { command = "display-message -p -t " ++ Command.quote (paneName ctx.pane) ++ " " ++ Command.quote (noTime inner.value), expect = ForRunExpanded ctx } ] s
+
+                else
+                    runLine ctx inner.value s
+
+            Nothing ->
+                plainLines ctx fixed s
 
     else
         when Syntax.askOf fixed is

@@ -100,6 +100,8 @@ SCENES = [
                 ("cli", "list-buffers", "-F", "#{buffer_name}"), ("keys", "Enter"), ("shot", "pasted"), ("q", "mode=#{pane_mode}")]),
     dict(name="popup", conf="bind p display-popup -E -T hello 'echo popped; sleep 4'\n", setup=FILL,
          steps=[("keys", P, "p"), ("shot", "popup", 1.0), ("q", "panes=#{window_panes}")]),
+    dict(name="status-menus", setup=FILL + [("new-window", "-t", "main", "-n", "two"), ("select-window", "-t", "main:0")],
+         steps=[("rclick", 2, 29), ("shot", "session-menu", 0.8), ("keys", "Escape"), ("rclick", 10, 29), ("shot", "window-menu", 0.8), ("keys", "Escape")]),
     dict(name="pane-scrollbars2", conf="set -g pane-scrollbars on\n",
          setup=THREE + [sk("main:0.0", "seq 1 100"), ("select-pane", "-t", "main:0.0")],
          steps=[("keys", P, "["), ("keys", "PPage"), ("q", CUR), ("shot", "copy-scrolled")]),
