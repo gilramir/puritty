@@ -2668,3 +2668,31 @@ rebinding, all `same`. Tests: tmux package 93 (22 for customize), app
   the rest) are drawn here as tmux sends them (RGB, the dark theme's), but
   the rest of puritty's 3.8 drawing, prompts included, still takes them
   as the plain colors (`themeyellow` as yellow, TM47).
+
+## TM63 · show.py's lines are checks (2026-11-13)
+
+TM61's second rule, done for `bench/tmux/show.py`: every result a
+scenario reads back from tmux, which it printed for a reader to judge, is
+now a check against what it should be (`check(label, got, want)`, `want` a
+value or `that(description, test)`); each says `ok` or `FAIL`, the run
+ends with `N checks, M failed` and status 1 on any failure. What is shown
+only for the reader and claims nothing is a `note`. `build` and `attach`,
+which only took pictures, check what they do (typed text in the pane, `jjjj`
+in `less` after an attach).
+
+Each want was taken from what the documents say should happen, not from
+what the scenario printed, and the first run against them failed six:
+
+- `modes`' `C-a s 1` and `C-a s M-c` chose `other` and `k10`, where the
+  scenario's comment said `k01` and `main`. The comment predates TM46,
+  which lists sessions in the order made (main, other, k00 …), as tmux
+  does; the printed line had changed meaning since and nobody saw it.
+  puritty is right; the want and the comment are fixed.
+- `copy`'s buffer is from the end of one line to the first character of
+  the line two below (`6\nline 57\nl`), which is what Space at column 0
+  then `k k $` selects; the want expected three whole lines.
+- `mouse`'s floating pane made by `new-pane -x 30 -y 6` is 28x4: the size
+  is the box's. The program's line begins with the shell's `$ `.
+
+After them: 138 checks in 17 scenarios, none failed. A failing check was
+seen to end the run with status 1.

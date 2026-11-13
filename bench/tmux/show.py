@@ -26,6 +26,40 @@ WORK = ROOT / ".harness-work" / "tmux-show"
 CONF = ROOT / "packages" / "tmux" / "tests" / "data" / "tmux.conf"
 
 
+# Each result a scenario reads back is checked against what it should be
+# (docs/tmux.md TM61's second rule: a printed line is not a check). A
+# failed check is said as FAIL and makes the run end with status 1.
+FAILED = []
+CHECKED = []
+
+
+def that(description, test):
+    """A want that is a test of the value rather than the value itself."""
+    test.description = description
+    return test
+
+
+def check(label, got, want):
+    """`got` against `want`, a value or a `that(...)`; said either way."""
+    ok = want(got) if callable(want) else got == want
+    CHECKED.append(label)
+    if not ok:
+        FAILED.append(label)
+    wanted = want.description if callable(want) else repr(want)
+    print(("ok   " if ok else "FAIL ") + f"{label}: {got!r}" + ("" if ok else f"  (want {wanted})"), flush=True)
+    return got
+
+
+def note(*words):
+    """Something shown for the reader, which is not a claim."""
+    print("     " + " ".join(str(w) for w in words), flush=True)
+
+
+def report():
+    print(f"{len(CHECKED)} checks, {len(FAILED)} failed" + ("" if not FAILED else ": " + "; ".join(FAILED)))
+    sys.exit(1 if FAILED else 0)
+
+
 def xdotool():
     out = subprocess.run(["nix", "build", "--impure", "--no-link", "--print-out-paths", "-f",
                           str(ROOT / "harness/ime/imes.nix"), "xdotool"], capture_output=True, text=True, check=True)
@@ -146,6 +180,8 @@ def main():
         subprocess.run([xdo, "type", "--delay", "20", "echo typed into puritty"], env=env, check=True)
         subprocess.run([xdo, "key", "Return"], env=env, check=True)
         snap("typed")
+        q = lambda *args: subprocess.run([*tmux, *args], env=env, capture_output=True, text=True).stdout
+        check("typed text reaches the pane", q("capture-pane", "-p", "-t", "%0").count("typed into puritty"), 2)
         cli("split-window", "-h")
         cli("send-keys", "-t", "%1", "printf '\\033[1;32mright pane\\033[0m 한글\\n'", "Enter")
         snap("split")
@@ -197,6 +233,8 @@ def attach(a, env, tmux, xdo, snap, cli):
         time.sleep(0.3)
         subprocess.run([xdo, "type", "--delay", "40", "jjjj"], env=env, check=True)
         snap("less-scrolled")
+        top = subprocess.run([*tmux, "capture-pane", "-p", "-t", "%1"], env=env, capture_output=True, text=True).stdout.splitlines()[:1]
+        check("jjjj in less, attached to: its first line", top, ["5"])
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -242,34 +280,40 @@ def mouse(a, env, tmux, xdo, snap, cli):
         subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
         time.sleep(2)
         geom = lambda: q("display-message", "-p", "-t", "%2", "#{pane_left},#{pane_top} #{pane_width}x#{pane_height}")
-        print("floating before:", geom(), "| active:", q("display-message", "-p", "#{pane_id}"))
+        before = geom()
+        # new-pane's -x and -y are the box's size, the pane two less
+        check("the floating pane, made 30x6 with its box", before.split()[1], "28x4")
         snap("mouse-attached")
         x, y = at(80, 20)
         subprocess.run([xdo, "mousemove", x, y, "click", "1"], env=env, check=True)
         time.sleep(0.5)
-        print("after a click in the right pane, active:", q("display-message", "-p", "#{pane_id}"))
+        check("a click in the right pane, the active pane", q("display-message", "-p", "#{pane_id}"), "%1")
         left, top = map(int, geom().split()[0].split(","))
         x0, y0 = at_t(left + 3, top - 1)
         x1, y1 = at_t(left + 13, top + 4)
         subprocess.run([xdo, "mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) + 30), y0,
                         "mousemove", x1, y1, "mouseup", "1"], env=env, check=True)
         time.sleep(0.6)
-        print("floating after moving its top edge by 10,5:", geom())
+        bl, bt = map(int, before.split()[0].split(","))
+        check("the floating pane after its top edge is dragged by 10,5", geom(), f"{bl + 10},{bt + 5} 28x4")
         left, top = map(int, geom().split()[0].split(","))
         w, h = map(int, geom().split()[1].split("x"))
         x0, y0 = at_t(left + w, top + h)
         x1, y1 = at_t(left + w + 6, top + h + 2)
         subprocess.run([xdo, "mousemove", x0, y0, "mousedown", "1", "mousemove", x1, y1, "mouseup", "1"], env=env, check=True)
         time.sleep(0.6)
-        print("floating after dragging its corner by 6,2:", geom())
+        check("the floating pane after its corner is dragged by 6,2", geom(), f"{left},{top} {w + 6}x{h + 2}")
         snap("mouse-moved")
         x, y = at_t(5, 24)
         subprocess.run([xdo, "mousemove", x, y, "click", "1"], env=env, check=True)
         time.sleep(0.4)
         subprocess.run([xdo, "key", "Up"], env=env, check=True)
         time.sleep(0.6)
-        print("active:", q("display-message", "-p", "#{pane_id}"), "| the left pane's program got:",
-              repr(q("capture-pane", "-p", "-t", "%0").split("cat -v")[-1].strip()[:80]))
+        check("a click in the left pane, the active pane", q("display-message", "-p", "#{pane_id}"), "%0")
+        # cat -v shows what the program got: the click as SGR mouse at its
+        # own cell (6,25 counting from 1), then Up in cursor-key mode
+        check("the left pane's program got", q("capture-pane", "-p", "-t", "%0").split("cat -v")[-1].strip()[:80],
+              that("the click and its release, then Up as ^[OA", lambda v: v.endswith("^[[<0;6;25M^[[<0;6;25m^[OA")))
         snap("mouse-left")
         cli("kill-server")
         time.sleep(1)
@@ -307,15 +351,16 @@ def select(a, env, tmux, xdo, snap, cli):
         x1, y1 = at_t(61, 0)
         xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) + 20), y0, "mousemove", x1, y1, "mouseup", "1")
         time.sleep(0.5)
-        print("a drag in the right pane, PRIMARY:", repr(sel("primary")))
+        check("a drag in the right pane, PRIMARY", sel("primary"), "hello world")
         x, y = at(2, 5)
         xd("mousemove", x, y, "click", "--repeat", "2", "--delay", "80", "1")
         time.sleep(0.5)
-        print("a double click on the scrolled left pane, PRIMARY:", repr(sel("primary")))
+        word = check("a double click on the scrolled left pane, PRIMARY", sel("primary"),
+                     that("a word of the left pane's lines", lambda v: v == "left" or v.isdigit()))
         snap("selected-left")
         xd("key", "ctrl+shift+c")
         time.sleep(0.5)
-        print("Ctrl+Shift+C, CLIPBOARD:", repr(sel("clipboard")))
+        check("Ctrl+Shift+C, CLIPBOARD", sel("clipboard"), word)
         xd("key", "Return")
         time.sleep(0.5)
         snap("back-down")
@@ -348,24 +393,26 @@ def tabs(a, env, tmux, xdo, snap, cli):
                              timeout=20).stdout.split()[0]
         xd("windowfocus", "--sync", win)
         time.sleep(2)
-        print("attached:", state())
+        check("attached", state(), "active 0:editor, 2 windows")
         snap("tabs-attached")
         # the tabs are " 0:editor │ 1:logs │ + │", on the bottom row
         x, y = at(13, TABROW)
         xd("mousemove", x, y, "click", "1")
         time.sleep(0.6)
-        print("a click on the second tab:", state())
+        check("a click on the second tab", state(), "active 1:logs, 2 windows")
         snap("tabs-second")
         x, y = at(20, TABROW)
         xd("mousemove", x, y, "click", "1")
         time.sleep(0.8)
-        print("a click on +:", state())
+        check("a click on +", state(), that("window 2 made and active, 3 windows",
+                                             lambda v: v.startswith("active 2:") and v.endswith(", 3 windows")))
         xd("key", "ctrl+Prior")
         time.sleep(0.6)
-        print("Ctrl+PgUp:", state())
+        check("Ctrl+PgUp", state(), "active 1:logs, 3 windows")
         xd("key", "ctrl+shift+t")
         time.sleep(0.8)
-        print("Ctrl+Shift+T:", state())
+        check("Ctrl+Shift+T", state(), that("window 3 made and active, 4 windows",
+                                              lambda v: v.startswith("active 3:") and v.endswith(", 4 windows")))
         cli("rename-window", "-t", "t:1", "renamed")
         time.sleep(0.6)
         snap("tabs-renamed")
@@ -413,16 +460,16 @@ def prefix(a, env, tmux, xdo, snap, cli):
         xd("type", "--delay", "20", "echo 한글 typed")
         xd("key", "Return")
         time.sleep(0.6)
-        print("typed text:", "한글 typed" in q("capture-pane", "-p"))
+        check("typed text reaches the pane", "한글 typed" in q("capture-pane", "-p"), True)
         xd("key", "ctrl+a", "bar")
         time.sleep(0.8)
-        print("C-a |:", panes(), "panes")
+        check("C-a |, panes", panes(), 2)
         xd("key", "ctrl+a", "minus")
         time.sleep(0.8)
-        print("C-a -:", panes(), "panes")
+        check("C-a -, panes", panes(), 3)
         xd("key", "ctrl+a", "quotedbl")
         time.sleep(0.8)
-        print("C-a \" (unbound):", panes(), "panes")
+        check("C-a \" (unbound), panes", panes(), 3)
         snap("prefix-splits")
         # a prompt or a confirmation would leave the client answering nothing
         # (TM24): puritty asks it itself (TM25), and tmux still answers
@@ -435,7 +482,7 @@ def prefix(a, env, tmux, xdo, snap, cli):
         xd("key", "Escape")
         xd("key", "ctrl+a", "bar")
         time.sleep(0.8)
-        print("C-a x Escape, C-a , Escape, then C-a |:", panes(), "panes")
+        check("C-a x Escape, C-a , Escape, then C-a |, panes", panes(), 4)
         xd("key", "ctrl+a", "i")
         time.sleep(0.6)
         snap("prefix-message")
@@ -445,7 +492,7 @@ def prefix(a, env, tmux, xdo, snap, cli):
         xd("type", "--delay", "20", "echo after-suspend")
         xd("key", "Return")
         time.sleep(0.6)
-        print("typing after C-a C-z:", "after-suspend" in q("capture-pane", "-p"))
+        check("typing after C-a C-z reaches the pane", "after-suspend" in q("capture-pane", "-p"), True)
         # a binding's error is said, as tmux's status line would say it
         xd("key", "ctrl+a", "5")
         time.sleep(0.6)
@@ -454,17 +501,17 @@ def prefix(a, env, tmux, xdo, snap, cli):
             xd("type", "--delay", "5", "echo line")
             xd("key", "Return")
         time.sleep(0.5)
-        print("history before C-k:", q("display-message", "-p", "#{history_size}"))
+        check("history before C-k", int(q("display-message", "-p", "#{history_size}")), that("some", lambda v: v > 0))
         xd("key", "ctrl+k")
         time.sleep(0.8)
-        print("history after C-k:", q("display-message", "-p", "#{history_size}"))
+        check("history after C-k", q("display-message", "-p", "#{history_size}"), "0")
         xd("key", "ctrl+a", "bracketleft")
         time.sleep(0.6)
-        print("C-a [:", q("display-message", "-p", "#{pane_in_mode} #{pane_mode}"))
+        check("C-a [", q("display-message", "-p", "#{pane_in_mode} #{pane_mode}"), "1 copy-mode")
         snap("prefix-copy-mode")
         xd("key", "q")
         time.sleep(0.6)
-        print("q:", q("display-message", "-p", "#{pane_in_mode}"))
+        check("q leaves copy mode", q("display-message", "-p", "#{pane_in_mode}"), "0")
         xd("key", "Up")
         time.sleep(0.4)
         xd("key", "ctrl+a", "ctrl+a")
@@ -499,18 +546,18 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         time.sleep(2)
         xd("key", "ctrl+a", "bar")
         time.sleep(0.6)
-        print(look, "| two panes:", panes())
+        check(f"{look} | C-a |, panes", panes(), 2)
         xd("key", "ctrl+a", "x")
         time.sleep(0.6)
         snap(f"{look}-confirm")
         xd("key", "n")
         time.sleep(0.5)
-        print(look, "| C-a x, n:", panes(), "panes")
+        check(f"{look} | C-a x, n, panes", panes(), 2)
         xd("key", "ctrl+a", "x")
         time.sleep(0.4)
         xd("key", "y")
         time.sleep(0.6)
-        print(look, "| C-a x, y:", panes(), "panes")
+        check(f"{look} | C-a x, y, panes", panes(), 1)
         xd("key", "ctrl+a", "comma")
         time.sleep(0.6)
         xd("key", "ctrl+u")
@@ -519,26 +566,27 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-rename")
         xd("key", "Return")
         time.sleep(0.6)
-        print(look, "| C-a , editor 1:", repr(name()))
+        check(f"{look} | C-a , editor 1", name(), "editor 1")
         xd("key", "ctrl+a", "comma")
         time.sleep(0.4)
         xd("key", "ctrl+u")
         xd("type", "--delay", "30", "한글 창")
         xd("key", "Return")
         time.sleep(0.6)
-        print(look, "| C-a , in Korean:", repr(name()))
+        check(f"{look} | C-a , in Korean", name(), "한글 창")
         xd("key", "ctrl+a", "comma")
         time.sleep(0.4)
         xd("type", "--delay", "30", "nope")
         xd("key", "Escape")
         time.sleep(0.5)
-        print(look, "| C-a , Escape:", repr(name()), "and tmux answers:", q("display-message", "-p", "ok"))
+        check(f"{look} | C-a , Escape keeps the name", name(), "한글 창")
+        check(f"{look} | then tmux answers", q("display-message", "-p", "ok"), "ok")
         xd("key", "ctrl+a", "colon")
         time.sleep(0.4)
         xd("type", "--delay", "30", "split-window -h")
         xd("key", "Return")
         time.sleep(0.6)
-        print(look, "| C-a : split-window -h:", panes(), "panes")
+        check(f"{look} | C-a : split-window -h, panes", panes(), 2)
         for _ in range(20):
             xd("type", "--delay", "3", "echo line")
             xd("key", "Return")
@@ -547,17 +595,19 @@ def prompts(a, env, tmux, xdo, snap, cli, look):
         time.sleep(0.6)
         xd("key", "3", "k")
         time.sleep(0.5)
-        print(look, "| copy mode, 3 k: cursor row", q("display-message", "-p", "#{copy_cursor_y}"), "of", q("display-message", "-p", "#{pane_height}"))
+        height = int(q("display-message", "-p", "#{pane_height}"))
+        # from the last row, three up
+        check(f"{look} | copy mode, 3 k, the cursor's row", int(q("display-message", "-p", "#{copy_cursor_y}")), height - 4)
         xd("key", "slash")
         time.sleep(0.5)
         xd("type", "--delay", "30", "echo")
         snap(f"{look}-search")
         xd("key", "Return")
         time.sleep(0.6)
-        print(look, "| / echo:", q("display-message", "-p", "#{pane_mode} #{search_present} #{search_match}"))
+        check(f"{look} | / echo", q("display-message", "-p", "#{pane_mode} #{search_present} #{search_match}"), "copy-mode 1 echo")
         xd("key", "q")
         time.sleep(0.5)
-        print(look, "| q:", repr(q("display-message", "-p", "#{pane_mode}")))
+        check(f"{look} | q leaves copy mode", q("display-message", "-p", "#{pane_mode}"), "")
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -597,7 +647,7 @@ def modes(a, env, tmux, xdo, snap, cli, look):
         cli("send-keys", "-t", "main:first.0", "echo left pane", "Enter")
         cli("send-keys", "-t", "main:first.1", "echo right pane", "Enter")
         time.sleep(0.5)
-        print(look, "| before:", where())
+        check(f"{look} | before", where(), "main:1")
         xd("key", "ctrl+a", "w")
         time.sleep(0.8)
         snap(f"{look}-tree-windows")
@@ -606,35 +656,38 @@ def modes(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-tree-window-two-panes")
         xd("key", "Return")
         time.sleep(0.8)
-        print(look, "| C-a w Up Enter:", where())
+        check(f"{look} | C-a w Up Enter: the window above", where(), "main:0")
         xd("key", "ctrl+a", "s")
         time.sleep(0.8)
         snap(f"{look}-tree-sessions")
         xd("key", "Up", "Return")
         time.sleep(0.8)
-        print(look, "| C-a s Up Enter:", where())
+        check(f"{look} | C-a s Up Enter: the session above, the last", where(), "other:0")
         xd("key", "ctrl+a", "s")
         time.sleep(0.6)
         xd("key", "Escape")
         time.sleep(0.4)
-        print(look, "| C-a s Escape:", where(), "| tmux answers:", q("display-message", "-p", "ok"))
+        check(f"{look} | C-a s Escape: still there", where(), "other:0")
+        check(f"{look} | then tmux answers", q("display-message", "-p", "ok"), "ok")
         xd("key", "ctrl+a", "t")
         time.sleep(1.2)
         snap(f"{look}-clock")
-        print(look, "| C-a t:", q("display-message", "-p", "-t", "other:", "#{pane_mode}"), "| tmux's time:", q("display-message", "-p", "%H:%M"))
+        check(f"{look} | C-a t", q("display-message", "-p", "-t", "other:", "#{pane_mode}"), "clock-mode")
         xd("key", "q")
         time.sleep(0.6)
-        print(look, "| q:", repr(q("display-message", "-p", "-t", "other:", "#{pane_mode}")))
+        check(f"{look} | q leaves the clock", q("display-message", "-p", "-t", "other:", "#{pane_mode}"), "")
         cli("set-buffer", "-b", "one", "kept text")
         xd("key", "ctrl+a", "equal")
         time.sleep(1.0)
-        print(look, "| C-a =:", q("display-message", "-p", "-t", "other:", "#{pane_mode}"))
+        # puritty shows the list (TM55): tmux enters no mode
+        check(f"{look} | C-a =, tmux's mode", q("display-message", "-p", "-t", "other:", "#{pane_mode}"), "")
         snap(f"{look}-buffer-mode")
         xd("key", "q")
         time.sleep(0.6)
-        print(look, "| C-a = then q:", repr(q("display-message", "-p", "-t", "other:", "#{pane_mode}")))
-        # the rows' keys (TM37): fourteen sessions, k00 to k11 first, so
-        # rows past the tenth have M-a and on; 1 chooses k01, M-c main
+        check(f"{look} | C-a = then q", q("display-message", "-p", "-t", "other:", "#{pane_mode}"), "")
+        # the rows' keys (TM37): fourteen sessions, in the order made
+        # (TM46): main, other, then k00 to k11, so rows past the tenth have
+        # M-a and on; 1 chooses other, M-c (the thirteenth) k10
         for i in range(12):
             cli("new-session", "-d", "-s", f"k{i:02d}")
         xd("key", "ctrl+a", "s")
@@ -642,12 +695,12 @@ def modes(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-tree-keys")
         xd("key", "1")
         time.sleep(0.8)
-        print(look, "| C-a s 1:", where())
+        check(f"{look} | C-a s 1: the second row", where(), "other:0")
         xd("key", "ctrl+a", "s")
         time.sleep(0.8)
         xd("key", "alt+c")
         time.sleep(0.8)
-        print(look, "| C-a s M-c:", where())
+        check(f"{look} | C-a s M-c: the thirteenth row", where(), "k10:0")
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -684,20 +737,29 @@ def copy(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-copy")
         xd("key", "k", "k", "k", "0")
         time.sleep(0.6)
-        print(look, "| k k k 0:", pos())
+        check(f"{look} | k k k 0", pos(), that("not scrolled, the cursor three up at column 0",
+                                               lambda v: v.startswith("0/") and v.endswith(" 0,25")))
         xd("key", "space", "k", "k", "dollar")
         time.sleep(0.6)
-        print(look, "| Space k k $:", pos(), q("display-message", "-p", "#{selection_start_x},#{selection_start_y} #{selection_end_x},#{selection_end_y}"))
+        check(f"{look} | Space k k $, the cursor", pos().split()[1], that("two more up, at the line's end",
+                                                                          lambda v: v.endswith(",23") and v != "0,23"))
+        check(f"{look} | the selection", q("display-message", "-p", "#{selection_present}"), "1")
         snap(f"{look}-copy-selection")
         xd("key", "ctrl+b")
         time.sleep(0.8)
-        print(look, "| C-b:", pos())
+        check(f"{look} | C-b scrolls a page", pos(), that("scrolled", lambda v: not v.startswith("0/")))
         snap(f"{look}-copy-page-up")
         xd("key", "ctrl+f")
         time.sleep(0.6)
         xd("key", "Return")
         time.sleep(0.8)
-        print(look, "| Enter (copy-pipe-and-cancel), the buffer:", repr(q("show-buffer")), "| mode:", repr(q("display-message", "-p", "#{pane_mode}")))
+        check(f"{look} | Enter (copy-pipe-and-cancel), the buffer", q("show-buffer"),
+              # from the cursor at the end of a line to the start of the
+              # line two below, where Space began: its last character, a
+              # whole line, its first
+              that("a line's last character, the next line, the next one's first",
+                   lambda v: len(v.splitlines()) == 3 and v.splitlines()[0].isdigit() and v.splitlines()[1].startswith("line ") and v.splitlines()[2] == "l"))
+        check(f"{look} | Enter leaves copy mode", q("display-message", "-p", "#{pane_mode}"), "")
         snap(f"{look}-copy-done")
         cli("kill-server")
         time.sleep(1)
@@ -729,7 +791,7 @@ def marks(a, env, tmux, xdo, snap, cli, look):
         time.sleep(0.5)
         xd("key", "ctrl+a", "m")
         time.sleep(1.5)
-        print(look, "| C-a m, marked:", q("display-message", "-p", "#{pane_marked}"))
+        check(f"{look} | C-a m, marked", q("display-message", "-p", "#{pane_marked}"), "1")
         snap(f"{look}-marked")
         cli("set", "-g", "pane-border-status", "top")
         time.sleep(1.5)
@@ -740,7 +802,7 @@ def marks(a, env, tmux, xdo, snap, cli, look):
         xd("key", "Return")
         xd("key", "ctrl+a", "0")
         time.sleep(2.5)
-        print(look, "| a bell behind, flags of window 1:", repr(q("display-message", "-p", "-t", ":1", "#{window_flags}")))
+        check(f"{look} | a bell behind, flags of window 1", q("display-message", "-p", "-t", ":1", "#{window_flags}"), that("has !", lambda v: "!" in v))
         snap(f"{look}-bell")
         cli("kill-server")
         time.sleep(1)
@@ -780,7 +842,7 @@ def status(a, env, tmux, xdo, snap, cli, look):
             xd("mousemove", "--window", win, "50", "500")
             xd("click", "1")
             time.sleep(0.6)
-            print(look, "| a click on the first window's text, active:", q("display-message", "-p", "#{window_index}"))
+            check(f"{look} | a click on the first window's text, active", q("display-message", "-p", "#{window_index}"), "0")
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -812,7 +874,7 @@ def numbers(a, env, tmux, xdo, snap, cli, look):
         time.sleep(0.5)
         xd("key", "ctrl+a", "minus")
         time.sleep(0.6)
-        print(look, "| three panes, active:", active())
+        check(f"{look} | three panes, active", active(), "2")
         # longer than the default second, for the picture to be taken
         # while they are up; puritty reads the option as it attaches
         cli("set", "-g", "display-panes-time", "3000")
@@ -831,14 +893,15 @@ def numbers(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-numbers")
         xd("key", "0")
         time.sleep(0.6)
-        print(look, "| C-a q 0, active:", active())
+        check(f"{look} | C-a q 0, active", active(), "0")
         xd("key", "ctrl+a", "q")
         time.sleep(3.5)
         snap(f"{look}-numbers-gone")
         xd("type", "--delay", "20", "echo after-numbers")
         xd("key", "Return")
         time.sleep(0.6)
-        print(look, "| after display-panes-time, typing reaches the pane:", "after-numbers" in q("capture-pane", "-p"), "| active:", active())
+        check(f"{look} | after display-panes-time, typing reaches the pane", "after-numbers" in q("capture-pane", "-p"), True)
+        check(f"{look} | and the active pane is still", active(), "0")
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -880,23 +943,24 @@ def menus(a, env, tmux, xdo, snap, cli, look):
         xd("type", "--delay", "20", "renamed")
         xd("key", "Return")
         time.sleep(0.6)
-        print(look, "| C-a < n renamed:", repr(q("display-message", "-p", "#{window_name}")))
+        check(f"{look} | C-a < n renamed", q("display-message", "-p", "#{window_name}"), "renamed")
         xd("key", "ctrl+a", "greater")
         time.sleep(0.8)
         snap(f"{look}-menu-pane")
         xd("key", "h")
         time.sleep(0.8)
-        print(look, "| C-a > h:", panes(), "panes")
+        check(f"{look} | C-a > h (Horizontal Split), panes", panes(), 2)
         xd("key", "ctrl+a", "less")
         time.sleep(0.6)
         xd("key", "Escape")
         time.sleep(0.4)
-        print(look, "| C-a < Escape, tmux answers:", q("display-message", "-p", "ok"), "| windows:", len(q("list-windows").splitlines()))
+        check(f"{look} | C-a < Escape, tmux answers", q("display-message", "-p", "ok"), "ok")
+        check(f"{look} | and no window was made", len(q("list-windows").splitlines()), 1)
         xd("key", "ctrl+a", "greater")
         time.sleep(0.6)
         xd("key", "Down", "Return")
         time.sleep(0.8)
-        print(look, "| C-a > Down Enter (Horizontal Split):", panes(), "panes")
+        check(f"{look} | C-a > Down Enter (Horizontal Split), panes", panes(), 3)
         # the right button, with tmux's mouse on: the pane's menu at the
         # pointer, over a word
         cli("set", "-g", "mouse", "on")
@@ -916,13 +980,13 @@ def menus(a, env, tmux, xdo, snap, cli, look):
         time.sleep(1.0)
         xd("key", "v")
         time.sleep(0.8)
-        print(look, "| right button, v:", before, "->", panes(), "panes")
+        check(f"{look} | right button, v: a pane more", panes(), before + 1)
         xd("mousemove", "--window", win, "700", "26")
         xd("click", "3")
         time.sleep(1.0)
         xd("key", "c")
         time.sleep(0.6)
-        print(look, "| right button on a word, c (Copy):", repr(q("show-buffer")))
+        check(f"{look} | right button on a word, c (Copy)", q("show-buffer"), "wordy")
         xd("mousemove", "--window", win, "700", "26")
         xd("click", "3")
         time.sleep(1.0)
@@ -931,7 +995,7 @@ def menus(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-menu-hover")
         xd("click", "1")
         time.sleep(0.8)
-        print(look, "| right button, a click on Zoom:", q("display-message", "-p", "#{window_zoomed_flag}"))
+        check(f"{look} | right button, a click on Zoom", q("display-message", "-p", "#{window_zoomed_flag}"), "1")
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -989,7 +1053,8 @@ def views(a, env, tmux, xdo, snap, cli, look):
         xd("key", "Return")
         time.sleep(0.6)
         shown = q("capture-pane", "-p")
-        print(look, "| after q, typing reaches the pane:", "after-view" in shown, "| keys kept from it while open:", "zzz" not in shown and "window" not in shown)
+        check(f"{look} | after q, typing reaches the pane", "after-view" in shown, True)
+        check(f"{look} | keys typed while the view was open kept from the pane", "zzz" not in shown and "window" not in shown, True)
         cli("set-buffer", "-b", "kept", "a buffer's text")
         xd("key", "ctrl+a", "numbersign")
         time.sleep(0.8)
@@ -1003,7 +1068,8 @@ def views(a, env, tmux, xdo, snap, cli, look):
         snap(f"{look}-view-command")
         xd("key", "q")
         time.sleep(0.4)
-        print(look, "| tmux answers:", q("display-message", "-p", "ok"), "| panes:", len(q("list-panes").splitlines()))
+        check(f"{look} | tmux answers", q("display-message", "-p", "ok"), "ok")
+        check(f"{look} | panes", len(q("list-panes").splitlines()), 2)
         cli("kill-server")
         time.sleep(1)
     finally:
@@ -1037,12 +1103,14 @@ def safety(a, env, tmux, xdo, snap, cli):
         time.sleep(0.3)
         cli("send-keys", "-t", "%0", "echo written while paused", "Enter")
         time.sleep(1.0)
-        print("pane %0 after the pause, as tmux has it:", repr(q("capture-pane", "-p", "-t", "%0").strip().splitlines()[-2:]))
+        check("pane %0 after the pause, as tmux has it", q("capture-pane", "-p", "-t", "%0").strip().splitlines()[-2:],
+              that("the line written while paused", lambda v: "written while paused" in v))
         snap("after-pause")
         cli("send-keys", "-t", "%0", " ".join(tmux).replace(SOCK, "puritty-bench-inner") + " -CC new-session", "Enter")
         time.sleep(2.0)
-        print("inner clients after the nested -CC:", repr(subprocess.run([*tmux[:1], "-L", "puritty-bench-inner", "list-clients"],
-                                                                         env=env, capture_output=True, text=True).stdout.strip()))
+        # the nested tmux -CC is detached with a note (TM19): no client left
+        check("inner clients after the nested -CC", subprocess.run([*tmux[:1], "-L", "puritty-bench-inner", "list-clients"],
+                                                                   env=env, capture_output=True, text=True).stdout.strip(), "")
         snap("nested")
         subprocess.run([*tmux[:1], "-L", "puritty-bench-inner", "kill-server"], env=env, stderr=subprocess.DEVNULL)
         cli("detach-client", "-t", client)
@@ -1074,20 +1142,20 @@ def lines(a, env, tmux, xdo, snap, cli):
                              timeout=20).stdout.split()[0]
         xd("windowfocus", "--sync", win)
         time.sleep(2)
-        print("before:", sizes())
+        note("before:", sizes())
         w0 = int(q("display-message", "-p", "-t", "%0", "#{pane_width}"))
         x0, y0 = at_t(w0, 5)
         x1, y1 = at_t(w0 - 10, 5)
         xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) - 30), y0, "mousemove", x1, y1, "mouseup", "1")
         time.sleep(0.6)
-        print("the vertical line dragged 10 left:", sizes())
+        check("the vertical line dragged 10 left, the left pane's width", int(q("display-message", "-p", "-t", "%0", "#{pane_width}")), w0 - 10)
         left = int(q("display-message", "-p", "-t", "%1", "#{pane_left}"))
         h1 = int(q("display-message", "-p", "-t", "%1", "#{pane_height}"))
         x0, y0 = at_t(left + 5, h1)
         x1, y1 = at_t(left + 5, h1 + 3)
         xd("mousemove", x0, y0, "mousedown", "1", "mousemove", x0, str(int(y0) + 20), "mousemove", x1, y1, "mouseup", "1")
         time.sleep(0.6)
-        print("the horizontal line dragged 3 down:", sizes())
+        check("the horizontal line dragged 3 down, the top right pane's height", int(q("display-message", "-p", "-t", "%1", "#{pane_height}")), h1 + 3)
         snap("lines-dragged")
         cli("kill-server")
         time.sleep(1)
@@ -1153,27 +1221,28 @@ def pointers(a, env, tmux, xdo, snap, cli):
         left1 = int(q("display-message", "-p", "-t", "%1", "#{pane_left}"))
         h1 = int(q("display-message", "-p", "-t", "%1", "#{pane_height}"))
         (fx, fy), (fw, fh) = [tuple(map(int, v.split(c))) for v, c in zip(geom().split(), (",", "x"))]
-        print("floating:", geom())
+        note("floating:", geom())
+        # each spot and the shape TM38 gives it
         spots = [
-            ("in the left pane", 3, 20), ("the line right of the left pane", w0, 26),
-            ("the line below the top right pane", left1 + 40, h1),
-            ("the box's top edge", fx + 5, fy - 1), ("the box's right edge", fx + fw, fy + 2),
-            ("the box's bottom edge", fx + 5, fy + fh), ("the box's bottom right corner", fx + fw, fy + fh),
-            ("the box's bottom left corner", fx - 1, fy + fh), ("the box's left edge", fx - 1, fy + 2),
-            ("inside the box", fx + 3, fy + 2),
+            ("in the left pane", 3, 20, "text"), ("the line right of the left pane", w0, 26, "width"),
+            ("the line below the top right pane", left1 + 40, h1, "height"),
+            ("the box's top edge", fx + 5, fy - 1, "move"), ("the box's right edge", fx + fw, fy + 2, "width"),
+            ("the box's bottom edge", fx + 5, fy + fh, "height"), ("the box's bottom right corner", fx + fw, fy + fh, "down-right"),
+            ("the box's bottom left corner", fx - 1, fy + fh, "down-left"), ("the box's left edge", fx - 1, fy + 2, "width"),
+            ("inside the box", fx + 3, fy + 2, "text"),
         ]
-        for label, col, row in spots:
+        for label, col, row, want in spots:
             xd("mousemove", *at_t(col, row))
             time.sleep(0.5)
-            print(f"{label}: {shape()}")
+            check(f"the pointer {label}", shape(), want)
         xd("mousemove", *at(10, TABROW))
         time.sleep(0.5)
-        print(f"the tab bar: {shape()}")
+        check("the pointer on the tab bar", shape(), "arrow")
         # a drag keeps its shape off the line
         x0, y0 = at_t(w0, 26)
         xd("mousemove", x0, y0, "mousedown", "1", "mousemove", str(int(x0) - 20), str(int(y0) - 40))
         time.sleep(0.5)
-        print(f"dragging the line, the pointer off it: {shape()}")
+        check("the pointer dragging the line, off it", shape(), "width")
         xd("mouseup", "1")
         time.sleep(0.6)
         # the box's edges, each resizing as its shape says
@@ -1185,7 +1254,10 @@ def pointers(a, env, tmux, xdo, snap, cli):
             x1, y1 = at_t(col + dcol, row + drow)
             xd("mousemove", x0, y0, "mousedown", "1", "mousemove", x1, y1, "mouseup", "1")
             time.sleep(0.7)
-            print(f"the box's {edge} edge dragged by {dcol},{drow}: {geom()}")
+            # the right and bottom edges grow the box; the left one moves its
+            # left edge, the right staying
+            want = {"right": f"{fx},{fy} {fw + 5}x{fh}", "bottom": f"{fx},{fy} {fw}x{fh + 2}", "left": f"{fx - 2},{fy} {fw + 2}x{fh}"}[edge]
+            check(f"the box's {edge} edge dragged by {dcol},{drow}", geom(), want)
         snap("pointers")
         cli("kill-server")
         time.sleep(1)
@@ -1196,3 +1268,4 @@ def pointers(a, env, tmux, xdo, snap, cli):
 
 if __name__ == "__main__":
     main()
+    report()
