@@ -2423,3 +2423,105 @@ the current window at index 1 on both. App tests 141.
 
 **Not done from TM39's item 6:** 3.8's `i` (information in place of the
 preview) and `<`/`>` (scrolling the previews).
+
+## TM61 · How the Enter bug got through, and the same kind found (2026-11-12)
+
+Gilbert, 2026-11-12: "do an analysis of why we had that tmux -CC ENTER
+bug; i.e., how did we miss it? how did we get it wrong? was our
+code-reading not careful enough? … if we determine why we got this one
+wrong, we can check to see if we made similar mistakes in other parts of
+the code."
+
+### What went wrong
+
+**The change (TM23, 2026-11-11).** To make tmux's bindings fire, puritty
+began sending every named key with `send-keys -K`, "as if typed by the
+client". What was checked: the prefix and bindings fire, typed text
+arrives. What was assumed: that a key no binding takes then goes to the
+program exactly as a typed one. That was argued from the manual and from
+the code we were changing (`cmd-send-keys.c`, the key-table lookup in
+`server_client_key_callback`), and the reading stopped there. The bytes
+are made further on, in `input_key` (`input-keys.c`), where the key still
+carries `KEYC_SENT`: it is never the plain-byte case, its table lookup
+fails, and an escape-sequence key counts as internal and is dropped;
+Enter falls to the extended-keys encoder and, in Ext 2, nothing is
+written (TM50). The code-reading was careful about the part we touched
+and not about the path to where it mattered: **the bytes the program
+receives**.
+
+**The evidence that was there.** `show.py mouse` ends by printing what
+the left pane's `cat -v` got after pressing Up. Since TM23 the line has
+ended without `^[OA` on every run: Up never arrived. The line is printed,
+not compared with anything, and read as "the mouse report arrived".
+
+**The chase.** Gilbert's report began with a paste, so the work went to
+pastes: the diagnostic log (DG1–DG4), and a Linux reproduction with a
+logging stand-in that did not reproduce. The stand-in turned on no
+extended keys and tmux had `extended-keys` off; and it was never compared
+with a normal client, the one thing that would have shown every arrow
+missing.
+
+**The kind of mistake.** puritty stands in for a tmux client by sending
+commands it believes equivalent to what a client does. Drawing got a
+side-by-side oracle against a plain client today (TM39); input had none,
+so each equivalence rested on reading, and reading stopped short.
+
+### The same kind, looked for and found
+
+A byte-level oracle for input, `bench/tmux/compare/keydiff.py`: the same
+keys and mouse events by xdotool to puritty running a **normal** tmux
+client and to puritty in **-CC**, a logging program in the pane asking
+for the same modes, on 3.6a and 3.8, `extended-keys` on and off. Its first
+version passed with nothing logged on either side (the log was unlinked
+under the logger); it now stops when a run logs nothing, and it was run
+against a build with TM50's fix turned off to see it fail (18 of 31 keys
+lost on 3.8 with no modes at all: arrows, Home, End, PgUp, PgDn, Insert,
+Delete, F-keys, Shift+Tab, keypad Enter; Enter too in Ext 2). Found and
+fixed with it:
+
+1. **Keypad Enter** (all versions, modes): `\n`, or `\eOM` in keypad mode,
+   where a normal client gives `\r`; puritty now sends it as Enter.
+2. **Mouse drags** (1002, 1003): no motion with a button held reached the
+   program (1002), or it came as button 35, none held (1003): the tmux
+   path gave a motion no button, where puritty's own path gives the
+   lowest held (`lowestHeld`).
+3. **Hover motions** (1003): never reached a pane. Main dropped a motion
+   with no button held unless *its own* terminal asked for every motion;
+   under `-CC` that terminal is the control channel, which never asks.
+   Now it asks tmux mode whether a pane does (`TmuxMode.anyMotion`).
+4. **3.6: a pane's modes at attach.** puritty learned them from
+   `pane_private_modes`, which is 3.8's; on 3.6 it is empty, so a program
+   that had turned on the mouse, cursor keys or the keypad before the
+   attach got no mouse reports and the wrong keys until it turned them on
+   again. Now 3.6's older flags fill in (`mouse_standard_flag`,
+   `_button_`, `_all_`, `_sgr_`, `_utf8_`, `keypad_cursor_flag`,
+   `keypad_flag`); `mouse_any_flag`, which reads as 1003, is any mouse
+   mode at all (measured).
+
+After them: 31 keys in 4 modes and 6 mouse events in 4 modes, the same
+bytes as a normal client's on 3.6a and 3.8. Gates: app 141, tmux package
+71, `pointer` 54, `mouse` 200,000, `select` 4, `events` 13; `show.py`
+mouse, select, lines, pointers, attach.
+
+**Still unchecked in the same way:** bracketed paste on 3.6 (no flag says
+a program asked for it, so it is known only once the program asks after
+the attach); pastes themselves (puritty adds the brackets and sends
+bytes; a client sends its terminal's paste through tmux); focus events
+(puritty sends `\e[I`/`\e[O`; tmux sends them with `focus-events` on
+and the program asking); the wheel on the alternate screen; IME commits.
+Each wants a case in `keydiff.py`.
+
+### What changes in how we work
+
+1. **Every place puritty stands in for a tmux client gets a byte-level
+   comparison with a normal client in puritty**, on the oldest and newest
+   tmux we support, before it is called done. `keydiff.py` is the start.
+2. **A printed result is not a check.** A line that prints state is
+   either compared with an expected value or it is not evidence;
+   `show.py`'s lines are to become assertions, beginning with the mouse
+   scenario's.
+3. **A check is run against the bug once**, so that a check that sees
+   nothing cannot pass, as this one's first version did.
+4. **Read to the boundary.** A claim of equivalence from a manual or from
+   the code being changed is a hypothesis until the code to the output
+   (here, `input_key`) is read or the bytes are measured.

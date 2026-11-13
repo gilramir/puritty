@@ -3327,9 +3327,10 @@ handleOne remote ms rest ev m =
                         |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
 
                 Window.Pointer p ->
-                  if p.action == 2 && m.held == 0 && (Vt.mouseModes m.term).tracking /= Mouse.any then
+                  if p.action == 2 && m.held == 0 && not (if TmuxMode.isOn m.tmux then TmuxMode.anyMotion m.tmux else (Vt.mouseModes m.term).tracking == Mouse.any) then
                     -- a motion with no button held that nothing asked for,
-                    -- sent for the pointer's shape alone (TM38)
+                    -- sent for the pointer's shape alone (TM38); under tmux
+                    -- a pane's program may ask (TM61)
                     handle remote ms rest { m | hover = Just p }
 
                   else if m.hover /= Just p then

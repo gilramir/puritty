@@ -20,6 +20,7 @@ module TmuxMode exposing
     , scrollKey
     , tabKey
     , newWindow
+    , anyMotion
     , tick
     , dueAt
     , selectedText
@@ -1370,7 +1371,7 @@ infoOf pane =
     "display-message -p -t "
         ++ Command.quote ("%" ++ String.fromInt pane)
         ++ " "
-        ++ Command.quote "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes}"
+        ++ Command.quote "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{keypad_cursor_flag} #{keypad_flag}"
 
 
 {-| A pane's history and screen, with its colors and attributes, wrapped
@@ -2085,7 +2086,22 @@ paneLine bytes =
                 , alt = int 6 == 1
                 , top = int 7
                 , bottom = int 8
-                , modes = String.split "," (Maybe.withDefault "" (Array.get 9 words)) |> Array.mapAndKeepJust String.toInt
+                , modes =
+                    let
+                        private =
+                            String.split "," (Maybe.withDefault "" (Array.get 9 words)) |> Array.mapAndKeepJust String.toInt
+
+                        -- before 3.8 `pane_private_modes` is empty: the
+                        -- modes from tmux's older flags (TM61; measured on
+                        -- 3.6a), bracketed paste having none
+                        flag i mode =
+                            if int i == 1 then [ mode ] else []
+                    in
+                    if not (Array.isEmpty private) then
+                        private
+
+                    else
+                        flag 10 1000 ++ flag 11 1002 ++ flag 12 1003 ++ flag 13 1006 ++ flag 14 1005 ++ flag 15 1 ++ flag 16 66
                 , saved = []
                 }
             }
@@ -3019,7 +3035,11 @@ keyByTable k bytes ms s =
             if s.keys.byTable && nobodyBinds then
                 when keyName k is
                     Just name ->
-                        [ Command.sendKeyTo s.active name ]
+                        -- keypad Enter as Enter: through a client attached
+                        -- in puritty, tmux is sent `\r` for it and gives the
+                        -- program `\r`; by its name it would give `\n`, or
+                        -- `\eOM` in keypad mode (measured, TM61)
+                        [ Command.sendKeyTo s.active (if name == "KPEnter" then "Enter" else name) ]
 
                     Nothing ->
                         byName k bytes s.active
@@ -8666,6 +8686,26 @@ dragged col row released d s =
         { state = s2, commands = [] }
 
 
+{-| The lowest-numbered button held, from `i` (0 for none), as Main's. -}
+lowestHeld : Int -> Int -> Int
+lowestHeld held i =
+    if i > 11 then
+        0
+
+    else if Bitwise.and held (Bitwise.shiftLeftBy i 1) /= 0 then
+        i
+
+    else
+        lowestHeld held (i + 1)
+
+
+{-| Whether a pane's program asks for every motion (mode 1003), so that the
+pointer's motions with no button held are its (TM61). -}
+anyMotion : State -> Bool
+anyMotion s =
+    Array.any (\id -> withPane id s (\t -> (Vt.mouseModes t).tracking == Mouse.any) == Just True) s.ids
+
+
 {-| A pointer event as the pane's program asked for it, if it did: encoded
 by the pane's mouse modes, at the pane's own cells, sent as its keys. -}
 report : Int -> Window.PointerEvent -> Layout.Pane -> (taken s : State) -> { state : State, commands : Array String }
@@ -8701,7 +8741,9 @@ report held p q s =
                                 , last = s.mouseLast
                                 }
                                 { action = p.action
-                                , button = p.button
+                                , -- a motion with its lowest button held, as
+                                  -- puritty reports one without tmux (TM61)
+                                  button = if p.action == 2 then lowestHeld held 1 else p.button
                                 , mods = p.mods
                                 , x = p.x - q.x * p.cellWidth
                                 , y = p.y - q.y * p.cellHeight
