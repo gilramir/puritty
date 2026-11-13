@@ -77,7 +77,8 @@ SUITES = [
     Suite("tmux", 99, runs_of("packages/tmux/tests")),
     Suite(
         "app",
-        149,
+        # 160 since TM69: the fake tmux's tree, prompt and menus, 11 more
+        160,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

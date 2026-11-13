@@ -3059,6 +3059,69 @@ program compiled against the real X11 `Window`, and as a Windows program
 against win32's, all seven passing on each.
 
 **Not yet:** one pane only; the
-tree, prompts, menus, customize-mode, the message log and the status line
-are TmuxMode's that the fake does not yet answer for. Each new test widens
+tree, prompts and menus came in TM69; customize-mode, the message log and
+the status line are TmuxMode's that the fake does not yet answer for. Each new test widens
 the fake and adds its questions to `record-tmux.py`.
+
+
+## TM69 · The fake tmux widened: the tree, the prompt and the menus (2026-11-13)
+
+TM68's fake answered what attaching and copy mode ask, and its key table
+was six lines written by hand. This week's fixes were mostly in the tree,
+the prompts and the menus, which no test reached.
+
+**The recording is made as puritty asks.** `record-tmux.py` asks every
+question through a control client (`tmux -C attach`), as puritty's own
+client asks, with the flags puritty's sends when it attaches (`refresh-client
+-f new-layouts,pause-after=5`). Asked through a separate `tmux` command
+instead, as TM68's recording was, 3.8 gave `window_visible_layout` in its
+JSON form; through a control client without those flags it gives the old
+form, and with them the JSON form again, so the flags are part of what is
+recorded. It records `list-keys` and `list-commands`' table whole (308 and
+92 lines on 3.8, 267 and 90 on 3.6a), and writes what changes from run to
+run as the fake gives it: the host's name `host`, the client's
+`client-0`, the activity and creation times 1700000000, and those times
+shown by `t/p:` `12:00`.
+
+**The fake's bindings are tmux's.** `list-keys` is answered with the
+version's recorded defaults, so `C-b s`, `C-b :` and `C-b <` reach puritty
+as tmux binds them, and a binding tmux changes between versions changes in
+the tests too (3.8's pane menu has Float, 3.6a's has Swap Up and Down).
+
+**Every question a scenario asks is recorded.** The fake keeps every command
+line as it was sent (`heard`). `TmuxTests.scenarios` names ten: attached,
+copy mode, the tree of sessions and of windows, the tree closed, the
+command prompt and one run, the window menu and its Rename, the pane menu.
+A test runs each on each version and lists every line that only asks
+(`display-message`, `list-*`, `capture-pane`) and is not in `RealTmux`,
+ready to be added to `app/tests/tmux-questions.txt`, which `record-tmux.py`
+puts to the real tmuxes. 61 lines there today, 85 answers a version in
+all, and TM68's test holds the fake to every one.
+
+**What holding it found in the fake**, each fixed:
+- the variables the tree reads (`session_attached`, `session_windows`, the
+  activity times, `pane_left`, `pane_flags`, which 3.6a does not have) and
+  `pane_private_modes` (`7,25` on 3.8, unknown on 3.6a);
+- the format language tmux's bindings use: `#{?#{…},a,b}` whose condition
+  is a format, `!:`, `&&:`, `||:`, `==:`, `!=:`, `<:`, `>:`, `m/r:` (for
+  the one-group patterns the bindings have), `=N:` and `=/N/end:`, `q:`,
+  `t/p:`, `#{#{x}}`, the one-letter aliases (`#W`), user options (`@name`,
+  which `set-option` keeps);
+- `display-message` writes `%%` as `%` (`100%%` is `100%`);
+- `capture-pane` without `-S` gives the screen, not the history too, and
+  `-a` on a pane with no alternate screen gives one empty line;
+- the selection's variables are empty while nothing is selected, not `0`;
+- and the test read a reply without its empty lines, which tmux sends.
+
+**The tests** (suite `TmuxMode`, 18: 2 over both versions, 8 on each):
+the tree of sessions shows `main: 1 windows (attached)` and `q` closes it;
+the tree of windows opens the session and shows `0: sh*`; the command
+prompt opens (puritty's dialog, `promptBox`), shows what is typed and
+sends it to tmux on Enter; the window menu shows tmux's nine items, and
+its Rename opens a prompt holding the window's name (`#W` expanded by
+tmux); the pane menu shows each version's items. App tests 160 on node,
+natively and on Windows (`vt-core.md` §VC62's gate holds 160).
+
+**Not yet:** more than one pane or window, customize mode, choose-buffer
+and choose-client, the clock, display-panes, and the message log.
+
