@@ -1728,7 +1728,7 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
    format (`search_count`); the highlighting means puritty searching its
    own copy of the history with the string it sent. Also: the `(search
    up)` and `(goto line)` prompts belong on the pane's last row, not the
-   bar. Count and marks done (TM41); the prompts' place not yet.
+   bar. Count and marks done (TM41), the prompts' place (TM42).
 2. **emacs `C-r` in copy mode does not search** (M): tmux's cursor moved
    with each character typed and stayed after Enter; under puritty it
    did not move. A bug, not a missing drawing; first to look at. Fixed
@@ -1878,3 +1878,19 @@ prompts unchanged.
 - A match across a wrapped row's end is found by tmux and not by puritty.
 - The styles are tmux's defaults, not the user's (TM39.4, reading the
   options).
+
+## TM42 · A prompt asked in the pane (`command-prompt -P`) (2026-11-12)
+
+The last of TM39's item 1. 3.8's copy-mode bindings ask their searches
+and `(goto line)` with `command-prompt -P` (`key-bindings.c:579`), which
+puts the prompt on the pane's last row rather than the status line; 3.6a's
+have no `-P` and ask on the status line, as puritty did. `Syntax.Prompt`
+keeps `inPane`, and in tmux's look such a prompt is drawn on the active
+pane's last row (`TmuxMode.promptAt`), its text and one cell after it in
+the message color and the rest of the row blank, as tmux draws it.
+puritty's own look asks in its box either way.
+
+**Checked side by side** (`bench/tmux/compare`, `copy-emacs`,
+`copy-vi`): `(search up) 1` and `(goto line)` on the same row, colored
+over the same cells. Tests: app 137, tmux package 62; `show.py`
+prompts, copy and modes unchanged.

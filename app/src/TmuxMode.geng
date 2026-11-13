@@ -1962,6 +1962,33 @@ paint s =
 
                 -- in tmux's look, a prompt or a message over the whole bar, as
                 -- tmux shows them on its status line (TM25)
+                -- where a prompt is asked: the status line, or the active
+                -- pane's last row for `command-prompt -P`, as 3.8's copy
+                -- mode asks its searches (TM42)
+                promptAt =
+                    when { asking = s.asking, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
+                        { asking = Just a, place = Just place } ->
+                            if askedInPane a then
+                                { row = place.value.y + place.value.h - 1, col = place.value.x, width = place.value.w }
+
+                            else
+                                { row = barRow, col = 0, width = cols }
+
+                        _ ->
+                            { row = barRow, col = 0, width = cols }
+
+                promptClear =
+                    when s.asking is
+                        Just a ->
+                            if s.lookTmux && askedInPane a then
+                                [ { row = promptAt.row, col = promptAt.col, text = String.repeat promptAt.width " " } ]
+
+                            else
+                                []
+
+                        Nothing ->
+                            []
+
                 tmuxLine =
                     if not s.lookTmux then
                         []
@@ -1969,7 +1996,14 @@ paint s =
                     else
                         when s.asking is
                             Just a ->
-                                [ { row = barRow, col = 0, text = String.padRight cols ' ' (String.takeFirst cols (a.label ++ String.fromArray a.chars)) } ]
+                                if askedInPane a then
+                                    -- in the pane, only the prompt's text
+                                    -- and a cell after it are colored, the
+                                    -- rest of the row blank (promptClear)
+                                    [ { row = promptAt.row, col = promptAt.col, text = String.takeFirst promptAt.width (a.label ++ String.fromArray a.chars ++ " ") } ]
+
+                                else
+                                    [ { row = promptAt.row, col = promptAt.col, text = String.padRight promptAt.width ' ' (String.takeFirst promptAt.width (a.label ++ String.fromArray a.chars)) } ]
 
                             Nothing ->
                                 if s.said == "" then
@@ -1986,7 +2020,7 @@ paint s =
                     when s.asking is
                         Just a ->
                             if s.lookTmux then
-                                [ { row = barRow, col = 0, text = String.takeFirst cols (a.label ++ String.fromArray (Array.slice 0 a.caret a.chars)) } ]
+                                [ { row = promptAt.row, col = promptAt.col, text = String.takeFirst promptAt.width (a.label ++ String.fromArray (Array.slice 0 a.caret a.chars)) } ]
 
                             else
                                 []
@@ -2223,6 +2257,7 @@ paint s =
                                         |> drawText busyTabColor tabBar.busy
                                         |> drawText barColor saidPiece
                            )
+                        |> drawText "\u{001B}[0m" promptClear
                         |> drawText messageColor tmuxLine
                         |> drawText messageColor caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
@@ -2517,6 +2552,17 @@ stepTo step answers a =
         { asking = { a | step = step, answers = answers, label = q.label, chars = String.toArray q.input, caret = String.count q.input, edited = False }
         , expand = expand q.label ForLabel ++ expand q.input ForInput
         }
+
+
+{-| Whether a prompt is asked in the pane (`command-prompt -P`). -}
+askedInPane : Asking -> Bool
+askedInPane a =
+    when a.ask is
+        Syntax.Prompt p ->
+            p.inPane
+
+        Syntax.Confirm _ ->
+            False
 
 
 {-| Whether a prompt is incremental (`command-prompt -i`, copy mode's
