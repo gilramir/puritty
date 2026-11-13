@@ -2405,3 +2405,21 @@ Session, New Window), the window menu's for the window pressed. App tests
 **Not done:** display-panes' digits one cell off in right-hand panes:
 3.8 draws them in a mode of its own (`window-panes.c`) with scaled
 geometry, not yet read.
+
+## TM60 · The tree's swap and help (2026-11-12)
+
+The last of TM39's item 6. **S-Up** and **S-Down** swap the chosen
+window with its neighbor in the same session (`swap-window -d`), only
+when sorted by index, as `window_tree_swap` refuses otherwise (swapping
+indexes would not move the rows); the lists are asked again and the
+chosen row follows the window. **C-h** (3.7 on) shows the keys as
+`mode_tree_help_start`, `window_tree_help_lines` and
+`mode_tree_help_end` list them, in puritty's view of printed lines
+(tmux draws them in a box over the tree).
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `tree-swap`):
+after S-Down on `0: first`, `0: two-`, `1: first*`, `2: three` on both,
+the current window at index 1 on both. App tests 141.
+
+**Not done from TM39's item 6:** 3.8's `i` (information in place of the
+preview) and `<`/`>` (scrolling the previews).

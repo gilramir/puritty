@@ -7326,6 +7326,36 @@ treeKey k t s =
     else if name == "r" then
         { state = { s | tree = Just (keepChosen at { t | reversed = not t.reversed }) }, commands = [] }
 
+    else if name == "S-Up" || name == "S-Down" then
+        -- the window swapped with its neighbor in its session, sorted by
+        -- index only, as window_tree_swap (TM60); the chosen row follows it
+        when at is
+            Just r ->
+                let
+                    step =
+                        if name == "S-Up" then -1 else 1
+
+                    neighbor =
+                        Array.get (t.selected + step) rows
+                in
+                when neighbor is
+                    Just o ->
+                        if r.depth == 1 && o.depth == 1 && o.session == r.session && t.sort == 0 then
+                            reloadTree [ "swap-window -d -s " ++ Command.quote (rowTarget r) ++ " -t " ++ Command.quote (rowTarget o) ] t s
+
+                        else
+                            { state = s, commands = [] }
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "C-h" && (s.version == 0 || s.version >= 37) then
+        -- the keys, as mode_tree's help lists them (3.7 on)
+        { state = { s | view = Just (viewOf (Array.map Bytes.fromString treeHelp)) }, commands = [] }
+
     else if name == "/" || name == "?" || name == "C-s" then
         { state = { s | asking = Just (treePrompt 1 "(search) " "") }, commands = [] }
 
@@ -7348,6 +7378,43 @@ treeKey k t s =
 
             Nothing ->
                 { state = s, commands = [] }
+
+
+{-| The tree's keys as tmux's help shows them (`mode_tree_help_start`,
+`window_tree_help_lines`, `mode_tree_help_end`, 3.8). -}
+treeHelp : Array String
+treeHelp =
+    [ "      Up, k │ Move cursor up"
+    , "    Down, j │ Move cursor down"
+    , "          g │ Go to top"
+    , "          G │ Go to bottom"
+    , " PPage, C-b │ Page up"
+    , " NPage, C-f │ Page down"
+    , "    Left, h │ Collapse item"
+    , "   Right, l │ Expand item"
+    , "        M-- │ Collapse all items"
+    , "        M-+ │ Expand all items"
+    , "          t │ Toggle item tag"
+    , "          T │ Untag all items"
+    , "        C-t │ Tag all items"
+    , "        C-s │ Search forward"
+    , "          n │ Repeat search forward"
+    , "          N │ Repeat search backward"
+    , "          f │ Filter items"
+    , "          O │ Change sort order"
+    , "          r │ Reverse sort order"
+    , "          v │ Toggle preview"
+    , "      Enter │ Choose selected item"
+    , "       S-Up │ Swap current and previous window"
+    , "     S-Down │ Swap current and next window"
+    , "          x │ Kill selected item"
+    , "          X │ Kill tagged items"
+    , "          m │ Set the marked pane"
+    , "          M │ Clear the marked pane"
+    , "          : │ Run a command for each tagged item"
+    , "          H │ Jump to the starting pane"
+    , "  q, Escape │ Exit mode"
+    ]
 
 
 {-| A question of the tree's own, asked at the status line as tmux asks
