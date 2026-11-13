@@ -4451,5 +4451,35 @@ scripted server's 25 cases and the live `sshd.py`'s 62 pass with the
 program's other modes unchanged.
 
 **Not yet:** the `text` package's Geng surface needs an open window and
-has no tests; the native and Windows runs are by hand, not in a gate.
+has no tests. The runs were by hand; §VC62 makes them a gate.
+
+
+## VC62. The unit suites' gate: `harness/units.py` (2026-11-13)
+
+Gilbert: the native tests need to be in a gate. `harness/units.py` builds
+and runs every gren-unit-node suite puritty has on each platform it runs
+on, and holds each run to its count: the program ends with status 0 and
+its runner says `OK — N passed` with the N written in the gate, which
+moves only with the commit that moves it (as geng-lang's `suites.py`
+holds its suites, D356).
+
+| suite | node | Linux, native | Windows (beelink1) |
+|---|---|---|---|
+| vt | 94 | 94 | 94 |
+| tmux | 99 | 99 | 99 |
+| app | 149 | 149 | 149 |
+| ssh-crypto's vectors | — | 10 | 10 |
+| ssh-tests' known-hosts | — | 34 | 34 |
+| ssh-tests' config | — | 30 | 30 |
+
+The Windows programs are cross-compiled here and copied to beelink1 with
+the files they read, and run there over ssh. **Windows is part of the
+gate**: when beelink1 cannot be reached, its runs fail, and `--no-windows`
+leaves them out on purpose and says that the run was not the whole gate.
+It is run from puritty's devbox, which has the X11 package's libraries;
+each build and run is capped at 8 GB.
+
+Measured: 15 of 15 runs pass in 495 s, most of it building (the app's
+three builds about 80 s each). Set to expect 98 of tmux, it fails, saying
+`passed 99 of 98 expected` with the report.
 
