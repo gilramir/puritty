@@ -2978,3 +2978,72 @@ as before (`%pane-mode-changed`, TM31).
 tests 142. The flash lasts one round trip, too short for a picture taken
 by the harness to catch reliably, so it is not checked by a test yet: a
 test of `TmuxMode`'s state for it is TM68's.
+
+## TM68 · TmuxMode tested against a fake tmux (2026-11-13)
+
+TM67's flash lasted one round trip, which no picture the harness takes
+catches reliably, and `show.py` and `bench/tmux/compare` see only what
+reaches a screen. Gilbert asked for tests of `TmuxMode`'s own state.
+
+**Why it can be tested without tmux.** `TmuxMode` is pure: tmux's bytes go
+in through `read`, keys through `typed`, `keys` and `paste`, and out come
+its state and the command lines it would send. Its only tie to a platform
+is two types of `Window`'s (the pointer's shapes and a pointer event), so
+`app/tests/src/Window.geng` declares just those, and the app's tests on
+node compile `TmuxMode` as it is, with the tmux package as a dependency.
+
+**`app/tests/src/FakeTmux.geng`**, a tmux server as control mode sees it:
+one session (`$0`), one window (`@0`), its panes (`%0`), each with its lines
+and, in copy mode, its scroll, cursor and the column the cursor keeps to.
+It answers each command of a line puritty sends with a `%begin`/`%end`
+block (parsing the line with the tmux package's own `Syntax.tokens`),
+expands the `#{…}` formats from the model (`#{?…}` and `#{T:…}`-style
+modifiers too), and acts on what changes it: `send-keys` in copy mode (by
+`-X` command, by key name, and `-K -H 6b`, the hex form puritty sends a
+letter in), `copy-mode`, `refresh-client -B` subscriptions (told at once).
+A command it does not know is answered with nothing and listed in
+`unknown`.
+
+**`app/tests/src/TmuxTests.geng`**, the driver and the tests. A run holds
+puritty's state, the fake, the command lines puritty sent that tmux has
+not answered yet, and a clock; `deliver` feeds tmux's bytes to `read`,
+`settle` answers what is held until puritty asks nothing more,
+`typeKey` types a key, and `look` paints and reads puritty's screen as rows
+of text. Holding the replies back is what lets a test see the moment
+between a key and tmux's answer.
+
+**Keeping the fake honest.** `app/tests/record-tmux.py` starts a real tmux
+(3.8 by default) with the tests' pane (200 lines, no last newline), asks
+puritty's questions (`windowQuery`, `tabsQuery`, `panesQuery`, the pane's
+info, `modeFormat`, `copyFormat`) attached, in copy mode, and after 30 and
+31 `cursor-up`s, and writes the answers into `app/tests/src/RealTmux.geng`.
+A test asks the fake the same questions in the same states and requires
+the same lines. Its first run found the fake wrong three times, and the
+fake was fixed to match: tmux numbers a new server's ids from 0 (`$0`,
+`@0`, `%0`); 3.8 gives the layout in its JSON form; copy mode's variables
+are empty outside it (`C %0  176   `, not zeros); and the copy cursor keeps
+its column until it moves, then is held to the line's last character in vi
+mode (entering at column 8, past the end of `line 200`, it shows 8; one
+line up, 7). Writing the fake also found it, not puritty, wrong once:
+`#{pane_mode}` is `copy-mode` with vi keys too; `copy-mode-vi` is only the
+key table.
+
+**The tests** (suite `TmuxMode`, 4):
+- the fake answers as the recorded tmux 3.8 does, in all four states (24
+  answers);
+- attaching asks for nothing the fake does not know, and draws lines 177
+  to 200;
+- 30 `k`s in copy mode scroll tmux to 7 and puritty shows `line 170` at
+  the top with `[7/176]` at its right;
+- one more `k`, tmux's answer held: puritty still shows `line 170`; let
+  through: `line 169`, `[8/176]`. **With TM67's fix taken out this test
+  fails**: held, it shows `line 177`, the live screen behind `[7/176]`,
+  the ghost Gilbert saw.
+
+App tests 146, in under a second with the rest.
+
+**Not yet:** the recording is of 3.8 only (3.6a's layouts are the old
+form, which the fake would need beside the JSON one); one pane only; the
+tree, prompts, menus, customize-mode, the message log and the status line
+are TmuxMode's that the fake does not yet answer for. Each new test widens
+the fake and adds its questions to `record-tmux.py`.

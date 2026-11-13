@@ -1,0 +1,280 @@
+module TmuxTests exposing (tmuxMode)
+
+{-| `TmuxMode` driven by `FakeTmux` (`docs/tmux.md` TM68): tmux's bytes
+delivered, keys typed, replies held back or let through, and the screen
+puritty draws read as rows of text. -}
+
+import Bytes exposing (Bytes)
+import Expect exposing (Expectation)
+import FakeTmux exposing (World)
+import RealTmux
+import Task
+import Test.Runner.UnitNode as U
+import TmuxMode
+import Vt
+
+
+{-| A session in progress: puritty's state, the fake server, the command
+lines puritty has sent and tmux has not answered yet, and the clock. -}
+type alias Run =
+    { tmux : TmuxMode.State
+    , world : World
+    , held : Array String
+    , ms : Int
+    }
+
+
+{-| puritty's window: the tmux window and one row for the tab bar. -}
+size : World -> { cols : Int, rows : Int }
+size w =
+    { cols = w.cols, rows = w.rows + 1 }
+
+
+{-| tmux's bytes read by puritty; what it sends back is held. -}
+deliver : Bytes -> (taken run : Run) -> Run
+deliver bytes run =
+    let
+        sized =
+            size run.world
+
+        held =
+            run.held
+
+        r =
+            TmuxMode.read sized bytes run.tmux
+    in
+    { run | tmux = r.state, held = held ++ r.commands }
+
+
+{-| Every held command answered, and what that makes puritty send, until
+it sends nothing more (at most `n` rounds). -}
+settle : (taken run : Run) -> Run
+settle run =
+    settleUpTo 200 run
+
+
+settleUpTo : Int -> (taken run : Run) -> Run
+settleUpTo n run =
+    when Array.popFirst run.held is
+        Just { first, rest } ->
+            if n <= 0 then
+                run
+
+            else
+                let
+                    answered =
+                        FakeTmux.answer first run.world
+                in
+                settleUpTo (n - 1) (deliver answered.bytes { run | world = answered.world, held = rest })
+
+        Nothing ->
+            run
+
+
+{-| A session attached to `w` and settled. -}
+attached : World -> Run
+attached w =
+    settle (deliver FakeTmux.startBytes { tmux = TmuxMode.idle {}, world = w, held = [], ms = 1000 })
+
+
+{-| A key with a letter on it (`k`), typed. -}
+typeKey : String -> (taken run : Run) -> Run
+typeKey letter run =
+    let
+        sym =
+            String.toArray letter |> Array.first |> Maybe.map Char.toCode |> Maybe.withDefault 0
+
+        bytes =
+            Bytes.fromString letter
+
+        ms =
+            run.ms
+
+        held =
+            run.held
+
+        r =
+            TmuxMode.typed { action = 1, keycode = 0, mods = 0, consumed = 0, unshifted = sym, sym = sym, text = bytes } bytes ms run.tmux
+    in
+    { run | tmux = r.state, held = held ++ r.commands, ms = ms + 30 }
+
+
+{-| The pane put in copy mode by tmux (as `prefix [` does), and settled. -}
+inCopyMode : Int -> (taken run : Run) -> Run
+inCopyMode pane run =
+    let
+        e =
+            FakeTmux.enterCopy pane run.world
+    in
+    settle (deliver (Bytes.fromString (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") e.notices))) { run | world = e.world })
+
+
+{-| The screen puritty draws, each row's text without its trailing blanks,
+and the run, painted. -}
+look : (taken run : Run) -> { run : Run, rows : Array String }
+look run =
+    let
+        painted =
+            TmuxMode.paint run.tmux
+
+        top =
+            Vt.rowsPushed painted.canvas
+
+        rows =
+            Array.range 0 (painted.canvas.rows - 1)
+                |> Array.map (\r -> Vt.selectionText { row = top + r, col = 0 } { row = top + r, col = painted.canvas.cols - 1 } painted.canvas |> String.trimRight)
+    in
+    { run = { run | tmux = painted }, rows = rows }
+
+
+row : Int -> { run : Run, rows : Array String } -> String
+row i seen =
+    Maybe.withDefault "" (Array.get i seen.rows)
+
+
+{-| A row as its text and what sits at its right edge, the run of spaces
+between dropped: `{ text = "line 170", edge = "[7/176]" }`. -}
+split : Int -> { run : Run, rows : Array String } -> { text : String, edge : String }
+split i seen =
+    let
+        line =
+            row i seen
+    in
+    when String.firstIndexOf "    " line is
+        Just at ->
+            { text = String.takeFirst at line, edge = String.trim (String.dropFirst at line) }
+
+        Nothing ->
+            { text = line, edge = "" }
+
+
+numbered : Int -> Array String
+numbered n =
+    Array.range 1 n |> Array.map (\i -> "line " ++ String.fromInt i)
+
+
+tmuxMode : U.Suite
+tmuxMode =
+    U.suite
+        { name = "TmuxMode"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            Array.map (\c -> U.test c.name (\_ -> Task.succeed (c.test {})))
+                [ { name = "the fake answers as a real tmux does, in every recorded state (TM68)"
+                  , test = \_ -> Expect.equal [] fakeDiffers
+                  }
+                , { name = "attaching asks for nothing the fake does not know, and draws the pane"
+                  , test =
+                        \_ ->
+                            let
+                                seen =
+                                    look (attached (FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 }))
+                            in
+                            Expect.equal
+                                { unknown = [], first = "line 177", last = "line 200" }
+                                { unknown = seen.run.world.unknown, first = row 0 seen, last = row 23 seen }
+                  }
+                , { name = "copy mode scrolled by k shows the lines tmux scrolled to (TM31)"
+                  , test =
+                        \_ ->
+                            let
+                                seen =
+                                    attached (FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 })
+                                        |> inCopyMode 0
+                                        |> keys 30
+                                        |> look
+                            in
+                            -- copy mode's position at the top right, as tmux's
+                            -- `[scroll/history]`
+                            Expect.equal
+                                { scroll = 7, top = { text = "line 170", edge = "[7/176]" } }
+                                { scroll = (FakeTmux.copyState 0 seen.run.world).scroll, top = split 0 seen }
+                  }
+                , { name = "a key in copy mode keeps the view until tmux answers, no live screen behind it (TM67)"
+                  , test =
+                        \_ ->
+                            let
+                                -- k typed, tmux's answer not let through yet
+                                waiting =
+                                    attached (FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 })
+                                        |> inCopyMode 0
+                                        |> keys 30
+                                        |> typeKey "k"
+                                        |> look
+
+                                before =
+                                    split 0 waiting
+
+                                answered =
+                                    look (settle waiting.run)
+                            in
+                            Expect.equal
+                                { waiting = { text = "line 170", edge = "[7/176]" }, answered = { text = "line 169", edge = "[8/176]" } }
+                                { waiting = before, answered = split 0 answered }
+                  }
+                ]
+        }
+
+
+{-| The fake in each state `record-tmux.py` recorded a real tmux in. -}
+fakeIn : String -> World
+fakeIn state =
+    let
+        start =
+            FakeTmux.world { cols = 80, rows = 24, lines = numbered 200 }
+
+        up n w =
+            if n <= 0 then w else up (n - 1) (FakeTmux.answer "send-keys -t %0 -X cursor-up" w).world
+    in
+    when state is
+        "attached" ->
+            start
+
+        "copy mode" ->
+            (FakeTmux.enterCopy 0 start).world
+
+        "30 up" ->
+            up 30 (FakeTmux.enterCopy 0 start).world
+
+        "31 up" ->
+            up 31 (FakeTmux.enterCopy 0 start).world
+
+        _ ->
+            start
+
+
+{-| The lines of the one reply in a block of the fake's. -}
+replyLines : String -> Array String
+replyLines text =
+    String.split "\n" text
+        |> Array.map (\l -> if String.endsWith "\u{000D}" l then String.dropLast 1 l else l)
+        |> Array.keepIf (\l -> l /= "" && not (String.startsWith "%begin" l) && not (String.startsWith "%end" l) && not (String.startsWith "%error" l))
+
+
+{-| Each recorded answer, and the fake's to the same question in the same
+state, where they differ: none when the fake is honest (TM68). -}
+fakeDiffers : Array { state : String, command : String, real : Array String, fake : Array String }
+fakeDiffers =
+    RealTmux.answers
+        |> Array.map
+            (\a ->
+                { state = a.state
+                , command = a.command
+                , real = a.lines
+                , fake = replyLines (Bytes.toStringLossy (FakeTmux.answer a.command (fakeIn a.state)).bytes)
+                }
+            )
+        |> Array.keepIf (\d -> d.real /= d.fake)
+
+
+{-| `k` typed `n` times, each answered before the next. -}
+keys : Int -> (taken run : Run) -> Run
+keys n run =
+    if n <= 0 then
+        run
+
+    else
+        keys (n - 1) (settle (typeKey "k" run))

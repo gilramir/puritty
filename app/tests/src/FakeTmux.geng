@@ -1,0 +1,662 @@
+module FakeTmux exposing
+    ( World
+    , Pane
+    , world
+    , startBytes
+    , answer
+    , enterCopy
+    , copyState
+    , known
+    )
+
+{-| A tmux server as puritty's control mode sees it, for `TmuxMode`'s tests
+(`docs/tmux.md` TM68): one session (`$0`, `main`) with one window (`@0`)
+and its panes, numbered from `%0` as a new server numbers them, each with its lines (history and screen) and, in copy
+mode, where the view and the cursor are. It answers the command lines
+`TmuxMode` sends as tmux 3.8 does, a `%begin`/`%end` block a command,
+expanding the `#{…}` formats it is asked for from that model, and acts on
+the commands that change it (`send-keys` in copy mode, `copy-mode`). A
+command it does not know is answered with nothing and kept in `unknown`,
+so that a test can see what it was not ready for.
+
+It is a model, so it can be wrong where tmux is not; `known` lists what it
+answers, and each answer is checked against a real tmux's (TM68).
+-}
+
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Tmux.Syntax as Syntax
+
+
+{-| A pane: its id (`%id`), its lines, oldest first, the last `rows` of
+them its screen; its mode as `#{pane_mode}` says it (`""` or `copy-mode`,
+whose keys are copy-mode-vi's here); and in copy mode how
+many lines back from the bottom the view is and the cursor in the pane. -}
+type alias Pane =
+    { id : Int
+    , lines : Array String
+    , rows : Int
+    , mode : String
+    , scroll : Int
+    , cx : Int
+    , cy : Int
+    , wanted : Int
+    }
+
+
+{-| The server: the window's size, its panes side by side, the active one,
+the reply count, what was asked that it does not know, the subscriptions,
+and every command answered, in order. -}
+type alias World =
+    { cols : Int
+    , rows : Int
+    , panes : Array Pane
+    , active : Int
+    , number : Int
+    , unknown : Array String
+    , subscriptions : Array { name : String, scope : String, format : String }
+    , answered : Array String
+    }
+
+
+{-| A window of `cols` by `rows` with one pane, `%0`, showing `lines`, the
+cursor after the last of them, as a program that printed them and no last
+newline leaves it. -}
+world : { cols : Int, rows : Int, lines : Array String } -> World
+world w =
+    { cols = w.cols
+    , rows = w.rows
+    , panes = [ { id = 0, lines = w.lines, rows = w.rows, mode = "", scroll = 0, cx = 0, cy = w.rows - 1, wanted = 0 } ]
+    , active = 0
+    , number = 1
+    , unknown = []
+    , subscriptions = []
+    , answered = []
+    }
+
+
+{-| What `tmux -CC attach` writes first: control mode begun, and the
+attach command's own empty reply. -}
+startBytes : Bytes
+startBytes =
+    Bytes.fromString ("\u{001B}P1000p" ++ "%begin 1700000000 0 0\u{000D}\n%end 1700000000 0 0\u{000D}\n")
+
+
+{-| The commands tmux answers here, by name. -}
+known : Array String
+known =
+    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane" ]
+
+
+{-| A command line answered: each of its commands' replies, then what the
+commands made tmux tell the client (`%pane-mode-changed`, subscriptions). -}
+answer : String -> World -> { world : World, bytes : Bytes }
+answer line w0 =
+    let
+        done =
+            Syntax.commands (Syntax.tokens line)
+                |> Array.foldl
+                    (\tokens acc ->
+                        let
+                            r =
+                                one (Array.map .value tokens) acc.w
+                        in
+                        { w = { r.w | number = r.w.number + 1, answered = Array.pushLast (String.join " " (Array.map .value tokens)) r.w.answered }
+                        , text = acc.text ++ block acc.w.number r.ok r.lines
+                        , notices = acc.notices ++ r.notices
+                        }
+                    )
+                    { w = w0, text = "", notices = [] }
+    in
+    { world = done.w
+    , bytes = Bytes.fromString (done.text ++ String.join "" (Array.map (\n -> n ++ "\u{000D}\n") done.notices))
+    }
+
+
+block : Int -> Bool -> Array String -> String
+block number ok lines =
+    let
+        tail =
+            (if ok then "%end " else "%error ") ++ "1700000000 " ++ String.fromInt number ++ " 1\u{000D}\n"
+    in
+    "%begin 1700000000 " ++ String.fromInt number ++ " 1\u{000D}\n" ++ String.join "" (Array.map (\l -> l ++ "\u{000D}\n") lines) ++ tail
+
+
+{-| One command: its reply's lines, whether it succeeded, the world after it
+and what tmux tells the client because of it. -}
+one : Array String -> World -> { w : World, ok : Bool, lines : Array String, notices : Array String }
+one words w =
+    let
+        name =
+            Maybe.withDefault "" (Array.first words)
+
+        args =
+            parsed (Array.dropFirst 1 words)
+
+        target =
+            paneOf (Dict.get "t" args.values) w
+
+        format =
+            Maybe.withDefault "" (Dict.get "F" args.values)
+
+        reply lines =
+            { w = w, ok = True, lines = lines, notices = [] }
+    in
+    when name is
+        "display-message" ->
+            reply [ expand (vars w target) (Maybe.withDefault "" (Array.last args.rest)) ]
+
+        "display" ->
+            reply [ expand (vars w target) (Maybe.withDefault "" (Array.last args.rest)) ]
+
+        "list-windows" ->
+            reply [ expand (vars w (activePane w)) format ]
+
+        "list-panes" ->
+            reply (Array.map (\p -> expand (vars w p) format) w.panes)
+
+        "list-sessions" ->
+            reply [ expand (vars w (activePane w)) format ]
+
+        "list-keys" ->
+            reply
+                (if Dict.member "F" args.values || String.contains "N" args.bools then
+                    []
+
+                 else
+                    bindings
+                )
+
+        "list-commands" ->
+            reply []
+
+        "capture-pane" ->
+            reply
+                (if String.contains "a" args.bools then
+                    []
+
+                 else
+                    target.lines
+                )
+
+        "refresh-client" ->
+            when Dict.get "B" args.values is
+                Just sub ->
+                    subscribe sub w
+
+                Nothing ->
+                    reply []
+
+        "send-keys" ->
+            sendKeys args target w
+
+        "copy-mode" ->
+            let
+                next =
+                    enterCopy target.id w
+            in
+            { w = next.world, ok = True, lines = [], notices = next.notices }
+
+        "switch-client" ->
+            reply []
+
+        "select-pane" ->
+            reply []
+
+        _ ->
+            { w = { w | unknown = Array.pushLast (String.join " " words) w.unknown }, ok = True, lines = [], notices = [] }
+
+
+{-| A command's words: its flags without values (`-p` as `p`), the ones
+with (`-t %1`), and the rest. -}
+parsed : Array String -> { bools : String, values : Dict String String, rest : Array String }
+parsed words =
+    let
+        takesValue c =
+            String.contains c "tFBCcfTSEbx"
+
+        step acc =
+            when Array.get acc.at words is
+                Nothing ->
+                    acc
+
+                Just word ->
+                    if acc.restOnly || not (String.startsWith "-" word) || word == "-" then
+                        step { acc | at = acc.at + 1, rest = Array.pushLast word acc.rest, restOnly = True }
+
+                    else
+                        let
+                            letters =
+                                String.dropFirst 1 word
+
+                            last =
+                                String.takeLast 1 letters
+                        in
+                        if takesValue last then
+                            step
+                                { acc
+                                    | at = acc.at + 2
+                                    , bools = acc.bools ++ String.dropLast 1 letters
+                                    , values = Dict.set last (Maybe.withDefault "" (Array.get (acc.at + 1) words)) acc.values
+                                }
+
+                        else
+                            step { acc | at = acc.at + 1, bools = acc.bools ++ letters }
+
+        done =
+            step { at = 0, bools = "", values = Dict.empty, rest = [], restOnly = False }
+    in
+    { bools = done.bools, values = done.values, rest = done.rest }
+
+
+activePane : World -> Pane
+activePane w =
+    Array.findFirst (\p -> p.id == w.active) w.panes
+        |> Maybe.map .value
+        |> Maybe.withDefault { id = 0, lines = [], rows = 1, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+
+
+{-| A command's target pane: `%N`, or the active one for anything else. -}
+paneOf : Maybe String -> World -> Pane
+paneOf t w =
+    when t |> Maybe.andThen (\s -> if String.startsWith "%" s then String.toInt (String.dropFirst 1 s) else Nothing) is
+        Just id ->
+            Array.findFirst (\p -> p.id == id) w.panes
+                |> Maybe.map .value
+                |> Maybe.withDefault (activePane w)
+
+        Nothing ->
+            activePane w
+
+
+setPane : Pane -> World -> World
+setPane p w =
+    { w | panes = Array.map (\q -> if q.id == p.id then p else q) w.panes }
+
+
+{-| A pane put in copy mode (`prefix [`), the cursor where the pane's is,
+and tmux's word of it. -}
+enterCopy : Int -> World -> { world : World, notices : Array String }
+enterCopy id w =
+    let
+        p =
+            paneOf (Just ("%" ++ String.fromInt id)) w
+    in
+    { world = setPane { p | mode = "copy-mode", scroll = 0, cx = cursorX p, cy = p.rows - 1, wanted = cursorX p } w
+    , notices = [ "%pane-mode-changed %" ++ String.fromInt id ]
+    }
+
+
+{-| Where a pane's copy mode is: lines back from the bottom, and the
+cursor in the pane. -}
+copyState : Int -> World -> { scroll : Int, cx : Int, cy : Int, mode : String }
+copyState id w =
+    let
+        p =
+            paneOf (Just ("%" ++ String.fromInt id)) w
+    in
+    { scroll = p.scroll, cx = p.cx, cy = p.cy, mode = p.mode }
+
+
+{-| `send-keys`: in copy mode, a copy command (`-X cursor-up`) or a key
+through copy-mode-vi's table (`-K k`, a key name, or `-H 6b`, its bytes in
+hex, as puritty sends a letter); otherwise nothing changes here (what the
+program would print is a test's to send). -}
+sendKeys : { bools : String, values : Dict String String, rest : Array String } -> Pane -> World -> { w : World, ok : Bool, lines : Array String, notices : Array String }
+sendKeys args p w =
+    let
+        commandsOf =
+            if String.contains "X" args.bools then
+                args.rest
+
+            else
+                Array.map (\k -> Maybe.withDefault "" (Dict.get k copyTable)) keysSent
+
+        keysSent =
+            if String.contains "H" args.bools then
+                Array.map (\h -> String.fromChar (Maybe.withDefault '?' (Char.fromCode (hexValue h)))) args.rest
+
+            else
+                args.rest
+    in
+    if p.mode == "" then
+        { w = w, ok = True, lines = [], notices = [] }
+
+    else
+        let
+            ran =
+                Array.foldl (\c acc -> copyCommand c acc) { pane = p, left = False } commandsOf
+
+            next =
+                if ran.left then
+                    setPane { p | mode = "", scroll = 0 } w
+
+                else
+                    setPane ran.pane w
+        in
+        { w = next, ok = True, lines = [], notices = if ran.left then [ "%pane-mode-changed %" ++ String.fromInt p.id ] else [] }
+
+
+hexValue : String -> Int
+hexValue text =
+    String.foldl
+        (\c v ->
+            let
+                code =
+                    Char.toCode c
+            in
+            v * 16 + (if code >= 0x61 then code - 0x61 + 10 else if code >= 0x41 then code - 0x41 + 10 else code - 0x30)
+        )
+        0
+        text
+
+
+copyTable : Dict String String
+copyTable =
+    Dict.empty
+        |> Dict.set "k" "cursor-up"
+        |> Dict.set "Up" "cursor-up"
+        |> Dict.set "j" "cursor-down"
+        |> Dict.set "Down" "cursor-down"
+        |> Dict.set "q" "cancel"
+
+
+{-| One copy-mode command, as tmux moves its cursor and view. -}
+copyCommand : String -> { pane : Pane, left : Bool } -> { pane : Pane, left : Bool }
+copyCommand c acc =
+    let
+        p =
+            acc.pane
+
+        rows =
+            p.rows
+    in
+    when c is
+        "cursor-up" ->
+            if p.cy > 0 then
+                { acc | pane = moved { p | cy = p.cy - 1 } }
+
+            else if p.scroll < historyOf p then
+                { acc | pane = moved { p | scroll = p.scroll + 1 } }
+
+            else
+                acc
+
+        "cursor-down" ->
+            if p.cy < rows - 1 then
+                { acc | pane = moved { p | cy = p.cy + 1 } }
+
+            else if p.scroll > 0 then
+                { acc | pane = moved { p | scroll = p.scroll - 1 } }
+
+            else
+                acc
+
+        "cancel" ->
+            { acc | left = True }
+
+        _ ->
+            acc
+
+
+{-| Copy mode's cursor after a move up or down: at the column it keeps to,
+but no further than the last character of the line under it, as vi keys
+allow (measured, 3.8: from column 8 up to `line 177`, 7; on entering copy
+mode it stays where the pane's cursor was, past the end). -}
+moved : Pane -> Pane
+moved p =
+    let
+        at =
+            Array.length p.lines - p.rows - p.scroll + p.cy
+
+        length =
+            String.count (Maybe.withDefault "" (Array.get at p.lines))
+    in
+    { p | cx = min p.wanted (max 0 (length - 1)) }
+
+
+{-| The pane's cursor's column: after its last line. -}
+cursorX : Pane -> Int
+cursorX p =
+    String.count (Maybe.withDefault "" (Array.last p.lines))
+
+
+{-| The lines of a pane above its screen. -}
+historyOf : Pane -> Int
+historyOf p =
+    max 0 (Array.length p.lines - p.rows)
+
+
+bindings : Array String
+bindings =
+    [ "bind-key    -T prefix       [                    copy-mode"
+    , "bind-key    -T copy-mode-vi k                    send-keys -X cursor-up"
+    , "bind-key    -T copy-mode-vi j                    send-keys -X cursor-down"
+    , "bind-key    -T copy-mode-vi Up                   send-keys -X cursor-up"
+    , "bind-key    -T copy-mode-vi Down                 send-keys -X cursor-down"
+    , "bind-key    -T copy-mode-vi q                    send-keys -X cancel"
+    ]
+
+
+{-| `refresh-client -B name:what:format`: kept, and its value told at
+once, as tmux tells a new subscription's. -}
+subscribe : String -> World -> { w : World, ok : Bool, lines : Array String, notices : Array String }
+subscribe sub w =
+    let
+        parts =
+            String.split ":" sub
+
+        name =
+            Maybe.withDefault "" (Array.get 0 parts)
+
+        scope =
+            Maybe.withDefault "" (Array.get 1 parts)
+
+        format =
+            String.join ":" (Array.dropFirst 2 parts)
+
+        notice p =
+            "%subscription-changed " ++ name ++ " $0 @0 0 %" ++ String.fromInt p.id ++ " - : " ++ expand (vars w p) format
+
+        notices =
+            if scope == "%*" then
+                Array.map notice w.panes
+
+            else
+                [ notice (activePane w) ]
+    in
+    { w = { w | subscriptions = Array.pushLast { name = name, scope = scope, format = format } w.subscriptions }, ok = True, lines = [], notices = notices }
+
+
+{-| The layout tmux 3.8 gives (its JSON form, `new-layouts`): one pane
+filling the window. -}
+layout : World -> String
+layout w =
+    let
+        p =
+            activePane w
+    in
+    "{\"V\":2,\"L\":{\"t\":\"p\",\"w\":"
+        ++ String.fromInt w.cols
+        ++ ",\"h\":"
+        ++ String.fromInt w.rows
+        ++ ",\"x\":0,\"y\":0,\"a\":true,\"i\":"
+        ++ String.fromInt p.id
+        ++ ",\"I\":\"%"
+        ++ String.fromInt p.id
+        ++ "\"}}"
+
+
+{-| A format's variables for a pane, as tmux 3.8 expands them; one this
+model has no value for is empty, as tmux's unknown ones are. -}
+vars : World -> Pane -> String -> String
+vars w p name =
+    let
+        n =
+            String.fromInt
+
+        history =
+            historyOf p
+
+        -- copy mode's variables are empty outside it (measured, 3.8)
+        copying value =
+            if p.mode == "" then "" else value
+    in
+    when name is
+        "pane_id" -> "%" ++ n p.id
+        "window_id" -> "@0"
+        "session_id" -> "$0"
+        "session_name" -> "main"
+        "window_name" -> "sh"
+        "window_index" -> "0"
+        "window_active" -> "1"
+        "window_flags" -> "*"
+        "window_panes" -> n (Array.length w.panes)
+        "window_layout" -> layout w
+        "window_visible_layout" -> layout w
+        "window_width" -> n w.cols
+        "window_height" -> n w.rows
+        "window_zoomed_flag" -> "0"
+        "pane_active" -> if p.id == w.active then "1" else "0"
+        "pane_index" -> n p.id
+        "pane_width" -> n ((w.cols - (Array.length w.panes - 1)) // max 1 (Array.length w.panes))
+        "pane_height" -> n w.rows
+        "pane_current_command" -> "sh"
+        "pane_title" -> "host"
+        "cursor_x" -> n (cursorX p)
+        "cursor_y" -> n (w.rows - 1)
+        "alternate_on" -> "0"
+        "scroll_region_upper" -> "0"
+        "scroll_region_lower" -> n (w.rows - 1)
+        "pane_mode" -> p.mode
+        "pane_in_mode" -> if p.mode == "" then "0" else "1"
+        "mode-keys" -> "vi"
+        "scroll_position" -> copying (n p.scroll)
+        "history_size" -> n history
+        "copy_cursor_x" -> copying (n p.cx)
+        "copy_cursor_y" -> copying (n p.cy)
+        "prefix" -> "C-b"
+        "prefix2" -> "None"
+        "repeat-time" -> "500"
+        "version" -> "3.8"
+        "display-panes-time" -> "1000"
+        "client_name" -> "/dev/pts/9"
+        "status" -> "on"
+        _ ->
+            if String.startsWith "selection_" name || String.startsWith "search_" name || name == "rectangle_toggle" then
+                copying "0"
+
+            else if String.endsWith "_flag" name then
+                "0"
+
+            else
+                ""
+
+
+{-| A format expanded: `#{name}` a variable, `#{?a,b,c}` b where a is set
+(not empty and not `0`) else c, `#{X:name}` (`T:`, `E:` and the like) the
+variable, `##` a `#`. -}
+expand : (String -> String) -> String -> String
+expand lookup text =
+    let
+        chars =
+            String.toArray text
+
+        go i acc =
+            when Array.get i chars is
+                Nothing ->
+                    acc
+
+                Just '#' ->
+                    when Array.get (i + 1) chars is
+                        Just '{' ->
+                            let
+                                close =
+                                    matching chars (i + 2) 1
+
+                                inner =
+                                    String.fromArray (Array.slice (i + 2) close chars)
+                            in
+                            go (close + 1) (acc ++ variable lookup inner)
+
+                        Just '#' ->
+                            go (i + 2) (acc ++ "#")
+
+                        _ ->
+                            go (i + 1) (acc ++ "#")
+
+                Just c ->
+                    go (i + 1) (acc ++ String.fromChar c)
+    in
+    go 0 ""
+
+
+matching : Array Char -> Int -> Int -> Int
+matching chars i depth =
+    when Array.get i chars is
+        Nothing ->
+            i
+
+        Just '}' ->
+            if depth == 1 then i else matching chars (i + 1) (depth - 1)
+
+        Just '{' ->
+            matching chars (i + 1) (depth + 1)
+
+        Just _ ->
+            matching chars (i + 1) depth
+
+
+variable : (String -> String) -> String -> String
+variable lookup inner =
+    if String.startsWith "?" inner then
+        let
+            parts =
+                topLevel (String.dropFirst 1 inner)
+
+            cond =
+                expand lookup ("#{" ++ Maybe.withDefault "" (Array.get 0 parts) ++ "}")
+        in
+        if cond /= "" && cond /= "0" then
+            expand lookup (Maybe.withDefault "" (Array.get 1 parts))
+
+        else
+            expand lookup (Maybe.withDefault "" (Array.get 2 parts))
+
+    else
+        when String.split ":" inner |> Array.last is
+            Just name ->
+                lookup name
+
+            Nothing ->
+                ""
+
+
+{-| A text split at its commas outside `#{…}`. -}
+topLevel : String -> Array String
+topLevel text =
+    let
+        done =
+            String.toArray text
+                |> Array.foldl
+                    (\c acc ->
+                        if c == ',' && acc.depth == 0 then
+                            { acc | parts = Array.pushLast acc.current acc.parts, current = "" }
+
+                        else
+                            { acc
+                                | current = acc.current ++ String.fromChar c
+                                , depth =
+                                    if c == '{' then
+                                        acc.depth + 1
+
+                                    else if c == '}' then
+                                        acc.depth - 1
+
+                                    else
+                                        acc.depth
+                            }
+                    )
+                    { parts = [], current = "", depth = 0 }
+    in
+    Array.pushLast done.current done.parts
