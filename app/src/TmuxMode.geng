@@ -1687,7 +1687,7 @@ replied expect ok lines acc =
                     acc.state
 
                 first =
-                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault ""
+                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "" |> asTmuxSays
 
                 more =
                     Array.length lines - 1
@@ -3647,6 +3647,24 @@ closePrompt run a s =
         (Array.mapAndFlatten Syntax.lines lines)
 
 
+{-| An error as tmux shows it to a client: a control client is sent
+`parse error: unknown command: x` (`control.c`), a client's status line
+shows `Unknown command: x`, its first letter made a capital
+(`cmd-queue.c`, TM59). -}
+asTmuxSays : String -> String
+asTmuxSays text =
+    let
+        bare =
+            if String.startsWith "parse error: " text then String.dropFirst 13 text else text
+    in
+    when String.popFirst bare is
+        Just { first, rest } ->
+            String.toUpper (String.fromChar first) ++ rest
+
+        Nothing ->
+            bare
+
+
 {-| Commands sent, each with what its reply is for. -}
 sendAsking : Array { command : String, expect : Expect } -> (taken s : State) -> { state : State, commands : Array String }
 sendAsking list s =
@@ -4666,8 +4684,10 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
                     parts =
                         String.split "#[align=right]" (own p).title
 
+                    -- two cells in, to the pane's right edge, as
+                    -- screen_redraw_make_pane_status's `sx - 2` (TM59)
                     room =
-                        max 0 (p.w - 4)
+                        max 0 (p.w - 2)
 
                     leftRuns =
                         takeRuns room (Style.runs style (Maybe.withDefault "" (Array.first parts)))

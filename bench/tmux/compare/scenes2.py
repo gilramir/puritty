@@ -102,6 +102,8 @@ SCENES = [
          steps=[("keys", P, "p"), ("shot", "popup", 1.0), ("q", "panes=#{window_panes}")]),
     dict(name="status-menus", setup=FILL + [("new-window", "-t", "main", "-n", "two"), ("select-window", "-t", "main:0")],
          steps=[("rclick", 2, 29), ("shot", "session-menu", 0.8), ("keys", "Escape"), ("rclick", 10, 29), ("shot", "window-menu", 0.8), ("keys", "Escape")]),
+    dict(name="title-buttons", conf="set -g pane-border-status top\nset -g mouse on\n", setup=[("split-window", "-h", "-t", "main:0")],
+         steps=[("shot", "buttons")]),
     dict(name="pane-scrollbars2", conf="set -g pane-scrollbars on\n",
          setup=THREE + [sk("main:0.0", "seq 1 100"), ("select-pane", "-t", "main:0.0")],
          steps=[("keys", P, "["), ("keys", "PPage"), ("q", CUR), ("shot", "copy-scrolled")]),

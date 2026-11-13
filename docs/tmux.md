@@ -2386,3 +2386,22 @@ labels need (`#{?...}`); puritty has tmux expand it (`display-message
 the session menu's items as tmux's (Renumber, Rename, Detach, New
 Session, New Window), the window menu's for the window pressed. App tests
 141; `show.py` menus unchanged.
+
+## TM59 · Two of TM39's smaller items (2026-11-12)
+
+- **Errors as tmux words them.** A control client is sent a parse error
+  as `parse error: unknown command: x` (`control.c:679`); a client's
+  status line shows `Unknown command: x`, the message's first letter a
+  capital (`cmd-queue.c:881`). puritty showed the control text; now it
+  shows the client's (`asTmuxSays`). Checked side by side on 3.8
+  (`messages2`).
+- **A pane title's right part at the pane's edge.** `pane-border-format`'s
+  `#[align=right]` part (by default 3.8's `[f][z][x]` buttons with the
+  mouse on) ended two cells short: puritty gave the title the pane's
+  width less 4, where `screen_redraw_make_pane_status` gives `sx - 2`
+  (with a scrollbar's width) from two cells in. Checked side by side
+  (`title-buttons`): `[x]` ends at columns 49 and 99 on both.
+
+**Not done:** display-panes' digits one cell off in right-hand panes:
+3.8 draws them in a mode of its own (`window-panes.c`) with scaled
+geometry, not yet read.
