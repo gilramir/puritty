@@ -2344,3 +2344,27 @@ panes, the second modal (`O` in its flags). Tests: tmux package 71
 **Not matched:** the popup's border styles and title, `-B` (no
 border), `-x`/`-y` given as `P`, `M`, `W`, `S` or `R` (drawn centered),
 `-e` environment, `-EE`.
+
+## TM57 · The command prompt's Tab, C-p, C-n, words, C-t and C-u (2026-11-12)
+
+TM39's item 9. From tmux's `prompt_key` (3.8) and `status_prompt_key`
+(3.6a):
+
+- **Tab** in the colon prompt completes the first word from tmux's
+  commands (`list-commands`, asked once at attach): one match whole with
+  a space after it, more as far as they agree; aliases are not completed
+  (measured: `sel` gives `select-`, where the aliases would stop it at
+  `select`). tmux shows a menu of the matches; puritty does not.
+- **C-p** and **C-n** go back and on through the answers, as Up and Down.
+- **M-b**/**C-Left** and **M-f**/**C-Right** move by words; **C-t** swaps
+  the two characters before the caret.
+- **C-u** clears the whole line, as both versions do; puritty deleted
+  only what was before the caret.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `command-prompt`):
+`split-w` Tab gives `split-window `, C-u then `sel` Tab gives `select-`,
+the history's Up. App tests 141; `show.py` prompts unchanged.
+
+**Not yet:** C-y (tmux pastes its newest buffer, or 3.8 what C-k and
+C-w removed), completion of options and targets, the matches' menu, vi
+keys in the prompt (`status-keys vi`), tmux's own prompt history.

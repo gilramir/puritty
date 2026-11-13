@@ -148,6 +148,8 @@ type alias State =
     , tree : Maybe Tree
       -- choose-buffer's or choose-client's list, drawn by puritty (TM55)
     , listing : Maybe Listing
+      -- tmux's commands and their aliases, for the prompt's Tab (TM57)
+    , commandNames : Array String
     }
 
 
@@ -520,6 +522,7 @@ type Expect
     | ForTreePanes
     | ForTreeFilter
     | ForListRows
+    | ForCommandNames
     | ForListFilter
     | ForListPreview String
     | ForPreviewList Int
@@ -593,6 +596,7 @@ idle _ =
     , dayOffset = Nothing
     , tree = Nothing
     , listing = Nothing
+    , commandNames = []
     }
 
 
@@ -879,6 +883,7 @@ expectName x =
         ForTreePanes -> "the tree's panes"
         ForTreeFilter -> "the tree's filter"
         ForListRows -> "the list's rows"
+        ForCommandNames -> "tmux's commands"
         ForListFilter -> "the list's filter"
         ForListPreview _ -> "the list's preview"
         ForPreviewList _ -> "the tree preview's panes or windows"
@@ -1418,6 +1423,7 @@ event size e acc =
             ask
                 [ { command = Command.clientFlags, expect = ForNothing }
                 , { command = Command.size (tmuxSize (statusRows st) size), expect = ForNothing }
+                , { command = "list-commands -F " ++ Command.quote "#{command_list_name} #{command_list_alias}", expect = ForCommandNames }
                 , { command = windowQuery, expect = ForWindow }
                 , { command = tabsQuery, expect = ForTabs }
                 , { command = panesQuery, expect = ForPanes }
@@ -1767,6 +1773,19 @@ replied expect ok lines acc =
                         lines
             in
             previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+
+        ForCommandNames ->
+            let
+                st =
+                    acc.state
+            in
+            if ok then
+                -- the names only: tmux completes no alias (measured, `sel`
+                -- gives `select-`)
+                { acc | state = { st | commandNames = Array.mapAndKeepJust (\line -> String.split " " (Bytes.toStringLossy line) |> Array.first) lines } }
+
+            else
+                { acc | state = st }
 
         ForListRows ->
             let
@@ -3200,7 +3219,8 @@ incrementally prefix a =
 {-| A key while a prompt is open (TM25). A confirmation takes its key, or
 Enter where `-y` says so, and runs its command; any other key says no. A
 command prompt edits its line as tmux's emacs keys do (Left, Right, Home,
-End, C-a, C-e, C-b, C-f, BSpace, DC, C-d, C-u, C-k, C-w, Up and Down for
+End, C-a, C-e, C-b, C-f, BSpace, DC, C-d, C-u (the whole line), C-k, C-w,
+M-b and M-f (words), C-t, Up or C-p and Down or C-n for
 earlier answers), Enter answers and Escape, C-c or C-g closes it; `-1`
 takes one key's text, `-k` a key's name, `-N` digits, any other key
 answering and then going on as typed. The commands after the prompt run
@@ -3267,6 +3287,10 @@ promptKey k bytes ms a s =
                     if p.incremental then
                         incrementalKey name text plainText enter cancel a s
 
+                    else if name == "Tab" && p.template == Nothing then
+                        -- the colon prompt: a command's name completed (TM57)
+                        { state = { s | asking = Just (completed s.commandNames a) }, commands = [] }
+
                     else if enter then
                         answer (String.fromArray a.chars) a s
 
@@ -3326,6 +3350,64 @@ runIncremental prefix a s =
     sendAsking (incrementally prefix a) { s | asking = Just a }
 
 
+{-| The colon prompt's first word completed from tmux's commands' names,
+as `prompt_replace_complete`: one match is written whole with a
+space after it, more as far as they agree (TM57). -}
+completed : Array String -> Asking -> Asking
+completed names a =
+    let
+        line =
+            String.fromArray a.chars
+
+        soFar =
+            String.fromArray (Array.takeFirst a.caret a.chars)
+    in
+    if String.contains " " soFar then
+        a
+
+    else
+        let
+            matches =
+                Array.keepIf (\c -> String.startsWith soFar c) names
+
+            common =
+                when Array.first matches is
+                    Just first ->
+                        Array.foldl
+                            (\m acc ->
+                                let
+                                    shared =
+                                        Array.range 0 (min (String.count m) (String.count acc))
+                                            |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
+                                            |> Maybe.map .value
+                                            |> Maybe.withDefault 0
+                                in
+                                String.takeFirst shared acc
+                            )
+                            first
+                            matches
+
+                    Nothing ->
+                        soFar
+
+            word =
+                when matches is
+                    [ only ] ->
+                        only ++ " "
+
+                    _ ->
+                        common
+
+            rest =
+                String.dropFirst (String.count soFar) line
+        in
+        if Array.isEmpty matches then
+            a
+
+        else
+            { a | chars = String.toArray (word ++ rest), caret = String.count word, edited = True }
+
+
 {-| Text typed at the caret. -}
 insert : String -> Asking -> Asking
 insert text a =
@@ -3365,6 +3447,29 @@ editLine name a history =
                             back (i - 1) False
             in
             back a.caret True
+
+        -- the end of the word after the caret, spaces before it too
+        wordEnd =
+            let
+                on i skipping =
+                    if i >= n then
+                        n
+
+                    else
+                        let
+                            space =
+                                Array.get i a.chars == Just ' '
+                        in
+                        if skipping && space then
+                            on (i + 1) True
+
+                        else if space then
+                            i
+
+                        else
+                            on (i + 1) False
+            in
+            on a.caret True
 
         recalled step =
             -- Up goes back through earlier answers, Down forward
@@ -3420,7 +3525,26 @@ editLine name a history =
         { a | chars = Array.slice 0 a.caret a.chars ++ Array.dropFirst (a.caret + 1) a.chars, edited = True }
 
     else if name == "C-u" then
-        { a | chars = Array.dropFirst a.caret a.chars, caret = 0, edited = True }
+        -- the whole line, as tmux's (3.6a, 3.8)
+        { a | chars = [], caret = 0, edited = True }
+
+    else if name == "M-b" || name == "C-Left" then
+        { a | caret = wordStart }
+
+    else if name == "M-f" || name == "C-Right" then
+        { a | caret = wordEnd }
+
+    else if name == "C-t" then
+        -- the characters before the caret swapped, the caret after them
+        let
+            at =
+                min n (a.caret + (if a.caret < n then 1 else 0))
+        in
+        if at >= 2 then
+            { a | chars = Array.slice 0 (at - 2) a.chars ++ Array.slice (at - 1) at a.chars ++ Array.slice (at - 2) (at - 1) a.chars ++ Array.dropFirst at a.chars, caret = at, edited = True }
+
+        else
+            a
 
     else if name == "C-k" then
         { a | chars = Array.slice 0 a.caret a.chars, edited = True }
@@ -3428,10 +3552,10 @@ editLine name a history =
     else if name == "C-w" then
         { a | chars = Array.slice 0 wordStart a.chars ++ Array.dropFirst a.caret a.chars, caret = wordStart, edited = True }
 
-    else if name == "Up" then
+    else if name == "Up" || name == "C-p" then
         recalled -1
 
-    else if name == "Down" then
+    else if name == "Down" || name == "C-n" then
         recalled 1
 
     else
