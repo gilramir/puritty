@@ -151,12 +151,16 @@ it covers every pane (`-Z`). -}
 type alias Tree =
     { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, text : String }
     , windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, text : String }
-    , panes : Array { window : Int, id : Int, index : Int, text : String }
+    , panes : Array { window : Int, id : Int, index : Int, command : String, text : String }
     , loaded : Int
     , open : Dict Int Bool
     , openWindows : Dict Int Bool
     , selected : Int
-    , startSessions : Bool
+    , start : Int
+    , filter : String
+    , passing : Maybe (Array Int)
+    , noMatches : Bool
+    , search : String
     , template : String
     , pane : Int
     , zoom : Bool
@@ -330,6 +334,7 @@ type alias Asking =
     , caret : Int
     , edited : Bool
     , recall : String
+    , purpose : Int
     }
 
 
@@ -388,6 +393,7 @@ type Expect
     | ForTreeSessions
     | ForTreeWindows
     | ForTreePanes
+    | ForTreeFilter
     | ForPreviewList Int
     | ForPreviewCapture { serial : Int, index : Int }
     | ForDayTime
@@ -741,6 +747,7 @@ expectName x =
         ForTreeSessions -> "the tree's sessions"
         ForTreeWindows -> "the tree's windows"
         ForTreePanes -> "the tree's panes"
+        ForTreeFilter -> "the tree's filter"
         ForPreviewList _ -> "the tree preview's panes or windows"
         ForPreviewCapture c -> "the tree preview's capture " ++ String.fromInt c.index
         ForDayTime -> "the time of day"
@@ -1410,7 +1417,7 @@ replied expect ok lines acc =
                         )
                         lines
             in
-            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | sessions = sessions, loaded = t.loaded + 1 }) st.tree } }
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | sessions = sessions, loaded = t.loaded + 1 }) st.tree } }
 
         ForTreeWindows ->
             let
@@ -1437,7 +1444,31 @@ replied expect ok lines acc =
                         )
                         lines
             in
-            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+
+        ForTreeFilter ->
+            -- the panes the filter keeps; with none, or a filter tmux could
+            -- not read, every row stays and the tree says so (TM45)
+            let
+                st =
+                    acc.state
+
+                ids =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split " " (Bytes.toStringLossy line) is
+                                [ "F", id ] ->
+                                    Just (idOf id)
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+
+                none =
+                    not ok || Array.isEmpty ids
+            in
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> refiltered (if none then Nothing else Just ids) { t | noMatches = none }) st.tree } }
 
         ForTreePanes ->
             let
@@ -1448,15 +1479,15 @@ replied expect ok lines acc =
                     Array.mapAndKeepJust
                         (\line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
-                                [ "P", window, id, index, text ] ->
-                                    Just { window = idOf window, id = idOf id, index = Maybe.withDefault 0 (String.toInt index), text = text }
+                                [ "P", window, id, index, cmd, text ] ->
+                                    Just { window = idOf window, id = idOf id, index = Maybe.withDefault 0 (String.toInt index), command = cmd, text = text }
 
                                 _ ->
                                     Nothing
                         )
                         lines
             in
-            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | panes = panes, loaded = t.loaded + 1 }) st.tree } }
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | panes = panes, loaded = t.loaded + 1 }) st.tree } }
 
         ForPreviewList serial ->
             -- the panes or windows of the row previewed, each then captured
@@ -2560,7 +2591,7 @@ opening : Syntax.Ask -> String -> { asking : Asking, expand : Array { command : 
 opening question after =
     let
         start =
-            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "" }
+            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0 }
 
         opened =
             stepTo 0 [] start
@@ -2932,6 +2963,11 @@ answer given a s =
         history =
             if given == "" || Array.last s.history == Just given then s.history else Array.pushLast given s.history
     in
+    if a.purpose /= 0 then
+        -- the tree's own question (TM45)
+        treeAnswered a.purpose given { s | asking = Nothing, history = history }
+
+    else
     when a.ask is
         Syntax.Prompt p ->
             if a.step + 1 < Array.length p.prompts then
@@ -2958,14 +2994,29 @@ answer given a s =
 
 
 {-| The prompt closed: `run`, then the commands after it, each said at the
-bar if it says anything. -}
+bar if it says anything; one puritty runs itself (`runsHere`: a tree, as
+`find-window` from `prefix f` opens, a menu, another prompt) run here
+(TM45). -}
 closePrompt : Array String -> Asking -> (taken s : State) -> { state : State, commands : Array String }
 closePrompt run a s =
     let
         lines =
             run ++ (if a.after == "" then [] else [ a.after ])
     in
-    sendAsking (Array.map (\c -> { command = c, expect = ForRan }) (Array.mapAndFlatten Syntax.lines lines)) { s | asking = Nothing }
+    Array.foldl
+        (\line acc ->
+            let
+                r =
+                    if runsHere line then
+                        runLine { pane = acc.state.active, mouse = Nothing } line acc.state
+
+                    else
+                        sendAsking [ { command = line, expect = ForRan } ] acc.state
+            in
+            { state = r.state, commands = acc.commands ++ r.commands }
+        )
+        { state = { s | asking = Nothing }, commands = [] }
+        (Array.mapAndFlatten Syntax.lines lines)
 
 
 {-| Commands sent, each with what its reply is for. -}
@@ -4352,8 +4403,8 @@ runLine ctx line s =
                                 let
                                     opened =
                                         sendAsking
-                                            (treeQueries s.version)
-                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, startSessions = t.sessions, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
+                                            (treeQueries s.version ++ (if t.filter == "" then [] else [ filterQuery t.filter ]))
+                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, start = t.start, filter = t.filter, passing = Nothing, noMatches = False, search = "", template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
 
                                     ran =
                                         runLine ctx t.after opened.state
@@ -5053,10 +5104,12 @@ bigDigit c =
 -- TREE MODE, THE CLOCK AND THE OTHER MODES (TM32)
 
 
-{-| A tree whose lists are in: the sessions open as `-w` asks (all) or
-`-s` (none), and the row of the window shown, or of its session, chosen. -}
-treeLoaded : Int -> Tree -> Tree
-treeLoaded shown t =
+{-| A tree whose lists are in, opened as tmux opens it (TM45): `-s`
+(start 0) every session folded on the current one; `-w` (1) the sessions
+open on the current window; neither (2) all open on the active pane, or
+its window when it is the only pane. -}
+treeLoaded : Int -> Int -> Tree -> Tree
+treeLoaded shown active t =
     if t.loaded < 3 then
         t
 
@@ -5066,24 +5119,204 @@ treeLoaded shown t =
                 Array.findFirst (\w -> w.id == shown) t.windows |> Maybe.map (\w -> w.value.session) |> Maybe.withDefault -1
 
             open =
-                if t.startSessions then
+                if t.start == 0 then
                     Dict.empty
 
                 else
                     Array.foldl (\x d -> Dict.set x.id True d) Dict.empty t.sessions
 
+            openWindows =
+                if t.start == 2 then
+                    Array.foldl (\w d -> Dict.set w.id True d) Dict.empty t.windows
+
+                else
+                    Dict.empty
+
             opened =
-                { t | open = open }
+                { t | open = open, openWindows = openWindows }
 
             rows =
                 treeRows opened
+
+            alone =
+                Array.length (Array.keepIf (\p -> p.window == shown) t.panes) <= 1
+
+            found =
+                if t.start == 0 then
+                    Array.findFirst (\r -> r.window < 0 && r.session == current) rows
+
+                else if t.start == 1 || alone then
+                    Array.findFirst (\r -> r.window == shown && r.pane < 0) rows
+
+                else
+                    Array.findFirst (\r -> r.pane == active) rows
         in
-        { opened
-            | selected =
-                Array.findFirst (\r -> if t.startSessions then r.window < 0 && r.session == current else r.window == shown && r.pane < 0) rows
+        { opened | selected = found |> Maybe.map .index |> Maybe.withDefault 0 }
+
+
+{-| The tree's filter asked of tmux: the panes for which it is true. -}
+filterQuery : String -> { command : String, expect : Expect }
+filterQuery filter =
+    { command = "list-panes -a -f " ++ Command.quote filter ++ " -F " ++ Command.quote "F #{pane_id}", expect = ForTreeFilter }
+
+
+{-| The tree's own questions answered (TM45): a search (1) goes to the
+next row that matches; a filter (2) is asked of tmux. -}
+treeAnswered : Int -> String -> (taken s : State) -> { state : State, commands : Array String }
+treeAnswered purpose given s =
+    when s.tree is
+        Just t ->
+            if purpose == 1 then
+                { state = { s | tree = Just (searchTree True { t | search = given }) }, commands = [] }
+
+            else if given == "" then
+                { state = { s | tree = Just (refiltered Nothing { t | filter = "", noMatches = False }) }, commands = [] }
+
+            else
+                sendAsking [ filterQuery given ] { s | tree = Just { t | filter = given } }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| The tree with the panes a filter keeps, as tmux rebuilds it (TM45,
+measured on 3.8): the chosen row stays where it is, or the first row is
+chosen when it is filtered out, and a session or a window that comes
+back is open. -}
+refiltered : Maybe (Array Int) -> Tree -> Tree
+refiltered passing t =
+    let
+        earlier =
+            kept t
+
+        chosen =
+            Array.get t.selected (treeRows t)
+
+        after =
+            kept { t | passing = passing }
+
+        opened =
+            { t
+                | passing = passing
+                , open =
+                    Array.foldl (\x d -> if Array.any (\y -> y.id == x.id) earlier.sessions then d else Dict.set x.id True d) t.open after.sessions
+                , openWindows =
+                    Array.foldl (\w d -> if Array.any (\v -> v.id == w.id) earlier.windows then d else Dict.set w.id True d) t.openWindows after.windows
+            }
+    in
+    when chosen is
+        Just r ->
+            when Array.findFirst (\x -> x.session == r.session && x.window == r.window && x.pane == r.pane) (treeRows opened) is
+                Just found ->
+                    { opened | selected = found.index }
+
+                Nothing ->
+                    -- gone: the first row, as tmux's
+                    { opened | selected = 0 }
+
+        Nothing ->
+            { opened | selected = 0 }
+
+
+{-| The chosen row kept within the rows there are. -}
+keepSelected : Tree -> Tree
+keepSelected t =
+    { t | selected = clamp 0 (max 0 (Array.length (treeRows t) - 1)) t.selected }
+
+
+{-| The next row whose name holds the search, after the chosen one or
+before it (`forward`), going round, as `mode_tree_search_forward`: every
+session, window and pane, folded or not, a pane by its command; case
+ignored when the search has no capitals. The rows above it are opened. -}
+searchTree : Bool -> Tree -> Tree
+searchTree forward t =
+    if t.search == "" then
+        t
+
+    else
+        let
+            caseless =
+                String.toLower t.search == t.search
+
+            matches name =
+                if caseless then String.contains t.search (String.toLower name) else String.contains t.search name
+
+            -- every item, in the tree's order, as `{ session, window, pane, name }`
+            items =
+                kept t
+                    |> (\k ->
+                            k.sessions
+                                |> Array.mapAndFlatten
+                                    (\x ->
+                                        Array.pushFirst { session = x.id, window = -1, pane = -1, name = x.name }
+                                            (Array.keepIf (\w -> w.session == x.id) k.windows
+                                                |> Array.mapAndFlatten
+                                                    (\w ->
+                                                        Array.pushFirst { session = x.id, window = w.id, pane = -1, name = w.name }
+                                                            (Array.keepIf (\p -> p.window == w.id) k.panes |> Array.map (\p -> { session = x.id, window = w.id, pane = p.id, name = p.command }))
+                                                    )
+                                            )
+                                    )
+                       )
+
+            n =
+                Array.length items
+
+            here =
+                Array.get t.selected (treeRows t)
+                    |> Maybe.andThen (\r -> Array.findFirst (\i -> i.session == r.session && i.window == r.window && i.pane == r.pane) items)
                     |> Maybe.map .index
                     |> Maybe.withDefault 0
-        }
+
+            order =
+                Array.range 1 n
+                    |> Array.map (\k -> if forward then modBy n (here + k) else modBy n (here - k + n))
+
+            found =
+                Array.findFirst (\i -> Maybe.map (\it -> matches it.name) (Array.get i items) == Just True) order
+                    |> Maybe.andThen (\f -> Array.get f.value items)
+        in
+        when found is
+            Just it ->
+                let
+                    opened =
+                        { t
+                            | open = Dict.set it.session True t.open
+                            , openWindows = if it.pane >= 0 then Dict.set it.window True t.openWindows else t.openWindows
+                        }
+                in
+                { opened
+                    | selected =
+                        Array.findFirst (\r -> r.session == it.session && r.window == it.window && r.pane == it.pane) (treeRows opened)
+                            |> Maybe.map .index
+                            |> Maybe.withDefault t.selected
+                }
+
+            Nothing ->
+                t
+
+
+{-| The sessions, windows and panes the filter keeps: a pane tmux said
+passes, a window with such a pane, a session with such a window; all of
+them when there is no filter or nothing passes. -}
+kept : Tree -> { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, text : String }, windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, text : String }, panes : Array { window : Int, id : Int, index : Int, command : String, text : String } }
+kept t =
+    when t.passing is
+        Just ids ->
+            let
+                panes =
+                    Array.keepIf (\p -> Array.member p.id ids) t.panes
+
+                windows =
+                    Array.keepIf (\w -> Array.any (\p -> p.window == w.id) panes) t.windows
+
+                sessions =
+                    Array.keepIf (\x -> Array.any (\w -> w.session == x.id) windows) t.sessions
+            in
+            { sessions = sessions, windows = windows, panes = panes }
+
+        Nothing ->
+            { sessions = t.sessions, windows = t.windows, panes = t.panes }
 
 
 {-| The preview asked for in a reply's turn. -}
@@ -5248,7 +5481,7 @@ treeQueries version =
     in
     [ { command = "list-sessions -F " ++ Command.quote ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
     , { command = "list-windows -a -F " ++ Command.quote ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
-    , { command = "list-panes -a -F " ++ Command.quote ("P\t#{window_id}\t#{pane_id}\t#{pane_index}\t" ++ paneText), expect = ForTreePanes }
+    , { command = "list-panes -a -F " ++ Command.quote ("P\t#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t" ++ paneText), expect = ForTreePanes }
     ]
 
 
@@ -5270,8 +5503,11 @@ rowTarget r =
 an open one's windows under it, an open window's panes under that; a
 window always has its panes to open, as in tmux. -}
 treeRows : Tree -> Array TreeRow
-treeRows t =
+treeRows t0 =
     let
+        t =
+            kept t0
+
         sessionCount =
             Array.length t.sessions
     in
@@ -5285,7 +5521,7 @@ treeRows t =
                     Array.length own
 
                 open =
-                    Dict.get x.id t.open == Just True
+                    Dict.get x.id t0.open == Just True
 
                 windowRows =
                     if open then
@@ -5302,7 +5538,7 @@ treeRows t =
                                         Array.length panes
 
                                     windowOpen =
-                                        Dict.get w.id t.openWindows == Just True
+                                        Dict.get w.id t0.openWindows == Just True
                                 in
                                 Array.pushFirst
                                     { session = x.id, window = w.id, pane = -1, depth = 1, name = String.fromInt w.index, text = w.text, last = lastWindow, parentLast = si == sessionCount - 1, children = paneCount > 0, expanded = windowOpen }
@@ -5333,8 +5569,10 @@ treeRows t =
 C-p and Down, j, C-n move; PPage, NPage, Home, g, End, G; Right, l, `+`
 open a session or a window, or go down from an open one; Left, h, `-`
 close it, or close its parent and go there (TM44); M-+ and M-- open and
-close every session; Enter chooses; a row's key (`treeRowKey`: a
-digit, or `M-a` to `M-z`) chooses that row; q, Escape and C-c close it. -}
+close every session; `/`, `?` and C-s search, n and N search again, f
+filters (TM45); Enter chooses; a row's key (`treeRowKey`: a
+digit, or `M-a` to `M-z`) chooses that row; q, Escape and C-g close it,
+as in tmux (C-c does not, TM45). -}
 treeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Tree -> (taken s : State) -> { state : State, commands : Array String }
 treeKey k t s =
     let
@@ -5356,7 +5594,7 @@ treeKey k t s =
         page =
             10
     in
-    if name == "q" || name == "Escape" || name == "C-c" then
+    if name == "q" || name == "Escape" || name == "C-g" then
         { state = { s | tree = Nothing }, commands = [] }
 
     else if name == "Up" || name == "k" || name == "C-p" then
@@ -5431,6 +5669,18 @@ treeKey k t s =
         in
         { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> Just x.session == session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault 0 } }, commands = [] }
 
+    else if name == "/" || name == "?" || name == "C-s" then
+        { state = { s | asking = Just (treePrompt 1 "(search) " "") }, commands = [] }
+
+    else if name == "n" then
+        { state = { s | tree = Just (searchTree True t) }, commands = [] }
+
+    else if name == "N" then
+        { state = { s | tree = Just (searchTree False t) }, commands = [] }
+
+    else if name == "f" then
+        { state = { s | asking = Just (treePrompt 2 "(filter) " t.filter) }, commands = [] }
+
     else if name == "Enter" || name == "KPEnter" || name == "C-m" then
         chooseRow at t s
 
@@ -5441,6 +5691,23 @@ treeKey k t s =
 
             Nothing ->
                 { state = s, commands = [] }
+
+
+{-| A question of the tree's own, asked at the status line as tmux asks
+it (TM45): a search (1) or a filter (2), with its first text. -}
+treePrompt : Int -> String -> String -> Asking
+treePrompt purpose label first =
+    { ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = Syntax.Text, template = Nothing, incremental = False, inPane = False }
+    , after = ""
+    , step = 0
+    , answers = []
+    , label = label
+    , chars = String.toArray first
+    , caret = String.count first
+    , edited = False
+    , recall = ""
+    , purpose = purpose
+    }
 
 
 {-| A session or a window opened or closed. -}
@@ -5649,7 +5916,7 @@ drawTree tmuxLook version place t =
                 place.w - 2
 
             label =
-                " choose " ++ (if t.startSessions then "a session " else "a window ")
+                " choose " ++ (if t.start == 0 then "a session " else "a window ")
 
             foot =
                 " Enter or a row's key: go  ←→: fold  q: close "

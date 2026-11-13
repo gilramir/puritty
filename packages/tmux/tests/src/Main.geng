@@ -571,7 +571,7 @@ tree : String -> String
 tree line =
     when Syntax.treeOf line is
         Just t ->
-            (if t.sessions then "sessions " else "windows ") ++ (if t.zoom then "zoom " else "- ") ++ t.template ++ " after [" ++ t.after ++ "]"
+            (if t.start == 0 then "sessions " else if t.start == 1 then "windows " else "panes ") ++ (if t.zoom then "zoom " else "- ") ++ t.template ++ " after [" ++ t.after ++ "]" ++ (if t.filter == "" then "" else " filter [" ++ t.filter ++ "]")
 
         Nothing ->
             "none"
@@ -684,8 +684,15 @@ syntax =
                         [ "sessions zoom switch-client -t '%%' after []"
                         , "windows zoom switch-client -t '%%' after []"
                         , "windows - kill-window -t '%%' after []"
+                        , "panes - switch-client -t '%%' after [] filter [#{==:#{session_name},x}]"
+                        , "panes zoom switch-client -t '%%' after [] filter [#{||:#{C:vim},#{||:#{m:*vim*,#{window_name}},#{m:*vim*,#{pane_title}}}}]"
+                        , "panes - switch-client -t '%%' after [] filter [#{m/i:*Log*,#{window_name}}]"
                         ]
-                        [ tree "choose-tree -Zs", tree "choose-tree -Zw", tree "choose-window \"kill-window -t '%%'\"" ]
+                        [ tree "choose-tree -Zs", tree "choose-tree -Zw", tree "choose-window \"kill-window -t '%%'\""
+                        , tree "choose-tree -f '#{==:#{session_name},x}'"
+                        , tree "find-window -Z -- 'vim'"
+                        , tree "find-window -Ni Log"
+                        ]
           }
         , { name = "a ; ending a word in a block, as list-keys writes it, is between commands"
           , test =

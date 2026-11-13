@@ -1740,14 +1740,15 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
    (TM43).
 4. **`prefix f` (find-window) is a dead end** (R): it enters tree mode
    with a filter (`cmd-find-window.c:107`), which puritty only says is
-   not drawn.
+   not drawn. Done (TM45).
 5. **The tree has no pane level** (M, R): no `+` on window rows, panes
    cannot be listed or chosen (`window-tree.c:360`). Done (TM44).
 6. **The tree's other keys do nothing** (M, R): search `/ n N`, filter
    `f` (and the text typed after it is dropped, so its Enter switched
    session), kill `x` with its prompt, tags `t T C-t`, `:`, sort `O r`,
    preview `v`, swap `S-Up S-Down` (3.6), help `C-h` (3.7). `+`/`-` fold
-   every row where tmux folds the current one.
+   every row where tmux folds the current one. Search, filter and the
+   folds done (TM44, TM45); tags, kill, sort, `v`, swap, help not yet.
 7. **Tree rows and preview** (M, R): no window flags or titles in rows;
    the preview has no colors, its split is the reverse of tmux's (tmux
    gives the list ⅔), its title lacks `(sort: …)`; 3.8 draws `→` where
@@ -1962,3 +1963,49 @@ up, so its window rows read `*Z`; puritty draws its tree over the window
 without zooming. 3.8's colors in the rows (flags in grey, a marked
 window magenta) are not drawn. Search, filter, tags, kill, sort and the
 preview's proportions are TM39's items 4, 6 and 7, still to do.
+
+## TM45 · The tree's search and filter, and find-window (2026-11-12)
+
+TM39's items 4 and 6 (in part).
+
+**Search** (`/`, `?`, C-s ask `(search) `; n and N again): as
+`mode_tree_search_forward` and `_backward`, every session, window and
+pane in the tree's order, folded or not, from the row after the chosen
+one round to it, matched by name (a pane by its command, as
+`window_tree_search` reads `osdep_get_name`), case ignored when the
+search has no capitals; the rows above the match are opened.
+
+**Filter** (f asks `(filter) ` with the filter as it is; `choose-tree
+-f`): a tmux format tested on every pane. tmux tests it for puritty:
+`list-panes -a -f FILTER` names the panes that pass, and a window is
+kept with such a pane, a session with such a window. When none passes,
+or tmux cannot read the filter, every row stays. After a change the
+chosen row stays, or the first row is chosen when it was filtered out,
+and a session or window that comes back is open (measured on 3.8).
+
+**Start state by flags** (`window_tree_init`): `-s` every session
+folded on the current one, `-w` the sessions open on the current window,
+neither (`choose-tree`, `find-window`) everything open on the active
+pane, or its window when it is the window's only pane. puritty treated
+neither as `-w` before.
+
+**find-window** (`prefix f`: `command-prompt { find-window -Z -- '%%' }`)
+opens the tree with the filter `cmd-find-window.c` builds from the text
+and its `-C`, `-N`, `-T`, `-i`, `-r` (`Syntax.findFilter`). The command
+filled from a prompt's answer used to go straight to tmux; now one that
+puritty runs itself (`runsHere`) runs in puritty (`closePrompt`), so the
+tree opens.
+
+**C-c no longer closes the tree**: tmux's tree closes on q, Escape and
+C-g only (`mode_tree_key`), and C-g now does in puritty.
+
+**Checked side by side** on 3.8 and 3.6a (`bench/tmux/compare`,
+`tree-search-filter`): `/logs`, `/sec`, `n` going round, the filter
+`#{==:#{session_name},other}`, clearing it, and `prefix f second`, the
+same rows and the same chosen row at each; Enter after find-window lands
+in the same session and window. Tests: tmux package 62 (find-window's
+and `-f`'s filters), app 141; `show.py` modes and prompts unchanged.
+
+**Not yet:** the tree's `(search)`/`(filter)` prompts take no history
+of tmux's; `no matches` is not said in the preview's top line; tags,
+kill, sort, `v`, swap and help.

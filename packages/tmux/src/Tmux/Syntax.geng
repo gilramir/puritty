@@ -733,12 +733,14 @@ panesOf command =
 
 
 {-| What a binding's `choose-tree` asks (puritty `docs/tmux.md` TM32), or
-`choose-session` and `choose-window`, its old names: whether it starts
-with the sessions folded (`-s`) or open on the windows (`-w`), whether it
-zooms the pane (`-Z`), the command a choice runs with `%%` the target
-chosen (`switch-client -t '%%'` when none is given), and the commands
-after it. -}
-treeOf : String -> Maybe { sessions : Bool, zoom : Bool, template : String, after : String }
+`choose-session` and `choose-window`, its old names, or `find-window`
+(TM45): how it starts (`start`: 0 every session folded, `-s`; 1 the
+sessions open on their windows, `-w`; 2 all open on the panes, neither,
+as tmux's `WINDOW_TREE_PANE`), its filter (`-f`, or the one
+`find-window` builds from its text), whether it zooms the pane (`-Z`),
+the command a choice runs with `%%` the target chosen (`switch-client -t
+'%%'` when none is given), and the commands after it. -}
+treeOf : String -> Maybe { start : Int, filter : String, zoom : Bool, template : String, after : String }
 treeOf command =
     let
         cmds =
@@ -746,6 +748,9 @@ treeOf command =
 
         name =
             Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+
+        after =
+            Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
     in
     when Array.first cmds is
         Just first ->
@@ -755,7 +760,16 @@ treeOf command =
                         flags "FfKOt" (Array.dropFirst 1 first)
                 in
                 Just
-                    { sessions = name == "choose-session" || (name == "choose-tree" && String.contains "s" args.bools && not (String.contains "w" args.bools))
+                    { start =
+                        if name == "choose-session" || (name == "choose-tree" && String.contains "s" args.bools) then
+                            0
+
+                        else if name == "choose-window" || String.contains "w" args.bools then
+                            1
+
+                        else
+                            2
+                    , filter = Maybe.withDefault "" (getFlag 'f' args.values)
                     , zoom = String.contains "Z" args.bools
                     , template =
                         when args.rest is
@@ -767,7 +781,20 @@ treeOf command =
 
                             many ->
                                 serialize many
-                    , after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+                    , after = after
+                    }
+
+            else if name == "find-window" then
+                let
+                    args =
+                        flags "t" (Array.dropFirst 1 first)
+                in
+                Just
+                    { start = 2
+                    , filter = findFilter args.bools (Array.map .value args.rest |> String.join " ")
+                    , zoom = String.contains "Z" args.bools
+                    , template = "switch-client -t '%%'"
+                    , after = after
                     }
 
             else
@@ -776,3 +803,50 @@ treeOf command =
         Nothing ->
             Nothing
 
+
+{-| The filter `find-window` gives tree mode for its text, as
+`cmd-find-window.c` builds it: `-C` the panes' contents, `-N` the
+windows' names, `-T` the panes' titles (all three when none is given),
+`-i` ignoring case, `-r` a regular expression. -}
+findFilter : String -> String -> String
+findFilter bools text =
+    let
+        has c =
+            String.contains c bools
+
+        given =
+            has "C" || has "N" || has "T"
+
+        suffix =
+            if has "r" && has "i" then "/ri" else if has "r" then "/r" else if has "i" then "/i" else ""
+
+        star =
+            if has "r" then "" else "*"
+
+        content =
+            "#{C" ++ suffix ++ ":" ++ text ++ "}"
+
+        matching field =
+            "#{m" ++ suffix ++ ":" ++ star ++ text ++ star ++ ",#{" ++ field ++ "}}"
+    in
+    when { c = not given || has "C", n = not given || has "N", t = not given || has "T" } is
+        { c = True, n = True, t = True } ->
+            "#{||:" ++ content ++ ",#{||:" ++ matching "window_name" ++ "," ++ matching "pane_title" ++ "}}"
+
+        { c = True, n = True, t = False } ->
+            "#{||:" ++ content ++ "," ++ matching "window_name" ++ "}"
+
+        { c = True, n = False, t = True } ->
+            "#{||:" ++ content ++ "," ++ matching "pane_title" ++ "}"
+
+        { c = False, n = True, t = True } ->
+            "#{||:" ++ matching "window_name" ++ "," ++ matching "pane_title" ++ "}"
+
+        { c = True, n = False, t = False } ->
+            content
+
+        { c = False, n = True, t = False } ->
+            matching "window_name"
+
+        _ ->
+            matching "pane_title"
