@@ -1759,7 +1759,7 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
 9. **The command prompt** (R): no Tab completion, `C-p`/`C-n`, `C-y` or
    word motions; its history is puritty's, not tmux's (known, TM25).
    `status-keys vi`'s normal mode: Escape closes puritty's prompt (TM25.3).
-10. **Borders** (M, R): junction cells (`┼ ├ ┬ ┴`) are gaps;
+10. **Borders** (M, R; done in tmux's look, TM48): junction cells (`┼ ├ ┬ ┴`) are gaps;
     `pane-border-lines` (double, heavy, simple, number, spaces) and
     `pane-border-indicators` (arrows) are not read; with two panes tmux
     colors half the divider, puritty all of it; the marked pane is a thin
@@ -2081,3 +2081,43 @@ The other options in the list (border lines and indicators, the status
 line's justify, position and lines, `window-style`, scrollbars, the
 clock's and display-panes' colors) are read and waiting for their
 drawing, which comes next.
+
+## TM48 · The panes' borders drawn as tmux draws them (2026-11-12)
+
+TM39's item 10, in tmux's look. puritty drew a line right of and below
+each tiled pane, the active pane's frame over it in its color, and the
+marked pane's frame magenta: the cells where lines meet were gaps, the
+whole divider took the active color, and `pane-border-lines` and
+`pane-border-indicators` were not read.
+
+**Now cell by cell, as `screen-redraw.c`** (`Tmux.Borders.cells`, in the
+tmux package with its own tests): a cell is a pane's border by
+`screen_redraw_pane_border`, looking from the active pane round the
+list; its glyph by which of its four neighbors are borders
+(`screen_redraw_type_of_cell`: the corners, the joins and the cross) in
+the set `pane-border-lines` names (single, double, heavy, simple,
+number, spaces); its color `pane-active-border-style` when the cell is
+the active pane's border and `pane-border-style` otherwise; with two
+panes and `pane-border-indicators` `colour` (the default) or `both`,
+each pane's side of the divider is its half, so the active color takes
+half (`screen_redraw_two_panes`); the marked pane's border reversed; and
+with `arrows` or `both`, an arrow on the active pane's border pointing
+at it, one cell in. The window is the layout's size, not puritty's
+canvas. Pane titles (`pane-border-status`) are drawn over the cells as
+before. puritty's own look keeps its lines.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `borders-2`,
+`-3`, `-4`, `border-lines-double`, `-heavy`, `-simple`, `-number`,
+`border-indicators-arrows`, `-both`, `marked`, `border-status-top`,
+`-bottom`, `border-styles`): the joins, the half-colored divider of two
+panes (rows 0 to 14 grey, 15 on green, as tmux's), double and heavy
+lines and their joins, the digits of `number`, the arrows at the same
+cells, the marked pane's reversed border. Tests: the tmux package's
+`Borders` (7: glyphs, both halves, indicators off, a cross, double, an
+arrow), 69 in all; app 141; `show.py` lines, marks and mouse unchanged
+(the lines still drag).
+
+**Not matched:** a pane's index for `number` is its place in the
+window's list, which is its index unless panes were moved; scrollbars
+(3.6) are not drawn, so their columns are not left; floating panes keep
+puritty's boxes.

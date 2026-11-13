@@ -43,6 +43,7 @@ import Dict exposing (Dict)
 import Keys
 import Search
 import Tmux.Bindings as Bindings
+import Tmux.Borders as Borders
 import Tmux.Command as Command
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax
@@ -2390,7 +2391,7 @@ paint s =
                         |> Vt.feed (Bytes.fromString "\u{001B}[?7l\u{001B}[0m\u{001B}[H\u{001B}[2J")
                         |> Vt.compose s.panes tiledPlaces
                         |> Vt.invert tiledSpans
-                        |> drawText borders.lineColor lines
+                        |> drawText borders.lineColor (if s.lookTmux then [] else lines)
                         |> drawPieces borders.tiled
                         |> drawPieces tiledMarks
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColor else boxColor) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
@@ -4048,13 +4049,32 @@ paneBorders tmuxLook cols rows active tiled floating status =
 
                 else
                     -- the border's line along the row, the title over it,
-                    -- as tmux draws it
-                    [ { row = row, col = p.x, color = lineIn, text = String.repeat (max 0 (min p.w (cols - p.x))) "─" } ]
+                    -- as tmux draws it; in tmux's look the line is the
+                    -- border's own cells (TM48)
+                    (if tmuxLook then [] else [ { row = row, col = p.x, color = lineIn, text = String.repeat (max 0 (min p.w (cols - p.x))) "─" } ])
                         ++ (laidRuns row (p.x + 2) leftRuns).pieces
                         ++ (if used + 1 + rightWidth <= room then (laidRuns row (p.x + 2 + room - rightWidth) rightRuns).pieces else [])
     in
     { lineColor = if tmuxLook then Style.sgr base else lineColor
-    , tiled = frames ++ Array.mapAndFlatten titleOf tiled
+    , tiled =
+        if tmuxLook then
+            Borders.cells
+                -- tmux's window: the layout's size, not puritty's canvas
+                { cols = Array.foldl (\p m -> max m (p.x + p.w)) 0 tiled
+                , rows = Array.foldl (\p m -> max m (p.y + p.h)) 0 tiled
+                , active = active
+                , marked = Array.findFirst (\p -> (own p).marked) tiled |> Maybe.map (\f -> f.value.id) |> Maybe.withDefault -1
+                , paneStatus = if status.borderStatus == "" then "off" else status.borderStatus
+                , lines = Maybe.withDefault "single" (Dict.get "pane-border-lines" status.options)
+                , indicators = Maybe.withDefault "colour" (Dict.get "pane-border-indicators" status.options)
+                , borderStyle = status.borderStyle
+                , activeStyle = Array.findFirst (\p -> p.id == active) tiled |> Maybe.map (\f -> (own f.value).border) |> Maybe.withDefault "fg=green"
+                }
+                (Array.keepIf (\p -> p.z == Nothing) tiled)
+                ++ Array.mapAndFlatten titleOf tiled
+
+        else
+            frames ++ Array.mapAndFlatten titleOf tiled
     , floating = Array.mapAndFlatten titleOf floating
     }
 

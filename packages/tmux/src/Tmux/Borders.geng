@@ -1,0 +1,297 @@
+module Tmux.Borders exposing (cells)
+
+{-| tmux's pane borders, cell by cell, as `screen-redraw.c` draws them on a
+client, for drawing them where tmux does not: under control mode
+(puritty `docs/tmux.md` TM48).
+-}
+
+import Dict
+import Tmux.Layout as Layout
+import Tmux.Style as Style
+
+
+{-| The tiled panes' borders in tmux's look, cell by cell, as tmux's
+`screen-redraw.c` draws them (puritty `docs/tmux.md` TM48): a cell is a border of a pane by
+`screen_redraw_pane_border`, its glyph by the borders around it
+(`screen_redraw_type_of_cell`) in `pane-border-lines`' set, its color
+`pane-active-border-style` when it is the active pane's border (half the
+divider when there are only two panes, as `pane-border-indicators`'
+`colour` says), `pane-border-style` otherwise, reversed on the marked
+pane's border, and an arrow pointing at the active pane where
+`pane-border-indicators` asks for arrows. -}
+cells :
+    { cols : Int, rows : Int, active : Int, marked : Int, paneStatus : String, lines : String, indicators : String, borderStyle : String, activeStyle : String }
+    -> Array Layout.Pane
+    -> Array { row : Int, col : Int, color : String, text : String }
+cells o panes =
+    let
+        sx =
+            o.cols
+
+        sy =
+            if o.paneStatus == "bottom" then o.rows - 1 else o.rows
+
+        coloured =
+            o.indicators == "colour" || o.indicators == "both" || o.indicators == ""
+
+        twoPanes direction =
+            when panes is
+                [ _, second ] ->
+                    coloured && (if direction == 0 then second.x /= 0 else second.y /= 0)
+
+                _ ->
+                    False
+
+        hsplit =
+            twoPanes 0
+
+        vsplit =
+            twoPanes 1
+
+        -- 0 outside, 1 inside, 2 left, 3 right, 4 top, 5 bottom
+        paneBorder p px py =
+            let
+                ex =
+                    p.x + p.w
+
+                ey =
+                    p.y + p.h
+
+                side =
+                    if (p.y == 0 || py >= p.y - 1) && py <= ey then
+                        if p.x == 0 && px == p.w && (not hsplit || py <= p.h // 2) then
+                            3
+
+                        else if p.x /= 0 && px == p.x - 1 && (not hsplit || py > p.h // 2) then
+                            2
+
+                        else if p.x /= 0 && px == p.x + p.w then
+                            3
+
+                        else
+                            0
+
+                    else
+                        0
+
+                across =
+                    if vsplit && o.paneStatus == "off" then
+                        if p.y == 0 && py == p.h && px <= p.w // 2 then
+                            5
+
+                        else if p.y /= 0 && py == p.y - 1 && px > p.w // 2 then
+                            4
+
+                        else
+                            0
+
+                    else if (p.x == 0 || px >= p.x) && px <= ex then
+                        if p.y /= 0 && py == p.y - 1 then
+                            4
+
+                        else if py == ey then
+                            5
+
+                        else
+                            0
+
+                    else
+                        0
+            in
+            if px >= p.x && px < ex && py >= p.y && py < ey then
+                1
+
+            else if side /= 0 then
+                side
+
+            else
+                across
+
+        -- tmux looks from the active pane round the list
+        ordered =
+            when Array.findFirst (\p -> p.id == o.active) panes is
+                Just found ->
+                    Array.dropFirst found.index panes ++ Array.takeFirst found.index panes
+
+                Nothing ->
+                    panes
+
+        isBorder px py =
+            if px > sx || py > sy || px < 0 || py < 0 then
+                False
+
+            else if px == sx || py == sy then
+                True
+
+            else
+                borderOf px py /= Nothing
+
+        -- the first pane, from the active one, whose border the cell is;
+        -- Nothing inside a pane or outside every border
+        borderOf px py =
+            Array.foldl
+                (\p acc ->
+                    when acc is
+                        { done = True, found = _ } ->
+                            acc
+
+                        _ ->
+                            let
+                                b =
+                                    paneBorder p px py
+                            in
+                            if b == 1 then
+                                { done = True, found = Nothing }
+
+                            else if b == 0 then
+                                acc
+
+                            else
+                                { done = True, found = Just p }
+                )
+                { done = False, found = Nothing }
+                ordered
+                |> .found
+
+        typeOf px py =
+            let
+                bits =
+                    (if px == 0 || isBorder (px - 1) py then 8 else 0)
+                        + (if px <= sx && isBorder (px + 1) py then 4 else 0)
+                        + (if o.paneStatus == "top" then
+                            (if py /= 0 && isBorder px (py - 1) then 2 else 0) + (if isBorder px (py + 1) then 1 else 0)
+
+                           else if o.paneStatus == "bottom" then
+                            (if py == 0 || isBorder px (py - 1) then 2 else 0) + (if py /= sy && isBorder px (py + 1) then 1 else 0)
+
+                           else
+                            (if py == 0 || isBorder px (py - 1) then 2 else 0) + (if isBorder px (py + 1) then 1 else 0)
+                          )
+            in
+            when bits is
+                15 -> 11
+                14 -> 8
+                13 -> 7
+                12 -> 2
+                11 -> 10
+                10 -> 6
+                9 -> 4
+                7 -> 9
+                6 -> 5
+                5 -> 3
+                3 -> 1
+                _ -> 12
+
+        glyph cellType p =
+            let
+                pick set =
+                    String.toArray set |> Array.get cellType |> Maybe.map String.fromChar |> Maybe.withDefault " "
+            in
+            when o.lines is
+                "double" ->
+                    pick " ║═╔╗╚╝╦╩╠╣╬·"
+
+                "heavy" ->
+                    pick " ┃━┏┓┗┛┳┻┣┫╋·"
+
+                "simple" ->
+                    pick " |-+++++++++."
+
+                "spaces" ->
+                    " "
+
+                "none" ->
+                    " "
+
+                "number" ->
+                    if cellType == 12 then
+                        "·"
+
+                    else
+                        Array.findFirst (\q -> q.id == p.id) panes |> Maybe.map (\f -> String.fromInt (modBy 10 f.index)) |> Maybe.withDefault "*"
+
+                _ ->
+                    pick " │─┌┐└┘┬┴├┤┼·"
+
+        activePane =
+            Array.findFirst (\p -> p.id == o.active) panes |> Maybe.map .value
+
+        markedPane =
+            Array.findFirst (\p -> p.id == o.marked) panes |> Maybe.map .value
+
+        onBorderOf maybePane px py =
+            when maybePane is
+                Just p ->
+                    let
+                        b =
+                            paneBorder p px py
+                    in
+                    b > 1
+
+                Nothing ->
+                    False
+
+        arrows =
+            o.indicators == "arrows" || o.indicators == "both"
+
+        styleAt px py =
+            let
+                base =
+                    Style.apply (if onBorderOf activePane px py then o.activeStyle else o.borderStyle) Style.plain
+            in
+            Style.sgr (if onBorderOf markedPane px py then Style.apply "reverse" base else base)
+
+        -- the cells that can be borders: around every pane, inside the
+        -- window, each once
+        candidates =
+            panes
+                |> Array.mapAndFlatten
+                    (\p ->
+                        (Array.range (p.y - 1) (p.y + p.h) |> Array.mapAndFlatten (\r -> [ { col = p.x - 1, row = r }, { col = p.x + p.w, row = r } ]))
+                            ++ (Array.range (p.x - 1) (p.x + p.w) |> Array.mapAndFlatten (\c -> [ { col = c, row = p.y - 1 }, { col = c, row = p.y + p.h } ]))
+                    )
+                |> Array.keepIf (\c -> c.col >= 0 && c.row >= 0 && c.col < sx && c.row < sy)
+                |> Array.foldl (\c d -> Dict.set (c.row * (sx + 1) + c.col) True d) Dict.empty
+                |> Dict.keys
+                |> Array.map (\k -> { col = modBy (sx + 1) k, row = k // (sx + 1) })
+    in
+    candidates
+        |> Array.mapAndKeepJust
+            (\c ->
+                when borderOf c.col c.row is
+                    Just p ->
+                        let
+                            cellType =
+                                typeOf c.col c.row
+
+                            sideOfActive =
+                                when activePane is
+                                    Just a ->
+                                        paneBorder a c.col c.row
+
+                                    Nothing ->
+                                        0
+
+                            arrowHere =
+                                arrows
+                                    && onBorderOf activePane c.col c.row
+                                    && ((c.col == p.x + 1 && (cellType == 2 || (cellType == 7 && sideOfActive == 5) || (cellType == 8 && sideOfActive == 4)))
+                                            || (c.row == p.y + 1 && (cellType == 1 || (cellType == 9 && sideOfActive == 3) || (cellType == 10 && sideOfActive == 2)))
+                                       )
+
+                            text =
+                                if arrowHere then
+                                    when sideOfActive is
+                                        2 -> "→"
+                                        3 -> "←"
+                                        4 -> "↓"
+                                        _ -> "↑"
+
+                                else
+                                    glyph cellType p
+                        in
+                        Just { row = c.row, col = c.col, color = styleAt c.col c.row, text = text }
+
+                    Nothing ->
+                        Nothing
+            )
