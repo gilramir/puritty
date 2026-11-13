@@ -264,12 +264,72 @@ type alias StatusLine =
     , borderStatus : String
     , borderStyle : String
     , panes : Dict Int { title : String, border : String, marked : Bool }
+      -- tmux's drawing options by name, as `optionNames` lists them (TM47)
+    , options : Dict String String
     }
 
 
 noStatus : StatusLine
 noStatus =
-    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty, borderStatus = "off", borderStyle = "", panes = Dict.empty }
+    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty, borderStatus = "off", borderStyle = "", panes = Dict.empty, options = Dict.empty }
+
+
+{-| The options puritty draws by (TM47), sent together, tab between: an
+option tmux does not have (3.6's lack of 3.8's) comes as nothing, and
+its default is used. -}
+optionNames : Array String
+optionNames =
+    [ "message-style"
+    , "message-command-style"
+    , "mode-style"
+    , "menu-selected-style"
+    , "copy-mode-match-style"
+    , "copy-mode-current-match-style"
+    , "pane-border-lines"
+    , "pane-border-indicators"
+    , "status-justify"
+    , "status-position"
+    , "status"
+    , "window-style"
+    , "window-active-style"
+    , "pane-scrollbars"
+    , "pane-scrollbars-style"
+    , "pane-scrollbars-position"
+    , "display-panes-colour"
+    , "display-panes-active-colour"
+    , "clock-mode-colour"
+    , "clock-mode-style"
+    ]
+
+
+{-| The colors tmux's look draws with, from the user's options or tmux's
+defaults (TM47). -}
+type alias Colors =
+    { message : String
+    , mode : String
+    , menuSelected : String
+    , match : String
+    , currentMatch : String
+    }
+
+
+colorsOf : StatusLine -> Colors
+colorsOf status =
+    let
+        styled name fallback =
+            when Dict.get name status.options is
+                Just v ->
+                    if String.trim v == "" then fallback else Style.sgr (Style.apply v Style.plain)
+
+                Nothing ->
+                    fallback
+    in
+    { message = styled "message-style" messageColor
+    , mode = styled "mode-style" messageColor
+    , menuSelected = styled "menu-selected-style" (styled "mode-style" messageColor)
+    , match = styled "copy-mode-match-style" matchColor
+    , currentMatch = styled "copy-mode-current-match-style" currentMatchColor
+    }
 
 
 {-| `display-panes` shown by puritty (TM28): each pane's index by its id,
@@ -2134,7 +2194,7 @@ paint s =
                 -- tmux's other modes (TM32): the clock drawn, the others
                 -- said; and the tree puritty shows for `choose-tree`
                 modesDrawn =
-                    Array.mapAndFlatten (\p -> modeOverlay s.lookTmux (p.id == active) (Maybe.withDefault "" (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
+                    Array.mapAndFlatten (\p -> modeOverlay (colorsOf s.status) s.lookTmux (p.id == active) (Maybe.withDefault "" (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
 
                 treeDrawn =
                     when s.tree is
@@ -2153,7 +2213,7 @@ paint s =
                                 in
                                 when area is
                                     Just place ->
-                                        drawTree s.lookTmux s.version place t
+                                        drawTree (colorsOf s.status) s.lookTmux s.version place t
 
                                     Nothing ->
                                         []
@@ -2186,7 +2246,7 @@ paint s =
                                 []
 
                             else
-                                drawMenu s.lookTmux (menuPlace cols rows s m) m
+                                drawMenu (colorsOf s.status) s.lookTmux (menuPlace cols rows s m) m
 
                         Nothing ->
                             []
@@ -2199,7 +2259,7 @@ paint s =
                             if s.lookTmux then
                                 when Array.findFirst (\p -> p.id == active) (tiled ++ floating) is
                                     Just place ->
-                                        tmuxView place.value v
+                                        tmuxView (colorsOf s.status) place.value v
 
                                     Nothing ->
                                         boxView cols rows s.barTop v
@@ -2306,10 +2366,15 @@ paint s =
                                                             ""
                                                        )
                                         in
-                                        { row = p.y, col = p.x + max 0 (p.w - String.count text), color = if s.lookTmux then messageColor else activeTabColor, text = String.takeFirst p.w text }
+                                        { row = p.y, col = p.x + max 0 (p.w - String.count text), color = if s.lookTmux then (colorsOf s.status).mode else activeTabColor, text = String.takeFirst p.w text }
                                     )
                         )
                         (tiled ++ floating)
+
+                -- the message's and the prompt's color, as message-style
+                -- says (TM47)
+                messageInk =
+                    (colorsOf s.status).message
 
                 -- a copy-mode search's matches (TM41)
                 tiledMarks =
@@ -2347,8 +2412,8 @@ paint s =
                                         |> drawText barColor saidPiece
                            )
                         |> drawText "\u{001B}[0m" promptClear
-                        |> drawText messageColor tmuxLine
-                        |> drawText messageColor caretPiece
+                        |> drawText messageInk tmuxLine
+                        |> drawText messageInk caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c numbersDrawn)
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c menuDrawn)
@@ -4037,6 +4102,7 @@ statusSubscriptions =
     , "puritty-ptitle:%*:#{T:pane-border-format}"
     , "puritty-pborder:%*:#{?pane_active,#{E:pane-active-border-style},#{E:pane-border-style}}"
     , "puritty-pmarked:%*:#{pane_marked}"
+    , "puritty-opts::" ++ String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") optionNames)
     ]
 
 
@@ -4105,6 +4171,9 @@ subscribed name window pane value status =
 
         "puritty-pmarked" ->
             perPane (\q -> { q | marked = value == "1" })
+
+        "puritty-opts" ->
+            { status | options = Array.foldl (\pair d -> Dict.set pair.name pair.value d) Dict.empty (Array.map2 (\option v -> { name = option, value = v }) optionNames (String.split "\t" value)) }
 
         _ ->
             status
@@ -4745,8 +4814,8 @@ menuPlace cols rows s m =
 (single lines, the title in the middle of the top edge, the chosen item
 in `menu-selected-style`, black on yellow, one that cannot be chosen
 dim); in puritty's, in the view's box with the chosen item amber. -}
-drawMenu : Bool -> { x : Int, y : Int, w : Int, h : Int, rows : Array MenuRow, title : String } -> Menuing -> Array { row : Int, col : Int, color : String, text : String }
-drawMenu tmuxLook place m =
+drawMenu : Colors -> Bool -> { x : Int, y : Int, w : Int, h : Int, rows : Array MenuRow, title : String } -> Menuing -> Array { row : Int, col : Int, color : String, text : String }
+drawMenu colors tmuxLook place m =
     let
         inner =
             place.w - 2
@@ -4761,7 +4830,7 @@ drawMenu tmuxLook place m =
             if tmuxLook then "\u{001B}[0;2;38;5;254;48;5;235m" else "\u{001B}[0;38;5;243;48;5;236m"
 
         chosenColor =
-            if tmuxLook then messageColor else activeTabColor
+            if tmuxLook then colors.menuSelected else activeTabColor
 
         heading =
             String.takeFirst inner place.title
@@ -6068,8 +6137,8 @@ windows under it joined by `├─>` and `└─>`, the chosen row in
 `mode-style`; in puritty's, the view's box. Below the list, when there is
 room, the chosen row's preview, as tmux draws it (TM35): the list takes a
 third of the height, or less with fewer rows. -}
-drawTree : Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
-drawTree tmuxLook version place t =
+drawTree : Colors -> Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
+drawTree colors tmuxLook version place t =
     let
         rows =
             treeRows t
@@ -6268,7 +6337,7 @@ drawTree tmuxLook version place t =
                         , col = if tmuxLook then place.x else place.x + 2
                         , color =
                             if chosen then
-                                if tmuxLook then messageColor else activeTabColor
+                                if tmuxLook then colors.mode else activeTabColor
 
                             else if tmuxLook then
                                 "\u{001B}[0m"
@@ -6417,8 +6486,8 @@ does not draw (`tree-mode` entered otherwise than by a binding,
 `buffer-mode`, `client-mode`, `options-mode`), a line in the pane's middle
 that says so and how to leave it, since tmux has the pane's keys. Copy and
 view mode are drawn elsewhere (TM31). -}
-modeOverlay : Bool -> Bool -> String -> String -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
-modeOverlay tmuxLook isActive mode time p =
+modeOverlay : Colors -> Bool -> Bool -> String -> String -> Layout.Pane -> Array { row : Int, col : Int, color : String, text : String }
+modeOverlay colors tmuxLook isActive mode time p =
     if mode == "" || mode == "copy-mode" || mode == "view-mode" then
         []
 
@@ -6472,7 +6541,7 @@ modeOverlay tmuxLook isActive mode time p =
             text =
                 String.takeFirst p.w (" tmux's " ++ mode ++ " is not drawn under -CC; q leaves it ")
         in
-        [ { row = p.y + p.h // 2, col = p.x + max 0 ((p.w - String.count text) // 2), color = if tmuxLook then messageColor else activeTabColor, text = text } ]
+        [ { row = p.y + p.h // 2, col = p.x + max 0 ((p.w - String.count text) // 2), color = if tmuxLook then colors.mode else activeTabColor, text = text } ]
 
 
 -- COPY MODE (TM31)
@@ -6536,7 +6605,7 @@ searchMarks panes s =
                                         (\m ->
                                             { row = p.y + m.start.row - top
                                             , col = p.x + m.start.col
-                                            , color = if m.start.row == cursorRow && m.start.col <= c.cx && c.cx <= m.end.col then currentMatchColor else matchColor
+                                            , color = if m.start.row == cursorRow && m.start.col <= c.cx && c.cx <= m.end.col then (colorsOf s.status).currentMatch else (colorsOf s.status).match
                                             , text = Vt.selectionText m.start m.end t
                                             }
                                         )
@@ -6757,8 +6826,8 @@ pane's top and tmux's position, `[N/M]` in `mode-style` at the top right,
 N the lines below the view and M those that do not fit, as tmux counts
 them (measured on 3.8: `prefix ?` opens at `[70/70]` in a pane of 23 rows
 over 93 lines). -}
-tmuxView : Layout.Pane -> View -> { rows : Int, pieces : Array { row : Int, col : Int, color : String, text : String } }
-tmuxView p v =
+tmuxView : Colors -> Layout.Pane -> View -> { rows : Int, pieces : Array { row : Int, col : Int, color : String, text : String } }
+tmuxView colors p v =
     let
         hidden =
             max 0 (Array.length v.lines - p.h)
@@ -6786,13 +6855,13 @@ tmuxView p v =
     , pieces =
         rowsOf
             ++ (if String.count position <= p.w then
-                    [ { row = p.y, col = p.x + p.w - String.count position, color = messageColor, text = position } ]
+                    [ { row = p.y, col = p.x + p.w - String.count position, color = colors.mode, text = position } ]
 
                 else
                     []
                )
             ++ (if v.filtering || v.filter /= "" then
-                    [ { row = p.y + p.h - 1, col = p.x, color = messageColor, text = String.takeFirst p.w (String.padRight p.w ' ' (filterLine v)) } ]
+                    [ { row = p.y + p.h - 1, col = p.x, color = colors.mode, text = String.takeFirst p.w (String.padRight p.w ' ' (filterLine v)) } ]
 
                 else
                     []

@@ -2057,3 +2057,27 @@ tests 141.
 view, `<`/`>` scrolling the preview, the mouse in the tree; 3.8's colors
 in the rows; the preview's inside is puritty's own drawing (each pane or
 window with a label line), not tmux's (borders and a centered label box).
+
+## TM47 · tmux's drawing options read: the styles (2026-11-12)
+
+TM39.4's first kind of work, begun. One more subscription
+(`puritty-opts`, `refresh-client -B`) carries tmux's drawing options,
+tab between (`optionNames`): an option's name is a format, so tmux sends
+the user's value whenever it changes, and an option a version lacks
+comes as nothing and its default is used. The styles are drawn from it
+(`colorsOf`): `message-style` for messages and prompts, `mode-style` for
+the tree's chosen row, copy mode's position and the views' lines and the
+modes' labels, `menu-selected-style` (or `mode-style`) for a menu's
+chosen item, and `copy-mode-match-style` and
+`copy-mode-current-match-style` for a search's marks. 3.8's theme names
+(`themeyellow`) read as their colors.
+
+**Checked** (`bench/tmux/compare`, `custom-message-style`): with
+`message-style bg=red,fg=white` the prompt and `prefix i`'s message are
+red on white. App tests 141; `show.py` prompts, menus, modes, copy
+unchanged.
+
+The other options in the list (border lines and indicators, the status
+line's justify, position and lines, `window-style`, scrollbars, the
+clock's and display-panes' colors) are read and waiting for their
+drawing, which comes next.
