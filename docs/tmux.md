@@ -1736,7 +1736,8 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
 3. **The status window list overflows silently** (M, R). With many
    windows puritty draws from window 0, so the current one can be off
    the edge, with no `<`/`>` marks, and the list runs over
-   status-right. tmux scrolls to keep the current window in view.
+   status-right. tmux scrolls to keep the current window in view. Done
+   (TM43).
 4. **`prefix f` (find-window) is a dead end** (R): it enters tree mode
    with a filter (`cmd-find-window.c:107`), which puritty only says is
    not drawn.
@@ -1894,3 +1895,29 @@ puritty's own look asks in its box either way.
 `copy-vi`): `(search up) 1` and `(goto line)` on the same row, colored
 over the same cells. Tests: app 137, tmux package 62; `show.py`
 prompts, copy and modes unchanged.
+
+## TM43 · A status line too long for the window (2026-11-12)
+
+TM39's item 3. puritty laid the windows out from window 0 and dropped
+what passed the edge, and dropped status-right whenever the list
+reached it, so with many windows the current one could be off the bar.
+tmux's default `status-format` makes the windows a list
+(`#[list=on]`, the current window `list=focus`, `<` and `>` as its
+markers), and `format_draw_left` and `format_draw_put_list`
+(`format-draw.c:125`, `:228`) fit it: the list gives way first, then
+status-right from its start, then status-left; a list cut short is shown
+from its focus's middle less half the width, kept within the list, with
+`<` where windows are hidden on the left and `>` on the right, each
+taking a cell of the list. `TmuxMode.tmuxBar` now does the same, and
+the windows' click ranges move and are cut with the text they belong to.
+
+**Checked side by side** (`bench/tmux/compare`, `status-overflow` and
+`status-overflow-click`): with twelve long-named windows, window 6
+current, `[main] <ong-window-name-5  6:a-rather-long-window-name-6*
+7:a-rather-long-win>"nene" …` on both, and with window 11,
+`[main] <e-9  10:…  11:a-rather-long-window-name-11*"nene" …`; a click on
+window 7's text selects it on both, a click on `<` does nothing on both.
+App tests 137; `show.py` status, tabs and mouse unchanged.
+
+**Not yet** (TM29): `status-justify` other than left, the status line on
+top, more than one line, a custom `status-format`.

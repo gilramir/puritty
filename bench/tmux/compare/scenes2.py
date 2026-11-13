@@ -47,6 +47,11 @@ SCENES = [
                 ("keys", "C-r"), ("q", CUR), ("keys", "BSpace"), ("q", CUR), ("type", "5"), ("q", CUR),
                 ("keys", "Enter"), ("q", CUR), ("keys", "C-r"), ("keys", "C-r"), ("q", CUR), ("shot", "recalled"),
                 ("keys", "C-r"), ("q", CUR), ("keys", "C-s"), ("q", CUR), ("keys", "C-c"), ("q", CUR)]),
+    dict(name="status-overflow-click", conf="set -g mouse on\n",
+         setup=[("new-window", "-t", "main", "-n", f"a-rather-long-window-name-{i}") for i in range(1, 12)]
+               + [("select-window", "-t", "main:6")],
+         steps=[("q", "win=#{window_index}"), ("click", 62, 29), ("q", "win=#{window_index}"), ("shot", "clicked-7"),
+                ("click", 7, 29), ("q", "win=#{window_index}"), ("shot", "clicked-left-marker")]),
     dict(name="pane-scrollbars2", conf="set -g pane-scrollbars on\n",
          setup=THREE + [sk("main:0.0", "seq 1 100"), ("select-pane", "-t", "main:0.0")],
          steps=[("keys", P, "["), ("keys", "PPage"), ("q", CUR), ("shot", "copy-scrolled")]),

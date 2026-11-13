@@ -4006,16 +4006,26 @@ laidRuns row col all =
 by default, measured in a tmux client inside another tmux: `status-style`
 across the row, `status-left` cut to its length, the windows' own texts
 in their styles with the separator between, `status-right` cut to its
-length at the right; and where each window's text is, for a click. -}
+length at the right; and where each window's text is, for a click.
+
+When it does not all fit, as tmux's `format_draw_left` and
+`format_draw_put_list` (TM43): the window list gives way first, then
+status-right (its end kept), then status-left; a list cut short is
+shown around the current window, with `<` or `>` where windows are
+hidden. -}
 tmuxBar : Int -> Int -> State -> { pieces : Array { row : Int, col : Int, color : String, text : String }, hits : Array { from : Int, to : Int, window : Int } }
 tmuxBar cols row s =
     let
         base =
             Style.apply s.status.style Style.plain
 
-        left =
-            laidRuns row 0 (takeRuns s.status.leftLength (Style.runs base s.status.left))
+        leftRuns =
+            takeRuns s.status.leftLength (Style.runs base s.status.left)
 
+        leftFull =
+            Array.foldl (\r n -> n + String.count r.text) 0 leftRuns
+
+        -- the list laid out from column 0
         windows =
             Array.foldl
                 (\t acc ->
@@ -4044,29 +4054,117 @@ tmuxBar cols row s =
                     , hits = Array.pushLast { from = gap.end, to = entry.end - 1, window = t.id } acc.hits
                     }
                 )
-                { end = left.end, pieces = [], hits = [] }
+                { end = 0, pieces = [], hits = [] }
                 s.tabs
+
+        listFull =
+            windows.end
 
         rightRuns =
             takeRuns s.status.rightLength (Style.runs base s.status.right)
 
-        rightWidth =
+        rightFull =
             Array.foldl (\r n -> n + String.count r.text) 0 rightRuns
 
-        right =
-            if windows.end + rightWidth <= cols then
-                (laidRuns row (cols - rightWidth) rightRuns).pieces
+        -- trimmed in tmux's order: the list, then the right, then the left
+        over0 =
+            max 0 (leftFull + listFull + rightFull - cols)
+
+        listW =
+            listFull - min over0 listFull
+
+        over1 =
+            over0 - (listFull - listW)
+
+        rightW =
+            rightFull - min over1 rightFull
+
+        leftW =
+            leftFull - min (over1 - (rightFull - rightW)) leftFull
+
+        -- which part of the list shows, around the current window
+        focus =
+            Array.findFirst (\h -> h.window == s.window) windows.hits
+                |> Maybe.map (\f -> f.value.from + (f.value.to + 1 - f.value.from) // 2)
+                |> Maybe.withDefault 0
+
+        start0 =
+            if listW >= listFull then
+                0
+
+            else if focus < listW // 2 then
+                0
 
             else
-                []
+                min (focus - listW // 2) (listFull - listW)
+
+        leftMark =
+            start0 /= 0 && listW > 1
+
+        afterLeft =
+            { at = leftW + (if leftMark then 1 else 0)
+            , start = start0 + (if leftMark then 1 else 0)
+            , width = listW - (if leftMark then 1 else 0)
+            }
+
+        rightMark =
+            listW < listFull && afterLeft.start + afterLeft.width < listFull && afterLeft.width > 1
+
+        shown =
+            { afterLeft | width = afterLeft.width - (if rightMark then 1 else 0) }
+
+        marks =
+            (if leftMark then [ { row = row, col = leftW, color = Style.sgr base, text = "<" } ] else [])
+                ++ (if rightMark then [ { row = row, col = shown.at + shown.width, color = Style.sgr base, text = ">" } ] else [])
+
+        listPieces =
+            windows.pieces
+                |> Array.mapAndKeepJust (\piece -> clipPiece shown.start (shown.start + shown.width) (shown.at - shown.start) piece)
+
+        hits =
+            windows.hits
+                |> Array.mapAndKeepJust
+                    (\h ->
+                        let
+                            from =
+                                max h.from shown.start
+
+                            to =
+                                min h.to (shown.start + shown.width - 1)
+                        in
+                        if from > to then
+                            Nothing
+
+                        else
+                            Just { from = from + shown.at - shown.start, to = to + shown.at - shown.start, window = h.window }
+                    )
     in
     { pieces =
         [ { row = row, col = 0, color = Style.sgr base, text = String.repeat cols " " } ]
-            ++ left.pieces
-            ++ Array.keepIf (\p -> p.col < cols) windows.pieces
-            ++ right
-    , hits = windows.hits
+            ++ Array.mapAndKeepJust (\piece -> clipPiece 0 leftW 0 piece) (laidRuns row 0 leftRuns).pieces
+            ++ listPieces
+            ++ marks
+            ++ Array.mapAndKeepJust (\piece -> clipPiece (rightFull - rightW) rightFull (cols - rightFull) piece) (laidRuns row 0 rightRuns).pieces
+    , hits = hits
     }
+
+
+{-| The part of a piece between columns `from` and `to` (not included),
+moved by `shift`, if any of it is there. -}
+clipPiece : Int -> Int -> Int -> { row : Int, col : Int, color : String, text : String } -> Maybe { row : Int, col : Int, color : String, text : String }
+clipPiece from to shift piece =
+    let
+        first =
+            max from piece.col
+
+        last =
+            min to (piece.col + String.count piece.text)
+    in
+    if first >= last then
+        Nothing
+
+    else
+        Just { piece | col = first + shift, text = String.slice (first - piece.col) (last - piece.col) piece.text }
 
 
 {-| Pieces of text, each in its own color, in order. -}
