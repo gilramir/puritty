@@ -149,10 +149,12 @@ listed, `loaded` once both lists are in, which sessions are open, the row
 chosen, the command a choice runs, the pane it was run in, and whether
 it covers every pane (`-Z`). -}
 type alias Tree =
-    { sessions : Array { id : Int, name : String, attached : Bool, windows : Int }
-    , windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int }
+    { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, text : String }
+    , windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, text : String }
+    , panes : Array { window : Int, id : Int, index : Int, text : String }
     , loaded : Int
     , open : Dict Int Bool
+    , openWindows : Dict Int Bool
     , selected : Int
     , startSessions : Bool
     , template : String
@@ -198,7 +200,17 @@ noPreview =
 {-| A row of the tree: a session (its id) or a window (its id and its
 session's), with what it says and whether it is its session's last. -}
 type alias TreeRow =
-    { session : Int, window : Int, text : String, last : Bool }
+    { session : Int
+    , window : Int
+    , pane : Int
+    , depth : Int
+    , name : String
+    , text : String
+    , last : Bool
+    , parentLast : Bool
+    , children : Bool
+    , expanded : Bool
+    }
 
 
 {-| A pane in copy mode as tmux describes it (TM31): how far back it is
@@ -375,6 +387,7 @@ type Expect
     | ForCopy
     | ForTreeSessions
     | ForTreeWindows
+    | ForTreePanes
     | ForPreviewList Int
     | ForPreviewCapture { serial : Int, index : Int }
     | ForDayTime
@@ -727,6 +740,7 @@ expectName x =
         ForCopy -> "copy mode's state"
         ForTreeSessions -> "the tree's sessions"
         ForTreeWindows -> "the tree's windows"
+        ForTreePanes -> "the tree's panes"
         ForPreviewList _ -> "the tree preview's panes or windows"
         ForPreviewCapture c -> "the tree preview's capture " ++ String.fromInt c.index
         ForDayTime -> "the time of day"
@@ -1387,22 +1401,12 @@ replied expect ok lines acc =
                 sessions =
                     Array.mapAndKeepJust
                         (\line ->
-                            when String.split " " (Bytes.toStringLossy line) is
-                                [ "S", id, attached, count, first ] ->
-                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault 0 (String.toInt count), name = first }
+                            when String.split "\t" (Bytes.toStringLossy line) is
+                                [ "S", id, attached, count, name, text ] ->
+                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault 0 (String.toInt count), name = name, text = text }
 
                                 _ ->
-                                    when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
-                                        Just { first = "S", rest = rest } ->
-                                            Just
-                                                { id = idOf (Maybe.withDefault "" (Array.get 0 rest))
-                                                , attached = Array.get 1 rest /= Just "0"
-                                                , windows = Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get 2 rest))
-                                                , name = String.join " " (Array.dropFirst 3 rest)
-                                                }
-
-                                        _ ->
-                                            Nothing
+                                    Nothing
                         )
                         lines
             in
@@ -1416,15 +1420,16 @@ replied expect ok lines acc =
                 windows =
                     Array.mapAndKeepJust
                         (\line ->
-                            when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
-                                Just { first = "W", rest = rest } ->
+                            when String.split "\t" (Bytes.toStringLossy line) is
+                                [ "W", session, id, index, active, panes, name, text ] ->
                                     Just
-                                        { session = idOf (Maybe.withDefault "" (Array.get 0 rest))
-                                        , id = idOf (Maybe.withDefault "" (Array.get 1 rest))
-                                        , index = Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get 2 rest))
-                                        , active = Array.get 3 rest == Just "1"
-                                        , panes = Maybe.withDefault 1 (Maybe.andThen String.toInt (Array.get 4 rest))
-                                        , name = String.join " " (Array.dropFirst 5 rest)
+                                        { session = idOf session
+                                        , id = idOf id
+                                        , index = Maybe.withDefault 0 (String.toInt index)
+                                        , active = active == "1"
+                                        , panes = Maybe.withDefault 1 (String.toInt panes)
+                                        , name = name
+                                        , text = text
                                         }
 
                                 _ ->
@@ -1433,6 +1438,25 @@ replied expect ok lines acc =
                         lines
             in
             previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | windows = windows, loaded = t.loaded + 1 }) st.tree } }
+
+        ForTreePanes ->
+            let
+                st =
+                    acc.state
+
+                panes =
+                    Array.mapAndKeepJust
+                        (\line ->
+                            when String.split "\t" (Bytes.toStringLossy line) is
+                                [ "P", window, id, index, text ] ->
+                                    Just { window = idOf window, id = idOf id, index = Maybe.withDefault 0 (String.toInt index), text = text }
+
+                                _ ->
+                                    Nothing
+                        )
+                        lines
+            in
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window { t | panes = panes, loaded = t.loaded + 1 }) st.tree } }
 
         ForPreviewList serial ->
             -- the panes or windows of the row previewed, each then captured
@@ -2088,7 +2112,7 @@ paint s =
                                 in
                                 when area is
                                     Just place ->
-                                        drawTree s.lookTmux place t
+                                        drawTree s.lookTmux s.version place t
 
                                     Nothing ->
                                         []
@@ -4328,10 +4352,8 @@ runLine ctx line s =
                                 let
                                     opened =
                                         sendAsking
-                                            [ { command = "list-sessions -F " ++ Command.quote "S #{session_id} #{session_attached} #{session_windows} #{session_name}", expect = ForTreeSessions }
-                                            , { command = "list-windows -a -F " ++ Command.quote "W #{session_id} #{window_id} #{window_index} #{window_active} #{window_panes} #{window_name}", expect = ForTreeWindows }
-                                            ]
-                                            { s | said = "", tree = Just { sessions = [], windows = [], loaded = 0, open = Dict.empty, selected = 0, startSessions = t.sessions, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
+                                            (treeQueries s.version)
+                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, startSessions = t.sessions, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
 
                                     ran =
                                         runLine ctx t.after opened.state
@@ -5035,7 +5057,7 @@ bigDigit c =
 `-s` (none), and the row of the window shown, or of its session, chosen. -}
 treeLoaded : Int -> Tree -> Tree
 treeLoaded shown t =
-    if t.loaded < 2 then
+    if t.loaded < 3 then
         t
 
     else
@@ -5058,7 +5080,7 @@ treeLoaded shown t =
         in
         { opened
             | selected =
-                Array.findFirst (\r -> if t.startSessions then r.window < 0 && r.session == current else r.window == shown) rows
+                Array.findFirst (\r -> if t.startSessions then r.window < 0 && r.session == current else r.window == shown && r.pane < 0) rows
                     |> Maybe.map .index
                     |> Maybe.withDefault 0
         }
@@ -5091,7 +5113,7 @@ askPreview : (taken s : State) -> { state : State, commands : Array String }
 askPreview s =
     when s.tree is
         Just t ->
-            if t.loaded < 2 then
+            if t.loaded < 3 then
                 { state = s, commands = [] }
 
             else
@@ -5102,7 +5124,7 @@ askPreview s =
                     target =
                         when row is
                             Just r ->
-                                if r.window >= 0 then "@" ++ String.fromInt r.window else "$" ++ String.fromInt r.session
+                                rowTarget r
 
                             Nothing ->
                                 ""
@@ -5116,6 +5138,10 @@ askPreview s =
                     command =
                         if isSession then
                             "list-windows -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}"
+
+                        else if String.startsWith "%" target then
+                            -- a pane's row: that pane alone, filling the area
+                            "list-panes -t " ++ Command.quote target ++ " -f " ++ Command.quote ("#{==:#{pane_id}," ++ target ++ "}") ++ " -F " ++ Command.quote "Q #{pane_id} 0 0 #{pane_width} #{pane_height} 1 #{pane_index}"
 
                         else
                             "list-panes -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}"
@@ -5196,34 +5222,118 @@ clipCells n text =
     done.text ++ String.repeat (max 0 (n - done.used)) " "
 
 
-{-| The tree's rows: each session, and an open one's windows under it. -}
+{-| tmux's questions for the tree's three lists (TM44): each row's text
+expanded by tmux with its tree's own default format (`window-tree.c`,
+`WINDOW_TREE_DEFAULT_FORMAT`), the same in 3.6a and 3.8 but for a pane's
+flags, which 3.8 writes as `pane_flags`. Fields are split at tabs, so a
+name with spaces stays whole. -}
+treeQueries : Int -> Array { command : String, expect : Expect }
+treeQueries version =
+    let
+        paneTitle =
+            "#{?#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}},: \"#{pane_title}\",}"
+
+        sessionText =
+            "#{session_windows} windows#{?session_grouped, (group #{session_group}: #{session_group_list}),}#{?session_attached, (attached),}"
+
+        windowText =
+            "#{window_name}#{window_flags}#{?#{&&:#{==:#{window_panes},1},#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}}},: \"#{pane_title}\",}"
+
+        paneText =
+            if version >= 38 then
+                "#{pane_current_command}#{pane_flags}" ++ paneTitle
+
+            else
+                "#{pane_current_command}#{?pane_active,*,}#{?pane_marked,M,}" ++ paneTitle
+    in
+    [ { command = "list-sessions -F " ++ Command.quote ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
+    , { command = "list-windows -a -F " ++ Command.quote ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
+    , { command = "list-panes -a -F " ++ Command.quote ("P\t#{window_id}\t#{pane_id}\t#{pane_index}\t" ++ paneText), expect = ForTreePanes }
+    ]
+
+
+{-| What a row names as a target: a pane's id, a window's or a session's
+(`%3`, `@2`, `$1`), which tmux takes. -}
+rowTarget : TreeRow -> String
+rowTarget r =
+    if r.pane >= 0 then
+        "%" ++ String.fromInt r.pane
+
+    else if r.window >= 0 then
+        "@" ++ String.fromInt r.window
+
+    else
+        "$" ++ String.fromInt r.session
+
+
+{-| The tree's rows, as tmux's tree mode lists them (TM44): each session,
+an open one's windows under it, an open window's panes under that; a
+window always has its panes to open, as in tmux. -}
 treeRows : Tree -> Array TreeRow
 treeRows t =
-    Array.mapAndFlatten
-        (\x ->
+    let
+        sessionCount =
+            Array.length t.sessions
+    in
+    Array.indexedMap
+        (\si x ->
             let
                 own =
                     Array.keepIf (\w -> w.session == x.id) t.windows
 
                 count =
                     Array.length own
+
+                open =
+                    Dict.get x.id t.open == Just True
+
+                windowRows =
+                    if open then
+                        Array.indexedMap
+                            (\i w ->
+                                let
+                                    lastWindow =
+                                        i == count - 1
+
+                                    panes =
+                                        Array.keepIf (\p -> p.window == w.id) t.panes
+
+                                    paneCount =
+                                        Array.length panes
+
+                                    windowOpen =
+                                        Dict.get w.id t.openWindows == Just True
+                                in
+                                Array.pushFirst
+                                    { session = x.id, window = w.id, pane = -1, depth = 1, name = String.fromInt w.index, text = w.text, last = lastWindow, parentLast = si == sessionCount - 1, children = paneCount > 0, expanded = windowOpen }
+                                    (if windowOpen then
+                                        Array.indexedMap
+                                            (\j p -> { session = x.id, window = w.id, pane = p.id, depth = 2, name = String.fromInt p.index, text = p.text, last = j == paneCount - 1, parentLast = lastWindow, children = False, expanded = False })
+                                            panes
+
+                                     else
+                                        []
+                                    )
+                            )
+                            own
+                            |> Array.flatten
+
+                    else
+                        []
             in
             Array.pushFirst
-                { session = x.id, window = -1, text = x.name ++ ": " ++ String.fromInt x.windows ++ " windows" ++ (if x.attached then " (attached)" else ""), last = False }
-                (if Dict.get x.id t.open == Just True then
-                    Array.indexedMap (\i w -> { session = x.id, window = w.id, text = String.fromInt w.index ++ ": " ++ w.name ++ (if w.active then "*" else "") ++ " (" ++ String.fromInt w.panes ++ " panes)", last = i == count - 1 }) own
-
-                 else
-                    []
-                )
+                { session = x.id, window = -1, pane = -1, depth = 0, name = x.name, text = x.text, last = si == sessionCount - 1, parentLast = False, children = count > 0, expanded = open }
+                windowRows
         )
         t.sessions
+        |> Array.flatten
 
 
 {-| A key while the tree is shown, as tmux's tree mode takes it: Up, k,
-C-p and Down, j, C-n move; PPage, NPage, Home, g, End, G; Right, l opens
-a session, Left, h closes it or goes to it from a window; `+` and `-`
-open and close every one; Enter chooses; a row's key (`treeRowKey`: a
+C-p and Down, j, C-n move; PPage, NPage, Home, g, End, G; Right, l, `+`
+open a session or a window, or go down from an open one; Left, h, `-`
+close it, or close its parent and go there (TM44); M-+ and M-- open and
+close every session; Enter chooses; a row's key (`treeRowKey`: a
 digit, or `M-a` to `M-z`) chooses that row; q, Escape and C-c close it. -}
 treeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Tree -> (taken s : State) -> { state : State, commands : Array String }
 treeKey k t s =
@@ -5267,30 +5377,51 @@ treeKey k t s =
     else if name == "End" || name == "G" then
         moved (count - 1) s
 
-    else if name == "Right" || name == "l" then
+    else if name == "Right" || name == "l" || name == "+" then
+        -- an open row, or one with nothing to open, goes down a row
         when at is
             Just r ->
-                { state = { s | tree = Just { t | open = Dict.set r.session True t.open } }, commands = [] }
+                if r.expanded || not r.children then
+                    moved (min (count - 1) (t.selected + 1)) s
+
+                else
+                    { state = { s | tree = Just (setOpen True r t) }, commands = [] }
 
             Nothing ->
                 { state = s, commands = [] }
 
-    else if name == "Left" || name == "h" then
+    else if name == "Left" || name == "h" || name == "-" then
+        -- an open row closes; any other closes its parent and goes to it,
+        -- or, at the top, goes up a row
         when at is
             Just r ->
-                let
-                    closed =
-                        { t | open = Dict.remove r.session t.open }
-                in
-                { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> x.window < 0 && x.session == r.session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault 0 } }, commands = [] }
+                if r.expanded then
+                    { state = { s | tree = Just (setOpen False r t) }, commands = [] }
+
+                else if r.depth == 0 then
+                    moved (max 0 (t.selected - 1)) s
+
+                else
+                    let
+                        parent =
+                            if r.depth == 2 then
+                                { r | pane = -1, depth = 1 }
+
+                            else
+                                { r | window = -1, pane = -1, depth = 0 }
+
+                        closed =
+                            setOpen False parent t
+                    in
+                    { state = { s | tree = Just { closed | selected = rowIndex parent closed } }, commands = [] }
 
             Nothing ->
                 { state = s, commands = [] }
 
-    else if name == "+" then
+    else if name == "M-+" then
         { state = { s | tree = Just { t | open = Array.foldl (\x d -> Dict.set x.id True d) Dict.empty t.sessions } }, commands = [] }
 
-    else if name == "-" then
+    else if name == "M--" then
         let
             closed =
                 { t | open = Dict.empty }
@@ -5310,6 +5441,24 @@ treeKey k t s =
 
             Nothing ->
                 { state = s, commands = [] }
+
+
+{-| A session or a window opened or closed. -}
+setOpen : Bool -> TreeRow -> Tree -> Tree
+setOpen on r t =
+    if r.window < 0 then
+        { t | open = if on then Dict.set r.session True t.open else Dict.remove r.session t.open }
+
+    else
+        { t | openWindows = if on then Dict.set r.window True t.openWindows else Dict.remove r.window t.openWindows }
+
+
+{-| Where a session's or a window's row is now. -}
+rowIndex : TreeRow -> Tree -> Int
+rowIndex r t =
+    Array.findFirst (\x -> x.session == r.session && x.window == r.window && x.pane == r.pane) (treeRows t)
+        |> Maybe.map .index
+        |> Maybe.withDefault 0
 
 
 {-| A row's key, as tmux's tree mode numbers its rows: `0` to `9`, then
@@ -5332,11 +5481,7 @@ chooseRow : Maybe TreeRow -> Tree -> (taken s : State) -> { state : State, comma
 chooseRow row t s =
     when row is
         Just r ->
-            let
-                target =
-                    if r.window >= 0 then "@" ++ String.fromInt r.window else "$" ++ String.fromInt r.session
-            in
-            runLine { pane = t.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens t.template) [ target ]) { s | tree = Nothing }
+            runLine { pane = t.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens t.template) [ rowTarget r ]) { s | tree = Nothing }
 
         Nothing ->
             { state = { s | tree = Nothing }, commands = [] }
@@ -5348,8 +5493,8 @@ windows under it joined by `├─>` and `└─>`, the chosen row in
 `mode-style`; in puritty's, the view's box. Below the list, when there is
 room, the chosen row's preview, as tmux draws it (TM35): the list takes a
 third of the height, or less with fewer rows. -}
-drawTree : Bool -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
-drawTree tmuxLook place t =
+drawTree : Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
+drawTree tmuxLook version place t =
     let
         rows =
             treeRows t
@@ -5395,6 +5540,21 @@ drawTree tmuxLook place t =
         keyWidth =
             if Array.length rows > 10 then 3 else 1
 
+        -- a window's and a pane's number are right-aligned to the widest
+        -- at their depth, as tmux's `mode_tree_align` (TM44)
+        alignTo depth =
+            Array.keepIf (\r -> r.depth == depth) rows |> Array.foldl (\r n -> max n (String.count r.name)) 0
+
+        windowAlign =
+            alignTo 1
+
+        paneAlign =
+            alignTo 2
+
+        -- 3.8 draws the branch's arrow as `→`, 3.6 as `>` (measured)
+        arrow =
+            if version >= 38 then "→" else ">"
+
         lineOf i r =
             let
                 -- tmux pads each key to the longest one shown, and one
@@ -5411,17 +5571,44 @@ drawTree tmuxLook place t =
                         Nothing ->
                             String.repeat (if tmuxLook then keyWidth + 3 else keyWidth + 2) " "
 
-                shape =
-                    if r.window < 0 then
-                        (if Dict.get r.session t.open == Just True then "- " else "+ ")
+                symbol =
+                    if not r.children then
+                        if r.depth == 0 then "  " else ""
 
-                    else if r.last then
-                        "└─> "
+                    else if r.expanded then
+                        "- "
 
                     else
-                        "├─> "
+                        "+ "
+
+                branch =
+                    if r.depth == 0 then
+                        ""
+
+                    else
+                        (if r.depth == 2 then (if r.parentLast then "    " else "│   ") else "")
+                            ++ (if r.last then "└─" else "├─")
+                            ++ arrow
+                            ++ " "
+
+                name =
+                    if r.depth == 1 then
+                        String.padLeft windowAlign ' ' r.name
+
+                    else if r.depth == 2 then
+                        String.padLeft paneAlign ' ' r.name
+
+                    else
+                        r.name
+
+                ownSymbol =
+                    if not r.children then "  " else if r.expanded then "▾ " else "▸ "
             in
-            if tmuxLook then key ++ shape ++ r.text else key ++ (if r.window < 0 then (if Dict.get r.session t.open == Just True then "▾ " else "▸ ") else "    ") ++ r.text
+            if tmuxLook then
+                key ++ branch ++ symbol ++ name ++ ": " ++ r.text
+
+            else
+                key ++ String.repeat (2 * r.depth) " " ++ ownSymbol ++ name ++ ": " ++ r.text
 
         width =
             if tmuxLook then place.w else place.w - 4

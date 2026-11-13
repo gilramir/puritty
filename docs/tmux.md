@@ -1742,7 +1742,7 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
    with a filter (`cmd-find-window.c:107`), which puritty only says is
    not drawn.
 5. **The tree has no pane level** (M, R): no `+` on window rows, panes
-   cannot be listed or chosen (`window-tree.c:360`).
+   cannot be listed or chosen (`window-tree.c:360`). Done (TM44).
 6. **The tree's other keys do nothing** (M, R): search `/ n N`, filter
    `f` (and the text typed after it is dropped, so its Enter switched
    session), kill `x` with its prompt, tags `t T C-t`, `:`, sort `O r`,
@@ -1921,3 +1921,44 @@ App tests 137; `show.py` status, tabs and mouse unchanged.
 
 **Not yet** (TM29): `status-justify` other than left, the status line on
 top, more than one line, a custom `status-format`.
+
+## TM44 · The tree's rows as tmux's, and its pane level (2026-11-12)
+
+TM39's item 5 and the rows of item 7. puritty listed sessions and
+windows in a text of its own (`0: first* (3 panes)`), with no panes.
+tmux's tree (`window-tree.c`, `mode-tree.c`) lists each session, an open
+one's windows, and an open window's panes, and every window has its
+panes to open, so every window row has a `+`.
+
+**The rows' text is tmux's.** puritty asks the three lists with tmux's
+own `WINDOW_TREE_DEFAULT_FORMAT` pieces (`TmuxMode.treeQueries`):
+`#{session_windows} windows` with the group and `(attached)`; a window's
+name and `window_flags` with its pane's title when it has one pane; a
+pane's command and flags with its title. Those are the same in 3.6a and
+3.8 but for a pane's flags: 3.8's `pane_flags` (`1: sh-` for the last
+pane), 3.6a's `*` and `M`. tmux's version is kept at attach in tenths
+(`State.version`, 36 or 38) for that and for the branch's arrow, `→` in
+3.8 and `>` in 3.6a (measured). Fields are split at tabs, so names keep
+their spaces.
+
+**Drawn as tmux draws them:** a window's and a pane's number right-
+aligned to the widest at its depth (`mode_tree_align`), the branch
+`├─`/`└─`, a pane row's `│   ` or four spaces as its window is last or
+not, `+`/`-` for a row with something to open. Keys as `mode_tree_key`:
+Right, l and `+` open a row or go down from an open one; Left, h and `-`
+close an open row, or close its parent and go there, or at the top go up
+a row; M-+ and M-- open and close every session (before, `+` and `-` did
+that). A pane's row chooses `%id`; its preview is that pane alone.
+
+**Checked side by side** on 3.8 and 3.6a (`bench/tmux/compare`,
+`choose-tree-s`, `tree-pane-choose`): the same rows, character for
+character, in the session tree, its windows open, a window's panes open,
+and `prefix w`; Enter on a pane row makes the same pane active; Left
+from a pane row and again close the same rows. App tests 141;
+`show.py` modes unchanged.
+
+**Not matched:** tmux's `choose-tree -Z` zooms the pane while the tree is
+up, so its window rows read `*Z`; puritty draws its tree over the window
+without zooming. 3.8's colors in the rows (flags in grey, a marked
+window magenta) are not drawn. Search, filter, tags, kill, sort and the
+preview's proportions are TM39's items 4, 6 and 7, still to do.
