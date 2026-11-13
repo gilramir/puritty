@@ -1,0 +1,1251 @@
+module AppSuites exposing (suites)
+
+{-| The application's unit tests (`docs/settings.md` ST17), with
+gren-unit-node: the settings' table and its lenient decoder, the settings
+window, the hosts, the words, chords, restoring, diagnostics, search and
+`TmuxMode` (`TmuxTests`). `Tests` runs them on node (`./run.sh`) and
+`native/`'s `NativeTests` as a native program, and `windows/` builds
+`NativeTests` for Windows. `Platform` is `app/linux`'s, or `app/windows`'s
+in that build, so a test of a platform's default reads it from there.
+-}
+
+import Chord
+import Config
+import Diag
+import Bytes
+import Expect exposing (Expectation)
+import Hosts
+import Platform
+import I18Next
+import Schema
+import Screen
+import SettingsWindow
+import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Toml
+import RestoreFile exposing (TabColor(..))
+import Search
+import TmuxTests
+import Vt
+import Words
+
+
+{-| Every suite, for the node runner (`Tests`) and the native one
+(`native/`'s `NativeTests`). -}
+suites : Array U.Suite
+suites =
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, TmuxTests.tmuxMode ]
+
+
+run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
+run name tests =
+    U.suite
+        { name = name
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map (\c -> U.test c.name (\fix -> Task.succeed (c.test fix))) tests
+        }
+
+
+{-| What a file's reports say, as `line: message`, or why it is not TOML. -}
+reported : String -> Array String
+reported text =
+    when Schema.decode text is
+        Ok d ->
+            Array.map (\r -> String.fromInt r.line ++ ": " ++ r.message) d.reports
+
+        Err r ->
+            [ "not TOML at " ++ String.fromInt r.line ]
+
+
+decoded : String -> Config.Config
+decoded text =
+    when Schema.decode text is
+        Ok d ->
+            d.config
+
+        Err _ ->
+            Config.defaults
+
+
+schema : U.Suite
+schema =
+    run "Schema"
+        [ { name = "a color scheme sets the foreground, the background and the 16 (ST29)"
+          , test =
+                \_ ->
+                    Expect.equal { fg = 0xBBBBBB, bg = 0, red = Just 0xBB0000, n = 16 }
+                        ((\c -> { fg = c.foreground, bg = c.background, red = Array.get 1 c.palette, n = Array.length c.palette }) (decoded "[colors]\nscheme = \"putty\"\n"))
+          }
+        , { name = "a color written beside a scheme wins over it, before it or after"
+          , test =
+                \_ ->
+                    Expect.equal [ 0x123456, 0x123456 ]
+                        [ (decoded "[colors]\nscheme = \"putty\"\nforeground = \"#123456\"\n").foreground
+                        , (decoded "[colors]\nforeground = \"#123456\"\nscheme = \"putty\"\n").foreground
+                        ]
+          }
+        , { name = "a scheme puritty does not have is reported, and the colors are left"
+          , test =
+                \_ ->
+                    Expect.equal { reports = 1, fg = Config.defaults.foreground } { reports = Array.length (reported "[colors]\nscheme = \"neon\"\n"), fg = (decoded "[colors]\nscheme = \"neon\"\n").foreground }
+          }
+        , { name = "an empty file is the defaults"
+          , test = \_ -> Expect.equal { config = Config.defaults, reports = [] } (Result.withDefault { config = Config.defaults, reports = [ { line = 0, message = "not TOML" } ] } (Schema.decode ""))
+          }
+        , { name = "the example decodes with nothing reported"
+          , test = \_ -> Expect.equal [] (reported Schema.example)
+          }
+        , { name = "the example names every setting, in its table"
+          , test =
+                \_ ->
+                    let
+                        missing =
+                            Schema.settings
+                                |> Array.keepIf
+                                    (\s ->
+                                        when s.key is
+                                            [ table, name ] ->
+                                                not (String.contains ("[" ++ table ++ "]") Schema.example && String.contains ("\n" ++ name ++ " = ") Schema.example)
+
+                                            [ name ] ->
+                                                -- a key outside any table comes first
+                                                not (String.startsWith (name ++ " = ") Schema.example)
+
+                                            _ ->
+                                                True
+                                    )
+                                |> Array.map Schema.keyName
+                    in
+                    Expect.equal [] missing
+          }
+        , { name = "the example's values are read"
+          , test =
+                \_ ->
+                    let
+                        c =
+                            decoded Schema.example
+                    in
+                    Expect.equal
+                        { palette = [ 0x1D1F21, 0xCC6666 ], command = [ "htop" ], charset = Just "euc-kr", language = Just "ja", pasteButton = 3, osc52Read = False, title = "puritty" }
+                        { palette = c.palette, command = c.command, charset = c.charset, language = c.language, pasteButton = c.pasteButton, osc52Read = c.osc52Read, title = c.title }
+          }
+        , { name = "every key is in one table and no two settings share one"
+          , test =
+                \_ ->
+                    let
+                        names =
+                            Array.map Schema.keyName Schema.settings
+                    in
+                    Expect.equal (Array.length names) (Array.length (Array.foldl (\n acc -> if Array.member n acc then acc else Array.pushLast n acc) [] names))
+          }
+        , { name = "the example's host is read whole"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { name = "build-box", host = "build.example.com", user = Just "gilbert", port = Just 2222, identity = Just "~/.ssh/id_ed25519", jump = Just "bastion.example.com", command = Just "tmux new -A -s main", foreground = Nothing, background = Just 0x2A1010, tab = Just 0xC62828, palette = Nothing, font = Nothing, points = Just 13, charset = Just "euc-kr", title = Just "build", client = Just "built-in" } ]
+                        (decoded Schema.example).hosts
+          }
+        , { name = "a host with no host is reported and left out"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "1: hosts.box has no host = \"…\", where to connect; it is left out" ], hosts = 0 }
+                        { reports = reported "[hosts.box]\nuser = \"me\"\n", hosts = Array.length (decoded "[hosts.box]\nuser = \"me\"\n").hosts }
+          }
+        , { name = "a host's misspelled key is reported, with the nearest"
+          , test = \_ -> Expect.equal [ "3: hosts.box.usr is not a host's setting; did you mean user?" ] (reported "[hosts.box]\nhost = \"h\"\nusr = \"me\"\n")
+          }
+        , { name = "a host's port out of range is reported and left out"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "3: hosts.box.port: 70000 is not from 1 to 65535; it is left out" ], port = [ Nothing ] }
+                        { reports = reported "[hosts.box]\nhost = \"h\"\nport = 70000\n", port = Array.map .port (decoded "[hosts.box]\nhost = \"h\"\nport = 70000\n").hosts }
+          }
+        , { name = "a host's tab color is read from its colors (docs/tabs.md TB9)"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "[hosts.box]\nhost = \"h\"\n\n[hosts.box.colors]\ntab = \"#c62828\"\n"
+                    in
+                    Expect.equal { reports = [], tab = [ Just 0xC62828 ] } { reports = reported file, tab = Array.map .tab (decoded file).hosts }
+          }
+        , { name = "a host's tab color that is no color is reported and left out"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "[hosts.box]\nhost = \"h\"\n\n[hosts.box.colors]\ntab = \"reddish\"\n"
+                    in
+                    Expect.equal { reports = 1, tab = [ Nothing ] } { reports = Array.length (reported file), tab = Array.map .tab (decoded file).hosts }
+          }
+        , { name = "a host's name may hold a space"
+          , test = \_ -> Expect.equal [ "my box" ] (Array.map .name (decoded "[hosts.\"my box\"]\nhost = \"h\"\n").hosts)
+          }
+        , { name = "start takes shell, hosts or host:NAME"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "1: start: \"ssh\" is not \"shell\", \"hosts\" or \"host:\" and a host's name; \"" ++ Platform.start ++ "\" is used" ], start = "host:box" }
+                        { reports = reported "start = \"ssh\"\n", start = (decoded "start = \"host:box\"\n").start }
+          }
+        , { name = "a misspelled key is reported at its line, with the nearest setting"
+          , test = \_ -> Expect.equal [ "3: font.sise is not a setting; did you mean font.size?" ] (reported "[font]\nfamily = \"x\"\nsise = 12\n")
+          }
+        , { name = "the rest of the file is read past a misspelled key"
+          , test = \_ -> Expect.equal "x" (decoded "[font]\nfamily = \"x\"\nsise = 12\n").font
+          }
+        , { name = "a key with nothing near it is reported without a guess"
+          , test = \_ -> Expect.equal [ "2: font.weight_of_glyphs is not a setting" ] (reported "[font]\nweight_of_glyphs = 1\n")
+          }
+        , { name = "a misspelled table is reported at its header, with the nearest"
+          , test = \_ -> Expect.equal [ "1: [fonts] is not a table of settings; did you mean [font]?" ] (reported "[fonts]\nsize = 12\n")
+          }
+        , { name = "a value out of bounds is reported, and the default used"
+          , test =
+                \_ ->
+                    Expect.equal { reports = [ "2: font.size: 2 is not from 4 to 200; 11 is used" ], points = 11 }
+                        { reports = reported "[font]\nsize = 2\n", points = (decoded "[font]\nsize = 2\n").points }
+          }
+        , { name = "a value of the wrong kind is reported"
+          , test = \_ -> Expect.equal [ "2: colors.background: not a string; \"#1d1f21\" is used" ] (reported "[colors]\nbackground = 12\n")
+          }
+        , { name = "a color that is not #rrggbb is reported"
+          , test = \_ -> Expect.equal [ "2: colors.foreground: \"#fff\" is not a color as #rrggbb; \"#c5c8c6\" is used" ] (reported "[colors]\nforeground = \"#fff\"\n")
+          }
+        , { name = "a choice not among a setting's is reported with them"
+          , test = \_ -> Expect.equal [ "2: mouse.paste_button: \"left\" is not \"middle\" or \"right\"; \"middle\" is used" ] (reported "[mouse]\npaste_button = \"left\"\n")
+          }
+        , { name = "a palette longer than 16 is reported"
+          , test =
+                \_ ->
+                    Expect.equal [ "2: colors.palette: 17 colors, where the palette has 16; [] is used" ]
+                        (reported ("[colors]\npalette = [" ++ String.join ", " (Array.repeat 17 "\"#000000\"") ++ "]\n"))
+          }
+        , { name = "a line after a value that runs on is counted"
+          , test = \_ -> Expect.equal [ "6: colors.forground is not a setting; did you mean colors.foreground?" ] (reported "[colors]\npalette = [\n  \"#000000\",\n  \"#111111\",\n]\nforground = \"#ffffff\"\n")
+          }
+        , { name = "several reports come in the order of the file"
+          , test = \_ -> Expect.equal [ "2: window.colums is not a setting; did you mean window.columns?", "4: font.size: 300 is not from 4 to 200; 11 is used" ] (reported "[window]\ncolums = 80\n[font]\nsize = 300\n")
+          }
+        , { name = "a file that is not TOML is refused, with its line"
+          , test = \_ -> Expect.equal [ "not TOML at 2" ] (reported "[font]\nsize = = 3\n")
+          }
+        , { name = "an optional setting left out is unset"
+          , test = \_ -> Expect.equal Nothing (decoded "[font]\nsize = 12\n").charset
+          }
+        , { name = "each setting reads back what it was set to"
+          , test =
+                \_ ->
+                    let
+                        wrong =
+                            Schema.settings
+                                |> Array.keepIf (\s -> s.get (s.set (s.get Config.defaults) Config.defaults) /= s.get Config.defaults)
+                                |> Array.map Schema.keyName
+                    in
+                    Expect.equal [] wrong
+          }
+        ]
+
+
+{-| A file as a user keeps it, comments and all. -}
+sample : String
+sample =
+    """
+    # My puritty settings
+
+    [window]
+    columns = 100   # wide
+    rows = 0x1E     # thirty, in hex
+    title = "work"
+
+    # fonts
+    [font]
+    family = "Fira Code"
+    """
+        -- a file ends its last line; Gren's multi-line string does not
+        ++ "\n"
+
+
+{-| The file after writing each setting and value in turn. -}
+written : String -> Array { key : Array String, value : Schema.Value } -> String
+written text changes =
+    when Toml.parse text is
+        Ok doc ->
+            Array.foldl
+                (\c d ->
+                    when Schema.find c.key is
+                        Just s ->
+                            Schema.write s c.value d
+
+                        Nothing ->
+                            d
+                )
+                doc
+                changes
+                |> Toml.toString
+
+        Err _ ->
+            "not TOML"
+
+
+{-| A file after an edit of its document. -}
+edited : String -> (Toml.Document -> Toml.Document) -> String
+edited text f =
+    when Toml.parse text is
+        Ok doc ->
+            Toml.toString (f doc)
+
+        Err _ ->
+            "not TOML"
+
+
+{-| A file after a host's fields are written in turn, as the settings
+window writes them (`Schema.write` of `Schema.hostFields`). -}
+writtenHost : String -> Array { key : Array String, value : Schema.Value } -> String
+writtenHost text changes =
+    Array.foldl
+        (\c t ->
+            when Array.get 1 c.key is
+                Just name ->
+                    when Array.findFirst (\f -> f.key == c.key) (Schema.hostFields name) is
+                        Just found ->
+                            edited t (Schema.write found.value c.value)
+
+                        Nothing ->
+                            t
+
+                Nothing ->
+                    t
+        )
+        text
+        changes
+
+
+{-| A value of a setting's kind other than its default. -}
+another : Schema.Setting -> Schema.Value
+another s =
+    when s.kind is
+        Schema.WholeIn r ->
+            Schema.Whole (if r.low == 0 then 1 else r.low)
+
+        Schema.AnyText ->
+            Schema.Text "something else"
+
+        Schema.FontFamily ->
+            Schema.Text "Some Font"
+
+        Schema.OnOff ->
+            Schema.Flag (s.get Config.defaults /= Schema.Flag True)
+
+        Schema.OneColor ->
+            Schema.Color 0x123456
+
+        Schema.ColorList _ ->
+            Schema.Colors [ 0x010203, 0xFFFEFD ]
+
+        Schema.OneOf names ->
+            Schema.Text (Maybe.withDefault "" (Array.last names))
+
+        Schema.Command ->
+            Schema.Words [ "vim", "-O", "a b.txt" ]
+
+        Schema.Launch ->
+            Schema.Text "hosts"
+
+        Schema.HostName ->
+            Schema.Text "another"
+
+        Schema.Address ->
+            Schema.Text "h.example.com"
+
+        Schema.KeyChord ->
+            Schema.Text "Ctrl+Alt+F5"
+
+
+writing : U.Suite
+writing =
+    run "Writing"
+        [ { name = "a setting written as it is changes no byte"
+          , test = \_ -> Expect.equal sample (written sample [ { key = [ "window", "columns" ], value = Schema.Whole 100 } ])
+          }
+        , { name = "a value the file writes another way is kept as it writes it"
+          , test = \_ -> Expect.equal sample (written sample [ { key = [ "window", "rows" ], value = Schema.Whole 30 } ])
+          }
+        , { name = "a setting set and then reset gives the file back"
+          , test =
+                \_ ->
+                    Expect.equal sample
+                        (written sample [ { key = [ "font", "size" ], value = Schema.Whole 14 }, { key = [ "font", "size" ], value = Schema.Whole 11 } ])
+          }
+        , { name = "a setting in a table the file lacks, set and reset, gives the file back"
+          , test =
+                \_ ->
+                    Expect.equal sample
+                        (written sample [ { key = [ "colors", "background" ], value = Schema.Color 0x102030 }, { key = [ "colors", "background" ], value = Schema.Color 0x1D1F21 } ])
+          }
+        , { name = "a setting set is read back from the file"
+          , test =
+                \_ ->
+                    Expect.equal { size = 14, columns = 100, family = "Fira Code" }
+                        (let
+                            c =
+                                decoded (written sample [ { key = [ "font", "size" ], value = Schema.Whole 14 } ])
+                         in
+                         { size = c.points, columns = c.columns, family = c.font }
+                        )
+          }
+        , { name = "a reset takes the key and its comment out, and keeps the table's others"
+          , test =
+                \_ ->
+                    Expect.equal
+                        (String.replace "columns = 100   # wide\n" "" sample)
+                        (written sample [ { key = [ "window", "columns" ], value = Schema.Whole 80 } ])
+          }
+        , { name = "a table emptied by a reset goes"
+          , test = \_ -> Expect.equal "" (written "[font]\nsize = 14\n" [ { key = [ "font", "size" ], value = Schema.Whole 11 } ])
+          }
+        , { name = "a table emptied by a reset stays when a comment is over its header"
+          , test =
+                \_ ->
+                    Expect.equal "# kept by hand\n[font]\n"
+                        (written "# kept by hand\n[font]\nsize = 14 # mine\n" [ { key = [ "font", "size" ], value = Schema.Whole 11 } ])
+          }
+        , { name = "an optional setting unset is taken out"
+          , test =
+                \_ ->
+                    Expect.equal "[font]\nsize = 14\n"
+                        (written "[font]\nsize = 14\nlanguage = \"ja\"\n" [ { key = [ "font", "language" ], value = Schema.Unset } ])
+          }
+        , { name = "a host's field set and unset gives the file back, its comments kept"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "# my hosts\n[hosts.box]   # the build box\nhost = \"b\"\n"
+
+                        set v =
+                            { key = [ "hosts", "box", "user" ], value = v }
+                    in
+                    Expect.equal { set = "# my hosts\n[hosts.box]   # the build box\nhost = \"b\"\nuser = \"me\"\n", back = file }
+                        { set = writtenHost file [ set (Schema.Text "me") ], back = writtenHost file [ set (Schema.Text "me"), set Schema.Unset ] }
+          }
+        , { name = "a host's color makes its table, and unset takes the table out"
+          , test =
+                \_ ->
+                    let
+                        file =
+                            "[hosts.box]\nhost = \"b\"\n"
+
+                        bg v =
+                            { key = [ "hosts", "box", "colors", "background" ], value = v }
+                    in
+                    Expect.equal { set = "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colors]\nbackground = \"#2a1010\"\n", back = file }
+                        { set = writtenHost file [ bg (Schema.Color 0x2A1010) ], back = writtenHost file [ bg (Schema.Color 0x2A1010), bg Schema.Unset ] }
+          }
+        , { name = "a host renamed takes the tables under it along"
+          , test =
+                \_ ->
+                    Expect.equal "[hosts.lab]\nhost = \"b\"\n\n[hosts.lab.colors]\nbackground = \"#2a1010\"\n"
+                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colors]\nbackground = \"#2a1010\"\n" (Schema.renameHost "box" "lab"))
+          }
+        , { name = "a host removed takes the tables under it, and the others stay"
+          , test =
+                \_ ->
+                    Expect.equal "[hosts.other]\nhost = \"o\"\n"
+                        (edited "[hosts.box]\nhost = \"b\"\n\n[hosts.box.colors]\nbackground = \"#2a1010\"\n\n[hosts.other]\nhost = \"o\"\n" (Schema.deleteHost "box"))
+          }
+        , { name = "a host written whole is read back as it was"
+          , test =
+                \_ ->
+                    let
+                        h =
+                            (decoded Schema.example).hosts
+                    in
+                    Expect.equal h (decoded (Array.foldl (\x d -> edited d (Schema.writeHost x)) "" h)).hosts
+          }
+        , { name = "every setting written to an empty file is read back as written"
+          , test =
+                \_ ->
+                    let
+                        wrong =
+                            Schema.settings
+                                |> Array.keepIf
+                                    (\s ->
+                                        let
+                                            v =
+                                                another s
+                                        in
+                                        s.get (decoded (written "" [ { key = s.key, value = v } ])) /= v
+                                    )
+                                |> Array.map Schema.keyName
+                    in
+                    Expect.equal [] wrong
+          }
+        , { name = "every setting written to an empty file is reported for nothing"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (Array.mapAndKeepJust
+                            (\s ->
+                                when reported (written "" [ { key = s.key, value = another s } ]) is
+                                    [] ->
+                                        Nothing
+
+                                    r ->
+                                        Just (Schema.keyName s ++ ": " ++ String.join "; " r)
+                            )
+                            Schema.settings
+                        )
+          }
+        ]
+
+
+opened : SettingsWindow.Model
+opened =
+    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], aliases = [], launcher = False }
+
+
+press : Int -> SettingsWindow.Input
+press sym =
+    SettingsWindow.Key { sym = sym, mods = 0, text = "" }
+
+
+typeIn : String -> Array SettingsWindow.Input
+typeIn text =
+    Array.map (\c -> SettingsWindow.Key { sym = Char.toCode c, mods = 0, text = String.fromChar c }) (String.toArray text)
+
+
+ctrl : Char -> SettingsWindow.Input
+ctrl c =
+    SettingsWindow.Key { sym = Char.toCode c, mods = 2, text = "" }
+
+
+k =
+    { enter = press 0xFF0D, escape = press 0xFF1B, tab = press 0xFF09, down = press 0xFF54, up = press 0xFF52, backspace = press 0xFF08, delete = press 0xFFFF, left = press 0xFF51 }
+
+
+{-| Effects as text: `font.size = 114`, `close`. -}
+said : Array SettingsWindow.Effect -> Array String
+said effects =
+    Array.map
+        (\e ->
+            when e is
+                SettingsWindow.Write w ->
+                    Schema.keyName w.setting ++ " = " ++ (when w.value is
+                        Schema.Unset ->
+                            "(unset)"
+
+                        v ->
+                            Schema.toText v
+                    )
+
+                SettingsWindow.Close ->
+                    "close"
+
+                SettingsWindow.ConnectHost name ->
+                    "connect " ++ name
+
+                SettingsWindow.ConnectQuick target ->
+                    "connect to " ++ target
+
+                SettingsWindow.PutHost h ->
+                    "put " ++ h.name
+
+                SettingsWindow.DeleteHost name ->
+                    "delete " ++ name
+
+                SettingsWindow.RenameHost r ->
+                    "rename " ++ r.from ++ " to " ++ r.to
+        )
+        effects
+
+
+after : Array SettingsWindow.Input -> { said : Array String, model : SettingsWindow.Model }
+after inputs =
+    let
+        r =
+            Screen.feedInputs inputs opened
+    in
+    { said = said r.effects, model = r.model }
+
+
+{-| The window with the example's host and an alias of ~/.ssh/config, on
+the Hosts page (the host list opens there; the settings window is taken
+there by its pages), after these inputs. -}
+onHostsPage : Bool -> Array SettingsWindow.Input -> { said : Array String, model : SettingsWindow.Model }
+onHostsPage launcher inputs =
+    let
+        start =
+            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], launcher = launcher }
+
+        toPage =
+            if launcher then [] else [ k.tab, k.tab ] ++ Array.repeat (Array.length Schema.pages) k.down ++ [ press 0xFF53 ]
+
+        r =
+            Screen.feedInputs (toPage ++ inputs) start
+    in
+    { said = said r.effects, model = r.model }
+
+
+{-| A click on what the drawn window shows (`SettingsWindow.Target`), so
+many times. -}
+click : SettingsWindow.Target -> Int -> SettingsWindow.Input
+click target count =
+    SettingsWindow.Hit { target = target, count = count }
+
+
+{-| What the window says at its foot, in English: its message, or nothing. -}
+foot : SettingsWindow.Model -> String
+foot m =
+    Maybe.withDefault "" (Maybe.map (Words.say Words.English) m.message)
+
+
+{-| The key of the setting with the focus. -}
+focusedKey : SettingsWindow.Model -> String
+focusedKey m =
+    Maybe.withDefault "" (Maybe.map Schema.keyName (SettingsWindow.focused m))
+
+
+{-| The rows listed, as `key = value`. -}
+rowsShown : SettingsWindow.Model -> Array String
+rowsShown m =
+    Array.map
+        (\s ->
+            Schema.keyName s
+                ++ " = "
+                ++ (when s.get m.config is
+                        Schema.Unset ->
+                            "(unset)"
+
+                        v ->
+                            Schema.toText v
+                   )
+        )
+        (SettingsWindow.listed m)
+
+
+{-| The row of the settings listed with this key, and whether it differs
+from its default. -}
+changedRow : String -> SettingsWindow.Model -> Bool
+changedRow key m =
+    Array.any (\s -> Schema.keyName s == key && SettingsWindow.changed m.config s) (SettingsWindow.listed m)
+
+
+window : U.Suite
+window =
+    run "SettingsWindow"
+        [ { name = "the first screen: Appearance's settings, the first focused, nothing searched"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { search = "", modifiedOnly = False, page = 0, first = "font.family = " ++ Platform.font, foreground = "colors.foreground = #c5c8c6", focused = "font.family", foot = "" }
+                        { search = String.fromArray opened.search
+                        , modifiedOnly = opened.modifiedOnly
+                        , page = opened.page
+                        , first = Maybe.withDefault "" (Array.get 0 (rowsShown opened))
+                        , foreground = Maybe.withDefault "" (Array.get 2 (rowsShown opened))
+                        , focused = focusedKey opened
+                        , foot = foot opened
+                        }
+          }
+        , { name = "Down moves to the next setting"
+          , test = \_ -> Expect.equal "font.size" (focusedKey (after [ k.down ]).model)
+          }
+        , { name = "a number typed is written while it is one the setting takes"
+          , test =
+                \_ ->
+                    -- 114, then 11 on the way back, which the setting takes too;
+                    -- 1 is too small and is not written
+                    Expect.equal [ "font.size = 114", "font.size = 11", "font.size = 13" ]
+                        (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ k.backspace, k.backspace ] ++ typeIn "3" ++ [ k.enter ])).said
+          }
+        , { name = "a number the setting does not take is shown as a problem and not written"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ k.down, k.enter, k.backspace ] ++ typeIn "")
+                    in
+                    Expect.equal { said = [], foot = "1 is not from 4 to 200" } { said = r.said, foot = foot r.model }
+          }
+        , { name = "Ctrl+Z undoes a change typed"
+          , test =
+                \_ ->
+                    Expect.equal [ "font.size = 114", "font.size = 11", "font.size = 13", "font.size = 11" ]
+                        (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ k.backspace, k.backspace ] ++ typeIn "3" ++ [ k.enter, ctrl 'z' ])).said
+          }
+        , { name = "Esc while typing puts back what was there"
+          , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ k.escape ])).said
+          }
+        , { name = "Enter turns a setting on or off, and it is marked as changed"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ k.down, k.down, k.down, k.down, k.down, k.enter ]
+                    in
+                    Expect.equal { said = [ "colors.bold_is_bright = true" ], marked = True }
+                        { said = r.said, marked = changedRow "colors.bold_is_bright" r.model }
+          }
+        , { name = "Delete resets a setting to its default"
+          , test = \_ -> Expect.equal [ "colors.bold_is_bright = true", "colors.bold_is_bright = false" ] (after [ k.down, k.down, k.down, k.down, k.down, k.enter, k.delete ]).said
+          }
+        , { name = "a search lists the matches of every page, and the pages count them"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ ctrl 'f' ] ++ typeIn "euc")
+                    in
+                    Expect.equal
+                        { search = "euc", rows = [ "terminal.charset = (unset)" ], counts = [ 0, 0, 1, 0, 0, 0, 0, 0, 0 ] }
+                        { search = String.fromArray r.model.search
+                        , rows = rowsShown r.model
+                        , counts = Array.map (SettingsWindow.pageCount r.model) Schema.pages
+                        }
+          }
+        , { name = "Enter opens a choice's list at its value; Down and Enter take the next, the system's first for an optional one"
+          , test =
+                \_ ->
+                    Expect.equal [ "terminal.charset = utf-8", "terminal.charset = cp949", "terminal.charset = (unset)" ]
+                        (after ([ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter, k.down, k.enter, k.enter, k.down, k.down, k.enter, k.enter, k.up, k.up, k.up, k.up, k.enter ])).said
+          }
+        , { name = "Esc closes a choice's list and changes nothing; the keys typed while it is open do nothing else"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter, k.down, SettingsWindow.Typed "x", ctrl 'z', k.escape ])
+                    in
+                    Expect.equal { said = [], open = Nothing } { said = r.said, open = r.model.choosing }
+          }
+        , { name = "a click on a choice in the list takes it; a click off the list only closes it"
+          , test =
+                \_ ->
+                    let
+                        open =
+                            [ ctrl 'f' ] ++ typeIn "euc" ++ [ k.down, k.enter ]
+                    in
+                    Expect.equal
+                        { taken = [ "terminal.charset = euc-kr" ], off = [], offOpen = Nothing }
+                        { taken = (after (open ++ [ click (SettingsWindow.OnChoice 2) 1 ])).said
+                        , off = (after (open ++ [ click (SettingsWindow.OnPage 1) 1 ])).said
+                        , offOpen = (after (open ++ [ click (SettingsWindow.OnPage 1) 1 ])).model.choosing
+                        }
+          }
+        , { name = "Modified only, with nothing changed, lists nothing"
+          , test = \_ -> Expect.equal { modifiedOnly = True, rows = 0 } ((after [ ctrl 'm' ]).model |> (\m -> { modifiedOnly = m.modifiedOnly, rows = SettingsWindow.rowCount m }))
+          }
+        , { name = "Esc with nothing to stop closes the window"
+          , test = \_ -> Expect.equal [ "close" ] (after [ k.escape ]).said
+          }
+        , { name = "text an input method commits is typed"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ ctrl 'f', SettingsWindow.Typed "title", k.down, k.enter, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, k.backspace, SettingsWindow.Typed "한글", k.enter ]
+                    in
+                    Expect.equal { said = True, shown = True }
+                        { said = Array.member "window.title = 한글" r.said
+                        , shown = Array.member "window.title = 한글" (rowsShown r.model) && changedRow "window.title" r.model
+                        }
+          }
+        , { name = "a click on a page shows it"
+          , test = \_ -> Expect.equal { page = 1, first = "window.columns = 80" } ((after [ click (SettingsWindow.OnPage 1) 1 ]).model |> (\m -> { page = m.page, first = Maybe.withDefault "" (Array.get 0 (rowsShown m)) }))
+          }
+        , { name = "a font typed is offered the system's that hold its name"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira")
+                    in
+                    Expect.equal { offered = [ "Fira Code", "Fira Mono" ], said = [] }
+                        { offered = Maybe.withDefault [] (Maybe.map (SettingsWindow.suggestions r.model) r.model.typing), said = r.said }
+          }
+        , { name = "the font list offers every font until the name is changed"
+          , test =
+                \_ ->
+                    let
+                        many =
+                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) ++ [ "DejaVu Sans Mono" ] }
+
+                        r =
+                            SettingsWindow.update k.enter many
+                    in
+                    when r.model.typing is
+                        Just t ->
+                            Expect.equal 13 (Array.length (SettingsWindow.suggestions r.model t))
+
+                        Nothing ->
+                            Expect.fail "not typing"
+          }
+        , { name = "the eleventh font is reached by Down and written"
+          , test =
+                \_ ->
+                    let
+                        many =
+                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) }
+
+                        r =
+                            Screen.feedInputs ([ k.enter ] ++ Array.repeat 11 k.down ++ [ k.enter ]) many
+                    in
+                    Expect.equal [ "font.family = Font 11" ] (said r.effects)
+          }
+        , { name = "the keypad's Down, NumLock off, picks as Down does"
+          , test = \_ -> Expect.equal [ "font.family = Fira Mono" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ press 0xFF99, press 0xFF99, k.enter ])).said
+          }
+        , { name = "a font is written when it is chosen, not as it is typed"
+          , test = \_ -> Expect.equal [ "font.family = Fira Mono" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "fira" ++ [ k.down, k.down, k.enter ])).said
+          }
+        , { name = "a font's name typed with nothing chosen is taken as typed"
+          , test = \_ -> Expect.equal [ "font.family = Some Font" ] (after ([ k.enter ] ++ Array.repeat 16 k.backspace ++ typeIn "Some Font" ++ [ k.enter ])).said
+          }
+        , { name = "the Hosts page lists quick connect, a new host, the file's hosts and ~/.ssh/config's"
+          , test =
+                \_ ->
+                    let
+                        m =
+                            (onHostsPage False []).model
+                    in
+                    Expect.equal
+                        { rows = 4
+                        , hosts =
+                            [ "build-box · gilbert@build.example.com:2222 · through bastion.example.com · from the settings"
+                            , "work · as ~/.ssh/config has it · from ~/.ssh/config"
+                            ]
+                        }
+                        { rows = SettingsWindow.rowCount m
+                        , hosts = Array.map (\h -> h.name ++ " · " ++ Words.say Words.English h.detail ++ " · " ++ Words.say Words.English h.from) (SettingsWindow.hostRows m)
+                        }
+          }
+        , { name = "Enter on a host connects to it"
+          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ k.down, k.down, k.enter ]).said
+          }
+        , { name = "quick connect connects to what is typed"
+          , test = \_ -> Expect.equal [ "connect to me@h.example.com:22" ] (onHostsPage False ([ k.enter ] ++ typeIn "me@h.example.com:22" ++ [ k.enter ])).said
+          }
+        , { name = "quick connect refuses what is not user@host:port"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False ([ k.enter ] ++ typeIn "me@" ++ [ k.enter ])
+                    in
+                    Expect.equal { said = [], foot = "\"me@\" is not where to connect, as user@host:port" } { said = r.said, foot = foot r.model }
+          }
+        , { name = "a new host is made from its name, and its form opened"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False ([ k.down, k.enter ] ++ typeIn "lab" ++ [ k.enter ])
+                    in
+                    Expect.equal { said = [ "put lab" ], name = True, host = True }
+                        { said = r.said
+                        , name = Array.member "hosts.lab = lab" (rowsShown r.model)
+                        , host = Array.member "hosts.lab.host = lab" (rowsShown r.model)
+                        }
+          }
+        , { name = "a host's field is changed in its form, as a setting is"
+          , test = \_ -> Expect.equal [ "put lab", "hosts.lab.user = m", "hosts.lab.user = me" ] (onHostsPage False ([ k.down, k.enter ] ++ typeIn "lab" ++ [ k.enter, k.down, k.enter ] ++ typeIn "me" ++ [ k.enter ])).said
+          }
+        , { name = "a host's field is unset by Delete; where it connects is not"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False [ k.down, k.down, press 0xFF53, k.delete, k.down, k.delete ]
+                    in
+                    Expect.equal { said = [ "hosts.build-box.user = (unset)" ], first = "A host must say where to connect" }
+                        { said = r.said, first = (onHostsPage False [ k.down, k.down, press 0xFF53, k.delete ]) |> .model |> foot }
+          }
+        , { name = "a host is removed by Delete in the list, and Ctrl+Z puts it back"
+          , test = \_ -> Expect.equal [ "delete build-box", "put build-box" ] (onHostsPage False [ k.down, k.down, k.delete, ctrl 'z' ]).said
+          }
+        , { name = "a host is renamed from its form's first row"
+          , test =
+                \_ ->
+                    Expect.equal [ "rename build-box to box2" ]
+                        (onHostsPage False ([ k.down, k.down, press 0xFF53, k.up, k.enter ] ++ Array.repeat 9 k.backspace ++ typeIn "box2" ++ [ k.enter ])).said
+          }
+        , { name = "where a host connects is not written empty"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsPage False ([ k.down, k.down, press 0xFF53, k.enter ] ++ Array.repeat 20 k.backspace)
+                    in
+                    Expect.equal { said = [ "hosts.build-box.host = build.example.co", "hosts.build-box.host = build.example.c" ], foot = "where to connect: a name or an address" }
+                        { said = Array.takeFirst 2 r.said, foot = foot r.model }
+          }
+        , { name = "Ctrl+D copies a host under a name of its own"
+          , test = \_ -> Expect.equal [ "put build-box-2" ] (onHostsPage False [ k.down, k.down, ctrl 'd' ]).said
+          }
+        , { name = "one of ~/.ssh/config's hosts is saved as a host to change it"
+          , test = \_ -> Expect.equal [ "put work" ] (onHostsPage False [ k.down, k.down, k.down, press 0xFF53 ]).said
+          }
+        , { name = "the host list opens on the Hosts page's list, as the host list"
+          , test = \_ -> Expect.equal { launcher = True, list = True } ((onHostsPage True [ k.escape ]).model |> (\m -> { launcher = m.launcher, list = SettingsWindow.inList m }))
+          }
+        , { name = "the host list opens typing where to connect"
+          , test = \_ -> Expect.equal [ "connect to me@box" ] (onHostsPage True (typeIn "me@box" ++ [ k.enter ])).said
+          }
+        , { name = "Down leaves where to connect for the hosts under it"
+          , test = \_ -> Expect.equal { typing = False, row = 1 } (onHostsPage True [ k.down ] |> .model |> (\md -> { typing = md.typing /= Nothing, row = md.row }))
+          }
+        , { name = "a key typed on quick connect begins typing it"
+          , test = \_ -> Expect.equal [ "connect to a@b" ] (onHostsPage False (typeIn "a@b" ++ [ k.enter ])).said
+          }
+        , { name = "a click on a value changes it, as Enter does"
+          , test = \_ -> Expect.equal [ "colors.bold_is_bright = true" ] (after [ click (SettingsWindow.OnValue 5) 1 ]).said
+          }
+        , { name = "a click on the reset mark resets"
+          , test =
+                \_ ->
+                    Expect.equal [ "colors.bold_is_bright = true", "colors.bold_is_bright = false" ] (after [ click (SettingsWindow.OnValue 5) 1, click (SettingsWindow.OnReset 5) 1 ]).said
+          }
+        , { name = "a click on a label only moves to it"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            after [ click (SettingsWindow.OnRow 5) 1 ]
+                    in
+                    Expect.equal { said = [], focused = "colors.bold_is_bright" } { said = r.said, focused = focusedKey r.model }
+          }
+        , { name = "a click away keeps what is typed, as Enter does, and Ctrl+Z undoes it"
+          , test = \_ -> Expect.equal [ "font.size = 114", "font.size = 11" ] (after ([ k.down, k.enter ] ++ typeIn "4" ++ [ click (SettingsWindow.OnRow 4) 1, ctrl 'z' ])).said
+          }
+        , { name = "a click away puts back what is typed when it is not a value"
+          , test = \_ -> Expect.equal [] (after [ k.down, k.enter, k.backspace, click (SettingsWindow.OnRow 4) 1 ]).said
+          }
+        , { name = "a double click on a host connects to it"
+          , test = \_ -> Expect.equal [ "connect build-box" ] (onHostsPage False [ click (SettingsWindow.OnRow 2) 2 ]).said
+          }
+        , { name = "a single click on a host only moves to it"
+          , test = \_ -> Expect.equal [] (onHostsPage False [ click (SettingsWindow.OnRow 2) 1 ]).said
+          }
+        , { name = "the wheel scrolls the settings by a setting a step"
+          , test =
+                \_ ->
+                    Expect.equal SettingsWindow.linesPerRow (after [ SettingsWindow.Resized { cols = 100, rows = 12 }, SettingsWindow.Scroll 1 ]).model.scroll
+          }
+        ]
+
+
+hosts : U.Suite
+hosts =
+    let
+        config =
+            decoded Schema.example
+
+        box =
+            Hosts.named "build-box" config
+    in
+    run "Hosts"
+        [ { name = "a host's command is OpenSSH's, with its port, user, key, jump and command"
+          , test = \_ -> Expect.equal [ "ssh", "-p", "2222", "-l", "gilbert", "-i", "~/.ssh/id_ed25519", "-J", "bastion.example.com", "-t", "build.example.com", "tmux new -A -s main" ] (Hosts.sshCommand config box)
+          }
+        , { name = "a jump that names another host is that host's user@host:port"
+          , test =
+                \_ ->
+                    let
+                        c =
+                            decoded "[hosts.bastion]\nhost = \"b.example.com\"\nuser = \"me\"\nport = 2200\n\n[hosts.inner]\nhost = \"10.0.0.5\"\njump = \"bastion\"\n"
+                    in
+                    Expect.equal [ "ssh", "-J", "me@b.example.com:2200", "10.0.0.5" ] (Hosts.sshCommand c (Hosts.named "inner" c))
+          }
+        , { name = "a name the settings do not have is ssh's to resolve, as an alias"
+          , test = \_ -> Expect.equal [ "ssh", "work" ] (Hosts.sshCommand config (Hosts.named "work" config))
+          }
+        , { name = "quick connect reads user@host:port, each part left out as one likes"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just [ "ssh", "-p", "22", "-l", "me", "h.example.com" ], Just [ "ssh", "h" ], Just [ "ssh", "-l", "me", "h" ], Just [ "ssh", "-p", "2222", "::1" ], Nothing, Nothing ]
+                        (Array.map (\t -> Hosts.quick t |> Maybe.map (Hosts.sshCommand config)) [ "me@h.example.com:22", "h", "me@h", "[::1]:2222", "me@", "h:port" ])
+          }
+        , { name = "a session takes the host's look, charset and title, and its name when it gives no title"
+          , test =
+                \_ ->
+                    let
+                        c =
+                            Hosts.session config box
+
+                        plain =
+                            Hosts.session config (Hosts.named "work" config)
+                    in
+                    Expect.equal { background = 0x2A1010, points = 13, charset = Just "euc-kr", title = "build", plainTitle = "work", foreground = config.foreground }
+                        { background = c.background, points = c.points, charset = c.charset, title = c.title, plainTitle = plain.title, foreground = c.foreground }
+          }
+        , { name = "a host whose client is built-in is the built-in client's, through a jump host too (ssh-client.md SC18, SC21)"
+          , test =
+                \_ ->
+                    let
+                        plainHost =
+                            Config.host "plain" "p.example.com"
+
+                        builtIn =
+                            { plainHost | client = Just "built-in" }
+
+                        remoteOf h =
+                            (Hosts.session config h).remote |> Maybe.map .name
+                    in
+                    -- a host with no client takes the platform's: OpenSSH on
+                    -- Linux, the built-in client on Windows
+                    Expect.equal
+                        [ Just "plain"
+                        , Just "plain"
+                        , Nothing
+                        , if Platform.defaultClient == "built-in" then Just "plain" else Nothing
+                        ]
+                        (Array.map remoteOf
+                            [ builtIn
+                            , { builtIn | jump = Just "bastion" }
+                            , { plainHost | client = Just "openssh" }
+                            , plainHost
+                            ]
+                        )
+          }
+        ]
+
+
+{-| The tables of words (`docs/settings-gui.md` SG4, SG7): Korean has
+every English key and no other, every setting has a Korean label and
+description, and a message's values are put in its words. -}
+words : U.Suite
+words =
+    let
+        own key =
+            String.startsWith "window." key || String.startsWith "message." key || String.startsWith "problem." key
+
+        everySetting =
+            Schema.settings ++ Schema.hostFields "h" ++ [ Schema.nameSetting "h" ]
+
+        settingKeys =
+            everySetting
+                |> Array.mapAndFlatten (\st -> [ "setting." ++ Schema.tableKey st ++ ".label", "setting." ++ Schema.tableKey st ++ ".description" ])
+    in
+    run "Words"
+        [ { name = "English has every key of Korean's own words"
+          , test = \_ -> Expect.equal [] (I18Next.keys Words.korean |> Array.keepIf own |> Array.keepIf (\key -> not (I18Next.hasKey Words.english key)))
+          }
+        , { name = "Korean has every key of English"
+          , test = \_ -> Expect.equal [] (I18Next.keys Words.english |> Array.keepIf (\key -> not (I18Next.hasKey Words.korean key)))
+          }
+        , { name = "every setting has a Korean label and description"
+          , test = \_ -> Expect.equal [] (Array.keepIf (\key -> not (I18Next.hasKey Words.korean key)) settingKeys)
+          }
+        , { name = "every setting Korean names is a setting"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (I18Next.keys Words.korean
+                            |> Array.keepIf (String.startsWith "setting.")
+                            |> Array.keepIf (\key -> not (Array.member key settingKeys))
+                        )
+          }
+        , { name = "a message's values are put in its words, in either language"
+          , test =
+                \_ ->
+                    let
+                        m =
+                            Words.message "problem.outOfRange" |> Words.with "n" "1" |> Words.with "low" "4" |> Words.with "high" "200"
+                    in
+                    Expect.equal
+                        { english = "1 is not from 4 to 200", korean = "1은(는) 4부터 200까지의 값이 아닙니다" }
+                        { english = Words.say Words.English m, korean = Words.say Words.Korean m }
+          }
+        , { name = "a key Korean lacks is the English given"
+          , test = \_ -> Expect.equal "Fallback" (Words.lookup Words.Korean "page.none" "Fallback")
+          }
+        , { name = "English is American"
+          , test = \_ -> Expect.equal "The color of text" (Words.lookup Words.English "setting.x.label" "The color of text")
+          }
+        , { name = "the window's words are found, not their keys"
+          , test =
+                \_ ->
+                    Expect.equal { english = "Search settings", korean = "설정 검색" }
+                        { english = (Words.words Words.English).search, korean = (Words.words Words.Korean).search }
+          }
+        ]
+
+
+pressed : Int -> Int -> Int -> { mods : Int, sym : Int, unshifted : Int }
+pressed mods sym unshifted =
+    { mods = mods, sym = sym, unshifted = unshifted }
+
+
+{-| The `[keys]` table's names (docs/tabs.md TB6). -}
+chords : U.Suite
+chords =
+    run "Chord"
+        [ { name = "names read in any case and order, and written one way"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Ok (Just "Ctrl+Shift+T"), Ok (Just "Ctrl+Alt+PageDown"), Ok (Just "Shift+Insert"), Ok (Just "Ctrl+Comma"), Ok (Just "Ctrl+F5"), Ok (Just "Ctrl+Plus"), Ok Nothing ]
+                        (Array.map (\t -> Chord.parse t |> Result.map (Maybe.map Chord.show))
+                            [ "shift+ctrl+t", "Ctrl+Alt+PgDn", " Shift + Insert ", "control+comma", "Ctrl+f5", "Ctrl++", "" ]
+                        )
+          }
+        , { name = "a name that is no key is refused, saying which part"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True, True ]
+                        (Array.map (\t -> when Chord.parse t is
+                            Err _ -> True
+                            Ok _ -> False)
+                            [ "Ctrl+Shift", "Hyper+T", "Ctrl+Ctrl+T", "Ctrl+F25" ]
+                        )
+          }
+        , { name = "a letter matches in either case, with exactly its modifiers"
+          , test =
+                \_ ->
+                    when Chord.parse "Ctrl+Shift+T" is
+                        Ok (Just c) ->
+                            Expect.equal [ True, True, False, False ]
+                                [ Chord.matches c (pressed 3 0x54 0x74), Chord.matches c (pressed 3 0x74 0x74), Chord.matches c (pressed 2 0x74 0x74), Chord.matches c (pressed 7 0x54 0x74) ]
+
+                        _ ->
+                            Expect.fail "not read"
+          }
+        , { name = "punctuation by its unshifted key, so Shift may change the character"
+          , test =
+                \_ ->
+                    when Chord.parse "Ctrl+Shift+Comma" is
+                        Ok (Just c) ->
+                            Expect.equal True (Chord.matches c (pressed 3 0x3C 0x2C))
+
+                        _ ->
+                            Expect.fail "not read"
+          }
+        , { name = "the keypad's Insert and PageUp are Insert and PageUp"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True ]
+                        [ Chord.parse "Shift+Insert" |> Result.map (Maybe.map (\c -> Chord.matches c (pressed 1 0xFF9E 0))) |> (==) (Ok (Just True))
+                        , Chord.parse "Ctrl+PageUp" |> Result.map (Maybe.map (\c -> Chord.matches c (pressed 2 0xFF9A 0))) |> (==) (Ok (Just True))
+                        ]
+          }
+        , { name = "a [keys] entry is read as puritty writes it, and a bad one reported with the default kept"
+          , test =
+                \_ ->
+                    Expect.equal { tab = "Ctrl+Alt+T", close = "", next = "Ctrl+PageDown", reports = 1 }
+                        ((\t -> when Schema.decode t is
+                            Ok d -> { tab = d.config.keyNewTab, close = d.config.keyCloseTab, next = d.config.keyNextTab, reports = Array.length d.reports }
+                            Err _ -> { tab = "", close = "?", next = "", reports = -1 })
+                            "[keys]\nnew_tab = \"alt+ctrl+t\"\nclose_tab = \"\"\nnext_tab = \"Ctrl+Pg\"\n"
+                        )
+          }
+        ]
+
+
+
+restoring : U.Suite
+restoring =
+    run "RestoreFile"
+        [ { name = "a window's tabs come back as they were saved (docs/tabs.md TB10)"
+          , test =
+                \_ ->
+                    let
+                        state =
+                            { host = Nothing
+                            , columns = 120
+                            , rows = 40
+                            , shown = 1
+                            , tabs =
+                                [ { name = "dm", color = Picked 0xC62828, directory = Just "/home/me/src \"a\"" }
+                                , { name = "", color = HostsColor, directory = Just "/tmp" }
+                                , { name = "\u{D55C}", color = NoColor, directory = Nothing }
+                                ]
+                            }
+                    in
+                    Expect.equal (Ok state) (RestoreFile.decode (RestoreFile.encode state))
+          }
+        , { name = "a host's window keeps its host, and a color as #rrggbb or none"
+          , test =
+                \_ ->
+                    Expect.equal "host = \"prod\"\ncolumns = 80\nrows = 24\nshown = 0\n\n[[tabs]]\nname = \"a\"\ncolor = \"#2e7d32\"\n\n[[tabs]]\nname = \"b\"\ncolor = \"none\"\n"
+                        (RestoreFile.encode { host = Just "prod", columns = 80, rows = 24, shown = 0, tabs = [ { name = "a", color = Picked 0x2E7D32, directory = Nothing }, { name = "b", color = NoColor, directory = Nothing } ] })
+          }
+        , { name = "a saved window with no tabs, or not TOML, is none"
+          , test =
+                \_ ->
+                    Expect.equal [ False, False ]
+                        [ Result.isOk (RestoreFile.decode "columns = 80\nrows = 24\nshown = 0\ntabs = []\n")
+                        , Result.isOk (RestoreFile.decode "columns = ")
+                        ]
+          }
+        , { name = "a color that is not one is the host's"
+          , test = \_ -> Expect.equal (Ok [ HostsColor ]) (RestoreFile.decode "columns = 80\nrows = 24\nshown = 0\n[[tabs]]\ncolor = \"red\"\n" |> Result.map (\st -> Array.map .color st.tabs))
+          }
+        ]
+
+
+{-| The diagnostic log says nothing typed, pasted or shown (docs/diagnostics.md
+DG1): keys by name, tmux's bytes counted, long quoted arguments by length. -}
+diagnostics : U.Suite
+diagnostics =
+    let
+        typedKey mods sym unshifted text =
+            { action = 1, keycode = 30, mods = mods, consumed = 0, unshifted = unshifted, sym = sym, text = Bytes.fromString text }
+    in
+    run "diagnostics"
+        [ { name = "a typed letter is text, not the letter", test = \_ -> Expect.equal (Just "text") (Diag.key (typedKey 0 0x61 0x61 "a")) }
+        , { name = "a shifted letter is text", test = \_ -> Expect.equal (Just "text") (Diag.key (typedKey 1 0x41 0x61 "A")) }
+        , { name = "Ctrl+C by name", test = \_ -> Expect.equal (Just "Ctrl+C") (Diag.key (typedKey 2 0x63 0x63 "\u{0003}")) }
+        , { name = "Enter by name", test = \_ -> Expect.equal (Just "Enter") (Diag.key (typedKey 0 0xFF0D 0 "\r")) }
+        , { name = "Shift+Up", test = \_ -> Expect.equal (Just "Shift+Up") (Diag.key (typedKey 1 0xFF52 0 "")) }
+        , { name = "a release is not said", test = \_ -> Expect.equal Nothing (Diag.key { action = 0, keycode = 30, mods = 0, consumed = 0, unshifted = 0x61, sym = 0x61, text = Bytes.empty }) }
+        , { name = "a modifier alone is not said", test = \_ -> Expect.equal Nothing (Diag.key (typedKey 2 0xFFE3 0 "")) }
+        , { name = "a Hangul syllable typed is text", test = \_ -> Expect.equal (Just "text") (Diag.key (typedKey 0 0 0xD55C "한")) }
+        , { name = "send-keys bytes counted", test = \_ -> Expect.equal "send-keys -t '%3' -H <3 bytes>" (Diag.command "send-keys -t '%3' -H 70 77 64") }
+        , { name = "a paste's text in set-buffer never shown", test = \_ -> Expect.equal "set-buffer -a -b puritty-paste <13 chars>" (Diag.command "set-buffer -a -b puritty-paste \"my password\"") }
+        , { name = "send-keys -K -H counted", test = \_ -> Expect.equal "send-keys -K -H <2 bytes>" (Diag.command "send-keys -K -H ed 95") }
+        , { name = "a long quoted argument by its length", test = \_ -> Expect.equal "if-shell -F -t '%1' '<45 chars>'" (Diag.command "if-shell -F -t '%1' 'select-word secret words that are on a screen'") }
+        , { name = "a format kept", test = \_ -> Expect.equal "display-message -p 'W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}'" (Diag.command "display-message -p 'W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}'") }
+        , { name = "a short command kept", test = \_ -> Expect.equal "select-pane -t '%2'" (Diag.command "select-pane -t '%2'") }
+        , { name = "a short typed search by its length", test = \_ -> Expect.equal "send -X search-backward-incremental -- '<2 chars>'" (Diag.command "send -X search-backward-incremental -- '=3'") }
+        , { name = "a typed name by its length", test = \_ -> Expect.equal "rename-window -t '@4' '<4 chars>'" (Diag.command "rename-window -t '@4' 'work'") }
+        , { name = "a quote inside a word counted as one", test = \_ -> Expect.equal "rename-window '<4 chars>' -t '@1'" (Diag.command "rename-window 'it'\\''s' -t '@1'") }
+        , { name = "key names kept, a letter not", test = \_ -> Expect.equal "send-keys -K 'C-Space' ; send-keys -K 'BSpace' ; send-keys -K 'M-a' ; send-keys -K '<1 chars>'" (Diag.command "send-keys -K 'C-Space' ; send-keys -K 'BSpace' ; send-keys -K 'M-a' ; send-keys -K 'q'") }
+        , { name = "lines of a paste", test = \_ -> Expect.equal [ 0, 1, 2, 2 ] [ Diag.lines (Bytes.fromString ""), Diag.lines (Bytes.fromString "a"), Diag.lines (Bytes.fromString "a\nb"), Diag.lines (Bytes.fromString "a\nb\n") ] }
+        , { name = "the clock", test = \_ -> Expect.equal "14:05:33.120" (Diag.clock (((14 * 60 + 5) * 60 + 33) * 1000 + 120)) }
+        , { name = "a line while the log is off is dropped", test = \_ -> Expect.equal [] (Diag.add 5 "key" "Enter" Diag.off).lines }
+        ]
+
+
+{-| tmux's copy-mode matches as puritty marks them (`docs/tmux.md` TM41). -}
+searching : U.Suite
+searching =
+    let
+        term text =
+            Vt.new { cols = 20, rows = 4, scrollbackBytes = 0, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 9, cellHeight = 17 }
+                |> Vt.feed (Bytes.fromString text)
+
+        found query text =
+            Search.matchesIn query 0 3 (term text)
+                |> Array.map (\m -> [ m.start.row, m.start.col, m.end.col ])
+    in
+    run "Search"
+        [ { name = "every match in a row, left to right, not overlapping"
+          , test = \_ -> Expect.equal [ [ 0, 0, 1 ], [ 0, 2, 3 ], [ 1, 1, 2 ] ] (found "aa" "aaaaa\r\nbaab")
+          }
+        , { name = "a lowercase query ignores case"
+          , test = \_ -> Expect.equal [ [ 0, 0, 2 ], [ 0, 4, 6 ] ] (found "foo" "FOO Foo")
+          }
+        , { name = "a query with a capital keeps case"
+          , test = \_ -> Expect.equal [ [ 0, 4, 6 ] ] (found "Foo" "FOO Foo")
+          }
+        , { name = "columns count a wide character's two cells"
+          , test = \_ -> Expect.equal [ [ 0, 3, 4 ] ] (found "ab" "\u{D55C}xab")
+          }
+        , { name = "an empty query finds nothing"
+          , test = \_ -> Expect.equal [] (found "" "abc")
+          }
+        ]

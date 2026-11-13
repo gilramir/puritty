@@ -927,6 +927,9 @@ found for 16 names to what `ssh-keygen -F` finds: 34 cases with the
 verdicts and orders, all passing. One expectation of mine was wrong, not
 the code: a host known by an Ed25519 key through `*.example.com` shows a
 *changed* key when another Ed25519 key comes, not an unknown one.
+Since 2026-11-13 `ssh-tests known-hosts FILE` and `ssh-tests config FILE`
+run their cases as suites on gren-unit-node's native runner, a test for
+each (`vt-core.md` §VC61), the runner's arguments after the file.
 
 **`Ssh.Config`** parses `ssh_config` lines (any case, `=` or space, double
 quotes, a `#` after a space ending the line) and resolves a host as `ssh

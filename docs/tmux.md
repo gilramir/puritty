@@ -2989,7 +2989,7 @@ reaches a screen. Gilbert asked for tests of `TmuxMode`'s own state.
 in through `read`, keys through `typed`, `keys` and `paste`, and out come
 its state and the command lines it would send. Its only tie to a platform
 is two types of `Window`'s (the pointer's shapes and a pointer event), so
-`app/tests/src/Window.geng` declares just those, and the app's tests on
+`app/tests/stub/Window.geng` declares just those, and the app's tests on
 node compile `TmuxMode` as it is, with the tmux package as a dependency.
 
 **`app/tests/src/FakeTmux.geng`**, a tmux server as control mode sees it:
@@ -3053,6 +3053,10 @@ the comparison fail on those two answers.
     behind `[7/176]`, the ghost Gilbert saw.
 
 App tests 149, in under a second with the rest.
+
+**Natively too** (`vt-core.md` §VC61): the same tests run as a native
+program compiled against the real X11 `Window`, and as a Windows program
+against win32's, all seven passing on each.
 
 **Not yet:** one pane only; the
 tree, prompts, menus, customize-mode, the message log and the status line

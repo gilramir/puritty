@@ -1,0 +1,1098 @@
+module TmuxSuites exposing (suites)
+
+{-| The tmux package's unit tests (puritty `docs/tmux.md` TM13), with
+gren-unit-node: control mode read from sessions recorded with tmux 3.8
+(`record.sh`, `Fixtures`), whole and split at every byte; the layouts in
+both forms; the commands.
+-}
+
+import Bytes exposing (Bytes)
+import Dict
+import Expect exposing (Expectation)
+import Fixtures
+import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Tmux.Bindings as Bindings
+import Tmux.Borders as Borders
+import Tmux.Command as Command
+import Tmux.Customize as Customize
+import CustomizeRaw36
+import Tmux.Style as Style
+import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
+import Tmux.Control as Control exposing (Event(..), Notice(..))
+import Tmux.Layout as Layout
+import UInt8
+
+
+{-| Every suite, for the node runner (`Main`) and the native one
+(`native/`'s `Native`). -}
+suites : Array U.Suite
+suites =
+    [ control, layout, command, bindings, syntax, style, borders, customize ]
+
+
+run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
+run name tests =
+    U.suite
+        { name = name
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests = Array.map (\c -> U.test c.name (\fix -> Task.succeed (c.test fix))) tests
+        }
+
+
+bytes : Array Int -> Bytes
+bytes values =
+    Bytes.fromUInt8s (Array.map UInt8.fromInt values)
+
+
+events : Bytes -> Array Event
+events b =
+    (Control.feed b Control.reader).events
+
+
+{-| The events of `b` fed in two reads, split at `at`. -}
+split : Bytes -> Int -> Array Event
+split b at =
+    let
+        first =
+            Control.feed (Bytes.slice 0 at b) Control.reader
+
+        second =
+            Control.feed (Bytes.slice at (Bytes.length b) b) first.reader
+    in
+    merged (first.events ++ second.events)
+
+
+{-| `Outside` runs side by side as one, as a split read gives two. -}
+merged : Array Event -> Array Event
+merged all =
+    Array.foldl
+        (\e acc ->
+            when { e = e, last = Array.last acc } is
+                { e = Outside b, last = Just (Outside a) } ->
+                    Array.pushLast (Outside (Bytes.flatten [ a, b ])) (Array.dropLast 1 acc)
+
+                _ ->
+                    Array.pushLast e acc
+        )
+        []
+        all
+
+
+notices : Array Event -> Array Notice
+notices all =
+    Array.mapAndKeepJust
+        (\e ->
+            when e is
+                Notice n ->
+                    Just n
+
+                _ ->
+                    Nothing
+        )
+        all
+
+
+replies : Array Event -> Array (Array String)
+replies all =
+    Array.mapAndKeepJust
+        (\e ->
+            when e is
+                Reply r ->
+                    Just (Array.map Bytes.toStringLossy r.lines)
+
+                _ ->
+                    Nothing
+        )
+        all
+
+
+layoutFlags : Array Event -> Array String
+layoutFlags all =
+    Array.mapAndKeepJust
+        (\n ->
+            when n is
+                LayoutChange l ->
+                    Just l.flags
+
+                _ ->
+                    Nothing
+        )
+        (notices all)
+
+
+outputOf : Int -> Array Event -> Bytes
+outputOf pane all =
+    Array.mapAndKeepJust
+        (\n ->
+            when n is
+                Output o ->
+                    if o.pane == pane then
+                        Just o.bytes
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        (notices all)
+        |> Bytes.flatten
+
+
+{-| Whether `part` is in `whole`, byte for byte. -}
+contains : Bytes -> Bytes -> Bool
+contains part whole =
+    let
+        hex =
+            Bytes.toHexString { padding = False }
+    in
+    String.indices (hex part) (hex whole) |> Array.any (\i -> modBy 2 i == 0)
+
+
+control : U.Suite
+control =
+    run "Control"
+        [ { name = "a session: entered, notifications, replies, %exit, then left"
+          , test =
+                \_ ->
+                    let
+                        all =
+                            events Fixtures.floating
+                    in
+                    Expect.equal
+                        { first = Array.first all, last = Array.last all, exits = Array.length (Array.keepIf (\n -> n == Exit "") (notices all)) }
+                        { first = Just Entered, last = Just Exited, exits = 1 }
+          }
+        , { name = "%subscription-changed: its name, its window (@1 or -), its pane (%2 or -) and its value, spaces kept"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ SubscriptionChanged { name = "pw", window = 1, pane = -1, value = "*" }
+                        , SubscriptionChanged { name = "pr", window = -1, pane = -1, value = "\"nene\" 13:41 11-Nov-26" }
+                        , SubscriptionChanged { name = "pm", window = 0, pane = 2, value = "1" }
+                        ]
+                        (notices (events (Bytes.fromString "\u{001B}P1000p%begin 1 1 0\n%end 1 1 0\n%subscription-changed pw $0 @1 1 - : *\n%subscription-changed pr $0 - - - : \"nene\" 13:41 11-Nov-26\n%subscription-changed pm $0 @0 0 %2 : 1\n")))
+          }
+        , { name = "every %layout-change, with 3.8's O for a modal pane"
+          , test = \_ -> Expect.equal [ "*", "*", "*O" ] (layoutFlags (events Fixtures.floating))
+          }
+        , { name = "a reply's lines, %begin to %end"
+          , test =
+                \_ ->
+                    Expect.equal [ "P %0 0 0", "P %1 0 0", "P %2 1 0", "P %3 1 1" ]
+                        (Maybe.withDefault [] (Array.findFirst (\r -> Array.length r == 4) (replies (events Fixtures.floating)) |> Maybe.map .value))
+          }
+        , { name = "%output unescaped: ESC, backslash, UTF-8 and EUC-KR's raw bytes"
+          , test =
+                \_ ->
+                    -- how tmux cuts a pane's output into lines depends on timing
+                    Expect.equal True
+                        (contains (Bytes.flatten [ Bytes.fromString "A\u{001B}[1mB\\Cé", bytes [ 0xC1, 0xD6 ], Bytes.fromString "\r\n" ])
+                            (outputOf 0 (events Fixtures.output))
+                        )
+          }
+        , { name = "%extended-output is output, its age dropped"
+          , test =
+                \_ ->
+                    Expect.equal True
+                        (Bytes.toStringLossy (outputOf 0 (events Fixtures.output)) |> String.endsWith "after\r\n$ ")
+          }
+        , { name = "a reply whose line holds a semicolon"
+          , test = \_ -> Expect.equal True (Array.member [ "a ; b" ] (replies (events Fixtures.output)))
+          }
+        , { name = "split at every byte, the floating session reads the same"
+          , test =
+                \_ ->
+                    let
+                        whole =
+                            events Fixtures.floating
+                    in
+                    Expect.equal [] (Array.keepIf (\at -> split Fixtures.floating at /= whole) (Array.range 1 (Bytes.length Fixtures.floating - 1)))
+          }
+        , { name = "split at every byte, the output session reads the same"
+          , test =
+                \_ ->
+                    let
+                        whole =
+                            events Fixtures.output
+                    in
+                    Expect.equal [] (Array.keepIf (\at -> split Fixtures.output at /= whole) (Array.range 1 (Bytes.length Fixtures.output - 1)))
+          }
+        , { name = "the terminal's bytes before and after control mode"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Outside (Bytes.fromString "hello\u{001B}[1m"), Entered, Notice (Exit ""), Exited, Outside (Bytes.fromString "bye") ]
+                        (events (Bytes.fromString "hello\u{001B}[1m\u{001B}P1000p%exit\r\n\u{001B}\\bye"))
+          }
+        , { name = "ESC P 1000 p split over two reads"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Control.feed (Bytes.fromString "ab\u{001B}P10") Control.reader
+
+                        second =
+                            Control.feed (Bytes.fromString "00p%sessions-changed\n") first.reader
+                    in
+                    Expect.equal [ Outside (Bytes.fromString "ab"), Entered, Notice SessionsChanged ] (first.events ++ second.events)
+          }
+        , { name = "an ESC P that is not control mode is the terminal's"
+          , test =
+                \_ ->
+                    Expect.equal [ Outside (Bytes.fromString "\u{001B}P1q") ] (merged (events (Bytes.fromString "\u{001B}P1q")))
+          }
+        , { name = "a line tmux 3.8 does not send is Unknown, and reading goes on"
+          , test =
+                \_ ->
+                    Expect.equal [ Notice (Unknown "%frobnicate @1"), Notice SessionsChanged ]
+                        (events (Bytes.fromString "\u{001B}P1000p%frobnicate @1\r\n%sessions-changed\r\n") |> Array.dropFirst 1)
+          }
+        , { name = "a reply's line that starts with an escape is a line, not the end of control mode"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Entered, Reply { number = 7, flags = 1, ok = True, lines = [ Bytes.fromString "\u{001B}[1mbold" ] }, Notice SessionsChanged ]
+                        (events (Bytes.fromString "\u{001B}P1000p%begin 1 7 1\r\n\u{001B}[1mbold\r\n%end 1 7 1\r\n%sessions-changed\r\n"))
+          }
+        , { name = "startsControl finds tmux -CC starting in a pane's output, and nothing else"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, False, False ]
+                        (Array.map (\t -> Control.startsControl (Bytes.fromString t))
+                            [ "\u{001B}P1000p", "ab\u{001B}[1m\u{001B}P1000p%begin", "\u{001B}P1q", "plain" ]
+                        )
+          }
+        , { name = "unescape: three octal digits, and a backslash without them kept"
+          , test =
+                \_ ->
+                    Expect.equal (bytes [ 0x61, 0x0D, 0x5C, 0x5C, 0x39, 0x62 ]) (Control.unescape (Bytes.fromString "a\\015\\134\\9b"))
+          }
+        ]
+
+
+layout : U.Suite
+layout =
+    run "Layout"
+        [ { name = "the old form: two panes side by side"
+          , test =
+                \_ ->
+                    Expect.equal
+                        (Ok [ { id = 0, w = 40, h = 24, x = 0, y = 0, active = False, z = Nothing }, { id = 1, w = 39, h = 24, x = 41, y = 0, active = False, z = Nothing } ])
+                        (Layout.parse "8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1}" |> Result.map Layout.panes)
+          }
+        , { name = "the old form nested: a column beside a pane"
+          , test =
+                \_ ->
+                    Expect.equal (Ok [ 0, 2, 1 ])
+                        (Layout.parse "abcd,80x24,0,0{40x24,0,0[40x12,0,0,0,40x11,0,13,2],39x24,41,0,1}" |> Result.map (Layout.panes >> Array.map .id))
+          }
+        , { name = "3.8's form: tiled panes, and floating ones bottom first"
+          , test =
+                \_ ->
+                    let
+                        text =
+                            "{\"V\":2,\"L\":{\"t\":\"h\",\"w\":80,\"h\":24,\"x\":0,\"y\":0,\"c\":[{\"t\":\"p\",\"w\":40,\"h\":24,\"x\":0,\"y\":0,\"l\":2,\"i\":0,\"I\":\"%0\"},{\"t\":\"p\",\"w\":39,\"h\":24,\"x\":41,\"y\":0,\"l\":1,\"i\":1,\"I\":\"%1\"},{\"t\":\"p\",\"w\":40,\"h\":6,\"x\":4,\"y\":2,\"l\":0,\"i\":2,\"z\":1,\"I\":\"%2\"},{\"t\":\"p\",\"w\":28,\"h\":6,\"x\":8,\"y\":4,\"a\":true,\"i\":3,\"z\":0,\"I\":\"%3\"}]}}"
+                    in
+                    Expect.equal
+                        (Ok { tiled = [ 0, 1 ], floating = [ 2, 3 ], active = [ 3 ] })
+                        (Layout.parse text
+                            |> Result.map
+                                (\c ->
+                                    { tiled = Array.map .id (Layout.tiled c)
+                                    , floating = Array.map .id (Layout.floating c)
+                                    , active = Layout.panes c |> Array.keepIf .active |> Array.map .id
+                                    }
+                                )
+                        )
+          }
+        , { name = "every layout in the floating session parses"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (notices (events Fixtures.floating)
+                            |> Array.mapAndKeepJust
+                                (\n ->
+                                    when n is
+                                        LayoutChange l ->
+                                            when Layout.parse l.layout is
+                                                Ok _ ->
+                                                    Nothing
+
+                                                Err why ->
+                                                    Just why
+
+                                        _ ->
+                                            Nothing
+                                )
+                        )
+          }
+        , { name = "a broken layout is an error, not a crash"
+          , test = \_ -> Expect.equal False (Result.isOk (Layout.parse "8205,80x24,0,0{40x24"))
+          }
+        ]
+
+
+command : U.Suite
+command =
+    run "Command"
+        [ { name = "a paste to tmux: quotes, $, a backslash, a line end and UTF-8 as tmux reads them, then pasted"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "set-buffer -b puritty-paste \"a\\\"b\\$\\\\\\012\\355\\225\\234\""
+                        , "paste-buffer -p -r -d -b puritty-paste -t '%3'"
+                        ]
+                        (Command.pasteBytes 3 { first = True, last = True } (Bytes.fromString "a\"b$\\\n한"))
+          }
+        , { name = "a paste in pieces: the first starts the buffer, the rest add, the last pastes"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ "set-buffer -b puritty-paste \"one\"" ], [ "set-buffer -a -b puritty-paste \"two\"" ], [ "paste-buffer -p -r -d -b puritty-paste -t '%0'" ] ]
+                        [ Command.pasteBytes 0 { first = True, last = False } (Bytes.fromString "one")
+                        , Command.pasteBytes 0 { first = False, last = False } (Bytes.fromString "two")
+                        , Command.pasteBytes 0 { first = False, last = True } Bytes.empty
+                        ]
+          }
+        , { name = "an empty paste makes nothing; a long one goes in pieces of 1024"
+          , test =
+                \_ ->
+                    Expect.equal [ 0, 3 ]
+                        [ Array.length (Command.pasteBytes 0 { first = True, last = True } Bytes.empty)
+                        , Array.length (Command.pasteBytes 0 { first = True, last = True } (Bytes.fromString (String.repeat 2000 "x")))
+                        ]
+          }
+        , { name = "send-keys -H, the pane quoted"
+          , test = \_ -> Expect.equal [ "send-keys -t '%3' -H 61 1b 0d" ] (Command.sendBytes 3 (bytes [ 0x61, 0x1B, 0x0D ]))
+          }
+        , { name = "a long paste in commands of 256 bytes"
+          , test = \_ -> Expect.equal 2 (Array.length (Command.sendBytes 0 (Bytes.fromString (String.repeat 300 "x"))))
+          }
+        , { name = "nothing to send, no command"
+          , test = \_ -> Expect.equal [] (Command.sendBytes 0 Bytes.empty)
+          }
+        , { name = "a key by name, to the client's key table"
+          , test = \_ -> Expect.equal "send-keys -K 'C-a'" (Command.sendKey "C-a")
+          }
+        , { name = "typed text, hex, to the client's key table"
+          , test = \_ -> Expect.equal [ "send-keys -K -H 22 ed 95 9c" ] (Command.typeText (Bytes.fromString "\"한"))
+          }
+        , { name = "a quote in a word"
+          , test = \_ -> Expect.equal "'it'\\''s'" (Command.quote "it's")
+          }
+        ]
+
+
+{-| Lines of tmux 3.8's own `list-keys`, and Gilbert's tmux.conf's. -}
+listed : Bindings.Follow
+listed =
+    { bindings =
+        Array.foldl Bindings.bindingOf
+            Bindings.follow.bindings
+            [ "bind-key    -T prefix \\\"      split-window"
+            , "bind-key    -T prefix x       confirm-before -p \"kill-pane #P? (y/n)\" kill-pane"
+            , "bind-key    -T prefix ,       command-prompt -I \"#W\" { rename-window \"%%\" }"
+            , "bind-key    -T prefix |       split-window -h"
+            , "bind-key    -T prefix g       switch-client -T move"
+            , "bind-key -r -T prefix Up      select-pane -U"
+            , "bind-key    -T prefix C-a     send-prefix"
+            , "bind-key    -T prefix C-z     suspend-client"
+            , "bind-key    -T copy-mode-vi / command-prompt -P -T search -p \"(search down)\" { send-keys -X search-forward -- \"%%\" }"
+            , "bind-key    -T copy-mode-vi q send-keys -X cancel"
+            , "bind-key    -T root   C-k     send-keys -R \\; send-keys C-l \\; clear-history"
+            , "bind-key    -T root   M-p     command-prompt -p pane { select-pane -t \"%%\" }"
+            ]
+    , prefixes = [ "C-a" ]
+    , repeatMs = 500
+    , table = "root"
+    , repeatUntil = -1
+    , byTable = True
+    }
+
+
+{-| Keys typed one after another at the times given, and where each went. -}
+typedAt : Array { key : String, ms : Int } -> Array { send : Bool, reset : Bool, table : String }
+typedAt presses =
+    typedIn (Array.map (\p -> { key = p.key, ms = p.ms, mode = Nothing }) presses)
+
+
+{-| The same, each key with the active pane's mode table. -}
+typedIn : Array { key : String, ms : Int, mode : Maybe String } -> Array { send : Bool, reset : Bool, table : String }
+typedIn presses =
+    Array.foldl
+        (\p acc ->
+            let
+                way =
+                    Bindings.route (Just p.key) p.ms (Maybe.withDefault "" p.mode) acc.state
+            in
+            { state = { listed | table = way.table, repeatUntil = way.repeatUntil, bindings = acc.state.bindings }
+            , out = Array.pushLast { send = way.send, reset = way.reset, table = way.table } acc.out
+            }
+        )
+        { state = listed, out = [] }
+        presses
+        |> .out
+
+
+bindings : U.Suite
+bindings =
+    run "Bindings"
+        [ { name = "list-keys lines: an escaped key without its backslash, and -r"
+          , test =
+                \_ ->
+                    Expect.equal [ Just "split-window", Just "select-pane -U", Nothing ]
+                        [ Maybe.map .command (Dict.get "prefix \"" listed.bindings)
+                        , Maybe.map .command (Dict.get "prefix Up" listed.bindings |> Maybe.keepIf .repeat)
+                        , Maybe.map .command (Dict.get "prefix \\\"" listed.bindings)
+                        ]
+          }
+        , { name = "the prefix moves to the prefix table, a binding back to root"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = True, reset = False, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "|", ms = 10 } ])
+          }
+        , { name = "a confirmation after the prefix is held back and tmux put back in root"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "x", ms = 10 } ])
+          }
+        , { name = "the command prompt, after the prefix and from a root binding, is held back"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" }, { send = False, reset = False, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = ",", ms = 10 }, { key = "M-p", ms = 20 } ])
+          }
+        , { name = "a repeatable binding keeps its table for repeat-time, then root again"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { send = True, reset = False, table = "prefix" }
+                        , { send = True, reset = False, table = "prefix" }
+                        , { send = True, reset = False, table = "prefix" }
+                        , { send = True, reset = False, table = "root" }
+                        ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "Up", ms = 10 }, { key = "Up", ms = 300 }, { key = "x", ms = 2000 } ])
+          }
+        , { name = "a key repeating does not reach a binding that does not repeat"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "Up", ms = 10 }, { key = "x", ms = 100 } ] |> Array.map .send)
+          }
+        , { name = "suspend-client is held back: a suspended control client takes no keys again"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "C-z", ms = 10 } ])
+          }
+        , { name = "in copy mode its table first: / is held, q sent, C-k found in root, the prefix still the prefix"
+          , test =
+                \_ ->
+                    Expect.equal [ False, True, True, True ]
+                        (typedIn
+                            [ { key = "/", ms = 0, mode = Just "copy-mode-vi" }
+                            , { key = "q", ms = 10, mode = Just "copy-mode-vi" }
+                            , { key = "C-k", ms = 20, mode = Just "copy-mode-vi" }
+                            , { key = "C-a", ms = 30, mode = Just "copy-mode-vi" }
+                            ]
+                            |> Array.map .send
+                        )
+          }
+        , { name = "after the prefix, a key bound only in root is looked for there"
+          , test =
+                \_ ->
+                    Expect.equal [ { send = True, reset = False, table = "prefix" }, { send = False, reset = True, table = "root" } ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "M-p", ms = 10 } ])
+          }
+        , { name = "switch-client -T moves to that table"
+          , test =
+                \_ ->
+                    Expect.equal [ "prefix", "move" ]
+                        (typedAt [ { key = "C-a", ms = 0 }, { key = "g", ms = 10 } ] |> Array.map .table)
+          }
+        , { name = "a root binding that is no prompt is sent"
+          , test = \_ -> Expect.equal [ { send = True, reset = False, table = "root" } ] (typedAt [ { key = "C-k", ms = 0 } ])
+          }
+        , { name = "the prefixes and repeat time, None left out"
+          , test = \_ -> Expect.equal { prefixes = [ "C-a" ], repeatMs = 600, byTable = True } (Bindings.prefixesOf "C-a None 600 3.8")
+          }
+        , { name = "send-keys -K from 3.4: 3.4, 3.8, a next- build yes; 3.3a, 3.2a, 2.7, none no"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True, False, False, False, False ]
+                        (Array.map (\v -> (Bindings.prefixesOf ("C-b None 500 " ++ v)).byTable) [ "3.4", "3.8", "next-3.9", "3.3a", "3.2a", "2.7", "" ])
+          }
+        ]
+
+
+{-| A binding's prompt as the test reads it. -}
+asked : String -> String
+asked line =
+    when Syntax.askOf line is
+        Just a ->
+            when a.ask is
+                Confirm c ->
+                    "confirm [" ++ c.prompt ++ "] run [" ++ c.run ++ "] key " ++ c.key ++ (if c.enterYes then " enter" else "") ++ " after [" ++ a.after ++ "]"
+
+                Prompt p ->
+                    "prompt " ++ String.join "|" p.prompts ++ " inputs " ++ String.join "|" p.inputs
+                        ++ (when p.entry is
+                                Text ->
+                                    ""
+
+                                Single ->
+                                    " single"
+
+                                Numeric ->
+                                    " numeric"
+
+                                KeyName ->
+                                    " key"
+                           )
+                        ++ " after [" ++ a.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
+{-| A binding's prompt filled with answers. -}
+filled : String -> Array String -> String
+filled line answers =
+    when Syntax.askOf line |> Maybe.map .ask is
+        Just (Prompt p) ->
+            when p.template is
+                Just t ->
+                    Syntax.fill t answers
+
+                Nothing ->
+                    "(the answer)"
+
+        _ ->
+            "none"
+
+
+menu : String -> String
+menu line =
+    when Syntax.menuOf line is
+        Just m ->
+            "title [" ++ m.menu.title ++ "] x " ++ m.menu.x ++ " y " ++ m.menu.y ++ " t [" ++ m.menu.target ++ "] items "
+                ++ String.join " " (Array.map (\i -> if i.name == "" then "[--]" else "[" ++ i.name ++ "|" ++ i.key ++ "|" ++ i.command ++ "]") m.menu.items)
+                ++ " after [" ++ m.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
+tree : String -> String
+tree line =
+    when Syntax.treeOf line is
+        Just t ->
+            (if t.start == 0 then "sessions " else if t.start == 1 then "windows " else "panes ") ++ (if t.zoom then "zoom " else "- ") ++ t.template ++ " after [" ++ t.after ++ "]" ++ (if t.filter == "" then "" else " filter [" ++ t.filter ++ "]")
+
+        Nothing ->
+            "none"
+
+
+panes : String -> String
+panes line =
+    when Syntax.panesOf line is
+        Just d ->
+            "d " ++ Maybe.withDefault "-" (Maybe.map String.fromInt d.duration) ++ (if d.keys then " keys " else " nokeys ") ++ d.template ++ " after [" ++ d.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
+ifFormat : String -> String
+ifFormat line =
+    when Syntax.ifFormatOf line is
+        Just f ->
+            "t [" ++ f.target ++ "] if [" ++ f.condition ++ "] yes [" ++ f.yes ++ "] no [" ++ f.no ++ "] after [" ++ f.after ++ "]"
+
+        Nothing ->
+            "none"
+
+
+syntax : U.Suite
+syntax =
+    run "Syntax"
+        [ { name = "confirm-before -p, its question and the command"
+          , test = \_ -> Expect.equal "confirm [kill-pane #P? (y/n) ] run [kill-pane] key y after []" (asked "confirm-before -p \"kill-pane #P? (y/n)\" kill-pane")
+          }
+        , { name = "confirm-before with no -p asks tmux's own question; -c and -y"
+          , test = \_ -> Expect.equal "confirm [Confirm 'kill-window'? (k/n) ] run [kill-window -t :2] key k enter after []" (asked "confirm-before -y -c k { kill-window -t :2 }")
+          }
+        , { name = "command-prompt -I with a block template"
+          , test = \_ -> Expect.equal "prompt (rename-window)  inputs #W after []" (asked "command-prompt -I \"#W\" { rename-window \"%%\" }")
+          }
+        , { name = "command-prompt with nothing: the colon prompt"
+          , test = \_ -> Expect.equal "prompt : inputs  after []" (asked "command-prompt")
+          }
+        , { name = "flags run together: -1P single, -NP numeric with -I, -k"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "prompt (jump forward)  inputs  single after []"
+                        , "prompt (repeat)  inputs 3 numeric after []"
+                        , "prompt key  inputs  key after []"
+                        ]
+                        [ asked "command-prompt -1P -p \"(jump forward)\" { send-keys -X jump-forward -- \"%%\" }"
+                        , asked "command-prompt -NP -I 3 -p (repeat) { send-keys -N \"%%\" }"
+                        , asked "command-prompt -k -p key { list-keys -1N \"%%\" }"
+                        ]
+          }
+        , { name = "several prompts, by commas, and the commands after the prompt"
+          , test = \_ -> Expect.equal "prompt a |b  inputs x|y after [display-message done]" (asked "command-prompt -p a,b -I x,y { swap-window -s %1 -t %2 } \\; display-message done")
+          }
+        , { name = "not a prompt: none"
+          , test = \_ -> Expect.equal "none" (asked "if-shell -F \"#{pane_floating_flag}\" { join-pane } { break-pane -W }")
+          }
+        , { name = "an answer filled in is one quoted word, whatever it holds"
+          , test =
+                \_ ->
+                    Expect.equal "rename-window 'a\"; kill-server; '\\''x'"
+                        (filled "command-prompt -I \"#W\" { rename-window \"%%\" }" [ "a\"; kill-server; 'x" ])
+          }
+        , { name = "%1 and %2 in their words; words without them as written"
+          , test = \_ -> Expect.equal "swap-window -s '3' -t '5'" (filled "command-prompt -p a,b { swap-window -s %1 -t %2 }" [ "3", "5" ])
+          }
+        , { name = "a word around the answer keeps the rest of it"
+          , test = \_ -> Expect.equal "select-window -t ':4'" (filled "command-prompt -p index { select-window -t \":%%\" }" [ "4" ])
+          }
+        , { name = "a string template is a command line too"
+          , test = \_ -> Expect.equal "new-window -n 'logs'" (filled "command-prompt -p name \"new-window -n '%%'\"" [ "logs" ])
+          }
+        , { name = "display-menu: title, place, items, a line, a disabled name kept as written"
+          , test =
+                \_ ->
+                    Expect.equal "title [#[align=centre]#{window_index}] x W y W t [] items [#{?pane_marked_set,,-}Swap Marked|s|swap-window] [--] [Kill|X|kill-window] [Rename|n|command-prompt -F -I \"#W\" { rename-window -t \"#{window_id}\" \"%%\" }] after []"
+                        (menu "display-menu -T \"#[align=centre]#{window_index}\" -x W -y W \"#{?pane_marked_set,,-}Swap Marked\" s { swap-window } '' Kill X { kill-window } Rename n { command-prompt -F -I \"#W\" { rename-window -t \"#{window_id}\" \"%%\" } }")
+          }
+        , { name = "display-menu -t = with an empty command and commands after it"
+          , test = \_ -> Expect.equal "title [Kill pane?] x M y M t [=] items [Yes|y|kill-pane -t =] [No|n|] after [display-message done]" (menu "display-menu -O -T \"Kill pane?\" -t = -x M -y M Yes y { kill-pane -t = } No n {  } \\; display-message done")
+          }
+        , { name = "if-shell -F: the pane, the format and both branches; a shell's if-shell is none"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "t [=] if [#{mouse_any_flag}] yes [select-pane -t = ; send-keys -M] no [display-menu -x M -y M Top < { send-keys -X history-top }] after []"
+                        , "none"
+                        ]
+                        [ ifFormat "if-shell -F -t = \"#{mouse_any_flag}\" { select-pane -t = ; send-keys -M } { display-menu -x M -y M Top < { send-keys -X history-top } }"
+                        , ifFormat "if-shell \"test -f x\" { kill-pane }"
+                        ]
+          }
+        , { name = "display-panes: the default template, -d, -N and a block"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "d - keys select-pane -t '%%' after []"
+                        , "d 3000 nokeys swap-pane -t '%%' after [display-message hi]"
+                        ]
+                        [ panes "display-panes"
+                        , panes "display-panes -N -d 3000 { swap-pane -t '%%' } \\; display-message hi"
+                        ]
+          }
+        , { name = "choose-tree: -Zs folded, -Zw open, a template; choose-window"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "sessions zoom switch-client -t '%%' after []"
+                        , "windows zoom switch-client -t '%%' after []"
+                        , "windows - kill-window -t '%%' after []"
+                        , "panes - switch-client -t '%%' after [] filter [#{==:#{session_name},x}]"
+                        , "panes zoom switch-client -t '%%' after [] filter [#{||:#{C:vim},#{||:#{m:*vim*,#{window_name}},#{m:*vim*,#{pane_title}}}}]"
+                        , "panes - switch-client -t '%%' after [] filter [#{m/i:*Log*,#{window_name}}]"
+                        ]
+                        [ tree "choose-tree -Zs", tree "choose-tree -Zw", tree "choose-window \"kill-window -t '%%'\""
+                        , tree "choose-tree -f '#{==:#{session_name},x}'"
+                        , tree "find-window -Z -- 'vim'"
+                        , tree "find-window -Ni Log"
+                        ]
+          }
+        , { name = "display-popup read, with tmux's defaults"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just "50% 50% C C True [htop]", Just "80 20% 3 C False []" ]
+                        (Array.map (\l -> Syntax.popupOf l |> Maybe.map (\p -> p.width ++ " " ++ p.height ++ " " ++ p.x ++ " " ++ p.y ++ (if p.close then " True [" else " False [") ++ p.command ++ "]"))
+                            [ "display-popup -E htop", "popup -w 80 -h 20% -x 3" ]
+                        )
+          }
+        , { name = "choose-buffer and choose-client read, with tmux's default commands"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just "buffer True paste-buffer -p -b '%%' []", Just "client False detach-client -t '%%' [x]", Just "buffer False delete-buffer -b '%%' []", Nothing ]
+                        (Array.map (\l -> Syntax.listOf l |> Maybe.map (\x -> x.kind ++ (if x.zoom then " True " else " False ") ++ x.template ++ " [" ++ x.filter ++ "]"))
+                            [ "choose-buffer -Z", "choose-client -f x", "choose-buffer \"delete-buffer -b '%%'\"", "choose-tree" ]
+                        )
+          }
+        , { name = "a ; ending a word in a block, as list-keys writes it, is between commands"
+          , test =
+                \_ ->
+                    Expect.equal [ [ "copy-mode", "-q" ], [ "set-buffer", "x y" ] ]
+                        (Syntax.commands (Syntax.tokens "copy-mode -q; set-buffer \"x y\"") |> Array.map (Array.map .value))
+          }
+        ]
+
+
+style : U.Suite
+style =
+    run "Style"
+        [ { name = "an option's style: 3.8's theme colors, named, bright, 256 and RGB"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}[0;30;42m", "\u{001B}[0;1;91;48;5;236m", "\u{001B}[0;38;2;255;0;16m" ]
+                        [ Style.sgr (Style.apply "bg=themegreen,fg=themeblack" Style.plain)
+                        , Style.sgr (Style.apply "fg=brightred bg=colour236 bold" Style.plain)
+                        , Style.sgr (Style.apply "fg=#FF0010" Style.plain)
+                        ]
+          }
+        , { name = "attributes on and off, default and none"
+          , test =
+                \_ ->
+                    Expect.equal "\u{001B}[0;4;31m"
+                        (Style.sgr (Style.apply "bold,underscore,fg=red,bg=blue,nobold,bg=default" Style.plain))
+          }
+        , { name = "a format's runs: #[…] changes the style from the base on, ## is #"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { text = "[0] ", sgr = "\u{001B}[0;30;42m" }, { text = "a#b", sgr = "\u{001B}[0;1;30;41m" }, { text = " c", sgr = "\u{001B}[0;1;30;42m" } ]
+                        (Style.runs (Style.apply "fg=black,bg=green" Style.plain) "[0] #[bg=red,bold]a##b#[bg=green] c" |> Array.map (\r -> { text = r.text, sgr = Style.sgr r.style }))
+          }
+        , { name = "default is the base's: a window's `default` style keeps the status line's colors, #[default] goes back to them"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[0;30;42m", "\u{001B}[0;30;42m" ]
+                        [ Style.sgr (Style.apply "default" (Style.apply "bg=green,fg=black" Style.plain))
+                        , Style.runs (Style.apply "bg=green,fg=black" Style.plain) "#[fg=red,bold]x#[default]y" |> Array.last |> Maybe.map (\r -> Style.sgr r.style) |> Maybe.withDefault ""
+                        ]
+          }
+        , { name = "strip"
+          , test = \_ -> Expect.equal "Search For wordy" (Style.strip "Search For #[underscore]wordy#[default]")
+          }
+        , { name = "tmux's X11 names, any case, and grey levels rounded as tmux rounds them (TM65)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "\u{001B}[0;38;2;184;134;11m", "\u{001B}[0;48;2;179;179;179m", "\u{001B}[0;38;2;190;190;190m", "\u{001B}[0;38;2;13;13;13m", "\u{001B}[0m" ]
+                        [ Style.sgr (Style.apply "fg=DarkGoldenrod" Style.plain)
+                        , Style.sgr (Style.apply "bg=gray70" Style.plain)
+                        , Style.sgr (Style.apply "fg=grey" Style.plain)
+                        , Style.sgr (Style.apply "fg=grey5" Style.plain)
+                        , Style.sgr (Style.apply "fg=gray101" Style.plain)
+                        ]
+          }
+        , { name = "3.8's theme names written as the theme's colors, in themeNames' order (TM65)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "bg=darkgoldenrod,fg=gray5,fill=darkgoldenrod", "#[fg=gray70]x#[fg=yellowgreen]y", "fg=red" ]
+                        [ Style.themed Style.darkTheme "bg=themeyellow,fg=themeblack,fill=themeyellow"
+                        , Style.themed Style.darkTheme "#[fg=themelightgrey]x#[fg=themegreen]y"
+                        , Style.themed Style.darkTheme "fg=red"
+                        ]
+          }
+        , { name = "what tmux takes as a color (TM65)"
+          , test =
+                \_ ->
+                    Expect.equal [ True, True, True, True, False, False ]
+                        (Array.map Style.isColor [ "darkgoldenrod", "colour236", "#b8860b", "default", "notacolor", "gray101" ])
+          }
+        ]
+
+
+{-| tmux's borders as puritty draws them in tmux's look (puritty `docs/tmux.md`
+TM48): which cells, their glyphs, and which take the active color. -}
+borders : U.Suite
+borders =
+    let
+        pane id x y w h =
+            { id = id, x = x, y = y, w = w, h = h, active = False, z = Nothing }
+
+        cells indicators lines active laid =
+            Borders.cells
+                { cols = 20, rows = 6, active = active, marked = -1, paneStatus = "off", lines = lines, indicators = indicators, borderStyle = "fg=white", activeStyle = "fg=green" }
+                laid
+                |> Array.sortBy (\c -> c.row * 100 + c.col)
+
+        activeRows list =
+            list |> Array.keepIf (\c -> String.contains "32" c.color) |> Array.map .row
+
+        two =
+            [ pane 0 0 0 9 6, pane 1 10 0 10 6 ]
+    in
+    run "Borders"
+        [ { name = "two side by side: the divider's glyphs"
+          , test = \_ -> Expect.equal [ "│", "│", "│", "│", "│", "│" ] (cells "colour" "single" 1 two |> Array.map .text)
+          }
+        , { name = "two side by side, the right active: its half below colored"
+          , test = \_ -> Expect.equal [ 4, 5 ] (activeRows (cells "colour" "single" 1 two))
+          }
+        , { name = "two side by side, the left active: its half above colored"
+          , test = \_ -> Expect.equal [ 0, 1, 2, 3 ] (activeRows (cells "colour" "single" 0 two))
+          }
+        , { name = "indicators off: the whole divider"
+          , test = \_ -> Expect.equal [ 0, 1, 2, 3, 4, 5 ] (activeRows (cells "off" "single" 1 two))
+          }
+        , { name = "four: the cross is a join"
+          , test =
+                \_ ->
+                    Expect.equal [ "┼" ]
+                        (cells "colour" "single" 0 [ pane 0 0 0 9 2, pane 1 10 0 10 2, pane 2 0 3 9 3, pane 3 10 3 10 3 ]
+                            |> Array.keepIf (\c -> c.row == 2 && c.col == 9)
+                            |> Array.map .text
+                        )
+          }
+        , { name = "double lines"
+          , test = \_ -> Expect.equal [ "║" ] (cells "colour" "double" 1 two |> Array.takeFirst 1 |> Array.map .text)
+          }
+        , { name = "arrows point at the active pane"
+          , test = \_ -> Expect.equal [ "→" ] (cells "arrows" "single" 1 two |> Array.keepIf (\c -> c.row == 1) |> Array.map .text)
+          }
+        ]
+
+
+customize : U.Suite
+customize =
+    let
+        t36 =
+            Customize.table 36
+
+        t38 =
+            Customize.table 38
+
+        infoText t name =
+            Dict.get name t.infos |> Maybe.map .text |> Maybe.withDefault "(none)"
+
+        rawLines text =
+            String.split "\n" text |> Array.keepIf (\l -> String.trim l /= "")
+
+        read36 =
+            Customize.bindingsOfText (rawLines CustomizeRaw36.keys)
+                (Array.foldl (\n acc -> Dict.set n.table (rawLines n.text) acc) Dict.empty CustomizeRaw36.notes)
+
+        data =
+            { server = Customize.optionsOf [ "escape-time 10", "command-alias[0] split-pane=split-window" ]
+            , globalSession = Customize.optionsOf [ "mouse off", "status on", "@mine \"a b\"", "base-index 0" ]
+            , session = Customize.optionsOf [ "base-index 1" ]
+            , globalWindow = Customize.optionsOf [ "mode-keys emacs", "pane-base-index 0" ]
+            , window = Customize.optionsOf []
+            , pane = Customize.optionsOf [ "pane-base-index 1" ]
+            , globalEnv = Customize.envOf [ "HOME=/home/u", "-DISPLAY" ] [ "SECRET=x" ]
+            , sessionEnv = Customize.envOf [ "LOC=v w" ] []
+            , keys =
+                [ { table = "prefix", key = "c", repeat = False, note = "Create a new window", command = "new-window" }
+                , { table = "prefix", key = "z", repeat = True, note = "", command = "display-message zz" }
+                , { table = "root", key = "F1", repeat = False, note = "", command = "display-message hi" }
+                ]
+            , paneIndex = 0
+            , windowIndex = 2
+            , sessionName = "main"
+            , paneId = "%5"
+            }
+
+        all v t =
+            Customize.entries t data { hideGlobal = v.hideGlobal, changedOnly = v.changedOnly, passing = v.passing }
+
+        shown v t =
+            Customize.lines v (all v t)
+
+        view =
+            Customize.startView
+
+        entryNamed name t =
+            all view t |> Array.findFirst (\e -> e.name == name) |> Maybe.map .value
+
+        act t keyName name =
+            Customize.act t data keyName [] (entryNamed name t)
+
+        commandsOf a =
+            when a is
+                Customize.Run cs ->
+                    cs
+
+                Customize.Ask p ->
+                    [ "ask " ++ p.label ++ "|" ++ p.first ]
+
+                Customize.Say text ->
+                    [ "say " ++ text ]
+
+                Customize.Stay ->
+                    []
+
+        previewOf t name width height =
+            when entryNamed name t is
+                Just e ->
+                    Customize.preview t data Nothing e { width = width, height = height }
+
+                Nothing ->
+                    []
+
+        rowsOf pieces =
+            Array.foldl (\p acc -> Dict.update p.row (\had -> Just (Maybe.withDefault "" had ++ p.text)) acc) Dict.empty pieces |> Dict.values
+    in
+    run "Customize"
+        [ { name = "3.8's table: status is a choice of six, on by default"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { kind = "choice", choices = [ "off", "on", "2", "3", "4", "5" ], default = Just "on" }
+                        { kind = Dict.get "status" t38.infos |> Maybe.map .kind |> Maybe.withDefault ""
+                        , choices = Dict.get "status" t38.infos |> Maybe.map .choices |> Maybe.withDefault []
+                        , default = Dict.get "status" t38.defaults
+                        }
+          }
+        , { name = "3.6's table is 3.8's with 3.6's own rows: wording, and options 3.6 lacks"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "Style of the command prompt when in command mode, if 'mode-keys' is set to 'vi'."
+                        , "Style of the command prompt when in command mode, if 'status-keys' is set to 'vi'."
+                        , "(none)"
+                        ]
+                        [ infoText t36 "message-command-style", infoText t38 "message-command-style", infoText t36 "clear-on-attach" ]
+          }
+        , { name = "3.6's list-keys text read by puritty is the table's every default key"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { count = Dict.count t36.keys, changed = [] }
+                        { count = Array.length read36
+                        , changed = read36 |> Array.keepIf (Customize.changedKey t36) |> Array.map (\b -> b.table ++ " " ++ b.key)
+                        }
+          }
+        , { name = "3.6's notes read: prefix c's"
+          , test =
+                \_ ->
+                    Expect.equal (Just "Create a new window")
+                        (read36 |> Array.findFirst (\b -> b.table == "prefix" && b.key == "c") |> Maybe.map (\found -> found.value.note))
+          }
+        , { name = "show-options' lines: quoted values unquoted, array items, a bare array"
+          , test =
+                \_ ->
+                    let
+                        opts =
+                            Customize.optionsOf [ "@mine \"a b\"", "command-alias[0] split-pane=split-window", "command-alias[1] \"server-info=show-messages -JT\"", "after-new-window" ]
+                    in
+                    Expect.equal
+                        [ Just "a b", Just "server-info=show-messages -JT", Just "" ]
+                        [ Dict.get "@mine" opts |> Maybe.map .value
+                        , Dict.get "command-alias" opts |> Maybe.andThen (\o -> Array.get 1 o.items) |> Maybe.map .value
+                        , Dict.get "after-new-window" opts |> Maybe.map .value
+                        ]
+          }
+        , { name = "the environment: removed, hidden, by name"
+          , test = \_ -> Expect.equal [ "-DISPLAY", "HOME", "SECRET h" ] (data.globalEnv |> Array.map (\v -> (if v.value == Nothing then "-" else "") ++ v.name ++ (if v.hidden then " h" else "")))
+          }
+        , { name = "3.8's sections, folded at first"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "Server Options", "Session Options", "Window & Pane Options", "Session Hooks", "Window & Pane Hooks", "Global Environment", "Session Environment", "Key Table - prefix", "Key Table - root" ]
+                        (shown view t38 |> Array.map (\l -> l.entry.name))
+          }
+        , { name = "3.6 has no hooks or environment"
+          , test = \_ -> Expect.equal [ "Server Options", "Session Options", "Window & Pane Options", "Key Table - prefix", "Key Table - root" ] (shown view t36 |> Array.map (\l -> l.entry.name))
+          }
+        , { name = "session options: user ones first, each from the lowest level, the session's in its name"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "@mine: a b", "base-index: (session main) 1", "mouse: off", "status: on" ]
+                        (all view t38 |> Array.keepIf (\e -> e.parent == "S:s") |> Array.map (\e -> e.name ++ ": " ++ (if e.scope == "" then "" else "(" ++ e.scope ++ ") ") ++ Maybe.withDefault "" e.text))
+          }
+        , { name = "changed only: what is as tmux's default left out, empty sections too"
+          , test =
+                \_ ->
+                    Expect.equal [ "Server Options", "@mine", "base-index", "mouse", "Window & Pane Options", "pane-base-index", "Key Table - prefix", "z", "Key Table - root", "F1" ]
+                        (all { view | changedOnly = True } t38 |> Array.keepIf (\e -> e.depth < 2) |> Array.map .name |> Array.keepIf (\n -> n /= "Session Options") |> Array.dropFirst 0 |> Array.keepIf (\n -> n /= "command-alias"))
+          }
+        , { name = "a flag flipped at the session's level"
+          , test = \_ -> Expect.equal [ "set-option -t %5 'mouse' 'on'" ] (commandsOf (act t38 "Enter" "mouse"))
+          }
+        , { name = "a choice moved on; S sets it globally"
+          , test = \_ -> Expect.equal [ "set-option -g 'status' '2'" ] (commandsOf (act t38 "S" "status"))
+          }
+        , { name = "a window-only option set at a pane is asked for at the window, with tmux's label"
+          , test = \_ -> Expect.equal [ "ask (pane-base-index, for window 2) |0" ] (commandsOf (act t38 "Enter" "pane-base-index"))
+          }
+        , { name = "w sets a pane's option at the window"
+          , test = \_ -> Expect.equal [ "ask (pane-base-index, for window 2) |0" ] (commandsOf (act t38 "w" "pane-base-index"))
+          }
+        , { name = "d asks, and y resets every level that sets it"
+          , test =
+                \_ ->
+                    when act t38 "d" "pane-base-index" is
+                        Customize.Ask p ->
+                            Expect.equal
+                                [ "Reset pane-base-index to default? ", "set-option -u -p -t %5 'pane-base-index'", "set-option -u -gw 'pane-base-index'" ]
+                                (Array.pushFirst p.label (commandsOf (Customize.confirmed t38 data p "y")))
+
+                        _ ->
+                            Expect.fail "no question"
+          }
+        , { name = "a key's repeat flipped, its note kept"
+          , test =
+                \_ ->
+                    let
+                        repeatRow =
+                            all view t38 |> Array.findFirst (\e -> e.id == "K:prefix\tc\tRepeat") |> Maybe.map .value
+                    in
+                    Expect.equal [ "bind-key -T 'prefix' -r -N 'Create a new window' 'c' 'new-window'" ] (commandsOf (Customize.act t38 data "Enter" [] repeatRow))
+          }
+        , { name = "a key reset to tmux's own binding"
+          , test =
+                \_ ->
+                    when act t38 "d" "z" is
+                        Customize.Ask p ->
+                            Expect.equal [ "bind-key -T 'prefix' -N 'Zoom the active pane' 'z' 'resize-pane -Z'" ] (commandsOf (Customize.confirmed t38 data p "y"))
+
+                        _ ->
+                            Expect.fail "no question"
+          }
+        , { name = "a new key: its word and its command"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ "bind-key -T 'root' 'F2' 'display-message \"x y\"'" ], [ "say Key binding must be key command" ] ]
+                        [ commandsOf (Customize.answered t38 data { label = "", first = "", single = False, asks = Customize.AddKey "root" } "F2 display-message \"x y\"")
+                        , commandsOf (Customize.answered t38 data { label = "", first = "", single = False, asks = Customize.AddKey "root" } "F2")
+                        ]
+          }
+        , { name = "a key's description, as 3.8 writes it"
+          , test =
+                \_ ->
+                    Expect.equal [ "Create a new window.", "This key is in the prefix table.", "Repeat: off", "Command: new-window" ]
+                        (rowsOf (previewOf t38 "c" 60 10))
+          }
+        , { name = "3.6 says repeat in words"
+          , test = \_ -> Expect.equal [ "Create a new window.", "This key is in the prefix table.", "This key does not repeat.", "Command: new-window" ] (rowsOf (previewOf t36 "c" 60 10))
+          }
+        , { name = "an option's description wrapped at spaces, its default and global value"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "Default index of the first window"
+                        , "in each session."
+                        , "This is a session option."
+                        , "Option value: 1"
+                        , "The default is: 0"
+                        , "Global value: 0"
+                        ]
+                        (rowsOf (previewOf t38 "base-index" 34 10))
+          }
+        , { name = "the description stops at the box's foot, as tmux's does"
+          , test = \_ -> Expect.equal [ "Default index of the first window", "in each session." ] (rowsOf (previewOf t38 "base-index" 34 3))
+          }
+        ]

@@ -4407,3 +4407,49 @@ as it is gives 27.2 M at every layout for `long-10000`. For
 `long-100000`, `-O1` promotes 31.3 M against 23.9 M at the others: a word
 there too, at a layout the build does not use. `perf.py` without
 `--layouts` is unchanged, and all within the record.
+
+
+## VC61. The unit suites run natively, on Linux and on Windows (2026-11-13)
+
+The unit suites of §VC46 and their siblings ran on node only, compiled to
+JavaScript: the core's, the tmux package's and the application's. puritty
+ships compiled to C, and on two platforms, so a test on node held the Geng
+code but not the code that runs. gren-unit-node 2.0.0 has a runner for
+native programs (geng-lang `m1b-test.md` §TS11, Dnene54), and each suite
+now runs on node, natively on Linux, and on Windows.
+
+**How.** Each suite's list moved out of its `main` into a module both
+entries share (`VtSuites`, `TmuxSuites`, `AppSuites`), so a suite added
+to one runs in all. The node entries are as they were (`run.sh`); a
+`native/` application beside each builds the same list on gren-unit-node's
+os runner (`native/run.sh`, whose arguments are the runner's), and
+`native/run.sh --windows` cross-compiles `tests.exe` for vt and tmux. The
+application's tests build natively over `app/linux`'s sources and the
+real X11 package, where node has `app/tests/stub/Window.geng`, and
+`app/tests/windows/build.sh` builds them over `app/windows`'s sources and
+the win32 package, as a console program so that its report shows.
+
+| suite | node | Linux, native | Windows 11 (beelink1) |
+|---|---|---|---|
+| vt | 94 | 94, in 7 ms | 94 |
+| tmux | 99 | 99, in 16 ms | 99 |
+| app | 149, in 229 ms | 149, in 31 ms | 149, in 75 ms |
+
+**What Windows found.** Its first run failed three of the application's
+tests, each a default `Platform` sets per platform that the test had
+written as Linux's: the `start` a bad value falls back to (`hosts` on
+Windows, `shell` on Linux), the default font (Cascadia Mono, DejaVu Sans
+Mono), and the client of a host that names none (the built-in client on
+Windows, OpenSSH on Linux; ssh-client.md SC18). The code was right on both;
+the tests now read the value from `Platform`, and pass on all three.
+
+**ssh's checks too.** `ssh-tests known-hosts FILE` and `ssh-tests config
+FILE` run their cases as suites on the same runner, a test for each case
+(34 and 30, as before), the runner's arguments after the file;
+`ssh-crypto-tests` became one the same day (ssh-client.md SC13). The
+scripted server's 25 cases and the live `sshd.py`'s 62 pass with the
+program's other modes unchanged.
+
+**Not yet:** the `text` package's Geng surface needs an open window and
+has no tests; the native and Windows runs are by hand, not in a gate.
+

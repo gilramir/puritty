@@ -34,6 +34,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Console
 import Dict
+import Expect
 import Os.Env
 import Os.Error
 import Os.File as File
@@ -52,6 +53,8 @@ import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
 import SshCrypto
 import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Test.Runner.UnitNode.Program as Program
 import UInt8
 
 
@@ -60,43 +63,99 @@ main =
     Task.map3 (\env fs net -> { args = env.args, fs = fs, net = net }) Os.Env.getEnvironment File.initialize Net.initialize
         |> Task.andThen
             (\r ->
-                when afterWord "connect" r.args is
-                    [ host, port ] ->
-                        connect r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
+                when Array.first r.args is
+                    Just "known-hosts" ->
+                        cases knownHostsSuite r
+
+                    Just "config" ->
+                        cases configSuite r
 
                     _ ->
-                        when afterWord "replay" r.args is
-                            [ file ] ->
-                                replay r.fs file
+                        when afterWord "connect" r.args is
+                            [ host, port ] ->
+                                connect r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
 
                             _ ->
-                                when afterWord "known-hosts" r.args is
+                                when afterWord "replay" r.args is
                                     [ file ] ->
-                                        knownHostsCases r.fs file
+                                        replay r.fs file
 
                                     _ ->
                                         configOrMore r
             )
 
 
+{-| A file of cases (`known-hosts FILE`, `config FILE`) run as a suite by
+gren-unit-node's native runner, a test for each case; the arguments after
+the file are the runner's (a glob, `-v`, `--list`, `--junit-xml PATH`). -}
+cases : (String -> U.Suite) -> { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
+cases suiteFor r =
+    when Array.get 1 r.args is
+        Just file ->
+            let
+                rest =
+                    Array.dropFirst 2 r.args
+            in
+            File.readFile r.fs (Path.fromString file)
+                |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+                |> Task.andThen
+                    (\text ->
+                        Program.runWith { args = rest, argsAsBytes = Array.map Bytes.fromString rest }
+                            { name = "ssh-tests"
+                            , version = "0.1.0"
+                            , init = Task.succeed {}
+                            , fileSystem = \_ -> Just r.fs
+                            , globalSetUp = \_ -> Task.succeed {}
+                            , globalTearDown = \_ -> Task.succeed {}
+                            , suites = \_ -> [ suiteFor (Bytes.toStringLossy text) ]
+                            }
+                    )
+
+        Nothing ->
+            fuzzOrUsage r
+
+
+{-| A case's test: it passes, or fails saying how. -}
+caseTest : String -> ({} -> Maybe String) -> U.Test {}
+caseTest name check =
+    U.test name
+        (\_ ->
+            Task.succeed
+                (when check {} is
+                    Nothing ->
+                        Expect.pass
+
+                    Just why ->
+                        Expect.fail why
+                )
+        )
+
+
+suiteOf : String -> Array (U.Test {}) -> U.Suite
+suiteOf name tests =
+    U.suite
+        { name = name
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests = tests
+        }
+
+
 configOrMore : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
 configOrMore r =
-    when afterWord "config" r.args is
-        [ file ] ->
-            configCases r.fs file
+    when afterWord "login" r.args is
+        [ host, port ] ->
+            login r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
 
         _ ->
-            when afterWord "login" r.args is
+            when afterWord "session" r.args is
                 [ host, port ] ->
-                    login r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
+                    sessionMode r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
 
                 _ ->
-                    when afterWord "session" r.args is
-                        [ host, port ] ->
-                            sessionMode r { host = host, port = String.toInt port |> Maybe.withDefault 22 }
-
-                        _ ->
-                            fuzzOrUsage r
+                    fuzzOrUsage r
 
 
 fuzzOrUsage : { args : Array String, fs : File.Permission, net : Net.Permission } -> Task Never {}
@@ -109,7 +168,7 @@ fuzzOrUsage r =
             fuzz r.fs file (String.toInt from |> Maybe.withDefault 1) (String.toInt count |> Maybe.withDefault 1000)
 
         _ ->
-            Console.write "usage: ssh-tests connect HOST PORT [...] | replay FILE | fuzz FILE [FROM] COUNT | known-hosts FILE\n"
+            Console.write "usage: ssh-tests connect HOST PORT [...] | replay FILE | fuzz FILE [FROM] COUNT | known-hosts FILE | config FILE\n"
                 |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
 
 
@@ -599,15 +658,12 @@ split size b k acc =
 
 {-| `make-known-hosts.py`'s cases: the lines found for a name, as
 `ssh-keygen -F` found them; a key's verdict; the host key algorithms'
-order. -}
-knownHostsCases : File.Permission -> String -> Task Never {}
-knownHostsCases fs file =
-    File.readFile fs (Path.fromString file)
-        |> Task.andThen
-            (\text ->
+order. A test for each, named by its number and its line. -}
+knownHostsSuite : String -> U.Suite
+knownHostsSuite text =
                 let
-                    cases =
-                        String.lines (Bytes.toStringLossy text)
+                    caseLines =
+                        String.lines text
 
                     fieldsOf l =
                         String.words l
@@ -627,7 +683,7 @@ knownHostsCases fs file =
                         Dict.get k f |> Maybe.withDefault ""
 
                     parsed =
-                        Array.findFirst (\l -> String.startsWith "file " l) cases
+                        Array.findFirst (\l -> String.startsWith "file " l) caseLines
                             |> Maybe.map (\found -> KnownHosts.parse (Bytes.toStringLossy (fromHex (String.dropFirst 5 found.value))))
                             |> Maybe.withDefault { entries = [], problems = [] }
 
@@ -706,57 +762,24 @@ knownHostsCases fs file =
                             Nothing
 
                     ran =
-                        Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l) cases
+                        Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l) caseLines
 
-                    failures =
-                        Array.mapAndFlatten
-                            (\l ->
-                                when run l is
-                                    Just f ->
-                                        [ f ]
-
-                                    Nothing ->
-                                        []
-                            )
-                            ran
-
-                    problems =
-                        Array.map (\p -> "line " ++ String.fromInt p.lineNumber ++ ": " ++ p.problem) parsed.problems
                 in
-                Console.write
-                    (String.join "" (Array.map (\p -> "not an entry: " ++ p ++ "\n") problems)
-                        ++ String.join "" (Array.map (\f -> "FAIL " ++ f ++ "\n") failures)
-                        ++ "known-hosts: "
-                        ++ String.fromInt (Array.length ran - Array.length failures)
-                        ++ " of "
-                        ++ String.fromInt (Array.length ran)
-                        ++ " cases pass\n"
-                    )
-                    |> Task.andThen
-                        (\_ ->
-                            if Array.isEmpty failures then
-                                Task.succeed {}
-
-                            else
-                                Os.Env.exitWithCode 1
-                        )
-            )
-        |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+                suiteOf "KnownHosts"
+                    (Array.indexedMap (\n l -> caseTest (String.fromInt (n + 1) ++ " " ++ String.takeFirst 48 l) (\_ -> run l)) ran)
 
 
 -- SSH_CONFIG
 
 
 {-| `make-config.py`'s cases: each config resolved for its host, and the
-lines held to what `ssh -G` printed, keyword by keyword in order. -}
-configCases : File.Permission -> String -> Task Never {}
-configCases fs file =
-    File.readFile fs (Path.fromString file)
-        |> Task.andThen
-            (\text ->
+lines held to what `ssh -G` printed, keyword by keyword in order. A test for
+each, named by the case. -}
+configSuite : String -> U.Suite
+configSuite text =
                 let
                     lines =
-                        String.lines (Bytes.toStringLossy text)
+                        String.lines text
 
                     header word =
                         Array.findFirst (\l -> String.startsWith (word ++ " ") l) lines
@@ -767,7 +790,7 @@ configCases fs file =
                         { host = host, localUser = header "localuser", home = header "home" }
 
                     -- the cases, each its case line, files and want line
-                    cases =
+                    configCases =
                         Array.foldl
                             (\l acc ->
                                 if String.startsWith "case " l then
@@ -886,36 +909,10 @@ configCases fs file =
                                         )
                                 )
 
-                    failures =
-                        Array.mapAndFlatten
-                            (\c ->
-                                when run c is
-                                    Just f ->
-                                        [ f ]
-
-                                    Nothing ->
-                                        []
-                            )
-                            cases
+                    caseName c =
+                        String.words c.head |> Array.get 1 |> Maybe.withDefault "?"
                 in
-                Console.write
-                    (String.join "" (Array.map (\f -> "FAIL " ++ f ++ "\n") failures)
-                        ++ "config: "
-                        ++ String.fromInt (Array.length cases - Array.length failures)
-                        ++ " of "
-                        ++ String.fromInt (Array.length cases)
-                        ++ " cases pass\n"
-                    )
-                    |> Task.andThen
-                        (\_ ->
-                            if Array.isEmpty failures then
-                                Task.succeed {}
-
-                            else
-                                Os.Env.exitWithCode 1
-                        )
-            )
-        |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
+                suiteOf "Config" (Array.map (\c -> caseTest (caseName c) (\_ -> run c)) configCases)
 
 
 {-| A path against an `Include` pattern: `*` and `?` in its last part. -}
