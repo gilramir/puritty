@@ -3212,8 +3212,9 @@ keys bytes s =
         { state = s, commands = [] }
 
     else
-        -- a key the pane's program gets brings its view to the bottom
-        sent (Command.sendBytes s.active bytes) { s | back = if Bytes.isEmpty bytes then s.back else Dict.remove s.active s.back }
+        -- a key the pane's program gets brings its view to the bottom, not
+        -- one copy mode takes (TM67)
+        sent (Command.sendBytes s.active bytes) { s | back = if Bytes.isEmpty bytes || inCopy s.active s then s.back else Dict.remove s.active s.back }
 
 
 {-| A paste, or a piece of one, to the active pane by tmux's own paste
@@ -3384,8 +3385,12 @@ keyByTable k bytes ms s =
             if way.reset then [ "switch-client -T root" ] else []
     in
     if way.send then
-        -- a key the pane's program gets brings its view to the bottom
-        sent commands { s | back = Dict.remove s.active s.back, keys = followed, said = way.said, modes = modes }
+        -- a key the pane's program gets brings its view to the bottom; in
+        -- copy mode the key is the mode's, and tmux's answer moves the
+        -- view (TM31), so it stays: brought down here, each key showed
+        -- the live screen until that answer came, a ghost behind a held
+        -- `k` (TM67)
+        sent commands { s | back = if inCopy s.active s then s.back else Dict.remove s.active s.back, keys = followed, said = way.said, modes = modes }
 
     else if runsHere way.held then
         -- a prompt, a menu, or an `if-shell -F` around one: puritty runs

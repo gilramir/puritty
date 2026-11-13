@@ -2954,3 +2954,27 @@ menus, panes, marks, status, copy, pointers as before.
 
 **Not yet:** a popup's `-T` title and `-B`; its box drawn where tmux's is
 (TM56).
+
+## TM67 · Copy mode's view kept while a key waits for tmux's answer (2026-11-13)
+
+Gilbert, in `-CC` with a long `find` in a pane: `prefix [`, then `k`
+held, and once the view scrolled past the screen it alternated between
+the scrolled lines and the pane's live screen, "the ghost of the old info
+flashing behind the scrolling contents".
+
+**Why.** Every key puritty sends to the active pane brought that pane's
+view back to the bottom, as a key typed into a program should
+(`keys` and the binding path in `TmuxMode`). A key in copy mode is the
+mode's, not the program's; the view is moved by tmux's answer to the copy
+question (TM31), which comes a round trip after the key. So each `k`
+drew the live screen for that round trip, and a held key alternated the
+two.
+
+**Now** a pane in copy mode keeps its view when a key is sent; tmux's
+answer moves it, and leaving copy mode gives the pane its own view back
+as before (`%pane-mode-changed`, TM31).
+
+**Checked:** `show.py` copy (12 checks), modes and prompts (22 each), app
+tests 142. The flash lasts one round trip, too short for a picture taken
+by the harness to catch reliably, so it is not checked by a test yet: a
+test of `TmuxMode`'s state for it is TM68's.
