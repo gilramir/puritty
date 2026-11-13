@@ -2148,3 +2148,38 @@ unchanged.
 **Not yet:** `status off` and `status 2` to `5` change how many rows
 tmux's panes have, which puritty tells tmux (`refresh-client -C`) and
 does not yet vary; a custom `status-format` is not drawn (TM29).
+
+## TM50 · Keys no binding takes go straight to the pane (2026-11-12)
+
+Gilbert's open bug (Enter did nothing in Claude Code under `-CC`, other
+keys fine; diagnostic log, DG1–DG5) found with the log and reproduced
+here. puritty sends every named key with `send-keys -K` (TM23), so that
+tmux's bindings fire. tmux keeps `-K`'s internal "sent" flag on a key no
+binding takes, and its encoder then drops every key that is an escape
+sequence (Down, F5: 3.7c and 3.8 drop it, 3.6a writes a wrong byte) and,
+when the pane has extended keys (`extended-keys on`, which Claude Code's
+setup advises, and the program asking for modifyOtherKeys, as Claude Code
+does), Enter too. Text (`-K -H`), Backspace and C-c still arrived, which
+is what Gilbert saw. Measured on 3.6a, 3.7c and 3.8 with a logging
+program behind a control client; the report is
+`upstream/tmux-send-keys-K-drops-keys.md`.
+
+**Now:** in the root table, with the pane in no mode, a named key that is
+not a prefix and has no root binding is sent to the pane by name
+(`send-keys -t %N Name`, `Command.sendKeyTo`), which tmux encodes for the
+pane's modes; a key a binding may take still goes `-K`, so the prefix,
+`bind -n` and the modes' tables work as before.
+
+**Checked** end to end (puritty on Xvfb, tmux 3.8, `extended-keys on`,
+the pane in Ext 2): `a`, Enter, Down, Backspace, F5, C-c, `b`, Enter
+arrive as `a`, `\r`, `\e[B`, `\x7f`, `\e[15~`, `\e[27;5;99~`, `b`, `\r`,
+and `C-b c` still opens a window. Claude Code itself in tmux 3.8 behind a
+control client ignored `-K Down` at its trust question where a normal
+client's Down moved it. App tests 141, tmux package 69; `show.py` prefix,
+prompts, copy, modes, menus unchanged.
+
+**Open:** Gilbert read `pane_key_mode` as VT10x in the stuck pane, and a
+`send-keys Enter` from the prompt did not help there; Claude Code turns
+its key modes off and on as it runs, so the reading may have come between,
+and a Claude Code that had already lost Enters may not have been taking
+keys. A new Windows build is needed for him to confirm.

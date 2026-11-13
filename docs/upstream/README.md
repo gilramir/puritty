@@ -17,6 +17,7 @@ fuzzer leaves out an input with one.
 
 | report | repository | found | filed |
 |---|---|---|---|
+| [`send-keys -K` drops escape-sequence keys, and Enter under extended keys](tmux-send-keys-K-drops-keys.md) | `tmux/tmux` | 2026-11-12, `tmux.md` TM50 | not filed (Gilbert decides) |
 | [A short Ed25519 key or an even RSA modulus in a public key blob fails an assertion](putty-asserts-on-malformed-host-keys.md) | PuTTY | 2026-11-10, `ssh-client.md` SC14 | not to be filed |
 | [Signature verification accepts an unreduced RSA signature and an Ed25519 point with x = 0 and the sign bit set](putty-verify-accepts-malleable-signatures.md) | PuTTY | 2026-11-10, `ssh-client.md` SC13 | not to be filed |
 | [Reflow joins a line to the next when the line's last row is blank](ghostty-reflow-joins-a-blank-continuation.md) | `ghostty-org/ghostty` | 2026-10-30, `vt-core.md` §VC14 | not to be filed |

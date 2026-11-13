@@ -2595,8 +2595,30 @@ whose prompt puritty can ask opening it (TM25). -}
 keyByTable : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
 keyByTable k bytes ms s =
     let
+        -- a key no binding can take goes straight to the pane: through
+        -- the client (`-K`) tmux loses escape-sequence keys, and Enter
+        -- under extended keys (TM50)
+        nobodyBinds =
+            when keyName k is
+                Just name ->
+                    s.keys.table == "root"
+                        && Maybe.withDefault "" (Dict.get s.active s.modes) == ""
+                        && not (Array.member name s.keys.prefixes)
+                        && Dict.get ("root " ++ name) s.keys.bindings == Nothing
+
+                Nothing ->
+                    False
+
         commands =
-            if s.keys.byTable then
+            if s.keys.byTable && nobodyBinds then
+                when keyName k is
+                    Just name ->
+                        [ Command.sendKeyTo s.active name ]
+
+                    Nothing ->
+                        byName k bytes s.active
+
+            else if s.keys.byTable then
                 byName k bytes s.active
 
             else
