@@ -29,7 +29,8 @@ rows = 36
 
 [font]
 family = "Fira Code"        # DejaVu Sans Mono when left out,
-                            # Cascadia Mono on Windows
+                            # Cascadia Mono on Windows; a font of your
+                            # own: see fonts.md
 size = 11                   # points
 language = "ko"             # which regional forms fallback fonts use
 ligatures = true            # the font's, as Fira Code's != and ->; the

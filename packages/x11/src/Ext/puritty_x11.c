@@ -202,11 +202,20 @@ static geng_bytes *family_lines(char **names, int n) {
     return b;
 }
 
+/* fontconfig made to read its font folders again when one has changed
+ * since it last did, so that a font installed while puritty runs (into
+ * ~/.local/share/fonts, docs/user/fonts.md) is listed and can be chosen
+ * without a restart: fontconfig reads them once, at FcInit, unless asked. */
+static void fonts_up_to_date(void) {
+    if (!FcConfigUptoDate(NULL)) FcInitReinitialize();
+}
+
 /* The families of the monospace fonts fontconfig has, for the settings
  * window (docs/settings.md ST8): spacing mono, dual (most CJK monospace
  * fonts) or charcell, each once, and not color (an emoji font is
  * monospace to fontconfig, and is no terminal's font), as Windows' list. */
 geng_cancel puritty_x11_fonts(geng_wait *wait) {
+    fonts_up_to_date();
     FcPattern *p = FcPatternCreate();
     FcObjectSet *os = FcObjectSetBuild(FC_FAMILY, FC_SPACING, FC_COLOR, NULL);
     FcFontSet *set = FcFontList(NULL, p, os);
@@ -1136,6 +1145,7 @@ geng_cancel puritty_x11_zoom(int32_t points, geng_wait *wait) {
  * such font. */
 geng_cancel puritty_x11_setfont(int32_t points, void *font_bytes, void *lang_bytes, int32_t cap, geng_wait *wait) {
     char *font = string_of(font_bytes), *lang = string_of(lang_bytes);
+    fonts_up_to_date();
     int done = pt_refont(font, lang, points, dpi0, cap);
     free(font);
     free(lang);
