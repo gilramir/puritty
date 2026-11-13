@@ -337,7 +337,10 @@ type alias StatusLine =
     , windows : Dict Int { text : String, style : String, flags : String }
     , borderStatus : String
     , borderStyle : String
-    , panes : Dict Int { title : String, border : String, marked : Bool }
+      -- each pane's title, border style and mark, and its own
+      -- window-style and window-active-style, a tab between (TM66: a
+      -- popup's pane is given popup-style)
+    , panes : Dict Int { title : String, border : String, marked : Bool, style : String }
       -- tmux's drawing options by name, as `optionNames` lists them (TM47)
     , options : Dict String String
       -- `status-format[1]` to `[4]` expanded, for `status 2` to `5` (TM54)
@@ -378,6 +381,7 @@ optionNames =
     , "menu-style"
     , "menu-border-style"
     , "tree-mode-border-style"
+    , "display-panes-border-style"
     ]
 
 
@@ -2671,11 +2675,35 @@ paint s =
                 -- where a prompt is asked: the status line, or the active
                 -- pane's last row for `command-prompt -P`, as 3.8's copy
                 -- mode asks its searches (TM42)
+                -- a mode tree's own questions (3.8's tree, lists and
+                -- customize-mode) on the mode's last row, or its first with
+                -- the status line at the top (`mode_tree_draw_prompt`, TM66)
+                modeOpen =
+                    when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+                        { tree = Just t, listing = _, customizing = _ } ->
+                            Just { zoom = t.zoom, pane = t.pane }
+
+                        { tree = Nothing, listing = Just l, customizing = _ } ->
+                            Just { zoom = l.zoom, pane = l.pane }
+
+                        { tree = Nothing, listing = Nothing, customizing = Just c } ->
+                            Just { zoom = c.zoom, pane = c.pane }
+
+                        _ ->
+                            Nothing
+
                 promptAt =
-                    when { asking = s.asking, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
-                        { asking = Just a, place = Just place } ->
+                    when { asking = s.asking, mode = Maybe.andThen (modePlace s cols rows (tiled ++ floating)) modeOpen, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) |> Maybe.map .value } is
+                        { asking = Just a, mode = Just place, place = _ } ->
                             if askedInPane a then
-                                { row = place.value.y + place.value.h - 1, col = place.value.x, width = place.value.w }
+                                { row = if Dict.get "status-position" s.status.options == Just "top" then place.y else place.y + place.h - 1, col = place.x, width = place.w }
+
+                            else
+                                { row = barRow, col = 0, width = cols }
+
+                        { asking = Just a, mode = Nothing, place = Just place } ->
+                            if askedInPane a then
+                                { row = place.y + place.h - 1, col = place.x, width = place.w }
 
                             else
                                 { row = barRow, col = 0, width = cols }
@@ -2686,9 +2714,11 @@ paint s =
                 promptClear =
                     when s.asking is
                         Just a ->
-                            -- customize-mode's questions leave the row's rest as it
-                            -- is (`mode_tree_draw_prompt`, measured, 3.8, TM62)
-                            if s.lookTmux && askedInPane a && a.purpose < 21 then
+                            -- a mode tree's questions leave the row's rest as it
+                            -- is (`mode_tree_draw_prompt`, measured on 3.8's
+                            -- customize-mode, TM62); `command-prompt -P`
+                            -- clears it
+                            if s.lookTmux && askedInPane a && modeOpen == Nothing then
                                 [ { row = promptAt.row, col = promptAt.col, text = String.repeat promptAt.width " " } ]
 
                             else
@@ -2763,15 +2793,8 @@ paint s =
 
                             else
                                 let
-                                    statusLines =
-                                        clamp 0 5 (statusRows s)
-
                                     area =
-                                        if t.zoom then
-                                            Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines), active = True, z = Nothing }
-
-                                        else
-                                            Array.findFirst (\p -> p.id == t.pane) (tiled ++ floating) |> Maybe.map .value
+                                        modePlace s cols rows (tiled ++ floating) { zoom = t.zoom, pane = t.pane }
                                 in
                                 when area is
                                     Just place ->
@@ -2792,15 +2815,8 @@ paint s =
 
                             else
                                 let
-                                    statusLines =
-                                        clamp 0 5 (statusRows s)
-
                                     area =
-                                        if l.zoom then
-                                            Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines), active = True, z = Nothing }
-
-                                        else
-                                            Array.findFirst (\p -> p.id == l.pane) (tiled ++ floating) |> Maybe.map .value
+                                        modePlace s cols rows (tiled ++ floating) { zoom = l.zoom, pane = l.pane }
                                 in
                                 when area is
                                     Just place ->
@@ -2821,15 +2837,8 @@ paint s =
 
                             else
                                 let
-                                    statusLines =
-                                        clamp 0 5 (statusRows s)
-
                                     area =
-                                        if c.zoom then
-                                            Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines), active = True, z = Nothing }
-
-                                        else
-                                            Array.findFirst (\p -> p.id == c.pane) (tiled ++ floating) |> Maybe.map .value
+                                        modePlace s cols rows (tiled ++ floating) { zoom = c.zoom, pane = c.pane }
                                 in
                                 when area is
                                     Just place ->
@@ -2940,8 +2949,32 @@ paint s =
                 -- active pane's framed in its own; the marked pane framed
                 -- in either look; each pane's `pane-border-format` on its
                 -- border when `pane-border-status` asks (TM30)
+                -- while 3.8 shows the panes' numbers, its mode draws every
+                -- border in display-panes-border-style (`window-panes.c`,
+                -- TM66), and no pane titles
+                panesBorder =
+                    if s.lookTmux && s.numbers /= Nothing && (s.version == 0 || s.version >= 38) then
+                        Maybe.andThen
+                            (\v -> if String.trim v == "" then Nothing else Just (Style.sgr (Style.apply v Style.plain)))
+                            (Dict.get "display-panes-border-style" s.status.options)
+
+                    else
+                        Nothing
+
                 borders =
-                    paneBorders s.lookTmux cols rows active (Array.map (withScrollbar s) tiled) tiled floating s.status
+                    let
+                        drawn =
+                            paneBorders s.lookTmux cols rows active (Array.map (withScrollbar s) tiled) tiled floating s.status
+                    in
+                    when panesBorder is
+                        Just ink ->
+                            { drawn
+                                | tiled = Array.keepIf (\piece -> String.all isBoxDrawing piece.text) drawn.tiled |> Array.map (\piece -> { piece | color = ink })
+                                , floating = []
+                            }
+
+                        Nothing ->
+                            drawn
 
                 cursor =
                     when { copying = Dict.get s.active s.copy, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
@@ -3007,6 +3040,11 @@ paint s =
                 floatMarks =
                     searchMarks floating s
 
+                -- each floating pane's frame color, read before the canvas
+                -- is drawn on
+                frameColors =
+                    Array.foldl (\p d -> Dict.set p.id (Maybe.withDefault (floatFrameColor s active p) panesBorder) d) Dict.empty floating
+
                 -- the tiled panes and their dividers, then each floating
                 -- pane in its box, the bottom one first
                 composed =
@@ -3017,7 +3055,7 @@ paint s =
                         |> drawText borders.lineColor (if s.lookTmux then [] else lines)
                         |> drawPieces borders.tiled
                         |> drawPieces tiledMarks
-                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColor else boxColor) (boxAround cols rows p) |> Vt.composeStyled s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> (\c -> Array.foldl (\p acc -> acc |> drawText (Maybe.withDefault boxColor (Dict.get p.id frameColors)) (boxAround cols rows p) |> Vt.composeStyled s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
                         |> drawPieces floatMarks
                         |> drawPieces borders.floating
                         |> drawPieces scrollbars
@@ -3098,6 +3136,37 @@ divider cols rows p =
                 []
     in
     right ++ below
+
+
+{-| Whether a character draws a line (U+2500 to U+257F, and the ASCII
+ones some `pane-border-lines` use). -}
+isBoxDrawing : Char -> Bool
+isBoxDrawing c =
+    let
+        code =
+            Char.toCode c
+    in
+    (code >= 0x2500 && code <= 0x257F) || c == '|' || c == '-' || c == '+' || c == ' '
+
+
+{-| A floating pane's frame color: in tmux's look the pane's own border
+style, as tmux 3.8 draws a floating pane's border (a popup's is
+popup-border-style, TM66); in puritty's, amber for the active one. -}
+floatFrameColor : State -> Int -> Layout.Pane -> String
+floatFrameColor s active p =
+    if s.lookTmux then
+        when Dict.get p.id s.status.panes is
+            Just own ->
+                Style.sgr (Style.apply own.border (Style.apply s.status.borderStyle Style.plain))
+
+            Nothing ->
+                if p.id == active then activeColor else boxColor
+
+    else if p.id == active then
+        activeColor
+
+    else
+        boxColor
 
 
 boxAround : Int -> Int -> Layout.Pane -> Array { row : Int, col : Int, text : String }
@@ -3414,6 +3483,21 @@ versionOf text =
 
         _ ->
             0
+
+
+{-| Where a mode puritty draws (the tree, a list, customize-mode) is: the
+window less the status line when zoomed (`-Z`), else its pane. -}
+modePlace : State -> Int -> Int -> Array Layout.Pane -> { zoom : Bool, pane : Int } -> Maybe Layout.Pane
+modePlace s cols rows places m =
+    if m.zoom then
+        let
+            statusLines =
+                clamp 0 5 (statusRows s)
+        in
+        Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = clamp 0 16384 cols, h = max 0 (clamp 0 16384 rows - statusLines), active = True, z = Nothing }
+
+    else
+        Array.findFirst (\p -> p.id == m.pane) places |> Maybe.map .value
 
 
 {-| Whether a prompt is asked in the pane (`command-prompt -P`). -}
@@ -4232,17 +4316,27 @@ placesOf : Array Layout.Pane -> State -> Array { index : Int, x : Int, y : Int, 
 placesOf panes s =
     let
         -- window-style for every pane, window-active-style over it for
-        -- the active one, as tmux gives a pane its default colors (TM52)
-        styleFor active =
+        -- the active one, as tmux gives a pane its default colors (TM52);
+        -- the pane's own where it has them (a popup's, TM66), as tmux
+        -- looks a pane option up from the pane first
+        styleFor id active =
             let
-                option name =
-                    Maybe.withDefault "default" (Dict.get name s.status.options)
+                own =
+                    Dict.get id s.status.panes |> Maybe.map (\q -> String.split "\t" q.style) |> Maybe.withDefault []
+
+                option index name =
+                    when Array.get index own is
+                        Just v ->
+                            if v == "" then Maybe.withDefault "default" (Dict.get name s.status.options) else v
+
+                        Nothing ->
+                            Maybe.withDefault "default" (Dict.get name s.status.options)
 
                 base =
-                    Style.apply (option "window-style") Style.plain
+                    Style.apply (option 0 "window-style") Style.plain
 
                 st =
-                    if active then Style.apply (option "window-active-style") base else base
+                    if active then Style.apply (option 1 "window-active-style") base else base
             in
             if s.lookTmux then { fg = vtColor st.fg, bg = vtColor st.bg } else { fg = 0, bg = 0 }
     in
@@ -4253,7 +4347,7 @@ placesOf panes s =
                     (\found ->
                         let
                             colors =
-                                styleFor (p.id == s.active)
+                                styleFor p.id (p.id == s.active)
                         in
                         { index = found.index, x = p.x, y = p.y, back = backOf p.id s, fg = colors.fg, bg = colors.bg }
                     )
@@ -4891,7 +4985,7 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
             Style.apply status.borderStyle Style.plain
 
         own p =
-            Maybe.withDefault { title = "", border = "", marked = False } (Dict.get p.id status.panes)
+            Maybe.withDefault { title = "", border = "", marked = False, style = "" } (Dict.get p.id status.panes)
 
         frameColor p =
             if (own p).marked then
@@ -5035,6 +5129,7 @@ statusSubscriptions =
     , "puritty-ptitle:%*:#{T:pane-border-format}"
     , "puritty-pborder:%*:#{?pane_active,#{E:pane-active-border-style},#{E:pane-border-style}}"
     , "puritty-pmarked:%*:#{pane_marked}"
+    , "puritty-pwstyle:%*:#{window-style}\t#{window-active-style}"
     , "puritty-opts::" ++ String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") optionNames)
     , "puritty-status1::#{T:status-format[1]}"
     , "puritty-status2::#{T:status-format[2]}"
@@ -5087,7 +5182,7 @@ themedStatus theme raw =
         , separator = t raw.separator
         , windows = Dict.map (\_ w -> { w | text = t w.text, style = t w.style }) raw.windows
         , borderStyle = t raw.borderStyle
-        , panes = Dict.map (\_ q -> { q | title = t q.title, border = t q.border }) raw.panes
+        , panes = Dict.map (\_ q -> { q | title = t q.title, border = t q.border, style = t q.style }) raw.panes
         , options = Dict.map (\_ v -> t v) raw.options
         , extra = Dict.map (\_ v -> t v) raw.extra
     }
@@ -5147,7 +5242,7 @@ subscribed name window pane value status =
             { status
                 | panes =
                     Dict.set pane
-                        (change (Maybe.withDefault { title = "", border = "", marked = False } (Dict.get pane status.panes)))
+                        (change (Maybe.withDefault { title = "", border = "", marked = False, style = "" } (Dict.get pane status.panes)))
                         status.panes
             }
 
@@ -5205,6 +5300,9 @@ subscribed name window pane value status =
 
         "puritty-pmarked" ->
             perPane (\q -> { q | marked = value == "1" })
+
+        "puritty-pwstyle" ->
+            perPane (\q -> { q | style = value })
 
         "puritty-status1" ->
             { status | extra = Dict.set 1 value status.extra }
@@ -6428,9 +6526,24 @@ openPopup ctx pop s =
                 ++ (if pop.dir == "" then "" else " -c " ++ Command.quote pop.dir)
                 ++ (if pop.command == "" then "" else " " ++ Command.quote pop.command)
 
+        -- the popup's colors given to its pane as its own options, which
+        -- tmux and puritty both draw it by (popup-style and
+        -- popup-border-style, 3.8's defaults dark grey, TM66): the new
+        -- pane is the current one for the commands after it on the line
+        styled =
+            [ "set -pF window-style '#{popup-style}'"
+            , "set -pF window-active-style '#{popup-style}'"
+            , "set -pF pane-border-style '#{popup-border-style}'"
+            , "set -pF pane-active-border-style '#{popup-border-style}'"
+            ]
+
         opened =
             if s.version == 0 || s.version >= 38 then
-                sendAsking [ { command = command, expect = ForRan } ] { s | said = "" }
+                let
+                    asked =
+                        expected (Array.pushFirst { command = command, expect = ForRan } (Array.map (\c -> { command = c, expect = ForNothing }) styled)) { s | said = "" }
+                in
+                { state = asked, commands = [ String.join " ; " (Array.pushFirst command styled) ] }
 
             else
                 { state = { s | said = "puritty: display-popup under tmux -CC needs tmux 3.8's floating panes" }, commands = [] }
@@ -6684,7 +6797,7 @@ listKey k l s =
         { state = { s | listing = Just { l | previewMode = if l.previewMode == 0 then 2 else if l.previewMode == 1 then 0 else 1 } }, commands = [] }
 
     else if name == "/" || name == "?" || name == "C-s" then
-        { state = { s | asking = Just (treePrompt 11 "(search) " "") }, commands = [] }
+        { state = { s | asking = Just (treePrompt s.version 11 "(search) " "") }, commands = [] }
 
     else if name == "n" then
         { state = { s | listing = Just (searchListing True l) }, commands = [] }
@@ -6693,7 +6806,7 @@ listKey k l s =
         { state = { s | listing = Just (searchListing False l) }, commands = [] }
 
     else if name == "f" then
-        { state = { s | asking = Just (treePrompt 12 "(filter) " l.filter) }, commands = [] }
+        { state = { s | asking = Just (treePrompt s.version 12 "(filter) " l.filter) }, commands = [] }
 
     else if name == "Enter" || name == "KPEnter" || name == "C-m" || (buffer && name == "p") then
         when at is
@@ -7677,7 +7790,7 @@ customizePrompt : Bool -> Int -> String -> String -> Bool -> Asking
 customizePrompt inPane purpose label first single =
     let
         q =
-            treePrompt purpose label first
+            treePrompt 0 purpose label first
     in
     { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = if single then Syntax.Single else Syntax.Text, template = Nothing, incremental = False, inPane = inPane } }
 
@@ -8691,15 +8804,22 @@ treeQueries version =
         paneTitle =
             "#{?#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}},: \"#{pane_title}\",}"
 
+        -- 3.8's formats carry its colors (TM66): the flags and a
+        -- session's text light grey, a marked row magenta
+        newer =
+            version == 0 || version >= 38
+
         sessionText =
-            "#{session_windows} windows#{?session_grouped, (group #{session_group}: #{session_group_list}),}#{?session_attached, (attached),}"
+            (if newer then "#[fg=themelightgrey]" else "")
+                ++ "#{session_windows} windows#{?session_grouped, (group #{session_group}: #{session_group_list}),}#{?session_attached, (attached),}"
 
         windowText =
-            "#{window_name}#{window_flags}#{?#{&&:#{==:#{window_panes},1},#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}}},: \"#{pane_title}\",}"
+            (if newer then "#{?window_marked_flag,#[fg=thememagenta],}#{window_name}#[fg=themelightgrey]#{window_flags}" else "#{window_name}#{window_flags}")
+                ++ "#{?#{&&:#{==:#{window_panes},1},#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}}},: \"#{pane_title}\",}"
 
         paneText =
-            if version >= 38 then
-                "#{pane_current_command}#{pane_flags}" ++ paneTitle
+            if newer then
+                "#{?pane_marked,#[fg=thememagenta],}#{?pane_floating_flag,#[underscore],}#{pane_current_command}#[fg=themelightgrey]#{pane_flags}" ++ paneTitle
 
             else
                 "#{pane_current_command}#{?pane_active,*,}#{?pane_marked,M,}" ++ paneTitle
@@ -8934,7 +9054,7 @@ treeKey k t s =
                         else
                             "Kill session " ++ r.name ++ "? "
                 in
-                { state = { s | asking = Just (treeQuestion 3 question Syntax.Single) }, commands = [] }
+                { state = { s | asking = Just (treeQuestion s.version 3 question Syntax.Single) }, commands = [] }
 
             Nothing ->
                 { state = s, commands = [] }
@@ -8944,10 +9064,10 @@ treeKey k t s =
             { state = s, commands = [] }
 
         else
-            { state = { s | asking = Just (treeQuestion 4 ("Kill " ++ String.fromInt (Array.length t.tagged) ++ " tagged? ") Syntax.Single) }, commands = [] }
+            { state = { s | asking = Just (treeQuestion s.version 4 ("Kill " ++ String.fromInt (Array.length t.tagged) ++ " tagged? ") Syntax.Single) }, commands = [] }
 
     else if name == ":" then
-        { state = { s | asking = Just (treeQuestion 5 (if Array.isEmpty t.tagged then "(current) " else "(" ++ String.fromInt (Array.length t.tagged) ++ " tagged) ") Syntax.Text) }, commands = [] }
+        { state = { s | asking = Just (treeQuestion s.version 5 (if Array.isEmpty t.tagged then "(current) " else "(" ++ String.fromInt (Array.length t.tagged) ++ " tagged) ") Syntax.Text) }, commands = [] }
 
     else if name == "m" then
         when at is
@@ -9053,7 +9173,7 @@ treeKey k t s =
         { state = { s | view = Just (viewOf (Array.map Bytes.fromString (treeHelp s.version))) }, commands = [] }
 
     else if name == "/" || name == "?" || name == "C-s" then
-        { state = { s | asking = Just (treePrompt 1 "(search) " "") }, commands = [] }
+        { state = { s | asking = Just (treePrompt s.version 1 "(search) " "") }, commands = [] }
 
     else if name == "n" then
         { state = { s | tree = Just (searchTree True t) }, commands = [] }
@@ -9062,7 +9182,7 @@ treeKey k t s =
         { state = { s | tree = Just (searchTree False t) }, commands = [] }
 
     else if name == "f" then
-        { state = { s | asking = Just (treePrompt 2 "(filter) " t.filter) }, commands = [] }
+        { state = { s | asking = Just (treePrompt s.version 2 "(filter) " t.filter) }, commands = [] }
 
     else if name == "Enter" || name == "KPEnter" || name == "C-m" then
         chooseRow at t s
@@ -9123,9 +9243,9 @@ treeHelp version =
 
 {-| A question of the tree's own, asked at the status line as tmux asks
 it (TM45): a search (1) or a filter (2), with its first text. -}
-treePrompt : Int -> String -> String -> Asking
-treePrompt purpose label first =
-    { ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = Syntax.Text, template = Nothing, incremental = False, inPane = False }
+treePrompt : Int -> Int -> String -> String -> Asking
+treePrompt version purpose label first =
+    { ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = Syntax.Text, template = Nothing, incremental = False, inPane = modeAsksInPane version }
     , after = ""
     , step = 0
     , answers = []
@@ -9138,15 +9258,23 @@ treePrompt purpose label first =
     }
 
 
-{-| A question the tree asks at the status line (TM46): kill the row (3),
-kill the tagged rows (4), or a command for them (5). -}
-treeQuestion : Int -> String -> Syntax.Entry -> Asking
-treeQuestion purpose label entry =
+{-| A question the tree asks (TM46): kill the row (3), kill the tagged
+rows (4), or a command for them (5); at the status line before 3.8, in the
+mode on 3.8 (TM66). -}
+treeQuestion : Int -> Int -> String -> Syntax.Entry -> Asking
+treeQuestion version purpose label entry =
     let
         q =
-            treePrompt purpose label ""
+            treePrompt version purpose label ""
     in
-    { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ "" ], entry = entry, template = Nothing, incremental = False, inPane = False } }
+    { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ "" ], entry = entry, template = Nothing, incremental = False, inPane = modeAsksInPane version } }
+
+
+{-| Whether a mode tree's questions are asked in the mode (3.8's
+`mode_tree_set_prompt`) rather than at the status line (3.7 and before). -}
+modeAsksInPane : Int -> Bool
+modeAsksInPane version =
+    version == 0 || version >= 38
 
 
 {-| Whether a tagged target is the row's parent or child, which tagging the
@@ -9451,10 +9579,75 @@ drawTree theme colors tmuxLook version place t =
                     if not r.children then "  " else if r.expanded then "▾ " else "▸ "
             in
             if tmuxLook then
-                key ++ branch ++ symbol ++ name ++ tagMark r ++ ": " ++ r.text
+                { key = key, branch = branch, symbol = symbol, name = name ++ tagMark r, text = r.text, plain = key ++ branch ++ symbol ++ name ++ tagMark r ++ ": " ++ Style.strip r.text }
 
             else
-                key ++ String.repeat (2 * r.depth) " " ++ ownSymbol ++ name ++ tagMark r ++ ": " ++ r.text
+                { key = key, branch = branch, symbol = symbol, name = name ++ tagMark r, text = r.text, plain = key ++ String.repeat (2 * r.depth) " " ++ ownSymbol ++ name ++ tagMark r ++ ": " ++ Style.strip r.text }
+
+        newer =
+            version == 0 || version >= 38
+
+        ink spec =
+            Style.sgr (Style.apply (Style.themed theme spec) Style.plain)
+
+        -- a row as 3.8 draws it (`mode_tree_draw`, MODE_TREE_PREFIX_FORMAT,
+        -- TM66): the key and branch light grey, `-` red and `+` green, the
+        -- name and text in the row's color (cyan when tagged) with the
+        -- text's own styles, `: ` light grey; the chosen row all in
+        -- mode-style across the pane (`screen_write_clearendofline` with
+        -- its background: a real client's screen, since `capture-pane`
+        -- leaves out a line's cleared end, color and all)
+        piecesOf j i r =
+            let
+                l =
+                    lineOf i r
+
+                rowAt =
+                    place.y + j
+
+                base =
+                    if tagMark r /= "" then "fg=themecyan" else ""
+
+                symbolPieces =
+                    when l.symbol is
+                        "- " ->
+                            [ { text = "-", color = ink "fg=themered" }, { text = " ", color = ink "fg=themelightgrey" } ]
+
+                        "+ " ->
+                            [ { text = "+", color = ink "fg=themegreen" }, { text = " ", color = ink "fg=themelightgrey" } ]
+
+                        other ->
+                            [ { text = other, color = ink "fg=themelightgrey" } ]
+
+                pieces =
+                    [ { text = l.key ++ l.branch, color = ink "fg=themelightgrey" } ]
+                        ++ symbolPieces
+                        ++ [ { text = l.name, color = ink base }, { text = ": ", color = ink "fg=themelightgrey" } ]
+                        ++ (Style.runs (Style.apply (Style.themed theme base) Style.plain) (Style.themed theme l.text) |> Array.map (\run -> { text = run.text, color = Style.sgr run.style }))
+            in
+            if i == t.selected then
+                [ { row = rowAt, col = place.x, color = colors.mode, text = clipCells place.w l.plain } ]
+
+            else
+                (Array.foldl
+                    (\piece acc ->
+                        let
+                            room =
+                                place.w - acc.col
+                        in
+                        if room <= 0 || piece.text == "" then
+                            acc
+
+                        else
+                            let
+                                cut =
+                                    clipCells (min room (cellCount piece.text)) piece.text
+                            in
+                            { col = acc.col + cellCount cut, out = Array.pushLast { row = rowAt, col = place.x + acc.col, color = piece.color, text = cut } acc.out }
+                    )
+                    { col = 0, out = [] }
+                    pieces
+                ).out
 
         width =
             if tmuxLook then place.w else place.w - 4
@@ -9481,13 +9674,18 @@ drawTree theme colors tmuxLook version place t =
 
                             else
                                 viewTextColor
-                        , text = String.padRight width ' ' (String.takeFirst width (lineOf i r))
+                        , text = String.padRight width ' ' (String.takeFirst width (lineOf i r).plain)
                         }
                     )
+
+        listed38 =
+            Array.slice top (top + shownRows) rows
+                |> Array.indexedMap (\j r -> piecesOf j (top + j) r)
+                |> Array.flatten
     in
     if tmuxLook then
         Array.range 0 (place.h - 1) |> Array.map (\r -> { row = place.y + r, col = place.x, color = "\u{001B}[0m", text = String.repeat place.w " " })
-            |> (\cleared -> cleared ++ listed ++ previewDrawn)
+            |> (\cleared -> cleared ++ (if newer then listed38 else listed) ++ previewDrawn)
 
     else
         let

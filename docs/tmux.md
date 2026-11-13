@@ -2881,19 +2881,76 @@ Tests: tmux package 99 (Style: X11 names and grey levels, theme names,
 what is a color), app 142. `show.py`'s 17 scenarios: 138 checks, none
 failed.
 
-**Not yet:**
-- `display-popup`'s box: tmux 3.8 draws it in `popup-style` and
-  `popup-border-style` (dark grey), puritty in its floating pane's frame
-  (TM56).
-- 3.8's display-panes mode zooms the window and draws the panes' borders
-  in `display-panes-border-style`; puritty keeps the panes' own.
+**Not yet:** (popup colors, display-panes' borders and the tree's
+questions done in TM66)
 - The message log has no `message:` lines for what tmux showed puritty
   (a control client is sent `%message`, which tmux does not log as a
   terminal client's status message), and a prompt's command reads
-  `command:` where a terminal client's reads `key ::`.
-- The tree's questions on 3.8 (kill, filter) are asked on the status
-  line; 3.8 asks them in the pane's last row, as customize mode does
-  (TM62).
+  `command:` where a terminal client's reads `key ::`. Kept: TM66.
 - `<` and `>` on a window's preview: puritty draws a window's panes by
   its layout, all of them, where tmux puts them side by side and scrolls
   them as a session's windows.
+
+## TM66 · The rest of TM65's list: questions in the mode, the tree's colors, popups, display-panes (2026-11-13)
+
+**A mode's questions on 3.8.** Every question a mode tree asks on 3.8
+(`mode_tree_set_prompt`: the tree's search, filter, kill, kill-tagged and
+`:`, choose-buffer's and choose-client's search and filter, customize's)
+is asked on the mode's own last row, or its first with `status-position
+top`, the rest of the row left as it is (3.8's `message-style` fills only
+where the prompt is not `IS_MODE`). Before 3.8 they stay at the status
+line. The row is the mode's place (`modePlace`: the window less the
+status line when zoomed, as `choose-tree -Zs` and `customize-mode -Z`
+open, else its pane), so customize-mode, which asked on the active pane's
+last row, now asks at the zoomed mode's foot. Checked side by side
+(`choose-tree-s`: the kill and filter questions on the tree's last row,
+no cell differing; on 3.6a still at the status line; `customize-set`,
+`-add`, `-filter`: one cell each, the cursor).
+
+**The tree's rows in 3.8's colors** (`MODE_TREE_PREFIX_FORMAT` and
+`WINDOW_TREE_DEFAULT_FORMAT`): the key and branches light grey, `-` red
+and `+` green, a window's flags and a session's `N windows` light grey, a
+marked window or pane magenta, a floating pane underlined, a tagged row
+cyan. puritty asks tmux for 3.8's formats with their style marks
+(`treeQueries`) and draws the runs; puritty's look strips them. The
+chosen row is all mode-style across the pane. Checked: every glyph with
+an RGB color in the tree's first six rows the same color as tmux's, in
+three scenes.
+
+**What `capture-pane` cannot show.** The side-by-side harness reads the
+inner client through the outer tmux's `capture-pane -p -e`, which leaves
+out a line's cleared end, background and all (measured: `\e[43mab\e[K`
+captures as `ab`, with or without `-N`). A highlight to the pane's edge
+looks like one that stops at the text. puritty's own screenshot of a
+plain tmux 3.8 client inside it shows the chosen row highlighted across
+the pane, which is what puritty draws. The harness is right about every
+cell with text in it.
+
+**Popups in tmux's colors.** puritty's popup is a modal floating pane
+(TM56). On the same command line as its `new-pane`, the new pane is given
+`popup-style` as its `window-style` and `window-active-style`, and
+`popup-border-style` as its border styles (`set -pF … '#{popup-style}'`),
+so tmux holds the colors as pane options. puritty reads each pane's own
+`window-style` (`puritty-pwstyle`, as tmux looks a pane option up from the
+pane first) and, in tmux's look, draws a floating pane's frame in the
+pane's own border style, as 3.8 does (puritty's look keeps amber and
+grey). Checked (`popup`): the inside gray15 and the frame light grey on
+gray15, as tmux's; 65 cells differ, the box's place a row and a column
+apart (TM56) and the title not shown.
+
+**display-panes' borders on 3.8.** While the numbers show, 3.8's mode
+draws every border, and the floating frames, in
+`display-panes-border-style` (gray15 under light grey), with no pane
+titles; puritty does the same. Checked (`display-panes`, `borders-3`): no
+cell differs.
+
+**Kept: the message log's `message:` lines.** tmux does not log what it
+tells a control client, and the log's times are minutes, so puritty
+cannot put its own messages among tmux's lines in the order they came;
+it adds none rather than guess.
+
+Tests: app 142, tmux package 99; `show.py` modes, prompts, views, mouse,
+menus, panes, marks, status, copy, pointers as before.
+
+**Not yet:** a popup's `-T` title and `-B`; its box drawn where tmux's is
+(TM56).
