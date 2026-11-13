@@ -72,6 +72,8 @@ class Run:
                         PURITTY_SHOT=str(self.shot))
         for k in ("LC_ALL", "TMUX", "ENV", "EDITOR", "VISUAL", "TMUX_PANE"):
             self.env.pop(k, None)
+        if a.debug_log:
+            self.env["XDG_STATE_HOME"] = str(self.out / "state")
         (self.out / "outer.conf").write_text(OUTER_CONF)
         self.log = open(self.out / "log.txt", "a")
 
@@ -111,7 +113,8 @@ class Run:
                f"env -u TMUX TERM=tmux-256color {self.a.tmux} -L {A} attach -t main", conf=self.out / "outer.conf")
         # puritty, control mode
         cfg = self.out / "config.toml"
-        cfg.write_text(f'[window]\ncolumns = {COLS}\nrows = {ROWS}\n\n[tmux]\nlook = "{self.a.look}"\n')
+        cfg.write_text(f'[window]\ncolumns = {COLS}\nrows = {ROWS}\n\n[tmux]\nlook = "{self.a.look}"\n'
+                       + ('\n[debug]\nlog = true\n' if self.a.debug_log else ''))
         if self.shot.exists():
             self.shot.unlink()
         app = subprocess.Popen([self.a.puritty, "--config", str(cfg), "--title", "ccsurvey", "--",
@@ -222,6 +225,8 @@ def main():
     ap.add_argument("--out", default=str(PURITTY / ".harness-work" / "tmux-compare" / "out-3.8"))
     ap.add_argument("--only", default="")
     ap.add_argument("--scenes", default="scenes")
+    ap.add_argument("--debug-log", action="store_true",
+                    help="puritty's diagnostic log on, written under OUT/state/puritty/logs")
     a = ap.parse_args()
     sys.path.insert(0, str(HERE))
     import importlib

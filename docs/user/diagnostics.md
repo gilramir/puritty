@@ -19,7 +19,9 @@ on:
 - **A paste is written by its size**: `734 bytes, 12 lines, bracketed`.
 - **What a program prints is written by its size**: `output %1 80 bytes`.
 - **tmux commands carrying text are counted**: `send-keys -t '%1' -H <256
-  bytes>`, and a long quoted argument as `<45 chars>`.
+  bytes>`, and any quoted argument that is not an id, a key's name or a
+  format as `<45 chars>`: what you answer at a prompt (a search, a new
+  name) is not written.
 - **Passwords and the answers to ssh's questions are not written**: only
   that a question was asked.
 

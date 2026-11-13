@@ -222,34 +222,86 @@ named sym =
 
 
 {-| A tmux command as the log says it: the bytes `send-keys -H` carries
-counted, not shown; a quoted argument longer than 40 characters by its
-length, unless it is a format (`#{`), which is puritty's own; and the
-whole cut at 300 characters. -}
+counted, not shown; a quoted argument shown only when it is a tmux id
+(`%3`, `@2`, `$1`), a key's name (`Up`, `C-Space`) or a format (`#{`),
+which are puritty's own, and any other by its length, since it may be
+what was typed at a prompt (a search, a name: TM40); and the whole cut
+at 300 characters. -}
 command : String -> String
 command c =
     let
+        -- a quote inside a quoted word, as `Command.quote` writes it
+        escaped =
+            "'\\''"
+
         redacted =
             when String.split " -H " c is
                 [ before, after ] ->
                     before ++ " -H <" ++ String.fromInt (Array.length (Array.keepIf (\t -> t /= "") (String.split " " after))) ++ " bytes>"
 
                 _ ->
-                    String.split "'" c
+                    String.replace escaped "\u{0001}" c
+                        |> String.split "'"
                         |> Array.indexedMap
                             (\i part ->
-                                if modBy 2 i == 1 && String.count part > 40 && not (String.contains "#{" part) then
-                                    "<" ++ String.fromInt (String.count part) ++ " chars>"
+                                if modBy 2 i == 1 && not (shownWord part) then
+                                    "<" ++ String.fromInt (String.count (String.replace "\u{0001}" "'" part)) ++ " chars>"
 
                                 else
                                     part
                             )
                         |> String.join "'"
+                        |> String.replace "\u{0001}" escaped
     in
     if String.count redacted > 300 then
         String.takeFirst 300 redacted ++ "…"
 
     else
         redacted
+
+
+{-| A quoted word the log may show: a format, a tmux id, or a key's name. -}
+shownWord : String -> Bool
+shownWord w =
+    String.contains "#{" w || isId w || isKeyName w
+
+
+isId : String -> Bool
+isId w =
+    when String.popFirst w is
+        Just { first = c, rest = rest } ->
+            (c == '%' || c == '@' || c == '$') && rest /= "" && String.all Char.isDigit rest
+
+        Nothing ->
+            False
+
+
+{-| A key's name as tmux writes it: a named key (`Up`, `BSpace`, `F5`),
+or any key after `C-`, `M-` or `S-`. A plain character is text, and not
+a name. -}
+isKeyName : String -> Bool
+isKeyName w =
+    let
+        bare =
+            dropModifiers w
+    in
+    (bare /= w && bare /= "") || namedKey bare
+
+
+dropModifiers : String -> String
+dropModifiers w =
+    if String.startsWith "C-" w || String.startsWith "M-" w || String.startsWith "S-" w then
+        if String.count w > 2 then dropModifiers (String.dropFirst 2 w) else w
+
+    else
+        w
+
+
+namedKey : String -> Bool
+namedKey w =
+    Array.member w [ "Up", "Down", "Left", "Right", "Home", "End", "PPage", "NPage", "PageUp", "PageDown", "PgUp", "PgDn", "Enter", "Escape", "Tab", "BTab", "BSpace", "DC", "IC", "Space", "KPEnter" ]
+        || (String.startsWith "F" w && String.count w <= 3 && String.all Char.isDigit (String.dropFirst 1 w) && String.count w >= 2)
+        || (String.startsWith "KP" w && String.count w == 3)
 
 
 {-| A press or release of the pointer, `Nothing` for a motion: the button

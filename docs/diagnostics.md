@@ -43,10 +43,13 @@ guide is [`user/diagnostics.md`](user/diagnostics.md).
 
 **Never**: the text of a key (`text`), of a paste, of a program's output,
 of a capture; a password or an answer to ssh's questions; the bytes
-`send-keys -H` carries; a quoted argument over 40 characters that is not
-a format (a `#{`) of puritty's own (`Diag.command`, which the app tests
-hold to it: a typed letter, a shifted one and a Hangul syllable are all
-`text`). Names are written (hosts, tmux's sessions and windows by id),
+`send-keys -H` carries; a quoted argument that is not a tmux id (`%3`,
+`@2`, `$1`), a key's name (`Up`, `C-Space`) or a format (a `#{`) of
+puritty's own (`Diag.command`, which the app tests hold to it: a typed
+letter, a shifted one and a Hangul syllable are all `text`). Until
+2026-11-12 only a quoted argument over 40 characters was hidden, so a
+command filled from a prompt's answer (a search, a new name) showed the
+answer when it was short; DG5 says how that was found. Names are written (hosts, tmux's sessions and windows by id),
 since the user chooses what leaves.
 
 **Written:**
@@ -101,3 +104,24 @@ The mark is the anchor: "the thirty lines before MARK 2, and the mark".
   `734 bytes, 12 lines, bracketed, in one piece, sent 746 bytes to tmux's
   active pane` and its three `send-keys -t '%1' -H` of 256, 256 and 234
   bytes, every reply, and the mark with pane `%1`'s paste brackets on.
+
+## DG5 · Prompt answers and copy mode's search kept out (2026-11-12)
+
+Found while building copy mode's incremental search and its marks
+(`tmux.md` TM40, TM41), by running a search with the log on
+(`bench/tmux/compare/survey.py --debug-log`): two places wrote what was
+typed.
+
+- **Commands filled from a prompt.** `Diag.command` hid only a quoted
+  argument over 40 characters, so `send-keys -X
+  search-backward-incremental -- '=3'` showed the search, as a short
+  `rename-window` answer would have. Now a quoted argument is shown only
+  when it is an id, a key's name or a format; any other is `<N chars>`.
+- **Copy mode's state.** Its reply now ends with `pane_search_string`
+  (TM41), and the log shows the first lines of that reply: the search is
+  written by its length (`TmuxMode.withoutSearch`).
+
+**Checked:** the same search, `C-r 3`, `C-r`, `C-r`, `BSpace`, `5`,
+Enter, with the log on: every search command reads `'<1 chars>'` or
+`'<2 chars>'`, and no line quotes the typed `3` or `5`. App tests 141
+(four new for `Diag.command`).

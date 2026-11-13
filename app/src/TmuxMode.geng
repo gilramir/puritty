@@ -105,6 +105,9 @@ type alias State =
       -- what tmux said (`%message`) or puritty says of a key, shown at the
       -- tab bar's right until the next key (TM24)
     , said : String
+      -- tmux's version in tenths (3.6a 36, 3.8 38, next-3.9 39), 0 until
+      -- it is known: what tmux draws differs by it (TM44)
+    , version : Int
       -- each pane's mode's key table (`copy-mode-vi` in copy mode), and
       -- `mode-keys`; a prompt puritty asks for tmux, the answers given
       -- before, and whether it is drawn in tmux's look (TM25)
@@ -423,6 +426,7 @@ idle _ =
     , barTop = False
     , keys = Bindings.follow
     , said = ""
+    , version = 0
     , modes = Dict.empty
     , modeKeys = "emacs"
     , asking = Nothing
@@ -583,12 +587,32 @@ describe next e =
                             Just ForWindow -> Array.takeFirst 3 r.lines
                             Just ForPrefixes -> Array.takeFirst 3 r.lines
                             Just ForModes -> Array.takeFirst 8 r.lines
-                            Just ForCopy -> Array.takeFirst 3 r.lines
+                            -- the search string is what was typed: only its
+                            -- length (docs/diagnostics.md)
+                            Just ForCopy -> Array.takeFirst 3 r.lines |> Array.map withoutSearch
                             Just ForPanesTime -> Array.takeFirst 1 r.lines
                             Just ForDayTime -> Array.takeFirst 1 r.lines
                             _ -> []
             in
             Array.pushFirst head (Array.map (\l -> "  | " ++ cut 160 (Bytes.toStringLossy l)) shown)
+
+
+{-| A copy-mode state line (`copyFormat`) for the diagnostic log: the
+search string, last, written by its length. -}
+withoutSearch : Bytes -> Bytes
+withoutSearch line =
+    let
+        words =
+            String.split " " (Bytes.toStringLossy line)
+
+        search =
+            String.join " " (Array.dropFirst 16 words)
+    in
+    if Array.length words <= 16 then
+        line
+
+    else
+        Bytes.fromString (String.join " " (Array.takeFirst 16 words) ++ " <" ++ String.fromInt (String.count search) ++ " chars>")
 
 
 noticeLine : Notice -> String
@@ -1231,7 +1255,7 @@ replied expect ok lines acc =
                     st.keys
             in
             if ok then
-                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs, byTable = got.byTable } } }
+                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs, byTable = got.byTable }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "" |> String.split " " |> Array.last |> Maybe.withDefault "") } }
 
             else
                 { acc | state = st }
@@ -2552,6 +2576,37 @@ stepTo step answers a =
         { asking = { a | step = step, answers = answers, label = q.label, chars = String.toArray q.input, caret = String.count q.input, edited = False }
         , expand = expand q.label ForLabel ++ expand q.input ForInput
         }
+
+
+{-| A `#{version}` in tenths: `3.6a` 36, `3.8` 38, `next-3.9` 39; 0 for
+what is not a version. -}
+versionOf : String -> Int
+versionOf text =
+    let
+        bare =
+            if String.startsWith "next-" text then String.dropFirst 5 text else text
+
+        digits part =
+            let
+                chars =
+                    String.toArray part
+
+                upTo =
+                    Array.findFirst (\c -> not (Char.isDigit c)) chars |> Maybe.map .index |> Maybe.withDefault (Array.length chars)
+            in
+            String.toInt (String.fromArray (Array.takeFirst upTo chars))
+    in
+    when String.split "." bare is
+        [ major, minor ] ->
+            when { a = digits major, b = digits minor } is
+                { a = Just a, b = Just b } ->
+                    a * 10 + min 9 b
+
+                _ ->
+                    0
+
+        _ ->
+            0
 
 
 {-| Whether a prompt is asked in the pane (`command-prompt -P`). -}
