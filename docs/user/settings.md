@@ -36,6 +36,13 @@ language = "ko"             # which regional forms fallback fonts use
 ligatures = true            # the font's, as Fira Code's != and ->; the
                             # cell under the cursor is always drawn alone
 
+[sound]
+bell = "none"               # what Ctrl-G (BEL) sounds like: "none",
+                            # "system" (the desktop's own beep), or a
+                            # classic computer's: "apple2", "ibm-pc",
+                            # "atari-st", "bbc-micro", "x11"
+keys = false                # a click for each key typed, another for Enter
+
 [colors]
 foreground = "#c5c8c6"
 background = "#1d1f21"

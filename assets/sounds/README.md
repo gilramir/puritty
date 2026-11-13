@@ -1,4 +1,6 @@
-# Key sounds
+# Sounds
+
+## Key sounds
 
 For the key-sound option (`docs/feature-plan.md` §3), off by default.
 
@@ -10,3 +12,11 @@ to ship them in released builds. Q10 has not been updated since 2007. Its
 author was written to that day at the address Q10 publishes,
 `q10@baara.com`, and the mail bounced: `550 Unroutable address`. They are
 not FocusWriter's files of the same names, which are other recordings.
+
+## Bells
+
+`bells/*.wav`, the classic computers' bells for `[sound] bell`
+(`docs/sounds.md` SN2), made by `make-bells.sh` with ffmpeg from each
+machine's own definition. The same script converts the key sounds and
+writes `puritty_sounds.h`, every sound as a C array, which the platform
+packages build into puritty. Run it again after changing a sound here.

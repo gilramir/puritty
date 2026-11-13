@@ -113,6 +113,9 @@ type alias Model =
     , held : Int
     , mouseLast : Maybe Mouse.Cell
     , allMotion : Bool
+      -- every terminal's bells added up when the bell last sounded, so
+      -- that a turn whose total rose rings it (docs/sounds.md SN6)
+    , bellsHeard : Int
       -- the pointer shown (the arrow while the program takes the mouse, a
       -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
       -- last place over the window, and whether Shift is held, which takes
@@ -892,6 +895,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , held = 0
                             , mouseLast = Nothing
                             , allMotion = False
+                            , bellsHeard = 0
                             , pointerShown = Window.TextPointer
                             , hover = Nothing
                             , shiftHeld = False
@@ -1391,10 +1395,91 @@ loop remote m00 =
         Window.motion all |> Task.map (\_ -> { m00 | allMotion = all })
     )
         |> Task.andThen pointerShape
+        |> Task.andThen bellRung
         |> Task.andThen clipboardRequests
         |> Task.andThen (writeLog False)
         |> Task.andThen (flush remote)
         |> Task.andThen (\m0 -> race remote m0)
+
+
+{-| The bell (docs/sounds.md SN6): when any terminal rang since the last
+turn, puritty's own or another tab's or a tmux pane's, the sound
+`[sound] bell` names, once however many came. A total that fell (a tab
+closed) is taken as it is. -}
+bellRung : (taken m : Model) -> Task Error Model
+bellRung m =
+    let
+        others =
+            Array.range 0 (Builder.length m.tabs - 1)
+                |> Array.foldl
+                    (\i n ->
+                        when Builder.get i m.tabs is
+                            Just (Just t) ->
+                                n + t.term.bells
+
+                            _ ->
+                                n
+                    )
+                    0
+
+        total =
+            m.term.bells + others + TmuxMode.bells m.tmux
+
+        sound =
+            bellSound m.config.soundBell
+    in
+    if total == m.bellsHeard then
+        Task.succeed m
+
+    else if total > m.bellsHeard then
+        when sound is
+            Just id ->
+                Window.sound id |> Task.map (\_ -> { m | bellsHeard = total })
+
+            Nothing ->
+                Task.succeed { m | bellsHeard = total }
+
+    else
+        Task.succeed { m | bellsHeard = total }
+
+
+{-| `[sound] bell`'s sound for `Window.sound`: -1 the system's own, the
+bells from 2 in `make-bells.sh`'s order; none for `none`. -}
+bellSound : String -> Maybe Int
+bellSound name =
+    when name is
+        "system" ->
+            Just -1
+
+        "apple2" ->
+            Just 2
+
+        "ibm-pc" ->
+            Just 3
+
+        "atari-st" ->
+            Just 4
+
+        "bbc-micro" ->
+            Just 5
+
+        "x11" ->
+            Just 6
+
+        _ ->
+            Nothing
+
+
+{-| The key sound for a key that sends something (`[sound] keys`,
+`feature-plan.md` §3): Enter's own, any other key's; none for a release or
+a key that sends nothing (a modifier alone). -}
+keySound : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Task x {}
+keySound config k bytes =
+    if config.soundKeys && k.action /= 0 && not (Bytes.isEmpty bytes) then
+        Window.sound (if k.sym == 0xFF0D || k.sym == 0xFF8D then 1 else 0)
+
+    else
+        Task.succeed {}
 
 
 {-| The pointer's shape (docs/phase3-select.md §21): the arrow while the
@@ -3330,7 +3415,9 @@ handleOne remote ms rest ev m =
 
                   else
                     -- the key path: the text as typed, never as a paste (V46)
+                    -- one key sound for the commit (feature-plan.md §3)
                     imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
+                        |> Task.andThen (\_ -> if m.config.soundKeys then Window.sound 0 else Task.succeed {})
                         |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
 
                 Window.Preedit p ->
@@ -4121,7 +4208,13 @@ key remote ms rest k m =
 
         focus =
             { focused = m.focus.focused, blinkOn = True }
+
+        clicked =
+            keySound m.config k bytes
     in
+    clicked
+        |> Task.andThen
+            (\_ ->
     handle remote ms rest
         (sendKey k bytes ms
             { m
@@ -4137,6 +4230,7 @@ key remote ms rest k m =
                         0
             }
         )
+            )
 
 
 {-| Where a paste of PRIMARY reads from (`docs/windows.md` WS27.2): the

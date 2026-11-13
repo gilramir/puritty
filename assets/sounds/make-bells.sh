@@ -48,4 +48,39 @@ tone bbc-micro 0.3 "0.3*$(square "t*515.7")"
 # as a PC speaker plays it.
 tone x11 0.1 "0.3*$(square "t*400")"
 
-ls -l "$out"
+# The key sounds (feature-plan.md §3) in the same form, so that the player
+# takes one format: 16-bit PCM, 44.1 kHz, mono.
+work=$(mktemp -d)
+for k in keyany keyenter; do
+    "$ffmpeg" -v error -y -i "$here/$k.wav" -ar 44100 -ac 1 -c:a pcm_s16le -fflags +bitexact -map_metadata -1 "$work/$k.wav"
+done
+
+# Every sound as a C array, in puritty's order (docs/sounds.md SN6): the
+# two key sounds, then the bells. Both platform packages include it.
+python3 - "$here/puritty_sounds.h" "$work/keyany.wav" "$work/keyenter.wav" \
+    "$out/apple2.wav" "$out/ibm-pc.wav" "$out/atari-st.wav" "$out/bbc-micro.wav" "$out/x11.wav" <<'PY'
+import sys
+from pathlib import Path
+out, files = sys.argv[1], sys.argv[2:]
+lines = ["/* puritty's sounds as WAV files (docs/sounds.md SN6): the key sounds, then the",
+         " * bells. Made by assets/sounds/make-bells.sh; do not edit. */", ""]
+names = []
+for i, f in enumerate(files):
+    data = Path(f).read_bytes()
+    names.append((Path(f).stem, len(data)))
+    lines.append(f"/* {Path(f).stem}, {len(data)} bytes */")
+    lines.append(f"static const unsigned char puritty_sound_{i}[{len(data)}] = {{")
+    for at in range(0, len(data), 24):
+        lines.append("    " + ",".join(str(b) for b in data[at:at + 24]) + ",")
+    lines.append("};")
+    lines.append("")
+lines.append("static const struct { const unsigned char *wav; unsigned int size; } puritty_sounds[] = {")
+for i, (name, size) in enumerate(names):
+    lines.append(f"    {{puritty_sound_{i}, {size}}}, /* {i}: {name} */")
+lines.append("};")
+lines.append(f"#define PURITTY_SOUND_COUNT {len(names)}")
+lines.append("#define PURITTY_SOUND_FIRST_BELL 2")
+Path(out).write_text("\n".join(lines) + "\n")
+PY
+rm -r "$work"
+ls -l "$out" "$here/puritty_sounds.h"

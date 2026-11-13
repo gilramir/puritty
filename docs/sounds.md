@@ -4,8 +4,8 @@ Gilbert, 2026-11-13: an option to play the key sounds (`feature-plan.md`
 §3), and a sound for the bell (Ctrl-G, BEL), chosen from classic
 computers' bells made with ffmpeg: the Apple II's, the IBM PC XT/AT's, and
 any others whose definitions can be found; "no bell" too. And how to play
-sounds on Linux and Windows. Nothing in puritty is built yet; the bells'
-files are made. Section numbers are SN*n*.
+sounds on Linux and Windows. Surveyed in SN1–SN5; built in SN6. Section
+numbers are SN*n*.
 
 ---
 
@@ -197,3 +197,69 @@ IBM BIOS listings in PCjs ([XT 1982-11-08](https://github.com/jeffpar/pcjs/tree/
 [MOS sound interface](https://kieranhj.github.io/llm-beeb-wiki/os/sound);
 [ETX 12.0.4](https://blogs.opentext.com/whats-new-in-opentext-exceed-turbox-12-0-4/),
 [ETX 12.5](https://wenweii.com.tw/new-features-of-exceed-turbox-12-5/).
+
+---
+
+## SN6 · Built (2026-11-13, Dnene54)
+
+**Dnene54, Gilbert's answers to SN5:** the bell is `none` by default;
+`system` is listed, since both platforms have a bell of their own; no
+volume setting until he has heard how it works; playback as SN4's
+leanings. The ETX test is his, soon.
+
+**Settings** (a Sound page in the settings window, `docs/user/settings.md`):
+
+```toml
+[sound]
+bell = "none"    # "system", "apple2", "ibm-pc", "atari-st", "bbc-micro", "x11"
+keys = false
+```
+
+**The sounds in the program.** `make-bells.sh` also converts the two key
+sounds to 16-bit PCM at 44.1 kHz and writes all seven WAV files into
+`assets/sounds/puritty_sounds.h` (the key sounds 0 and 1, the bells 2 to
+6), which both platform packages include, so a build carries them and
+needs no files beside it. `Window.sound n` plays one without waiting; -1
+is the system's bell.
+
+**Linux** (`packages/x11/src/Ext/puritty_sound.c`): PulseAudio's simple
+API loaded with `dlopen` at the first sound, on a thread of its own
+(`geng_thread_start`, which blocks signals there), one stream kept open
+with a 20 ms buffer, written 10 ms at a time so that a new request cuts
+in (`pa_simple_flush`). A key sound replaces what plays; a bell while a
+bell plays or waits is dropped. No audio library, or no server: nothing
+plays, nothing fails. The system bell is `xcb_bell` on puritty's own X
+connection. The devbox build's C library is nix's, whose loader neither
+searches the system's folders nor would find a system library's own
+libraries (measured with `strace`: `libpulse-simple.so.0` looked for in
+the nix store only), so `app/build.sh` names nix's libpulse-simple by its
+path (`PURITTY_PULSE_SIMPLE`, from the devbox's `libpulseaudio`), which
+talks to the desktop's server over its socket. A distribution build
+(`app/distro`) loads the system's by name.
+
+**Windows** (`puritty_win32.c`): `PlaySoundA` from memory, `SND_ASYNC`;
+a bell with `SND_NOSTOP`, so that a bell asked for while a sound plays is
+dropped; `MessageBeep(MB_OK)` for `system`. `winmm` is linked.
+
+**When.** The bell: after each turn of the loop puritty adds up every
+terminal's bells (the shown tab's, the other tabs', every tmux pane's
+under `-CC`) and rings once when the total rose, however many came. The
+key sounds: in `key`, for a press or repeat that sends bytes (Enter its
+own sound, by keysym), and one for an IME commit.
+
+**Checked.** Sounds sent to a null sink (`PULSE_SINK`,
+`module-null-sink`, unloaded after) and recorded from its monitor, so
+nothing was heard here: with `bell = "apple2"`, `ibm-pc` and
+`atari-st`, a program printing one BEL and, a second later, three: two
+sounds each, the three BELs one, at 942, 898 and 2,404 Hz (the files'
+934.5, 896.5 and 2,403.9 through the sink's resampling; the second Apple
+II sound measured 1,044 Hz, a measuring artifact not looked into
+further); with `keys = true`, xdotool typing `a`, `b`, Enter 0.6 s apart:
+three sounds, 148, 148 and 365 ms long (the key sound, the key sound,
+Enter's). The Windows build and the RHEL8 build compile and link;
+`app/distro/smoke.sh rhel8` passes (its image has no PulseAudio, so it
+also shows a machine without audio is fine). App tests 142 (a page more
+counted), the settings gate 20 of 20 (Hosts one page further down).
+
+**Not yet:** a volume setting (Gilbert, after trying it); Windows not
+heard yet (beelink1); ETX (Gilbert's test, SN4.3); SN2.2's bells.

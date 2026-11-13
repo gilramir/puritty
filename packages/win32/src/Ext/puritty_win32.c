@@ -72,6 +72,7 @@
 #include <windows.h>
 #include <imm.h>
 #include <windowsx.h>
+#include <mmsystem.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -81,6 +82,7 @@
 #include <string.h>
 
 #include "geng.h"
+#include "../../../../assets/sounds/puritty_sounds.h"
 #include "puritty_text.h"
 #include "win32_keycodes.h"
 
@@ -1752,6 +1754,22 @@ static int write_shot(const char *path) {
     LeaveCriticalSection(&paint);
     fclose(o);
     return 0;
+}
+
+/* A sound (docs/sounds.md SN6): -1 Windows' own bell (`MessageBeep`,
+ * `system`), else one of puritty's WAV files, played from memory without
+ * waiting. PlaySound plays one sound at a time: a key's replaces what
+ * plays; a bell asked for while a sound plays is dropped (SND_NOSTOP),
+ * since bells come in floods. */
+geng_cancel puritty_win32_sound(int32_t id, geng_wait *wait) {
+    if (id < 0) {
+        MessageBeep(MB_OK);
+    } else if (id < PURITTY_SOUND_COUNT) {
+        DWORD flags = SND_MEMORY | SND_ASYNC | SND_NODEFAULT | (id >= PURITTY_SOUND_FIRST_BELL ? SND_NOSTOP : 0);
+        PlaySoundA((LPCSTR) puritty_sounds[id].wav, NULL, flags);
+    }
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
 }
 
 geng_cancel puritty_win32_shot(void *path_bytes, geng_wait *wait) {

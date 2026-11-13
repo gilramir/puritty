@@ -1,7 +1,7 @@
 module Window exposing
     ( Settings, Cell, open
     , setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer(..), spot, zoom, resize, motion, select, Selection(..), paste, pasted
-    , events, take, Event(..), PointerEvent
+    , sound, events, take, Event(..), PointerEvent
     )
 
 {-| puritty's window on X11 (`docs/renderer.md`, V34–V37).
@@ -16,7 +16,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, motion, select, Selection, paste, pasted, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
 
 -}
 
@@ -92,6 +92,19 @@ draw list =
 
 @extern(c, "puritty_x11_draw")
 drawExtern : Bytes -> Task x Bytes
+
+
+{-| Plays a sound (`docs/sounds.md` SN6), without waiting for it: -1
+the system's own bell, 0 and 1 the key sounds (a key, Enter), 2 to 6 the
+bells (Apple II, IBM PC, Atari ST, BBC Micro, X11). A sound that cannot
+play, or a bell while a bell plays, is dropped. -}
+sound : Int -> Task x {}
+sound id =
+    soundExtern id |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_x11_sound")
+soundExtern : Int -> Task x Int
 
 
 {-| Writes the window as it is on the screen, as a PPM, to a file: the

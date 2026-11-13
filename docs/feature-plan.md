@@ -64,6 +64,8 @@ X11 forwarding (MobaXterm's built-in X server) is out of scope.
 
 ## 3. Key sounds
 
+*Built 2026-11-13 with the bell's sounds: `sounds.md` SN6.*
+
 Gilbert wants an option to play a sound while typing, off by default:
 
 - `keyany.wav` for any key other than Enter;
