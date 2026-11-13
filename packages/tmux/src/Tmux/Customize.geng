@@ -2018,11 +2018,17 @@ setOption t d o global allowPane =
             choices =
                 info |> Maybe.map .choices |> Maybe.withDefault []
 
-            at =
-                Array.findFirst (\c -> c == now) choices |> Maybe.map .index |> Maybe.withDefault -1
+            -- each choice beside the one after it, the last beside the
+            -- first: the next is the one beside the choice now set, or
+            -- the first when none is
+            after =
+                Array.dropFirst 1 choices ++ Array.takeFirst 1 choices
 
             next =
-                Array.get (if at + 1 >= Array.length choices then 0 else at + 1) choices |> Maybe.withDefault now
+                Array.map2 (\c following -> { choice = c, after = following }) choices after
+                    |> Array.findFirst (\p -> p.choice == now)
+                    |> Maybe.map (\found -> found.value.after)
+                    |> Maybe.withDefaultLazy (\_ -> Array.first choices |> Maybe.withDefault now)
         in
         Run [ set next ]
 

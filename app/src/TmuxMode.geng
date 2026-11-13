@@ -262,7 +262,7 @@ type alias Listing =
     { kind : String
     , rows : Array ListRow
     , loaded : Bool
-    , selected : Int
+    , selected : Int where 0 <= selected && (selected == 0 || selected < Array.length rows)
     , tagged : Array String
     , sort : Int
     , reversed : Bool
@@ -1916,9 +1916,15 @@ replied expect ok lines acc =
                             (\l ->
                                 let
                                     next =
-                                        { l | rows = rows, loaded = True }
+                                        { l | rows = rows, loaded = True, selected = 0 }
+
+                                    -- the row chosen before, where it is now, or the
+                                    -- same place; inside the rows, or 0 when there
+                                    -- are none (it was -1 then)
+                                    found =
+                                        Array.findFirst (\r -> Just r.name == chosen) (listRows next) |> Maybe.map .index |> Maybe.withDefault l.selected
                                 in
-                                { next | selected = Array.findFirst (\r -> Just r.name == chosen) (listRows next) |> Maybe.map .index |> Maybe.withDefault (clamp 0 (Array.length rows - 1) l.selected) }
+                                { next | selected = clamp 0 (max 0 (Array.length next.rows - 1)) found }
                             )
                             st.listing
 
@@ -6639,7 +6645,7 @@ listFilterQuery kind filter =
 by name or largest first (`window_buffer_cmp`), the name breaking ties;
 clients by name, width, when made or most recently active
 (`window_client_sort_list`). -}
-listRows : Listing -> Array ListRow
+listRows : (l : Listing) -> (r : Array ListRow where Array.length r <= Array.length l.rows)
 listRows l =
     let
         keptRows =
@@ -6928,7 +6934,8 @@ searchListing forward l =
     else
         when Array.findFirst (\i -> Maybe.map matches (Array.get i rows) == Just True) order is
             Just found ->
-                { l | selected = found.value }
+                -- a row of the rows shown, which are no more than the rows
+                { l | selected = clamp 0 (max 0 (Array.length l.rows - 1)) found.value }
 
             Nothing ->
                 l
@@ -7004,7 +7011,8 @@ drawListing colors tmuxLook version place l =
             if tmuxLook then "\u{001B}[0m" else viewTextColor
 
         listed =
-            Array.slice top (top + listHeight) rows
+            Array.dropFirst top rows
+                |> Array.takeFirst listHeight
                 |> Array.indexedMap
                     (\j r ->
                         let
@@ -7371,7 +7379,7 @@ customizeAt height at offset0 c =
 customizeHeight : State -> Customizing -> Int
 customizeHeight s c =
     customizeArea s c
-        |> Maybe.map (\a -> customizeListHeight c.view.preview (if s.lookTmux then a.h else a.h - 2))
+        |> Maybe.map (\a -> customizeListHeight c.view.preview (if s.lookTmux then max 0 a.h else if a.h > 2 then a.h - 2 else 0))
         |> Maybe.withDefault 10
 
 
@@ -7526,7 +7534,7 @@ customizeDetailGot asked ok text s =
 
 {-| The list's height in the pane: all of it, or less the twelve rows of
 the description (`window_customize_height`, `mode_tree_set_height`). -}
-customizeListHeight : Int -> Int -> Int
+customizeListHeight : Int -> (sy : Int where 0 <= sy) -> (r : Int where 0 <= r && r <= sy)
 customizeListHeight preview sy =
     let
         h =

@@ -4483,3 +4483,69 @@ Measured: 15 of 15 runs pass in 495 s, most of it building (the app's
 three builds about 80 s each). Set to expect 98 of tmux, it fails, saying
 `passed 99 of 98 expected` with the report.
 
+
+
+## VC63. The checks report after the tabs, the tmux work and the sounds (2026-11-13)
+
+Gilbert: use `geng checks` to tighten the refinements and find new ones.
+`geng checks Main` in `app/linux` against `corpus/checks/baseline.tsv`
+had not been run since §VC59, and the program had grown by the tabs,
+TM35 to TM69, the sounds and the settings' pages: it failed, **7 checks
+open** and 396 fallbacks that can run not in the list.
+
+| | 2026-11-11, §VC59 | 2026-11-13, before | after |
+|---|---:|---:|---:|
+| checks hold | 1,891 | 1,937 | 1,948 |
+| fallbacks never run | 46 | 46 | 47 |
+| fallbacks can run | 736 | 1,115 | 1,114 |
+| open | 0 | 7 | 0 |
+
+**The open checks, each bounded where the value is made:**
+
+- **The choose-buffer and choose-client list's selection** (`drawListing`,
+  `top + listHeight` and `selected - listHeight + 1`): `Listing.selected`
+  is a row index now, a type invariant `0 <= selected && (selected == 0 ||
+  selected < Array.length rows)`, asked at every write. Writing it found a
+  bug: when tmux's answer emptied the list, the selection became
+  `clamp 0 (Array.length rows - 1) l.selected`, which is -1; it is 0
+  now. The writes clamp to the rows shown, a sorted copy of the rows the
+  filter kept, which `core` could not show to be no more than the rows;
+  `Array.keepIf` and the sorts now say so (geng-lang `m4-refine-t1.md`
+  TO21), and `listRows` says its result is no longer than `l.rows`. The
+  rows shown are `dropFirst top` then `takeFirst listHeight`, which needs
+  no sum. A search's hit is clamped where it is written (`findFirst`
+  promises its index nothing).
+- **customize-mode's list height** (`drawCustomize`, `customizeHeight`):
+  `customizeListHeight` takes a height of 0 or more and answers one
+  between 0 and it; the height less its frame is taken only when the
+  area is taller than 2.
+- **A choice moved on** (`Tmux.Customize.setOption`, `at + 1` of an index
+  `findFirst` gave): each choice is paired with the one after it, the last
+  with the first, so the next is found with no arithmetic. A new test
+  holds the round from the last choice to the first (tmux tests 100); it
+  passes on the code before and after.
+
+**A fallback proved away:** the dialog's buttons' places are made one for
+each button (`Array.indexedMap` over their widths, where a fold made
+them), and `Dialog.layout` says so (`Array.length r.buttonXs ==
+Array.length d.buttons`), so the draw's read of a button's place never
+falls back.
+
+**What is left, and recorded** (1,114 entries, 693 lines): the 388 new are
+input, read as it comes: tmux's replies and their words (`replied`, the
+tree's, the listing's and customize mode's parsers), the restore file's
+tabs, an IME's feedback array, a key chord typed, the event queue's
+end; the tree's selection over rows it works out rather than keeps, empty
+while it loads; and the tab order, whose closing writes (`keepIf`) leave
+nothing a rule could bound. **From now on a new one fails `geng checks`
+again**, as §VC59 set.
+
+**Opportunities found, not taken here:** `Array.findFirst` cannot promise
+its index, since a refined field inside `Maybe` is refused (every "find,
+then read" clamps instead); the tree's rows are worked out, not kept, so
+its selection has no field to be bounded by; and the tab order could keep
+its shown tab as an invariant if closing a tab chose the next one in the
+same update.
+
+Tested: the unit gate (`harness/units.py`) 15 of 15 on node, Linux and
+Windows, before the tmux count moved to 100.

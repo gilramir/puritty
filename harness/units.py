@@ -74,7 +74,8 @@ def runs_of(folder: str, node: bool = True) -> list[Run]:
 
 SUITES = [
     Suite("vt", 94, runs_of("vt/tests")),
-    Suite("tmux", 99, runs_of("packages/tmux/tests")),
+    # 100 since VC63: a choice moved on from the last
+    Suite("tmux", 100, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 160 since TM69: the fake tmux's tree, prompt and menus, 11 more
