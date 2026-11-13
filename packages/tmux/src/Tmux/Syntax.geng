@@ -13,6 +13,7 @@ module Tmux.Syntax exposing
     , treeOf
     , listOf
     , popupOf
+    , customizeOf
     , retarget
     , lines
     , fill
@@ -852,6 +853,44 @@ findFilter bools text =
 
         _ ->
             matching "pane_title"
+
+
+{-| What a binding's `customize-mode` asks (puritty `docs/tmux.md` TM62):
+its filter (`-f`), whether it zooms the pane (`-Z`), starts without the
+description (`-N`), and answers its yes-or-no questions yes at once
+(`-y`); the commands after it. -}
+customizeOf : String -> Maybe { filter : String, zoom : Bool, noPreview : Bool, yes : Bool, after : String }
+customizeOf command =
+    let
+        cmds =
+            commands (tokens command)
+
+        name =
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+
+        after =
+            Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
+    in
+    when Array.first cmds is
+        Just first ->
+            if name == "customize-mode" then
+                let
+                    args =
+                        flags "Fft" (Array.dropFirst 1 first)
+                in
+                Just
+                    { filter = Maybe.withDefault "" (getFlag 'f' args.values)
+                    , zoom = String.contains "Z" args.bools
+                    , noPreview = String.contains "N" args.bools
+                    , yes = String.contains "y" args.bools
+                    , after = after
+                    }
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
 
 
 {-| What a binding's `choose-buffer` or `choose-client` asks (puritty

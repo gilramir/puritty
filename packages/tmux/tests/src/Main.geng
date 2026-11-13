@@ -16,6 +16,8 @@ import Test.Runner.UnitNode as U
 import Tmux.Bindings as Bindings
 import Tmux.Borders as Borders
 import Tmux.Command as Command
+import Tmux.Customize as Customize
+import CustomizeRaw36
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
 import Tmux.Control as Control exposing (Event(..), Notice(..))
@@ -31,7 +33,7 @@ main =
                 U.run env
                     { name = "puritty-tmux"
                     , version = "0.1.0"
-                    , suites = [ control, layout, command, bindings, syntax, style, borders ]
+                    , suites = [ control, layout, command, bindings, syntax, style, borders, customize ]
                     }
             )
 
@@ -809,5 +811,240 @@ borders =
           }
         , { name = "arrows point at the active pane"
           , test = \_ -> Expect.equal [ "→" ] (cells "arrows" "single" 1 two |> Array.keepIf (\c -> c.row == 1) |> Array.map .text)
+          }
+        ]
+
+
+customize : U.Suite
+customize =
+    let
+        t36 =
+            Customize.table 36
+
+        t38 =
+            Customize.table 38
+
+        infoText t name =
+            Dict.get name t.infos |> Maybe.map .text |> Maybe.withDefault "(none)"
+
+        rawLines text =
+            String.split "\n" text |> Array.keepIf (\l -> String.trim l /= "")
+
+        read36 =
+            Customize.bindingsOfText (rawLines CustomizeRaw36.keys)
+                (Array.foldl (\n acc -> Dict.set n.table (rawLines n.text) acc) Dict.empty CustomizeRaw36.notes)
+
+        data =
+            { server = Customize.optionsOf [ "escape-time 10", "command-alias[0] split-pane=split-window" ]
+            , globalSession = Customize.optionsOf [ "mouse off", "status on", "@mine \"a b\"", "base-index 0" ]
+            , session = Customize.optionsOf [ "base-index 1" ]
+            , globalWindow = Customize.optionsOf [ "mode-keys emacs", "pane-base-index 0" ]
+            , window = Customize.optionsOf []
+            , pane = Customize.optionsOf [ "pane-base-index 1" ]
+            , globalEnv = Customize.envOf [ "HOME=/home/u", "-DISPLAY" ] [ "SECRET=x" ]
+            , sessionEnv = Customize.envOf [ "LOC=v w" ] []
+            , keys =
+                [ { table = "prefix", key = "c", repeat = False, note = "Create a new window", command = "new-window" }
+                , { table = "prefix", key = "z", repeat = True, note = "", command = "display-message zz" }
+                , { table = "root", key = "F1", repeat = False, note = "", command = "display-message hi" }
+                ]
+            , paneIndex = 0
+            , windowIndex = 2
+            , sessionName = "main"
+            , paneId = "%5"
+            }
+
+        all v t =
+            Customize.entries t data { hideGlobal = v.hideGlobal, changedOnly = v.changedOnly, passing = v.passing }
+
+        shown v t =
+            Customize.lines v (all v t)
+
+        view =
+            Customize.startView
+
+        entryNamed name t =
+            all view t |> Array.findFirst (\e -> e.name == name) |> Maybe.map .value
+
+        act t keyName name =
+            Customize.act t data keyName [] (entryNamed name t)
+
+        commandsOf a =
+            when a is
+                Customize.Run cs ->
+                    cs
+
+                Customize.Ask p ->
+                    [ "ask " ++ p.label ++ "|" ++ p.first ]
+
+                Customize.Say text ->
+                    [ "say " ++ text ]
+
+                Customize.Stay ->
+                    []
+
+        previewOf t name width height =
+            when entryNamed name t is
+                Just e ->
+                    Customize.preview t data Nothing e { width = width, height = height }
+
+                Nothing ->
+                    []
+
+        rowsOf pieces =
+            Array.foldl (\p acc -> Dict.update p.row (\had -> Just (Maybe.withDefault "" had ++ p.text)) acc) Dict.empty pieces |> Dict.values
+    in
+    run "Customize"
+        [ { name = "3.8's table: status is a choice of six, on by default"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { kind = "choice", choices = [ "off", "on", "2", "3", "4", "5" ], default = Just "on" }
+                        { kind = Dict.get "status" t38.infos |> Maybe.map .kind |> Maybe.withDefault ""
+                        , choices = Dict.get "status" t38.infos |> Maybe.map .choices |> Maybe.withDefault []
+                        , default = Dict.get "status" t38.defaults
+                        }
+          }
+        , { name = "3.6's table is 3.8's with 3.6's own rows: wording, and options 3.6 lacks"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "Style of the command prompt when in command mode, if 'mode-keys' is set to 'vi'."
+                        , "Style of the command prompt when in command mode, if 'status-keys' is set to 'vi'."
+                        , "(none)"
+                        ]
+                        [ infoText t36 "message-command-style", infoText t38 "message-command-style", infoText t36 "clear-on-attach" ]
+          }
+        , { name = "3.6's list-keys text read by puritty is the table's every default key"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { count = Dict.count t36.keys, changed = [] }
+                        { count = Array.length read36
+                        , changed = read36 |> Array.keepIf (Customize.changedKey t36) |> Array.map (\b -> b.table ++ " " ++ b.key)
+                        }
+          }
+        , { name = "3.6's notes read: prefix c's"
+          , test =
+                \_ ->
+                    Expect.equal (Just "Create a new window")
+                        (read36 |> Array.findFirst (\b -> b.table == "prefix" && b.key == "c") |> Maybe.map (\found -> found.value.note))
+          }
+        , { name = "show-options' lines: quoted values unquoted, array items, a bare array"
+          , test =
+                \_ ->
+                    let
+                        opts =
+                            Customize.optionsOf [ "@mine \"a b\"", "command-alias[0] split-pane=split-window", "command-alias[1] \"server-info=show-messages -JT\"", "after-new-window" ]
+                    in
+                    Expect.equal
+                        [ Just "a b", Just "server-info=show-messages -JT", Just "" ]
+                        [ Dict.get "@mine" opts |> Maybe.map .value
+                        , Dict.get "command-alias" opts |> Maybe.andThen (\o -> Array.get 1 o.items) |> Maybe.map .value
+                        , Dict.get "after-new-window" opts |> Maybe.map .value
+                        ]
+          }
+        , { name = "the environment: removed, hidden, by name"
+          , test = \_ -> Expect.equal [ "-DISPLAY", "HOME", "SECRET h" ] (data.globalEnv |> Array.map (\v -> (if v.value == Nothing then "-" else "") ++ v.name ++ (if v.hidden then " h" else "")))
+          }
+        , { name = "3.8's sections, folded at first"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "Server Options", "Session Options", "Window & Pane Options", "Session Hooks", "Window & Pane Hooks", "Global Environment", "Session Environment", "Key Table - prefix", "Key Table - root" ]
+                        (shown view t38 |> Array.map (\l -> l.entry.name))
+          }
+        , { name = "3.6 has no hooks or environment"
+          , test = \_ -> Expect.equal [ "Server Options", "Session Options", "Window & Pane Options", "Key Table - prefix", "Key Table - root" ] (shown view t36 |> Array.map (\l -> l.entry.name))
+          }
+        , { name = "session options: user ones first, each from the lowest level, the session's in its name"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "@mine: a b", "base-index: (session main) 1", "mouse: off", "status: on" ]
+                        (all view t38 |> Array.keepIf (\e -> e.parent == "S:s") |> Array.map (\e -> e.name ++ ": " ++ (if e.scope == "" then "" else "(" ++ e.scope ++ ") ") ++ Maybe.withDefault "" e.text))
+          }
+        , { name = "changed only: what is as tmux's default left out, empty sections too"
+          , test =
+                \_ ->
+                    Expect.equal [ "Server Options", "@mine", "base-index", "mouse", "Window & Pane Options", "pane-base-index", "Key Table - prefix", "z", "Key Table - root", "F1" ]
+                        (all { view | changedOnly = True } t38 |> Array.keepIf (\e -> e.depth < 2) |> Array.map .name |> Array.keepIf (\n -> n /= "Session Options") |> Array.dropFirst 0 |> Array.keepIf (\n -> n /= "command-alias"))
+          }
+        , { name = "a flag flipped at the session's level"
+          , test = \_ -> Expect.equal [ "set-option -t %5 'mouse' 'on'" ] (commandsOf (act t38 "Enter" "mouse"))
+          }
+        , { name = "a choice moved on; S sets it globally"
+          , test = \_ -> Expect.equal [ "set-option -g 'status' '2'" ] (commandsOf (act t38 "S" "status"))
+          }
+        , { name = "a window-only option set at a pane is asked for at the window, with tmux's label"
+          , test = \_ -> Expect.equal [ "ask (pane-base-index, for window 2) |0" ] (commandsOf (act t38 "Enter" "pane-base-index"))
+          }
+        , { name = "w sets a pane's option at the window"
+          , test = \_ -> Expect.equal [ "ask (pane-base-index, for window 2) |0" ] (commandsOf (act t38 "w" "pane-base-index"))
+          }
+        , { name = "d asks, and y resets every level that sets it"
+          , test =
+                \_ ->
+                    when act t38 "d" "pane-base-index" is
+                        Customize.Ask p ->
+                            Expect.equal
+                                [ "Reset pane-base-index to default? ", "set-option -u -p -t %5 'pane-base-index'", "set-option -u -gw 'pane-base-index'" ]
+                                (Array.pushFirst p.label (commandsOf (Customize.confirmed t38 data p "y")))
+
+                        _ ->
+                            Expect.fail "no question"
+          }
+        , { name = "a key's repeat flipped, its note kept"
+          , test =
+                \_ ->
+                    let
+                        repeatRow =
+                            all view t38 |> Array.findFirst (\e -> e.id == "K:prefix\tc\tRepeat") |> Maybe.map .value
+                    in
+                    Expect.equal [ "bind-key -T 'prefix' -r -N 'Create a new window' 'c' 'new-window'" ] (commandsOf (Customize.act t38 data "Enter" [] repeatRow))
+          }
+        , { name = "a key reset to tmux's own binding"
+          , test =
+                \_ ->
+                    when act t38 "d" "z" is
+                        Customize.Ask p ->
+                            Expect.equal [ "bind-key -T 'prefix' -N 'Zoom the active pane' 'z' 'resize-pane -Z'" ] (commandsOf (Customize.confirmed t38 data p "y"))
+
+                        _ ->
+                            Expect.fail "no question"
+          }
+        , { name = "a new key: its word and its command"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ "bind-key -T 'root' 'F2' 'display-message \"x y\"'" ], [ "say Key binding must be key command" ] ]
+                        [ commandsOf (Customize.answered t38 data { label = "", first = "", single = False, asks = Customize.AddKey "root" } "F2 display-message \"x y\"")
+                        , commandsOf (Customize.answered t38 data { label = "", first = "", single = False, asks = Customize.AddKey "root" } "F2")
+                        ]
+          }
+        , { name = "a key's description, as 3.8 writes it"
+          , test =
+                \_ ->
+                    Expect.equal [ "Create a new window.", "This key is in the prefix table.", "Repeat: off", "Command: new-window" ]
+                        (rowsOf (previewOf t38 "c" 60 10))
+          }
+        , { name = "3.6 says repeat in words"
+          , test = \_ -> Expect.equal [ "Create a new window.", "This key is in the prefix table.", "This key does not repeat.", "Command: new-window" ] (rowsOf (previewOf t36 "c" 60 10))
+          }
+        , { name = "an option's description wrapped at spaces, its default and global value"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "Default index of the first window"
+                        , "in each session."
+                        , "This is a session option."
+                        , "Option value: 1"
+                        , "The default is: 0"
+                        , "Global value: 0"
+                        ]
+                        (rowsOf (previewOf t38 "base-index" 34 10))
+          }
+        , { name = "the description stops at the box's foot, as tmux's does"
+          , test = \_ -> Expect.equal [ "Default index of the first window", "in each session." ] (rowsOf (previewOf t38 "base-index" 34 3))
           }
         ]

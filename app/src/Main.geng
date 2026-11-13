@@ -2258,7 +2258,7 @@ isMenuClick p =
 window of its own, then each host of the settings. -}
 menuAt : Int -> Int -> Model -> Menu
 menuAt row col m =
-    { items = menuItems m.config
+    { items = popupItems m
     , row = row
     , col = col
     , selected = 0
@@ -2281,6 +2281,7 @@ type MenuDoes
     | Reopens
     | Marks
     | OpensTab
+    | Customizes
 
 
 {-| The menu's items: the settings window, the host list, a new tab, a
@@ -2298,6 +2299,28 @@ menuItems config =
     ]
         ++ (if config.debugLog then [ { label = "Mark the diagnostic log", does = Marks } ] else [])
         ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
+
+
+{-| The pop-up menu's items: the menu's, and under tmux -CC "Customize
+tmux…" after "New window", which opens tmux's customize-mode (docs/tmux.md
+TM62). The system menu keeps the menu's own, whose places are fixed when
+it is made. -}
+popupItems : Model -> Array MenuItem
+popupItems m =
+    let
+        items =
+            menuItems m.config
+    in
+    if TmuxMode.isOn m.tmux then
+        when Array.findFirst (\i -> i.label == "New window") items is
+            Just at ->
+                Array.slice 0 (at.index + 1) items ++ [ { label = "Customize tmux…", does = Customizes } ] ++ Array.dropFirst (at.index + 1) items
+
+            Nothing ->
+                Array.pushLast { label = "Customize tmux…", does = Customizes } items
+
+    else
+        items
 
 
 {-| What a chosen item does. -}
@@ -2332,6 +2355,17 @@ menuDo item m =
             else
                 openTab m
 
+        Customizes ->
+            if TmuxMode.isOn m.tmux then
+                let
+                    r =
+                        TmuxMode.customize m.tmux
+                in
+                Task.succeed (sendCommands r.commands { m | tmux = r.state, urgent = True })
+
+            else
+                Task.succeed m
+
 
 {-| The menu at the pointer: the platform's own when it shows one
 (Windows), else drawn over the screen. -}
@@ -2339,7 +2373,7 @@ openMenu : Window.PointerEvent -> (taken m : Model) -> Task x Model
 openMenu p m =
     let
         items =
-            menuItems m.config
+            popupItems m
     in
     Window.menu { x = p.x, y = p.y, items = Array.map .label items }
         |> Task.map

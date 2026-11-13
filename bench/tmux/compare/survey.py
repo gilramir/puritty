@@ -143,6 +143,12 @@ class Run:
                     for s in (A, B):
                         self.t(s, *st[1:])
                     time.sleep(0.3)
+                elif kind == "out":
+                    # a command's output on both, compared (TM61: a printed
+                    # line is not a check)
+                    pa = self.t(A, *st[1:]).strip()
+                    pb = self.t(B, *st[1:]).strip()
+                    self.say(f"  out {' '.join(st[1:])}: {'same' if pa == pb else 'DIFFERS'} plain [{pa}] cc [{pb}]")
                 elif kind == "q":
                     self.say(f"  q {st[1]!r}: plain [{self.t(A, 'display-message', '-p', '-t', 'main', st[1]).strip()}]"
                              f" cc [{self.t(B, 'display-message', '-p', '-t', 'main', st[1]).strip()}]")

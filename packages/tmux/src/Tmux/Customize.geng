@@ -1,0 +1,2295 @@
+module Tmux.Customize exposing
+    ( Info
+    , Table
+    , table
+    , Opt
+    , optionsOf
+    , Binding
+    , keyFormat
+    , bindingsOfFormat
+    , bindingsOfText
+    , Env
+    , envOf
+    , Data
+    , emptyData
+    , Entry
+    , Target(..)
+    , entries
+    , changedOption
+    , changedKey
+    , View
+    , startView
+    , Line
+    , lines
+    , visibleTagged
+    , Piece
+    , Detail
+    , preview
+    , previewTitle
+    , filterFormat
+    , Prompt
+    , Asks(..)
+    , Act(..)
+    , act
+    , answered
+    , confirmed
+    , help
+    , rowKey
+    , levelFlags
+    , optionValue
+    , effectiveValue
+    )
+
+{-| tmux's customize mode (`prefix C`, `customize-mode`), drawn by puritty
+under control mode (puritty `docs/tmux.md` TM62), as tmux 3.6 and 3.8's
+`window-customize.c` build and draw it: the options at each level, the
+hooks, the environment and the key tables in a tree; the chosen item's
+description below; and what each key does, as the tmux commands that do
+it, since a control client cannot reach into tmux's own tables.
+
+What no command reports, each option's description, type, choices and
+default and each key's default binding, comes from `Tmux.CustomizeTables`,
+generated from tmux's source.
+-}
+
+import Dict exposing (Dict)
+import Tmux.Command as Command
+import Tmux.CustomizeTables as Tables
+import Tmux.Syntax as Syntax
+
+
+
+-- THE TABLES
+
+
+{-| An option as tmux's `options-table.c` describes it: its type
+(`string`, `number`, `key`, `colour`, `flag`, `choice`, `command`), its
+scopes (`S` server, `s` session, `w` window, `p` pane), whether it is an
+array, a hook, a style or a colour string, its unit, its choices and its
+description. -}
+type alias Info =
+    { kind : String
+    , scopes : String
+    , array : Bool
+    , hook : Bool
+    , style : Bool
+    , colour : Bool
+    , unit : String
+    , choices : Array String
+    , text : String
+    }
+
+
+{-| A version's table: the options, their defaults by name (`name` or
+`name[key]`, the value as tmux shows it, unquoted), and the default keys by
+table and key. -}
+type alias Table =
+    { version : Int
+    , infos : Dict String Info
+    , defaults : Dict String String
+    , keys : Dict String Binding
+    }
+
+
+{-| The table for a tmux version (tenths, 0 unknown): the newest version's
+rows, or an older one's as the newest's with its differences applied. -}
+table : Int -> Table
+table version =
+    let
+        rowsIn text =
+            String.split "\n" text |> Array.keepIf (\l -> String.trim l /= "")
+
+        base =
+            Array.foldl (\row acc -> Dict.set (rowIdentity row) row acc) Dict.empty (rowsIn Tables.newest.rows)
+
+        diff =
+            if version == 0 || version >= Tables.newest.version then
+                Nothing
+
+            else
+                when Array.findFirst (\o -> o.version <= version) Tables.older is
+                    Just found ->
+                        Just found.value
+
+                    Nothing ->
+                        Array.last Tables.older
+
+        merged =
+            when diff is
+                Just d ->
+                    Array.foldl
+                        (\row acc ->
+                            if String.startsWith "X\t" row then
+                                Dict.remove (String.dropFirst 2 row) acc
+
+                            else
+                                Dict.set (rowIdentity row) row acc
+                        )
+                        base
+                        (rowsIn d.rows)
+
+                Nothing ->
+                    base
+    in
+    Dict.foldl (\_ row acc -> addRow row acc) { version = version, infos = Dict.empty, defaults = Dict.empty, keys = Dict.empty } merged
+
+
+{-| What a row is about: `O` and the option's name, `D` and the shown
+name, `K`, the table and the key. -}
+rowIdentity : String -> String
+rowIdentity row =
+    let
+        fields =
+            String.split "\t" row
+    in
+    when Array.takeFirst 3 fields is
+        [ "K", t, k ] ->
+            "K\t" ++ t ++ "\t" ++ k
+
+        _ ->
+            when Array.takeFirst 2 fields is
+                [ "O", name ] ->
+                    "O\t" ++ name
+
+                [ "D", line ] ->
+                    "D\t" ++ (Array.first (String.split " " line) |> Maybe.withDefault line)
+
+                _ ->
+                    row
+
+
+addRow : String -> Table -> Table
+addRow row t =
+    let
+        fields =
+            String.split "\t" row
+    in
+    when Array.first fields is
+        Just "O" ->
+            when fields is
+                [ _, name, kind, scopes, marks, unit, choices, text ] ->
+                    { t
+                        | infos =
+                            Dict.set name
+                                { kind = kind
+                                , scopes = scopes
+                                , array = String.contains "a" marks
+                                , hook = String.contains "h" marks
+                                , style = String.contains "s" marks
+                                , colour = String.contains "c" marks
+                                , unit = unit
+                                , choices = if choices == "" then [] else String.split "," choices
+                                , text = text
+                                }
+                                t.infos
+                    }
+
+                _ ->
+                    t
+
+        Just "D" ->
+            when shownOf (String.dropFirst 2 row) is
+                Just o ->
+                    { t | defaults = Dict.set (o.name ++ (if o.key == "" then "" else "[" ++ o.key ++ "]")) o.value t.defaults }
+
+                Nothing ->
+                    t
+
+        Just "K" ->
+            when bindingOfFormat (String.dropFirst 2 row) is
+                Just b ->
+                    { t | keys = Dict.set (b.table ++ "\t" ++ b.key) b t.keys }
+
+                Nothing ->
+                    t
+
+        _ ->
+            t
+
+
+
+-- WHAT TMUX SAYS
+
+
+{-| An option as one level holds it: its value, or an array's items in
+tmux's order. -}
+type alias Opt =
+    { value : String
+    , items : Array { key : String, value : String }
+    , array : Bool
+    }
+
+
+{-| One line of `show-options`: `name value`, `name[key] value`, or a bare
+name (an array with nothing in it), the value unquoted as tmux's parser
+reads it. -}
+shownOf : String -> Maybe { name : String, key : String, value : String, bare : Bool }
+shownOf line =
+    let
+        head =
+            when String.firstIndexOf " " line is
+                Just at ->
+                    { word = String.takeFirst at line, rest = Just (String.dropFirst (at + 1) line) }
+
+                Nothing ->
+                    { word = line, rest = Nothing }
+
+        named =
+            when String.firstIndexOf "[" head.word is
+                Just at ->
+                    if String.endsWith "]" head.word then
+                        { name = String.takeFirst at head.word, key = String.dropFirst (at + 1) head.word |> String.dropLast 1 }
+
+                    else
+                        { name = head.word, key = "" }
+
+                Nothing ->
+                    { name = head.word, key = "" }
+    in
+    if head.word == "" then
+        Nothing
+
+    else
+        when head.rest is
+            Just rest ->
+                Just { name = named.name, key = named.key, value = unquoted rest, bare = False }
+
+            Nothing ->
+                Just { name = named.name, key = named.key, value = "", bare = True }
+
+
+{-| A value as `show-options` prints it, read as tmux's parser would: a
+quoted word unquoted, anything else as it is. -}
+unquoted : String -> String
+unquoted text =
+    when Syntax.tokens text is
+        [ one ] ->
+            if one.sep || one.block then text else one.value
+
+        _ ->
+            text
+
+
+{-| A level's options from `show-options`' lines, by name. -}
+optionsOf : Array String -> Dict String Opt
+optionsOf shown =
+    Array.foldl
+        (\line acc ->
+            when shownOf line is
+                Just o ->
+                    if o.key /= "" then
+                        Dict.set o.name
+                            (when Dict.get o.name acc is
+                                Just had ->
+                                    { had | items = Array.pushLast { key = o.key, value = o.value } had.items, array = True }
+
+                                Nothing ->
+                                    { value = "", items = [ { key = o.key, value = o.value } ], array = True }
+                            )
+                            acc
+
+                    else
+                        Dict.set o.name { value = o.value, items = [], array = o.bare } acc
+
+                Nothing ->
+                    acc
+        )
+        Dict.empty
+        shown
+
+
+{-| A key's binding: its table, key, whether it repeats, its note and its
+command as tmux prints it. -}
+type alias Binding =
+    { table : String
+    , key : String
+    , repeat : Bool
+    , note : String
+    , command : String
+    }
+
+
+{-| `list-keys -F`'s format, 3.7 on; split at tabs. -}
+keyFormat : String
+keyFormat =
+    "#{key_table}\t#{key_string}\t#{key_repeat}\t#{key_note}\t#{key_command}"
+
+
+bindingOfFormat : String -> Maybe Binding
+bindingOfFormat line =
+    let
+        fields =
+            String.split "\t" line
+    in
+    when Array.takeFirst 4 fields is
+        [ t, k, r, n ] ->
+            Just { table = t, key = k, repeat = r == "1", note = n, command = unescaped (String.join "\t" (Array.dropFirst 4 fields)) }
+
+        _ ->
+            Nothing
+
+
+bindingsOfFormat : Array String -> Array Binding
+bindingsOfFormat shown =
+    Array.mapAndKeepJust bindingOfFormat shown
+
+
+{-| 3.6's `list-keys` text (`bind-key [-r] -T TABLE KEY COMMAND`) and its
+notes (`list-keys -N -a -P '' -T TABLE`: the key, spaces, the note), read
+into bindings: the key unquoted as tmux's parser reads it, the command as
+printed. -}
+bindingsOfText : Array String -> Dict String (Array String) -> Array Binding
+bindingsOfText listed notes =
+    let
+        noteOf tableName keyName =
+            Dict.get tableName notes
+                |> Maybe.withDefault []
+                |> Array.findFirst (\l -> Array.first (String.words (String.trim l)) == Just keyName)
+                |> Maybe.map (\found -> String.trim (String.dropFirst (String.count keyName) (String.trim found.value)))
+                |> Maybe.withDefault ""
+    in
+    Array.mapAndKeepJust
+        (\line ->
+            when bindLine line is
+                Just b ->
+                    Just { b | note = noteOf b.table b.key }
+
+                Nothing ->
+                    Nothing
+        )
+        listed
+
+
+bindLine : String -> Maybe Binding
+bindLine line =
+    let
+        chars =
+            String.toArray line
+
+        n =
+            Array.length chars
+
+        skipSpaces i =
+            if i < n && Array.get i chars == Just ' ' then skipSpaces (i + 1) else i
+
+        wordEnd i =
+            if i < n && Array.get i chars /= Just ' ' then wordEnd (i + 1) else i
+
+        wordAt i =
+            String.fromArray (Array.slice i (wordEnd i) chars)
+
+        -- the flags before the key: -r, and -T with its table
+        flagsFrom i acc =
+            let
+                at =
+                    skipSpaces i
+            in
+            when wordAt at is
+                "-r" ->
+                    flagsFrom (wordEnd at) { acc | repeat = True }
+
+                "-T" ->
+                    let
+                        tableAt =
+                            skipSpaces (wordEnd at)
+                    in
+                    flagsFrom (wordEnd tableAt) { acc | table = wordAt tableAt }
+
+                _ ->
+                    { acc | at = at }
+
+        flagged =
+            flagsFrom (wordEnd 0) { repeat = False, table = "", at = 0 }
+
+        -- the key, unquoted: '...', "..." with backslashes, or a word
+        -- with backslashes
+        keyRead =
+            when Array.get flagged.at chars is
+                Just '\'' ->
+                    quoted '\'' (flagged.at + 1) []
+
+                Just '"' ->
+                    quoted '"' (flagged.at + 1) []
+
+                _ ->
+                    bare flagged.at []
+
+        quoted q i acc =
+            when Array.get i chars is
+                Just c ->
+                    if c == q then
+                        { key = String.fromArray acc, next = i + 1 }
+
+                    else if q == '"' && c == '\\' then
+                        quoted q (i + 2) (Array.pushLast (Array.get (i + 1) chars |> Maybe.withDefault c) acc)
+
+                    else
+                        quoted q (i + 1) (Array.pushLast c acc)
+
+                Nothing ->
+                    { key = String.fromArray acc, next = i }
+
+        bare i acc =
+            when Array.get i chars is
+                Just c ->
+                    if c == ' ' then
+                        { key = String.fromArray acc, next = i }
+
+                    else if c == '\\' then
+                        bare (i + 2) (Array.pushLast (Array.get (i + 1) chars |> Maybe.withDefault c) acc)
+
+                    else
+                        bare (i + 1) (Array.pushLast c acc)
+
+                Nothing ->
+                    { key = String.fromArray acc, next = i }
+    in
+    if wordAt 0 /= "bind-key" || flagged.table == "" then
+        Nothing
+
+    else
+        Just
+            { table = flagged.table
+            , key = keyRead.key
+            , repeat = flagged.repeat
+            , note = ""
+            , command = unescaped (String.trim (String.fromArray (Array.dropFirst keyRead.next chars)))
+            }
+
+
+{-| A command as customize-mode shows it (`cmd_list_print` unescaped):
+`list-keys` writes the commands' separators ` \; `, the mode ` ; `, which
+is also what `bind-key` reads back as two commands. -}
+unescaped : String -> String
+unescaped command =
+    String.replace " \\; " " ; " command
+
+
+{-| An environment variable: its name, its value (none when removed,
+`-NAME`), and whether hidden (`setenv -h`). -}
+type alias Env =
+    { name : String
+    , value : Maybe String
+    , hidden : Bool
+    }
+
+
+{-| `show-environment`'s lines and those of `show-environment -h`, by name
+as tmux keeps them. -}
+envOf : Array String -> Array String -> Array Env
+envOf shown hiddenShown =
+    let
+        read hide line =
+            if String.startsWith "-" line then
+                Just { name = String.dropFirst 1 line, value = Nothing, hidden = hide }
+
+            else
+                when String.firstIndexOf "=" line is
+                    Just at ->
+                        Just { name = String.takeFirst at line, value = Just (String.dropFirst (at + 1) line), hidden = hide }
+
+                    Nothing ->
+                        Nothing
+    in
+    Array.mapAndKeepJust (read False) shown
+        ++ Array.mapAndKeepJust (read True) hiddenShown
+        |> Array.sortBy .name
+
+
+{-| What tmux said: each level's options (by `show-options -s`, `-g`,
+the session's, `-gw`, the window's and the pane's), the environment, the
+keys in tmux's order, and where the mode was opened (the pane's index,
+its window's, its session's name, its id). -}
+type alias Data =
+    { server : Dict String Opt
+    , globalSession : Dict String Opt
+    , session : Dict String Opt
+    , globalWindow : Dict String Opt
+    , window : Dict String Opt
+    , pane : Dict String Opt
+    , globalEnv : Array Env
+    , sessionEnv : Array Env
+    , keys : Array Binding
+    , paneIndex : Int
+    , windowIndex : Int
+    , sessionName : String
+    , paneId : String
+    }
+
+
+emptyData : Data
+emptyData =
+    { server = Dict.empty
+    , globalSession = Dict.empty
+    , session = Dict.empty
+    , globalWindow = Dict.empty
+    , window = Dict.empty
+    , pane = Dict.empty
+    , globalEnv = []
+    , sessionEnv = []
+    , keys = []
+    , paneIndex = 0
+    , windowIndex = 0
+    , sessionName = ""
+    , paneId = ""
+    }
+
+
+
+-- THE TREE
+
+
+{-| What a row is: a section's title (its name, to add to it), an option
+at a level (1 server, 2 global session, 3 session, 4 global window, 5
+window, 6 pane) with an array's key, a key's row or one of its three
+(`Command`, `Note`, `Repeat`), or an environment variable (7 global, 8 the
+session's). -}
+type Target
+    = Section String
+    | Option { scope : Int, name : String, key : Maybe String }
+    | Key { table : String, key : String, part : String }
+    | Variable { scope : Int, name : String }
+
+
+{-| A row of the tree, its children after it: an id that stays across
+rebuilds (tmux's tag), its parent's, its depth, the name and the text after
+`: ` (none: no `: `), the level in reverse before a value set below the
+global level, whether the text is light grey (3.8), open at first (tmux's
+`expanded`), never tagged, drawing its parent's description, and its place
+among its siblings (`last`, `flat`: none of them has children). -}
+type alias Entry =
+    { id : String
+    , parent : String
+    , depth : Int
+    , name : String
+    , scope : String
+    , text : Maybe String
+    , grey : Bool
+    , open : Bool
+    , noTag : Bool
+    , asParent : Bool
+    , children : Bool
+    , last : Bool
+    , flat : Bool
+    , parentLast : Bool
+    , target : Target
+    }
+
+
+type Node
+    = Node { entry : Entry, kids : Array Node }
+
+
+node : Entry -> Array Node -> Node
+node e kids =
+    Node { entry = e, kids = kids }
+
+
+{-| The tree as tmux builds it (`window_customize_build`): the server's,
+the session's, and the window's and pane's options; on 3.8 the hooks and
+the global and session environment; then each key table not empty.
+`hideGlobal` (`H`) leaves out global values; `changedOnly` (3.8's `C`)
+leaves out what is as tmux's default, and the environment; `passing`, the
+ids a filter keeps (with none, every one). -}
+entries : Table -> Data -> { hideGlobal : Bool, changedOnly : Bool, passing : Maybe (Array String) } -> Array Entry
+entries t d o =
+    let
+        newer =
+            t.version == 0 || t.version >= 38
+
+        keep id =
+            when o.passing is
+                Just ids ->
+                    Array.member id ids
+
+                Nothing ->
+                    True
+
+        section title tag kids =
+            if o.changedOnly && Array.isEmpty kids then
+                []
+
+            else
+                [ node (blank ("S:" ++ tag) title (Section title)) kids ]
+
+        optionSections hooks =
+            [ section (if hooks then "Session Hooks" else "Session Options") (if hooks then "sh" else "s") (optionNodes t d o keep hooks [ 2, 3 ])
+            , section (if hooks then "Window & Pane Hooks" else "Window & Pane Options") (if hooks then "wh" else "w") (optionNodes t d o keep hooks [ 4, 5, 6 ])
+            ]
+                |> Array.flatten
+
+        options =
+            section "Server Options" "S" (optionNodes t d o keep False [ 1 ])
+                ++ optionSections False
+                ++ (if newer then optionSections True else [])
+
+        env =
+            if newer && not o.changedOnly then
+                section "Global Environment" "ge" (envNodes t d keep 7 d.globalEnv)
+                    ++ section "Session Environment" "se" (envNodes t d keep 8 d.sessionEnv)
+
+            else
+                []
+
+        tables =
+            Array.foldl (\b acc -> if Array.member b.table acc then acc else Array.pushLast b.table acc) [] d.keys
+                |> Array.sortBy identity
+                |> Array.mapAndFlatten (\name -> section ("Key Table - " ++ name) ("k:" ++ name) (keyNodes t d o keep name))
+    in
+    flatten "" 0 False (options ++ env ++ tables)
+
+
+blank : String -> String -> Target -> Entry
+blank id name target =
+    { id = id
+    , parent = ""
+    , depth = 0
+    , name = name
+    , scope = ""
+    , text = Nothing
+    , grey = False
+    , open = False
+    , noTag = True
+    , asParent = False
+    , children = False
+    , last = False
+    , flat = False
+    , parentLast = False
+    , target = target
+    }
+
+
+{-| A level's nodes laid out: each one's parent, depth, place among its
+siblings and children, then its children after it. -}
+flatten : String -> Int -> Bool -> Array Node -> Array Entry
+flatten parentId depth parentIsLast nodes =
+    let
+        count =
+            Array.length nodes
+
+        isFlat =
+            Array.all (\(Node n) -> Array.isEmpty n.kids) nodes
+    in
+    Array.indexedMap
+        (\i (Node n) ->
+            let
+                e =
+                    n.entry
+
+                kids =
+                    n.kids
+
+                placed =
+                    { e | parent = parentId, depth = depth, children = not (Array.isEmpty kids), last = i == count - 1, flat = isFlat, parentLast = parentIsLast }
+            in
+            Array.pushFirst placed (flatten e.id (depth + 1) placed.last kids)
+        )
+        nodes
+        |> Array.flatten
+
+
+{-| The level names a value set at a level is shown with (`(session
+main)`); none at the global levels. -}
+scopeText : Data -> Int -> String
+scopeText d scope =
+    if scope == 6 then
+        "pane " ++ String.fromInt d.paneIndex
+
+    else if scope == 3 || scope == 8 then
+        "session " ++ d.sessionName
+
+    else if scope == 5 then
+        "window " ++ String.fromInt d.windowIndex
+
+    else
+        ""
+
+
+levelOf : Data -> Int -> Dict String Opt
+levelOf d scope =
+    if scope == 1 then
+        d.server
+
+    else if scope == 2 then
+        d.globalSession
+
+    else if scope == 3 then
+        d.session
+
+    else if scope == 4 then
+        d.globalWindow
+
+    else if scope == 5 then
+        d.window
+
+    else if scope == 6 then
+        d.pane
+
+    else
+        Dict.empty
+
+
+{-| A section's options as `window_customize_build_options`: the user
+options of every level first, in the order the levels hold them, then the
+global level's others; each with its value from the lowest level that sets
+it; hooks or not. -}
+optionNodes : Table -> Data -> { hideGlobal : Bool, changedOnly : Bool, passing : Maybe (Array String) } -> (String -> Bool) -> Bool -> Array Int -> Array Node
+optionNodes t d o keep hooks levels =
+    let
+        globalLevel =
+            Array.first levels |> Maybe.withDefault 1
+
+        userNames =
+            Array.foldl
+                (\level acc ->
+                    Array.foldl (\name inner -> if String.startsWith "@" name && not (Array.member name inner) then Array.pushLast name inner else inner) acc (Dict.keys (levelOf d level))
+                )
+                []
+                levels
+
+        tableNames =
+            Dict.keys (levelOf d globalLevel) |> Array.keepIf (\name -> not (String.startsWith "@" name))
+
+        ownerOf name =
+            Array.foldr (\level found -> if found == 0 && Dict.member name (levelOf d level) then level else found) 0 levels
+
+        isHook name =
+            Dict.get name t.infos |> Maybe.map .hook |> Maybe.withDefault False
+    in
+    (userNames ++ tableNames)
+        |> Array.mapAndKeepJust
+            (\name ->
+                let
+                    owner =
+                        ownerOf name
+
+                    global =
+                        owner == 1 || owner == 2 || owner == 4
+
+                    held =
+                        Dict.get name (levelOf d owner) |> Maybe.withDefault { value = "", items = [], array = False }
+
+                    info =
+                        Dict.get name t.infos
+
+                    isArray =
+                        held.array || (info |> Maybe.map .array |> Maybe.withDefault False)
+
+                    unit =
+                        info |> Maybe.map .unit |> Maybe.withDefault ""
+
+                    id =
+                        "O:" ++ String.fromInt globalLevel ++ ":" ++ name
+
+                    shownScope =
+                        if global then "" else scopeText d owner
+
+                    valueText v =
+                        v ++ (if unit == "" then "" else " " ++ unit)
+
+                    items =
+                        held.items
+                            |> Array.keepIf (\item -> not o.changedOnly || changedItem t name item)
+                            |> Array.map
+                                (\item ->
+                                    node
+                                        ((blank (id ++ "[" ++ item.key ++ "]") (name ++ "[" ++ item.key ++ "]") (Option { scope = owner, name = name, key = Just item.key })) |> (\fresh -> { fresh
+                                            | scope = shownScope
+                                            , text = Just (valueText item.value)
+                                            , grey = t.version == 0 || t.version >= 38
+                                            , open = True
+                                            , noTag = False
+                                        }))
+                                        []
+                                )
+                in
+                if isHook name /= hooks || owner == 0 || (o.hideGlobal && global) || (o.changedOnly && not (changedOption t name held)) || not (keep id) then
+                    Nothing
+
+                else
+                    Just
+                        (node
+                            ((blank id name (Option { scope = owner, name = name, key = Nothing })) |> (\fresh -> { fresh
+                                | scope = shownScope
+                                , text = if isArray then Nothing else Just (valueText held.value)
+                                , grey = t.version == 0 || t.version >= 38
+                                , noTag = False
+                            }))
+                            (if isArray then items else [])
+                        )
+            )
+
+
+{-| Whether an option differs from tmux's default
+(`window_customize_option_is_changed`): a user option always; an array by
+its items. -}
+changedOption : Table -> String -> Opt -> Bool
+changedOption t name held =
+    when Dict.get name t.infos is
+        Just info ->
+            if info.array then
+                let
+                    prefix =
+                        name ++ "["
+
+                    defaults =
+                        Dict.foldl (\k v acc -> if String.startsWith prefix k then Array.pushLast { key = String.dropFirst (String.count prefix) k |> String.dropLast 1, value = v } acc else acc) [] t.defaults
+                in
+                Array.map (\i -> i.key ++ "=" ++ i.value) held.items |> Array.sortBy identity |> (\mine -> mine /= (Array.map (\i -> i.key ++ "=" ++ i.value) defaults |> Array.sortBy identity))
+
+            else
+                Dict.get name t.defaults /= Just held.value
+
+        Nothing ->
+            True
+
+
+changedItem : Table -> String -> { key : String, value : String } -> Bool
+changedItem t name item =
+    when Dict.get name t.infos is
+        Just _ ->
+            Dict.get (name ++ "[" ++ item.key ++ "]") t.defaults /= Just item.value
+
+        Nothing ->
+            True
+
+
+{-| Whether a key differs from tmux's default binding
+(`window_customize_key_is_changed`). -}
+changedKey : Table -> Binding -> Bool
+changedKey t b =
+    when Dict.get (b.table ++ "\t" ++ b.key) t.keys is
+        Just was ->
+            was.repeat /= b.repeat || was.note /= b.note || was.command /= b.command
+
+        Nothing ->
+            True
+
+
+envNodes : Table -> Data -> (String -> Bool) -> Int -> Array Env -> Array Node
+envNodes t d keep scope vars =
+    vars
+        |> Array.mapAndKeepJust
+            (\v ->
+                let
+                    id =
+                        "E:" ++ String.fromInt scope ++ ":" ++ v.name
+                in
+                if not (keep id) then
+                    Nothing
+
+                else
+                    Just
+                        (node
+                            ((blank id (if v.value == Nothing then "-" ++ v.name else v.name) (Variable { scope = scope, name = v.name })) |> (\fresh -> { fresh
+                                | text = v.value
+                                , grey = True
+                                , noTag = False
+                            }))
+                            []
+                        )
+            )
+
+
+keyNodes : Table -> Data -> { hideGlobal : Bool, changedOnly : Bool, passing : Maybe (Array String) } -> (String -> Bool) -> String -> Array Node
+keyNodes t d o keep tableName =
+    let
+        newer =
+            t.version == 0 || t.version >= 38
+    in
+    d.keys
+        |> Array.keepIf (\b -> b.table == tableName)
+        |> Array.mapAndKeepJust
+            (\b ->
+                let
+                    id =
+                        "K:" ++ b.table ++ "\t" ++ b.key
+
+                    part label text =
+                        node
+                            ((blank (id ++ "\t" ++ label) label (Key { table = b.table, key = b.key, part = label })) |> (\fresh -> { fresh
+                                | text = Just text
+                                , grey = newer
+                                , open = True
+                                , asParent = True
+                            }))
+                            []
+                in
+                if (o.changedOnly && not (changedKey t b)) || not (keep id) then
+                    Nothing
+
+                else
+                    Just
+                        (node
+                            ((blank id b.key (Key { table = b.table, key = b.key, part = "" })) |> (\fresh -> { fresh | noTag = False }))
+                            [ part "Command" b.command
+                            , part "Note" b.note
+                            , part "Repeat" (if b.repeat then "on" else "off")
+                            ]
+                        )
+            )
+
+
+
+-- WHAT IS SHOWN
+
+
+{-| What the tree shows besides tmux's answers: which rows are open (by id,
+over each row's own default), the chosen row by id and its place, the top
+row shown (tmux's `offset`), the tagged rows, `H` and `C`, the preview
+(0 off, 1 normal, 2 big, `v`), the filter and the ids it keeps (none:
+every one) or that it kept nothing, the search, and the help shown. -}
+type alias View =
+    { open : Dict String Bool
+    , current : String
+    , offset : Int
+    , tagged : Array String
+    , hideGlobal : Bool
+    , changedOnly : Bool
+    , preview : Int
+    , filter : String
+    , passing : Maybe (Array String)
+    , noMatches : Bool
+    , search : String
+    }
+
+
+startView : View
+startView =
+    { open = Dict.empty
+    , current = ""
+    , offset = 0
+    , tagged = []
+    , hideGlobal = False
+    , changedOnly = False
+    , preview = 1
+    , filter = ""
+    , passing = Nothing
+    , noMatches = False
+    , search = ""
+    }
+
+
+{-| A row shown: its entry and whether it is open. -}
+type alias Line =
+    { entry : Entry
+    , expanded : Bool
+    }
+
+
+{-| The rows shown: each one whose parents are all open
+(`mode_tree_build_lines`). -}
+lines : View -> Array Entry -> Array Line
+lines v all =
+    Array.foldl
+        (\e acc ->
+            if acc.skip >= 0 && e.depth > acc.skip then
+                acc
+
+            else
+                let
+                    isOpen =
+                        Dict.get e.id v.open |> Maybe.withDefault e.open
+                in
+                { shown = Array.pushLast { entry = e, expanded = isOpen } acc.shown
+                , skip = if isOpen || not e.children then -1 else e.depth
+                }
+        )
+        { shown = [], skip = -1 }
+        all
+        |> .shown
+
+
+{-| The tagged rows among those shown, in order. -}
+visibleTagged : View -> Array Line -> Array Line
+visibleTagged v shown =
+    Array.keepIf (\l -> Array.member l.entry.id v.tagged) shown
+
+
+{-| A row's key (`mode_tree_build_lines`): its digit for the first ten,
+`M-a` to `M-z` for the next 26. -}
+rowKey : Int -> Maybe String
+rowKey i =
+    if i < 0 then
+        Nothing
+
+    else if i < 10 then
+        Just (String.fromInt i)
+
+    else if i < 36 then
+        Just ("M-" ++ String.slice (i - 10) (i - 9) "abcdefghijklmnopqrstuvwxyz")
+
+    else
+        Nothing
+
+
+
+-- THE DESCRIPTION
+
+
+{-| A piece of the description: where in its box, its text, and its
+style as tmux names it (empty: the default). -}
+type alias Piece =
+    { row : Int
+    , col : Int
+    , text : String
+    , style : String
+    }
+
+
+{-| What only tmux can say about the chosen item, asked when it is chosen:
+what its value expands to as a format, and a hook's fires (how many, and
+when last, as tmux shows the time; empty when never). -}
+type alias Detail =
+    { id : String
+    , expanded : Maybe String
+    , fires : Maybe { count : Int, last : String }
+    }
+
+
+type alias Writer =
+    { x : Int
+    , y : Int
+    , pieces : Array Piece
+    , stopped : Bool
+    }
+
+
+{-| Text written as `screen_write_text` writes it, in a box `width` wide
+and from the writer's row `lines` high: as much as fits on each line, back
+to the last space, a line break at `\n`; `more` leaves the cursor after it
+for more on the line. It stops the description, as tmux's does, when the
+text did not all fit, or ended on the last line with no more to come. -}
+write : Int -> Int -> Bool -> String -> String -> Writer -> Writer
+write width lineCount more style text w =
+    if w.stopped then
+        w
+
+    else
+        let
+            chars =
+                String.toArray text
+
+            n =
+                Array.length chars
+
+            startY =
+                w.y
+
+            charAt i =
+                Array.get i chars |> Maybe.withDefault ' '
+
+            fitEnd idx left at =
+                if idx < n && charAt idx /= '\n' && at + 1 <= left then fitEnd (idx + 1) left (at + 1) else idx
+
+            spaceBack i idx =
+                if i > idx && charAt i /= ' ' then spaceBack (i - 1) idx else i
+
+            go idx x y left out =
+                let
+                    end0 =
+                        fitEnd idx left 0
+
+                    cut =
+                        if end0 >= n then
+                            { end = end0, next = end0 }
+
+                        else if charAt end0 == '\n' || charAt end0 == ' ' then
+                            { end = end0, next = end0 + 1 }
+
+                        else
+                            let
+                                back =
+                                    spaceBack end0 idx
+                            in
+                            if back /= idx then { end = back, next = back + 1 } else { end = end0, next = end0 }
+
+                    piece =
+                        { row = y, col = x, text = String.fromArray (Array.slice idx cut.end chars), style = style }
+
+                    placed =
+                        if cut.end > idx then Array.pushLast piece out else out
+
+                    afterX =
+                        x + (cut.end - idx)
+                in
+                if y == startY + lineCount - 1 || cut.next >= n then
+                    { idx = cut.next, x = afterX, y = y, out = placed }
+
+                else
+                    go cut.next 0 (y + 1) width placed
+
+            done =
+                go 0 w.x w.y (width - w.x) w.pieces
+        in
+        if (done.y == startY + lineCount - 1 && (not more || done.x == width)) || done.idx < n then
+            { x = done.x, y = done.y, pieces = done.out, stopped = True }
+
+        else if not more || done.x == width then
+            { x = 0, y = done.y + 1, pieces = done.out, stopped = False }
+
+        else
+            { x = done.x, y = done.y, pieces = done.out, stopped = False }
+
+
+{-| The blank line tmux leaves between parts (`/* skip line */`), which
+stops the description at the box's last line. -}
+skipLine : Int -> Writer -> Writer
+skipLine height w =
+    if w.stopped then
+        w
+
+    else if w.y + 1 >= height - 1 then
+        { w | y = w.y + 1, x = 0, stopped = True }
+
+    else
+        { w | y = w.y + 1, x = 0 }
+
+
+{-| The chosen row's description, as `window_customize_draw` writes it in
+the box under the list, `width` by `height`: an option's description, what
+it is, its value, what it expands to, its choices, an example of its color
+or style, its default and the values above its level; a key's note, table,
+repeat and command; a variable's value. -}
+preview : Table -> Data -> Maybe Detail -> Entry -> { width : Int, height : Int } -> Array Piece
+preview t d detail e box =
+    let
+        newer =
+            t.version == 0 || t.version >= 38
+
+        say more style text w =
+            write box.width (box.height - w.y) more style text w
+
+        -- a label and its value, the value light grey on 3.8
+        -- (`window_customize_write_value`); one plain line on 3.6
+        labelled label value w =
+            if newer then
+                if w.stopped then
+                    w
+
+                else
+                    let
+                        afterLabel =
+                            say True "" label w
+                    in
+                    if afterLabel.stopped || afterLabel.y - w.y >= box.height - w.y then
+                        { afterLabel | stopped = True }
+
+                    else
+                        say False "fg=themelightgrey" value afterLabel
+
+            else
+                say False "" (label ++ value) w
+
+        start =
+            { x = 0, y = 0, pieces = [], stopped = False }
+
+        drawn =
+            when e.target is
+                Option o ->
+                    optionPreview t d detail o say labelled (skipLine box.height) box.height start
+
+                Key k ->
+                    when Array.findFirst (\b -> b.table == k.table && b.key == k.key) d.keys is
+                        Just found ->
+                            keyPreview t found.value say labelled (skipLine box.height) start
+
+                        Nothing ->
+                            start
+
+                Variable v ->
+                    envPreview d v say labelled (skipLine box.height) start
+
+                Section _ ->
+                    start
+    in
+    if box.width <= 0 || box.height <= 0 then
+        []
+
+    else
+        drawn.pieces
+
+
+optionPreview :
+    Table
+    -> Data
+    -> Maybe Detail
+    -> { scope : Int, name : String, key : Maybe String }
+    -> (Bool -> String -> String -> Writer -> Writer)
+    -> (String -> String -> Writer -> Writer)
+    -> (Writer -> Writer)
+    -> Int
+    -> Writer
+    -> Writer
+optionPreview t d detail o say labelled skip height start =
+    let
+        newer =
+            t.version == 0 || t.version >= 38
+
+        info =
+            Dict.get o.name t.infos
+
+        held =
+            Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault { value = "", items = [], array = False }
+
+        isHook =
+            info |> Maybe.map .hook |> Maybe.withDefault False
+
+        isArray =
+            info |> Maybe.map .array |> Maybe.withDefault held.array
+
+        value =
+            when o.key is
+                Just k ->
+                    Array.findFirst (\i -> i.key == k) held.items |> Maybe.map (\found -> found.value.value) |> Maybe.withDefault ""
+
+                Nothing ->
+                    if isArray then
+                        Array.map .value held.items |> String.join " "
+
+                    else
+                        held.value
+
+        unit =
+            info |> Maybe.map .unit |> Maybe.withDefault ""
+
+        withUnit v =
+            v ++ (if unit == "" then "" else " " ++ unit)
+
+        described =
+            when info is
+                Just i ->
+                    if i.text == "" then "This option doesn't have a description." else i.text
+
+                Nothing ->
+                    "This option doesn't have a description."
+
+        what =
+            when info is
+                Just i ->
+                    if String.contains "w" i.scopes && String.contains "p" i.scopes then
+                        "window and pane"
+
+                    else if String.contains "w" i.scopes then
+                        "window"
+
+                    else if String.contains "s" i.scopes then
+                        "session"
+
+                    else
+                        "server"
+
+                Nothing ->
+                    "user"
+
+        fires w =
+            when detail |> Maybe.andThen .fires is
+                Just f ->
+                    if f.last /= "" then
+                        say False "" ("This hook has been fired " ++ String.fromInt f.count ++ " times, last " ++ f.last ++ ".") w
+
+                    else
+                        say False "" ("This hook has been fired " ++ String.fromInt f.count ++ " times.") w
+
+                Nothing ->
+                    w
+
+        head =
+            start
+                |> say False "" described
+                |> skip
+                |> say False "" (if isHook then "This is a " ++ what ++ " hook." else "This is a " ++ what ++ " option.")
+
+        arrayPart w =
+            if isArray then
+                if isHook && newer then
+                    if o.key == Nothing then
+                        w |> say False "" "This is an array hook." |> fires |> (\x -> { x | stopped = True })
+
+                    else
+                        w
+
+                else
+                    when o.key is
+                        Just k ->
+                            say False "" (if newer then "This is an array option, key " ++ k ++ "." else "This is an array option, index " ++ k ++ ".") w
+
+                        Nothing ->
+                            say False "" "This is an array option." w |> (\x -> { x | stopped = True })
+
+            else
+                w
+
+        defaultValue =
+            if o.key == Nothing && info /= Nothing then
+                when Dict.get o.name t.defaults is
+                    Just dv ->
+                        if dv == value then Nothing else Just dv
+
+                    Nothing ->
+                        if isArray then
+                            let
+                                prefix =
+                                    o.name ++ "["
+
+                                joined =
+                                    Dict.foldl (\k v acc -> if String.startsWith prefix k then Array.pushLast v acc else acc) [] t.defaults |> String.join " "
+                            in
+                            if joined == value then Nothing else Just joined
+
+                        else
+                            Nothing
+
+            else
+                Nothing
+
+        valuePart w =
+            let
+                shown =
+                    if isHook then
+                        w |> labelled "Hook command: " (withUnit value) |> fires
+
+                    else
+                        labelled "Option value: " (withUnit value) w
+
+                expands =
+                    if info == Nothing || (info |> Maybe.map .kind) == Just "string" then
+                        when detail |> Maybe.andThen .expanded is
+                            Just x ->
+                                if x /= value then labelled "This expands to: " x else identity
+
+                            Nothing ->
+                                identity
+
+                    else
+                        identity
+
+                choices =
+                    when info is
+                        Just i ->
+                            if i.kind == "choice" then labelled "Available values are: " (String.join ", " i.choices) else identity
+
+                        Nothing ->
+                            identity
+
+                example label style =
+                    \w2 -> w2 |> say True "" label |> say False style "EXAMPLE"
+
+                colourPart =
+                    when info is
+                        Just i ->
+                            if i.kind == "colour" || i.colour then
+                                example "This is a colour option: " ("fg=" ++ value)
+
+                            else if i.style then
+                                example "This is a style option: " (detail |> Maybe.andThen .expanded |> Maybe.withDefault value)
+
+                            else
+                                identity
+
+                        Nothing ->
+                            identity
+
+                defaultPart =
+                    when defaultValue is
+                        Just dv ->
+                            labelled "The default is: " (withUnit dv)
+
+                        Nothing ->
+                            identity
+            in
+            shown |> expands |> choices |> colourPart |> defaultPart
+
+        -- the values above the option's level (`Window value (from window
+        -- N)`, `Global value`), where they are set and it is not
+        parents w =
+            if w.stopped || w.y + 1 > height - 1 then
+                { w | stopped = True }
+
+            else
+                let
+                    below =
+                        { w | y = w.y + 1, x = 0 }
+
+                    windowValue =
+                        if o.scope == 6 && not isArray then
+                            Dict.get o.name d.window |> Maybe.map .value
+
+                        else
+                            Nothing
+
+                    globalScope =
+                        if isArray then 0 else if o.scope == 6 || o.scope == 5 then 4 else if o.scope == 3 then 2 else 0
+
+                    globalValue =
+                        if globalScope == 0 then Nothing else Dict.get o.name (levelOf d globalScope) |> Maybe.map .value
+
+                    windowed =
+                        when windowValue is
+                            Just v ->
+                                labelled ("Window value (from window " ++ String.fromInt d.windowIndex ++ "): ") (withUnit v) below
+
+                            Nothing ->
+                                below
+                in
+                when globalValue is
+                    Just v ->
+                        labelled "Global value: " (withUnit v) windowed
+
+                    Nothing ->
+                        windowed
+    in
+    head |> arrayPart |> skip |> valuePart |> parents
+
+
+keyPreview : Table -> Binding -> (Bool -> String -> String -> Writer -> Writer) -> (String -> String -> Writer -> Writer) -> (Writer -> Writer) -> Writer -> Writer
+keyPreview t b say labelled skip start =
+    let
+        newer =
+            t.version == 0 || t.version >= 38
+
+        note =
+            if b.note == "" then "There is no note for this key." else b.note
+
+        period =
+            if String.endsWith "." note then "" else "."
+
+        defaultPart w =
+            when Dict.get (b.table ++ "\t" ++ b.key) t.keys is
+                Just was ->
+                    if was.command /= b.command then labelled "The default is: " was.command w else w
+
+                Nothing ->
+                    w
+    in
+    start
+        |> say False "" (note ++ period)
+        |> skip
+        |> say False "" ("This key is in the " ++ b.table ++ " table.")
+        |> (if newer then labelled "Repeat: " (if b.repeat then "on" else "off") else say False "" ("This key " ++ (if b.repeat then "does" else "does not") ++ " repeat."))
+        |> skip
+        |> labelled "Command: " b.command
+        |> defaultPart
+
+
+envPreview : Data -> { scope : Int, name : String } -> (Bool -> String -> String -> Writer -> Writer) -> (String -> String -> Writer -> Writer) -> (Writer -> Writer) -> Writer -> Writer
+envPreview d v say labelled skip start =
+    let
+        own =
+            Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) |> Maybe.map .value
+
+        global =
+            Array.findFirst (\x -> x.name == v.name) d.globalEnv |> Maybe.map .value
+    in
+    when own is
+        Just found ->
+            let
+                head =
+                    start
+                        |> say False "" ("This is a " ++ (if v.scope == 7 then "global" else "session") ++ " environment variable.")
+                        |> (if found.hidden then say False "" "This variable is hidden." else identity)
+                        |> skip
+
+                valued =
+                    when found.value is
+                        Just x ->
+                            labelled "Variable value: " x head
+
+                        Nothing ->
+                            say False "" "Variable is removed." head
+            in
+            if v.scope == 7 then
+                valued
+
+            else
+                when global is
+                    Just g ->
+                        when g.value is
+                            Just x ->
+                                labelled "Global value: " x valued
+
+                            Nothing ->
+                                say False "" "Global variable is removed." valued
+
+                    Nothing ->
+                        valued
+
+        Nothing ->
+            start
+
+
+{-| The description box's title: the chosen row's name, or its parent's
+for a key's three rows (`mode_tree_draw`). -}
+previewTitle : Array Line -> Entry -> String
+previewTitle shown e =
+    if e.asParent then
+        Array.findFirst (\l -> l.entry.id == e.parent) shown |> Maybe.map (\found -> found.value.entry.name) |> Maybe.withDefault e.name
+
+    else
+        e.name
+
+
+
+-- THE FILTER
+
+
+{-| A filter (`f`), a format, made into one tmux expands for many rows at
+once: each row's variables (`option_name`, `option_value`, `key`,
+`environment_name` and the rest `window_customize_build` sets) written in
+where the filter names them as `#{name}`, the row's answer `1` or `0`, the
+rows' answers one after another. tmux expands the rest for the pane. -}
+filterFormat : Table -> Data -> String -> Array Entry -> String
+filterFormat t d filter rows =
+    rows
+        |> Array.map
+            (\e ->
+                let
+                    vars =
+                        variablesOf t d e
+
+                    filled =
+                        Array.foldl (\var acc -> String.replace ("#{" ++ var.name ++ "}") (literal var.value) acc) filter vars
+                in
+                "#{?" ++ filled ++ ",1,0}"
+            )
+        |> String.join ""
+
+
+{-| A value written into a format as itself. -}
+literal : String -> String
+literal text =
+    text
+        |> String.replace "#" "##"
+        |> String.replace "," "#,"
+        |> String.replace "}" "#}"
+
+
+variablesOf : Table -> Data -> Entry -> Array { name : String, value : String }
+variablesOf t d e =
+    let
+        flag b =
+            if b then "1" else "0"
+    in
+    when e.target is
+        Option o ->
+            let
+                info =
+                    Dict.get o.name t.infos
+
+                held =
+                    Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault { value = "", items = [], array = False }
+
+                global =
+                    o.scope == 1 || o.scope == 2 || o.scope == 4
+            in
+            [ { name = "is_option", value = "1" }
+            , { name = "is_key", value = "0" }
+            , { name = "is_environment", value = "0" }
+            , { name = "option_name", value = o.name }
+            , { name = "option_value", value = held.value }
+            , { name = "option_is_global", value = flag global }
+            , { name = "option_is_array", value = flag held.array }
+            , { name = "option_is_hook", value = flag (info |> Maybe.map .hook |> Maybe.withDefault False) }
+            , { name = "option_scope", value = scopeText d o.scope }
+            , { name = "option_unit", value = info |> Maybe.map .unit |> Maybe.withDefault "" }
+            ]
+
+        Key k ->
+            let
+                note =
+                    Array.findFirst (\b -> b.table == k.table && b.key == k.key) d.keys |> Maybe.map (\found -> found.value.note) |> Maybe.withDefault ""
+            in
+            [ { name = "is_option", value = "0" }
+            , { name = "is_key", value = "1" }
+            , { name = "is_environment", value = "0" }
+            , { name = "key", value = k.key }
+            , { name = "key_note", value = note }
+            ]
+
+        Variable v ->
+            let
+                found =
+                    Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) |> Maybe.map .value
+            in
+            [ { name = "is_option", value = "0" }
+            , { name = "is_key", value = "0" }
+            , { name = "is_environment", value = "1" }
+            , { name = "environment_name", value = v.name }
+            , { name = "environment_value", value = found |> Maybe.andThen .value |> Maybe.withDefault "" }
+            , { name = "environment_is_global", value = flag (v.scope == 7) }
+            , { name = "environment_scope", value = scopeText d v.scope }
+            , { name = "environment_hidden", value = flag (found |> Maybe.map .hidden |> Maybe.withDefault False) }
+            , { name = "environment_removed", value = flag ((found |> Maybe.andThen .value) == Nothing) }
+            ]
+
+        Section _ ->
+            []
+
+
+
+-- WHAT THE KEYS DO
+
+
+{-| A question the mode asks (`mode_tree_set_prompt`): its label, its
+first text, whether one key answers it (a yes or no), and what an answer
+does. -}
+type alias Prompt =
+    { label : String
+    , first : String
+    , single : Bool
+    , asks : Asks
+    }
+
+
+{-| What a question's answer is for. -}
+type Asks
+    = SetOption { scope : Int, name : String, key : Maybe String }
+    | SetVariable { scope : Int, name : String, hidden : Bool }
+    | SetCommand Binding
+    | SetNote Binding
+    | AddOption { scope : Int, hook : Bool }
+    | AddVariable Int
+    | AddKey String
+    | ArrayKey { scope : Int, name : String, key : String, value : String }
+    | Reset (Array Target)
+    | Unset (Array Target)
+
+
+{-| What a key does: commands sent (then the tree asked again), a question
+asked, something said, or nothing. -}
+type Act
+    = Run (Array String)
+    | Ask Prompt
+    | Say String
+    | Stay
+
+
+{-| The level flags of `set-option` and `show-options` for a level, the
+pane named by id. -}
+levelFlags : String -> Int -> String
+levelFlags pane scope =
+    if scope == 1 then
+        "-s"
+
+    else if scope == 2 then
+        "-g"
+
+    else if scope == 3 then
+        "-t " ++ pane
+
+    else if scope == 4 then
+        "-gw"
+
+    else if scope == 5 then
+        "-w -t " ++ pane
+
+    else
+        "-p -t " ++ pane
+
+
+optionName : String -> Maybe String -> String
+optionName name key =
+    when key is
+        Just k ->
+            name ++ "[" ++ k ++ "]"
+
+        Nothing ->
+            name
+
+
+{-| An option's value as its row shows it: an array item's, an array's
+items joined, or the value. -}
+optionValue : Data -> { scope : Int, name : String, key : Maybe String } -> String
+optionValue d o =
+    let
+        held =
+            Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault { value = "", items = [], array = False }
+    in
+    when o.key is
+        Just k ->
+            itemValue d o.scope o.name k
+
+        Nothing ->
+            if held.array then Array.map .value held.items |> String.join " " else held.value
+
+
+{-| What a value is at a level, from there up: 6 the pane's, through its
+window's, to the global window level. -}
+effectiveValue : Data -> Int -> String -> Maybe String
+effectiveValue d scope name =
+    effective d scope name
+
+
+{-| What a value is at a level, from there up (`options_get`). -}
+effective : Data -> Int -> String -> Maybe String
+effective d scope name =
+    let
+        chain =
+            if scope == 6 then
+                [ 6, 5, 4 ]
+
+            else if scope == 5 then
+                [ 5, 4 ]
+
+            else if scope == 3 then
+                [ 3, 2 ]
+
+            else
+                [ scope ]
+    in
+    Array.foldl
+        (\level found ->
+            when found is
+                Just _ ->
+                    found
+
+                Nothing ->
+                    Dict.get name (levelOf d level) |> Maybe.map .value
+        )
+        Nothing
+        chain
+
+
+{-| A key pressed on the chosen row (`window_customize_key`): `Enter` and
+`s` set at the row's level (or add to a section, 3.8), `w` at the
+window's, `S` and `W` globally; `d` and `D` back to tmux's default, `u` and
+`U` unset; `a` an array item's key (3.8). `H` and `C` are the view's. -}
+act : Table -> Data -> String -> Array Target -> Maybe Entry -> Act
+act t d keyName tagged chosen =
+    let
+        newer =
+            t.version == 0 || t.version >= 38
+    in
+    if keyName == "D" || keyName == "U" then
+        manyAct keyName tagged
+
+    else
+        actOn t d newer keyName tagged chosen
+
+
+actOn : Table -> Data -> Bool -> String -> Array Target -> Maybe Entry -> Act
+actOn t d newer keyName tagged chosen =
+    when chosen is
+        Nothing ->
+            Stay
+
+        Just e ->
+            when e.target is
+                Section title ->
+                    if (keyName == "Enter" || keyName == "s") && newer then
+                        addTo d title
+
+                    else
+                        Stay
+
+                Option o ->
+                    if keyName == "Enter" || keyName == "s" then
+                        setOption t d o False True
+
+                    else if keyName == "w" then
+                        setOption t d o False False
+
+                    else if keyName == "S" || keyName == "W" then
+                        setOption t d o True False
+
+                    else if keyName == "d" then
+                        if o.key /= Nothing then Stay else Ask { label = "Reset " ++ o.name ++ " to default? ", first = "", single = True, asks = Reset [ e.target ] }
+
+                    else if keyName == "u" then
+                        Ask { label = "Unset " ++ optionName o.name o.key ++ "? ", first = "", single = True, asks = Unset [ e.target ] }
+
+                    else if keyName == "a" && newer then
+                        when o.key is
+                            Just k ->
+                                Ask
+                                    { label = "(" ++ o.name ++ "[" ++ k ++ "]) "
+                                    , first = k
+                                    , single = False
+                                    , asks = ArrayKey { scope = o.scope, name = o.name, key = k, value = itemValue d o.scope o.name k }
+                                    }
+
+                            Nothing ->
+                                Stay
+
+                    else
+                        manyAct keyName tagged
+
+                Key k ->
+                    when Array.findFirst (\b -> b.table == k.table && b.key == k.key) d.keys is
+                        Just found ->
+                            let
+                                b =
+                                    found.value
+                            in
+                            if keyName == "Enter" || keyName == "s" then
+                                if k.part == "Repeat" then
+                                    Run [ bindCommand { b | repeat = not b.repeat } ]
+
+                                else if k.part == "Command" then
+                                    Ask { label = "(" ++ b.key ++ ") ", first = b.command, single = False, asks = SetCommand b }
+
+                                else if k.part == "Note" then
+                                    Ask { label = "(" ++ b.key ++ ") ", first = b.note, single = False, asks = SetNote b }
+
+                                else
+                                    Stay
+
+                            else if keyName == "d" then
+                                Ask { label = "Reset " ++ b.key ++ " to default? ", first = "", single = True, asks = Reset [ e.target ] }
+
+                            else if keyName == "u" then
+                                Ask { label = "Unset " ++ b.key ++ "? ", first = "", single = True, asks = Unset [ e.target ] }
+
+                            else
+                                manyAct keyName tagged
+
+                        Nothing ->
+                            Stay
+
+                Variable v ->
+                    when Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) is
+                        Just found ->
+                            let
+                                var =
+                                    found.value
+
+                                global =
+                                    keyName == "S" || keyName == "W"
+
+                                scope =
+                                    if global then 7 else v.scope
+
+                                label =
+                                    if scope == 8 then "(" ++ v.name ++ ", for " ++ scopeText d 8 ++ ") " else "(" ++ v.name ++ ", global) "
+                            in
+                            if keyName == "Enter" || keyName == "s" || global then
+                                Ask { label = label, first = Maybe.withDefault "" var.value, single = False, asks = SetVariable { scope = scope, name = v.name, hidden = var.hidden } }
+
+                            else if keyName == "u" then
+                                Ask { label = "Unset " ++ v.name ++ "? ", first = "", single = True, asks = Unset [ e.target ] }
+
+                            else
+                                manyAct keyName tagged
+
+                        Nothing ->
+                            Stay
+
+
+{-| `D` and `U`: reset or unset the tagged rows, when there are any. -}
+manyAct : String -> Array Target -> Act
+manyAct keyName tagged =
+    let
+        count =
+            String.fromInt (Array.length tagged)
+    in
+    if Array.isEmpty tagged then
+        Stay
+
+    else if keyName == "D" then
+        Ask { label = "Reset " ++ count ++ " tagged to default? ", first = "", single = True, asks = Reset tagged }
+
+    else if keyName == "U" then
+        Ask { label = "Unset " ++ count ++ " tagged? ", first = "", single = True, asks = Unset tagged }
+
+    else
+        Stay
+
+
+itemValue : Data -> Int -> String -> String -> String
+itemValue d scope name k =
+    Dict.get name (levelOf d scope)
+        |> Maybe.andThen (\held -> Array.findFirst (\i -> i.key == k) held.items)
+        |> Maybe.map (\found -> found.value.value)
+        |> Maybe.withDefault ""
+
+
+{-| Enter on a section's title (3.8, `window_customize_add_current`): a
+new user option or hook, variable or key there. -}
+addTo : Data -> String -> Act
+addTo d title =
+    if title == "Server Options" then
+        Ask { label = "New user option: ", first = "@", single = False, asks = AddOption { scope = 1, hook = False } }
+
+    else if title == "Session Options" then
+        Ask { label = "New user option: ", first = "@", single = False, asks = AddOption { scope = 3, hook = False } }
+
+    else if title == "Window & Pane Options" then
+        Ask { label = "New user option: ", first = "@", single = False, asks = AddOption { scope = 6, hook = False } }
+
+    else if title == "Session Hooks" then
+        Ask { label = "New user hook: ", first = "@", single = False, asks = AddOption { scope = 3, hook = True } }
+
+    else if title == "Window & Pane Hooks" then
+        Ask { label = "New user hook: ", first = "@", single = False, asks = AddOption { scope = 6, hook = True } }
+
+    else if title == "Global Environment" then
+        Ask { label = "New environment: ", first = "", single = False, asks = AddVariable 7 }
+
+    else if title == "Session Environment" then
+        Ask { label = "New environment: ", first = "", single = False, asks = AddVariable 8 }
+
+    else if String.startsWith "Key Table - " title then
+        let
+            tableName =
+                String.dropFirst 12 title
+        in
+        Ask { label = "New key in " ++ tableName ++ ": ", first = "", single = False, asks = AddKey tableName }
+
+    else
+        Stay
+
+
+{-| Setting an option (`window_customize_set_option`): at the row's level,
+or the global one (`S`), or the window's rather than the pane's (`w`); a
+flag flipped and a choice moved on at once, anything else asked. -}
+setOption : Table -> Data -> { scope : Int, name : String, key : Maybe String } -> Bool -> Bool -> Act
+setOption t d o global allowPane =
+    let
+        info =
+            Dict.get o.name t.infos
+
+        isArray =
+            info |> Maybe.map .array |> Maybe.withDefault False
+
+        pane =
+            allowPane && (info |> Maybe.map (\i -> String.contains "p" i.scopes) |> Maybe.withDefault True)
+
+        scope =
+            if isArray then
+                o.scope
+
+            else if global then
+                if o.scope == 3 then 2 else if o.scope == 5 || o.scope == 6 then 4 else o.scope
+
+            else if o.scope == 5 || o.scope == 6 || o.scope == 4 then
+                if pane then 6 else 5
+
+            else if o.scope == 2 then
+                3
+
+            else
+                o.scope
+
+        now =
+            effective d scope o.name |> Maybe.withDefault ""
+
+        kind =
+            info |> Maybe.map .kind |> Maybe.withDefault "string"
+
+        set value =
+            "set-option " ++ levelFlags d.paneId scope ++ " " ++ Command.quote o.name ++ " " ++ Command.quote value
+
+        where_ =
+            let
+                text =
+                    scopeText d scope
+            in
+            if text /= "" then ", for " ++ text else if scope /= 1 then ", global" else ""
+
+        label =
+            if isArray then
+                when o.key is
+                    Just k ->
+                        "(" ++ o.name ++ "[" ++ k ++ "]" ++ where_ ++ ") "
+
+                    Nothing ->
+                        "(" ++ o.name ++ "[+]" ++ where_ ++ ") "
+
+            else
+                "(" ++ o.name ++ where_ ++ ") "
+
+        first =
+            when o.key is
+                Just k ->
+                    itemValue d o.scope o.name k
+
+                Nothing ->
+                    if isArray then
+                        ""
+
+                    else
+                        now
+    in
+    if kind == "flag" then
+        Run [ set (if now == "on" then "off" else "on") ]
+
+    else if kind == "choice" then
+        let
+            choices =
+                info |> Maybe.map .choices |> Maybe.withDefault []
+
+            at =
+                Array.findFirst (\c -> c == now) choices |> Maybe.map .index |> Maybe.withDefault -1
+
+            next =
+                Array.get (if at + 1 >= Array.length choices then 0 else at + 1) choices |> Maybe.withDefault now
+        in
+        Run [ set next ]
+
+    else
+        Ask { label = label, first = first, single = False, asks = SetOption { scope = scope, name = o.name, key = o.key } }
+
+
+{-| A binding as `bind-key` makes it again: its table, repeat and note
+kept. -}
+bindCommand : Binding -> String
+bindCommand b =
+    "bind-key -T "
+        ++ Command.quote b.table
+        ++ (if b.repeat then " -r" else "")
+        ++ (if b.note == "" then "" else " -N " ++ Command.quote b.note)
+        ++ " "
+        ++ Command.quote b.key
+        ++ " "
+        ++ Command.quote b.command
+
+
+{-| An answer to a question that takes text: the commands it sends, or
+what tmux says to a wrong one (`Say`). An empty answer does nothing, as in
+tmux. -}
+answered : Table -> Data -> Prompt -> String -> Act
+answered t d p given =
+    let
+        pane =
+            d.paneId
+
+        envFlags scope =
+            if scope == 7 then "-g" else "-t " ++ pane
+
+        nextIndex name scope =
+            let
+                held =
+                    Dict.get name (levelOf d scope) |> Maybe.map .items |> Maybe.withDefault []
+
+                taken k =
+                    Array.any (\i -> i.key == String.fromInt k) held
+
+                free k =
+                    if taken k then free (k + 1) else k
+            in
+            String.fromInt (free 0)
+
+        firstWord text =
+            when String.firstIndexOf " " (String.replace "\t" " " text) is
+                Just at ->
+                    { word = String.takeFirst at text, rest = String.trimLeft (String.dropFirst at text) }
+
+                Nothing ->
+                    { word = text, rest = "" }
+    in
+    when p.asks is
+        SetVariable v ->
+            -- an empty value is a value, as tmux sets it
+            Run [ "set-environment " ++ envFlags v.scope ++ (if v.hidden then " -h " else " ") ++ Command.quote v.name ++ " " ++ Command.quote given ]
+
+        _ ->
+            if given == "" then
+                Stay
+
+            else
+                when p.asks is
+                    SetOption o ->
+                        let
+                            isArray =
+                                Dict.get o.name t.infos |> Maybe.map .array |> Maybe.withDefault False
+
+                            key =
+                                if isArray then
+                                    Just (Maybe.withDefault (nextIndex o.name o.scope) o.key)
+
+                                else
+                                    o.key
+                        in
+                        Run [ "set-option " ++ levelFlags pane o.scope ++ " " ++ Command.quote (optionName o.name key) ++ " " ++ Command.quote given ]
+
+                    SetCommand b ->
+                        Run [ bindCommand { b | command = given } ]
+
+                    SetNote b ->
+                        Run [ bindCommand { b | note = given } ]
+
+                    AddOption a ->
+                        let
+                            split =
+                                firstWord given
+                        in
+                        if split.word == "" || split.rest == "" then
+                            Say "User option must be @name value"
+
+                        else if not (String.startsWith "@" split.word) || String.contains "[" split.word then
+                            Say (if a.hook then "User hook name must start with @" else "User option name must start with @")
+
+                        else
+                            Run [ (if a.hook then "set-hook " else "set-option ") ++ levelFlags pane a.scope ++ " " ++ Command.quote split.word ++ " " ++ Command.quote split.rest ]
+
+                    AddVariable scope ->
+                        if String.startsWith "-" given then
+                            if given == "-" || String.contains "=" given then
+                                Say ("Bad environment variable: " ++ given)
+
+                            else
+                                Run [ "set-environment " ++ envFlags scope ++ " -r " ++ Command.quote (String.dropFirst 1 given) ]
+
+                        else
+                            when String.firstIndexOf "=" given is
+                                Just at ->
+                                    if at == 0 then
+                                        Say "Environment variable must be NAME=value"
+
+                                    else
+                                        Run [ "set-environment " ++ envFlags scope ++ " " ++ Command.quote (String.takeFirst at given) ++ " " ++ Command.quote (String.dropFirst (at + 1) given) ]
+
+                                Nothing ->
+                                    Say "Environment variable must be NAME=value"
+
+                    AddKey tableName ->
+                        let
+                            split =
+                                firstWord given
+                        in
+                        if split.word == "" || split.rest == "" then
+                            Say "Key binding must be key command"
+
+                        else
+                            Run [ "bind-key -T " ++ Command.quote tableName ++ " " ++ Command.quote split.word ++ " " ++ Command.quote split.rest ]
+
+                    ArrayKey a ->
+                        let
+                            held =
+                                Dict.get a.name (levelOf d a.scope) |> Maybe.map .items |> Maybe.withDefault []
+                        in
+                        if Array.any (\i -> i.key == given) held then
+                            Stay
+
+                        else
+                            Run
+                                [ "set-option " ++ levelFlags pane a.scope ++ " " ++ Command.quote (a.name ++ "[" ++ given ++ "]") ++ " " ++ Command.quote a.value
+                                , "set-option -u " ++ levelFlags pane a.scope ++ " " ++ Command.quote (a.name ++ "[" ++ a.key ++ "]")
+                                ]
+
+                    _ ->
+                        Stay
+
+
+{-| A yes-or-no question answered: only `y` (or `Y`) does it. Reset puts an
+option back to tmux's default at its level and every level above
+(`window_customize_reset_option`), a key to its default binding or unbinds
+one tmux has none for; unset removes an option at its level (tmux's
+default at a global one), an array item, a key or a variable. -}
+confirmed : Table -> Data -> Prompt -> String -> Act
+confirmed t d p given =
+    if String.toLower given /= "y" then
+        Stay
+
+    else
+        when p.asks is
+            Reset targets ->
+                Run (Array.mapAndFlatten (resetCommands t d) targets)
+
+            Unset targets ->
+                Run (Array.mapAndFlatten (unsetCommands d) targets)
+
+            _ ->
+                Stay
+
+
+resetCommands : Table -> Data -> Target -> Array String
+resetCommands t d target =
+    let
+        pane =
+            d.paneId
+    in
+    when target is
+        Option o ->
+            if o.key /= Nothing then
+                []
+
+            else
+                let
+                    chain =
+                        if o.scope == 6 then
+                            [ 6, 5, 4 ]
+
+                        else if o.scope == 5 then
+                            [ 5, 4 ]
+
+                        else if o.scope == 3 then
+                            [ 3, 2 ]
+
+                        else
+                            [ o.scope ]
+                in
+                chain
+                    |> Array.keepIf (\level -> level == 1 || level == 2 || level == 4 || Dict.member o.name (levelOf d level))
+                    |> Array.map (\level -> "set-option -u " ++ levelFlags pane level ++ " " ++ Command.quote o.name)
+
+        Key k ->
+            when Dict.get (k.table ++ "\t" ++ k.key) t.keys is
+                Just was ->
+                    [ bindCommand was ]
+
+                Nothing ->
+                    [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
+
+        _ ->
+            []
+
+
+unsetCommands : Data -> Target -> Array String
+unsetCommands d target =
+    let
+        pane =
+            d.paneId
+    in
+    when target is
+        Option o ->
+            [ "set-option -u " ++ levelFlags pane o.scope ++ " " ++ Command.quote (optionName o.name o.key) ]
+
+        Key k ->
+            [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
+
+        Variable v ->
+            [ "set-environment " ++ (if v.scope == 7 then "-g" else "-t " ++ pane) ++ " -u " ++ Command.quote v.name ]
+
+        Section _ ->
+            []
+
+
+{-| The keys as tmux's help shows them for this mode (`mode_tree_help_start`,
+`window_customize_help_lines`, `mode_tree_help_end`, 3.8). -}
+help : Array String
+help =
+    [ "      Up, k │ Move cursor up"
+    , "    Down, j │ Move cursor down"
+    , "          g │ Go to top"
+    , "          G │ Go to bottom"
+    , " PPage, C-b │ Page up"
+    , " NPage, C-f │ Page down"
+    , "    Left, h │ Collapse item"
+    , "   Right, l │ Expand item"
+    , "        M-- │ Collapse all items"
+    , "        M-+ │ Expand all items"
+    , "          t │ Toggle item tag"
+    , "          T │ Untag all items"
+    , "        C-t │ Tag all items"
+    , "        C-s │ Search forward"
+    , "          n │ Repeat search forward"
+    , "          N │ Repeat search backward"
+    , "          f │ Filter items"
+    , "          O │ Change sort order"
+    , "          r │ Reverse sort order"
+    , "          v │ Toggle preview"
+    , "   Enter, s │ Set item value"
+    , "          S │ Set global item value"
+    , "          w │ Set window item value"
+    , "          d │ Set to default value"
+    , "          D │ Set tagged items to default value"
+    , "          u │ Unset an item"
+    , "          U │ Unset tagged items"
+    , "          a │ Change array key"
+    , "          e │ Open item value in editor"
+    , "          f │ Enter a filter"
+    , "          C │ Toggle only changed items"
+    , "          v │ Toggle information"
+    , "  q, Escape │ Exit mode"
+    ]

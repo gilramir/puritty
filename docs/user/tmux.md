@@ -133,9 +133,22 @@ Control mode needs tmux 3.2 or later; floating panes need 3.7 or later.
   side, each with the text it shows (without its colors). **The clock**:
   `prefix t`.
 
-Not yet under `-CC`: the buffer list (`prefix =`), the client list
-(`prefix D`) and the options editor (`prefix C`) work as in tmux but
-puritty does not draw them; the pane says so, and `q` leaves them. `prefix Ctrl+Z` does nothing and says
+- **The buffer list** (`prefix =`) and **the client list** (`prefix D`)
+  as tmux shows them.
+
+- **Customizing tmux**: `prefix C`, or **Customize tmux…** in puritty's
+  right-click menu, opens tmux's own options editor: every option, hook,
+  environment variable and key binding in a tree, and below it what the
+  chosen one is, its value, its default and its choices. Right opens a
+  section; Enter changes the chosen one (a yes/no option flips, a choice
+  moves on, anything else is asked for), `S` sets it for every session or
+  window, `d` puts it back to tmux's default, `u` unsets it; `/` finds one
+  by name, `f` filters, and on tmux 3.8 `C` shows only what you have
+  changed. `Ctrl+H` lists every key; `q` closes it. A change takes effect
+  at once, as in tmux, but is not written to your `.tmux.conf`. Not yet:
+  `e` (edit in an editor) and the mouse in it.
+
+`prefix Ctrl+Z` does nothing and says
 why in the tab bar, since tmux would then take no more keys from puritty.
 
 ## tmux drawing for itself

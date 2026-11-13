@@ -20,6 +20,7 @@ module TmuxMode exposing
     , scrollKey
     , tabKey
     , newWindow
+    , customize
     , anyMotion
     , tick
     , dueAt
@@ -47,6 +48,7 @@ import Search
 import Tmux.Bindings as Bindings
 import Tmux.Borders as Borders
 import Tmux.Command as Command
+import Tmux.Customize as Customize
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax
 import Tmux.Control as Control exposing (Event(..), Notice(..))
@@ -151,6 +153,8 @@ type alias State =
     , listing : Maybe Listing
       -- tmux's commands and their aliases, for the prompt's Tab (TM57)
     , commandNames : Array String
+      -- customize-mode, drawn by puritty (TM62)
+    , customizing : Maybe Customizing
     }
 
 
@@ -527,6 +531,10 @@ type Expect
     | ForRunExpanded Context
     | ForListFilter
     | ForListPreview String
+    | ForCustomize Int
+    | ForCustomizeNotes String
+    | ForCustomizeFilter { filter : String, ids : Array String }
+    | ForCustomizeDetail { id : String, part : Int }
     | ForPreviewList Int
     | ForPreviewCapture { serial : Int, index : Int }
     | ForDayTime
@@ -599,6 +607,7 @@ idle _ =
     , tree = Nothing
     , listing = Nothing
     , commandNames = []
+    , customizing = Nothing
     }
 
 
@@ -889,6 +898,10 @@ expectName x =
         ForRunExpanded _ -> "a run -C's commands"
         ForListFilter -> "the list's filter"
         ForListPreview _ -> "the list's preview"
+        ForCustomize part -> "customize-mode's answer " ++ String.fromInt part
+        ForCustomizeNotes _ -> "customize-mode's key notes"
+        ForCustomizeFilter _ -> "customize-mode's filter"
+        ForCustomizeDetail _ -> "customize-mode's details"
         ForPreviewList _ -> "the tree preview's panes or windows"
         ForPreviewCapture c -> "the tree preview's capture " ++ String.fromInt c.index
         ForDayTime -> "the time of day"
@@ -970,6 +983,7 @@ diagnose s =
             , if s.view /= Nothing then "a view" else ""
             , if s.tree /= Nothing then "the tree" else ""
             , if s.listing /= Nothing then "a list" else ""
+            , if s.customizing /= Nothing then "customize-mode" else ""
             , if s.drag /= Nothing then "a drag" else ""
             ]
                 |> Array.keepIf (\x -> x /= "")
@@ -1065,7 +1079,7 @@ input method commits and what is pasted, or shows a view (TM26), which
 drops them. -}
 isAsking : State -> Bool
 isAsking s =
-    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing || s.tree /= Nothing || s.listing /= Nothing
+    s.asking /= Nothing || s.view /= Nothing || s.menu /= Nothing || s.numbers /= Nothing || s.tree /= Nothing || s.listing /= Nothing || s.customizing /= Nothing
 
 
 {-| Text from an input method or a paste, typed into the prompt: a line
@@ -1868,6 +1882,30 @@ replied expect ok lines acc =
             in
             { acc | state = { st | listing = Maybe.map (\l -> { l | passing = if none then Nothing else Just names, noMatches = none, selected = 0 }) st.listing } }
 
+        ForCustomize part ->
+            let
+                got =
+                    customizeGot part (if ok then Array.map Bytes.toStringLossy lines else []) acc.state
+            in
+            { acc | state = got.state, commands = acc.commands ++ got.commands }
+
+        ForCustomizeNotes tableName ->
+            let
+                got =
+                    customizeNotes tableName (if ok then Array.map Bytes.toStringLossy lines else []) acc.state
+            in
+            { acc | state = got.state, commands = acc.commands ++ got.commands }
+
+        ForCustomizeFilter f ->
+            let
+                got =
+                    customizeFiltered f ok (Array.map Bytes.toStringLossy lines) acc.state
+            in
+            { acc | state = got.state, commands = acc.commands ++ got.commands }
+
+        ForCustomizeDetail asked ->
+            { acc | state = customizeDetailGot asked ok (Array.map Bytes.toStringLossy lines) acc.state }
+
         ForListPreview name ->
             let
                 st =
@@ -2526,7 +2564,9 @@ paint s =
                 promptClear =
                     when s.asking is
                         Just a ->
-                            if s.lookTmux && askedInPane a then
+                            -- customize-mode's questions leave the row's rest as it
+                            -- is (`mode_tree_draw_prompt`, measured, 3.8, TM62)
+                            if s.lookTmux && askedInPane a && a.purpose < 21 then
                                 [ { row = promptAt.row, col = promptAt.col, text = String.repeat promptAt.width " " } ]
 
                             else
@@ -2575,7 +2615,7 @@ paint s =
                             []
 
                 shownCursor =
-                    when { asking = s.asking, view = s.view, menu = if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing then Just {} else Nothing } is
+                    when { asking = s.asking, view = s.view, menu = if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing || s.customizing /= Nothing then Just {} else Nothing } is
                         { asking = Just _, view = _, menu = _ } ->
                             if s.lookTmux then "\u{001B}[?25h" else "\u{001B}[?25l"
 
@@ -2643,6 +2683,35 @@ paint s =
                                 when area is
                                     Just place ->
                                         drawListing (colorsOf s.status) s.lookTmux s.version place l
+
+                                    Nothing ->
+                                        []
+
+                        Nothing ->
+                            []
+
+                -- customize-mode (TM62)
+                customizeDrawn =
+                    when s.customizing is
+                        Just c ->
+                            if c.loaded < c.asked && Array.isEmpty c.data.keys then
+                                []
+
+                            else
+                                let
+                                    statusLines =
+                                        clamp 0 5 (statusRows s)
+
+                                    area =
+                                        if c.zoom then
+                                            Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines), active = True, z = Nothing }
+
+                                        else
+                                            Array.findFirst (\p -> p.id == c.pane) (tiled ++ floating) |> Maybe.map .value
+                                in
+                                when area is
+                                    Just place ->
+                                        drawCustomize s.lookTmux place c
 
                                     Nothing ->
                                         []
@@ -2834,6 +2903,7 @@ paint s =
                         |> drawPieces modesDrawn
                         |> drawPieces treeDrawn
                         |> drawPieces listingDrawn
+                        |> drawPieces customizeDrawn
                         |> (\c ->
                                 if tmuxLook then
                                     drawPieces statusBar c
@@ -3001,14 +3071,17 @@ typedHere k bytes ms s =
                 { state = { s | view = viewKey k v, clock = ms }, commands = [] }
 
             { asking = Nothing, menu = Nothing, numbers = Nothing, view = Nothing } ->
-                when { tree = s.tree, listing = s.listing } is
-                    { tree = Just t, listing = _ } ->
+                when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+                    { tree = Just t, listing = _, customizing = _ } ->
                         previewAfter (treeKey k t { s | clock = ms })
 
-                    { tree = Nothing, listing = Just l } ->
+                    { tree = Nothing, listing = Just l, customizing = _ } ->
                         listPreviewAfter (listKey k l { s | clock = ms })
 
-                    { tree = Nothing, listing = Nothing } ->
+                    { tree = Nothing, listing = Nothing, customizing = Just c } ->
+                        customizeKey k c { s | clock = ms }
+
+                    { tree = Nothing, listing = Nothing, customizing = Nothing } ->
                         keyByTable k bytes ms { s | clock = ms }
 
 
@@ -3607,7 +3680,11 @@ answer given a s =
         history =
             if given == "" || Array.last s.history == Just given then s.history else Array.pushLast given s.history
     in
-    if a.purpose >= 11 then
+    if a.purpose >= 21 then
+        -- customize-mode's own question (TM62); a yes or no is not kept
+        customizeAnswered a.purpose given { s | asking = Nothing, history = if a.purpose == 22 then s.history else history }
+
+    else if a.purpose >= 11 then
         -- a list's own question (TM55)
         listAnswered a.purpose given { s | asking = Nothing, history = history }
 
@@ -4363,7 +4440,7 @@ pointerShape select p s =
                         dragShape d.kind
 
                     Nothing ->
-                        if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing || row == barRow then
+                        if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing || s.customizing /= Nothing || row == barRow then
                             Window.ArrowPointer
 
                         else
@@ -5171,8 +5248,8 @@ paneName pane =
 `if-shell -F` that chooses between commands. -}
 runsHere : String -> Bool
 runsHere line =
-    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line, list = Syntax.listOf line, popup = Syntax.popupOf line } is
-        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing, list = Nothing, popup = Nothing } ->
+    when { ask = Syntax.askOf line, menu = Syntax.menuOf line, test = Syntax.ifFormatOf line, panes = Syntax.panesOf line, tree = Syntax.treeOf line, list = Syntax.listOf line, popup = Syntax.popupOf line, custom = Syntax.customizeOf line } is
+        { ask = Nothing, menu = Nothing, test = Nothing, panes = Nothing, tree = Nothing, list = Nothing, popup = Nothing, custom = Nothing } ->
             False
 
         _ ->
@@ -5261,14 +5338,17 @@ runLine ctx line s =
                         openMenu ctx m.menu m.after s
 
                     { menu = Nothing, panes = Nothing } ->
-                        when { tree = Syntax.treeOf fixed, list = Syntax.listOf fixed, popup = Syntax.popupOf fixed } is
-                            { tree = Nothing, list = Nothing, popup = Just pop } ->
+                        when { tree = Syntax.treeOf fixed, list = Syntax.listOf fixed, popup = Syntax.popupOf fixed, custom = Syntax.customizeOf fixed } is
+                            { tree = Nothing, list = Nothing, popup = Nothing, custom = Just cust } ->
+                                openCustomize ctx cust s
+
+                            { tree = Nothing, list = Nothing, popup = Just pop, custom = _ } ->
                                 openPopup ctx pop s
 
-                            { tree = Nothing, list = Just l, popup = _ } ->
+                            { tree = Nothing, list = Just l, popup = _, custom = _ } ->
                                 listPreviewAfter (openListing ctx l s)
 
-                            { tree = Just t, list = _, popup = _ } ->
+                            { tree = Just t, list = _, popup = _, custom = _ } ->
                                 let
                                     opened =
                                         sendAsking
@@ -5280,7 +5360,7 @@ runLine ctx line s =
                                 in
                                 { state = ran.state, commands = opened.commands ++ ran.commands }
 
-                            { tree = Nothing, list = Nothing, popup = Nothing } ->
+                            { tree = Nothing, list = Nothing, popup = Nothing, custom = Nothing } ->
                                 plainLines ctx fixed s
 
                     { menu = Nothing, panes = Just d } ->
@@ -6546,6 +6626,1129 @@ drawListing colors tmuxLook version place l =
     (Array.range 0 (place.h - 1) |> Array.map (\r -> { row = place.y + r, col = place.x, color = plainInk, text = String.repeat place.w " " }))
         ++ listed
         ++ box
+
+
+-- CUSTOMIZE-MODE (TM62)
+
+
+{-| customize-mode shown by puritty (TM62): the version's table (what no
+command reports), what tmux said and how many of the answers asked for are
+in, the raw answers 3.6's keys and the environment are read from together,
+what is shown, the chosen row's place, its details, the question asked,
+whether yes-or-no questions are answered yes at once (`-y`), the pane it
+was opened in and whether it covers every pane (`-Z`). -}
+type alias Customizing =
+    { table : Customize.Table
+    , data : Customize.Data
+    , loaded : Int
+    , asked : Int
+    , envRaw : Dict Int (Array String)
+    , keysRaw : Array String
+    , notesRaw : Dict String (Array String)
+    , view : Customize.View
+    , at : Int
+    , detail : Maybe Customize.Detail
+    , prompt : Maybe Customize.Prompt
+    , yes : Bool
+    , pane : Int
+    , zoom : Bool
+    }
+
+
+{-| customize-mode opened, from a binding, the command prompt or
+puritty's menu: everything asked of tmux, then the commands after it. -}
+openCustomize : Context -> { filter : String, zoom : Bool, noPreview : Bool, yes : Bool, after : String } -> (taken s : State) -> { state : State, commands : Array String }
+openCustomize ctx o s =
+    let
+        start =
+            Customize.startView
+
+        data0 =
+            Customize.emptyData
+
+        c =
+            { table = Customize.table s.version
+            , data = { data0 | paneId = "%" ++ String.fromInt ctx.pane }
+            , loaded = 0
+            , asked = 0
+            , envRaw = Dict.empty
+            , keysRaw = []
+            , notesRaw = Dict.empty
+            , view = { start | preview = if o.noPreview then 0 else 1, filter = o.filter }
+            , at = 0
+            , detail = Nothing
+            , prompt = Nothing
+            , yes = o.yes
+            , pane = ctx.pane
+            , zoom = o.zoom
+            }
+
+        opened =
+            customizeAsk [] c { s | said = "" }
+
+        ran =
+            runLine ctx o.after opened.state
+    in
+    { state = ran.state, commands = opened.commands ++ ran.commands }
+
+
+{-| customize-mode opened from puritty's menu (TM62): on the active pane,
+over every pane, as `prefix C` opens it. -}
+customize : (taken s : State) -> { state : State, commands : Array String }
+customize s =
+    let
+        pane =
+            s.active
+    in
+    openCustomize { pane = pane, mouse = Nothing } { filter = "", zoom = True, noPreview = False, yes = False, after = "" } s
+
+
+{-| Commands sent, then everything asked of tmux again: where the pane
+is, each level's options and hooks (`-H`), the environment and its
+hidden variables, and the keys (3.7's `list-keys -F`, 3.6's text). A
+filter is asked again when the answers are in. -}
+customizeAsk : Array String -> Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeAsk commands c s =
+    let
+        p =
+            c.data.paneId
+
+        newer =
+            s.version == 0 || s.version >= 37
+
+        queries =
+            [ { command = "display-message -p -t " ++ p ++ " " ++ Command.quote "#{pane_index}\t#{window_index}\t#{session_name}", expect = ForCustomize 0 }
+            , { command = "show-options -H -s", expect = ForCustomize 1 }
+            , { command = "show-options -H -g", expect = ForCustomize 2 }
+            , { command = "show-options -H -t " ++ p, expect = ForCustomize 3 }
+            , { command = "show-options -H -gw", expect = ForCustomize 4 }
+            , { command = "show-options -H -w -t " ++ p, expect = ForCustomize 5 }
+            , { command = "show-options -H -p -t " ++ p, expect = ForCustomize 6 }
+            , { command = "show-environment -g", expect = ForCustomize 7 }
+            , { command = "show-environment -g -h", expect = ForCustomize 8 }
+            , { command = "show-environment -t " ++ p, expect = ForCustomize 9 }
+            , { command = "show-environment -t " ++ p ++ " -h", expect = ForCustomize 10 }
+            , { command = if newer then "list-keys -F " ++ Command.quote Customize.keyFormat else "list-keys", expect = ForCustomize 11 }
+            ]
+    in
+    sendAsking
+        (Array.map (\command -> { command = command, expect = ForRan }) commands ++ queries)
+        { s | customizing = Just { c | loaded = 0, asked = Array.length queries, notesRaw = if newer then c.notesRaw else Dict.empty } }
+
+
+{-| An answer about the mode's rows taken in: where the pane is, a level's
+options, the environment, the keys; 3.6's keys ask for each table's notes.
+When all are in, the chosen row is found again and its details asked. -}
+customizeGot : Int -> Array String -> (taken s : State) -> { state : State, commands : Array String }
+customizeGot part text s =
+    when s.customizing is
+        Just c ->
+            let
+                d =
+                    c.data
+
+                newer =
+                    s.version == 0 || s.version >= 37
+
+                envRaw =
+                    if part >= 7 && part <= 10 then Dict.set part text c.envRaw else c.envRaw
+
+                envOf a b =
+                    Customize.envOf (Maybe.withDefault [] (Dict.get a envRaw)) (Maybe.withDefault [] (Dict.get b envRaw))
+
+                data =
+                    if part == 0 then
+                        when Array.first text |> Maybe.map (String.split "\t") is
+                            Just [ paneIndex, windowIndex, sessionName ] ->
+                                { d | paneIndex = Maybe.withDefault 0 (String.toInt paneIndex), windowIndex = Maybe.withDefault 0 (String.toInt windowIndex), sessionName = sessionName }
+
+                            _ ->
+                                d
+
+                    else if part == 1 then
+                        { d | server = Customize.optionsOf text }
+
+                    else if part == 2 then
+                        { d | globalSession = Customize.optionsOf text }
+
+                    else if part == 3 then
+                        { d | session = Customize.optionsOf text }
+
+                    else if part == 4 then
+                        { d | globalWindow = Customize.optionsOf text }
+
+                    else if part == 5 then
+                        { d | window = Customize.optionsOf text }
+
+                    else if part == 6 then
+                        { d | pane = Customize.optionsOf text }
+
+                    else if part >= 7 && part <= 10 then
+                        { d | globalEnv = envOf 7 8, sessionEnv = envOf 9 10 }
+
+                    else if part == 11 && newer then
+                        { d | keys = Customize.bindingsOfFormat text }
+
+                    else if part == 11 then
+                        { d | keys = Customize.bindingsOfText text c.notesRaw }
+
+                    else
+                        d
+
+                -- 3.6's notes, a table at a time
+                tables =
+                    if part == 11 && not newer then
+                        Array.foldl (\b acc -> if Array.member b.table acc then acc else Array.pushLast b.table acc) [] data.keys
+
+                    else
+                        []
+
+                updated =
+                    { c | data = data, envRaw = envRaw, keysRaw = if part == 11 then text else c.keysRaw, loaded = c.loaded + 1, asked = c.asked + Array.length tables }
+
+                notes =
+                    sendAsking
+                        (Array.map (\t -> { command = "list-keys -N -a -P '' -T " ++ Command.quote t, expect = ForCustomizeNotes t }) tables)
+                        { s | customizing = Just updated }
+            in
+            customizeSettled notes
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| 3.6's notes for a table taken in, its keys read again with them. -}
+customizeNotes : String -> Array String -> (taken s : State) -> { state : State, commands : Array String }
+customizeNotes tableName text s =
+    when s.customizing is
+        Just c ->
+            let
+                notesRaw =
+                    Dict.set tableName text c.notesRaw
+
+                d =
+                    c.data
+            in
+            customizeSettled { state = { s | customizing = Just { c | notesRaw = notesRaw, data = { d | keys = Customize.bindingsOfText c.keysRaw notesRaw }, loaded = c.loaded + 1 } }, commands = [] }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| Once every answer is in: the filter asked again if there is one, the
+chosen row found again by its id, or the row at its place
+(`mode_tree_set_current`), and its details asked. -}
+customizeSettled : (taken r0 : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+customizeSettled r0 =
+    let
+        s =
+            r0.state
+    in
+    when s.customizing is
+        Just c ->
+            if c.loaded < c.asked then
+                { state = s, commands = r0.commands }
+
+            else if c.view.filter /= "" && c.view.passing == Nothing && not c.view.noMatches then
+                let
+                    asked =
+                        customizeFilterAsk c s
+                in
+                { state = asked.state, commands = r0.commands ++ asked.commands }
+
+            else
+                let
+                    placed =
+                        customizePlaced (customizeHeight s c) c
+
+                    detailed =
+                        customizeDetailAsk { s | customizing = Just placed }
+                in
+                { state = detailed.state, commands = r0.commands ++ detailed.commands }
+
+        Nothing ->
+            { state = s, commands = r0.commands }
+
+
+{-| The rows of the tree, and those shown. -}
+customizeShown : Customizing -> { all : Array Customize.Entry, shown : Array Customize.Line }
+customizeShown c =
+    let
+        all =
+            Customize.entries c.table c.data { hideGlobal = c.view.hideGlobal, changedOnly = c.view.changedOnly, passing = c.view.passing }
+    in
+    { all = all, shown = Customize.lines c.view all }
+
+
+{-| The chosen row kept: by its id where it still is, else at its place
+(`mode_tree_set_current`). -}
+customizePlaced : Int -> Customizing -> Customizing
+customizePlaced height c =
+    let
+        shown =
+            (customizeShown c).shown
+
+        count =
+            Array.length shown
+
+        at =
+            when Array.findFirst (\l -> l.entry.id == c.view.current) shown is
+                Just found ->
+                    found.index
+
+                Nothing ->
+                    clamp 0 (max 0 (count - 1)) c.at
+    in
+    customizeAt height at c.view.offset c
+
+
+{-| The row at a place chosen, and the top row shown moved only as far as
+it must be for the row to be shown (`mode_tree_check_selected`). -}
+customizeAt : Int -> Int -> Int -> Customizing -> Customizing
+customizeAt height at offset0 c =
+    let
+        shown =
+            (customizeShown c).shown
+
+        count =
+            Array.length shown
+
+        h =
+            max 1 height
+
+        bounded =
+            if count <= h then 0 else min offset0 (count - h)
+
+        offset =
+            if at < bounded then at else if at > bounded + h - 1 then at - h + 1 else bounded
+
+        v =
+            c.view
+    in
+    { c | at = at, view = { v | current = Array.get at shown |> Maybe.map (\l -> l.entry.id) |> Maybe.withDefault "", offset = max 0 offset } }
+
+
+{-| The list's height where customize-mode is drawn, for its scrolling. -}
+customizeHeight : State -> Customizing -> Int
+customizeHeight s c =
+    customizeArea s c
+        |> Maybe.map (\a -> customizeListHeight c.view.preview (if s.lookTmux then a.h else a.h - 2))
+        |> Maybe.withDefault 10
+
+
+{-| The filter asked of tmux (`f`): each option's, key's and variable's
+row answered `1` or `0` by one `display-message`. -}
+customizeFilterAsk : Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeFilterAsk c s =
+    let
+        rows =
+            Customize.entries c.table c.data { hideGlobal = c.view.hideGlobal, changedOnly = c.view.changedOnly, passing = Nothing }
+                |> Array.keepIf
+                    (\e ->
+                        when e.target is
+                            Customize.Option o ->
+                                o.key == Nothing
+
+                            Customize.Key k ->
+                                k.part == ""
+
+                            Customize.Variable _ ->
+                                True
+
+                            Customize.Section _ ->
+                                False
+                    )
+    in
+    sendAsking
+        [ { command = "display-message -p -t " ++ c.data.paneId ++ " " ++ Command.quote (Customize.filterFormat c.table c.data c.view.filter rows)
+          , expect = ForCustomizeFilter { filter = c.view.filter, ids = Array.map .id rows }
+          }
+        ]
+        { s | customizing = Just c }
+
+
+{-| The filter's answers: the rows it keeps, or that it keeps none, when
+tmux shows every row and says so (`mode_tree_build`). -}
+customizeFiltered : { filter : String, ids : Array String } -> Bool -> Array String -> (taken s : State) -> { state : State, commands : Array String }
+customizeFiltered f ok text s =
+    when s.customizing is
+        Just c ->
+            if c.view.filter /= f.filter then
+                { state = s, commands = [] }
+
+            else
+                let
+                    answers =
+                        Array.first text |> Maybe.withDefault "" |> String.toArray
+
+                    keptIds =
+                        Array.indexedMap (\i id -> if Array.get i answers == Just '1' then Just id else Nothing) f.ids |> Array.mapAndKeepJust identity
+
+                    none =
+                        not ok || Array.isEmpty keptIds
+
+                    v =
+                        c.view
+                in
+                customizeSettled { state = { s | customizing = Just { c | view = { v | passing = if none then Nothing else Just keptIds, noMatches = none } } }, commands = [] }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| The chosen row's details asked of tmux, when it is not the row they are
+for: what an option's value expands to (a string's with `#`), and a hook's
+fires (3.8). -}
+customizeDetailAsk : (taken s : State) -> { state : State, commands : Array String }
+customizeDetailAsk s =
+    when s.customizing is
+        Just c ->
+            let
+                shown =
+                    (customizeShown c).shown
+
+                chosen =
+                    Array.get c.at shown |> Maybe.map .entry
+
+                same =
+                    Maybe.map .id c.detail == Maybe.map .id chosen
+            in
+            when chosen is
+                Just e ->
+                    if same then
+                        { state = s, commands = [] }
+
+                    else
+                        let
+                            fresh =
+                                { id = e.id, expanded = Nothing, fires = Nothing }
+                        in
+                        when e.target is
+                            Customize.Option o ->
+                                let
+                                    info =
+                                        Dict.get o.name c.table.infos
+
+                                    held =
+                                        Customize.optionValue c.data o
+
+                                    expand =
+                                        if (info == Nothing || Maybe.map .kind info == Just "string") && String.contains "#" held then
+                                            [ { command = "display-message -p -t " ++ c.data.paneId ++ " " ++ Command.quote (String.replace "%" "%%" held), expect = ForCustomizeDetail { id = e.id, part = 0 } } ]
+
+                                        else
+                                            []
+
+                                    fires =
+                                        if Maybe.map .hook info == Just True && (s.version == 0 || s.version >= 38) && o.key == Nothing then
+                                            [ { command = "show-hooks " ++ Customize.levelFlags c.data.paneId o.scope ++ " -F " ++ Command.quote "#{hook_fire_count}\t#{hook_fire_time}\t#{t/p:hook_fire_time}" ++ " " ++ Command.quote o.name, expect = ForCustomizeDetail { id = e.id, part = 1 } } ]
+
+                                        else
+                                            []
+                                in
+                                sendAsking (expand ++ fires) { s | customizing = Just { c | detail = Just fresh } }
+
+                            _ ->
+                                { state = { s | customizing = Just { c | detail = Just fresh } }, commands = [] }
+
+                Nothing ->
+                    { state = s, commands = [] }
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+customizeDetailGot : { id : String, part : Int } -> Bool -> Array String -> (taken s : State) -> State
+customizeDetailGot asked ok text s =
+    when s.customizing is
+        Just c ->
+            when c.detail is
+                Just d ->
+                    if d.id /= asked.id || not ok then
+                        s
+
+                    else if asked.part == 0 then
+                        { s | customizing = Just { c | detail = Just { d | expanded = Just (String.join "\n" text) } } }
+
+                    else
+                        when Array.first text |> Maybe.map (String.split "\t") is
+                            Just [ count, when_, pretty ] ->
+                                { s | customizing = Just { c | detail = Just { d | fires = Just { count = Maybe.withDefault 0 (String.toInt count), last = if when_ == "" || when_ == "0" then "" else pretty } } } }
+
+                            _ ->
+                                s
+
+                Nothing ->
+                    s
+
+        Nothing ->
+            s
+
+
+{-| The list's height in the pane: all of it, or less the twelve rows of
+the description (`window_customize_height`, `mode_tree_set_height`). -}
+customizeListHeight : Int -> Int -> Int
+customizeListHeight preview sy =
+    let
+        h =
+            if preview == 0 then sy else if sy > 12 then sy - 12 else sy
+    in
+    if sy - h < 2 then sy else h
+
+
+{-| Where the mode is drawn: over every pane but the status line (`-Z`),
+or in its pane. -}
+customizeArea : State -> Customizing -> Maybe { x : Int, y : Int, w : Int, h : Int }
+customizeArea s c =
+    let
+        statusLines =
+            clamp 0 5 (statusRows s)
+
+        cols =
+            s.canvas.cols
+
+        rows =
+            s.canvas.rows
+    in
+    if c.zoom then
+        Just { x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines) }
+
+    else
+        when s.layout is
+            Just cell ->
+                placedPanes s cell (Layout.tiled cell ++ Layout.floating cell)
+                    |> Array.findFirst (\p -> p.id == c.pane)
+                    |> Maybe.map (\found -> { x = found.value.x, y = found.value.y, w = found.value.w, h = found.value.h })
+
+            Nothing ->
+                Nothing
+
+
+{-| A key while customize-mode is shown, as `mode_tree_key` then
+`window_customize_key` take it (TM62). -}
+customizeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeKey k c s =
+    let
+        name =
+            Maybe.withDefault "" (lookupName k)
+
+        both =
+            customizeShown c
+
+        shown =
+            both.shown
+
+        count =
+            Array.length shown
+
+        listHeight =
+            customizeHeight s c
+
+        v =
+            c.view
+
+        line =
+            Array.get c.at shown
+
+        -- the row chosen, the top row kept so that it is shown
+        moved at offset st =
+            customizeDetailAsk { st | customizing = Just (customizeAt listHeight at offset c) }
+
+        rebuilt c2 st =
+            customizeDetailAsk { st | customizing = Just (customizePlaced listHeight c2) }
+
+        withView v2 =
+            { c | view = v2 }
+
+        newer =
+            s.version == 0 || s.version >= 38
+
+        chosenKey =
+            Array.findFirst (\i -> Customize.rowKey i == Just name) (Array.range 0 (min count 36 - 1))
+
+        taggedTargets =
+            Customize.visibleTagged v shown |> Array.map (\l -> l.entry.target)
+
+        ancestorsOf id =
+            let
+                up current acc =
+                    when Array.findFirst (\e -> e.id == current) both.all |> Maybe.map .value is
+                        Just e ->
+                            if e.parent == "" then acc else up e.parent (Array.pushLast e.parent acc)
+
+                        Nothing ->
+                            acc
+            in
+            up id []
+
+        descendantsOf id =
+            Array.keepIf (\e -> Array.member id (ancestorsOf e.id)) both.all |> Array.map .id
+    in
+    if c.loaded < c.asked && count == 0 then
+        if name == "q" || name == "Escape" || name == "C-g" then
+            { state = { s | customizing = Nothing }, commands = [] }
+
+        else
+            { state = s, commands = [] }
+
+    else
+    when chosenKey is
+        Just found ->
+            customizeAct "Enter" (customizeAt listHeight found.value v.offset c) s
+
+        Nothing ->
+            if name == "q" || name == "Escape" || name == "C-[" || name == "C-g" then
+                { state = { s | customizing = Nothing }, commands = [] }
+
+            else if name == "C-h" || name == "F1" then
+                { state = { s | view = Just (viewOf (Array.map Bytes.fromString Customize.help)) }, commands = [] }
+
+            else if name == "Up" || name == "k" || name == "C-p" then
+                if c.at == 0 then moved (count - 1) (if count >= listHeight then count - listHeight else 0) s else moved (c.at - 1) v.offset s
+
+            else if name == "Down" || name == "j" || name == "C-n" then
+                if c.at >= count - 1 then moved 0 0 s else moved (c.at + 1) v.offset s
+
+            else if name == "PPage" || name == "C-b" then
+                moved (max 0 (c.at - listHeight)) v.offset s
+
+            else if name == "NPage" || name == "C-f" then
+                moved (min (count - 1) (c.at + listHeight)) v.offset s
+
+            else if name == "g" || name == "Home" then
+                moved 0 0 s
+
+            else if name == "G" || name == "End" then
+                moved (count - 1) (if count - 1 > listHeight - 1 then count - listHeight else 0) s
+
+            else if name == "t" then
+                when line is
+                    Just l ->
+                        if l.entry.noTag then
+                            { state = s, commands = [] }
+
+                        else if Array.member l.entry.id v.tagged then
+                            { state = { s | customizing = Just (withView { v | tagged = Array.keepIf (\x -> x /= l.entry.id) v.tagged }) }, commands = [] }
+
+                        else
+                            let
+                                linked =
+                                    ancestorsOf l.entry.id ++ descendantsOf l.entry.id
+                            in
+                            { state = { s | customizing = Just (withView { v | tagged = Array.pushLast l.entry.id (Array.keepIf (\x -> not (Array.member x linked)) v.tagged) }) }, commands = [] }
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            else if name == "T" then
+                { state = { s | customizing = Just (withView { v | tagged = [] }) }, commands = [] }
+
+            else if name == "C-t" then
+                let
+                    noTagIds =
+                        Array.keepIf .noTag both.all |> Array.map .id
+
+                    all =
+                        shown
+                            |> Array.keepIf (\l -> (l.entry.parent == "" && not l.entry.noTag) || (l.entry.parent /= "" && Array.member l.entry.parent noTagIds))
+                            |> Array.map (\l -> l.entry.id)
+                in
+                { state = { s | customizing = Just (withView { v | tagged = all }) }, commands = [] }
+
+            else if name == "Left" || name == "h" || name == "-" then
+                when line is
+                    Just l ->
+                        if l.entry.flat || not l.expanded then
+                            if l.entry.parent == "" then
+                                if c.at == 0 then { state = s, commands = [] } else moved (c.at - 1) v.offset s
+
+                            else
+                                rebuilt (withView { v | open = Dict.set l.entry.parent False v.open, current = l.entry.parent }) s
+
+                        else
+                            rebuilt (withView { v | open = Dict.set l.entry.id False v.open }) s
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            else if name == "Right" || name == "l" || name == "+" then
+                when line is
+                    Just l ->
+                        if l.entry.flat || l.expanded then
+                            if c.at >= count - 1 then { state = s, commands = [] } else moved (c.at + 1) v.offset s
+
+                        else
+                            rebuilt (withView { v | open = Dict.set l.entry.id True v.open }) s
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            else if name == "M--" || name == "M-+" then
+                let
+                    tops =
+                        Array.keepIf (\e -> e.depth == 0) both.all
+                in
+                rebuilt (withView { v | open = Array.foldl (\e acc -> Dict.set e.id (name == "M-+") acc) v.open tops }) s
+
+            else if name == "/" || name == "?" || name == "C-s" then
+                { state = { s | asking = Just (customizePrompt newer 23 "(search) " "" False) }, commands = [] }
+
+            else if name == "n" || name == "N" then
+                customizeSearch (name == "n") c s
+
+            else if name == "f" then
+                { state = { s | asking = Just (customizePrompt newer 24 "(filter) " v.filter False) }, commands = [] }
+
+            else if name == "c" then
+                rebuilt (withView { v | filter = "", passing = Nothing, noMatches = False }) s
+
+            else if name == "v" then
+                rebuilt (withView { v | preview = if v.preview == 0 then 2 else if v.preview == 1 then 0 else 1 }) s
+
+            else if name == "H" then
+                rebuilt (withView { v | hideGlobal = not v.hideGlobal, passing = Nothing, noMatches = False }) s
+
+            else if name == "C" && newer then
+                rebuilt (withView { v | changedOnly = not v.changedOnly, passing = Nothing, noMatches = False }) s
+
+            else if name == "e" then
+                { state = { s | said = "puritty: e (edit in an editor) is not done under tmux -CC; Enter sets the value" }, commands = [] }
+
+            else
+                customizeActWith name taggedTargets c s
+
+
+customizeAct : String -> Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeAct name c s =
+    customizeActWith name [] c s
+
+
+{-| What `window_customize_key` does for a key: commands sent and the
+tree asked again, a question asked (at once answered yes with `-y`), or
+something said. -}
+customizeActWith : String -> Array Customize.Target -> Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeActWith name tagged c s =
+    let
+        chosen =
+            Array.get c.at (customizeShown c).shown |> Maybe.map .entry
+
+        newer =
+            s.version == 0 || s.version >= 38
+    in
+    when Customize.act c.table c.data name tagged chosen is
+        Customize.Run commands ->
+            customizeAsk commands c s
+
+        Customize.Ask p ->
+            if p.single && c.yes then
+                customizeOutcome (Customize.confirmed c.table c.data p "y") c s
+
+            else
+                { state = { s | customizing = Just { c | prompt = Just p }, asking = Just (customizePrompt newer (if p.single then 22 else 21) p.label p.first p.single) }, commands = [] }
+
+        Customize.Say text ->
+            { state = { s | said = text, customizing = Just c }, commands = [] }
+
+        Customize.Stay ->
+            { state = { s | customizing = Just c }, commands = [] }
+
+
+customizeOutcome : Customize.Act -> Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeOutcome a c s =
+    when a is
+        Customize.Run commands ->
+            customizeAsk commands { c | prompt = Nothing } s
+
+        Customize.Say text ->
+            { state = { s | said = text, customizing = Just { c | prompt = Nothing } }, commands = [] }
+
+        _ ->
+            { state = { s | customizing = Just { c | prompt = Nothing } }, commands = [] }
+
+
+{-| A question of customize-mode's (TM62): asked in the pane's last row on
+3.8 (`mode_tree_set_prompt`), at the status line on 3.6; a yes-or-no one
+answered by a key. -}
+customizePrompt : Bool -> Int -> String -> String -> Bool -> Asking
+customizePrompt inPane purpose label first single =
+    let
+        q =
+            treePrompt purpose label first
+    in
+    { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = if single then Syntax.Single else Syntax.Text, template = Nothing, incremental = False, inPane = inPane } }
+
+
+{-| customize-mode's questions answered: a value (21), a yes or no (22),
+a search (23), a filter (24). -}
+customizeAnswered : Int -> String -> (taken s : State) -> { state : State, commands : Array String }
+customizeAnswered purpose given s =
+    when s.customizing is
+        Just c ->
+            let
+                v =
+                    c.view
+            in
+            if purpose == 21 || purpose == 22 then
+                when c.prompt is
+                    Just p ->
+                        customizeOutcome (if purpose == 22 then Customize.confirmed c.table c.data p given else Customize.answered c.table c.data p given) c s
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            else if purpose == 23 then
+                if given == "" then
+                    { state = { s | customizing = Just { c | view = { v | search = "" } } }, commands = [] }
+
+                else
+                    customizeSearch True { c | view = { v | search = given } } s
+
+            else if given == "" then
+                customizeDetailAsk { s | customizing = Just (customizePlaced (customizeHeight s c) { c | view = { v | filter = "", passing = Nothing, noMatches = False } }) }
+
+            else
+                customizeFilterAsk { c | view = { v | filter = given, passing = Nothing, noMatches = False } } s
+
+        Nothing ->
+            { state = s, commands = [] }
+
+
+{-| The next row whose name holds the search, through every row, folded
+or not, from the chosen one round (`mode_tree_search_forward`), case
+ignored when the search has no capitals; its parents opened. -}
+customizeSearch : Bool -> Customizing -> (taken s : State) -> { state : State, commands : Array String }
+customizeSearch forward c s =
+    let
+        both =
+            customizeShown c
+
+        all =
+            both.all
+
+        n =
+            Array.length all
+
+        v =
+            c.view
+
+        caseless =
+            String.toLower v.search == v.search
+
+        matches e =
+            if caseless then String.contains v.search (String.toLower e.name) else String.contains v.search e.name
+
+        from =
+            Array.findFirst (\e -> e.id == v.current) all |> Maybe.map .index |> Maybe.withDefault 0
+
+        order =
+            Array.range 1 (n - 1) |> Array.map (\k -> if forward then modBy n (from + k) else modBy n (from - k + n))
+
+        parentsOf id =
+            let
+                up current acc =
+                    when Array.findFirst (\e -> e.id == current) all |> Maybe.map .value is
+                        Just e ->
+                            if e.parent == "" then acc else up e.parent (Array.pushLast e.parent acc)
+
+                        Nothing ->
+                            acc
+            in
+            up id []
+    in
+    if v.search == "" || n == 0 then
+        { state = { s | customizing = Just c }, commands = [] }
+
+    else
+        when Array.findFirst (\i -> Maybe.map matches (Array.get i all) == Just True) order |> Maybe.andThen (\found -> Array.get found.value all) is
+            Just e ->
+                customizeDetailAsk { s | customizing = Just (customizePlaced (customizeHeight s c) { c | view = { v | current = e.id, open = Array.foldl (\p acc -> Dict.set p True acc) v.open (parentsOf e.id) } }) }
+
+            Nothing ->
+                { state = { s | customizing = Just c }, commands = [] }
+
+
+{-| tmux 3.8's theme colors as tmux sends them to a client that takes
+RGB, the dark theme's (`dark-theme-*`: light grey is gray70, b3b3b3). -}
+themed : String -> String
+themed spec =
+    spec
+        |> String.replace "themelightgrey" "#b3b3b3"
+        |> String.replace "themedarkgrey" "#262626"
+        |> String.replace "themeblack" "#0d0d0d"
+        |> String.replace "themewhite" "#e6e6e6"
+        |> String.replace "themegreen" "#9acd32"
+        |> String.replace "themeyellow" "#b8860b"
+        |> String.replace "themered" "#cd5c5c"
+        |> String.replace "themeblue" "#6ca6cd"
+        |> String.replace "themecyan" "#5f9ea0"
+        |> String.replace "thememagenta" "#9370db"
+
+
+{-| customize-mode's cells (TM62), as tmux's mode tree draws it: each row's
+key, its branch, `+` or `-` for a row folded or open, its name and text,
+the chosen row in mode-style (3.8's tree-mode-selection-style), the tagged
+in cyan; below, in a box under the chosen row's name, its description. In
+puritty's look, the view's colors in a box of its own. -}
+drawCustomize : Bool -> Layout.Pane -> Customizing -> Array { row : Int, col : Int, color : String, text : String }
+drawCustomize tmuxLook place c =
+    let
+        version =
+            c.table.version
+
+        newer =
+            version == 0 || version >= 38
+
+        both =
+            customizeShown c
+
+        shown =
+            both.shown
+
+        area =
+            if tmuxLook then
+                { x = place.x, y = place.y, w = place.w, h = place.h }
+
+            else
+                { x = place.x + 2, y = place.y + 1, w = max 0 (place.w - 4), h = max 0 (place.h - 2) }
+
+        sy =
+            area.h
+
+        width =
+            area.w
+
+        listHeight =
+            customizeListHeight c.view.preview sy
+
+        withBox =
+            c.view.preview /= 0 && sy > 4 && listHeight >= 2 && sy - listHeight > 4 && width > 4
+
+        count =
+            Array.length shown
+
+        keyLen =
+            if count > 10 then 6 else 4
+
+        -- mode-style as the pane sees it, tmux's default when unset
+        modeSpec =
+            Customize.effectiveValue c.data 6 (if newer then "tree-mode-selection-style" else "mode-style")
+                |> Maybe.map (\x -> if String.contains "#{E:mode-style}" x then Maybe.withDefault "" (Customize.effectiveValue c.data 6 "mode-style") else x)
+                |> Maybe.withDefault (Maybe.withDefault "bg=yellow,fg=black" (Dict.get "mode-style" c.table.defaults))
+
+        borderSpec =
+            if newer then Customize.effectiveValue c.data 6 "tree-mode-border-style" |> Maybe.withDefault "" else ""
+
+        -- the chosen row is all mode-style, its pieces' own colors not
+        -- drawn but the level's reverse (measured, 3.8)
+        ink isChosen spec =
+            if tmuxLook then
+                Style.sgr
+                    (if isChosen then
+                        Style.apply (if String.contains "reverse" spec then "reverse" else "") (Style.apply (themed modeSpec) Style.plain)
+
+                     else
+                        Style.apply (themed spec) Style.plain
+                    )
+
+            else if isChosen then
+                activeTabColor
+
+            else if String.contains "reverse" spec then
+                viewEdgeColor
+
+            else if spec /= "" then
+                "\u{001B}[0;38;5;246;48;5;236m"
+
+            else
+                viewTextColor
+
+        grey =
+            if newer then "fg=themelightgrey" else ""
+
+        arrow =
+            if newer then "→" else ">"
+
+        top =
+            clamp 0 (max 0 (count - listHeight)) c.view.offset
+
+        -- a row's pieces: its text and style, one after another
+        piecesOf i l =
+            let
+                e =
+                    l.entry
+
+                key =
+                    when Customize.rowKey i is
+                        Just k ->
+                            String.padRight keyLen ' ' ("(" ++ k ++ ")")
+
+                        Nothing ->
+                            String.repeat keyLen " "
+
+                lead =
+                    if e.depth == 0 then
+                        ""
+
+                    else
+                        String.repeat (e.depth - 1) (if e.parentLast then "    " else "│   ") ++ (if e.last then "└─" else "├─") ++ arrow ++ " "
+
+                symbol =
+                    if e.children then
+                        [ { text = if l.expanded then "-" else "+", style = if newer then (if l.expanded then "fg=themered" else "fg=themegreen") else "" }, { text = " ", style = grey } ]
+
+                    else if e.flat then
+                        []
+
+                    else
+                        [ { text = "  ", style = grey } ]
+
+                tagged =
+                    Array.member e.id c.view.tagged
+
+                text =
+                    when e.text is
+                        Just t ->
+                            [ { text = ": ", style = grey } ]
+                                ++ (if e.scope == "" then [] else [ { text = "(" ++ e.scope ++ ")", style = "reverse" }, { text = " ", style = "" } ])
+                                ++ [ { text = t, style = if e.grey then grey else "" } ]
+
+                        Nothing ->
+                            []
+            in
+            [ { text = key ++ lead, style = grey } ]
+                ++ symbol
+                ++ [ { text = e.name ++ (if tagged then "*" else ""), style = if tagged then "fg=themecyan" else "" } ]
+                ++ text
+
+        -- the pieces placed along the row, cut at its end
+        placed row isChosen pieces =
+            Array.foldl
+                (\p acc ->
+                    let
+                        room =
+                            width - acc.col
+
+                        shownText =
+                            shownLine p.text
+
+                        used =
+                            min (max 0 room) (cellCount shownText)
+
+                        cut =
+                            clipCells used shownText
+                    in
+                    if used <= 0 then
+                        acc
+
+                    else
+                        { col = acc.col + used, out = Array.pushLast { row = row, col = area.x + acc.col, color = ink isChosen p.style, text = cut } acc.out }
+                )
+                { col = 0, out = [] }
+                pieces
+                |> .out
+
+        listed =
+            Array.slice top (top + listHeight) shown
+                |> Array.indexedMap
+                    (\j l ->
+                        let
+                            i =
+                                top + j
+
+                            isChosen =
+                                i == c.at
+                        in
+                        Array.pushFirst { row = area.y + j, col = area.x, color = ink isChosen "", text = String.repeat width " " } (placed (area.y + j) isChosen (piecesOf i l))
+                    )
+                |> Array.flatten
+
+        chosen =
+            Array.get c.at shown |> Maybe.map .entry
+
+        box =
+            if not withBox then
+                []
+
+            else
+                let
+                    boxRow =
+                        area.y + listHeight
+
+                    boxH =
+                        sy - listHeight
+
+                    inner =
+                        width - 2
+
+                    edge =
+                        ink False borderSpec
+
+                    boxName =
+                        " " ++ (Maybe.map (Customize.previewTitle shown) chosen |> Maybe.withDefault "")
+
+                    note =
+                        if c.view.filter /= "" && inner >= String.count boxName + 10 + (if c.view.noMatches then 10 else 6) + 2 then
+                            " (filter: " ++ (if c.view.noMatches then "no matches" else "active") ++ ") "
+
+                        else
+                            " "
+
+                    heading =
+                        if String.count boxName <= inner then [ { row = boxRow, col = area.x + 1, color = edge, text = boxName ++ note } ] else []
+
+                    described =
+                        when chosen is
+                            Just e ->
+                                Customize.preview c.table c.data (if Maybe.map .id c.detail == Just e.id then c.detail else Nothing) (if e.asParent then Array.findFirst (\l -> l.entry.id == e.parent) shown |> Maybe.map (\found -> found.value.entry) |> Maybe.withDefault e else e) { width = width - 4, height = boxH - 2 }
+                                    |> Array.map (\p -> { row = boxRow + 1 + p.row, col = area.x + 2 + p.col, color = ink False p.style, text = clipCells (min (max 0 (width - 4 - p.col)) (cellCount (shownLine p.text))) (shownLine p.text) })
+
+                            Nothing ->
+                                []
+                in
+                [ { row = boxRow, col = area.x, color = edge, text = "┌" ++ String.repeat inner "─" ++ "┐" } ]
+                    ++ (Array.range 1 (boxH - 2) |> Array.mapAndFlatten (\r -> [ { row = boxRow + r, col = area.x, color = edge, text = "│" }, { row = boxRow + r, col = area.x + 1, color = ink False "", text = String.repeat inner " " }, { row = boxRow + r, col = area.x + width - 1, color = edge, text = "│" } ]))
+                    ++ [ { row = boxRow + boxH - 1, col = area.x, color = edge, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
+                    ++ heading
+                    ++ described
+
+        cleared =
+            Array.range 0 (sy - 1) |> Array.map (\r -> { row = area.y + r, col = area.x, color = ink False "", text = String.repeat width " " })
+    in
+    if tmuxLook then
+        cleared ++ listed ++ box
+
+    else
+        let
+            inner =
+                place.w - 2
+
+            label =
+                " customize tmux "
+
+            foot =
+                " Enter: set  d: default  u: unset  C-h: keys  q: close "
+        in
+        [ { row = place.y, col = place.x, color = viewEdgeColor, text = "╭" ++ String.takeFirst inner (label ++ String.repeat inner "─") ++ "╮" } ]
+            ++ (Array.range 1 (place.h - 2) |> Array.mapAndFlatten (\r -> [ { row = place.y + r, col = place.x, color = viewEdgeColor, text = "│" ++ String.repeat inner " " ++ "│" } ]))
+            ++ cleared
+            ++ listed
+            ++ box
+            ++ [ { row = place.y + place.h - 1, col = place.x, color = viewEdgeColor, text = "╰" ++ String.takeFirst inner (foot ++ String.repeat inner "─") ++ "╯" } ]
+
+
+{-| How many cells a line of text takes. -}
+cellCount : String -> Int
+cellCount text =
+    String.foldl
+        (\ch n ->
+            let
+                cp =
+                    Char.toCode ch
+            in
+            n + (if cp < 0x20 || cp == 0x7F then 0 else if cp < 0x80 then 1 else Width.width cp)
+        )
+        0
+        text
 
 
 -- TREE MODE, THE CLOCK AND THE OTHER MODES (TM32)
