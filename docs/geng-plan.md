@@ -879,6 +879,11 @@ the IME matrix; the ETX X server's extensions checked, RENDER above all.
 Exit: Gilbert uses it in the ETX desktop on his RHEL8 VM, and bytes per update are
 recorded there as in phase 2.
 
+*Begun 2026-11-13 (`rhel8-etx.md`):* `inspect.sh` ran on Gilbert's VM
+(no `pidfd_open`: geng-lang Dnene53 names children by pid there; the X
+server has RENDER), and `app/distro/build.sh rhel8` builds a RHEL8 preview in an
+AlmaLinux 8 container that runs there under Xvfb. Not yet run on RHEL8.
+
 **Phase 7 · Hardening and release.** Soak tests (§7), a crash report
 that doesn't need a debugger, and packaging for Mint and RHEL8.
 
