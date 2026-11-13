@@ -1775,7 +1775,7 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
     `clock-mode-style` (12-hour, seconds).
 14. **The status line's own options** (M, R): `status-justify`,
     `status-position top`, `status 2`/off, a custom `status-format`
-    (known, TM29).
+    (known, TM29). Justify and position done (TM49).
 15. **`show-messages` (`prefix ~`)** (M): the log is mostly puritty's own
     control commands (`send-keys -K`, `refresh-client -B`, captures),
     lines cut at the edge, tmux's `message:` lines absent. tmux's log, so
@@ -2121,3 +2121,30 @@ arrow), 69 in all; app 141; `show.py` lines, marks and mouse unchanged
 window's list, which is its index unless panes were moved; scrollbars
 (3.6) are not drawn, so their columns are not left; floating panes keep
 puritty's boxes.
+
+## TM49 · status-justify and status-position (2026-11-12)
+
+Part of TM39's item 14, from the options TM47 reads. **status-justify**
+places the window list as tmux 3.8 draws it (measured side by side): `left`
+after status-left; `centre` centered between status-left's end and
+status-right's start (`format_draw_centre`'s middle); `absolute-centre`
+centered on the whole row; `right` against status-right, which stays at
+the edge (not after it, as `format_draw_right` reads at first sight: the
+list region is between the two sides). Trimming, the `<`/`>` marks and the
+click ranges move with it (TM43).
+
+**status-position** decides, in tmux's look, whether the bar is at the
+top or the bottom, once tmux has said (`barPlaced`); until then, and in
+puritty's own look, `[tmux] tabs` does as before (kept apart as
+`barTopConfig`).
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`,
+`status-justify-centre`, `-right`, `-absolute-centre`, `status-top`): the
+list at the same column in each (35, 59 before `"nene"`, 42), and with
+the status on top a click at row 10 picks the same pane on both. App
+tests 141; `show.py` status, tabs, mouse and `status-overflow-click`
+unchanged.
+
+**Not yet:** `status off` and `status 2` to `5` change how many rows
+tmux's panes have, which puritty tells tmux (`refresh-client -C`) and
+does not yet vary; a custom `status-format` is not drawn (TM29).

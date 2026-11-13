@@ -98,6 +98,9 @@ type alias State =
       -- the tab bar at the window's top, or at its bottom where tmux's
       -- status line was (`[tmux] tabs`, TM22)
     , barTop : Bool
+      -- the bar's place as the config says it; in tmux's look tmux's
+      -- status-position decides once it is known (TM49)
+    , barTopConfig : Bool
       -- tmux's key bindings, by table and key, and the prefix keys, read
       -- on attach; the table the client is in as puritty follows it, and
       -- until when a repeatable binding keeps it there, -1 when none does
@@ -513,6 +516,7 @@ idle _ =
     , tabs = []
     , nested = Dict.empty
     , barTop = False
+    , barTopConfig = False
     , keys = Bindings.follow
     , said = ""
     , version = 0
@@ -939,7 +943,18 @@ tabsQuery =
 {-| The tab bar at the top (`True`) or the bottom of the window. -}
 setBar : Bool -> (taken s : State) -> State
 setBar top s =
-    { s | barTop = top }
+    barPlaced { s | barTopConfig = top }
+
+
+{-| The bar at the top or the bottom: in tmux's look where status-position
+puts tmux's status line, else where the config says. -}
+barPlaced : (taken s : State) -> State
+barPlaced s =
+    let
+        position =
+            Maybe.withDefault "" (Dict.get "status-position" s.status.options)
+    in
+    { s | barTop = if s.lookTmux && position /= "" then position == "top" else s.barTopConfig }
 
 
 {-| The prompt puritty asks for tmux, in puritty's look, for the window's
@@ -1031,7 +1046,7 @@ typeIntoPrompt text s =
 {-| tmux's prompts and messages in tmux's look (`True`) or puritty's. -}
 setLook : Bool -> (taken s : State) -> State
 setLook tmuxLook s =
-    { s | lookTmux = tmuxLook }
+    barPlaced { s | lookTmux = tmuxLook }
 
 
 {-| The rows of puritty's window that are not tmux's: the tab bar. -}
@@ -1951,7 +1966,7 @@ notice n acc =
                     st.status.borderStatus
 
                 next =
-                    { st | status = subscribed sub.name sub.window sub.pane sub.value st.status }
+                    barPlaced { st | status = subscribed sub.name sub.window sub.pane sub.value st.status }
             in
             if next.status.borderStatus /= was then
                 -- the panes' sizes change with their titles' rows, and
@@ -4330,8 +4345,31 @@ tmuxBar cols row s =
         leftMark =
             start0 /= 0 && listW > 1
 
+        -- where the list goes, by status-justify, as tmux 3.8 draws it
+        -- (measured, TM49): after status-left, centered between the two
+        -- sides, against status-right, or centered on the whole row
+        justify =
+            Maybe.withDefault "left" (Dict.get "status-justify" s.status.options)
+
+        listAt =
+            if justify == "right" then
+                -- against status-right, which stays at the edge (measured)
+                max leftW (cols - rightW - listW)
+
+            else if justify == "centre" then
+                max leftW (leftW + ((cols - rightW) - leftW) // 2 - listW // 2)
+
+            else if justify == "absolute-centre" then
+                max 0 ((cols - listW) // 2)
+
+            else
+                leftW
+
+        rightAt =
+            cols - rightW
+
         afterLeft =
-            { at = leftW + (if leftMark then 1 else 0)
+            { at = listAt + (if leftMark then 1 else 0)
             , start = start0 + (if leftMark then 1 else 0)
             , width = listW - (if leftMark then 1 else 0)
             }
@@ -4343,7 +4381,7 @@ tmuxBar cols row s =
             { afterLeft | width = afterLeft.width - (if rightMark then 1 else 0) }
 
         marks =
-            (if leftMark then [ { row = row, col = leftW, color = Style.sgr base, text = "<" } ] else [])
+            (if leftMark then [ { row = row, col = listAt, color = Style.sgr base, text = "<" } ] else [])
                 ++ (if rightMark then [ { row = row, col = shown.at + shown.width, color = Style.sgr base, text = ">" } ] else [])
 
         listPieces =
@@ -4373,7 +4411,7 @@ tmuxBar cols row s =
             ++ Array.mapAndKeepJust (\piece -> clipPiece 0 leftW 0 piece) (laidRuns row 0 leftRuns).pieces
             ++ listPieces
             ++ marks
-            ++ Array.mapAndKeepJust (\piece -> clipPiece (rightFull - rightW) rightFull (cols - rightFull) piece) (laidRuns row 0 rightRuns).pieces
+            ++ Array.mapAndKeepJust (\piece -> clipPiece (rightFull - rightW) rightFull (rightAt - (rightFull - rightW)) piece) (laidRuns row 0 rightRuns).pieces
     , hits = hits
     }
 
