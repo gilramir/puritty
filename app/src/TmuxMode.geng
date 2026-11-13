@@ -271,12 +271,14 @@ type alias StatusLine =
     , panes : Dict Int { title : String, border : String, marked : Bool }
       -- tmux's drawing options by name, as `optionNames` lists them (TM47)
     , options : Dict String String
+      -- `status-format[1]` to `[4]` expanded, for `status 2` to `5` (TM54)
+    , extra : Dict Int String
     }
 
 
 noStatus : StatusLine
 noStatus =
-    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty, borderStatus = "off", borderStyle = "", panes = Dict.empty, options = Dict.empty }
+    { left = "", right = "", style = "bg=green,fg=black", separator = " ", leftLength = 10, rightLength = 40, windows = Dict.empty, borderStatus = "off", borderStyle = "", panes = Dict.empty, options = Dict.empty, extra = Dict.empty }
 
 
 {-| The options puritty draws by (TM47), sent together, tab between: an
@@ -1064,7 +1066,27 @@ setLook tmuxLook s =
     barPlaced { s | lookTmux = tmuxLook }
 
 
-{-| The rows of puritty's window that are not tmux's: the tab bar. -}
+{-| The rows of puritty's window that are not tmux's panes: tmux's status
+lines in tmux's look, as `status` says (`off` none, `2` to `5` that many,
+TM54), else the tab bar's one. -}
+statusRows : State -> (r : Int where 0 <= r && r <= 5)
+statusRows s =
+    if s.lookTmux then
+        when Dict.get "status" s.status.options is
+            Just "off" ->
+                0
+
+            Just v ->
+                clamp 1 5 (Maybe.withDefault 1 (String.toInt v))
+
+            Nothing ->
+                1
+
+    else
+        1
+
+
+{-| The tab bar's one row. -}
 bar : Int
 bar =
     1
@@ -1266,24 +1288,20 @@ heightOf cell =
 titles, then below the bar when it is at the top. -}
 placedPanes : State -> Layout.Cell -> Array Layout.Pane -> Array Layout.Pane
 placedPanes s cell panes =
-    Array.map (\p -> down s.barTop (fittedIn s (heightOf cell) p)) panes
+    Array.map (\p -> down (if s.barTop then statusRows s else 0) (fittedIn s (heightOf cell) p)) panes
 
 
 {-| A pane of the layout where it is drawn in puritty's window: below the
 tab bar when the bar is at the top, where tmux has it when at the bottom. -}
-down : Bool -> Layout.Pane -> Layout.Pane
-down top p =
-    if top then
-        { p | y = min 16384 (p.y + bar) }
-
-    else
-        p
+down : Int -> Layout.Pane -> Layout.Pane
+down rows p =
+    { p | y = min 16384 (p.y + clamp 0 16 rows) }
 
 
 {-| The size tmux is told: puritty's window less the tab bar. -}
-tmuxSize : { cols : Int, rows : Int } -> { cols : Int, rows : Int }
-tmuxSize size =
-    { cols = size.cols, rows = max 1 (size.rows - bar) }
+tmuxSize : Int -> { cols : Int, rows : Int } -> { cols : Int, rows : Int }
+tmuxSize statusLines size =
+    { cols = size.cols, rows = max 1 (size.rows - statusLines) }
 
 
 {-| Every pane of the session, each a line starting with `P`, so that none
@@ -1356,7 +1374,7 @@ event size e acc =
             in
             ask
                 [ { command = Command.clientFlags, expect = ForNothing }
-                , { command = Command.size (tmuxSize size), expect = ForNothing }
+                , { command = Command.size (tmuxSize (statusRows st) size), expect = ForNothing }
                 , { command = windowQuery, expect = ForWindow }
                 , { command = tabsQuery, expect = ForTabs }
                 , { command = panesQuery, expect = ForPanes }
@@ -2143,19 +2161,31 @@ notice n acc =
                 barWas =
                     scrollbarOf st
 
+                rowsWas =
+                    statusRows st
+
                 next =
                     barPlaced { st | status = subscribed sub.name sub.window sub.pane sub.value st.status }
 
                 barNow =
                     scrollbarOf next
+
+                -- `status` changed how many rows tmux's panes have: tmux
+                -- told the new size (TM54)
+                resize =
+                    if statusRows next /= rowsWas then
+                        [ Command.size (tmuxSize (statusRows next) { cols = next.canvas.cols, rows = next.canvas.rows }) ]
+
+                    else
+                        []
             in
             if next.status.borderStatus /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
                 -- the panes' sizes change with their titles' rows, and
                 -- tmux sends no layout for it
-                { acc | state = refit next }
+                { acc | state = refit next, commands = acc.commands ++ resize }
 
             else
-                { acc | state = next }
+                { acc | state = next, commands = acc.commands ++ resize }
 
         WindowRenamed r ->
             let
@@ -2303,8 +2333,10 @@ paint s =
                 floating =
                     placedPanes s cell (Layout.floating cell)
 
+                -- the status line's first row; with `status off` the last
+                -- row, where tmux's prompts and messages go over the panes
                 barRow =
-                    if s.barTop then 0 else s.canvas.rows - 1
+                    if s.barTop then 0 else s.canvas.rows - max 1 (statusRows s)
 
                 tabBar =
                     tabsOf cols barRow s
@@ -2399,14 +2431,17 @@ paint s =
                 treeDrawn =
                     when s.tree is
                         Just t ->
-                            if t.loaded < 2 then
+                            if t.loaded < 3 then
                                 []
 
                             else
                                 let
+                                    statusLines =
+                                        clamp 0 5 (statusRows s)
+
                                     area =
                                         if t.zoom then
-                                            Just { id = -1, x = 0, y = if s.barTop then bar else 0, w = cols, h = rows - bar, active = True, z = Nothing }
+                                            Just { id = -1, x = 0, y = if s.barTop then statusLines else 0, w = cols, h = max 0 (rows - statusLines), active = True, z = Nothing }
 
                                         else
                                             Array.findFirst (\p -> p.id == t.pane) (tiled ++ floating) |> Maybe.map .value
@@ -2435,7 +2470,7 @@ paint s =
                     s.lookTmux
 
                 statusBar =
-                    if s.lookTmux then (tmuxBar cols barRow s).pieces else []
+                    if s.lookTmux && statusRows s > 0 then (tmuxBar cols barRow s).pieces ++ extraStatus cols barRow s else []
 
                 -- a menu of tmux's (TM27), once tmux has answered its
                 -- formats
@@ -3783,7 +3818,7 @@ pointer how p s =
                         Nothing
 
                 barRow =
-                    if s.barTop then 0 else max 0 (p.height // max 1 p.cellHeight) - 1
+                    if statusRows s == 0 then -1 else if s.barTop then 0 else max 0 (p.height // max 1 p.cellHeight) - statusRows s
 
                 tabHit =
                     if row == barRow && p.action == 0 && p.button == 1 && s.drag == Nothing && s.grab == Nothing then
@@ -3956,7 +3991,7 @@ pointerShape select p s =
                     q.z /= Nothing && col >= q.x - 1 && col <= q.x + q.w && row >= q.y - 1 && row <= q.y + q.h && not (inside q)
 
                 barRow =
-                    if s.barTop then 0 else max 0 (p.height // max 1 p.cellHeight) - 1
+                    if statusRows s == 0 then -1 else if s.barTop then 0 else max 0 (p.height // max 1 p.cellHeight) - statusRows s
 
                 line =
                     Array.findFirst
@@ -4408,6 +4443,10 @@ statusSubscriptions =
     , "puritty-pborder:%*:#{?pane_active,#{E:pane-active-border-style},#{E:pane-border-style}}"
     , "puritty-pmarked:%*:#{pane_marked}"
     , "puritty-opts::" ++ String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") optionNames)
+    , "puritty-status1::#{T:status-format[1]}"
+    , "puritty-status2::#{T:status-format[2]}"
+    , "puritty-status3::#{T:status-format[3]}"
+    , "puritty-status4::#{T:status-format[4]}"
     ]
 
 
@@ -4477,6 +4516,18 @@ subscribed name window pane value status =
         "puritty-pmarked" ->
             perPane (\q -> { q | marked = value == "1" })
 
+        "puritty-status1" ->
+            { status | extra = Dict.set 1 value status.extra }
+
+        "puritty-status2" ->
+            { status | extra = Dict.set 2 value status.extra }
+
+        "puritty-status3" ->
+            { status | extra = Dict.set 3 value status.extra }
+
+        "puritty-status4" ->
+            { status | extra = Dict.set 4 value status.extra }
+
         "puritty-opts" ->
             { status | options = Array.foldl (\pair d -> Dict.set pair.name pair.value d) Dict.empty (Array.map2 (\option v -> { name = option, value = v }) optionNames (String.split "\t" value)) }
 
@@ -4514,6 +4565,35 @@ laidRuns row col all =
         (\r acc -> { end = acc.end + String.count r.text, pieces = Array.pushLast { row = row, col = acc.end, color = Style.sgr r.style, text = r.text } acc.pieces })
         { end = col, pieces = [] }
         all
+
+
+{-| The status lines after the first, for `status 2` to `5` (TM54): each
+`status-format[n]` as tmux expands it, in its styles, from the left; the
+list's `<` and `>` markers left out, and the list not trimmed. -}
+extraStatus : Int -> Int -> State -> Array { row : Int, col : Int, color : String, text : String }
+extraStatus cols barRow s =
+    let
+        -- on the terminal's own colors, as 3.8 draws the second line
+        -- (measured); its styles come in its text
+        base =
+            Style.plain
+    in
+    Array.range 1 (statusRows s - 1)
+        |> Array.mapAndFlatten
+            (\i ->
+                let
+                    row =
+                        barRow + i
+
+                    text =
+                        Maybe.withDefault "" (Dict.get i s.status.extra)
+                            |> String.replace "#[list=left-marker]<" "#[list=left-marker]"
+                            |> String.replace "#[list=right-marker]>" "#[list=right-marker]"
+                in
+                [ { row = row, col = 0, color = Style.sgr base, text = String.repeat cols " " } ]
+                    ++ (laidRuns row 0 (Style.runs base text)).pieces
+                    |> Array.mapAndKeepJust (\piece -> clipPiece 0 cols 0 piece)
+            )
 
 
 {-| The bar in tmux's look (TM29): tmux's status line as tmux 3.8 draws it
@@ -5069,11 +5149,14 @@ menuPlace cols rows s m =
         w =
             clamp 0 cols (max (min 1000 widest + 4) (min 1000 (String.count heading) + 4))
 
+        statusLines =
+            statusRows s
+
         areaTop =
-            if s.barTop then bar else 0
+            if s.barTop then statusLines else 0
 
         areaH =
-            rows - bar
+            rows - statusLines
 
         h =
             clamp 0 (max 0 areaH) (min 1000 (Array.length shown) + 2)
@@ -5087,7 +5170,7 @@ menuPlace cols rows s m =
                     Nothing
 
         barRow =
-            if s.barTop then 0 else rows - 1
+            if s.barTop then 0 else rows - max 1 (statusRows s)
 
         tab =
             Array.findFirst (\hit -> hit.window == s.window) (tabsOf cols barRow s).hits |> Maybe.map (\f -> f.value.from) |> Maybe.withDefault 0
@@ -7567,7 +7650,7 @@ dragged col row released d s =
                 "resize-pane -t " ++ target ++ " -x " ++ String.fromInt (max 4 (d.w + 2 + dx)) ++ " -y " ++ String.fromInt (max 3 (d.h + 2 + dy))
 
         boxTop =
-            d.y - (if top then bar else 0) - 1
+            d.y - (if top then statusRows s else 0) - 1
 
         -- the left edge goes no further right than leaves the box 4 wide
         leftDx =
@@ -7657,7 +7740,7 @@ report held p q s =
 resized : { cols : Int, rows : Int } -> (taken s : State) -> { state : State, commands : Array String }
 resized size s =
     if s.on then
-        sent [ Command.size (tmuxSize size) ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
+        sent [ Command.size (tmuxSize (statusRows s) size) ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
 
     else
         { state = s, commands = [] }

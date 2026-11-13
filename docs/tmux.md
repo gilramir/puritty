@@ -2256,3 +2256,28 @@ lines and attach unchanged.
 **Not matched:** out of a mode the history is puritty's own (its
 scrollback setting), which can be shorter than tmux's; 3.8's `autohide`
 is drawn as off.
+
+## TM54 · status off, and two to five status lines (2026-11-12)
+
+The rest of TM39's item 14. Under `-CC` puritty tells tmux its size
+(`refresh-client -C`) less the status line's row, always one. Now the rows
+are tmux's `status` (`statusRows`, in tmux's look): `off` none, so the
+panes have every row and tmux's prompts and messages go over the last;
+`2` to `5` that many, the lines after the first each `status-format[n]`
+as tmux expands it (subscribed, `#{T:status-format[n]}`), drawn from the
+left in its own styles on the terminal's colors (as 3.8 draws them,
+measured), the list's `<` `>` markers left out. A change to `status`
+sends tmux the new size. The panes' offset below a top status, a menu's
+area, the zoomed tree and a floating box's drag all take the rows from
+`statusRows`; clicks on the window list need a status line to be on.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `status-off`,
+`status-top-2lines`): tmux's window 100x30 with the status off and
+100x28 with two lines on top, as a plain client's; the same rows of the
+panes; the second line ` P: 0:[nene]*` on the terminal's background.
+App tests 141; `show.py` status, tabs, mouse, menus unchanged.
+
+**Not matched:** a list in a second line is not trimmed or kept around
+its focus (TM43 does the first line's); `#[align=right]` and `centre`
+in those lines are drawn from the left; a custom `status-format[0]` is
+still not read (TM29).
