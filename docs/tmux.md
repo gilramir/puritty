@@ -2182,5 +2182,7 @@ prompts, copy, modes, menus unchanged.
 bad state and `Ext 2` in it, as the cause says. Still open: a
 `send-keys Enter` from the prompt did not help there, though without
 `-K` tmux delivers Enter in Ext 2 here; a Claude Code that had already
-lost Enters may not have been taking keys. A new Windows build is needed
-for him to confirm the fix.
+lost Enters may not have been taking keys. **The fix confirmed by
+Gilbert at work** (2026-11-12, Windows preview 2026-11-12c from
+`ace0f29`): Enter reaches Claude Code under `-CC`, and `prefix s` lists
+the sessions in the order made (TM46).
