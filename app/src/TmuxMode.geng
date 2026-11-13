@@ -41,6 +41,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Keys
+import Search
 import Tmux.Bindings as Bindings
 import Tmux.Command as Command
 import Tmux.Style as Style
@@ -208,6 +209,11 @@ type alias Copying =
     , cy : Int
     , selection : Maybe { sx : Int, sy : Int, ex : Int, ey : Int }
     , rectangle : Bool
+    , marked : Bool
+    , count : Int
+    , partial : Bool
+    , timedOut : Bool
+    , search : String
     }
 
 
@@ -2158,13 +2164,36 @@ paint s =
                                 |> Maybe.map
                                     (\c ->
                                         let
+                                            -- and the search's count, as
+                                            -- copy-mode-position-format's
+                                            -- default says it (TM41)
                                             text =
-                                                "[" ++ String.fromInt c.scroll ++ "/" ++ String.fromInt c.hsize ++ "]"
+                                                "["
+                                                    ++ String.fromInt c.scroll
+                                                    ++ "/"
+                                                    ++ String.fromInt c.hsize
+                                                    ++ "]"
+                                                    ++ (if c.timedOut then
+                                                            " (timed out)"
+
+                                                        else if c.count > 0 then
+                                                            " (" ++ String.fromInt c.count ++ (if c.partial then "+" else "") ++ " results)"
+
+                                                        else
+                                                            ""
+                                                       )
                                         in
                                         { row = p.y, col = p.x + max 0 (p.w - String.count text), color = if s.lookTmux then messageColor else activeTabColor, text = String.takeFirst p.w text }
                                     )
                         )
                         (tiled ++ floating)
+
+                -- a copy-mode search's matches (TM41)
+                tiledMarks =
+                    searchMarks tiled s
+
+                floatMarks =
+                    searchMarks floating s
 
                 -- the tiled panes and their dividers, then each floating
                 -- pane in its box, the bottom one first
@@ -2175,7 +2204,9 @@ paint s =
                         |> Vt.invert tiledSpans
                         |> drawText borders.lineColor lines
                         |> drawPieces borders.tiled
+                        |> drawPieces tiledMarks
                         |> (\c -> Array.foldl (\p acc -> acc |> drawText (if p.id == active then activeColor else boxColor) (boxAround cols rows p) |> Vt.compose s.panes (placesIn p.id floatPlaces) |> Vt.invert (spansIn p.id floatSpans)) c floating)
+                        |> drawPieces floatMarks
                         |> drawPieces borders.floating
                         |> drawPieces copyMarks
                         |> drawPieces modesDrawn
@@ -3043,7 +3074,7 @@ spans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
 spans q s =
     when Dict.get q.id s.copy |> Maybe.andThen .selection is
         Just sel ->
-            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, cx = 0, cy = 0, selection = Nothing, rectangle = False } (Dict.get q.id s.copy)) sel
+            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, search = "" } (Dict.get q.id s.copy)) sel
 
         Nothing ->
             ownSpans q s
@@ -5426,7 +5457,7 @@ modeOverlay tmuxLook isActive mode time p =
 selection and its ends, and `rectangle_toggle`. -}
 copyFormat : String
 copyFormat =
-    "C #{pane_id} #{scroll_position} #{history_size} #{copy_cursor_x} #{copy_cursor_y} #{selection_present} #{selection_start_x} #{selection_start_y} #{selection_end_x} #{selection_end_y} #{rectangle_toggle}"
+    "C #{pane_id} #{scroll_position} #{history_size} #{copy_cursor_x} #{copy_cursor_y} #{selection_present} #{selection_start_x} #{selection_start_y} #{selection_end_x} #{selection_end_y} #{rectangle_toggle} #{search_present} #{search_count} #{search_count_partial} #{search_timed_out} #{pane_search_string}"
 
 
 inCopy : Int -> State -> Bool
@@ -5449,6 +5480,50 @@ askCopy pane acc =
 
     else
         ask [ { command = "display-message -p -t " ++ paneName pane ++ " " ++ Command.quote copyFormat, expect = ForCopy } ] { acc | state = { st | copyAsked = Dict.set pane False st.copyAsked } }
+
+
+{-| A search's matches in the panes in copy mode, where they show, as
+tmux marks them (TM41): each in copy-mode-match-style, the one at the
+cursor in copy-mode-current-match-style. tmux searches with a regular
+expression for `/` and `?`, which puritty does not have: a search with
+any of a regular expression's special characters is not marked, its
+count still said. -}
+searchMarks : Array Layout.Pane -> State -> Array { row : Int, col : Int, color : String, text : String }
+searchMarks panes s =
+    Array.mapAndFlatten
+        (\p ->
+            when Dict.get p.id s.copy is
+                Just c ->
+                    if c.marked && c.search /= "" && not (String.any (\ch -> String.contains (String.fromChar ch) ".[]()*+?{}|^$\\") c.search) then
+                        withPane p.id s
+                            (\t ->
+                                let
+                                    top =
+                                        Vt.rowsPushed t - backOf p.id s
+
+                                    cursorRow =
+                                        top + c.cy
+                                in
+                                Search.matchesIn c.search top (top + p.h - 1) t
+                                    |> Array.keepIf (\m -> m.start.col < p.w)
+                                    |> Array.map
+                                        (\m ->
+                                            { row = p.y + m.start.row - top
+                                            , col = p.x + m.start.col
+                                            , color = if m.start.row == cursorRow && m.start.col <= c.cx && c.cx <= m.end.col then currentMatchColor else matchColor
+                                            , text = Vt.selectionText m.start m.end t
+                                            }
+                                        )
+                            )
+                            |> Maybe.withDefault []
+
+                    else
+                        []
+
+                Nothing ->
+                    []
+        )
+        panes
 
 
 {-| An answer to `copyFormat`: the pane's copy mode kept, and its view
@@ -5484,6 +5559,11 @@ copyLine bytes s =
                         , cy = num 5
                         , selection = if num 6 == 1 then Just { sx = num 7, sy = num 8, ex = num 9, ey = num 10 } else Nothing
                         , rectangle = num 11 == 1
+                        , marked = num 12 == 1
+                        , count = num 13
+                        , partial = num 14 == 1
+                        , timedOut = num 15 == 1
+                        , search = String.join " " (Array.dropFirst 16 words)
                         }
 
                     most =
@@ -5828,6 +5908,18 @@ boxColor =
 activeColor : String
 activeColor =
     "\u{001B}[0;38;5;214m"
+
+
+{-| copy-mode-match-style's default, and copy-mode-current-match-style's
+(TM41). -}
+matchColor : String
+matchColor =
+    "\u{001B}[0;30;46m"
+
+
+currentMatchColor : String
+currentMatchColor =
+    "\u{001B}[0;30;45m"
 
 
 {-| tmux's `message-style` by default, black on yellow: a prompt or a

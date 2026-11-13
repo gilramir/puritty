@@ -20,6 +20,8 @@ import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Toml
 import RestoreFile exposing (TabColor(..))
+import Search
+import Vt
 import Words
 
 
@@ -31,7 +33,7 @@ main =
                 U.run env
                     { name = "puritty-app"
                     , version = "0.1.0"
-                    , suites = [ schema, writing, window, hosts, words, chords, restoring, diagnostics ]
+                    , suites = [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching ]
                     }
             )
 
@@ -1204,4 +1206,35 @@ diagnostics =
         , { name = "lines of a paste", test = \_ -> Expect.equal [ 0, 1, 2, 2 ] [ Diag.lines (Bytes.fromString ""), Diag.lines (Bytes.fromString "a"), Diag.lines (Bytes.fromString "a\nb"), Diag.lines (Bytes.fromString "a\nb\n") ] }
         , { name = "the clock", test = \_ -> Expect.equal "14:05:33.120" (Diag.clock (((14 * 60 + 5) * 60 + 33) * 1000 + 120)) }
         , { name = "a line while the log is off is dropped", test = \_ -> Expect.equal [] (Diag.add 5 "key" "Enter" Diag.off).lines }
+        ]
+
+
+{-| tmux's copy-mode matches as puritty marks them (`docs/tmux.md` TM41). -}
+searching : U.Suite
+searching =
+    let
+        term text =
+            Vt.new { cols = 20, rows = 4, scrollbackBytes = 0, pageRows = Vt.defaultPageRows, checksums = False, cellWidth = 9, cellHeight = 17 }
+                |> Vt.feed (Bytes.fromString text)
+
+        found query text =
+            Search.matchesIn query 0 3 (term text)
+                |> Array.map (\m -> [ m.start.row, m.start.col, m.end.col ])
+    in
+    run "Search"
+        [ { name = "every match in a row, left to right, not overlapping"
+          , test = \_ -> Expect.equal [ [ 0, 0, 1 ], [ 0, 2, 3 ], [ 1, 1, 2 ] ] (found "aa" "aaaaa\r\nbaab")
+          }
+        , { name = "a lowercase query ignores case"
+          , test = \_ -> Expect.equal [ [ 0, 0, 2 ], [ 0, 4, 6 ] ] (found "foo" "FOO Foo")
+          }
+        , { name = "a query with a capital keeps case"
+          , test = \_ -> Expect.equal [ [ 0, 4, 6 ] ] (found "Foo" "FOO Foo")
+          }
+        , { name = "columns count a wide character's two cells"
+          , test = \_ -> Expect.equal [ [ 0, 3, 4 ] ] (found "ab" "\u{D55C}xab")
+          }
+        , { name = "an empty query finds nothing"
+          , test = \_ -> Expect.equal [] (found "" "abc")
+          }
         ]

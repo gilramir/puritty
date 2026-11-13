@@ -1,4 +1,4 @@
-module Search exposing (State, start, find, backFor)
+module Search exposing (State, start, find, backFor, matchesIn)
 
 {-| Scrollback search (`docs/phase3-select.md` §23): the query as typed,
 and the match shown, found row by row in the scrollback and the screen,
@@ -98,3 +98,59 @@ backFor row back t =
 
     else
         clamp 0 (Vt.scrollbackRows t) (Vt.rowsPushed t - row + t.rows // 2)
+
+
+{-| Every match of `query` in rows `first` to `last`, as tmux's copy mode
+marks them (`docs/tmux.md` TM41): within one row, left to right, not
+overlapping, and ignoring case when the query has no capitals, as tmux's
+`window_copy_is_lowercase`. -}
+matchesIn : String -> Int -> Int -> Vt.Term -> Array { start : Vt.Point, end : Vt.Point }
+matchesIn query first last t =
+    if query == "" || last < first then
+        []
+
+    else
+        let
+            caseless =
+                String.toLower query == query
+
+            n =
+                String.count query
+        in
+        Array.mapAndFlatten (\row -> rowMatches query caseless n row t) (Array.range first last)
+
+
+rowMatches : String -> Bool -> Int -> Int -> Vt.Term -> Array { start : Vt.Point, end : Vt.Point }
+rowMatches query caseless n row t =
+    let
+        text =
+            Vt.selectionText { row = row, col = 0 } { row = row, col = t.cols - 1 } t
+
+        hay =
+            if caseless then String.toLower text else text
+    in
+    matchesFrom query n row text hay 0 []
+
+
+matchesFrom : String -> Int -> Int -> String -> String -> Int -> Array { start : Vt.Point, end : Vt.Point } -> Array { start : Vt.Point, end : Vt.Point }
+matchesFrom query n row text hay from found =
+    when String.firstIndexOf query (String.dropFirst from hay) is
+        Just j ->
+            let
+                i =
+                    from + j
+
+                before =
+                    cells (String.takeFirst i text)
+
+                within =
+                    cells (String.slice i (i + n) text)
+            in
+            if n < 1 then
+                found
+
+            else
+                matchesFrom query n row text hay (i + n) (Array.pushLast { start = { row = row, col = before }, end = { row = row, col = before + max 1 within - 1 } } found)
+
+        Nothing ->
+            found

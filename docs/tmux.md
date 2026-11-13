@@ -1408,7 +1408,8 @@ the cursor; `Enter` (3.8's vi table has no `y`) copies `6\nline 57\nl`
 into tmux's buffer and leaves copy mode. Every other scenario gives what
 it gave.
 
-**Not yet:** search matches are not marked (tmux highlights them); a line
+**Not yet:** ~~search matches are not marked (tmux highlights them)~~
+(marked, TM41); a line
 longer than the pane that tmux wrapped is where puritty wrapped it, which
 is the same only when the pane's width has not changed since; lines beyond
 puritty's own history (`[scrollback] lines`) cannot be shown. Tree mode,
@@ -1727,7 +1728,7 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
    format (`search_count`); the highlighting means puritty searching its
    own copy of the history with the string it sent. Also: the `(search
    up)` and `(goto line)` prompts belong on the pane's last row, not the
-   bar.
+   bar. Count and marks done (TM41); the prompts' place not yet.
 2. **emacs `C-r` in copy mode does not search** (M): tmux's cursor moved
    with each character typed and stayed after Enter; under puritty it
    did not move. A bug, not a missing drawing; first to look at. Fixed
@@ -1841,3 +1842,39 @@ unchanged.
 incremental prompt go on to copy mode with the prompt left open
 (`prompt_check_move`); puritty keeps them for the line and its history.
 A paste into the prompt changes the line without running the search.
+
+## TM41 · A copy-mode search's matches marked, and counted (2026-11-12)
+
+TM39's item 1. tmux marks every match of a copy-mode search in
+`copy-mode-match-style` (black on cyan by default), the one at the cursor
+in `copy-mode-current-match-style` (black on magenta), and its default
+`copy-mode-position-format` (3.6a and 3.8 alike) says `(N results)` after
+the position, `N+` when the count stopped early, `(timed out)` when the
+search did.
+
+**tmux does not hand the marks over**: `capture-pane -M` gives copy
+mode's text without its styles (measured, 3.6a and 3.8). So puritty
+finds them itself, in its own copy of the pane's rows
+(`Search.matchesIn`), as tmux's `window_copy_search_marks` does: within a
+row, left to right, not overlapping, ignoring case when the search has
+no capitals (`window_copy_is_lowercase`). The search string, whether
+marks are up, the count and its two flags come with copy mode's state
+after each key (`copyFormat`: `search_present`, `search_count`,
+`search_count_partial`, `search_timed_out`, `pane_search_string`), and
+the position reads `[0/14] (14 results)`. The marks are drawn on tiled
+panes before the floating boxes and on floating ones after.
+
+**Checked side by side** (`bench/tmux/compare`, `copy-emacs2`,
+`copy-wrapped-search`): the same cells marked as a plain client's, the
+same current match, the same `(14 results)` and `(7 results)`. puritty
+draws its cursor on the current match's first cell where the plain
+capture shows none. Tests: `Search` (5), app 137; `show.py` copy and
+prompts unchanged.
+
+**Not matched:**
+- vi's `/` and `?` (`search-forward`, `search-backward`) are regular
+  expressions in tmux, and puritty has none: a search holding any of
+  `. [ ] ( ) * + ? { } | ^ $ \` is not marked. Its count is still said.
+- A match across a wrapped row's end is found by tmux and not by puritty.
+- The styles are tmux's defaults, not the user's (TM39.4, reading the
+  options).
