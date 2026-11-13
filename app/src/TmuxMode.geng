@@ -149,8 +149,8 @@ listed, `loaded` once both lists are in, which sessions are open, the row
 chosen, the command a choice runs, the pane it was run in, and whether
 it covers every pane (`-Z`). -}
 type alias Tree =
-    { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, text : String }
-    , windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, text : String }
+    { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, activity : Int, text : String }
+    , windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, activity : Int, text : String }
     , panes : Array { window : Int, id : Int, index : Int, command : String, text : String }
     , loaded : Int
     , open : Dict Int Bool
@@ -161,6 +161,15 @@ type alias Tree =
     , passing : Maybe (Array Int)
     , noMatches : Bool
     , search : String
+      -- the preview off (0), as tmux draws it (1) or big (2), `v`; the sort
+      -- (0 index, 1 name, 2 time, `O`) and whether reversed (`r`); the
+      -- rows tagged, by target (`t`); and, while the lists are asked
+      -- again, the row chosen before (TM46)
+    , previewMode : Int
+    , sort : Int
+    , reversed : Bool
+    , tagged : Array String
+    , reload : Maybe { session : Int, window : Int, pane : Int }
     , template : String
     , pane : Int
     , zoom : Bool
@@ -1409,8 +1418,8 @@ replied expect ok lines acc =
                     Array.mapAndKeepJust
                         (\line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
-                                [ "S", id, attached, count, name, text ] ->
-                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault 0 (String.toInt count), name = name, text = text }
+                                [ "S", id, attached, count, activity, name, text ] ->
+                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault 0 (String.toInt count), activity = Maybe.withDefault 0 (String.toInt activity), name = name, text = text }
 
                                 _ ->
                                     Nothing
@@ -1428,13 +1437,14 @@ replied expect ok lines acc =
                     Array.mapAndKeepJust
                         (\line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
-                                [ "W", session, id, index, active, panes, name, text ] ->
+                                [ "W", session, id, index, active, panes, activity, name, text ] ->
                                     Just
                                         { session = idOf session
                                         , id = idOf id
                                         , index = Maybe.withDefault 0 (String.toInt index)
                                         , active = active == "1"
                                         , panes = Maybe.withDefault 1 (String.toInt panes)
+                                        , activity = Maybe.withDefault 0 (String.toInt activity)
                                         , name = name
                                         , text = text
                                         }
@@ -2964,8 +2974,8 @@ answer given a s =
             if given == "" || Array.last s.history == Just given then s.history else Array.pushLast given s.history
     in
     if a.purpose /= 0 then
-        -- the tree's own question (TM45)
-        treeAnswered a.purpose given { s | asking = Nothing, history = history }
+        -- the tree's own question (TM45); a kill's y is not kept for Up
+        treeAnswered a.purpose given { s | asking = Nothing, history = if a.purpose == 3 || a.purpose == 4 then s.history else history }
 
     else
     when a.ask is
@@ -4404,7 +4414,7 @@ runLine ctx line s =
                                     opened =
                                         sendAsking
                                             (treeQueries s.version ++ (if t.filter == "" then [] else [ filterQuery t.filter ]))
-                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, start = t.start, filter = t.filter, passing = Nothing, noMatches = False, search = "", template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
+                                            { s | said = "", tree = Just { sessions = [], windows = [], panes = [], loaded = 0, open = Dict.empty, openWindows = Dict.empty, selected = 0, start = t.start, filter = t.filter, passing = Nothing, noMatches = False, search = "", previewMode = 1, sort = 0, reversed = False, tagged = [], reload = Nothing, template = t.template, pane = ctx.pane, zoom = t.zoom, preview = noPreview } }
 
                                     ran =
                                         runLine ctx t.after opened.state
@@ -5114,6 +5124,27 @@ treeLoaded shown active t =
         t
 
     else
+        when t.reload is
+            Just r ->
+                -- asked again after a kill or a command: the rows open as
+                -- they were, the same row chosen where it still is
+                let
+                    again =
+                        { t | reload = Nothing }
+                in
+                when Array.findFirst (\x -> x.session == r.session && x.window == r.window && x.pane == r.pane) (treeRows again) is
+                    Just found ->
+                        { again | selected = found.index }
+
+                    Nothing ->
+                        keepSelected again
+
+            Nothing ->
+                treeOpened shown active t
+
+
+treeOpened : Int -> Int -> Tree -> Tree
+treeOpened shown active t =
         let
             current =
                 Array.findFirst (\w -> w.id == shown) t.windows |> Maybe.map (\w -> w.value.session) |> Maybe.withDefault -1
@@ -5166,7 +5197,36 @@ treeAnswered : Int -> String -> (taken s : State) -> { state : State, commands :
 treeAnswered purpose given s =
     when s.tree is
         Just t ->
-            if purpose == 1 then
+            if purpose == 3 then
+                -- kill the chosen row, on `y`
+                when Array.get t.selected (treeRows t) is
+                    Just r ->
+                        if given == "y" then reloadTree [ killOf (rowTarget r) ] t s else { state = s, commands = [] }
+
+                    Nothing ->
+                        { state = s, commands = [] }
+
+            else if purpose == 4 then
+                if given == "y" then reloadTree (Array.map killOf t.tagged) t s else { state = s, commands = [] }
+
+            else if purpose == 5 then
+                -- the command for each tagged row, or the chosen one, `%%`
+                -- its target
+                let
+                    targets =
+                        if Array.isEmpty t.tagged then
+                            Array.get t.selected (treeRows t) |> Maybe.map (\r -> [ rowTarget r ]) |> Maybe.withDefault []
+
+                        else
+                            t.tagged
+                in
+                if String.trim given == "" then
+                    { state = s, commands = [] }
+
+                else
+                    reloadTree (Array.map (\target -> Syntax.fill (Syntax.tokens given) [ target ]) targets) t s
+
+            else if purpose == 1 then
                 { state = { s | tree = Just (searchTree True { t | search = given }) }, commands = [] }
 
             else if given == "" then
@@ -5218,6 +5278,27 @@ refiltered passing t =
             { opened | selected = 0 }
 
 
+{-| The tree's orders as tmux names them: 3.6's `window_tree_sort_list`,
+3.8's `window_tree_order_seq` (`activity` is 3.6's `time`; `z`, the
+floating panes' order, sorts as index here). -}
+sortNames : Int -> Array String
+sortNames version =
+    if version >= 38 then [ "index", "name", "activity", "z" ] else [ "index", "name", "time" ]
+
+
+{-| The command that kills a target, as `window_tree_kill_each`. -}
+killOf : String -> String
+killOf target =
+    if String.startsWith "%" target then
+        "kill-pane -t " ++ Command.quote target
+
+    else if String.startsWith "@" target then
+        "kill-window -t " ++ Command.quote target
+
+    else
+        "kill-session -t " ++ Command.quote target
+
+
 {-| The chosen row kept within the rows there are. -}
 keepSelected : Tree -> Tree
 keepSelected t =
@@ -5243,7 +5324,7 @@ searchTree forward t =
 
             -- every item, in the tree's order, as `{ session, window, pane, name }`
             items =
-                kept t
+                treeOrder t
                     |> (\k ->
                             k.sessions
                                 |> Array.mapAndFlatten
@@ -5296,10 +5377,73 @@ searchTree forward t =
                 t
 
 
+{-| The rows the filter keeps, in the tree's order (`O`, `r`), as
+`window_tree_cmp_session` and `_window` sort them: by index (a session's
+id), by name, or by time, the most recent first and then by name; panes
+by their number whatever the order, as tmux's are but for time, which
+tmux sorts by a pane's last use and does not say. -}
+treeOrder : Tree -> { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, activity : Int, text : String }, windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, activity : Int, text : String }, panes : Array { window : Int, id : Int, index : Int, command : String, text : String } }
+treeOrder t =
+    let
+        k =
+            kept t
+
+        flip o =
+            if t.reversed then
+                when o is
+                    LT ->
+                        GT
+
+                    GT ->
+                        LT
+
+                    EQ ->
+                        EQ
+
+            else
+                o
+
+        byTime a b nameA nameB =
+            if a > b then LT else if a < b then GT else compare nameA nameB
+    in
+    { sessions =
+        Array.sortWith
+            (\a b ->
+                flip
+                    (if t.sort == 0 || t.sort == 3 then
+                        compare a.id b.id
+
+                     else if t.sort == 1 then
+                        compare a.name b.name
+
+                     else
+                        byTime a.activity b.activity a.name b.name
+                    )
+            )
+            k.sessions
+    , windows =
+        Array.sortWith
+            (\a b ->
+                flip
+                    (if t.sort == 0 || t.sort == 3 then
+                        compare a.index b.index
+
+                     else if t.sort == 1 then
+                        compare a.name b.name
+
+                     else
+                        byTime a.activity b.activity a.name b.name
+                    )
+            )
+            k.windows
+    , panes = Array.sortWith (\a b -> flip (compare a.index b.index)) k.panes
+    }
+
+
 {-| The sessions, windows and panes the filter keeps: a pane tmux said
 passes, a window with such a pane, a session with such a window; all of
 them when there is no filter or nothing passes. -}
-kept : Tree -> { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, text : String }, windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, text : String }, panes : Array { window : Int, id : Int, index : Int, command : String, text : String } }
+kept : Tree -> { sessions : Array { id : Int, name : String, attached : Bool, windows : Int, activity : Int, text : String }, windows : Array { session : Int, id : Int, index : Int, name : String, active : Bool, panes : Int, activity : Int, text : String }, panes : Array { window : Int, id : Int, index : Int, command : String, text : String } }
 kept t =
     when t.passing is
         Just ids ->
@@ -5479,8 +5623,8 @@ treeQueries version =
             else
                 "#{pane_current_command}#{?pane_active,*,}#{?pane_marked,M,}" ++ paneTitle
     in
-    [ { command = "list-sessions -F " ++ Command.quote ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
-    , { command = "list-windows -a -F " ++ Command.quote ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
+    [ { command = "list-sessions -F " ++ Command.quote ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
+    , { command = "list-windows -a -F " ++ Command.quote ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_activity}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
     , { command = "list-panes -a -F " ++ Command.quote ("P\t#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t" ++ paneText), expect = ForTreePanes }
     ]
 
@@ -5506,7 +5650,7 @@ treeRows : Tree -> Array TreeRow
 treeRows t0 =
     let
         t =
-            kept t0
+            treeOrder t0
 
         sessionCount =
             Array.length t.sessions
@@ -5669,6 +5813,102 @@ treeKey k t s =
         in
         { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> Just x.session == session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault 0 } }, commands = [] }
 
+    else if name == "t" then
+        -- tag the row, its parents and children untagged, and go down;
+        -- or untag it (mode_tree_key)
+        when at is
+            Just r ->
+                let
+                    target =
+                        rowTarget r
+
+                    others =
+                        Array.keepIf (\x -> not (related r x t)) t.tagged
+
+                    tagged =
+                        if Array.member target t.tagged then Array.keepIf (\x -> x /= target) t.tagged else Array.pushLast target others
+                in
+                { state = { s | tree = Just { t | tagged = tagged, selected = min (count - 1) (t.selected + 1) } }, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "T" then
+        { state = { s | tree = Just { t | tagged = [] } }, commands = [] }
+
+    else if name == "C-t" then
+        { state = { s | tree = Just { t | tagged = Array.keepIf (\r -> r.depth == 0) rows |> Array.map rowTarget } }, commands = [] }
+
+    else if name == "x" then
+        when at is
+            Just r ->
+                let
+                    question =
+                        if r.pane >= 0 then
+                            "Kill pane " ++ r.name ++ "? "
+
+                        else if r.window >= 0 then
+                            "Kill window " ++ r.name ++ "? "
+
+                        else
+                            "Kill session " ++ r.name ++ "? "
+                in
+                { state = { s | asking = Just (treeQuestion 3 question Syntax.Single) }, commands = [] }
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "X" then
+        if Array.isEmpty t.tagged then
+            { state = s, commands = [] }
+
+        else
+            { state = { s | asking = Just (treeQuestion 4 ("Kill " ++ String.fromInt (Array.length t.tagged) ++ " tagged? ") Syntax.Single) }, commands = [] }
+
+    else if name == ":" then
+        { state = { s | asking = Just (treeQuestion 5 (if Array.isEmpty t.tagged then "(current) " else "(" ++ String.fromInt (Array.length t.tagged) ++ " tagged) ") Syntax.Text) }, commands = [] }
+
+    else if name == "m" then
+        when at is
+            Just r ->
+                reloadTree [ "select-pane -m -t " ++ Command.quote (rowTarget r) ] t s
+
+            Nothing ->
+                { state = s, commands = [] }
+
+    else if name == "M" then
+        reloadTree [ "select-pane -M" ] t s
+
+    else if name == "H" then
+        -- back to the active pane's row, opened to it
+        let
+            window =
+                Array.findFirst (\w -> w.id == s.window) t.windows |> Maybe.map .value
+
+            opened =
+                when window is
+                    Just w ->
+                        { t | open = Dict.set w.session True t.open, openWindows = Dict.set w.id True t.openWindows }
+
+                    Nothing ->
+                        t
+
+            found =
+                Array.findFirst (\r -> r.pane == s.active) (treeRows opened)
+                    |> Maybe.map .index
+                    |> Maybe.withDefault opened.selected
+        in
+        { state = { s | tree = Just { opened | selected = found } }, commands = [] }
+
+    else if name == "v" then
+        { state = { s | tree = Just { t | previewMode = if t.previewMode == 0 then 2 else if t.previewMode == 1 then 0 else 1 } }, commands = [] }
+
+    else if name == "O" then
+        { state = { s | tree = Just (keepChosen at { t | sort = modBy (Array.length (sortNames s.version)) (t.sort + 1) }) }, commands = [] }
+
+    else if name == "r" then
+        { state = { s | tree = Just (keepChosen at { t | reversed = not t.reversed }) }, commands = [] }
+
     else if name == "/" || name == "?" || name == "C-s" then
         { state = { s | asking = Just (treePrompt 1 "(search) " "") }, commands = [] }
 
@@ -5708,6 +5948,74 @@ treePrompt purpose label first =
     , recall = ""
     , purpose = purpose
     }
+
+
+{-| A question the tree asks at the status line (TM46): kill the row (3),
+kill the tagged rows (4), or a command for them (5). -}
+treeQuestion : Int -> String -> Syntax.Entry -> Asking
+treeQuestion purpose label entry =
+    let
+        q =
+            treePrompt purpose label ""
+    in
+    { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ "" ], entry = entry, template = Nothing, incremental = False, inPane = False } }
+
+
+{-| Whether a tagged target is the row's parent or child, which tagging the
+row untags. -}
+related : TreeRow -> String -> Tree -> Bool
+related r target t =
+    let
+        session =
+            "$" ++ String.fromInt r.session
+
+        window =
+            "@" ++ String.fromInt r.window
+
+        isWindowOf w =
+            Array.any (\x -> "@" ++ String.fromInt x.id == w && x.session == r.session) t.windows
+
+        isPaneOf w p =
+            Array.any (\x -> "%" ++ String.fromInt x.id == p && "@" ++ String.fromInt x.window == w) t.panes
+
+        isPaneInSession p =
+            Array.any (\x -> "%" ++ String.fromInt x.id == p && Array.any (\w -> w.id == x.window && w.session == r.session) t.windows) t.panes
+    in
+    if r.pane >= 0 then
+        target == session || target == window
+
+    else if r.window >= 0 then
+        target == session || isPaneOf window target
+
+    else
+        isWindowOf target || isPaneInSession target
+
+
+{-| The tree re-sorted, the same row chosen. -}
+keepChosen : Maybe TreeRow -> Tree -> Tree
+keepChosen at t =
+    when at is
+        Just r ->
+            { t | selected = rowIndex r t }
+
+        Nothing ->
+            keepSelected t
+
+
+{-| Commands run, and the tree's lists asked again, its rows kept open and
+the chosen one kept, as tmux rebuilds the tree after a kill or a mark. -}
+reloadTree : Array String -> Tree -> (taken s : State) -> { state : State, commands : Array String }
+reloadTree commands t s =
+    let
+        chosen =
+            Array.get t.selected (treeRows t) |> Maybe.map (\r -> { session = r.session, window = r.window, pane = r.pane })
+    in
+    sendAsking
+        (Array.map (\c -> { command = c, expect = ForRan }) commands
+            ++ treeQueries s.version
+            ++ (if t.filter == "" then [] else [ filterQuery t.filter ])
+        )
+        { s | tree = Just { t | loaded = 0, reload = chosen, tagged = [] } }
 
 
 {-| A session or a window opened or closed. -}
@@ -5773,30 +6081,91 @@ drawTree tmuxLook version place t =
             else
                 { x = place.x + 2, y = place.y + 1, w = place.w - 4, h = place.h - 2 }
 
-        withPreview =
-            t.preview.target /= "" && listArea.h >= 8 && listArea.w >= 12
+        -- the list's height as `mode_tree_set_height` (TM46): two thirds
+        -- with the preview, half when the rows are fewer, all when that
+        -- leaves less than ten; a quarter with the big preview; all
+        -- without
+        sy =
+            listArea.h
 
-        shownRows =
-            if withPreview then
-                max 1 (min (Array.length rows) (max 3 (listArea.h // 3)))
+        lineCount =
+            Array.length rows
+
+        listHeight0 =
+            if t.previewMode == 1 then
+                let
+                    twoThirds =
+                        (sy // 3) * 2
+
+                    h =
+                        if twoThirds > lineCount then sy // 2 else twoThirds
+                in
+                if h < 10 then sy else h
+
+            else if t.previewMode == 2 then
+                max 2 (min lineCount (sy // 4))
 
             else
-                max 1 listArea.h
+                sy
+
+        listHeight =
+            if sy - listHeight0 < 2 then sy else listHeight0
+
+        withPreview =
+            t.preview.target /= "" && listHeight < sy && listArea.w > 4
+
+        shownRows =
+            max 1 listHeight
+
+        chosenName =
+            Array.get t.selected rows |> Maybe.map .name |> Maybe.withDefault ""
+
+        sortName =
+            Array.get t.sort (sortNames version) |> Maybe.withDefault "index"
 
         previewDrawn =
             if withPreview then
                 let
-                    sepRow =
+                    boxRow =
                         listArea.y + shownRows
 
-                    separator =
-                        if tmuxLook then
-                            { row = sepRow, col = place.x, color = lineColor, text = String.repeat place.w "─" }
+                    boxH =
+                        sy - shownRows
+
+                    inner =
+                        listArea.w - 2
+
+                    -- the box's top line: its name and sort, and the
+                    -- filter's state when there is one (`mode_tree_draw`)
+                    -- 3.8 names the preview's view (TM46)
+                    boxTitle =
+                        " " ++ chosenName ++ " (sort: " ++ sortName ++ (if t.reversed then ", reversed" else "") ++ ")" ++ (if version >= 38 then " (view: preview)" else "")
+
+                    note =
+                        if t.filter /= "" then
+                            " (filter: " ++ (if t.noMatches then "no matches" else "active") ++ ") "
 
                         else
-                            { row = sepRow, col = place.x, color = viewEdgeColor, text = "├" ++ String.repeat (place.w - 2) "─" ++ "┤" }
+                            " "
+
+                    heading =
+                        if String.count boxTitle <= inner then String.takeFirst inner (boxTitle ++ note) else ""
+
+                    edge =
+                        if tmuxLook then "\u{001B}[0m" else viewEdgeColor
+
+                    box =
+                        [ { row = boxRow, col = listArea.x, color = edge, text = "┌" ++ String.repeat inner "─" ++ "┐" }
+                        , { row = boxRow, col = listArea.x + 1, color = edge, text = heading }
+                        ]
+                            ++ (Array.range 1 (boxH - 2) |> Array.map (\r -> { row = boxRow + r, col = listArea.x, color = edge, text = "│" ++ String.repeat inner " " ++ "│" }))
+                            ++ [ { row = boxRow + boxH - 1, col = listArea.x, color = edge, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
                 in
-                Array.pushFirst separator (drawPreview tmuxLook { x = listArea.x, y = sepRow + 1, w = listArea.w, h = listArea.h - shownRows - 1 } t.preview)
+                if boxH < 3 then
+                    []
+
+                else
+                    box ++ drawPreview tmuxLook { x = listArea.x + 2, y = boxRow + 1, w = listArea.w - 4, h = boxH - 2 } t.preview
 
             else
                 []
@@ -5817,6 +6186,10 @@ drawTree tmuxLook version place t =
 
         paneAlign =
             alignTo 2
+
+        -- a tagged row's name has a `*` after it (TM46)
+        tagMark r =
+            if Array.member (rowTarget r) t.tagged then "*" else ""
 
         -- 3.8 draws the branch's arrow as `→`, 3.6 as `>` (measured)
         arrow =
@@ -5872,10 +6245,10 @@ drawTree tmuxLook version place t =
                     if not r.children then "  " else if r.expanded then "▾ " else "▸ "
             in
             if tmuxLook then
-                key ++ branch ++ symbol ++ name ++ ": " ++ r.text
+                key ++ branch ++ symbol ++ name ++ tagMark r ++ ": " ++ r.text
 
             else
-                key ++ String.repeat (2 * r.depth) " " ++ ownSymbol ++ name ++ ": " ++ r.text
+                key ++ String.repeat (2 * r.depth) " " ++ ownSymbol ++ name ++ tagMark r ++ ": " ++ r.text
 
         width =
             if tmuxLook then place.w else place.w - 4

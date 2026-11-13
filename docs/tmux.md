@@ -1748,7 +1748,8 @@ line), on 3.6 at work. *M* = seen side by side, *R* = read in source.
    session), kill `x` with its prompt, tags `t T C-t`, `:`, sort `O r`,
    preview `v`, swap `S-Up S-Down` (3.6), help `C-h` (3.7). `+`/`-` fold
    every row where tmux folds the current one. Search, filter and the
-   folds done (TM44, TM45); tags, kill, sort, `v`, swap, help not yet.
+   folds done (TM44, TM45); tags, kill, `:`, marks, sort and `v` done
+   (TM46); swap, help and 3.8's info view not yet.
 7. **Tree rows and preview** (M, R): no window flags or titles in rows;
    the preview has no colors, its split is the reverse of tmux's (tmux
    gives the list ⅔), its title lacks `(sort: …)`; 3.8 draws `→` where
@@ -2009,3 +2010,50 @@ and `-f`'s filters), app 141; `show.py` modes and prompts unchanged.
 **Not yet:** the tree's `(search)`/`(filter)` prompts take no history
 of tmux's; `no matches` is not said in the preview's top line; tags,
 kill, sort, `v`, swap and help.
+
+## TM46 · The tree's kill, tags, commands, sort and preview (2026-11-12)
+
+The rest of TM39's item 6, and item 7's list and preview proportions.
+From `window_tree_key` and `mode_tree_key`:
+
+- **x** asks `Kill session NAME? `, `Kill window N? ` or `Kill pane N? `
+  (one key; `y` kills, as `window_tree_kill_each`); **X** asks `Kill N
+  tagged? `; **:** asks `(current) ` or `(N tagged) ` for a command run
+  with `%%` each target. **m** marks the row's pane (`select-pane -m`),
+  **M** clears the mark; **H** goes back to the active pane's row.
+  After each, the three lists are asked again with the rows kept open
+  and the chosen row kept where it still is (`reloadTree`), as tmux
+  rebuilds.
+- **t** tags the row (its parents and children untagged) and goes down a
+  row, or untags it; **T** untags all; **C-t** tags every session. A
+  tagged row's name has a `*` after it.
+- **O** turns the order: 3.6's `index`, `name`, `time`, 3.8's `index`,
+  `name`, `activity`, `z` (`sortNames`); **r** reverses it. Sessions by
+  id, windows by number, either by name, or by activity (most recent
+  first, then by name, from `session_activity` and `window_activity`);
+  panes by number always, as tmux's but for time (a pane's last use,
+  which tmux does not say), `z` as index. Sessions sorted by id is new:
+  puritty listed them in `list-sessions`'s order, by name; measured,
+  tmux lists `zed`, `alpha`, `mid` as made, so `show.py modes`' `C-a s 1`
+  now chooses `other`, its second session, not `k01`.
+- **v** turns the preview: as tmux draws it, off, big, as
+  `mode_tree_key`. The list's height is `mode_tree_set_height`'s: two
+  thirds of the pane with the preview, half when the rows are fewer, all
+  when that leaves under ten; a quarter with the big preview. The
+  preview is a box whose top line says ` NAME (sort: ORDER)`, 3.8 adding
+  ` (view: preview)`, and ` (filter: active)` or `no matches`.
+
+**Checked side by side** on 3.8 (`bench/tmux/compare`, `choose-tree-s`,
+`tree-kill`, `tree-session-order`): `v`, `t` and its move, the kill
+questions and their effect (`other` killed, the chosen row then on
+`spare`; two tagged rows killed with X, the chosen row on `1`), the
+filter, `O`, the box's top line at the same row; and on 3.6a the same
+but one step where the plain 3.6a client in the harness lost a Down
+(tmux asked `Kill window 2?` from row 3 where its start row, the current
+window, measured in `choose-tree-s`, puts four Downs at row 4). App
+tests 141.
+
+**Not yet:** S-Up/S-Down swap (3.6), C-h help (3.7), 3.8's `i` info
+view, `<`/`>` scrolling the preview, the mouse in the tree; 3.8's colors
+in the rows; the preview's inside is puritty's own drawing (each pane or
+window with a label line), not tmux's (borders and a centered label box).
