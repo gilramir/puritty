@@ -24,6 +24,7 @@ module SettingsWindow exposing
     , suggestions
     , told
     , update
+    , withRecents
     , withRowLines
     )
 
@@ -49,6 +50,7 @@ import Bitwise
 import Config exposing (Config)
 import Hosts
 import Reason
+import Recent exposing (Recent(..))
 import Schema exposing (Kind(..), Setting, Value(..))
 import Words exposing (Message)
 
@@ -91,6 +93,9 @@ type alias Model =
     -- whether the window is the host list, which a session replaces (V65)
     , aliases : Array String
     , launcher : Bool
+    -- the connections made last, newest first, listed before the saved
+    -- hosts (SG14)
+    , recents : Array Recent
     -- the host whose form is shown on the Hosts page (ST25)
     , form : Maybe String
     -- how many lines each listed row takes, as the drawing measured
@@ -147,6 +152,7 @@ type Effect
     | DeleteHost String
     | RenameHost { from : String, to : String }
     | Hear { setting : Setting, value : Value }
+    | ForgetRecent Recent
 
 
 init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, launcher : Bool } -> Model
@@ -177,6 +183,7 @@ init r =
     , fonts = r.fonts
     , aliases = r.aliases
     , launcher = r.launcher
+    , recents = []
     , form = Nothing
     , lines = []
     , choosing = Nothing
@@ -304,16 +311,29 @@ onHosts m =
     m.page == hostsPage && Array.isEmpty m.search
 
 
-{-| The hosts listed: the file's, then ~/.ssh/config's that the file does
-not name, each with where it goes and where it is from. -}
-hostRows : Model -> Array { name : String, detail : Message, from : Message, own : Bool }
+{-| The connections made last (SG14), then the hosts listed: the file's,
+then ~/.ssh/config's that the file does not name, each with where it goes
+and where it is from. -}
+hostRows : Model -> Array { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent }
 hostRows m =
     let
+        whereOf h =
+            Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\u -> u ++ "@") h.user)
+                ++ h.host
+                ++ Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\p -> ":" ++ String.fromInt p) h.port)
+                ++ (when h.command is
+                        Just c ->
+                            " · " ++ c
+
+                        Nothing ->
+                            meant Reason.NotSet ""
+                   )
+
         own =
             Array.map
                 (\h ->
                     { name = h.name
-                    , detail = Words.plain (Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\p -> ":" ++ String.fromInt p) h.port))
+                    , detail = Words.plain (whereOf h)
                     , from =
                         when h.jump is
                             Just jump ->
@@ -322,6 +342,7 @@ hostRows m =
                             Nothing ->
                                 meant Reason.NotSet Words.message "message.hostFromSettings"
                     , own = True
+                    , recent = Nothing
                     }
                 )
                 m.config.hosts
@@ -329,9 +350,38 @@ hostRows m =
         theirs =
             m.aliases
                 |> Array.keepIf (\a -> not (Array.any (\h -> h.name == a) m.config.hosts))
-                |> Array.map (\a -> { name = a, detail = Words.message "message.asSshConfig", from = Words.message "message.hostFromSshConfig", own = False })
+                |> Array.map (\a -> { name = a, detail = Words.message "message.asSshConfig", from = Words.message "message.hostFromSshConfig", own = False, recent = Nothing })
+
+        recent =
+            m.recents
+                |> Array.map
+                    (\r ->
+                        when r is
+                            Saved name ->
+                                { name = name
+                                , detail =
+                                    when hostNamed m name is
+                                        Just h ->
+                                            Words.plain (whereOf h)
+
+                                        Nothing ->
+                                            meant Reason.NotKnown Words.message "message.asSshConfig"
+                                , from = Words.message "message.recentSaved"
+                                , own = False
+                                , recent = Just r
+                                }
+
+                            Quick text ->
+                                { name = text, detail = Words.message "message.quickConnected", from = Words.message "message.recent", own = False, recent = Just r }
+                    )
     in
-    own ++ theirs
+    recent ++ own ++ theirs
+
+
+{-| The connections made last, read from their file (SG14). -}
+withRecents : Array Recent -> Model -> Model
+withRecents recents m =
+    { m | recents = recents }
 
 
 {-| The host list: the Hosts page with no host's form open. -}
@@ -341,9 +391,72 @@ inList m =
 
 
 {-| The host on a row of the list (quick connect and New host come first). -}
-hostAt : Model -> Int -> Maybe { name : String, detail : Message, from : Message, own : Bool }
+hostAt : Model -> Int -> Maybe { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent }
 hostAt m row =
     Array.get (row - 2) (hostRows m)
+
+
+{-| Right on a recent connection (SG14): a saved host's form, as Right on
+its own row; one quick connect made saved as a host first, named for where
+it goes, and its form opened to name it and give it the rest. -}
+saveRecent : Recent -> Model -> { model : Model, effects : Array Effect }
+saveRecent recent m =
+    let
+        opened name st =
+            keepInView { st | form = Just name, row = 1, scroll = 0 }
+
+        saveAs host =
+            let
+                name =
+                    if hostNamed m host.name == Nothing then
+                        host.name
+
+                    else
+                        copyName m host.name
+
+                made =
+                    { host | name = name }
+
+                saved =
+                    hostsChanged (m.config.hosts ++ [ made ]) [ PutHost made ] (Words.message "message.hostAdded" |> Words.with "name" name) m
+            in
+            { saved | model = opened name saved.model }
+    in
+    when recent is
+        Quick text ->
+            when Hosts.quick text is
+                Just host ->
+                    saveAs { host | name = host.host }
+
+                Nothing ->
+                    meant Reason.FromOutside done { m | message = Just (Words.message "message.notAnAddress" |> Words.with "text" text) }
+
+        Saved name ->
+            when hostNamed m name is
+                Just _ ->
+                    done (opened name { m | message = Nothing })
+
+                Nothing ->
+                    -- one of ~/.ssh/config's, saved as a host first
+                    meant Reason.NotKnown saveAs (Config.host name name)
+
+
+{-| Right on a host's row: its form; one of ~/.ssh/config's is saved as a
+host first. -}
+rightOnHost : { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent } -> Model -> { model : Model, effects : Array Effect }
+rightOnHost h m =
+    if h.own then
+        done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = Nothing })
+
+    else
+        let
+            saved =
+                hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
+
+            after =
+                saved.model
+        in
+        { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
 
 
 {-| A host of the settings, by name. -}
@@ -762,7 +875,19 @@ rowsKey k m =
                     else
                         when hostAt m m.row is
                             Just h ->
-                                { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }, effects = [ ConnectHost h.name ] }
+                                { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }
+                                , effects =
+                                    when h.recent is
+                                        Just (Quick text) ->
+                                            [ ConnectQuick text ]
+
+                                        Just (Saved name) ->
+                                            [ ConnectHost name ]
+
+                                        Nothing ->
+                                            -- a saved host's own row
+                                            meant Reason.NotSet [ ConnectHost h.name ]
+                                }
 
                             Nothing ->
                                 meant Reason.OutOfRange done m
@@ -771,18 +896,13 @@ rowsKey k m =
                     -- a host's form; one of ~/.ssh/config's is saved as a host first
                     when hostAt m m.row is
                         Just h ->
-                            if h.own then
-                                done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = Nothing })
+                            when h.recent is
+                                Just recent ->
+                                    saveRecent recent m
 
-                            else
-                                let
-                                    saved =
-                                        hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
-
-                                    after =
-                                        saved.model
-                                in
-                                { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
+                                Nothing ->
+                                    -- a saved host's own row, or ~/.ssh/config's
+                                    meant Reason.NotSet (rightOnHost h m)
 
                         Nothing ->
                             meant Reason.OutOfRange done m
@@ -797,14 +917,26 @@ rowsKey k m =
                             { m | form = Nothing, message = Nothing }
 
                         row =
-                            Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault (meant Reason.Gone 0)
+                            Array.findFirst (\h -> h.name == name && h.recent == Nothing) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault (meant Reason.Gone 0)
                     in
                     done (keepInView { back | row = row })
 
                 else if (k.sym == sym.delete || k.sym == sym.backspace) && inList m then
                     when hostAt m m.row is
                         Just h ->
-                            if h.own then
+                            if h.recent /= Nothing then
+                                when h.recent is
+                                    Just r ->
+                                        let
+                                            left =
+                                                { m | recents = Recent.forgotten r m.recents, message = Just (Words.message "message.recentForgotten" |> Words.with "name" h.name) }
+                                        in
+                                        { model = keepInView { left | row = min left.row (rowCount left - 1) }, effects = [ ForgetRecent r ] }
+
+                                    Nothing ->
+                                        done m
+
+                            else if h.own then
                                 hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
 
                             else

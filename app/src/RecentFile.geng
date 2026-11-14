@@ -1,0 +1,68 @@
+module RecentFile exposing (folder, forget, load, remember)
+
+{-| The recent connections' file in puritty's state folder (`Recent`,
+`docs/settings-gui.md` SG14): read, a connection added first, one
+forgotten. A recent list is a convenience: a file that cannot be read is
+none, and one that cannot be written is left as it was.
+-}
+
+import Bytes
+import Os.Directory as Directory
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Reason
+import Recent exposing (Recent, added, fileName, forgotten, fromText, toText)
+import Task exposing (Task)
+
+
+{-| puritty's state folder, from `Platform.stateDirectory`'s, which is
+its saved windows' folder inside it, as the logs' is beside that. -}
+folder : String -> Path
+folder windows =
+    Path.fromString (String.dropLast (String.count "windows") windows)
+
+
+{-| The recent connections in the state folder `dir`; none when there is no
+file yet, or it cannot be read. -}
+load : File.Permission -> Path -> Task x (Array Recent)
+load fs dir =
+    File.readFile fs (Path.append (Path.fromString fileName) dir)
+        |> Task.map
+            (\b ->
+                when Bytes.toString b is
+                    Just text ->
+                        fromText text
+
+                    Nothing ->
+                        meant Reason.FromOutside []
+            )
+        |> Task.onError (\_ -> Task.succeed [])
+
+
+{-| A connection made, kept first in the file, written whole and moved into
+place so that a reader never sees half of it; nothing said when it cannot
+be, since a recent list is a convenience. -}
+remember : File.Permission -> Path -> Int -> Recent -> Task x {}
+remember fs dir most r =
+    load fs dir
+        |> Task.andThen (\recents -> write fs dir (added most r recents))
+
+
+{-| A recent connection forgotten (Delete on its row). -}
+forget : File.Permission -> Path -> Recent -> Task x {}
+forget fs dir r =
+    load fs dir
+        |> Task.andThen (\recents -> write fs dir (forgotten r recents))
+
+
+write : File.Permission -> Path -> Array Recent -> Task x {}
+write fs dir recents =
+    let
+        next =
+            Path.append (Path.fromString (fileName ++ ".new")) dir
+    in
+    Directory.createAll fs dir
+        |> Task.andThen (\_ -> File.writeFile fs (Bytes.fromString (toText recents)) next)
+        |> Task.andThen (\_ -> File.move fs { from = next, to = Path.append (Path.fromString fileName) dir })
+        |> Task.map (\_ -> {})
+        |> Task.onError (\_ -> Task.succeed {})

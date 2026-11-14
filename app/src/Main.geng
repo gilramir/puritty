@@ -64,6 +64,8 @@ import Outbox exposing (Outbox)
 import Platform
 import Process as Sleep
 import Reason
+import Recent exposing (Recent)
+import RecentFile
 import Restore
 import RestoreFile exposing (TabColor(..))
 import Schema
@@ -541,6 +543,7 @@ terminalMain mode env =
 
                                                             Ok config ->
                                                                 say (got.problems ++ chosen.problems)
+                                                                    |> Task.andThen (\_ -> rememberStart ctx.fs (Maybe.map RecentFile.folder (Platform.stateDirectory ctx.vars)) config (recentOf mode asked config))
                                                                     |> Task.andThen (\_ -> start ctx.cp ctx.vars given (got.problems ++ chosen.problems) config { dir = stateDir, claimed = Nothing })
                                     )
                         )
@@ -577,6 +580,47 @@ restoredConfig state config =
                     meant Reason.NotSet config
     in
     { base | columns = clamp 10 1000 state.columns, rows = clamp 3 1000 state.rows }
+
+
+{-| The connection a window starts as, kept among the recent ones the host
+list offers (`docs/settings-gui.md` SG14): what `puritty ssh` was given, a
+host `--host` or `start` names; none for a shell or a program. -}
+recentOf : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> Config -> Maybe Recent
+recentOf mode asked config =
+    if not (Array.isEmpty asked.program) then
+        Nothing
+
+    else
+        when mode is
+            Ssh target ->
+                Just (Recent.Quick (String.trim target))
+
+            Plain ->
+                when asked.host is
+                    Just name ->
+                        Just (Recent.Saved name)
+
+                    Nothing ->
+                        meant Reason.NotSet
+                            (if String.startsWith "host:" config.start then
+                                Just (Recent.Saved (String.dropFirst 5 config.start))
+
+                             else
+                                Nothing
+                            )
+
+            _ ->
+                Nothing
+
+
+rememberStart : File.Permission -> Maybe Path.Path -> Config -> Maybe Recent -> Task x {}
+rememberStart fs dir config recent =
+    when { dir = dir, recent = recent } is
+        { dir = Just d, recent = Just r } ->
+            RecentFile.remember fs d config.recentConnections r
+
+        _ ->
+            Task.succeed {}
 
 
 {-| What the window runs (`docs/settings.md` ST11, V64): a program on the

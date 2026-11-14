@@ -25,6 +25,8 @@ import Os.Path as Path
 import Os.Process as Process
 import Platform
 import Reason
+import Recent exposing (Recent)
+import RecentFile
 import Schema
 import SettingsFile exposing (Store)
 import SettingsGui
@@ -60,6 +62,8 @@ type alias State =
     -- the host it becomes (V65)
     , opener : Maybe Opener
     , launcher : Bool
+    -- where the recent connections are kept (SG14)
+    , stateDir : Maybe Path.Path
     , outcome : Maybe Config.Host
     -- the last left press, to count a double click (ST27)
     , lastPress : { at : Int, row : Int, col : Int, count : Int }
@@ -170,6 +174,7 @@ openWindow r given locale =
                                         (SettingsSource.watchSettings given)
                                         Window.fonts
                                         (sshAliases r)
+                                        |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = recents }))
                                         -- an arrow over a window of choices, not the
                                         -- terminal's I-beam (Gilbert, 2026-11-10)
                                         |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
@@ -191,6 +196,30 @@ openWindow r given locale =
             )
 
 
+{-| The connections made last (SG14), from the state folder; none when
+there is none. -}
+recentsOf : Asked -> Task x (Array Recent)
+recentsOf r =
+    when Platform.stateDirectory r.vars is
+        Just dir ->
+            RecentFile.load r.fs (RecentFile.folder dir)
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed []
+
+
+{-| A connection made from the list, kept first among the recent ones; in a
+window that starts another puritty, that one keeps it (`Main`). -}
+remembered : Recent -> State -> Task x State
+remembered recent s =
+    when s.stateDir is
+        Just dir ->
+            RecentFile.remember s.given.fs dir s.window.config.recentConnections recent |> Task.map (\_ -> s)
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed s
+
+
 {-| The hosts `~/.ssh/config` names, or none when it cannot be read. -}
 sshAliases : Asked -> Task x (Array String)
 sshAliases r =
@@ -204,7 +233,7 @@ sshAliases r =
             meant Reason.NotSet Task.succeed []
 
 
-first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String } -> Maybe String -> Words.Lang -> State
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent } -> Maybe String -> Words.Lang -> State
 first r given read cell w shotPath lang =
     let
         got =
@@ -229,6 +258,8 @@ first r given read cell w shotPath lang =
             , aliases = w.aliases
             , launcher = r.launcher
             }
+            |> SettingsWindow.withRecents w.recents
+    , stateDir = Maybe.map RecentFile.folder (Platform.stateDirectory r.vars)
     , cell = { width = cell.width, height = cell.height }
     , lang = lang
     , hits = []
@@ -454,11 +485,13 @@ effect e s =
 
         SettingsWindow.ConnectHost name ->
             connect (Hosts.named name s.window.config) [ "--host", name ] s
+                |> Task.andThen (whenLauncher (Recent.Saved name))
 
         SettingsWindow.ConnectQuick target ->
             when Hosts.quick target is
                 Just h ->
                     connect h [ "ssh", target ] s
+                        |> Task.andThen (whenLauncher (Recent.Quick (String.trim target)))
 
                 Nothing ->
                     Task.succeed s
@@ -477,6 +510,25 @@ effect e s =
 
         SettingsWindow.Hear w ->
             hear w |> Task.map (\_ -> s)
+
+        SettingsWindow.ForgetRecent recent ->
+            when s.stateDir is
+                Just dir ->
+                    RecentFile.forget s.given.fs dir recent |> Task.map (\_ -> s)
+
+                Nothing ->
+                    meant Reason.NotSet Task.succeed s
+
+
+{-| A connection the host list itself becomes, remembered here; one made by
+starting another puritty is remembered by it. -}
+whenLauncher : Recent -> State -> Task String State
+whenLauncher recent s =
+    if s.launcher && s.outcome /= Nothing then
+        remembered recent s
+
+    else
+        Task.succeed s
 
 
 {-| A sound setting's value played as it is chosen (`docs/sounds.md` SN7):

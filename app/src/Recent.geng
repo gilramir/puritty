@@ -1,0 +1,73 @@
+module Recent exposing (Recent(..), added, fileName, forgotten, fromText, keep, toText)
+
+{-| The connections made last (`docs/settings-gui.md` SG14, Dnene59), newest
+first, which the host list offers before the saved ones: a saved host by its
+name, so that a change to it applies, or what quick connect was given, as it
+was typed, `gilbert@build tmux -CC attach`. Kept in a file of their own in
+puritty's state folder, a line each, `host NAME` or `quick TEXT`; never in the
+settings file, and never a password.
+-}
+
+
+type Recent
+    = Saved String
+    | Quick String
+
+
+{-| The file's name in the state folder. -}
+fileName : String
+fileName =
+    "recent.txt"
+
+
+{-| How many are kept unless the settings say otherwise (`recent`). -}
+keep : Int
+keep =
+    8
+
+
+{-| The file's lines read: one that is neither `host` nor `quick` is passed
+over, as a file from a later puritty might have. -}
+fromText : String -> Array Recent
+fromText text =
+    String.lines text
+        |> Array.mapAndKeepJust
+            (\line ->
+                if String.startsWith "host " line && String.count line > 5 then
+                    Just (Saved (String.dropFirst 5 line))
+
+                else if String.startsWith "quick " line && String.count line > 6 then
+                    Just (Quick (String.dropFirst 6 line))
+
+                else
+                    Nothing
+            )
+
+
+toText : Array Recent -> String
+toText recents =
+    recents
+        |> Array.map
+            (\r ->
+                when r is
+                    Saved name ->
+                        "host " ++ name
+
+                    Quick text ->
+                        "quick " ++ text
+            )
+        |> String.join "\n"
+        |> (\t -> t ++ "\n")
+
+
+{-| A connection made: first, the same one further down gone, and no more
+than `most` kept; none at all when `most` is 0. -}
+added : Int -> Recent -> Array Recent -> Array Recent
+added most r recents =
+    Array.pushFirst r (forgotten r recents)
+        |> Array.takeFirst (max 0 most)
+
+
+forgotten : Recent -> Array Recent -> Array Recent
+forgotten r recents =
+    Array.keepIf (\x -> x /= r) recents

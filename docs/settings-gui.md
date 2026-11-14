@@ -401,3 +401,31 @@ makes one of those.
    `[hosts."name"]`.
 
 Same window on Linux and Windows, so both get it.
+
+**Built (2026-11-14).** `Recent` (pure: the two kinds, the file's lines,
+`added`, `forgotten`) and `RecentFile` (the file, `recent.txt` in
+puritty's state folder beside `logs`, written whole and moved into
+place). The host list's rows are Quick connect, New connection, the recent
+connections, then the saved hosts; a recent row's second line says it is
+one ("a recent connection · Right saves it"), a quick one's value "by
+quick connect". Enter connects as it was made; Delete forgets it (the
+saved host stays); Right on a quick one saves it as a host named for its
+address, its user, port and command kept, and opens the form, and on a
+saved one opens that host's form. Remembered by the window a connection
+becomes: `puritty ssh`, `--host`, `start = "host:NAME"` (`Main.recentOf`),
+and the host list when it becomes the session; `[connections] recent`
+(default 8, 0 for none). `Hosts.quick` takes a command after the first
+space; the field shows its grayed example, `user@host:port command`,
+until a key is typed, and the footer says it. A saved host's line says its
+command after `user@host:port`.
+
+**Checked:** app tests 180 (five new: the rows, Enter on each kind, Delete,
+Right saving, the command parsed); settings gate 20 of 20; and run:
+`puritty ssh` twice wrote `recent.txt` newest first, and `puritty hosts`
+listed both above the saved hosts, its field grayed with the example.
+
+**Found, not this work's:** `harness/hosts.py` fails three cases
+(`menu-connects`, `double-click-host`, `settings-connects`) at the commit
+before this work too: in each, one puritty starts another, which runs no
+ssh. The gate is not in the unit gate; left to look into.
+

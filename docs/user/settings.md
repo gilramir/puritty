@@ -117,7 +117,13 @@ tab = "#c62828"                  # its tabs' color in the bar
 ```
 
 A name the file doesn't have is looked up in `~/.ssh/config`, so your
-aliases work as they are. `start = "hosts"` at the top of the file makes
+aliases work as they are.
+
+The host list offers the connections you made last first (eight, or as
+many as `[connections] recent` says; 0 for none): Enter makes one again,
+Delete forgets it, and Right saves a quick one as a host. In quick connect,
+anything after a space is a command to run there, as with `ssh`:
+`gilbert@build tmux -CC attach`. `start = "hosts"` at the top of the file makes
 plain `puritty` open the host list, and `start = "host:build-box"` connect
 straight there; `puritty shell` still opens a local shell.
 

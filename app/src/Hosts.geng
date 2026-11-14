@@ -23,10 +23,32 @@ named name config =
 
 
 {-| A host from what quick connect is given, `user@host:port`, the user
-and the port each left out as one likes; named as given. -}
+and the port each left out as one likes, and after the first space a
+command to run there, as `ssh` takes one (`docs/settings-gui.md` SG14);
+named as given, the command too. -}
 quick : String -> Maybe Host
-quick target =
+quick given =
     let
+        trimmed =
+            String.trim given
+
+        space =
+            String.firstIndexOf " " trimmed
+
+        target =
+            Maybe.map (\i -> String.takeFirst i trimmed) space |> Maybe.withDefault (meant Reason.NotSet trimmed)
+
+        command =
+            Maybe.map (\i -> String.trim (String.dropFirst (i + 1) trimmed)) space
+                |> Maybe.andThen
+                    (\c ->
+                        if c == "" then
+                            Nothing
+
+                        else
+                            Just c
+                    )
+
         at =
             String.lastIndexOf "@" target
 
@@ -59,13 +81,13 @@ quick target =
                 address
 
         h =
-            Config.host target bare
+            Config.host trimmed bare
     in
     if bare == "" || user == Just "" || (portAt /= Nothing && port == Nothing) then
         Nothing
 
     else
-        Just { h | user = user, port = port }
+        Just { h | user = user, port = port, command = command }
 
 
 {-| A host's jump host as OpenSSH's `-J` and `ProxyJump` take it: another
