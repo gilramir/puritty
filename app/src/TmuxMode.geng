@@ -8174,7 +8174,14 @@ listKey k l s =
         moved (l.selected - 10) s
 
     else if name == "NPage" || name == "C-f" then
-        moved (l.selected + 10) s
+        moved
+            (if l.selected >= count - 10 then
+                count - 1
+
+             else
+                l.selected + 10
+            )
+            s
 
     else if name == "Home" || name == "g" then
         moved 0 s
@@ -11542,8 +11549,10 @@ drawTree theme colors tmuxLook version place t =
         withPreview =
             t.preview.target /= "" && listHeight < sy && listArea.w > 4
 
+        -- at most a window's rows (`Vt.Term`'s 1000), so the rows read
+        -- from `top` on stay inside `Int`
         shownRows =
-            max 1 listHeight
+            clamp 1 1000 listHeight
 
         chosenName =
             Array.get t.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")
@@ -11656,12 +11665,18 @@ drawTree theme colors tmuxLook version place t =
             else
                 []
 
+        -- the first row shown, from the selection held to the rows, so
+        -- that `top + shownRows` is at most the rows' count or 1000
         top =
-            if t.selected < shownRows then
+            let
+                held =
+                    clamp 0 (max 0 (Array.length rows - 1)) t.selected
+            in
+            if held < shownRows then
                 0
 
             else
-                t.selected - shownRows + 1
+                held - shownRows + 1
 
         keyWidth =
             if Array.length rows > 10 then

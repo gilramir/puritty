@@ -252,17 +252,19 @@ expect c chars at =
 
 number : Array Int -> Int -> Result String { value : Int, at : Int }
 number chars at =
-    numberFrom chars at at 0
+    numberFrom chars at 9 0
 
 
+{-| The digits from `at` on, at most `left` more of them: nine in all, so
+the value stays well inside `Int`. -}
 numberFrom : Array Int -> Int -> Int -> Int -> Result String { value : Int, at : Int }
-numberFrom chars start at value =
+numberFrom chars at left value =
     when Array.get at chars is
         Just c ->
-            if c >= 0x30 && c <= 0x39 && at - start < 9 then
-                numberFrom chars start (at + 1) (value * 10 + c - 0x30)
+            if c >= 0x30 && c <= 0x39 && left > 0 then
+                numberFrom chars (at + 1) (left - 1) (value * 10 + c - 0x30)
 
-            else if at > start then
+            else if left < 9 then
                 Ok { value = value, at = at }
 
             else
@@ -270,7 +272,7 @@ numberFrom chars start at value =
 
         Nothing ->
             meant Reason.NoMore
-                if at > start then
+                if left < 9 then
                     Ok { value = value, at = at }
 
                 else

@@ -4754,3 +4754,56 @@ functions are gone.
 `vte-dense_cells` 746.8 M where it is 762.1 M, 2.0% lower, likely
 `sgrLoop`'s reads, not confirmed with `--against`, so the record is kept.
 The unit gate: 17 of 17 on node, Linux and Windows, fmt and checks green; the Windows app builds.
+
+## VC68 · Round 11: the checker sees through helpers and folds (2026-11-14)
+
+geng-lang's TO29 (Dnene56 to Dnene58, Dnene60): a `let`'s helper with no
+refined signature is walked at each call, `core`'s folds are loops to the
+checker, `String.split`, `Char.fromCode` and `Array.repeat` say what they
+answer, and a goal's cone follows a tested sum back. The list is 103 → 78,
+nothing new, nothing open.
+
+| | after VC67 | now |
+|---|---|---|
+| checks hold | 2,003 | 2,051 |
+| fallbacks never run | 58 | 77 |
+| can run, on the list | 103 | 78 |
+| meant | 990 | 992 |
+
+**Gone with no change here** (22): a split's first or last piece
+(`Chord.parse`, `Main.dialogOf` and `shortTitle`, `Platform.charsetOf` and
+`languageOf`, `Tmux.Syntax.firstWord`, `Tmux.Customize.rowIdentity`,
+`TmuxMode.previewItem`, `replied`, `subscribed`, `themeAsked`), a code
+known to be a character (`Tmux.Command.quoteBytes`, `TmuxMode.paneNumber`,
+`Vt.Dump.escapeReply`), and helpers and folds seen through
+(`Tmux.Customize.write`, `TmuxMode.paneBorders`, `Vt.Osc.oscDispatch`).
+
+**`String.toInt` on what was already read** (TO28's fourth): `Ssh.Config`'s
+`Directive` keeps the number `checked` read (`number`), and the resolved
+`Settings` the numbers of `Port`, `ServerAliveInterval` and
+`ServerAliveCountMax` (`numbers`), so `Ssh.Session` reads them as numbers:
+the three `String.toInt … |> withDefault` that could not fail but were on
+the list are `meant Reason.NotSet` defaults for a keyword no line set.
+`Vt.Osc.digits` reads its index in one pass, held from growing past six
+digits and answered at most 99999, as before, where it checked the
+characters and then parsed the last five.
+
+**Sums a helper's read now reaches** (twelve, each the checker's first
+look at it, since a helper walked with `4 * g` reads at `4 * g`):
+
+- `Ssh.Base64`: a group's index is `Array.indexedMap`'s over `Array.repeat
+  count {}`, so it is below the count, and `encode` reads a group's second
+  and third bytes only when it has them, so its read past the end is gone
+  and its default never used.
+- `Vt.Sgr.extendedColor` says `0 <= k && k < Array.length params`, which
+  its callers' test already showed.
+- `Vt.Recut.lastSource` tests `h >= Owned.length page.heads - 2`, the same
+  test as a difference.
+- `Vt.pagedPrompt` carries the rows left, `r`, not `start` and `at`.
+- `Tmux.Layout.numberFrom` counts the digits left, nine, not `at - start`.
+- `TmuxMode.listKey`'s page down is `count - 1` past `count - 10`;
+  `drawTree` shows at most 1000 rows (a window's most) and starts them from
+  the selection held to the rows.
+- `Vt.Resize.changeRows` holds `hist` to the rows in `now`'s difference.
+
+Each is the same for every value the program has; the tests say so below.

@@ -1110,11 +1110,13 @@ promptMark y t =
         metaPrompt (metaAt (rowOffset t.screen y) t.screen)
 
     else
-        pagedPrompt t.back t.back.head 0 (t.back.rows + y + t.screen.hist)
+        pagedPrompt t.back t.back.head (t.back.rows + y + t.screen.hist)
 
 
-pagedPrompt : Back -> Int -> Int -> Int -> Int
-pagedPrompt b i start at =
+{-| The prompt mark of paged row `r` counted from slot `i`'s page on: the
+pages before the one it lies in are stepped over, `r` less each one's rows. -}
+pagedPrompt : Back -> Int -> Int -> Int
+pagedPrompt b i r =
     when Builder.get i b.pages is
         Nothing ->
             meant Reason.OutOfRange 0
@@ -1124,11 +1126,11 @@ pagedPrompt b i start at =
                 count =
                     pageRowCount page
             in
-            if start + count <= at then
-                pagedPrompt b (i + 1) (start + count) at
+            if count <= r then
+                pagedPrompt b (i + 1) (r - count)
 
             else
-                pagePromptAt page (at - start)
+                pagePromptAt page r
 
 
 {-| `want` rows of the pages from paged row `at` on, read from each page
@@ -1149,7 +1151,7 @@ viewPages b i start at want clusters acc =
                     count =
                         pageRowCount page
                 in
-                if start + count <= at then
+                if count <= at - start then
                     viewPages b (i + 1) (start + count) at want clusters acc
 
                 else

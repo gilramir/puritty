@@ -31,9 +31,10 @@ import Ssh.Reason as Reason
 
 
 {-| One line that says something: where it is, its keyword in lower case,
-and its arguments, quotes taken off. -}
+and its arguments, quotes taken off; for one OpenSSH reads as a number, the
+number `checked` read. -}
 type alias Directive =
-    { file : String, lineNumber : Int, keyword : String, args : Array String }
+    { file : String, lineNumber : Int, keyword : String, args : Array String, number : Maybe Int }
 
 
 {-| A file's directives, and the lines that do not read. -}
@@ -51,7 +52,7 @@ parse file text =
                         Ok split ->
                             when Array.popFirst split is
                                 Just w ->
-                                    when checked { file = file, lineNumber = l.lineNumber, keyword = String.toLower w.first, args = w.rest } is
+                                    when checked { file = file, lineNumber = l.lineNumber, keyword = String.toLower w.first, args = w.rest, number = Nothing } is
                                         Ok d ->
                                             { acc | directives = Array.pushLast d acc.directives }
 
@@ -81,7 +82,7 @@ checked d =
                 [ value ] ->
                     when read value is
                         Just n ->
-                            Ok { d | args = [ String.fromInt n ] }
+                            Ok { d | args = [ String.fromInt n ], number = Just n }
 
                         Nothing ->
                             meant Reason.FromOutside (Err (why value))
@@ -313,7 +314,7 @@ type alias Source =
 in, and the problems met: lines that do not read, `Match` criteria this
 client cannot judge (`exec`, `localnetwork`). -}
 type alias Settings =
-    { values : Dict String (Array String), problems : Array String }
+    { values : Dict String (Array String), numbers : Dict String Int, problems : Array String }
 
 
 multi : Array String
@@ -323,6 +324,7 @@ multi =
 
 type alias Reading =
     { values : Dict String (Array String)
+    , numbers : Dict String Int
     , active : Bool
     , final : Bool
     , wantsFinal : Bool
@@ -337,26 +339,26 @@ for `Match final` and `Match canonical` if any line asks for them. -}
 resolve : Context -> Source -> Array Directive -> Array Directive -> Settings
 resolve context source user system =
     let
-        pass final values =
+        pass final values numbers =
             Array.foldl (apply context source)
-                { values = values, active = True, final = final, wantsFinal = False, problems = [], depth = 0 }
+                { values = values, numbers = numbers, active = True, final = final, wantsFinal = False, problems = [], depth = 0 }
                 (user ++ system)
 
         first =
-            pass False Dict.empty
+            pass False Dict.empty Dict.empty
 
         whole =
             if first.wantsFinal then
                 let
                     again =
-                        pass True first.values
+                        pass True first.values first.numbers
                 in
                 { again | problems = first.problems ++ again.problems }
 
             else
                 first
     in
-    { values = defaults context whole.values, problems = whole.problems }
+    { values = defaults context whole.values, numbers = whole.numbers, problems = whole.problems }
 
 
 apply : Context -> Source -> Directive -> Reading -> Reading
@@ -405,7 +407,17 @@ apply context source d r =
                 r
 
             else
-                { r | values = Dict.set keyword d.args r.values }
+                { r
+                    | values = Dict.set keyword d.args r.values
+                    , numbers =
+                        when d.number is
+                            Just n ->
+                                Dict.set keyword n r.numbers
+
+                            Nothing ->
+                                -- a keyword whose value is not a number
+                                meant Reason.NotSet r.numbers
+                }
 
 
 where_ : Directive -> String

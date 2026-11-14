@@ -1159,10 +1159,10 @@ resolveOne permissions given =
             given.home ++ "/.ssh/config"
 
         entry =
-            [ Maybe.map (\u -> { file = "puritty", lineNumber = 0, keyword = "user", args = [ u ] }) given.user
-            , Maybe.map (\p -> { file = "puritty", lineNumber = 0, keyword = "port", args = [ String.fromInt p ] }) given.port
-            , Maybe.map (\i -> { file = "puritty", lineNumber = 0, keyword = "identityfile", args = [ i ] }) given.identity
-            , Maybe.map (\j -> { file = "puritty", lineNumber = 0, keyword = "proxyjump", args = [ j ] }) given.jump
+            [ Maybe.map (\u -> { file = "puritty", lineNumber = 0, keyword = "user", args = [ u ], number = Nothing }) given.user
+            , Maybe.map (\p -> { file = "puritty", lineNumber = 0, keyword = "port", args = [ String.fromInt p ], number = Just p }) given.port
+            , Maybe.map (\i -> { file = "puritty", lineNumber = 0, keyword = "identityfile", args = [ i ], number = Nothing }) given.identity
+            , Maybe.map (\j -> { file = "puritty", lineNumber = 0, keyword = "proxyjump", args = [ j ], number = Nothing }) given.jump
             ]
                 |> Array.mapAndFlatten (\m -> Maybe.map (\d -> [ d ]) m |> Maybe.withDefault (meant Reason.NotSet []))
     in
@@ -1252,7 +1252,7 @@ resolveOne permissions given =
                             in
                             { options =
                                 { host = one "hostname" given.host
-                                , port = String.toInt (one "port" "22") |> Maybe.withDefault 22
+                                , port = Dict.get "port" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 22)
                                 , user = one "user" given.localUser
                                 , identityFiles = Array.map expand (all "identityfile")
                                 , identitiesOnly = String.toLower (one "identitiesonly" "no") == "yes"
@@ -1275,8 +1275,8 @@ resolveOne permissions given =
                                                 )
                                     , command = remoteCommand
                                     }
-                                , keepaliveSeconds = String.toInt (one "serveraliveinterval" "0") |> Maybe.withDefault 0
-                                , keepaliveCountMax = String.toInt (one "serveralivecountmax" "3") |> Maybe.withDefault 3
+                                , keepaliveSeconds = Dict.get "serveraliveinterval" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
+                                , keepaliveCountMax = Dict.get "serveralivecountmax" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 3)
                                 }
                             , proxyJump = one "proxyjump" "none"
                             , problems = parsed.problems ++ settings.problems

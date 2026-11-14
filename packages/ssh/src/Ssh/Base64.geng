@@ -64,16 +64,18 @@ decode text =
 
     else
         let
+            -- a group's index, known to be below `n // 4`, so its four
+            -- places stay inside `Int`
             groups =
-                Array.range 0 (n // 4 - 1)
+                Array.repeat (n // 4) {}
 
             byteAt i =
                 Array.get i values |> Maybe.withDefault (meant Reason.OutOfRange 0)
 
             bytes =
                 groups
-                    |> Array.mapAndFlatten
-                        (\g ->
+                    |> Array.indexedMap
+                        (\g _ ->
                             let
                                 word =
                                     Bitwise.or (Bitwise.shiftLeftBy 18 (byteAt (4 * g)))
@@ -83,6 +85,7 @@ decode text =
                             in
                             [ Bitwise.and 255 (Bitwise.shiftRightZfBy 16 word), Bitwise.and 255 (Bitwise.shiftRightZfBy 8 word), Bitwise.and 255 word ]
                         )
+                    |> Array.flatten
                     |> Array.takeFirst (3 * (n // 4) - padding)
         in
         Just (Bytes.fromUInt8s (Array.map UInt8.fromIntWrap bytes))
@@ -94,21 +97,45 @@ encode b =
         n =
             Bytes.length b
 
+        -- a group of three bytes for each three, and one for those left
+        count =
+            if 3 * (n // 3) == n then
+                n // 3
+
+            else
+                n // 3 + 1
+
         at i =
-            Bytes.get i b |> Maybe.map UInt8.toInt |> Maybe.withDefault (meant Reason.OutOfRange 0)
+            Bytes.get i b |> Maybe.map UInt8.toInt |> Maybe.withDefault 0
 
         char v =
             String.slice v (v + 1) alphabet
     in
-    Array.range 0 ((n + 2) // 3 - 1)
-        |> Array.map
-            (\g ->
+    Array.repeat count {}
+        |> Array.indexedMap
+            (\g _ ->
                 let
-                    word =
-                        Bitwise.or (Bitwise.shiftLeftBy 16 (at (3 * g))) (Bitwise.or (Bitwise.shiftLeftBy 8 (at (3 * g + 1))) (at (3 * g + 2)))
-
                     left =
                         n - 3 * g
+
+                    -- the second and third bytes only when the group has
+                    -- them: the last group of one or two is padded
+                    second =
+                        if left >= 2 then
+                            at (3 * g + 1)
+
+                        else
+                            0
+
+                    third =
+                        if left >= 3 then
+                            at (3 * g + 2)
+
+                        else
+                            0
+
+                    word =
+                        Bitwise.or (Bitwise.shiftLeftBy 16 (at (3 * g))) (Bitwise.or (Bitwise.shiftLeftBy 8 second) third)
                 in
                 char (Bitwise.and 63 (Bitwise.shiftRightZfBy 18 word))
                     ++ char (Bitwise.and 63 (Bitwise.shiftRightZfBy 12 word))

@@ -346,27 +346,33 @@ resetPalette words t =
 
 {-| A color's index: decimal digits only, no sign, as Ghostty's
 `parseInt` for an unsigned type takes it (§VC18). One too big for any
-index is 99999, which none has. -}
+index is 99999, which none has; leading zeros count for nothing, so
+`000012` is 12. Read in one pass, the value held from growing past six
+digits. -}
 digits : String -> Maybe Int
 digits w =
-    if w /= "" && String.all Char.isDigit w then
-        if String.count w > 5 then
-            when String.toInt (String.takeLast 5 w) is
-                Just v ->
-                    if String.all (\c -> c == '0') (String.dropLast 5 w) then
-                        Just v
-
-                    else
-                        Just 99999
-
-                Nothing ->
-                    Nothing
-
-        else
-            String.toInt w
+    if w == "" then
+        Nothing
 
     else
-        Nothing
+        String.foldl
+            (\c got ->
+                Maybe.andThen
+                    (\v ->
+                        if not (Char.isDigit c) then
+                            Nothing
+
+                        else if v >= 100000 then
+                            Just v
+
+                        else
+                            Just (v * 10 + Char.toCode c - 48)
+                    )
+                    got
+            )
+            (Just 0)
+            w
+            |> Maybe.map (min 99999)
 
 
 {-| A color as xterm reports one: `rgb:` and each channel in 16 bits. -}
