@@ -222,3 +222,43 @@ prompt on the screen, app tests 142, the settings gate 20 of 20, `show.py`
 mouse, menus and panes as before; the Windows build compiles. ETX itself
 is Gilbert's to try: whether the window now shows at once, and what the
 log's `window` lines say if it does not.
+
+## RE10 · The blank window was the clock: a machine up 24.8 days (2026-11-14)
+
+The same blank window on gmktec7 (Linux Mint 22.3, Cinnamon), started from
+the file manager or a shell: the cursor, no prompt, until a click anywhere.
+Every start did it there, and none did on nene or under Xvfb.
+
+**What it was.** `Main`'s clock (`now`) was `Time.monotonic` in
+milliseconds as an `Int`. Natively that clock counts from when the machine
+started (`CLOCK_MONOTONIC`; on node, from the program's start, so the
+tests never saw it). gmktec7 had been up 30.3 days, past 2^31 ms (24.8
+days), so `Int64.toInt` held every reading at 2147483647. The first frame
+drew (it is urgent); after that a frame is due at `last + frameMs`, which
+overflowed to a negative number, which `frameAt` reads as none due, so no
+timer was set and no frame drawn until an X event made one urgent. A run
+with lines on standard error showed it: `ms=2147483647`, and each read of
+the prompt followed by a wait with no timer. RE9's window under ETX was
+most likely the same: work machines stay up for weeks. RE9's repaints on
+`MapNotify`, `VisibilityNotify` and focus stay; they do no harm.
+
+What looked like evidence and was not: with `PURITTY_NO_XIM` the prompt
+showed, but only because the input method's start-up changed when the
+first, urgent frame was drawn; under `strace` it hung without XIM too.
+
+**What changed.** The window's clock counts from the window's start:
+`Main.clock` subtracts `clockStart`, the system's reading when the window
+began, in `Int64`, so times start at 0 on any machine. The settings
+window's double click keeps its press times in `Int64`
+(`SettingsProgram`).
+
+**Left:** a window open longer than 24.8 days reaches the same limit,
+since its times are still `Int` compared as they are (`ms >= at`). puritty
+only ever asks how long since a moment, never how long the window has been
+open, so Gilbert's choice (2026-11-14) is a clock that wraps, with every
+test made on the difference (`ms - at >= 0`), as the Linux kernel compares
+jiffies: next, as RE11.
+
+**Checked:** on gmktec7, up 30.3 days, three starts (two as the file manager
+starts it, `gio launch` of the desktop entry, one from a shell): the
+prompt on the screen at once each time, where before every start was blank.

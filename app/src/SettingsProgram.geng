@@ -66,7 +66,7 @@ type alias State =
     , stateDir : Maybe Path.Path
     , outcome : Outcome
     -- the last left press, to count a double click (ST27)
-    , lastPress : { at : Int, row : Int, col : Int, count : Int }
+    , lastPress : { at : Int64, row : Int, col : Int, count : Int }
     }
 
 
@@ -266,7 +266,7 @@ first r given read cell w shotPath lang =
     , opener = r.opener
     , launcher = r.launcher
     , outcome = Closed
-    , lastPress = { at = -1000, row = -1, col = -1, count = 0 }
+    , lastPress = { at = Int64.fromInt (-1000), row = -1, col = -1, count = 0 }
     }
 
 
@@ -396,8 +396,11 @@ one ev s =
             if p.action == 0 && p.button == 1 && p.cellWidth > 0 && p.cellHeight > 0 then
                 -- a second press within 400 ms on the same cell is a double
                 -- click (ST27)
+                -- in Int64: the system's clock counts from an arbitrary
+                -- moment, past the largest Int on a machine up 24.8 days
+                -- (docs/rhel8-etx.md RE10)
                 Time.monotonic
-                    |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
+                    |> Task.map Time.inMilliseconds
                     |> Task.andThen
                         (\ms ->
                             let
@@ -408,7 +411,7 @@ one ev s =
                                     s.lastPress
 
                                 count =
-                                    if ms - last.at <= 400 && last.row == cell.row && last.col == cell.col then
+                                    if Int64.toInt (ms - last.at) <= 400 && last.row == cell.row && last.col == cell.col then
                                         last.count + 1
 
                                     else

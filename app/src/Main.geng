@@ -218,6 +218,9 @@ type alias Model =
     , logDir : Maybe String
     , turnMs : Int
     , loggedTab : Int
+    -- the system's clock when the window began, which every time the
+    -- window keeps is counted from (`clock`)
+    , clockStart : Int64
     -- whether the window is maximized, asked at each resize, and its size
     -- when it last was not, which the next window opens with
     -- (docs/window-state.md WP8)
@@ -335,9 +338,18 @@ type Turn
     | BehindWritable Int
 
 
-now : Task x Int
-now =
-    Time.monotonic |> Task.map (\t -> Int64.toInt (Time.inMilliseconds t))
+{-| The window's clock: milliseconds since it began (`clockStart`). The
+system's own counts from an arbitrary moment, since the machine started on
+Linux and Windows, and a machine up longer than 24.8 days had passed the
+largest Int, so every time read the same and no frame came due (RE10). -}
+clock : Int64 -> Task x Int
+clock began =
+    clockNow |> Task.map (\t -> Int64.toInt (t - began))
+
+
+clockNow : Task x Int64
+clockNow =
+    Time.monotonic |> Task.map Time.inMilliseconds
 
 
 type Command
@@ -1068,9 +1080,13 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
     Text.interfaceFont Platform.interfaceFont
         -- the system menu's items, where the platform has one (ST26)
         |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
-        |> Task.andThen (\_ -> now)
+        |> Task.andThen (\_ -> clockNow)
         |> Task.andThen
-            (\t0 ->
+            (\began ->
+                let
+                    t0 =
+                        0
+                in
                 restoreInto restoring
                     { config = config
                     , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
@@ -1157,6 +1173,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                     , logDir = logDir
                     , turnMs = t0
                     , loggedTab = -1
+                    , clockStart = began
                     , maximized = False
                     , normalSize = { columns = config.columns, rows = config.rows }
                     }
@@ -1798,7 +1815,7 @@ hoverShapes m =
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
 race remote m0 =
-    now
+    clock m0.clockStart
         |> Task.andThen
             (\ms0 ->
                 let
@@ -1852,7 +1869,7 @@ race remote m0 =
                 Task.race (remote.read |> Task.map Read) ([ Window.events |> Task.map Events ] ++ timer ++ writing ++ following ++ behindTabs)
                     |> Task.andThen
                         (\turn ->
-                            now
+                            clock m.clockStart
                                 |> Task.andThen
                                     (\ms ->
                                         when turn is
@@ -2183,7 +2200,7 @@ beginLog m =
                             path =
                                 dir ++ Platform.pathSeparator ++ name
                         in
-                        now
+                        clock m.clockStart
                             |> Task.map
                                 (\ms ->
                                     { m
@@ -2346,7 +2363,7 @@ says so; a file that cannot be written loses them, said on the next. -}
 writeLog : Bool -> (taken m : Model) -> Task Error Model
 writeLog force m0 =
     if Diag.isOn m0.diag && (force || Diag.due m0.diag >= 0) then
-        now
+        clock m0.clockStart
             |> Task.andThen
                 (\ms ->
                     let
@@ -5840,7 +5857,7 @@ dropShownFrom dir m =
                 next =
                     r.model
             in
-            now
+            clock next.clockStart
                 |> Task.andThen (\ms -> relayout cols (afterSwitch (keepClosed { tab = r.old, directory = dir, at = ms } next)))
 
         Nothing ->
@@ -6422,7 +6439,7 @@ endTab id kill m =
             in
             ending
                 |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })
-                |> Task.andThen (\_ -> now)
+                |> Task.andThen (\_ -> clock rest.clockStart)
                 |> Task.andThen (\ms -> relayout cols (keepClosed { tab = t, directory = Nothing, at = ms } rest))
 
         Nothing ->
