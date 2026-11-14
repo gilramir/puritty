@@ -1,4 +1,4 @@
-module Vt.View exposing (Shadow, shadow, shadowIn, frame, frameWith, frameBack, Highlight, noHighlight, inked, wantsFrame, Look, defaultLook, Focus, focused, Preedit, noPreedit, preeditSpot)
+module Vt.View exposing (Focus, Highlight, Look, Preedit, Shadow, defaultLook, focused, frame, frameBack, frameWith, inked, noHighlight, noPreedit, preeditSpot, shadow, shadowIn, wantsFrame)
 
 {-| The renderer's Geng side (`docs/phase2-window.md` §3, V18; in the
 core's package by V19, `docs/renderer.md` §R6): a renderer that keeps its
@@ -97,16 +97,16 @@ and the frame draws every cell.
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Dict
 import Int64
 import UInt8
 import Vt.Cell exposing (..)
-import Vt.Term exposing (..)
+import Vt.Palette exposing (paletteColor, programColor)
+import Vt.Reason as Reason
 import Vt.Screen exposing (..)
 import Vt.Style exposing (Attrs, Clusters, Styles, cellPoints, styleOf)
-import Vt.Palette exposing (programColor, paletteColor)
+import Vt.Term exposing (..)
 import Vt.Width as Width
-import Dict
-import Vt.Reason as Reason
 
 
 type alias Shadow =
@@ -127,9 +127,9 @@ type alias Shadow =
     , inked : Bool
     , drawnIn : Builder Int
     , pending : Bool
-      -- the window's rows, the terminal's and any below them its embedder
-      -- draws itself (a tab bar, puritty `docs/tabs.md` TB2): the size
-      -- record asks for them all, so the window keeps them
+    -- the window's rows, the terminal's and any below them its embedder
+    -- draws itself (a tab bar, puritty `docs/tabs.md` TB2): the size
+    -- record asks for them all, so the window keeps them
     , screenRows : Int
     }
 
@@ -273,7 +273,20 @@ overlayOf p t =
                     styleBits (preeditStyle + Bitwise.and 7 g.feedback)
 
                 head =
-                    { value = Bitwise.or id (Bitwise.or (Int64.fromInt (Bitwise.and 0x1FFFFF (pointsKey g.points))) (Int64.fromInt (if g.width == 2 then wideHead else 0))), points = g.points }
+                    { value =
+                        Bitwise.or id
+                            (Bitwise.or (Int64.fromInt (Bitwise.and 0x1FFFFF (pointsKey g.points)))
+                                (Int64.fromInt
+                                    (if g.width == 2 then
+                                        wideHead
+
+                                     else
+                                        0
+                                    )
+                                )
+                            )
+                    , points = g.points
+                    }
 
                 cells =
                     if g.width == 2 then
@@ -287,9 +300,24 @@ overlayOf p t =
 
             else
                 { cells = cells
-                , caretAt = if g.caret then at else acc.caretAt
-                , caretCells = if g.caret then g.width else acc.caretCells
-                , spotAt = if acc.spotAt < 0 && Bitwise.and 1 g.feedback /= 0 then at else acc.spotAt
+                , caretAt =
+                    if g.caret then
+                        at
+
+                    else
+                        acc.caretAt
+                , caretCells =
+                    if g.caret then
+                        g.width
+
+                    else
+                        acc.caretCells
+                , spotAt =
+                    if acc.spotAt < 0 && Bitwise.and 1 g.feedback /= 0 then
+                        at
+
+                    else
+                        acc.spotAt
                 }
 
         placed =
@@ -306,7 +334,12 @@ overlayOf p t =
     , cells = placed.cells
     , caretAt = caretAt
     , caretCells = placed.caretCells
-    , spotAt = if placed.spotAt >= 0 then placed.spotAt else caretAt
+    , spotAt =
+        if placed.spotAt >= 0 then
+            placed.spotAt
+
+        else
+            caretAt
     }
 
 
@@ -462,9 +495,19 @@ frameOn look focus preedit hl s clusters back t sh0 =
                 { plainCursor
                     | preAt = o.at
                     , pre = o.cells
-                    , at = if plainCursor.at >= 0 || t.showCursor then o.caretAt else -1
+                    , at =
+                        if plainCursor.at >= 0 || t.showCursor then
+                            o.caretAt
+
+                        else
+                            -1
                     , cells = o.caretCells
-                    , shape = if plainCursor.shape == 0 then 1 else plainCursor.shape
+                    , shape =
+                        if plainCursor.shape == 0 then
+                            1
+
+                        else
+                            plainCursor.shape
                 }
 
         sh1 =
@@ -624,7 +667,24 @@ scanY k y end start score current hashes best =
                 Maybe.withDefault (meant Reason.OutOfRange -2) (Array.get y current)
         in
         if h == Maybe.withDefault (meant Reason.OutOfRange -3) (Builder.get (y + k) hashes) then
-            scanY k (y + 1) end (if start < 0 then y else start) (if h == 7 then score else score + 1) current hashes best
+            scanY k
+                (y + 1)
+                end
+                (if start < 0 then
+                    y
+
+                 else
+                    start
+                )
+                (if h == 7 then
+                    score
+
+                 else
+                    score + 1
+                )
+                current
+                hashes
+                best
 
         else
             scanY k (y + 1) end -1 0 current hashes closed
@@ -1147,7 +1207,6 @@ diffRows s clusters cursor y rows cols sh list =
 
             r =
                 diffRow s clusters cursor o (extentAt o s) y 0 cols sh list
-
         in
         diffRows s clusters cursor (y + 1) rows cols r.shadow r.list
 
@@ -1169,7 +1228,11 @@ cellAt s cursor o ext row x =
     let
         -- `preAt` 0 or more, so that the difference cannot wrap
         i =
-            if cursor.preAt >= 0 then row + x - cursor.preAt else -1
+            if cursor.preAt >= 0 then
+                row + x - cursor.preAt
+
+            else
+                -1
     in
     if cursor.preAt >= 0 && i >= 0 && i < Array.length cursor.pre then
         Maybe.withDefault 0 (Maybe.map .value (Array.get i cursor.pre))
@@ -1295,10 +1358,28 @@ writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
             seen =
                 Builder.get id stamps == Just stamp
         in
-        writeRun s clusters cursor o ext row (x + 1) end stamp
+        writeRun s
+            clusters
+            cursor
+            o
+            ext
+            row
+            (x + 1)
+            end
+            stamp
             (Builder.set (row + x) (drawnAs s cursor o ext row x) cells)
-            (if seen then stamps else Builder.set id stamp stamps)
-            (if seen then styleIds else Builder.pushLast id styleIds)
+            (if seen then
+                stamps
+
+             else
+                Builder.set id stamp stamps
+            )
+            (if seen then
+                styleIds
+
+             else
+                Builder.pushLast id styleIds
+            )
             (Array.foldl push24
                 (list
                     |> Builder.pushLast (UInt8.fromInt (Bitwise.or (Bitwise.shiftRightZfBy 15 (cellWide c)) (Array.length points)))
@@ -1330,7 +1411,26 @@ colorKey look t =
             Bitwise.xor (rotl h) v
     in
     Dict.foldl (\k v h -> mix (mix h k) v)
-        (mix (mix (mix (if Dict.get 5 t.modes == Just True then 1 else 0) look.foreground) look.background) (if look.boldIsBright then 1 else 0))
+        (mix
+            (mix
+                (mix
+                    (if Dict.get 5 t.modes == Just True then
+                        1
+
+                     else
+                        0
+                    )
+                    look.foreground
+                )
+                look.background
+            )
+            (if look.boldIsBright then
+                1
+
+             else
+                0
+            )
+        )
         t.colors
 
 
@@ -1378,7 +1478,12 @@ cursorOf focus s back t =
         , selFrom = -1
         , selTo = -1
         , at = y * t.cols + head
-        , cells = if wide then 2 else 1
+        , cells =
+            if wide then
+                2
+
+            else
+                1
         , shape =
             if blinking && not focus.blinkOn then
                 5
@@ -1465,10 +1570,18 @@ styleRecord look t shape id b =
             (Bitwise.and a.flags 16 /= 0) /= (Dict.get 5 t.modes == Just True)
 
         fg1 =
-            if swapped then bg0 else fg0
+            if swapped then
+                bg0
+
+            else
+                fg0
 
         bg =
-            if swapped then fg0 else bg0
+            if swapped then
+                fg0
+
+            else
+                bg0
 
         fg2 =
             if Bitwise.and a.flags 2 /= 0 then
@@ -1524,8 +1637,25 @@ preeditAttrs fb =
     { fg = 0
     , bg = 0
     , ulc = 0
-    , flags = (if Bitwise.and 1 fb /= 0 then 16 else 0) + (if Bitwise.and 4 fb /= 0 then 1 else 0)
-    , ul = if Bitwise.and 1 fb /= 0 then 0 else 1
+    , flags =
+        (if Bitwise.and 1 fb /= 0 then
+            16
+
+         else
+            0
+        )
+            + (if Bitwise.and 4 fb /= 0 then
+                1
+
+               else
+                0
+              )
+    , ul =
+        if Bitwise.and 1 fb /= 0 then
+            0
+
+        else
+            1
     }
 
 
@@ -1545,7 +1675,14 @@ colorOf look t isFg bold c =
             i =
                 c - 1
         in
-        paletteColor (if bold && look.boldIsBright && i < 8 then i + 8 else i) t
+        paletteColor
+            (if bold && look.boldIsBright && i < 8 then
+                i + 8
+
+             else
+                i
+            )
+            t
 
     else
         Bitwise.and c 0xFFFFFF

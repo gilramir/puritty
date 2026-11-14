@@ -1,7 +1,7 @@
 module Vt.Recut exposing
-    ( recut
+    ( packArray
     , popLast
-    , packArray
+    , recut
     )
 
 {-| Part of `Vt` (docs/vt-core.md §VC23): the scrollback's pages reflowed
@@ -35,12 +35,12 @@ import Bitwise
 import Bytes.Owned as Owned exposing (Owned)
 import Int64
 import UInt8
-import Vt.Width as Width
 import Vt.Cell exposing (..)
-import Vt.Style exposing (..)
-import Vt.Term exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Reason as Reason
+import Vt.Style exposing (..)
+import Vt.Term exposing (..)
+import Vt.Width as Width
 
 
 {-| The pages being written: those done, and the one being written, its
@@ -174,7 +174,12 @@ toPage cols o =
 {-| Every line from page `pi`, its header `h`, text `ti` and runs `r` on. -}
 lines : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Clusters -> (taken o : Out) -> { out : Out, clusters : Clusters }
 lines reflow old cols plains pages pi h ti r clusters o =
-    when (if pi < Array.length plains then Array.get pi pages else Nothing) is
+    when (if pi < Array.length plains then
+            Array.get pi pages
+
+          else
+            Nothing
+         ) is
         Nothing ->
             meant Reason.NoMore { out = o, clusters = clusters }
 
@@ -217,7 +222,12 @@ anyLine reflow old cols plains pages pi h ti r clusters o =
 the first that does not wrap, and where the next line starts. -}
 gather : Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Array Source -> { rows : Array Source, pi : Int, h : Int, ti : Int, r : Int }
 gather plains pages pi h ti r acc =
-    when (if pi < Array.length plains then Array.get pi pages else Nothing) is
+    when (if pi < Array.length plains then
+            Array.get pi pages
+
+          else
+            Nothing
+         ) is
         Nothing ->
             meant Reason.NoMore { rows = acc, pi = pi, h = h, ti = ti, r = r }
 
@@ -441,17 +451,22 @@ where the next line starts. `from`: where this page's part began. Nothing
 when it is not, and the line is cut otherwise. -}
 plainSpans : Int -> Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Array Span -> Maybe { spans : Array Span, last : Int, pi : Int, h : Int, ti : Int }
 plainSpans old plains pages pi h ti from acc =
-    when (if pi < Array.length plains then Array.get pi pages else Nothing) is
+    when (if pi < Array.length plains then
+            Array.get pi pages
+
+          else
+            Nothing
+         ) is
         Nothing ->
             -- the pages end inside the line: every row of it wraps, and
             -- none has its empty cells trimmed
             meant Reason.NoMore
-            when Array.last acc is
-                Nothing ->
-                    meant Reason.NoMore Nothing
+                when Array.last acc is
+                    Nothing ->
+                        meant Reason.NoMore Nothing
 
-                Just span ->
-                    Just { spans = acc, last = span.to, pi = pi, h = h, ti = ti }
+                    Just span ->
+                        Just { spans = acc, last = span.to, pi = pi, h = h, ti = ti }
 
         Just page ->
             if not (plainAt plains pi) then
@@ -1026,11 +1041,11 @@ packArray clusters cells i text runs style count wrote =
     when Array.get i cells is
         Nothing ->
             meant Reason.NoMore
-            if count == 0 || (style == 0 && not wrote) then
-                { text = text, runs = runs, styled = False }
+                if count == 0 || (style == 0 && not wrote) then
+                    { text = text, runs = runs, styled = False }
 
-            else
-                { text = text, runs = pushU16 style runs, styled = True }
+                else
+                    { text = text, runs = pushU16 style runs, styled = True }
 
         Just c ->
             let

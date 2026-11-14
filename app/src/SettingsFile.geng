@@ -1,4 +1,4 @@
-module SettingsFile exposing (Store, store, change)
+module SettingsFile exposing (Store, change, store)
 
 {-| Writing `config.toml` (`docs/settings.md` ST6): each change read from
 the file as it is now, so that an edit by hand since is kept, edited in
@@ -15,9 +15,9 @@ import Os.Directory as Directory
 import Os.Error
 import Os.File as File
 import Os.Path as Path exposing (Path)
+import Reason
 import Task exposing (Task)
 import Toml
-import Reason
 
 
 {-| A settings file being changed, and whether this session has kept a
@@ -48,7 +48,11 @@ change edit s =
         dir =
             when Path.parent s.path is
                 Just d ->
-                    if Path.toString d == "" then Nothing else Just d
+                    if Path.toString d == "" then
+                        Nothing
+
+                    else
+                        Just d
 
                 Nothing ->
                     meant Reason.NotSet Nothing
@@ -96,8 +100,8 @@ change edit s =
 
                                 Nothing ->
                                     meant Reason.NotYet
-                                    Maybe.map (Directory.createAll s.fs) dir
-                                        |> Maybe.withDefault (meant Reason.NotSet (Task.succeed {}))
+                                        Maybe.map (Directory.createAll s.fs) dir
+                                            |> Maybe.withDefault (meant Reason.NotSet (Task.succeed {}))
                             )
                                 |> Task.andThen (\_ -> File.writeFile s.fs (Toml.toBytes edited) (beside ".new"))
                                 |> Task.andThen (\_ -> File.move s.fs { from = beside ".new", to = s.path })

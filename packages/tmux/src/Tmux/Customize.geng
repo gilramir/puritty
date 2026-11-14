@@ -1,43 +1,43 @@
 module Tmux.Customize exposing
-    ( Info
-    , Table
-    , table
-    , Opt
-    , optionsOf
-    , Binding
-    , keyFormat
-    , bindingsOfFormat
-    , bindingsOfText
-    , Env
-    , envOf
-    , Data
-    , emptyData
-    , Entry
-    , Target(..)
-    , entries
-    , changedOption
-    , changedKey
-    , View
-    , startView
-    , Line
-    , lines
-    , visibleTagged
-    , Piece
-    , Detail
-    , preview
-    , previewTitle
-    , filterFormat
-    , Prompt
+    ( Act(..)
     , Asks(..)
-    , Act(..)
+    , Binding
+    , Data
+    , Detail
+    , Entry
+    , Env
+    , Info
+    , Line
+    , Opt
+    , Piece
+    , Prompt
+    , Table
+    , Target(..)
+    , View
     , act
     , answered
+    , bindingsOfFormat
+    , bindingsOfText
+    , changedKey
+    , changedOption
     , confirmed
-    , help
-    , rowKey
-    , levelFlags
-    , optionValue
     , effectiveValue
+    , emptyData
+    , entries
+    , envOf
+    , filterFormat
+    , help
+    , keyFormat
+    , levelFlags
+    , lines
+    , optionValue
+    , optionsOf
+    , preview
+    , previewTitle
+    , rowKey
+    , startView
+    , table
+    , visibleTagged
     )
 
 {-| tmux's customize mode (`prefix C`, `customize-mode`), drawn by puritty
@@ -55,9 +55,8 @@ generated from tmux's source.
 import Dict exposing (Dict)
 import Tmux.Command as Command
 import Tmux.CustomizeTables as Tables
-import Tmux.Syntax as Syntax
 import Tmux.Reason as Reason
-
+import Tmux.Syntax as Syntax
 
 
 -- THE TABLES
@@ -179,7 +178,12 @@ addRow row t =
                                 , style = String.contains "s" marks
                                 , colour = String.contains "c" marks
                                 , unit = unit
-                                , choices = if choices == "" then [] else String.split "," choices
+                                , choices =
+                                    if choices == "" then
+                                        []
+
+                                    else
+                                        String.split "," choices
                                 , text = text
                                 }
                                 t.infos
@@ -191,7 +195,20 @@ addRow row t =
         Just "D" ->
             when shownOf (String.dropFirst 2 row) is
                 Just o ->
-                    { t | defaults = Dict.set (o.name ++ (if o.key == "" then "" else "[" ++ o.key ++ "]")) o.value t.defaults }
+                    { t
+                        | defaults =
+                            Dict.set
+                                (o.name
+                                    ++ (if o.key == "" then
+                                            ""
+
+                                        else
+                                            "[" ++ o.key ++ "]"
+                                       )
+                                )
+                                o.value
+                                t.defaults
+                    }
 
                 Nothing ->
                     meant Reason.NotKnown t
@@ -206,7 +223,6 @@ addRow row t =
 
         _ ->
             meant Reason.NotKnown t
-
 
 
 -- WHAT TMUX SAYS
@@ -265,7 +281,11 @@ unquoted : String -> String
 unquoted text =
     when Syntax.tokens text is
         [ one ] ->
-            if one.sep || one.block then text else one.value
+            if one.sep || one.block then
+                text
+
+            else
+                one.value
 
         _ ->
             text
@@ -371,10 +391,18 @@ bindLine line =
             Array.length chars
 
         skipSpaces i =
-            if i < n && Array.get i chars == Just ' ' then skipSpaces (i + 1) else i
+            if i < n && Array.get i chars == Just ' ' then
+                skipSpaces (i + 1)
+
+            else
+                i
 
         wordEnd i =
-            if i < n && Array.get i chars /= Just ' ' then wordEnd (i + 1) else i
+            if i < n && Array.get i chars /= Just ' ' then
+                wordEnd (i + 1)
+
+            else
+                i
 
         wordAt i =
             String.fromArray (Array.slice i (wordEnd i) chars)
@@ -536,7 +564,6 @@ emptyData =
     }
 
 
-
 -- THE TREE
 
 
@@ -614,15 +641,46 @@ entries t d o =
                 [ node (blank ("S:" ++ tag) title (Section title)) kids ]
 
         optionSections hooks =
-            [ section (if hooks then "Session Hooks" else "Session Options") (if hooks then "sh" else "s") (optionNodes t d o keep hooks [ 2, 3 ])
-            , section (if hooks then "Window & Pane Hooks" else "Window & Pane Options") (if hooks then "wh" else "w") (optionNodes t d o keep hooks [ 4, 5, 6 ])
+            [ section
+                (if hooks then
+                    "Session Hooks"
+
+                 else
+                    "Session Options"
+                )
+                (if hooks then
+                    "sh"
+
+                 else
+                    "s"
+                )
+                (optionNodes t d o keep hooks [ 2, 3 ])
+            , section
+                (if hooks then
+                    "Window & Pane Hooks"
+
+                 else
+                    "Window & Pane Options"
+                )
+                (if hooks then
+                    "wh"
+
+                 else
+                    "w"
+                )
+                (optionNodes t d o keep hooks [ 4, 5, 6 ])
             ]
                 |> Array.flatten
 
         options =
             section "Server Options" "S" (optionNodes t d o keep False [ 1 ])
                 ++ optionSections False
-                ++ (if newer then optionSections True else [])
+                ++ (if newer then
+                        optionSections True
+
+                    else
+                        []
+                   )
 
         env =
             if newer && not o.changedOnly then
@@ -633,7 +691,16 @@ entries t d o =
                 []
 
         tables =
-            Array.foldl (\b acc -> if Array.member b.table acc then acc else Array.pushLast b.table acc) [] d.keys
+            Array.foldl
+                (\b acc ->
+                    if Array.member b.table acc then
+                        acc
+
+                    else
+                        Array.pushLast b.table acc
+                )
+                []
+                d.keys
                 |> Array.sortBy identity
                 |> Array.mapAndFlatten (\name -> section ("Key Table - " ++ name) ("k:" ++ name) (keyNodes t d o keep name))
     in
@@ -743,7 +810,16 @@ optionNodes t d o keep hooks levels =
         userNames =
             Array.foldl
                 (\level acc ->
-                    Array.foldl (\name inner -> if String.startsWith "@" name && not (Array.member name inner) then Array.pushLast name inner else inner) acc (Dict.keys (levelOf d level))
+                    Array.foldl
+                        (\name inner ->
+                            if String.startsWith "@" name && not (Array.member name inner) then
+                                Array.pushLast name inner
+
+                            else
+                                inner
+                        )
+                        acc
+                        (Dict.keys (levelOf d level))
                 )
                 []
                 levels
@@ -752,7 +828,16 @@ optionNodes t d o keep hooks levels =
             Dict.keys (levelOf d globalLevel) |> Array.keepIf (\name -> not (String.startsWith "@" name))
 
         ownerOf name =
-            Array.foldr (\level found -> if found == 0 && Dict.member name (levelOf d level) then level else found) 0 levels
+            Array.foldr
+                (\level found ->
+                    if found == 0 && Dict.member name (levelOf d level) then
+                        level
+
+                    else
+                        found
+                )
+                0
+                levels
 
         isHook name =
             Dict.get name t.infos |> Maybe.map .hook |> Maybe.withDefault (meant Reason.NotKnown False)
@@ -783,10 +868,20 @@ optionNodes t d o keep hooks levels =
                         "O:" ++ String.fromInt globalLevel ++ ":" ++ name
 
                     shownScope =
-                        if global then "" else scopeText d owner
+                        if global then
+                            ""
+
+                        else
+                            scopeText d owner
 
                     valueText v =
-                        v ++ (if unit == "" then "" else " " ++ unit)
+                        v
+                            ++ (if unit == "" then
+                                    ""
+
+                                else
+                                    " " ++ unit
+                               )
 
                     items =
                         held.items
@@ -794,13 +889,17 @@ optionNodes t d o keep hooks levels =
                             |> Array.map
                                 (\item ->
                                     node
-                                        ((blank (id ++ "[" ++ item.key ++ "]") (name ++ "[" ++ item.key ++ "]") (Option { scope = owner, name = name, key = Just item.key })) |> (\fresh -> { fresh
-                                            | scope = shownScope
-                                            , text = Just (valueText item.value)
-                                            , grey = t.version == 0 || t.version >= 38
-                                            , open = True
-                                            , noTag = False
-                                        }))
+                                        ((blank (id ++ "[" ++ item.key ++ "]") (name ++ "[" ++ item.key ++ "]") (Option { scope = owner, name = name, key = Just item.key }))
+                                            |> (\fresh ->
+                                                    { fresh
+                                                        | scope = shownScope
+                                                        , text = Just (valueText item.value)
+                                                        , grey = t.version == 0 || t.version >= 38
+                                                        , open = True
+                                                        , noTag = False
+                                                    }
+                                               )
+                                        )
                                         []
                                 )
                 in
@@ -810,13 +909,27 @@ optionNodes t d o keep hooks levels =
                 else
                     Just
                         (node
-                            ((blank id name (Option { scope = owner, name = name, key = Nothing })) |> (\fresh -> { fresh
-                                | scope = shownScope
-                                , text = if isArray then Nothing else Just (valueText held.value)
-                                , grey = t.version == 0 || t.version >= 38
-                                , noTag = False
-                            }))
-                            (if isArray then items else [])
+                            ((blank id name (Option { scope = owner, name = name, key = Nothing }))
+                                |> (\fresh ->
+                                        { fresh
+                                            | scope = shownScope
+                                            , text =
+                                                if isArray then
+                                                    Nothing
+
+                                                else
+                                                    Just (valueText held.value)
+                                            , grey = t.version == 0 || t.version >= 38
+                                            , noTag = False
+                                        }
+                                   )
+                            )
+                            (if isArray then
+                                items
+
+                             else
+                                []
+                            )
                         )
             )
 
@@ -834,7 +947,16 @@ changedOption t name held =
                         name ++ "["
 
                     defaults =
-                        Dict.foldl (\k v acc -> if String.startsWith prefix k then Array.pushLast { key = String.dropFirst (String.count prefix) k |> String.dropLast 1, value = v } acc else acc) [] t.defaults
+                        Dict.foldl
+                            (\k v acc ->
+                                if String.startsWith prefix k then
+                                    Array.pushLast { key = String.dropFirst (String.count prefix) k |> String.dropLast 1, value = v } acc
+
+                                else
+                                    acc
+                            )
+                            []
+                            t.defaults
                 in
                 Array.map (\i -> i.key ++ "=" ++ i.value) held.items |> Array.sortBy identity |> (\mine -> mine /= (Array.map (\i -> i.key ++ "=" ++ i.value) defaults |> Array.sortBy identity))
 
@@ -882,11 +1004,23 @@ envNodes t d keep scope vars =
                 else
                     Just
                         (node
-                            ((blank id (if v.value == Nothing then "-" ++ v.name else v.name) (Variable { scope = scope, name = v.name })) |> (\fresh -> { fresh
-                                | text = v.value
-                                , grey = True
-                                , noTag = False
-                            }))
+                            ((blank id
+                                (if v.value == Nothing then
+                                    "-" ++ v.name
+
+                                 else
+                                    v.name
+                                )
+                                (Variable { scope = scope, name = v.name })
+                             )
+                                |> (\fresh ->
+                                        { fresh
+                                            | text = v.value
+                                            , grey = True
+                                            , noTag = False
+                                        }
+                                   )
+                            )
                             []
                         )
             )
@@ -908,12 +1042,16 @@ keyNodes t d o keep tableName =
 
                     part label text =
                         node
-                            ((blank (id ++ "\t" ++ label) label (Key { table = b.table, key = b.key, part = label })) |> (\fresh -> { fresh
-                                | text = Just text
-                                , grey = newer
-                                , open = True
-                                , asParent = True
-                            }))
+                            ((blank (id ++ "\t" ++ label) label (Key { table = b.table, key = b.key, part = label }))
+                                |> (\fresh ->
+                                        { fresh
+                                            | text = Just text
+                                            , grey = newer
+                                            , open = True
+                                            , asParent = True
+                                        }
+                                   )
+                            )
                             []
                 in
                 if (o.changedOnly && not (changedKey t b)) || not (keep id) then
@@ -925,11 +1063,16 @@ keyNodes t d o keep tableName =
                             ((blank id b.key (Key { table = b.table, key = b.key, part = "" })) |> (\fresh -> { fresh | noTag = False }))
                             [ part "Command" b.command
                             , part "Note" b.note
-                            , part "Repeat" (if b.repeat then "on" else "off")
+                            , part "Repeat"
+                                (if b.repeat then
+                                    "on"
+
+                                 else
+                                    "off"
+                                )
                             ]
                         )
             )
-
 
 
 -- WHAT IS SHOWN
@@ -993,7 +1136,12 @@ lines v all =
                         Dict.get e.id v.open |> Maybe.withDefault (meant Reason.NotSet e.open)
                 in
                 { shown = Array.pushLast { entry = e, expanded = isOpen } acc.shown
-                , skip = if isOpen || not e.children then -1 else e.depth
+                , skip =
+                    if isOpen || not e.children then
+                        -1
+
+                    else
+                        e.depth
                 }
         )
         { shown = [], skip = -1 }
@@ -1022,7 +1170,6 @@ rowKey i =
 
     else
         Nothing
-
 
 
 -- THE DESCRIPTION
@@ -1081,10 +1228,18 @@ write width lineCount more style text w =
                 Array.get i chars |> Maybe.withDefault ' '
 
             fitEnd idx left at =
-                if idx < n && charAt idx /= '\n' && at + 1 <= left then fitEnd (idx + 1) left (at + 1) else idx
+                if idx < n && charAt idx /= '\n' && at + 1 <= left then
+                    fitEnd (idx + 1) left (at + 1)
+
+                else
+                    idx
 
             spaceBack i idx =
-                if i > idx && charAt i /= ' ' then spaceBack (i - 1) idx else i
+                if i > idx && charAt i /= ' ' then
+                    spaceBack (i - 1) idx
+
+                else
+                    i
 
             go idx x y left out =
                 let
@@ -1103,13 +1258,21 @@ write width lineCount more style text w =
                                 back =
                                     spaceBack end0 idx
                             in
-                            if back /= idx then { end = back, next = back + 1 } else { end = end0, next = end0 }
+                            if back /= idx then
+                                { end = back, next = back + 1 }
+
+                            else
+                                { end = end0, next = end0 }
 
                     piece =
                         { row = y, col = x, text = String.fromArray (Array.slice idx cut.end chars), style = style }
 
                     placed =
-                        if cut.end > idx then Array.pushLast piece out else out
+                        if cut.end > idx then
+                            Array.pushLast piece out
+
+                        else
+                            out
 
                     afterX =
                         x + (cut.end - idx)
@@ -1246,22 +1409,32 @@ optionPreview t d detail o say labelled skip height start =
 
                 Nothing ->
                     meant Reason.NotSet
-                    if isArray then
-                        Array.map .value held.items |> String.join " "
+                        if isArray then
+                            Array.map .value held.items |> String.join " "
 
-                    else
-                        held.value
+                        else
+                            held.value
 
         unit =
             info |> Maybe.map .unit |> Maybe.withDefault (meant Reason.NotKnown "")
 
         withUnit v =
-            v ++ (if unit == "" then "" else " " ++ unit)
+            v
+                ++ (if unit == "" then
+                        ""
+
+                    else
+                        " " ++ unit
+                   )
 
         described =
             when info is
                 Just i ->
-                    if i.text == "" then "This option doesn't have a description." else i.text
+                    if i.text == "" then
+                        "This option doesn't have a description."
+
+                    else
+                        i.text
 
                 Nothing ->
                     meant Reason.NotKnown "This option doesn't have a description."
@@ -1300,7 +1473,15 @@ optionPreview t d detail o say labelled skip height start =
             start
                 |> say False "" described
                 |> skip
-                |> say False "" (if isHook then "This is a " ++ what ++ " hook." else "This is a " ++ what ++ " option.")
+                |> say
+                    False
+                    ""
+                    (if isHook then
+                        "This is a " ++ what ++ " hook."
+
+                     else
+                        "This is a " ++ what ++ " option."
+                    )
 
         arrayPart w =
             if isArray then
@@ -1314,7 +1495,15 @@ optionPreview t d detail o say labelled skip height start =
                 else
                     when o.key is
                         Just k ->
-                            say False "" (if newer then "This is an array option, key " ++ k ++ "." else "This is an array option, index " ++ k ++ ".") w
+                            say False
+                                ""
+                                (if newer then
+                                    "This is an array option, key " ++ k ++ "."
+
+                                 else
+                                    "This is an array option, index " ++ k ++ "."
+                                )
+                                w
 
                         Nothing ->
                             meant Reason.NotSet say False "" "This is an array option." w |> (\x -> { x | stopped = True })
@@ -1326,22 +1515,40 @@ optionPreview t d detail o say labelled skip height start =
             if o.key == Nothing && info /= Nothing then
                 when Dict.get o.name t.defaults is
                     Just dv ->
-                        if dv == value then Nothing else Just dv
+                        if dv == value then
+                            Nothing
+
+                        else
+                            Just dv
 
                     Nothing ->
                         meant Reason.NotKnown
-                        if isArray then
-                            let
-                                prefix =
-                                    o.name ++ "["
+                            if isArray then
+                                let
+                                    prefix =
+                                        o.name ++ "["
 
-                                joined =
-                                    Dict.foldl (\k v acc -> if String.startsWith prefix k then Array.pushLast v acc else acc) [] t.defaults |> String.join " "
-                            in
-                            if joined == value then Nothing else Just joined
+                                    joined =
+                                        Dict.foldl
+                                            (\k v acc ->
+                                                if String.startsWith prefix k then
+                                                    Array.pushLast v acc
 
-                        else
-                            Nothing
+                                                else
+                                                    acc
+                                            )
+                                            []
+                                            t.defaults
+                                            |> String.join " "
+                                in
+                                if joined == value then
+                                    Nothing
+
+                                else
+                                    Just joined
+
+                            else
+                                Nothing
 
             else
                 Nothing
@@ -1359,7 +1566,11 @@ optionPreview t d detail o say labelled skip height start =
                     if info == Nothing || (info |> Maybe.map .kind) == Just "string" then
                         when detail |> Maybe.andThen .expanded is
                             Just x ->
-                                if x /= value then labelled "This expands to: " x else identity
+                                if x /= value then
+                                    labelled "This expands to: " x
+
+                                else
+                                    identity
 
                             Nothing ->
                                 meant Reason.NotYet identity
@@ -1370,7 +1581,11 @@ optionPreview t d detail o say labelled skip height start =
                 choices =
                     when info is
                         Just i ->
-                            if i.kind == "choice" then labelled "Available values are: " (String.join ", " i.choices) else identity
+                            if i.kind == "choice" then
+                                labelled "Available values are: " (String.join ", " i.choices)
+
+                            else
+                                identity
 
                         Nothing ->
                             meant Reason.NotKnown identity
@@ -1422,10 +1637,24 @@ optionPreview t d detail o say labelled skip height start =
                             Nothing
 
                     globalScope =
-                        if isArray then 0 else if o.scope == 6 || o.scope == 5 then 4 else if o.scope == 3 then 2 else 0
+                        if isArray then
+                            0
+
+                        else if o.scope == 6 || o.scope == 5 then
+                            4
+
+                        else if o.scope == 3 then
+                            2
+
+                        else
+                            0
 
                     globalValue =
-                        if globalScope == 0 then Nothing else Dict.get o.name (levelOf d globalScope) |> Maybe.map .value
+                        if globalScope == 0 then
+                            Nothing
+
+                        else
+                            Dict.get o.name (levelOf d globalScope) |> Maybe.map .value
 
                     windowed =
                         when windowValue is
@@ -1452,15 +1681,27 @@ keyPreview t b say labelled skip start =
             t.version == 0 || t.version >= 38
 
         note =
-            if b.note == "" then "There is no note for this key." else b.note
+            if b.note == "" then
+                "There is no note for this key."
+
+            else
+                b.note
 
         period =
-            if String.endsWith "." note then "" else "."
+            if String.endsWith "." note then
+                ""
+
+            else
+                "."
 
         defaultPart w =
             when Dict.get (b.table ++ "\t" ++ b.key) t.keys is
                 Just was ->
-                    if was.command /= b.command then labelled "The default is: " was.command w else w
+                    if was.command /= b.command then
+                        labelled "The default is: " was.command w
+
+                    else
+                        w
 
                 Nothing ->
                     meant Reason.NotKnown w
@@ -1469,7 +1710,28 @@ keyPreview t b say labelled skip start =
         |> say False "" (note ++ period)
         |> skip
         |> say False "" ("This key is in the " ++ b.table ++ " table.")
-        |> (if newer then labelled "Repeat: " (if b.repeat then "on" else "off") else say False "" ("This key " ++ (if b.repeat then "does" else "does not") ++ " repeat."))
+        |> (if newer then
+                labelled "Repeat: "
+                    (if b.repeat then
+                        "on"
+
+                     else
+                        "off"
+                    )
+
+            else
+                say False
+                    ""
+                    ("This key "
+                        ++ (if b.repeat then
+                                "does"
+
+                            else
+                                "does not"
+                           )
+                        ++ " repeat."
+                    )
+           )
         |> skip
         |> labelled "Command: " b.command
         |> defaultPart
@@ -1479,7 +1741,14 @@ envPreview : Data -> { scope : Int, name : String } -> (Bool -> String -> String
 envPreview d v say labelled skip start =
     let
         own =
-            Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) |> Maybe.map .value
+            Array.findFirst (\x -> x.name == v.name)
+                (if v.scope == 7 then
+                    d.globalEnv
+
+                 else
+                    d.sessionEnv
+                )
+                |> Maybe.map .value
 
         global =
             Array.findFirst (\x -> x.name == v.name) d.globalEnv |> Maybe.map .value
@@ -1489,8 +1758,24 @@ envPreview d v say labelled skip start =
             let
                 head =
                     start
-                        |> say False "" ("This is a " ++ (if v.scope == 7 then "global" else "session") ++ " environment variable.")
-                        |> (if found.hidden then say False "" "This variable is hidden." else identity)
+                        |> say
+                            False
+                            ""
+                            ("This is a "
+                                ++ (if v.scope == 7 then
+                                        "global"
+
+                                    else
+                                        "session"
+                                   )
+                                ++ " environment variable."
+                            )
+                        |> (if found.hidden then
+                                say False "" "This variable is hidden."
+
+                            else
+                                identity
+                           )
                         |> skip
 
                 valued =
@@ -1532,7 +1817,6 @@ previewTitle shown e =
         e.name
 
 
-
 -- THE FILTER
 
 
@@ -1571,7 +1855,11 @@ variablesOf : Table -> Data -> Entry -> Array { name : String, value : String }
 variablesOf t d e =
     let
         flag b =
-            if b then "1" else "0"
+            if b then
+                "1"
+
+            else
+                "0"
     in
     when e.target is
         Option o ->
@@ -1612,7 +1900,14 @@ variablesOf t d e =
         Variable v ->
             let
                 found =
-                    Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) |> Maybe.map .value
+                    Array.findFirst (\x -> x.name == v.name)
+                        (if v.scope == 7 then
+                            d.globalEnv
+
+                         else
+                            d.sessionEnv
+                        )
+                        |> Maybe.map .value
             in
             [ { name = "is_option", value = "0" }
             , { name = "is_key", value = "0" }
@@ -1627,7 +1922,6 @@ variablesOf t d e =
 
         Section _ ->
             []
-
 
 
 -- WHAT THE KEYS DO
@@ -1714,7 +2008,11 @@ optionValue d o =
 
         Nothing ->
             meant Reason.NotSet
-            if held.array then Array.map .value held.items |> String.join " " else held.value
+                if held.array then
+                    Array.map .value held.items |> String.join " "
+
+                else
+                    held.value
 
 
 {-| What a value is at a level, from there up: 6 the pane's, through its
@@ -1797,7 +2095,11 @@ actOn t d newer keyName tagged chosen =
                         setOption t d o True False
 
                     else if keyName == "d" then
-                        if o.key /= Nothing then Stay else Ask { label = "Reset " ++ o.name ++ " to default? ", first = "", single = True, asks = Reset [ e.target ] }
+                        if o.key /= Nothing then
+                            Stay
+
+                        else
+                            Ask { label = "Reset " ++ o.name ++ " to default? ", first = "", single = True, asks = Reset [ e.target ] }
 
                     else if keyName == "u" then
                         Ask { label = "Unset " ++ optionName o.name o.key ++ "? ", first = "", single = True, asks = Unset [ e.target ] }
@@ -1851,7 +2153,13 @@ actOn t d newer keyName tagged chosen =
                             meant Reason.Gone Stay
 
                 Variable v ->
-                    when Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) is
+                    when Array.findFirst (\x -> x.name == v.name)
+                        (if v.scope == 7 then
+                            d.globalEnv
+
+                         else
+                            d.sessionEnv
+                        ) is
                         Just found ->
                             let
                                 var =
@@ -1861,10 +2169,18 @@ actOn t d newer keyName tagged chosen =
                                     keyName == "S" || keyName == "W"
 
                                 scope =
-                                    if global then 7 else v.scope
+                                    if global then
+                                        7
+
+                                    else
+                                        v.scope
 
                                 label =
-                                    if scope == 8 then "(" ++ v.name ++ ", for " ++ scopeText d 8 ++ ") " else "(" ++ v.name ++ ", global) "
+                                    if scope == 8 then
+                                        "(" ++ v.name ++ ", for " ++ scopeText d 8 ++ ") "
+
+                                    else
+                                        "(" ++ v.name ++ ", global) "
                             in
                             if keyName == "Enter" || keyName == "s" || global then
                                 Ask { label = label, first = Maybe.withDefault (meant Reason.Gone "") var.value, single = False, asks = SetVariable { scope = scope, name = v.name, hidden = var.hidden } }
@@ -1963,10 +2279,21 @@ setOption t d o global allowPane =
                 o.scope
 
             else if global then
-                if o.scope == 3 then 2 else if o.scope == 5 || o.scope == 6 then 4 else o.scope
+                if o.scope == 3 then
+                    2
+
+                else if o.scope == 5 || o.scope == 6 then
+                    4
+
+                else
+                    o.scope
 
             else if o.scope == 5 || o.scope == 6 || o.scope == 4 then
-                if pane then 6 else 5
+                if pane then
+                    6
+
+                else
+                    5
 
             else if o.scope == 2 then
                 3
@@ -1988,7 +2315,14 @@ setOption t d o global allowPane =
                 text =
                     scopeText d scope
             in
-            if text /= "" then ", for " ++ text else if scope /= 1 then ", global" else ""
+            if text /= "" then
+                ", for " ++ text
+
+            else if scope /= 1 then
+                ", global"
+
+            else
+                ""
 
         label =
             if isArray then
@@ -2009,14 +2343,22 @@ setOption t d o global allowPane =
 
                 Nothing ->
                     meant Reason.NotSet
-                    if isArray then
-                        ""
+                        if isArray then
+                            ""
 
-                    else
-                        now
+                        else
+                            now
     in
     if kind == "flag" then
-        Run [ set (if now == "on" then "off" else "on") ]
+        Run
+            [ set
+                (if now == "on" then
+                    "off"
+
+                 else
+                    "on"
+                )
+            ]
 
     else if kind == "choice" then
         let
@@ -2047,8 +2389,18 @@ bindCommand : Binding -> String
 bindCommand b =
     "bind-key -T "
         ++ Command.quote b.table
-        ++ (if b.repeat then " -r" else "")
-        ++ (if b.note == "" then "" else " -N " ++ Command.quote b.note)
+        ++ (if b.repeat then
+                " -r"
+
+            else
+                ""
+           )
+        ++ (if b.note == "" then
+                ""
+
+            else
+                " -N " ++ Command.quote b.note
+           )
         ++ " "
         ++ Command.quote b.key
         ++ " "
@@ -2065,7 +2417,11 @@ answered t d p given =
             d.paneId
 
         envFlags scope =
-            if scope == 7 then "-g" else "-t " ++ pane
+            if scope == 7 then
+                "-g"
+
+            else
+                "-t " ++ pane
 
         nextIndex name scope =
             let
@@ -2076,7 +2432,11 @@ answered t d p given =
                     Array.any (\i -> i.key == String.fromInt k) held
 
                 free k =
-                    if taken k then free (k + 1) else k
+                    if taken k then
+                        free (k + 1)
+
+                    else
+                        k
             in
             String.fromInt (free 0)
 
@@ -2091,7 +2451,19 @@ answered t d p given =
     when p.asks is
         SetVariable v ->
             -- an empty value is a value, as tmux sets it
-            Run [ "set-environment " ++ envFlags v.scope ++ (if v.hidden then " -h " else " ") ++ Command.quote v.name ++ " " ++ Command.quote given ]
+            Run
+                [ "set-environment "
+                    ++ envFlags v.scope
+                    ++ (if v.hidden then
+                            " -h "
+
+                        else
+                            " "
+                       )
+                    ++ Command.quote v.name
+                    ++ " "
+                    ++ Command.quote given
+                ]
 
         _ ->
             if given == "" then
@@ -2128,10 +2500,28 @@ answered t d p given =
                             Say "User option must be @name value"
 
                         else if not (String.startsWith "@" split.word) || String.contains "[" split.word then
-                            Say (if a.hook then "User hook name must start with @" else "User option name must start with @")
+                            Say
+                                (if a.hook then
+                                    "User hook name must start with @"
+
+                                 else
+                                    "User option name must start with @"
+                                )
 
                         else
-                            Run [ (if a.hook then "set-hook " else "set-option ") ++ levelFlags pane a.scope ++ " " ++ Command.quote split.word ++ " " ++ Command.quote split.rest ]
+                            Run
+                                [ (if a.hook then
+                                    "set-hook "
+
+                                   else
+                                    "set-option "
+                                  )
+                                    ++ levelFlags pane a.scope
+                                    ++ " "
+                                    ++ Command.quote split.word
+                                    ++ " "
+                                    ++ Command.quote split.rest
+                                ]
 
                     AddVariable scope ->
                         if String.startsWith "-" given then
@@ -2260,7 +2650,16 @@ unsetCommands d target =
             [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
 
         Variable v ->
-            [ "set-environment " ++ (if v.scope == 7 then "-g" else "-t " ++ pane) ++ " -u " ++ Command.quote v.name ]
+            [ "set-environment "
+                ++ (if v.scope == 7 then
+                        "-g"
+
+                    else
+                        "-t " ++ pane
+                   )
+                ++ " -u "
+                ++ Command.quote v.name
+            ]
 
         Section _ ->
             []

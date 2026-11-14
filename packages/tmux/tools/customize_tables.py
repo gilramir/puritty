@@ -20,6 +20,7 @@ and a fresh server of the same version:
 
   python3 packages/tmux/tools/customize_tables.py \\
       36=SRC-3.6a:BIN-3.6a 38=SRC-3.8:BIN-3.8 > packages/tmux/src/Tmux/CustomizeTables.geng
+  scripts/fmt.sh packages/tmux/src/Tmux/CustomizeTables.geng
 """
 
 import os

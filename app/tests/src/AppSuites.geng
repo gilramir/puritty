@@ -9,24 +9,24 @@ window, the hosts, the words, chords, restoring, diagnostics, search and
 in that build, so a test of a platform's default reads it from there.
 -}
 
+import Bytes
 import Chord
 import Config
 import Diag
-import Bytes
 import Expect exposing (Expectation)
 import Hosts
-import Platform
 import I18Next
+import Platform
+import RestoreFile exposing (TabColor(..))
 import Schema
 import Screen
+import Search
 import SettingsWindow
+import TabOrder
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
-import Toml
-import RestoreFile exposing (TabColor(..))
-import Search
-import TabOrder
 import TmuxTests
+import Toml
 import Vt
 import Words
 
@@ -172,7 +172,20 @@ schema =
                         names =
                             Array.map Schema.keyName Schema.settings
                     in
-                    Expect.equal (Array.length names) (Array.length (Array.foldl (\n acc -> if Array.member n acc then acc else Array.pushLast n acc) [] names))
+                    Expect.equal (Array.length names)
+                        (Array.length
+                            (Array.foldl
+                                (\n acc ->
+                                    if Array.member n acc then
+                                        acc
+
+                                    else
+                                        Array.pushLast n acc
+                                )
+                                []
+                                names
+                            )
+                        )
           }
         , { name = "the example's host is read whole"
           , test =
@@ -361,7 +374,13 @@ another : Schema.Setting -> Schema.Value
 another s =
     when s.kind is
         Schema.WholeIn r ->
-            Schema.Whole (if r.low == 0 then 1 else r.low)
+            Schema.Whole
+                (if r.low == 0 then
+                    1
+
+                 else
+                    r.low
+                )
 
         Schema.AnyText ->
             Schema.Text "something else"
@@ -566,13 +585,15 @@ said effects =
         (\e ->
             when e is
                 SettingsWindow.Write w ->
-                    Schema.keyName w.setting ++ " = " ++ (when w.value is
-                        Schema.Unset ->
-                            "(unset)"
+                    Schema.keyName w.setting
+                        ++ " = "
+                        ++ (when w.value is
+                                Schema.Unset ->
+                                    "(unset)"
 
-                        v ->
-                            Schema.toText v
-                    )
+                                v ->
+                                    Schema.toText v
+                           )
 
                 SettingsWindow.Close ->
                     "close"
@@ -614,7 +635,11 @@ onHostsPage launcher inputs =
             SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], launcher = launcher }
 
         toPage =
-            if launcher then [] else [ k.tab, k.tab ] ++ Array.repeat (Array.length Schema.pages) k.down ++ [ press 0xFF53 ]
+            if launcher then
+                []
+
+            else
+                [ k.tab, k.tab ] ++ Array.repeat (Array.length Schema.pages) k.down ++ [ press 0xFF53 ]
 
         r =
             Screen.feedInputs (toPage ++ inputs) start
@@ -1034,7 +1059,11 @@ hosts =
                         [ Just "plain"
                         , Just "plain"
                         , Nothing
-                        , if Platform.defaultClient == "built-in" then Just "plain" else Nothing
+                        , if Platform.defaultClient == "built-in" then
+                            Just "plain"
+
+                          else
+                            Nothing
                         ]
                         (Array.map remoteOf
                             [ builtIn
@@ -1130,9 +1159,15 @@ chords =
           , test =
                 \_ ->
                     Expect.equal [ True, True, True, True ]
-                        (Array.map (\t -> when Chord.parse t is
-                            Err _ -> True
-                            Ok _ -> False)
+                        (Array.map
+                            (\t ->
+                                when Chord.parse t is
+                                    Err _ ->
+                                        True
+
+                                    Ok _ ->
+                                        False
+                            )
                             [ "Ctrl+Shift", "Hyper+T", "Ctrl+Ctrl+T", "Ctrl+F25" ]
                         )
           }
@@ -1169,14 +1204,18 @@ chords =
           , test =
                 \_ ->
                     Expect.equal { tab = "Ctrl+Alt+T", close = "", next = "Ctrl+PageDown", reports = 1 }
-                        ((\t -> when Schema.decode t is
-                            Ok d -> { tab = d.config.keyNewTab, close = d.config.keyCloseTab, next = d.config.keyNextTab, reports = Array.length d.reports }
-                            Err _ -> { tab = "", close = "?", next = "", reports = -1 })
+                        ((\t ->
+                            when Schema.decode t is
+                                Ok d ->
+                                    { tab = d.config.keyNewTab, close = d.config.keyCloseTab, next = d.config.keyNextTab, reports = Array.length d.reports }
+
+                                Err _ ->
+                                    { tab = "", close = "?", next = "", reports = -1 }
+                         )
                             "[keys]\nnew_tab = \"alt+ctrl+t\"\nclose_tab = \"\"\nnext_tab = \"Ctrl+Pg\"\n"
                         )
           }
         ]
-
 
 
 restoring : U.Suite

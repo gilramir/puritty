@@ -1,18 +1,18 @@
 module Vt.Sgr exposing
-    ( withPen
-    , withPenInterned
-    , eraseCell
-    , styleCacheSize
-    , cacheSlot
-    , sgr
-    , sgrLoop
+    ( cacheSlot
+    , colonRun
     , colorNext
     , colorOr
+    , eraseCell
+    , extendedColor
     , packColor
     , pastColons
-    , extendedColor
     , rgbAt
-    , colonRun
+    , sgr
+    , sgrLoop
+    , styleCacheSize
+    , withPen
+    , withPenInterned
     )
 
 {-| SGR: the pen and the styles it interns (`docs/vt-core.md` §VC45). -}
@@ -20,27 +20,27 @@ module Vt.Sgr exposing
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
-import Vt.Base64 as Base64
 import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
-import Vt.Keys as Keys
-import Vt.Width as Width
+import Vt.Base64 as Base64
 import Vt.Cell exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Dump exposing (..)
+import Vt.Keys as Keys
+import Vt.Pages exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Reason as Reason
+import Vt.Recut exposing (recut)
+import Vt.Resize exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Scroll exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
-import Vt.Screen exposing (..)
-import Vt.Pages exposing (..)
-import Vt.Resize exposing (..)
-import Vt.Recut exposing (recut)
-import Vt.Dump exposing (..)
-import Vt.Palette exposing (..)
-import Vt.Cursor exposing (..)
-import Vt.Prompt exposing (..)
-import Vt.Scroll exposing (..)
-import Vt.Reason as Reason
+import Vt.Width as Width
 
 
 {-| The pen made from `attrs`, and the cell an erase writes: empty, in the
@@ -161,130 +161,142 @@ sgrLoop params colons k fg bg ulc flags ul =
             sgrLoop params colons (pastColons colons next) fg bg ulc flags ul
 
         else
-        when p is
-            0 ->
-                sgrLoop params colons next 0 0 0 0 0
+            when p is
+                0 ->
+                    sgrLoop params colons next 0 0 0 0 0
 
-            1 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 1) ul
+                1 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 1) ul
 
-            2 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 2) ul
+                2 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 2) ul
 
-            3 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 4) ul
+                3 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 4) ul
 
-            4 ->
-                if Bitwise.and colons (Bitwise.shiftLeftBy k 1) /= 0 then
-                    -- Ghostty's `4:`: nothing with no style after it, the
-                    -- group skipped with a colon after the style, and a
-                    -- style it does not know a single underline (§VC17)
-                    if next >= Array.length params then
-                        sgrLoop params colons next fg bg ulc flags ul
+                4 ->
+                    if Bitwise.and colons (Bitwise.shiftLeftBy k 1) /= 0 then
+                        -- Ghostty's `4:`: nothing with no style after it, the
+                        -- group skipped with a colon after the style, and a
+                        -- style it does not know a single underline (§VC17)
+                        if next >= Array.length params then
+                            sgrLoop params colons next fg bg ulc flags ul
 
-                    else if Bitwise.and colons (Bitwise.shiftLeftBy next 1) /= 0 then
-                        sgrLoop params colons (pastColons colons k) fg bg ulc flags ul
+                        else if Bitwise.and colons (Bitwise.shiftLeftBy next 1) /= 0 then
+                            sgrLoop params colons (pastColons colons k) fg bg ulc flags ul
+
+                        else
+                            let
+                                style =
+                                    Maybe.withDefault 1 (Array.get next params)
+                            in
+                            sgrLoop params
+                                colons
+                                (k + 2)
+                                fg
+                                bg
+                                ulc
+                                flags
+                                (if style >= 0 && style <= 5 then
+                                    style
+
+                                 else
+                                    1
+                                )
 
                     else
-                        let
-                            style =
-                                Maybe.withDefault 1 (Array.get next params)
-                        in
-                        sgrLoop params colons (k + 2) fg bg ulc flags (if style >= 0 && style <= 5 then style else 1)
+                        sgrLoop params colons next fg bg ulc flags 1
 
-                else
-                    sgrLoop params colons next fg bg ulc flags 1
+                5 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 8) ul
 
-            5 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 8) ul
+                6 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 8) ul
 
-            6 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 8) ul
+                7 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 16) ul
 
-            7 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 16) ul
+                8 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 32) ul
 
-            8 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 32) ul
+                9 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 64) ul
 
-            9 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 64) ul
+                21 ->
+                    sgrLoop params colons next fg bg ulc flags 2
 
-            21 ->
-                sgrLoop params colons next fg bg ulc flags 2
+                22 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 3)) ul
 
-            22 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 3)) ul
+                23 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 4)) ul
 
-            23 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 4)) ul
+                24 ->
+                    sgrLoop params colons next fg bg ulc flags 0
 
-            24 ->
-                sgrLoop params colons next fg bg ulc flags 0
+                25 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 8)) ul
 
-            25 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 8)) ul
+                27 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 16)) ul
 
-            27 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 16)) ul
+                28 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 32)) ul
 
-            28 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 32)) ul
+                29 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 64)) ul
 
-            29 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 64)) ul
+                38 ->
+                    let
+                        c =
+                            extendedColor params colons k
+                    in
+                    sgrLoop params colons (colorNext c) (colorOr fg c) bg ulc flags ul
 
-            38 ->
-                let
-                    c =
-                        extendedColor params colons k
-                in
-                sgrLoop params colons (colorNext c) (colorOr fg c) bg ulc flags ul
+                39 ->
+                    sgrLoop params colons next 0 bg ulc flags ul
 
-            39 ->
-                sgrLoop params colons next 0 bg ulc flags ul
+                48 ->
+                    let
+                        c =
+                            extendedColor params colons k
+                    in
+                    sgrLoop params colons (colorNext c) fg (colorOr bg c) ulc flags ul
 
-            48 ->
-                let
-                    c =
-                        extendedColor params colons k
-                in
-                sgrLoop params colons (colorNext c) fg (colorOr bg c) ulc flags ul
+                49 ->
+                    sgrLoop params colons next fg 0 ulc flags ul
 
-            49 ->
-                sgrLoop params colons next fg 0 ulc flags ul
+                53 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.or flags 128) ul
 
-            53 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.or flags 128) ul
+                55 ->
+                    sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 128)) ul
 
-            55 ->
-                sgrLoop params colons next fg bg ulc (Bitwise.and flags (Bitwise.complement 128)) ul
+                58 ->
+                    let
+                        c =
+                            extendedColor params colons k
+                    in
+                    sgrLoop params colons (colorNext c) fg bg (colorOr ulc c) flags ul
 
-            58 ->
-                let
-                    c =
-                        extendedColor params colons k
-                in
-                sgrLoop params colons (colorNext c) fg bg (colorOr ulc c) flags ul
+                59 ->
+                    sgrLoop params colons next fg bg 0 flags ul
 
-            59 ->
-                sgrLoop params colons next fg bg 0 flags ul
+                _ ->
+                    if p >= 30 && p <= 37 then
+                        sgrLoop params colons next (p - 30 + 1) bg ulc flags ul
 
-            _ ->
-                if p >= 30 && p <= 37 then
-                    sgrLoop params colons next (p - 30 + 1) bg ulc flags ul
+                    else if p >= 40 && p <= 47 then
+                        sgrLoop params colons next fg (p - 40 + 1) ulc flags ul
 
-                else if p >= 40 && p <= 47 then
-                    sgrLoop params colons next fg (p - 40 + 1) ulc flags ul
+                    else if p >= 90 && p <= 97 then
+                        sgrLoop params colons next (p - 90 + 9) bg ulc flags ul
 
-                else if p >= 90 && p <= 97 then
-                    sgrLoop params colons next (p - 90 + 9) bg ulc flags ul
+                    else if p >= 100 && p <= 107 then
+                        sgrLoop params colons next fg (p - 100 + 9) ulc flags ul
 
-                else if p >= 100 && p <= 107 then
-                    sgrLoop params colons next fg (p - 100 + 9) ulc flags ul
-
-                else
-                    sgrLoop params colons next fg bg ulc flags ul
+                    else
+                        sgrLoop params colons next fg bg ulc flags ul
 
 
 {-| `extendedColor`'s answer is the parameter after the color times 2²⁶,

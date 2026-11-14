@@ -9,8 +9,8 @@ import Expect exposing (Expectation)
 import FakeTmux exposing (World)
 import RealTmux
 import Task
-import Tmux.Syntax as Syntax
 import Test.Runner.UnitNode as U
+import Tmux.Syntax as Syntax
 import TmuxMode
 import Vt
 
@@ -106,7 +106,23 @@ ctrl letter run =
 keysym, typed. -}
 named : Int -> (taken run : Run) -> Run
 named sym run =
-    press { mods = 0, sym = sym, unshifted = sym, text = Bytes.fromString (if sym == enterKey then "\u{000D}" else if sym == escapeKey then "\u{001B}" else "") } run
+    press
+        { mods = 0
+        , sym = sym
+        , unshifted = sym
+        , text =
+            Bytes.fromString
+                (if sym == enterKey then
+                    "\u{000D}"
+
+                 else if sym == escapeKey then
+                    "\u{001B}"
+
+                 else
+                    ""
+                )
+        }
+        run
 
 
 enterKey : Int
@@ -248,162 +264,162 @@ tmuxMode =
 onVersion : String -> Array { name : String, test : {} -> Expectation }
 onVersion version =
     Array.map (\c -> { c | name = c.name ++ ", tmux " ++ version })
-                [ { name = "attaching asks for nothing the fake does not know, and draws the pane"
-                  , test =
-                        \_ ->
-                            let
-                                seen =
-                                    look (attached (start version))
-                            in
-                            Expect.equal
-                                { unknown = [], first = "line 177", last = "line 200" }
-                                { unknown = seen.run.world.unknown, first = row 0 seen, last = row 23 seen }
-                  }
-                , { name = "copy mode scrolled by k shows the lines tmux scrolled to (TM31)"
-                  , test =
-                        \_ ->
-                            let
-                                seen =
-                                    attached (start version)
-                                        |> inCopyMode 0
-                                        |> keys 30
-                                        |> look
-                            in
-                            -- copy mode's position at the top right, as tmux's
-                            -- `[scroll/history]`
-                            Expect.equal
-                                { scroll = 7, top = { text = "line 170", edge = "[7/176]" } }
-                                { scroll = (FakeTmux.copyState 0 seen.run.world).scroll, top = split 0 seen }
-                  }
-                , { name = "the tree of sessions shows the session, its windows and attachment, and q closes it (TM32)"
-                  , test =
-                        \_ ->
-                            let
-                                opened =
-                                    look (prefixThen "s" (attached (start version)))
+        [ { name = "attaching asks for nothing the fake does not know, and draws the pane"
+          , test =
+                \_ ->
+                    let
+                        seen =
+                            look (attached (start version))
+                    in
+                    Expect.equal
+                        { unknown = [], first = "line 177", last = "line 200" }
+                        { unknown = seen.run.world.unknown, first = row 0 seen, last = row 23 seen }
+          }
+        , { name = "copy mode scrolled by k shows the lines tmux scrolled to (TM31)"
+          , test =
+                \_ ->
+                    let
+                        seen =
+                            attached (start version)
+                                |> inCopyMode 0
+                                |> keys 30
+                                |> look
+                    in
+                    -- copy mode's position at the top right, as tmux's
+                    -- `[scroll/history]`
+                    Expect.equal
+                        { scroll = 7, top = { text = "line 170", edge = "[7/176]" } }
+                        { scroll = (FakeTmux.copyState 0 seen.run.world).scroll, top = split 0 seen }
+          }
+        , { name = "the tree of sessions shows the session, its windows and attachment, and q closes it (TM32)"
+          , test =
+                \_ ->
+                    let
+                        opened =
+                            look (prefixThen "s" (attached (start version)))
 
-                                row1 =
-                                    row 1 opened
+                        row1 =
+                            row 1 opened
 
-                                title =
-                                    String.contains "choose a session" (row 0 opened)
+                        title =
+                            String.contains "choose a session" (row 0 opened)
 
-                                session =
-                                    String.trim (String.slice 1 (String.count row1 - 1) row1)
+                        session =
+                            String.trim (String.slice 1 (String.count row1 - 1) row1)
 
-                                closed =
-                                    look (settle (typeKey "q" opened.run))
-                            in
-                            Expect.equal
-                                { title = True, session = "0  ▸ main: 1 windows (attached)", after = "line 177" }
-                                { title = title, session = session, after = row 0 closed }
-                  }
-                , { name = "the tree of windows opens the session and shows its window, flags and all (TM32)"
-                  , test =
-                        \_ ->
-                            let
-                                opened =
-                                    look (prefixThen "w" (attached (start version)))
+                        closed =
+                            look (settle (typeKey "q" opened.run))
+                    in
+                    Expect.equal
+                        { title = True, session = "0  ▸ main: 1 windows (attached)", after = "line 177" }
+                        { title = title, session = session, after = row 0 closed }
+          }
+        , { name = "the tree of windows opens the session and shows its window, flags and all (TM32)"
+          , test =
+                \_ ->
+                    let
+                        opened =
+                            look (prefixThen "w" (attached (start version)))
 
-                                inner r =
-                                    String.trim (String.slice 1 (String.count r - 1) r)
-                            in
-                            Expect.equal
-                                [ "0  ▾ main: 1 windows (attached)", "1    ▸ 0: sh*" ]
-                                [ inner (row 1 opened), inner (row 2 opened) ]
-                  }
-                , { name = "the command prompt runs what is typed as a tmux command (TM25)"
-                  , test =
-                        \_ ->
-                            let
-                                asked =
-                                    prefixThen ":" (attached (start version))
+                        inner r =
+                            String.trim (String.slice 1 (String.count r - 1) r)
+                    in
+                    Expect.equal
+                        [ "0  ▾ main: 1 windows (attached)", "1    ▸ 0: sh*" ]
+                        [ inner (row 1 opened), inner (row 2 opened) ]
+          }
+        , { name = "the command prompt runs what is typed as a tmux command (TM25)"
+          , test =
+                \_ ->
+                    let
+                        asked =
+                            prefixThen ":" (attached (start version))
 
-                                box =
-                                    TmuxMode.promptBox asked.tmux
+                        box =
+                            TmuxMode.promptBox asked.tmux
 
-                                typed =
-                                    typeText "kill-server -a" asked
+                        typed =
+                            typeText "kill-server -a" asked
 
-                                shown =
-                                    TmuxMode.promptBox typed.tmux |> Maybe.map .typed
+                        shown =
+                            TmuxMode.promptBox typed.tmux |> Maybe.map .typed
 
-                                ran =
-                                    settle (named enterKey typed)
-                            in
-                            Expect.equal
-                                { opened = True, shown = Just "kill-server -a", closed = True, sent = True }
-                                { opened = box /= Nothing
-                                , shown = shown
-                                , closed = TmuxMode.promptBox ran.tmux == Nothing
-                                , sent = Array.member "kill-server -a" ran.world.unknown
-                                }
-                  }
-                , { name = "the window menu shows tmux's items, and Rename asks with the window's name in the prompt (TM27)"
-                  , test =
-                        \_ ->
-                            let
-                                opened =
-                                    look (prefixThen "<" (attached (start version)))
+                        ran =
+                            settle (named enterKey typed)
+                    in
+                    Expect.equal
+                        { opened = True, shown = Just "kill-server -a", closed = True, sent = True }
+                        { opened = box /= Nothing
+                        , shown = shown
+                        , closed = TmuxMode.promptBox ran.tmux == Nothing
+                        , sent = Array.member "kill-server -a" ran.world.unknown
+                        }
+          }
+        , { name = "the window menu shows tmux's items, and Rename asks with the window's name in the prompt (TM27)"
+          , test =
+                \_ ->
+                    let
+                        opened =
+                            look (prefixThen "<" (attached (start version)))
 
-                                items =
-                                    opened.rows
-                                        |> Array.keepIf (\r -> String.startsWith "│" r)
-                                        |> Array.map (\r -> String.trim (String.slice 1 (String.count r - 1) r))
+                        items =
+                            opened.rows
+                                |> Array.keepIf (\r -> String.startsWith "│" r)
+                                |> Array.map (\r -> String.trim (String.slice 1 (String.count r - 1) r))
 
-                                renaming =
-                                    settle (typeKey "n" opened.run)
-                            in
-                            Expect.equal
-                                { items = [ "Swap Left", "Swap Right", "Swap Marked", "Kill       (X)", "Respawn    (R)", "Mark       (m)", "Rename     (n)", "New After  (w)", "New At End (W)" ]
-                                , prompt = Just "sh"
-                                }
-                                { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
-                  }
-                , { name = "the pane menu shows the items this tmux's binding has (TM27)"
-                  , test =
-                        \_ ->
-                            let
-                                opened =
-                                    look (prefixThen ">" (attached (start version)))
+                        renaming =
+                            settle (typeKey "n" opened.run)
+                    in
+                    Expect.equal
+                        { items = [ "Swap Left", "Swap Right", "Swap Marked", "Kill       (X)", "Respawn    (R)", "Mark       (m)", "Rename     (n)", "New After  (w)", "New At End (W)" ]
+                        , prompt = Just "sh"
+                        }
+                        { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
+          }
+        , { name = "the pane menu shows the items this tmux's binding has (TM27)"
+          , test =
+                \_ ->
+                    let
+                        opened =
+                            look (prefixThen ">" (attached (start version)))
 
-                                items =
-                                    opened.rows
-                                        |> Array.keepIf (\r -> String.startsWith "│" r)
-                                        |> Array.map (\r -> String.trim (String.slice 1 (String.count r - 1) r))
-                            in
-                            Expect.equal
-                                (if version == "3.6a" then
-                                    [ "Horizontal Split (h)", "Vertical Split   (v)", "Swap Up", "Swap Down", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
+                        items =
+                            opened.rows
+                                |> Array.keepIf (\r -> String.startsWith "│" r)
+                                |> Array.map (\r -> String.trim (String.slice 1 (String.count r - 1) r))
+                    in
+                    Expect.equal
+                        (if version == "3.6a" then
+                            [ "Horizontal Split (h)", "Vertical Split   (v)", "Swap Up", "Swap Down", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
 
-                                 else
-                                    [ "Float            (f)", "Horizontal Split (h)", "Vertical Split   (v)", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
-                                )
-                                items
-                  }
-                , { name = "a key in copy mode keeps the view until tmux answers, no live screen behind it (TM67)"
-                  , test =
-                        \_ ->
-                            let
-                                -- k typed, tmux's answer not let through yet
-                                waiting =
-                                    attached (start version)
-                                        |> inCopyMode 0
-                                        |> keys 30
-                                        |> typeKey "k"
-                                        |> look
+                         else
+                            [ "Float            (f)", "Horizontal Split (h)", "Vertical Split   (v)", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
+                        )
+                        items
+          }
+        , { name = "a key in copy mode keeps the view until tmux answers, no live screen behind it (TM67)"
+          , test =
+                \_ ->
+                    let
+                        -- k typed, tmux's answer not let through yet
+                        waiting =
+                            attached (start version)
+                                |> inCopyMode 0
+                                |> keys 30
+                                |> typeKey "k"
+                                |> look
 
-                                before =
-                                    split 0 waiting
+                        before =
+                            split 0 waiting
 
-                                answered =
-                                    look (settle waiting.run)
-                            in
-                            Expect.equal
-                                { waiting = { text = "line 170", edge = "[7/176]" }, answered = { text = "line 169", edge = "[8/176]" } }
-                                { waiting = before, answered = split 0 answered }
-                  }
-                ]
+                        answered =
+                            look (settle waiting.run)
+                    in
+                    Expect.equal
+                        { waiting = { text = "line 170", edge = "[7/176]" }, answered = { text = "line 169", edge = "[8/176]" } }
+                        { waiting = before, answered = split 0 answered }
+          }
+        ]
 
 
 {-| The tests' server: one 80x24 pane that printed `line 1` to `line 200`. -}
@@ -420,7 +436,11 @@ fakeIn version state =
             start version
 
         up n w =
-            if n <= 0 then w else up (n - 1) (FakeTmux.answer "send-keys -t %0 -X cursor-up" w).world
+            if n <= 0 then
+                w
+
+            else
+                up (n - 1) (FakeTmux.answer "send-keys -t %0 -X cursor-up" w).world
     in
     when state is
         "attached" ->
@@ -444,7 +464,14 @@ them; what it tells the client between blocks left out. -}
 replyLines : String -> Array String
 replyLines text =
     String.split "\n" text
-        |> Array.map (\l -> if String.endsWith "\u{000D}" l then String.dropLast 1 l else l)
+        |> Array.map
+            (\l ->
+                if String.endsWith "\u{000D}" l then
+                    String.dropLast 1 l
+
+                else
+                    l
+            )
         |> Array.foldl
             (\l acc ->
                 if String.startsWith "%begin" l then
@@ -564,7 +591,11 @@ unrecorded =
                         (\name ->
                             let
                                 state =
-                                    if name == "copy mode" then "31 up" else "attached"
+                                    if name == "copy mode" then
+                                        "31 up"
+
+                                    else
+                                        "attached"
                             in
                             (scenario version name).world.heard
                                 |> Array.keepIf onlyAsks
@@ -572,7 +603,15 @@ unrecorded =
                                 |> Array.map (\line -> state ++ "\t" ++ line)
                         )
             )
-        |> Array.foldl (\l acc -> if Array.member l acc then acc else Array.pushLast l acc) []
+        |> Array.foldl
+            (\l acc ->
+                if Array.member l acc then
+                    acc
+
+                else
+                    Array.pushLast l acc
+            )
+            []
         |> String.join "\n"
 
 
@@ -585,4 +624,3 @@ failedStart bytes =
             TmuxMode.read { cols = 80, rows = 25 } (Bytes.fromString bytes) (TmuxMode.idle {})
     in
     { said = Bytes.toStringLossy r.outside, asked = r.commands }
-

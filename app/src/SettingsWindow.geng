@@ -1,7 +1,30 @@
 module SettingsWindow exposing
-    ( Model, Input(..), Effect(..), Target(..), Focus(..), Typing
-    , init, update, fileRead, told
-    , linesPerRow, rowLines, rowTop, withRowLines, choicesOf, listed, rowCount, hostRows, focused, changed, inList, onHosts, hostsPage, isFamily, suggestions, pageCount
+    ( Effect(..)
+    , Focus(..)
+    , Input(..)
+    , Model
+    , Target(..)
+    , Typing
+    , changed
+    , choicesOf
+    , fileRead
+    , focused
+    , hostRows
+    , hostsPage
+    , inList
+    , init
+    , isFamily
+    , linesPerRow
+    , listed
+    , onHosts
+    , pageCount
+    , rowCount
+    , rowLines
+    , rowTop
+    , suggestions
+    , told
+    , update
+    , withRowLines
     )
 
 {-| The settings window's model (`docs/settings.md` ST7, `settings-gui.md`
@@ -25,9 +48,9 @@ defaults; Ctrl+F goes to the search.
 import Bitwise
 import Config exposing (Config)
 import Hosts
+import Reason
 import Schema exposing (Kind(..), Setting, Value(..))
 import Words exposing (Message)
-import Reason
 
 
 type Focus
@@ -64,18 +87,18 @@ type alias Model =
     , undo : Array Undo
     , message : Maybe Message
     , fonts : Array String
-      -- the hosts of ~/.ssh/config, listed with the file's (V63), and
-      -- whether the window is the host list, which a session replaces (V65)
+    -- the hosts of ~/.ssh/config, listed with the file's (V63), and
+    -- whether the window is the host list, which a session replaces (V65)
     , aliases : Array String
     , launcher : Bool
-      -- the host whose form is shown on the Hosts page (ST25)
+    -- the host whose form is shown on the Hosts page (ST25)
     , form : Maybe String
-      -- how many lines each listed row takes, as the drawing measured
-      -- them so that no description is cut (SG12); a row not in it takes
-      -- linesPerRow
+    -- how many lines each listed row takes, as the drawing measured
+    -- them so that no description is cut (SG12); a row not in it takes
+    -- linesPerRow
     , lines : Array Int
-      -- the focused choice setting's list, open, and the choice picked in
-      -- it (SG13)
+    -- the focused choice setting's list, open, and the choice picked in
+    -- it (SG13)
     , choosing : Maybe Int
     }
 
@@ -133,12 +156,22 @@ init r =
     , cols = r.cols
     , rows = r.rows
     , focus = OnRows
-    , page = if r.launcher then hostsPage else 0
+    , page =
+        if r.launcher then
+            hostsPage
+
+        else
+            0
     , row = 0
     , scroll = 0
     , search = []
     , modifiedOnly = False
-    , typing = if r.launcher then Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 } else Nothing
+    , typing =
+        if r.launcher then
+            Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }
+
+        else
+            Nothing
     , undo = []
     , fonts = r.fonts
     , aliases = r.aliases
@@ -169,12 +202,10 @@ fileRead r m =
     { m | config = r.config, reports = r.reports }
 
 
-
 {-| A message at the foot, from the program: a write that failed. -}
 told : Message -> Model -> Model
 told message m =
     { m | message = Just message }
-
 
 
 -- WHAT IS SHOWN
@@ -259,7 +290,6 @@ pageCount m p =
 
     else
         Array.length (Array.keepIf (modified m.config) on)
-
 
 
 {-| The Hosts page, after the settings' pages (ST11). -}
@@ -355,7 +385,6 @@ rowCount m =
         Array.length (listed m)
 
 
-
 -- UPDATE
 
 
@@ -372,14 +401,14 @@ update input m =
 
                 Nothing ->
                     meant Reason.NotOpen
-                    if m.focus == OnSearch then
-                        done (searched (m.search ++ String.toArray text) m)
+                        if m.focus == OnSearch then
+                            done (searched (m.search ++ String.toArray text) m)
 
-                    else if m.focus == OnRows && inList m && m.row <= 1 then
-                        typed (insert text { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }) m
+                        else if m.focus == OnRows && inList m && m.row <= 1 then
+                            typed (insert text { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }) m
 
-                    else
-                        done m
+                        else
+                            done m
 
         Hit h ->
             hit h m
@@ -391,7 +420,18 @@ update input m =
             in
             when m.choosing is
                 Just pick ->
-                    choosingKey { sym = if steps < 0 then sym.up else sym.down, mods = 0, text = "" } pick m
+                    choosingKey
+                        { sym =
+                            if steps < 0 then
+                                sym.up
+
+                            else
+                                sym.down
+                        , mods = 0
+                        , text = ""
+                        }
+                        pick
+                        m
 
                 Nothing ->
                     meant Reason.NotOpen done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
@@ -407,11 +447,11 @@ update input m =
 
                 Nothing ->
                     meant Reason.NotOpen
-                    if Bitwise.and k.mods 2 /= 0 then
-                        control k m
+                        if Bitwise.and k.mods 2 /= 0 then
+                            control k m
 
-                    else
-                        keyed k m
+                        else
+                            keyed k m
 
 
 {-| A key with no list open and no Ctrl: to the field being typed in, or
@@ -424,15 +464,15 @@ keyed k m =
 
         Nothing ->
             meant Reason.NotOpen
-            when m.focus is
-                OnSearch ->
-                    searchKey k m
+                when m.focus is
+                    OnSearch ->
+                        searchKey k m
 
-                OnPages ->
-                    pagesKey k m
+                    OnPages ->
+                        pagesKey k m
 
-                OnRows ->
-                    rowsKey k m
+                    OnRows ->
+                        rowsKey k m
 
 
 done : Model -> { model : Model, effects : Array Effect }
@@ -514,13 +554,25 @@ moveFocus k m =
                 | focus =
                     when m.focus is
                         OnSearch ->
-                            if back then OnRows else OnPages
+                            if back then
+                                OnRows
+
+                            else
+                                OnPages
 
                         OnPages ->
-                            if back then OnSearch else OnRows
+                            if back then
+                                OnSearch
+
+                            else
+                                OnRows
 
                         OnRows ->
-                            if back then OnPages else OnSearch
+                            if back then
+                                OnPages
+
+                            else
+                                OnSearch
             }
 
     else
@@ -532,13 +584,29 @@ control k m =
     -- Ctrl with a letter: its keysym is the letter's, in either case
     let
         letter =
-            if k.sym >= 0x41 && k.sym <= 0x5A then k.sym + 32 else k.sym
+            if k.sym >= 0x41 && k.sym <= 0x5A then
+                k.sym + 32
+
+            else
+                k.sym
     in
     if letter == 0x7A then
         undo { m | typing = Nothing }
 
     else if letter == 0x6D then
-        done (keepInView { m | modifiedOnly = not m.modifiedOnly, row = 0, message = if m.modifiedOnly then Nothing else Just (Words.message "message.modifiedOnly") })
+        done
+            (keepInView
+                { m
+                    | modifiedOnly = not m.modifiedOnly
+                    , row = 0
+                    , message =
+                        if m.modifiedOnly then
+                            Nothing
+
+                        else
+                            Just (Words.message "message.modifiedOnly")
+                }
+            )
 
     else if letter == 0x66 then
         done { m | focus = OnSearch, typing = Nothing }
@@ -552,7 +620,16 @@ control k m =
                         Just n
 
                     Nothing ->
-                        meant Reason.NotOpen hostAt m m.row |> Maybe.andThen (\h -> if h.own then Just h.name else Nothing)
+                        meant Reason.NotOpen
+                            hostAt m m.row
+                                |> Maybe.andThen
+                                    (\h ->
+                                        if h.own then
+                                            Just h.name
+
+                                        else
+                                            Nothing
+                                    )
         in
         when Maybe.andThen (hostNamed m) name is
             Just h ->
@@ -583,24 +660,24 @@ searchKey k m =
 
         Nothing ->
             meant Reason.NotKnown
-            if k.sym == sym.escape then
-                if Array.isEmpty m.search then
-                    { model = m, effects = [ Close ] }
+                if k.sym == sym.escape then
+                    if Array.isEmpty m.search then
+                        { model = m, effects = [ Close ] }
+
+                    else
+                        done (searched [] m)
+
+                else if k.sym == sym.backspace then
+                    done (searched (Array.slice 0 -1 m.search) m)
+
+                else if k.sym == sym.down || isEnter k.sym then
+                    done { m | focus = OnRows }
+
+                else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
+                    done (searched (m.search ++ String.toArray k.text) m)
 
                 else
-                    done (searched [] m)
-
-            else if k.sym == sym.backspace then
-                done (searched (Array.slice 0 -1 m.search) m)
-
-            else if k.sym == sym.down || isEnter k.sym then
-                done { m | focus = OnRows }
-
-            else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
-                done (searched (m.search ++ String.toArray k.text) m)
-
-            else
-                done m
+                    done m
 
 
 searched : Array Char -> Model -> Model
@@ -616,20 +693,20 @@ pagesKey k m =
 
         Nothing ->
             meant Reason.NotKnown
-            if k.sym == sym.up then
-                done (keepInView { m | page = max 0 (m.page - 1), row = 0, scroll = 0 })
+                if k.sym == sym.up then
+                    done (keepInView { m | page = max 0 (m.page - 1), row = 0, scroll = 0 })
 
-            else if k.sym == sym.down then
-                done (keepInView { m | page = min hostsPage (m.page + 1), row = 0, scroll = 0 })
+                else if k.sym == sym.down then
+                    done (keepInView { m | page = min hostsPage (m.page + 1), row = 0, scroll = 0 })
 
-            else if k.sym == sym.right || isEnter k.sym then
-                done { m | focus = OnRows }
+                else if k.sym == sym.right || isEnter k.sym then
+                    done { m | focus = OnRows }
 
-            else if k.sym == sym.escape then
-                { model = m, effects = [ Close ] }
+                else if k.sym == sym.escape then
+                    { model = m, effects = [ Close ] }
 
-            else
-                done m
+                else
+                    done m
 
 
 rowsKey : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
@@ -644,126 +721,133 @@ rowsKey k m =
 
         Nothing ->
             meant Reason.NotKnown
-            if k.sym == sym.up then
-                done (keepInView { m | row = max 0 (m.row - 1) })
+                if k.sym == sym.up then
+                    done (keepInView { m | row = max 0 (m.row - 1) })
 
-            else if k.sym == sym.down then
-                done (keepInView { m | row = min (count - 1) (m.row + 1) })
+                else if k.sym == sym.down then
+                    done (keepInView { m | row = min (count - 1) (m.row + 1) })
 
-            else if k.sym == sym.pageUp then
-                done (keepInView { m | row = max 0 (m.row - bodyRows m // 3) })
+                else if k.sym == sym.pageUp then
+                    done (keepInView { m | row = max 0 (m.row - bodyRows m // 3) })
 
-            else if k.sym == sym.pageDown then
-                done (keepInView { m | row = max 0 (min (count - 1) (m.row + bodyRows m // 3)) })
+                else if k.sym == sym.pageDown then
+                    done (keepInView { m | row = max 0 (min (count - 1) (m.row + bodyRows m // 3)) })
 
-            else if k.sym == sym.home then
-                done (keepInView { m | row = 0 })
+                else if k.sym == sym.home then
+                    done (keepInView { m | row = 0 })
 
-            else if k.sym == sym.end then
-                done (keepInView { m | row = max 0 (count - 1) })
+                else if k.sym == sym.end then
+                    done (keepInView { m | row = max 0 (count - 1) })
 
-            else if k.sym == sym.left then
-                done { m | focus = OnPages }
+                else if k.sym == sym.left then
+                    done { m | focus = OnPages }
 
-            else if k.sym == sym.escape then
-                if Array.isEmpty m.search then
-                    { model = m, effects = [ Close ] }
+                else if k.sym == sym.escape then
+                    if Array.isEmpty m.search then
+                        { model = m, effects = [ Close ] }
 
-                else
-                    done (searched [] m)
+                    else
+                        done (searched [] m)
 
-            else if inList m && m.row <= 1 && k.text /= "" && k.text /= " " && Bitwise.and k.mods 4 == 0 && printable k.text then
-                -- a key typed on quick connect or a new host begins typing it
-                quickKey k { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 } { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
+                else if inList m && m.row <= 1 && k.text /= "" && k.text /= " " && Bitwise.and k.mods 4 == 0 && printable k.text then
+                    -- a key typed on quick connect or a new host begins typing it
+                    quickKey k { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 } { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
 
-            else if (isEnter k.sym || k.sym == sym.space) && inList m then
-                if m.row <= 1 then
-                    -- quick connect, or a new host's name
-                    done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
+                else if (isEnter k.sym || k.sym == sym.space) && inList m then
+                    if m.row <= 1 then
+                        -- quick connect, or a new host's name
+                        done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
 
-                else
+                    else
+                        when hostAt m m.row is
+                            Just h ->
+                                { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }, effects = [ ConnectHost h.name ] }
+
+                            Nothing ->
+                                meant Reason.OutOfRange done m
+
+                else if k.sym == sym.right && inList m then
+                    -- a host's form; one of ~/.ssh/config's is saved as a host first
                     when hostAt m m.row is
                         Just h ->
-                            { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }, effects = [ ConnectHost h.name ] }
+                            if h.own then
+                                done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = Nothing })
+
+                            else
+                                let
+                                    saved =
+                                        hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
+
+                                    after =
+                                        saved.model
+                                in
+                                { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
 
                         Nothing ->
                             meant Reason.OutOfRange done m
 
-            else if k.sym == sym.right && inList m then
-                -- a host's form; one of ~/.ssh/config's is saved as a host first
-                when hostAt m m.row is
-                    Just h ->
-                        if h.own then
-                            done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = Nothing })
+                else if (k.sym == sym.left || k.sym == sym.escape) && onHosts m && m.form /= Nothing then
+                    -- back to the list, on the host the form was of
+                    let
+                        name =
+                            Maybe.withDefault "" m.form
 
-                        else
-                            let
-                                saved =
-                                    hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
+                        back =
+                            { m | form = Nothing, message = Nothing }
 
-                                after =
-                                    saved.model
-                            in
-                            { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
+                        row =
+                            Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault (meant Reason.Gone 0)
+                    in
+                    done (keepInView { back | row = row })
 
-                    Nothing ->
-                        meant Reason.OutOfRange done m
+                else if (k.sym == sym.delete || k.sym == sym.backspace) && inList m then
+                    when hostAt m m.row is
+                        Just h ->
+                            if h.own then
+                                hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
 
-            else if (k.sym == sym.left || k.sym == sym.escape) && onHosts m && m.form /= Nothing then
-                -- back to the list, on the host the form was of
-                let
-                    name =
-                        Maybe.withDefault "" m.form
+                            else
+                                done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
 
-                    back =
-                        { m | form = Nothing, message = Nothing }
+                        Nothing ->
+                            meant Reason.OutOfRange done m
 
-                    row =
-                        Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault (meant Reason.Gone 0)
-                in
-                done (keepInView { back | row = row })
+                else if isEnter k.sym || k.sym == sym.space then
+                    when focused m is
+                        Just s ->
+                            change s m
 
-            else if (k.sym == sym.delete || k.sym == sym.backspace) && inList m then
-                when hostAt m m.row is
-                    Just h ->
-                        if h.own then
-                            hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
+                        Nothing ->
+                            meant Reason.NotOpen done m
 
-                        else
-                            done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
+                else if k.sym == sym.delete || k.sym == sym.backspace then
+                    when focused m is
+                        Just s ->
+                            if s.kind == Schema.HostName then
+                                done { m | message = Just (Words.message "message.removeFromList") }
 
-                    Nothing ->
-                        meant Reason.OutOfRange done m
+                            else if not s.optional && s.page == Schema.HostsPage then
+                                done { m | message = Just (Words.message "message.hostNeedsAddress") }
 
-            else if isEnter k.sym || k.sym == sym.space then
-                when focused m is
-                    Just s ->
-                        change s m
+                            else
+                                set s
+                                    (if s.page == Schema.HostsPage then
+                                        Unset
 
-                    Nothing ->
-                        meant Reason.NotOpen done m
+                                     else
+                                        s.get Config.defaults
+                                    )
+                                    { m | message = Just (Words.message "message.isDefault" |> Words.with "key" (Schema.keyName s)) }
 
-            else if k.sym == sym.delete || k.sym == sym.backspace then
-                when focused m is
-                    Just s ->
-                        if s.kind == Schema.HostName then
-                            done { m | message = Just (Words.message "message.removeFromList") }
+                        Nothing ->
+                            meant Reason.NotOpen done m
 
-                        else if not s.optional && s.page == Schema.HostsPage then
-                            done { m | message = Just (Words.message "message.hostNeedsAddress") }
+                else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
+                    -- typing from the list searches, as a settings editor's does
+                    done (searched (m.search ++ String.toArray k.text) { m | focus = OnSearch })
 
-                        else
-                            set s (if s.page == Schema.HostsPage then Unset else s.get Config.defaults) { m | message = Just (Words.message "message.isDefault" |> Words.with "key" (Schema.keyName s)) }
-
-                    Nothing ->
-                        meant Reason.NotOpen done m
-
-            else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
-                -- typing from the list searches, as a settings editor's does
-                done (searched (m.search ++ String.toArray k.text) { m | focus = OnSearch })
-
-            else
-                done m
+                else
+                    done m
 
 
 printable : String -> Bool
@@ -777,7 +861,13 @@ choicesOf : Setting -> Array Value
 choicesOf s =
     when s.kind is
         OneOf names ->
-            (if s.optional then [ Unset ] else []) ++ Array.map Text names
+            (if s.optional then
+                [ Unset ]
+
+             else
+                []
+            )
+                ++ Array.map Text names
 
         _ ->
             []
@@ -912,8 +1002,24 @@ undo m =
                         -- each host as it was written back, and each host
                         -- added since taken out
                         effects =
-                            Array.mapAndKeepJust (\h -> if Array.member h now then Nothing else Just (PutHost h)) before
-                                ++ Array.mapAndKeepJust (\h -> if Array.any (\b -> b.name == h.name) before then Nothing else Just (DeleteHost h.name)) now
+                            Array.mapAndKeepJust
+                                (\h ->
+                                    if Array.member h now then
+                                        Nothing
+
+                                    else
+                                        Just (PutHost h)
+                                )
+                                before
+                                ++ Array.mapAndKeepJust
+                                    (\h ->
+                                        if Array.any (\b -> b.name == h.name) before then
+                                            Nothing
+
+                                        else
+                                            Just (DeleteHost h.name)
+                                    )
+                                    now
 
                         config =
                             m.config
@@ -955,7 +1061,20 @@ typingKey k t m =
         else
             let
                 renamed =
-                    hostsChanged (Array.map (\h -> if h.name == from then { h | name = to } else h) m.config.hosts) [ RenameHost { from = from, to = to } ] (Words.message "message.renamed" |> Words.with "from" from |> Words.with "to" to) { m | typing = Nothing }
+                    hostsChanged
+                        (Array.map
+                            (\h ->
+                                if h.name == from then
+                                    { h | name = to }
+
+                                else
+                                    h
+                            )
+                            m.config.hosts
+                        )
+                        [ RenameHost { from = from, to = to } ]
+                        (Words.message "message.renamed" |> Words.with "from" from |> Words.with "to" to)
+                        { m | typing = Nothing }
 
                 r =
                     renamed.model
@@ -971,7 +1090,12 @@ typingKey k t m =
                         s.get m.config /= t.before
                 in
                 { model = { m | config = s.set t.before m.config, typing = Nothing, message = Nothing }
-                , effects = if back then [ Write { setting = s, value = t.before } ] else []
+                , effects =
+                    if back then
+                        [ Write { setting = s, value = t.before } ]
+
+                    else
+                        []
                 }
 
             Nothing ->
@@ -999,7 +1123,19 @@ typingKey k t m =
             count =
                 Array.length (suggestions m t)
         in
-        done { m | typing = Just { t | pick = if k.sym == sym.down then min (count - 1) (t.pick + 1) else max -1 (t.pick - 1) } }
+        done
+            { m
+                | typing =
+                    Just
+                        { t
+                            | pick =
+                                if k.sym == sym.down then
+                                    min (count - 1) (t.pick + 1)
+
+                                else
+                                    max -1 (t.pick - 1)
+                        }
+            }
 
     else if isEnter k.sym || k.sym == sym.tab then
         when t.problem is
@@ -1008,21 +1144,26 @@ typingKey k t m =
 
             Nothing ->
                 meant Reason.NotOpen
-                when focused m is
-                    Just s ->
-                        let
-                            now =
-                                s.get m.config
-                        in
-                        done
-                            { m
-                                | typing = Nothing
-                                , message = Nothing
-                                , undo = if now /= t.before then Array.pushLast (Was { setting = s, value = t.before }) m.undo else m.undo
-                            }
+                    when focused m is
+                        Just s ->
+                            let
+                                now =
+                                    s.get m.config
+                            in
+                            done
+                                { m
+                                    | typing = Nothing
+                                    , message = Nothing
+                                    , undo =
+                                        if now /= t.before then
+                                            Array.pushLast (Was { setting = s, value = t.before }) m.undo
 
-                    Nothing ->
-                        meant Reason.NotOpen done { m | typing = Nothing }
+                                        else
+                                            m.undo
+                                }
+
+                        Nothing ->
+                            meant Reason.NotOpen done { m | typing = Nothing }
 
     else if k.sym == sym.left then
         done { m | typing = Just { t | caret = max 0 (t.caret - 1) } }
@@ -1097,7 +1238,19 @@ quickKey k t m =
 
     else if k.sym == sym.down || k.sym == sym.up then
         -- what is typed is left, and the list moved in
-        done (keepInView { m | typing = Nothing, message = Nothing, row = if k.sym == sym.down then min (rowCount m - 1) (m.row + 1) else max 0 (m.row - 1) })
+        done
+            (keepInView
+                { m
+                    | typing = Nothing
+                    , message = Nothing
+                    , row =
+                        if k.sym == sym.down then
+                            min (rowCount m - 1) (m.row + 1)
+
+                        else
+                            max 0 (m.row - 1)
+                }
+            )
 
     else if isEnter k.sym then
         when Hosts.quick text is
@@ -1151,21 +1304,25 @@ typedSetting : Typing -> Model -> { model : Model, effects : Array Effect }
 typedSetting t m =
     when focused m is
         Just s ->
-          if s.kind == FontFamily || s.kind == Schema.HostName then
-            -- the suggestions follow the name; it is written when chosen
-            done { m | typing = Just { t | pick = -1, problem = Nothing } }
+            if s.kind == FontFamily || s.kind == Schema.HostName then
+                -- the suggestions follow the name; it is written when chosen
+                done { m | typing = Just { t | pick = -1, problem = Nothing } }
 
-          else
-            when Schema.fromText s (String.fromArray t.chars) is
-                Ok v ->
-                    let
-                        writes =
-                            if v /= s.get m.config then [ Write { setting = s, value = v } ] else []
-                    in
-                    { model = { m | config = s.set v m.config, typing = Just { t | problem = Nothing }, message = Nothing }, effects = writes }
+            else
+                when Schema.fromText s (String.fromArray t.chars) is
+                    Ok v ->
+                        let
+                            writes =
+                                if v /= s.get m.config then
+                                    [ Write { setting = s, value = v } ]
 
-                Err why ->
-                    meant Reason.FromOutside done { m | typing = Just { t | problem = Just why }, message = Just why }
+                                else
+                                    []
+                        in
+                        { model = { m | config = s.set v m.config, typing = Just { t | problem = Nothing }, message = Nothing }, effects = writes }
+
+                    Err why ->
+                        meant Reason.FromOutside done { m | typing = Just { t | problem = Just why }, message = Just why }
 
         Nothing ->
             meant Reason.NotOpen done { m | typing = Nothing }
@@ -1318,11 +1475,14 @@ suggestions m t =
             String.trim (String.fromArray t.chars)
 
         q =
-            if name == Schema.toText t.before then "" else String.toLower name
+            if name == Schema.toText t.before then
+                ""
+
+            else
+                String.toLower name
     in
     m.fonts
         |> Array.keepIf (\f -> q == "" || String.contains q (String.toLower f))
-
 
 
 -- LAYOUT

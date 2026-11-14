@@ -1,11 +1,28 @@
 module Schema exposing
-    ( Setting, Kind(..), Value(..), Page(..), Applies(..), Report
-    , settings, find, keyName, tableKey, pages, pageName
-    , decode, Decoded
-    , write
-    , hostFields, nameSetting, writeHost, deleteHost, renameHost
-    , toText, fromText, hex
+    ( Applies(..)
+    , Decoded
+    , Kind(..)
+    , Page(..)
+    , Report
+    , Setting
+    , Value(..)
+    , decode
+    , deleteHost
     , example
+    , find
+    , fromText
+    , hex
+    , hostFields
+    , keyName
+    , nameSetting
+    , pageName
+    , pages
+    , renameHost
+    , settings
+    , tableKey
+    , toText
+    , write
+    , writeHost
     )
 
 {-| Every setting puritty has, in one table (`docs/settings.md` ST5,
@@ -23,17 +40,17 @@ holds to it.
 
 -}
 
-import Palettes
+import Chord
 import Config exposing (Config)
 import Dict exposing (Dict)
+import Palettes
+import Reason
 import Toml
 import Toml.Ast as Ast
-import Toml.Table
 import Toml.Decode
 import Toml.Edit
-import Chord
+import Toml.Table
 import Words exposing (Message)
-import Reason
 
 
 {-| One setting. `key` is its path in the file, `["font", "size"]`;
@@ -153,7 +170,6 @@ keyName s =
     String.join "." s.key
 
 
-
 -- THE TABLE
 
 
@@ -168,9 +184,14 @@ settings =
       , page = WindowPage
       , applies = NewWindows
       , get = \c -> Whole c.columns
-      , set = \v c -> when v is
-            Whole n -> { c | columns = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | columns = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "window", "rows" ]
       , kind = WholeIn { low = 1, high = 1000, unit = "cells" }
@@ -181,9 +202,14 @@ settings =
       , page = WindowPage
       , applies = NewWindows
       , get = \c -> Whole c.rows
-      , set = \v c -> when v is
-            Whole n -> { c | rows = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | rows = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "window", "title" ]
       , kind = AnyText
@@ -194,9 +220,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Text c.title
-      , set = \v c -> when v is
-            Text t -> { c | title = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | title = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "font", "family" ]
       , kind = FontFamily
@@ -207,9 +238,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Text c.font
-      , set = \v c -> when v is
-            Text t -> { c | font = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | font = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "font", "size" ]
       , kind = WholeIn { low = 4, high = 200, unit = "pt" }
@@ -220,9 +256,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Whole c.points
-      , set = \v c -> when v is
-            Whole n -> { c | points = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | points = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "font", "language" ]
       , kind = AnyText
@@ -233,10 +274,17 @@ settings =
       , page = TextAndLanguage
       , applies = AtOnce
       , get = \c -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Text c.language)
-      , set = \v c -> when v is
-            Text t -> { c | language = Just t }
-            Unset -> { c | language = Nothing }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | language = Just t }
+
+                    Unset ->
+                        { c | language = Nothing }
+
+                    _ ->
+                        c
       }
     , { key = [ "font", "ligatures" ]
       , kind = OnOff
@@ -247,9 +295,14 @@ settings =
       , page = TextAndLanguage
       , applies = AtOnce
       , get = \c -> Flag c.ligatures
-      , set = \v c -> when v is
-            Flag b -> { c | ligatures = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | ligatures = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "font", "glyph_cache_mb" ]
       , kind = WholeIn { low = 4, high = 1024, unit = "MB" }
@@ -260,9 +313,14 @@ settings =
       , page = Advanced
       , applies = AtOnce
       , get = \c -> Whole c.glyphCacheMb
-      , set = \v c -> when v is
-            Whole n -> { c | glyphCacheMb = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | glyphCacheMb = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "colors", "foreground" ]
       , kind = OneColor
@@ -273,9 +331,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Color c.foreground
-      , set = \v c -> when v is
-            Color n -> { c | foreground = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Color n ->
+                        { c | foreground = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "colors", "scheme" ]
       , kind = OneOf Palettes.names
@@ -286,9 +349,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Text c.scheme
-      , set = \v c -> when v is
-            Text t -> { c | scheme = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | scheme = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "colors", "background" ]
       , kind = OneColor
@@ -299,9 +367,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Color c.background
-      , set = \v c -> when v is
-            Color n -> { c | background = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Color n ->
+                        { c | background = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "colors", "bold_is_bright" ]
       , kind = OnOff
@@ -312,9 +385,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Flag c.boldIsBright
-      , set = \v c -> when v is
-            Flag b -> { c | boldIsBright = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | boldIsBright = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "colors", "palette" ]
       , kind = ColorList { most = 16 }
@@ -325,9 +403,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Colors c.palette
-      , set = \v c -> when v is
-            Colors p -> { c | palette = p }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Colors p ->
+                        { c | palette = p }
+
+                    _ ->
+                        c
       }
     , { key = [ "cursor", "blink_ms" ]
       , kind = WholeIn { low = 0, high = 10000, unit = "ms" }
@@ -338,9 +421,14 @@ settings =
       , page = Appearance
       , applies = AtOnce
       , get = \c -> Whole c.blinkMs
-      , set = \v c -> when v is
-            Whole n -> { c | blinkMs = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | blinkMs = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "frames", "every_ms" ]
       , kind = WholeIn { low = 1, high = 1000, unit = "ms" }
@@ -351,9 +439,14 @@ settings =
       , page = Advanced
       , applies = AtOnce
       , get = \c -> Whole c.frameMs
-      , set = \v c -> when v is
-            Whole n -> { c | frameMs = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | frameMs = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "frames", "sync_timeout_ms" ]
       , kind = WholeIn { low = 0, high = 10000, unit = "ms" }
@@ -364,9 +457,14 @@ settings =
       , page = Advanced
       , applies = AtOnce
       , get = \c -> Whole c.syncTimeoutMs
-      , set = \v c -> when v is
-            Whole n -> { c | syncTimeoutMs = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | syncTimeoutMs = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "scrollback", "lines" ]
       , kind = WholeIn { low = 0, high = 10000000, unit = "lines" }
@@ -377,9 +475,14 @@ settings =
       , page = Advanced
       , applies = AtOnce
       , get = \c -> Whole c.scrollbackLines
-      , set = \v c -> when v is
-            Whole n -> { c | scrollbackLines = n }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Whole n ->
+                        { c | scrollbackLines = n }
+
+                    _ ->
+                        c
       }
     , { key = [ "program", "command" ]
       , kind = Command
@@ -390,9 +493,14 @@ settings =
       , page = Program
       , applies = NewWindows
       , get = \c -> Words c.command
-      , set = \v c -> when v is
-            Words w -> { c | command = w }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Words w ->
+                        { c | command = w }
+
+                    _ ->
+                        c
       }
     , { key = [ "start" ]
       , kind = Launch
@@ -403,9 +511,14 @@ settings =
       , page = Program
       , applies = NewWindows
       , get = \c -> Text c.start
-      , set = \v c -> when v is
-            Text t -> { c | start = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | start = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "terminal", "charset" ]
       , kind = OneOf [ "utf-8", "euc-kr", "cp949" ]
@@ -416,10 +529,17 @@ settings =
       , page = TextAndLanguage
       , applies = AtOnce
       , get = \c -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Text c.charset)
-      , set = \v c -> when v is
-            Text t -> { c | charset = Just t }
-            Unset -> { c | charset = Nothing }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | charset = Just t }
+
+                    Unset ->
+                        { c | charset = Nothing }
+
+                    _ ->
+                        c
       }
     , { key = [ "selection", "word_boundaries" ]
       , kind = AnyText
@@ -430,9 +550,14 @@ settings =
       , page = MouseAndSelection
       , applies = AtOnce
       , get = \c -> Text c.wordBoundaries
-      , set = \v c -> when v is
-            Text t -> { c | wordBoundaries = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | wordBoundaries = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "selection", "copy_to_clipboard" ]
       , kind = OnOff
@@ -443,9 +568,14 @@ settings =
       , page = MouseAndSelection
       , applies = AtOnce
       , get = \c -> Flag c.copyToClipboard
-      , set = \v c -> when v is
-            Flag b -> { c | copyToClipboard = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | copyToClipboard = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "mouse", "paste_button" ]
       , kind = OneOf [ "middle", "right" ]
@@ -455,11 +585,26 @@ settings =
       , words = [ "paste", "click", "button" ]
       , page = MouseAndSelection
       , applies = AtOnce
-      , get = \c -> Text (if c.pasteButton == 2 then "right" else "middle")
-      , set = \v c -> when v is
-            Text "right" -> { c | pasteButton = 2 }
-            Text "middle" -> { c | pasteButton = 3 }
-            _ -> c
+      , get =
+            \c ->
+                Text
+                    (if c.pasteButton == 2 then
+                        "right"
+
+                     else
+                        "middle"
+                    )
+      , set =
+            \v c ->
+                when v is
+                    Text "right" ->
+                        { c | pasteButton = 2 }
+
+                    Text "middle" ->
+                        { c | pasteButton = 3 }
+
+                    _ ->
+                        c
       }
     , { key = [ "tmux", "tabs" ]
       , kind = OneOf [ "bottom", "top" ]
@@ -470,9 +615,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Text c.tmuxTabs
-      , set = \v c -> when v is
-            Text t -> { c | tmuxTabs = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | tmuxTabs = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "tmux", "look" ]
       , kind = OneOf [ "puritty", "tmux" ]
@@ -483,9 +633,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Text c.tmuxLook
-      , set = \v c -> when v is
-            Text t -> { c | tmuxLook = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | tmuxLook = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "tabs", "bar" ]
       , kind = OneOf [ "auto", "always" ]
@@ -496,9 +651,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Text c.tabsBar
-      , set = \v c -> when v is
-            Text t -> { c | tabsBar = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | tabsBar = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "sound", "bell" ]
       , kind = OneOf [ "none", "system", "apple2", "ibm-pc", "atari-st", "bbc-micro", "x11" ]
@@ -509,9 +669,14 @@ settings =
       , page = SoundPage
       , applies = AtOnce
       , get = \c -> Text c.soundBell
-      , set = \v c -> when v is
-            Text t -> { c | soundBell = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | soundBell = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "sound", "keys" ]
       , kind = OnOff
@@ -522,9 +687,14 @@ settings =
       , page = SoundPage
       , applies = AtOnce
       , get = \c -> Flag c.soundKeys
-      , set = \v c -> when v is
-            Flag b -> { c | soundKeys = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | soundKeys = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "tabs", "look" ]
       , kind = OneOf [ "puritty", "plain" ]
@@ -535,9 +705,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Text c.tabsLook
-      , set = \v c -> when v is
-            Text t -> { c | tabsLook = t }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Text t ->
+                        { c | tabsLook = t }
+
+                    _ ->
+                        c
       }
     , { key = [ "tabs", "middle_click_closes" ]
       , kind = OnOff
@@ -548,9 +723,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Flag c.tabsMiddleCloses
-      , set = \v c -> when v is
-            Flag b -> { c | tabsMiddleCloses = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | tabsMiddleCloses = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "tabs", "ask_before_closing" ]
       , kind = OnOff
@@ -561,9 +741,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Flag c.tabsAskBeforeClosing
-      , set = \v c -> when v is
-            Flag b -> { c | tabsAskBeforeClosing = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | tabsAskBeforeClosing = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "tabs", "restore" ]
       , kind = OnOff
@@ -574,9 +759,14 @@ settings =
       , page = WindowPage
       , applies = AtOnce
       , get = \c -> Flag c.tabsRestore
-      , set = \v c -> when v is
-            Flag b -> { c | tabsRestore = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | tabsRestore = b }
+
+                    _ ->
+                        c
       }
     , { key = [ "debug", "log" ]
       , kind = OnOff
@@ -587,9 +777,14 @@ settings =
       , page = Advanced
       , applies = AtOnce
       , get = \c -> Flag c.debugLog
-      , set = \v c -> when v is
-            Flag b -> { c | debugLog = b }
-            _ -> c
+      , set =
+            \v c ->
+                when v is
+                    Flag b ->
+                        { c | debugLog = b }
+
+                    _ ->
+                        c
       }
     , chordSetting "mark_log" "Mark the diagnostic log" "While the diagnostic log is on, writes a numbered mark in it with the state of the window, to find the lines around a problem; the menu has it too. While the log is off the key goes to the program." (\c -> c.keyMarkLog) (\t c -> { c | keyMarkLog = t })
     , chordSetting "new_tab" "New tab" "A new tab, after the last, where the shown one is; in a tab under tmux -CC, tmux's new window." (\c -> c.keyNewTab) (\t c -> { c | keyNewTab = t })
@@ -616,11 +811,26 @@ settings =
       , words = [ "osc 52", "clipboard", "security" ]
       , page = Clipboard
       , applies = AtOnce
-      , get = \c -> Text (if c.osc52Read then "allow" else "deny")
-      , set = \v c -> when v is
-            Text "allow" -> { c | osc52Read = True }
-            Text "deny" -> { c | osc52Read = False }
-            _ -> c
+      , get =
+            \c ->
+                Text
+                    (if c.osc52Read then
+                        "allow"
+
+                     else
+                        "deny"
+                    )
+      , set =
+            \v c ->
+                when v is
+                    Text "allow" ->
+                        { c | osc52Read = True }
+
+                    Text "deny" ->
+                        { c | osc52Read = False }
+
+                    _ ->
+                        c
       }
     ]
 
@@ -648,14 +858,17 @@ sections =
         (\s acc ->
             when Array.first s.key is
                 Just section ->
-                    if Array.member section acc then acc else Array.pushLast section acc
+                    if Array.member section acc then
+                        acc
+
+                    else
+                        Array.pushLast section acc
 
                 Nothing ->
                     acc
         )
         []
         settings
-
 
 
 -- DECODING
@@ -691,9 +904,7 @@ decode text =
                             linesOf doc
 
                         at =
-                            { line = \path -> Maybe.withDefault (meant Reason.NotKnown 1) (Dict.get (String.join "." path) lines)
-                            , integer = \path -> Toml.Decode.fromDocument (Toml.Decode.at path Toml.Decode.int) doc |> Result.mapError (\_ -> "too large a number")
-                            }
+                            { line = \path -> Maybe.withDefault (meant Reason.NotKnown 1) (Dict.get (String.join "." path) lines), integer = \path -> Toml.Decode.fromDocument (Toml.Decode.at path Toml.Decode.int) doc |> Result.mapError (\_ -> "too large a number") }
 
                         -- the scheme first, so that a color the file sets
                         -- beside it wins whatever the keys' order (ST29)
@@ -772,9 +983,10 @@ one at key value acc =
     in
     when find key is
         Nothing ->
-            meant Reason.FromOutside report (at.line key)
-                (name ++ " is not a setting" ++ suggest name (Array.map keyName settings))
-                acc
+            meant Reason.FromOutside
+                report (at.line key)
+                    (name ++ " is not a setting" ++ suggest name (Array.map keyName settings))
+                    acc
 
         Just s ->
             when read (\_ -> at.integer key) s.kind value is
@@ -952,7 +1164,11 @@ hostLook at here named table key value r =
             { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ ": " ++ why ++ "; it is left out" } r.reports }
 
         allowed =
-            if table == "colors" then [ "foreground", "background", "tab", "palette" ] else [ "family", "size" ]
+            if table == "colors" then
+                [ "foreground", "background", "tab", "palette" ]
+
+            else
+                [ "family", "size" ]
     in
     if not (Array.member key allowed) then
         { r | reports = Array.pushLast { line = at.line path, message = named ++ "." ++ key ++ " is not a host's setting" ++ suggest key allowed } r.reports }
@@ -975,7 +1191,14 @@ hostLook at here named table key value r =
             Just s ->
                 when read (\_ -> at.integer path) s.kind value is
                     Ok (Color n) ->
-                        { r | host = if key == "foreground" then { h | foreground = Just n } else { h | background = Just n } }
+                        { r
+                            | host =
+                                if key == "foreground" then
+                                    { h | foreground = Just n }
+
+                                else
+                                    { h | background = Just n }
+                        }
 
                     Ok (Colors p) ->
                         { r | host = { h | palette = Just p } }
@@ -1076,7 +1299,15 @@ read integerHere kind value =
             string value |> Result.map Text
 
         Address ->
-            string value |> Result.andThen (\t -> if t == "" then Err "where to connect is empty" else Ok (Text t))
+            string value
+                |> Result.andThen
+                    (\t ->
+                        if t == "" then
+                            Err "where to connect is empty"
+
+                        else
+                            Ok (Text t)
+                    )
 
         KeyChord ->
             string value |> Result.andThen chordText
@@ -1179,7 +1410,11 @@ shown s v =
             "\"" ++ t ++ "\""
 
         Flag b ->
-            if b then "true" else "false"
+            if b then
+                "true"
+
+            else
+                "false"
 
         Color n ->
             "\"" ++ hex n ++ "\""
@@ -1191,7 +1426,11 @@ shown s v =
             "[" ++ String.join ", " (Array.map (\t -> "\"" ++ t ++ "\"") w) ++ "]"
 
         Unset ->
-            if s.optional then "the system's choice" else "nothing"
+            if s.optional then
+                "the system's choice"
+
+            else
+                "nothing"
 
 
 hex : Int -> String
@@ -1216,7 +1455,13 @@ suggest name known =
                 (\k acc ->
                     let
                         d =
-                            distance name (if String.startsWith "[" k then String.slice 1 -1 k else k)
+                            distance name
+                                (if String.startsWith "[" k then
+                                    String.slice 1 -1 k
+
+                                 else
+                                    k
+                                )
                     in
                     if d <= 2 && (acc.distance < 0 || d < acc.distance) then
                         { distance = d, key = k }
@@ -1263,7 +1508,11 @@ distance a b =
                             Maybe.withDefault 0 (Array.last acc)
 
                         cost =
-                            if ca == cb then 0 else 1
+                            if ca == cb then
+                                0
+
+                            else
+                                1
                     in
                     Array.pushLast (min (min (above + 1) (left + 1)) (diagonal + cost)) acc
                 )
@@ -1274,7 +1523,6 @@ distance a b =
         a
         |> Array.last
         |> Maybe.withDefault 0
-
 
 
 -- A HOST'S FIELDS
@@ -1373,9 +1621,23 @@ hostFields name =
     , field [ "colors", "foreground" ] OneColor True "Foreground" "The color of text, over the settings'." (\h -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Color h.foreground)) (\v h -> { h | foreground = colorOf v })
     , field [ "colors", "background" ] OneColor True "Background" "The color behind text, over the settings'; a red one for production is the usual." (\h -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Color h.background)) (\v h -> { h | background = colorOf v })
     , field [ "colors", "tab" ] OneColor True "Tab" "The color of its tabs in the bar, until a tab is given its own; none when unset." (\h -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Color h.tab)) (\v h -> { h | tab = colorOf v })
-    , field [ "colors", "palette" ] (ColorList { most = 16 }) True "Palette" "The 16 named colors, over the settings'." (\h -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Colors h.palette)) (\v h -> { h | palette = when v is
-                Colors p -> Just p
-                _ -> Nothing })
+    , field [ "colors", "palette" ]
+        (ColorList { most = 16 })
+        True
+        "Palette"
+        "The 16 named colors, over the settings'."
+        (\h -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Colors h.palette))
+        (\v h ->
+            { h
+                | palette =
+                    when v is
+                        Colors p ->
+                            Just p
+
+                        _ ->
+                            Nothing
+            }
+        )
     , field [ "font", "family" ] FontFamily True "Font" "The font, over the settings'." (\h -> text h.font) (\v h -> { h | font = textOf v })
     , field [ "font", "size" ] (WholeIn { low = 4, high = 200, unit = "pt" }) True "Font size" "In points, over the settings'." (\h -> Maybe.withDefault (meant Reason.NotSet Unset) (Maybe.map Whole h.points)) (\v h -> { h | points = wholeOf v })
     ]
@@ -1408,7 +1670,6 @@ renameHost from to doc =
     Toml.Edit.renameTable [ "hosts", from ] to doc
 
 
-
 -- AS TEXT
 
 
@@ -1425,7 +1686,11 @@ toText v =
             t
 
         Flag b ->
-            if b then "true" else "false"
+            if b then
+                "true"
+
+            else
+                "false"
 
         Color n ->
             hex n
@@ -1434,7 +1699,17 @@ toText v =
             String.join ", " (Array.map hex p)
 
         Words w ->
-            String.join " " (Array.map (\word -> if String.contains " " word || word == "" then "\"" ++ word ++ "\"" else word) w)
+            String.join " "
+                (Array.map
+                    (\word ->
+                        if String.contains " " word || word == "" then
+                            "\"" ++ word ++ "\""
+
+                        else
+                            word
+                    )
+                    w
+                )
 
         Unset ->
             ""
@@ -1475,7 +1750,11 @@ fromText s text0 =
                 Ok (Text text0)
 
             FontFamily ->
-                if text == "" then Err (Words.message "problem.noFont") else Ok (Text text)
+                if text == "" then
+                    Err (Words.message "problem.noFont")
+
+                else
+                    Ok (Text text)
 
             OnOff ->
                 if text == "true" then
@@ -1493,7 +1772,11 @@ fromText s text0 =
             ColorList r ->
                 let
                     parts =
-                        if text == "" then [] else Array.map String.trim (String.split "," text)
+                        if text == "" then
+                            []
+
+                        else
+                            Array.map String.trim (String.split "," text)
                 in
                 if Array.length parts > r.most then
                     Err (Words.message "problem.tooManyColors" |> Words.with "n" (String.fromInt (Array.length parts)) |> Words.with "most" (String.fromInt r.most))
@@ -1516,10 +1799,18 @@ fromText s text0 =
                 launch text |> Result.map Text
 
             HostName ->
-                if text == "" then Err (Words.message "problem.hostNeedsName") else Ok (Text text)
+                if text == "" then
+                    Err (Words.message "problem.hostNeedsName")
+
+                else
+                    Ok (Text text)
 
             Address ->
-                if text == "" then Err (Words.message "problem.whereToConnect") else Ok (Text text)
+                if text == "" then
+                    Err (Words.message "problem.whereToConnect")
+
+                else
+                    Ok (Text text)
 
             KeyChord ->
                 chordText text |> Result.mapError (\_ -> Words.message "problem.notAChord" |> Words.with "text" text)
@@ -1574,7 +1865,6 @@ words text =
 
     else
         Ok end.done
-
 
 
 -- WRITING
@@ -1643,7 +1933,6 @@ editValue v =
             Toml.Edit.string ""
 
 
-
 -- LINES
 
 
@@ -1680,7 +1969,6 @@ linesOf doc =
 keyPath : Ast.Key -> Array String
 keyPath key =
     Array.pushFirst key.first.value (Array.map (\part -> part.key.value) key.rest)
-
 
 
 -- THE EXAMPLE
@@ -1830,9 +2118,14 @@ chordSetting name label description get set =
     , page = KeysPage
     , applies = AtOnce
     , get = \c -> Text (get c)
-    , set = \v c -> when v is
-        Text t -> set t c
-        _ -> c
+    , set =
+        \v c ->
+            when v is
+                Text t ->
+                    set t c
+
+                _ ->
+                    c
     }
 
 
@@ -1841,4 +2134,3 @@ key. -}
 chordText : String -> Result String Value
 chordText text =
     Chord.parse text |> Result.map (\found -> Text (found |> Maybe.map Chord.show |> Maybe.withDefault (meant Reason.NotSet "")))
-

@@ -1,12 +1,12 @@
 module FakeTmux exposing
-    ( World
-    , Pane
-    , world
-    , startBytes
+    ( Pane
+    , World
     , answer
-    , enterCopy
     , copyState
+    , enterCopy
     , known
+    , startBytes
+    , world
     )
 
 {-| A tmux server as puritty's control mode sees it, for `TmuxMode`'s tests
@@ -127,7 +127,15 @@ block : Int -> Bool -> Array String -> String
 block number ok lines =
     let
         tail =
-            (if ok then "%end " else "%error ") ++ "1700000000 " ++ String.fromInt number ++ " 1\u{000D}\n"
+            (if ok then
+                "%end "
+
+             else
+                "%error "
+            )
+                ++ "1700000000 "
+                ++ String.fromInt number
+                ++ " 1\u{000D}\n"
     in
     "%begin 1700000000 " ++ String.fromInt number ++ " 1\u{000D}\n" ++ String.join "" (Array.map (\l -> l ++ "\u{000D}\n") lines) ++ tail
 
@@ -278,7 +286,15 @@ activePane w =
 {-| A command's target pane: `%N`, or the active one for anything else. -}
 paneOf : Maybe String -> World -> Pane
 paneOf t w =
-    when t |> Maybe.andThen (\s -> if String.startsWith "%" s then String.toInt (String.dropFirst 1 s) else Nothing) is
+    when t
+        |> Maybe.andThen
+            (\s ->
+                if String.startsWith "%" s then
+                    String.toInt (String.dropFirst 1 s)
+
+                else
+                    Nothing
+            ) is
         Just id ->
             Array.findFirst (\p -> p.id == id) w.panes
                 |> Maybe.map .value
@@ -290,7 +306,18 @@ paneOf t w =
 
 setPane : Pane -> World -> World
 setPane p w =
-    { w | panes = Array.map (\q -> if q.id == p.id then p else q) w.panes }
+    { w
+        | panes =
+            Array.map
+                (\q ->
+                    if q.id == p.id then
+                        p
+
+                    else
+                        q
+                )
+                w.panes
+    }
 
 
 {-| A pane put in copy mode (`prefix [`), the cursor where the pane's is,
@@ -353,7 +380,16 @@ sendKeys args p w =
                 else
                     setPane ran.pane w
         in
-        { w = next, ok = True, lines = [], notices = if ran.left then [ "%pane-mode-changed %" ++ String.fromInt p.id ] else [] }
+        { w = next
+        , ok = True
+        , lines = []
+        , notices =
+            if ran.left then
+                [ "%pane-mode-changed %" ++ String.fromInt p.id ]
+
+            else
+                []
+        }
 
 
 hexValue : String -> Int
@@ -364,7 +400,16 @@ hexValue text =
                 code =
                     Char.toCode c
             in
-            v * 16 + (if code >= 0x61 then code - 0x61 + 10 else if code >= 0x41 then code - 0x41 + 10 else code - 0x30)
+            v * 16
+                + (if code >= 0x61 then
+                    code - 0x61 + 10
+
+                   else if code >= 0x41 then
+                    code - 0x41 + 10
+
+                   else
+                    code - 0x30
+                  )
         )
         0
         text
@@ -395,7 +440,11 @@ copyCommand clamp c acc =
             acc.pane
 
         moved q =
-            if clamp then held q else q
+            if clamp then
+                held q
+
+            else
+                q
 
         rows =
             p.rows
@@ -493,10 +542,23 @@ captured args p =
             line flag fallback =
                 when Dict.get flag args.values is
                     Just "-" ->
-                        if flag == "S" then 0 else total - 1
+                        if flag == "S" then
+                            0
+
+                        else
+                            total - 1
 
                     Just n ->
-                        String.toInt n |> Maybe.map (\v -> if v < 0 then screenTop + v else screenTop + v) |> Maybe.withDefault fallback
+                        String.toInt n
+                            |> Maybe.map
+                                (\v ->
+                                    if v < 0 then
+                                        screenTop + v
+
+                                    else
+                                        screenTop + v
+                                )
+                            |> Maybe.withDefault fallback
 
                     Nothing ->
                         fallback
@@ -634,83 +696,221 @@ vars w p name =
 
         -- copy mode's variables are empty outside it (measured, 3.8 and 3.6a)
         copying value =
-            if p.mode == "" then "" else value
+            if p.mode == "" then
+                ""
+
+            else
+                value
     in
     if String.startsWith "@" name then
         Maybe.withDefault "" (Dict.get name w.options)
 
     else
-    when name is
-        "pane_id" -> "%" ++ n p.id
-        "window_id" -> "@0"
-        "session_id" -> "$0"
-        "session_name" -> "main"
-        "window_name" -> "sh"
-        "window_index" -> "0"
-        "window_active" -> "1"
-        "window_flags" -> "*"
-        "window_panes" -> n (Array.length w.panes)
-        "session_attached" -> "1"
-        "session_windows" -> "1"
-        "session_grouped" -> "0"
-        "session_activity" -> "1700000000"
-        "session_created" -> "1700000000"
-        "window_activity" -> "1700000000"
-        "pane_activity" -> "1700000000"
-        "pane_flags" -> if w.version /= "3.6a" && p.id == w.active then "*" else ""
-        "pane_left" -> n (paneIndex w p * (paneWidth w + 1))
-        "pane_top" -> "0"
-        "pane_marked" -> "0"
-        "pane_marked_set" -> "0"
-        "pane_private_modes" -> if w.version == "3.6a" then "" else "7,25"
-        "host" -> "host"
-        "host_short" -> "host"
-        "tree-mode-preview-style" -> if w.version == "3.6a" then "" else "fg=themered"
-        "pane_search_string" -> ""
-        "selection_present" -> copying "0"
-        "window_layout" -> layout w
-        "window_visible_layout" -> layout w
-        "window_width" -> n w.cols
-        "window_height" -> n w.rows
-        "window_zoomed_flag" -> "0"
-        "pane_active" -> if p.id == w.active then "1" else "0"
-        "pane_index" -> n (paneIndex w p)
-        "pane_width" -> n (paneWidth w)
-        "pane_height" -> n w.rows
-        "pane_current_command" -> "sh"
-        "pane_title" -> "host"
-        "cursor_x" -> n (cursorX p)
-        "cursor_y" -> n (w.rows - 1)
-        "alternate_on" -> "0"
-        "scroll_region_upper" -> "0"
-        "scroll_region_lower" -> n (w.rows - 1)
-        "pane_mode" -> p.mode
-        "pane_in_mode" -> if p.mode == "" then "0" else "1"
-        "mode-keys" -> "vi"
-        "scroll_position" -> copying (n p.scroll)
-        "history_size" -> n history
-        "copy_cursor_x" -> copying (n p.cx)
-        "copy_cursor_y" -> copying (n p.cy)
-        "prefix" -> "C-b"
-        "prefix2" -> "None"
-        "repeat-time" -> "500"
-        "version" -> w.version
-        "display-panes-time" -> "1000"
-        "client_name" -> "client-0"
-        "status" -> "on"
-        _ ->
-            -- with nothing selected, where a selection is is empty
-            if String.startsWith "selection_" name then
-                ""
+        when name is
+            "pane_id" ->
+                "%" ++ n p.id
 
-            else if String.startsWith "search_" name || name == "rectangle_toggle" then
-                copying "0"
+            "window_id" ->
+                "@0"
 
-            else if String.endsWith "_flag" name then
+            "session_id" ->
+                "$0"
+
+            "session_name" ->
+                "main"
+
+            "window_name" ->
+                "sh"
+
+            "window_index" ->
                 "0"
 
-            else
+            "window_active" ->
+                "1"
+
+            "window_flags" ->
+                "*"
+
+            "window_panes" ->
+                n (Array.length w.panes)
+
+            "session_attached" ->
+                "1"
+
+            "session_windows" ->
+                "1"
+
+            "session_grouped" ->
+                "0"
+
+            "session_activity" ->
+                "1700000000"
+
+            "session_created" ->
+                "1700000000"
+
+            "window_activity" ->
+                "1700000000"
+
+            "pane_activity" ->
+                "1700000000"
+
+            "pane_flags" ->
+                if w.version /= "3.6a" && p.id == w.active then
+                    "*"
+
+                else
+                    ""
+
+            "pane_left" ->
+                n (paneIndex w p * (paneWidth w + 1))
+
+            "pane_top" ->
+                "0"
+
+            "pane_marked" ->
+                "0"
+
+            "pane_marked_set" ->
+                "0"
+
+            "pane_private_modes" ->
+                if w.version == "3.6a" then
+                    ""
+
+                else
+                    "7,25"
+
+            "host" ->
+                "host"
+
+            "host_short" ->
+                "host"
+
+            "tree-mode-preview-style" ->
+                if w.version == "3.6a" then
+                    ""
+
+                else
+                    "fg=themered"
+
+            "pane_search_string" ->
                 ""
+
+            "selection_present" ->
+                copying "0"
+
+            "window_layout" ->
+                layout w
+
+            "window_visible_layout" ->
+                layout w
+
+            "window_width" ->
+                n w.cols
+
+            "window_height" ->
+                n w.rows
+
+            "window_zoomed_flag" ->
+                "0"
+
+            "pane_active" ->
+                if p.id == w.active then
+                    "1"
+
+                else
+                    "0"
+
+            "pane_index" ->
+                n (paneIndex w p)
+
+            "pane_width" ->
+                n (paneWidth w)
+
+            "pane_height" ->
+                n w.rows
+
+            "pane_current_command" ->
+                "sh"
+
+            "pane_title" ->
+                "host"
+
+            "cursor_x" ->
+                n (cursorX p)
+
+            "cursor_y" ->
+                n (w.rows - 1)
+
+            "alternate_on" ->
+                "0"
+
+            "scroll_region_upper" ->
+                "0"
+
+            "scroll_region_lower" ->
+                n (w.rows - 1)
+
+            "pane_mode" ->
+                p.mode
+
+            "pane_in_mode" ->
+                if p.mode == "" then
+                    "0"
+
+                else
+                    "1"
+
+            "mode-keys" ->
+                "vi"
+
+            "scroll_position" ->
+                copying (n p.scroll)
+
+            "history_size" ->
+                n history
+
+            "copy_cursor_x" ->
+                copying (n p.cx)
+
+            "copy_cursor_y" ->
+                copying (n p.cy)
+
+            "prefix" ->
+                "C-b"
+
+            "prefix2" ->
+                "None"
+
+            "repeat-time" ->
+                "500"
+
+            "version" ->
+                w.version
+
+            "display-panes-time" ->
+                "1000"
+
+            "client_name" ->
+                "client-0"
+
+            "status" ->
+                "on"
+
+            _ ->
+                -- with nothing selected, where a selection is is empty
+                if String.startsWith "selection_" name then
+                    ""
+
+                else if String.startsWith "search_" name || name == "rectangle_toggle" then
+                    copying "0"
+
+                else if String.endsWith "_flag" name then
+                    "0"
+
+                else
+                    ""
 
 
 {-| Where a pane is among the window's, and how wide each is: the panes
@@ -781,7 +981,11 @@ matching chars i depth =
             i
 
         Just '}' ->
-            if depth == 1 then i else matching chars (i + 1) (depth - 1)
+            if depth == 1 then
+                i
+
+            else
+                matching chars (i + 1) (depth - 1)
 
         Just '{' ->
             matching chars (i + 1) (depth + 1)
@@ -797,7 +1001,11 @@ variable lookup inner =
             v /= "" && v /= "0"
 
         bool b =
-            if b then "1" else "0"
+            if b then
+                "1"
+
+            else
+                "0"
 
         parts rest =
             Array.map (expand lookup) (topLevel rest)
@@ -877,7 +1085,11 @@ variable lookup inner =
                         bool (not (truthy (expand lookup m.rest)))
 
                     "t/p" ->
-                        if lookup m.rest == "" then "" else "12:00"
+                        if lookup m.rest == "" then
+                            ""
+
+                        else
+                            "12:00"
 
                     op ->
                         when truncation op is
@@ -910,7 +1122,11 @@ modifierOf inner =
                     Nothing
 
                 Just ':' ->
-                    if depth == 0 then Just i else colon (i + 1) depth
+                    if depth == 0 then
+                        Just i
+
+                    else
+                        colon (i + 1) depth
 
                 Just '{' ->
                     colon (i + 1) (depth + 1)
@@ -959,7 +1175,16 @@ truncation op =
 with a backslash. -}
 quoted : String -> String
 quoted value =
-    String.foldl (\c acc -> if String.contains (String.fromChar c) "|&;<>()$`\\\"'*?[# =%" then acc ++ "\\" ++ String.fromChar c else acc ++ String.fromChar c) "" value
+    String.foldl
+        (\c acc ->
+            if String.contains (String.fromChar c) "|&;<>()$`\\\"'*?[# =%" then
+                acc ++ "\\" ++ String.fromChar c
+
+            else
+                acc ++ String.fromChar c
+        )
+        ""
+        value
 
 
 {-| `m/r:`'s match, for the patterns tmux's own bindings use: literal

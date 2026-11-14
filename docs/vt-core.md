@@ -4637,3 +4637,28 @@ reason that fits; those are `NotKnown` or `Refused`, and a `Result` or
 **From now on** a new fallback that can run fails `geng checks` unless it
 is marked `meant` or recorded, as before, and a mark whose fallback stops
 running fails it too.
+
+## VC65. puritty is formatted, and kept so (2026-11-13)
+
+Gilbert: run `geng fmt` on puritty; all its code needs to be formatted.
+Of its 164 Geng files (the application, the packages, their tests, the
+probes), 117 were not; `scripts/fmt.sh` formats them all, or the files
+given, and `--check` changes nothing and fails listing what is not
+formatted. The unit gate (`harness/units.py`) runs `--check` before the
+suites, so an unformatted file fails it.
+
+The generated tables are formatted by their generators, so a table made
+again is the same text: `vt/gen-euckr.py`, `vt/gen-keys.py`,
+`packages/tmux/tools/color_names.py` and `probes/euckr/gen.py` run
+`scripts/fmt.sh` on what they write; `vt/gen-width.py` and
+`customize_tables.py`, which print, say to in their usage. Made again,
+`EucKrIndex` and `KeyTables` are byte for byte the formatted files.
+`gen-keys.py` had not known of §VC64's marks, and writes them now
+(`meant Reason.NotKnown 0` in its five lookups, and the import after
+the module's doc comment, where §VC64's script had put it before).
+
+The formatter writes an array of more than one line one element to a
+line, so `EucKrIndex`'s 23,940 entries went from 1,260 lines to 23,949.
+
+`geng checks`: 0 new, the same counts. The unit gate passes and the
+Windows build compiles.

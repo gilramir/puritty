@@ -6,6 +6,7 @@ TM65). The table is the same in tmux 3.6a and 3.8.
     color_names.py PATH/TO/tmux/colour.c
 """
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -93,6 +94,9 @@ names =
 {lines}
     """
 ''')
+    # formatted as the rest of puritty (scripts/fmt.sh), so that the table
+    # made again is the same text
+    subprocess.run([str(OUT.parents[4] / "scripts" / "fmt.sh"), str(OUT)], check=True, stdout=subprocess.DEVNULL)
     print(f"{OUT}: {len(rows)} names")
 
 

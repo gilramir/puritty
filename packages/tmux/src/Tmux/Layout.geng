@@ -1,10 +1,10 @@
 module Tmux.Layout exposing
     ( Cell(..)
     , Pane
-    , parse
-    , panes
-    , tiled
     , floating
+    , panes
+    , parse
+    , tiled
     )
 
 {-| A tmux window's layout (puritty `docs/tmux.md` TM5.6), from either of
@@ -83,7 +83,6 @@ floating cell =
         |> Array.sortBy (\p -> 0 - Maybe.withDefault 0 p.z)
 
 
-
 -- 3.8's JSON
 
 
@@ -139,7 +138,6 @@ paneDecoder =
         )
 
 
-
 -- the old form: `csum,` then a cell, `WxH,X,Y` and `,id` for a pane or
 -- `{…}` (left to right) or `[…]` (top to bottom) of cells
 
@@ -175,10 +173,31 @@ bounded v =
 oldCell : Array Int -> Int -> Result String { cell : Cell, at : Int }
 oldCell chars at =
     number chars at
-        |> Result.andThen (\w -> expect 0x78 chars w.at |> Result.andThen (\a1 -> number chars a1
-        |> Result.andThen (\h -> expect 0x2C chars h.at |> Result.andThen (\a2 -> number chars a2
-        |> Result.andThen (\x -> expect 0x2C chars x.at |> Result.andThen (\a3 -> number chars a3
-        |> Result.andThen (\y -> oldRest chars { w = w.value, h = h.value, x = x.value, y = y.value } y.at)))))))
+        |> Result.andThen
+            (\w ->
+                expect 0x78 chars w.at
+                    |> Result.andThen
+                        (\a1 ->
+                            number chars a1
+                                |> Result.andThen
+                                    (\h ->
+                                        expect 0x2C chars h.at
+                                            |> Result.andThen
+                                                (\a2 ->
+                                                    number chars a2
+                                                        |> Result.andThen
+                                                            (\x ->
+                                                                expect 0x2C chars x.at
+                                                                    |> Result.andThen
+                                                                        (\a3 ->
+                                                                            number chars a3
+                                                                                |> Result.andThen (\y -> oldRest chars { w = w.value, h = h.value, x = x.value, y = y.value } y.at)
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )
 
 
 oldRest : Array Int -> { w : Int, h : Int, x : Int, y : Int } -> Int -> Result String { cell : Cell, at : Int }
@@ -251,8 +270,8 @@ numberFrom chars start at value =
 
         Nothing ->
             meant Reason.NoMore
-            if at > start then
-                Ok { value = value, at = at }
+                if at > start then
+                    Ok { value = value, at = at }
 
-            else
-                Err "a layout ends where a number should be"
+                else
+                    Err "a layout ends where a number should be"

@@ -1,29 +1,29 @@
 module Vt.Modes exposing
-    ( fresh
-    , setPrivate
-    , visibilityReport
-    , deccolm
-    , screenMode
-    , saveMode
-    , restoreMode
-    , privateState
-    , knownPrivate
-    , setAnsi
-    , ansiKey
+    ( ansiKey
     , ansiState
-    , toAlt
     , clearAlt
-    , toMain
     , cursorStyle
-    , protect
-    , saveCursor
-    , restoreCursor
-    , reset
-    , softReset
-    , modifyOtherKeysKey
+    , deccolm
+    , fresh
+    , knownPrivate
     , modifyKeys
-    , softResetModes
+    , modifyOtherKeysKey
+    , privateState
+    , protect
+    , reset
     , resetSaved
+    , restoreCursor
+    , restoreMode
+    , saveCursor
+    , saveMode
+    , screenMode
+    , setAnsi
+    , setPrivate
+    , softReset
+    , softResetModes
+    , toAlt
+    , toMain
+    , visibilityReport
     )
 
 {-| The modes, DECSC and DECRC, and the resets (`docs/vt-core.md` §VC45). -}
@@ -31,29 +31,29 @@ module Vt.Modes exposing
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
-import Vt.Base64 as Base64
 import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
-import Vt.Keys as Keys
-import Vt.Width as Width
+import Vt.Base64 as Base64
 import Vt.Cell exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Dump exposing (..)
+import Vt.Edit exposing (..)
+import Vt.Keys as Keys
+import Vt.Pages exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Reason as Reason
+import Vt.Recut exposing (recut)
+import Vt.Resize exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
-import Vt.Screen exposing (..)
-import Vt.Pages exposing (..)
-import Vt.Resize exposing (..)
-import Vt.Recut exposing (recut)
-import Vt.Dump exposing (..)
-import Vt.Palette exposing (..)
-import Vt.Cursor exposing (..)
-import Vt.Prompt exposing (..)
-import Vt.Scroll exposing (..)
-import Vt.Sgr exposing (..)
-import Vt.Edit exposing (..)
-import Vt.Reason as Reason
+import Vt.Width as Width
 
 
 fresh : (config : Config where 1 <= config.cols && config.cols <= 1000 && 1 <= config.rows && config.rows <= 1000 && 16 <= config.pageRows && config.pageRows <= 4096) -> Term
@@ -85,7 +85,18 @@ fresh config =
     , styleCache = Builder.fromArray (Array.repeat (2 * styleCacheSize) -1)
     , clusters = noClusters
     , back = emptyBack config.pageRows config.scrollbackBytes
-    , tabs = Builder.fromArray (Array.initialize config.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0))
+    , tabs =
+        Builder.fromArray
+            (Array.initialize config.cols
+                0
+                (\i ->
+                    if modBy 8 i == 0 && i > 0 then
+                        1
+
+                    else
+                        0
+                )
+            )
     , autowrap = True
     , plain = True
     , statusLine = False
@@ -96,9 +107,9 @@ fresh config =
     , lfSlow = False
     , prompt = 0
     , otherPrompt = 0
-      -- the shell is not taken to write its prompt again after a resize
-      -- until it says it does (`redraw=1`), as libghostty-vt has it, which
-      -- does not assume Ghostty's shell integration (V17)
+    -- the shell is not taken to write its prompt again after a resize
+    -- until it says it does (`redraw=1`), as libghostty-vt has it, which
+    -- does not assume Ghostty's shell integration (V17)
     , redraw = 1
     , modes = Dict.empty
     , savedModes = Dict.empty
@@ -343,15 +354,15 @@ restoreMode p t =
 
         Nothing ->
             meant Reason.NotSet
-            let
-                state =
-                    privateState p (fresh t.config)
-            in
-            if state == 1 || state == 2 then
-                setPrivate p (state == 1) t
+                let
+                    state =
+                        privateState p (fresh t.config)
+                in
+                if state == 1 || state == 2 then
+                    setPrivate p (state == 1) t
 
-            else
-                t
+                else
+                    t
 
 
 {-| DECRQM's state of private mode `p`: 1 set, 2 reset, 4 permanently
@@ -387,12 +398,12 @@ privateState p t =
 
             Nothing ->
                 meant Reason.NotSet
-                if Array.member p [ 1007, 1035, 1036 ] then
-                    -- set until changed, as Ghostty's defaults
-                    1
+                    if Array.member p [ 1007, 1035, 1036 ] then
+                        -- set until changed, as Ghostty's defaults
+                        1
 
-                else
-                    2
+                    else
+                        2
 
 
 {-| The private modes DECRQM answers for although the core only records
@@ -597,20 +608,21 @@ restoreCursor t =
         v =
             t.screen.saved
     in
-    withPlain <| withPen v.attrs
-        { t
-            -- a saved position is on the screen it was saved on, which a
-            -- resize may since have made smaller
-            | x = clamp 0 (t.cols - 1) v.x
-            , y = clamp 0 (t.rows - 1) v.y
-            , wrapNext = v.wrapNext
-            , origin = v.origin
-            , sets = v.sets
-            , gl = v.gl
-            , single = v.single
-            , guard = v.guard
-            , pen = Bitwise.or v.guard (Bitwise.and (Bitwise.complement protectBit) t.pen)
-        }
+    withPlain <|
+        withPen v.attrs
+            { t
+                -- a saved position is on the screen it was saved on, which a
+                -- resize may since have made smaller
+                | x = clamp 0 (t.cols - 1) v.x
+                , y = clamp 0 (t.rows - 1) v.y
+                , wrapNext = v.wrapNext
+                , origin = v.origin
+                , sets = v.sets
+                , gl = v.gl
+                , single = v.single
+                , guard = v.guard
+                , pen = Bitwise.or v.guard (Bitwise.and (Bitwise.complement protectBit) t.pen)
+            }
 
 
 {-| RIS: the terminal as new, its replies kept, and the dynamic colors
@@ -714,4 +726,3 @@ resetSaved t =
             t.screen
     in
     { t | screen = { s | saved = noSaved } }
-

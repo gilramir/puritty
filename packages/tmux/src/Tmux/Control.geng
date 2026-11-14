@@ -1,12 +1,12 @@
 module Tmux.Control exposing
-    ( Reader
-    , reader
-    , isInside
-    , Event(..)
+    ( Event(..)
     , Notice(..)
+    , Reader
     , feed
-    , unescape
+    , isInside
+    , reader
     , startsControl
+    , unescape
     )
 
 {-| tmux's control mode (`tmux -CC`), read from the bytes the terminal
@@ -23,8 +23,8 @@ the first bytes of `ESC P 1000 p`) is kept for the next read.
 -}
 
 import Bytes exposing (Bytes)
-import UInt8
 import Tmux.Reason as Reason
+import UInt8
 
 
 {-| Where reading has got to. -}
@@ -227,17 +227,17 @@ line bytes block events =
 
         Nothing ->
             meant Reason.NotOpen
-            when guard bytes is
-                Just g ->
-                    if g.kind == "%begin" then
-                        { block = Just { number = g.number, flags = g.flags, lines = [] }, events = events }
+                when guard bytes is
+                    Just g ->
+                        if g.kind == "%begin" then
+                            { block = Just { number = g.number, flags = g.flags, lines = [] }, events = events }
 
-                    else
-                        -- an `%end` with no `%begin`: nothing to close
-                        { block = Nothing, events = events }
+                        else
+                            -- an `%end` with no `%begin`: nothing to close
+                            { block = Nothing, events = events }
 
-                Nothing ->
-                    meant Reason.NotKnown { block = Nothing, events = Array.pushLast (Notice (notice bytes)) events }
+                    Nothing ->
+                        meant Reason.NotKnown { block = Nothing, events = Array.pushLast (Notice (notice bytes)) events }
 
 
 {-| `%begin`, `%end` or `%error`, with their time, number and flags. -}
@@ -299,7 +299,18 @@ output at extended bytes =
             indexOf 0x20 at bytes
 
         pane =
-            id (Bytes.toStringLossy (Bytes.slice at (if space < 0 then Bytes.length bytes else space) bytes))
+            id
+                (Bytes.toStringLossy
+                    (Bytes.slice at
+                        (if space < 0 then
+                            Bytes.length bytes
+
+                         else
+                            space
+                        )
+                        bytes
+                    )
+                )
 
         dataAt =
             if space < 0 then
@@ -517,7 +528,9 @@ unescapeFrom bytes from slash pieces =
                 Array.pushLast (Bytes.slice from slash bytes) pieces
         in
         if octal then
-            unescapeFrom bytes (slash + 4) (indexOf 0x5C (slash + 4) bytes)
+            unescapeFrom bytes
+                (slash + 4)
+                (indexOf 0x5C (slash + 4) bytes)
                 (Array.pushLast (Bytes.fromUInt8s [ UInt8.fromInt (d0 * 64 + d1 * 8 + d2) ]) before)
 
         else

@@ -12,7 +12,7 @@ and VS16 need before them, from the emoji-data.txt of the same UCD.
 
 Needs harness/oracle/build.sh first.
 
-usage: gen-width.py > src/Vt/Width.geng
+usage: gen-width.py > src/Vt/Width.geng && ../scripts/fmt.sh src/Vt/Width.geng
 """
 import glob
 import os

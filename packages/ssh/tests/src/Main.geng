@@ -740,112 +740,111 @@ split size b k acc =
 order. A test for each, named by its number and its line. -}
 knownHostsSuite : String -> U.Suite
 knownHostsSuite text =
+    let
+        caseLines =
+            String.lines text
+
+        fieldsOf l =
+            String.words l
+                |> Array.dropFirst 1
+                |> Array.foldl
+                    (\w d ->
+                        when String.split "=" w is
+                            [ k, v ] ->
+                                Dict.set k v d
+
+                            _ ->
+                                d
+                    )
+                    Dict.empty
+
+        get f k =
+            Dict.get k f |> Maybe.withDefault ""
+
+        parsed =
+            Array.findFirst (\l -> String.startsWith "file " l) caseLines
+                |> Maybe.map (\found -> KnownHosts.parse (Bytes.toStringLossy (fromHex (String.dropFirst 5 found.value))))
+                |> Maybe.withDefault { entries = [], problems = [] }
+
+        entries =
+            parsed.entries
+
+        listed s =
+            if s == "-" then
+                ""
+
+            else
+                s
+
+        verdictText v =
+            when v is
+                KnownHosts.Known ->
+                    "Known"
+
+                KnownHosts.Unknown u ->
+                    "Unknown:"
+                        ++ (if Array.isEmpty u.otherTypes then
+                                "-"
+
+                            else
+                                String.join "," u.otherTypes
+                           )
+
+                KnownHosts.Changed c ->
+                    "Changed:" ++ String.join "," (Array.map String.fromInt c.lineNumbers)
+
+                KnownHosts.KeyRevoked ->
+                    "KeyRevoked"
+
+        run l =
+            let
+                f =
+                    fieldsOf l
+
+                name =
+                    String.toLower (get f "name")
+            in
+            if String.startsWith "query " l then
                 let
-                    caseLines =
-                        String.lines text
-
-                    fieldsOf l =
-                        String.words l
-                            |> Array.dropFirst 1
-                            |> Array.foldl
-                                (\w d ->
-                                    when String.split "=" w is
-                                        [ k, v ] ->
-                                            Dict.set k v d
-
-                                        _ ->
-                                            d
-                                )
-                                Dict.empty
-
-                    get f k =
-                        Dict.get k f |> Maybe.withDefault ""
-
-                    parsed =
-                        Array.findFirst (\l -> String.startsWith "file " l) caseLines
-                            |> Maybe.map (\found -> KnownHosts.parse (Bytes.toStringLossy (fromHex (String.dropFirst 5 found.value))))
-                            |> Maybe.withDefault { entries = [], problems = [] }
-
-                    entries =
-                        parsed.entries
-
-                    listed s =
-                        if s == "-" then
-                            ""
-
-                        else
-                            s
-
-                    verdictText v =
-                        when v is
-                            KnownHosts.Known ->
-                                "Known"
-
-                            KnownHosts.Unknown u ->
-                                "Unknown:"
-                                    ++ (if Array.isEmpty u.otherTypes then
-                                            "-"
-
-                                        else
-                                            String.join "," u.otherTypes
-                                       )
-
-                            KnownHosts.Changed c ->
-                                "Changed:" ++ String.join "," (Array.map String.fromInt c.lineNumbers)
-
-                            KnownHosts.KeyRevoked ->
-                                "KeyRevoked"
-
-                    run l =
-                        let
-                            f =
-                                fieldsOf l
-
-                            name =
-                                String.toLower (get f "name")
-                        in
-                        if String.startsWith "query " l then
-                            let
-                                got =
-                                    KnownHosts.matching name entries |> Array.map (\e -> String.fromInt e.lineNumber) |> String.join ","
-                            in
-                            if got == listed (get f "lines") then
-                                Nothing
-
-                            else
-                                Just (l ++ " -> " ++ got)
-
-                        else if String.startsWith "check " l then
-                            let
-                                got =
-                                    verdictText (KnownHosts.check name (fromHex (get f "key")) entries)
-                            in
-                            if got == get f "verdict" then
-                                Nothing
-
-                            else
-                                Just (String.takeFirst 60 l ++ "... " ++ get f "verdict" ++ " -> " ++ got)
-
-                        else if String.startsWith "order " l then
-                            let
-                                got =
-                                    String.join "," (KnownHosts.orderHostKeys (KnownHosts.keyTypesFor name entries) Transport.defaultConfig.hostKeys)
-                            in
-                            if got == get f "algorithms" then
-                                Nothing
-
-                            else
-                                Just (l ++ " -> " ++ got)
-
-                        else
-                            Nothing
-
-                    ran =
-                        Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l) caseLines
-
+                    got =
+                        KnownHosts.matching name entries |> Array.map (\e -> String.fromInt e.lineNumber) |> String.join ","
                 in
-                suiteOf "KnownHosts"
-                    (Array.indexedMap (\n l -> caseTest (String.fromInt (n + 1) ++ " " ++ String.takeFirst 48 l) (\_ -> run l)) ran)
+                if got == listed (get f "lines") then
+                    Nothing
+
+                else
+                    Just (l ++ " -> " ++ got)
+
+            else if String.startsWith "check " l then
+                let
+                    got =
+                        verdictText (KnownHosts.check name (fromHex (get f "key")) entries)
+                in
+                if got == get f "verdict" then
+                    Nothing
+
+                else
+                    Just (String.takeFirst 60 l ++ "... " ++ get f "verdict" ++ " -> " ++ got)
+
+            else if String.startsWith "order " l then
+                let
+                    got =
+                        String.join "," (KnownHosts.orderHostKeys (KnownHosts.keyTypesFor name entries) Transport.defaultConfig.hostKeys)
+                in
+                if got == get f "algorithms" then
+                    Nothing
+
+                else
+                    Just (l ++ " -> " ++ got)
+
+            else
+                Nothing
+
+        ran =
+            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l) caseLines
+    in
+    suiteOf "KnownHosts"
+        (Array.indexedMap (\n l -> caseTest (String.fromInt (n + 1) ++ " " ++ String.takeFirst 48 l) (\_ -> run l)) ran)
 
 
 -- SSH_CONFIG
@@ -856,170 +855,180 @@ lines held to what `ssh -G` printed, keyword by keyword in order. A test for
 each, named by the case. -}
 configSuite : String -> U.Suite
 configSuite text =
-                let
-                    lines =
-                        String.lines text
+    let
+        lines =
+            String.lines text
 
-                    header word =
-                        Array.findFirst (\l -> String.startsWith (word ++ " ") l) lines
-                            |> Maybe.map (\found -> String.dropFirst (String.count word + 1) found.value)
-                            |> Maybe.withDefault ""
+        header word =
+            Array.findFirst (\l -> String.startsWith (word ++ " ") l) lines
+                |> Maybe.map (\found -> String.dropFirst (String.count word + 1) found.value)
+                |> Maybe.withDefault ""
 
-                    context host =
-                        { host = host, localUser = header "localuser", home = header "home" }
+        context host =
+            { host = host, localUser = header "localuser", home = header "home" }
 
-                    -- the cases, each its case line, files and want line
-                    configCases =
-                        Array.foldl
-                            (\l acc ->
-                                if String.startsWith "case " l then
-                                    Array.pushLast { head = l, files = [], want = "", bad = "" } acc
+        -- the cases, each its case line, files and want line
+        configCases =
+            Array.foldl
+                (\l acc ->
+                    if String.startsWith "case " l then
+                        Array.pushLast { head = l, files = [], want = "", bad = "" } acc
 
-                                else
-                                    let
-                                        n =
-                                            Array.length acc - 1
-                                    in
-                                    when Array.get n acc is
-                                        Just current ->
-                                            if String.startsWith "file " l then
-                                                Array.set n { current | files = Array.pushLast l current.files } acc
-
-                                            else if String.startsWith "bad " l then
-                                                Array.set n { current | bad = String.dropFirst 4 l } acc
-
-                                            else if String.startsWith "want " l then
-                                                Array.set n { current | want = Bytes.toStringLossy (fromHex (String.dropFirst 5 l)) } acc
-
-                                            else
-                                                acc
-
-                                        Nothing ->
-                                            acc
-                            )
-                            []
-                            lines
-
-                    run c =
+                    else
                         let
-                            words =
-                                String.words c.head
+                            n =
+                                Array.length acc - 1
+                        in
+                        when Array.get n acc is
+                            Just current ->
+                                if String.startsWith "file " l then
+                                    Array.set n { current | files = Array.pushLast l current.files } acc
 
-                            name =
-                                Array.get 1 words |> Maybe.withDefault "?"
+                                else if String.startsWith "bad " l then
+                                    Array.set n { current | bad = String.dropFirst 4 l } acc
 
-                            host =
-                                Array.get 2 words |> Maybe.map (String.dropFirst 5) |> Maybe.withDefault ""
-
-                            files =
-                                Array.map
-                                    (\f ->
-                                        let
-                                            parts =
-                                                String.words f
-
-                                            path =
-                                                Array.get 1 parts |> Maybe.withDefault ""
-
-                                            body =
-                                                Array.get 2 parts
-                                                    |> Maybe.map
-                                                        (\h ->
-                                                            if h == "-" then
-                                                                ""
-
-                                                            else
-                                                                Bytes.toStringLossy (fromHex h)
-                                                        )
-                                                    |> Maybe.withDefault ""
-                                        in
-                                        { path = path, parsed = Config.parse path body }
-                                    )
-                                    c.files
-
-                            source pattern =
-                                Array.keepIf (\f -> pathGlob pattern f.path) files
-                                    |> Array.map (\f -> { path = f.path, directives = f.parsed.directives })
-
-                            main_ =
-                                Array.first files |> Maybe.map (\f -> f.parsed.directives) |> Maybe.withDefault []
-
-                            resolved =
-                                Config.resolve (context host) source main_ []
-
-                            got =
-                                Config.toLines resolved
-
-                            -- the lines the problems name: each bad line's, and no other
-                            problems =
-                                Array.mapAndFlatten (\f -> f.parsed.problems) files ++ resolved.problems
-
-                            named =
-                                Array.map
-                                    (\p ->
-                                        String.split ":" p
-                                            |> Array.get 1
-                                            |> Maybe.withDefault ""
-                                    )
-                                    problems
-
-                            wrongProblems =
-                                if (c.bad == "" && Array.isEmpty problems) || (c.bad /= "" && Array.length problems == 1 && named == [ c.bad ]) then
-                                    []
+                                else if String.startsWith "want " l then
+                                    Array.set n { current | want = Bytes.toStringLossy (fromHex (String.dropFirst 5 l)) } acc
 
                                 else
-                                    [ "problems [" ++ String.join " | " problems ++ "] where line " ++ (if c.bad == "" then "none" else c.bad) ++ " was wanted" ]
+                                    acc
 
-                            grouped ls =
-                                Array.foldl
-                                    (\l d ->
-                                        let
-                                            key =
-                                                String.words l |> Array.first |> Maybe.withDefault ""
-                                        in
-                                        Dict.update key (\old -> Just (Array.pushLast l (Maybe.withDefault [] old))) d
-                                    )
-                                    Dict.empty
-                                    ls
+                            Nothing ->
+                                acc
+                )
+                []
+                lines
 
-                            want =
-                                grouped (String.lines c.want)
+        run c =
+            let
+                words =
+                    String.words c.head
 
-                            mine =
-                                grouped got
+                name =
+                    Array.get 1 words |> Maybe.withDefault "?"
 
-                            keys =
-                                Dict.keys want ++ Array.keepIf (\k -> not (Dict.member k want)) (Dict.keys mine)
+                host =
+                    Array.get 2 words |> Maybe.map (String.dropFirst 5) |> Maybe.withDefault ""
 
-                            differ =
-                                Array.keepIf (\k -> Dict.get k want /= Dict.get k mine) keys
-                        in
-                        if Array.isEmpty differ && Array.isEmpty wrongProblems then
-                            Nothing
+                files =
+                    Array.map
+                        (\f ->
+                            let
+                                parts =
+                                    String.words f
 
-                        else
-                            Just
-                                (name
-                                    ++ ": "
-                                    ++ String.join "; "
-                                        (wrongProblems
-                                            ++ Array.map
-                                            (\k ->
-                                                k
-                                                    ++ " wants ["
-                                                    ++ String.join " | " (Dict.get k want |> Maybe.withDefault [])
-                                                    ++ "] got ["
-                                                    ++ String.join " | " (Dict.get k mine |> Maybe.withDefault [])
-                                                    ++ "]"
+                                path =
+                                    Array.get 1 parts |> Maybe.withDefault ""
+
+                                body =
+                                    Array.get 2 parts
+                                        |> Maybe.map
+                                            (\h ->
+                                                if h == "-" then
+                                                    ""
+
+                                                else
+                                                    Bytes.toStringLossy (fromHex h)
                                             )
-                                            differ
-                                        )
-                                )
+                                        |> Maybe.withDefault ""
+                            in
+                            { path = path, parsed = Config.parse path body }
+                        )
+                        c.files
 
-                    caseName c =
-                        String.words c.head |> Array.get 1 |> Maybe.withDefault "?"
-                in
-                suiteOf "Config" (Array.map (\c -> caseTest (caseName c) (\_ -> run c)) configCases)
+                source pattern =
+                    Array.keepIf (\f -> pathGlob pattern f.path) files
+                        |> Array.map (\f -> { path = f.path, directives = f.parsed.directives })
+
+                main_ =
+                    Array.first files |> Maybe.map (\f -> f.parsed.directives) |> Maybe.withDefault []
+
+                resolved =
+                    Config.resolve (context host) source main_ []
+
+                got =
+                    Config.toLines resolved
+
+                -- the lines the problems name: each bad line's, and no other
+                problems =
+                    Array.mapAndFlatten (\f -> f.parsed.problems) files ++ resolved.problems
+
+                named =
+                    Array.map
+                        (\p ->
+                            String.split ":" p
+                                |> Array.get 1
+                                |> Maybe.withDefault ""
+                        )
+                        problems
+
+                wrongProblems =
+                    if (c.bad == "" && Array.isEmpty problems) || (c.bad /= "" && Array.length problems == 1 && named == [ c.bad ]) then
+                        []
+
+                    else
+                        [ "problems ["
+                            ++ String.join " | " problems
+                            ++ "] where line "
+                            ++ (if c.bad == "" then
+                                    "none"
+
+                                else
+                                    c.bad
+                               )
+                            ++ " was wanted"
+                        ]
+
+                grouped ls =
+                    Array.foldl
+                        (\l d ->
+                            let
+                                key =
+                                    String.words l |> Array.first |> Maybe.withDefault ""
+                            in
+                            Dict.update key (\old -> Just (Array.pushLast l (Maybe.withDefault [] old))) d
+                        )
+                        Dict.empty
+                        ls
+
+                want =
+                    grouped (String.lines c.want)
+
+                mine =
+                    grouped got
+
+                keys =
+                    Dict.keys want ++ Array.keepIf (\k -> not (Dict.member k want)) (Dict.keys mine)
+
+                differ =
+                    Array.keepIf (\k -> Dict.get k want /= Dict.get k mine) keys
+            in
+            if Array.isEmpty differ && Array.isEmpty wrongProblems then
+                Nothing
+
+            else
+                Just
+                    (name
+                        ++ ": "
+                        ++ String.join "; "
+                            (wrongProblems
+                                ++ Array.map
+                                    (\k ->
+                                        k
+                                            ++ " wants ["
+                                            ++ String.join " | " (Dict.get k want |> Maybe.withDefault [])
+                                            ++ "] got ["
+                                            ++ String.join " | " (Dict.get k mine |> Maybe.withDefault [])
+                                            ++ "]"
+                                    )
+                                    differ
+                            )
+                    )
+
+        caseName c =
+            String.words c.head |> Array.get 1 |> Maybe.withDefault "?"
+    in
+    suiteOf "Config" (Array.map (\c -> caseTest (caseName c) (\_ -> run c)) configCases)
 
 
 {-| A path against an `Include` pattern: `*` and `?` in its last part. -}

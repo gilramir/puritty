@@ -12,7 +12,7 @@ Inputs, in WORK (default ../../.harness-work/euckr):
   ko.euckr      Korean ls-like lines: words of KS X 1001 syllables, a few
                 Hanja and symbols, SGR colors; ko.utf8 the same in UTF-8
 """
-import random, sys, pathlib
+import random, sys, pathlib, subprocess
 
 here = pathlib.Path(__file__).parent
 work = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else here / "../../.harness-work/euckr"
@@ -30,6 +30,10 @@ with open(here / "src/EucKrIndex.geng", "w") as f:
     f.write("index : Array Int\nindex =\n    [ ")
     f.write("\n    , ".join(", ".join(str(v) for v in table[i:i + 19]) for i in range(0, len(table), 19)))
     f.write("\n    ]\n")
+
+# formatted as the rest of puritty (scripts/fmt.sh), so that a table made
+# again is the same text
+subprocess.run([str(here / "../../scripts/fmt.sh"), str(here / "src/EucKrIndex.geng")], check=True, stdout=subprocess.DEVNULL)
 
 git = (here / "../../.harness-work/perf/inputs/gitlog.txt").read_bytes().decode("utf-8", "replace")
 cp = git.encode("cp949", "replace")

@@ -7,6 +7,7 @@ both forms; the commands.
 -}
 
 import Bytes exposing (Bytes)
+import CustomizeRaw36
 import Dict
 import Expect exposing (Expectation)
 import Fixtures
@@ -15,12 +16,11 @@ import Test.Runner.UnitNode as U
 import Tmux.Bindings as Bindings
 import Tmux.Borders as Borders
 import Tmux.Command as Command
+import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Customize as Customize
-import CustomizeRaw36
+import Tmux.Layout as Layout
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
-import Tmux.Control as Control exposing (Event(..), Notice(..))
-import Tmux.Layout as Layout
 import UInt8
 
 
@@ -539,10 +539,27 @@ asked line =
         Just a ->
             when a.ask is
                 Confirm c ->
-                    "confirm [" ++ c.prompt ++ "] run [" ++ c.run ++ "] key " ++ c.key ++ (if c.enterYes then " enter" else "") ++ " after [" ++ a.after ++ "]"
+                    "confirm ["
+                        ++ c.prompt
+                        ++ "] run ["
+                        ++ c.run
+                        ++ "] key "
+                        ++ c.key
+                        ++ (if c.enterYes then
+                                " enter"
+
+                            else
+                                ""
+                           )
+                        ++ " after ["
+                        ++ a.after
+                        ++ "]"
 
                 Prompt p ->
-                    "prompt " ++ String.join "|" p.prompts ++ " inputs " ++ String.join "|" p.inputs
+                    "prompt "
+                        ++ String.join "|" p.prompts
+                        ++ " inputs "
+                        ++ String.join "|" p.inputs
                         ++ (when p.entry is
                                 Text ->
                                     ""
@@ -556,7 +573,9 @@ asked line =
                                 KeyName ->
                                     " key"
                            )
-                        ++ " after [" ++ a.after ++ "]"
+                        ++ " after ["
+                        ++ a.after
+                        ++ "]"
 
         Nothing ->
             "none"
@@ -582,9 +601,29 @@ menu : String -> String
 menu line =
     when Syntax.menuOf line is
         Just m ->
-            "title [" ++ m.menu.title ++ "] x " ++ m.menu.x ++ " y " ++ m.menu.y ++ " t [" ++ m.menu.target ++ "] items "
-                ++ String.join " " (Array.map (\i -> if i.name == "" then "[--]" else "[" ++ i.name ++ "|" ++ i.key ++ "|" ++ i.command ++ "]") m.menu.items)
-                ++ " after [" ++ m.after ++ "]"
+            "title ["
+                ++ m.menu.title
+                ++ "] x "
+                ++ m.menu.x
+                ++ " y "
+                ++ m.menu.y
+                ++ " t ["
+                ++ m.menu.target
+                ++ "] items "
+                ++ String.join " "
+                    (Array.map
+                        (\i ->
+                            if i.name == "" then
+                                "[--]"
+
+                            else
+                                "[" ++ i.name ++ "|" ++ i.key ++ "|" ++ i.command ++ "]"
+                        )
+                        m.menu.items
+                    )
+                ++ " after ["
+                ++ m.after
+                ++ "]"
 
         Nothing ->
             "none"
@@ -594,7 +633,31 @@ tree : String -> String
 tree line =
     when Syntax.treeOf line is
         Just t ->
-            (if t.start == 0 then "sessions " else if t.start == 1 then "windows " else "panes ") ++ (if t.zoom then "zoom " else "- ") ++ t.template ++ " after [" ++ t.after ++ "]" ++ (if t.filter == "" then "" else " filter [" ++ t.filter ++ "]")
+            (if t.start == 0 then
+                "sessions "
+
+             else if t.start == 1 then
+                "windows "
+
+             else
+                "panes "
+            )
+                ++ (if t.zoom then
+                        "zoom "
+
+                    else
+                        "- "
+                   )
+                ++ t.template
+                ++ " after ["
+                ++ t.after
+                ++ "]"
+                ++ (if t.filter == "" then
+                        ""
+
+                    else
+                        " filter [" ++ t.filter ++ "]"
+                   )
 
         Nothing ->
             "none"
@@ -604,7 +667,18 @@ panes : String -> String
 panes line =
     when Syntax.panesOf line is
         Just d ->
-            "d " ++ Maybe.withDefault "-" (Maybe.map String.fromInt d.duration) ++ (if d.keys then " keys " else " nokeys ") ++ d.template ++ " after [" ++ d.after ++ "]"
+            "d "
+                ++ Maybe.withDefault "-" (Maybe.map String.fromInt d.duration)
+                ++ (if d.keys then
+                        " keys "
+
+                    else
+                        " nokeys "
+                   )
+                ++ d.template
+                ++ " after ["
+                ++ d.after
+                ++ "]"
 
         Nothing ->
             "none"
@@ -711,7 +785,9 @@ syntax =
                         , "panes zoom switch-client -t '%%' after [] filter [#{||:#{C:vim},#{||:#{m:*vim*,#{window_name}},#{m:*vim*,#{pane_title}}}}]"
                         , "panes - switch-client -t '%%' after [] filter [#{m/i:*Log*,#{window_name}}]"
                         ]
-                        [ tree "choose-tree -Zs", tree "choose-tree -Zw", tree "choose-window \"kill-window -t '%%'\""
+                        [ tree "choose-tree -Zs"
+                        , tree "choose-tree -Zw"
+                        , tree "choose-window \"kill-window -t '%%'\""
                         , tree "choose-tree -f '#{==:#{session_name},x}'"
                         , tree "find-window -Z -- 'vim'"
                         , tree "find-window -Ni Log"
@@ -722,7 +798,28 @@ syntax =
                 \_ ->
                     Expect.equal
                         [ Just "50% 50% C C True [htop]", Just "80 20% 3 C False []" ]
-                        (Array.map (\l -> Syntax.popupOf l |> Maybe.map (\p -> p.width ++ " " ++ p.height ++ " " ++ p.x ++ " " ++ p.y ++ (if p.close then " True [" else " False [") ++ p.command ++ "]"))
+                        (Array.map
+                            (\l ->
+                                Syntax.popupOf l
+                                    |> Maybe.map
+                                        (\p ->
+                                            p.width
+                                                ++ " "
+                                                ++ p.height
+                                                ++ " "
+                                                ++ p.x
+                                                ++ " "
+                                                ++ p.y
+                                                ++ (if p.close then
+                                                        " True ["
+
+                                                    else
+                                                        " False ["
+                                                   )
+                                                ++ p.command
+                                                ++ "]"
+                                        )
+                            )
                             [ "display-popup -E htop", "popup -w 80 -h 20% -x 3" ]
                         )
           }
@@ -731,7 +828,24 @@ syntax =
                 \_ ->
                     Expect.equal
                         [ Just "buffer True paste-buffer -p -b '%%' []", Just "client False detach-client -t '%%' [x]", Just "buffer False delete-buffer -b '%%' []", Nothing ]
-                        (Array.map (\l -> Syntax.listOf l |> Maybe.map (\x -> x.kind ++ (if x.zoom then " True " else " False ") ++ x.template ++ " [" ++ x.filter ++ "]"))
+                        (Array.map
+                            (\l ->
+                                Syntax.listOf l
+                                    |> Maybe.map
+                                        (\x ->
+                                            x.kind
+                                                ++ (if x.zoom then
+                                                        " True "
+
+                                                    else
+                                                        " False "
+                                                   )
+                                                ++ x.template
+                                                ++ " ["
+                                                ++ x.filter
+                                                ++ "]"
+                                        )
+                            )
                             [ "choose-buffer -Z", "choose-client -f x", "choose-buffer \"delete-buffer -b '%%'\"", "choose-tree" ]
                         )
           }
@@ -993,7 +1107,27 @@ customize =
                         ]
           }
         , { name = "the environment: removed, hidden, by name"
-          , test = \_ -> Expect.equal [ "-DISPLAY", "HOME", "SECRET h" ] (data.globalEnv |> Array.map (\v -> (if v.value == Nothing then "-" else "") ++ v.name ++ (if v.hidden then " h" else "")))
+          , test =
+                \_ ->
+                    Expect.equal [ "-DISPLAY", "HOME", "SECRET h" ]
+                        (data.globalEnv
+                            |> Array.map
+                                (\v ->
+                                    (if v.value == Nothing then
+                                        "-"
+
+                                     else
+                                        ""
+                                    )
+                                        ++ v.name
+                                        ++ (if v.hidden then
+                                                " h"
+
+                                            else
+                                                ""
+                                           )
+                                )
+                        )
           }
         , { name = "3.8's sections, folded at first"
           , test =
@@ -1010,7 +1144,21 @@ customize =
                 \_ ->
                     Expect.equal
                         [ "@mine: a b", "base-index: (session main) 1", "mouse: off", "status: on" ]
-                        (all view t38 |> Array.keepIf (\e -> e.parent == "S:s") |> Array.map (\e -> e.name ++ ": " ++ (if e.scope == "" then "" else "(" ++ e.scope ++ ") ") ++ Maybe.withDefault "" e.text))
+                        (all view t38
+                            |> Array.keepIf (\e -> e.parent == "S:s")
+                            |> Array.map
+                                (\e ->
+                                    e.name
+                                        ++ ": "
+                                        ++ (if e.scope == "" then
+                                                ""
+
+                                            else
+                                                "(" ++ e.scope ++ ") "
+                                           )
+                                        ++ Maybe.withDefault "" e.text
+                                )
+                        )
           }
         , { name = "changed only: what is as tmux's default left out, empty sections too"
           , test =

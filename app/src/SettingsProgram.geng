@@ -1,4 +1,4 @@
-module SettingsProgram exposing (run, Outcome(..), Opener)
+module SettingsProgram exposing (Opener, Outcome(..), run)
 
 {-| `puritty settings` (`docs/settings.md` ST2, ST7): the settings window,
 a process of its own (V57). `SettingsWindow` is what it shows and does;
@@ -15,35 +15,35 @@ an edit by hand shows in the window.
 
 import Bytes exposing (Bytes)
 import Config exposing (Config)
-import Hosts
-import Os.Process as Process
-import SshConfig
 import Dict exposing (Dict)
+import Hosts
+import Int64
 import Os.Directory as Directory
 import Os.Error
 import Os.File as File
 import Os.Path as Path
+import Os.Process as Process
 import Platform
+import Reason
 import Schema
 import SettingsFile exposing (Store)
-import SettingsSource exposing (Given, Read(..))
 import SettingsGui
+import SettingsSource exposing (Given, Read(..))
 import SettingsWindow
-import Text
-import Words
 import Source exposing (Source)
-import Int64
+import SshConfig
 import Task exposing (Task)
+import Text
 import Time
 import Toml
 import Window
-import Reason
+import Words
 
 
 type alias State =
     { window : SettingsWindow.Model
-      -- a cell's size in pixels, the window's language, and the boxes the
-      -- last frame's clicks land in (docs/settings-gui.md SG3)
+    -- a cell's size in pixels, the window's language, and the boxes the
+    -- last frame's clicks land in (docs/settings-gui.md SG3)
     , cell : { width : Int, height : Int }
     , lang : Words.Lang
     , hits : Array SettingsGui.Hit
@@ -53,15 +53,15 @@ type alias State =
     , events : Maybe (Source Directory.Change)
     , closed : Bool
     , lost : Bool
-      -- with PURITTY_SHOT set, the file each frame's picture is written to,
-      -- for the settings gate (harness/settings.py)
+    -- with PURITTY_SHOT set, the file each frame's picture is written to,
+    -- for the settings gate (harness/settings.py)
     , shotPath : Maybe String
-      -- how a session is started in a new window, and, for the host list,
-      -- the host it becomes (V65)
+    -- how a session is started in a new window, and, for the host list,
+    -- the host it becomes (V65)
     , opener : Maybe Opener
     , launcher : Bool
     , outcome : Maybe Config.Host
-      -- the last left press, to count a double click (ST27)
+    -- the last left press, to count a double click (ST27)
     , lastPress : { at : Int, row : Int, col : Int, count : Int }
     }
 
@@ -116,7 +116,12 @@ run r =
                 -- one settings window: a second raises the first and ends
                 -- (ST8); each host list is a session to be, so there may be
                 -- several
-                (if r.launcher then Task.succeed False else Window.raise said.title)
+                (if r.launcher then
+                    Task.succeed False
+
+                 else
+                    Window.raise said.title
+                )
                     |> Task.andThen
                         (\already ->
                             if already then
@@ -137,48 +142,53 @@ openWindow r given locale =
         said =
             Words.words lang
     in
-                SettingsSource.readSettings given
+    SettingsSource.readSettings given
+        |> Task.andThen
+            (\read ->
+                Window.open
+                    { cols = size.cols
+                    , rows = size.rows
+                    , font = Platform.font
+                    , points = Config.defaults.points
+                    , lang = locale.language
+                    , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
+                    , title =
+                        if r.launcher then
+                            said.hostsTitle
+
+                        else
+                            said.title
+                    }
                     |> Task.andThen
-                        (\read ->
-                            Window.open
-                                { cols = size.cols
-                                , rows = size.rows
-                                , font = Platform.font
-                                , points = Config.defaults.points
-                                , lang = locale.language
-                                , glyphCap = Config.defaults.glyphCacheMb * 1024 * 1024
-                                , title = if r.launcher then said.hostsTitle else said.title
-                                }
-                                |> Task.andThen
-                                    (\opened ->
-                                        when opened is
-                                            Err why ->
-                                                meant Reason.Refused Task.fail ("cannot open the window: " ++ why)
+                        (\opened ->
+                            when opened is
+                                Err why ->
+                                    meant Reason.Refused Task.fail ("cannot open the window: " ++ why)
 
-                                            Ok cell ->
-                                                Task.map3 (\events fonts aliases -> { events = events, fonts = fonts, aliases = aliases })
-                                                    (SettingsSource.watchSettings given)
-                                                    Window.fonts
-                                                    (sshAliases r)
-                                                    -- an arrow over a window of choices, not the
-                                                    -- terminal's I-beam (Gilbert, 2026-11-10)
-                                                    |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
-                                                    |> Task.andThen (\w -> Text.interfaceFont Platform.interfaceFont |> Task.map (\_ -> w))
-                                                    |> Task.andThen (\w -> loop (first r given read cell w (Dict.get "PURITTY_SHOT" r.vars) lang))
-                                                    -- and the I-beam back for a session that takes this
-                                                    -- window, whose loop begins with one
-                                                    |> Task.andThen (\s -> Window.setPointer Window.TextPointer |> Task.map (\_ -> s))
-                                                    |> Task.map
-                                                        (\s ->
-                                                            when s.outcome is
-                                                                Just h ->
-                                                                    Session h
+                                Ok cell ->
+                                    Task.map3 (\events fonts aliases -> { events = events, fonts = fonts, aliases = aliases })
+                                        (SettingsSource.watchSettings given)
+                                        Window.fonts
+                                        (sshAliases r)
+                                        -- an arrow over a window of choices, not the
+                                        -- terminal's I-beam (Gilbert, 2026-11-10)
+                                        |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
+                                        |> Task.andThen (\w -> Text.interfaceFont Platform.interfaceFont |> Task.map (\_ -> w))
+                                        |> Task.andThen (\w -> loop (first r given read cell w (Dict.get "PURITTY_SHOT" r.vars) lang))
+                                        -- and the I-beam back for a session that takes this
+                                        -- window, whose loop begins with one
+                                        |> Task.andThen (\s -> Window.setPointer Window.TextPointer |> Task.map (\_ -> s))
+                                        |> Task.map
+                                            (\s ->
+                                                when s.outcome is
+                                                    Just h ->
+                                                        Session h
 
-                                                                Nothing ->
-                                                                    meant Reason.NotSet Closed
-                                                        )
-                                    )
+                                                    Nothing ->
+                                                        meant Reason.NotSet Closed
+                                            )
                         )
+            )
 
 
 {-| The hosts `~/.ssh/config` names, or none when it cannot be read. -}
@@ -374,7 +384,11 @@ one ev s =
                                     s.lastPress
 
                                 count =
-                                    if ms - last.at <= 400 && last.row == cell.row && last.col == cell.col then last.count + 1 else 1
+                                    if ms - last.at <= 400 && last.row == cell.row && last.col == cell.col then
+                                        last.count + 1
+
+                                    else
+                                        1
 
                                 -- the topmost box under the pointer: the last
                                 -- drawn comes first
@@ -395,7 +409,16 @@ one ev s =
 
             else if p.action == 0 && (p.button == 4 || p.button == 5) then
                 -- the wheel: a step up or down
-                input (SettingsWindow.Scroll (if p.button == 4 then -1 else 1)) s
+                input
+                    (SettingsWindow.Scroll
+                        (if p.button == 4 then
+                            -1
+
+                         else
+                            1
+                        )
+                    )
+                    s
 
             else
                 Task.succeed s

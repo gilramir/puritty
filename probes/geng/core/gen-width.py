@@ -4,7 +4,7 @@ Width W and F) and those that take none (Mn, Me, Cf, and the Hangul medial and
 final jamo), from Python's own unicodedata, for the probe's cost only. The real
 package generates from UCD 17.0.0, the version core pins; Python's may be older.
 
-usage: gen-width.py > src/Width.geng
+usage: gen-width.py > src/Width.geng && ../../../scripts/fmt.sh src/Width.geng
 """
 import sys
 import unicodedata as u

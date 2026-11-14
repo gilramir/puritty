@@ -1,13 +1,13 @@
 module Vt.Dispatch exposing
-    ( dispatch
-    , dispatchRest
-    , dispatchRare
-    , count0
-    , zeroIsNothing
-    , takesOne
+    ( count0
     , cursorLeft
-    , reverseLeft
+    , dispatch
+    , dispatchRare
+    , dispatchRest
     , rectChecksum
+    , reverseLeft
+    , takesOne
+    , zeroIsNothing
     )
 
 {-| A CSI sequence's dispatch (`docs/vt-core.md` §VC45). -}
@@ -15,33 +15,33 @@ module Vt.Dispatch exposing
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
-import Vt.Base64 as Base64
 import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
-import Vt.Keys as Keys
-import Vt.Width as Width
+import Vt.Base64 as Base64
 import Vt.Cell exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Dcs exposing (..)
+import Vt.Dump exposing (..)
+import Vt.Edit exposing (..)
+import Vt.Keys as Keys
+import Vt.Modes exposing (..)
+import Vt.Osc exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Print exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Reason as Reason
+import Vt.Recut exposing (recut)
+import Vt.Resize exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Scroll exposing (..)
+import Vt.Sgr exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
-import Vt.Screen exposing (..)
-import Vt.Pages exposing (..)
-import Vt.Resize exposing (..)
-import Vt.Recut exposing (recut)
-import Vt.Dump exposing (..)
-import Vt.Palette exposing (..)
-import Vt.Cursor exposing (..)
-import Vt.Prompt exposing (..)
-import Vt.Scroll exposing (..)
-import Vt.Sgr exposing (..)
-import Vt.Edit exposing (..)
-import Vt.Modes exposing (..)
-import Vt.Print exposing (..)
-import Vt.Dcs exposing (..)
-import Vt.Osc exposing (..)
-import Vt.Reason as Reason
+import Vt.Width as Width
 
 
 {-| A CSI sequence's action. SGR and CUP, most of what a program sends, are
@@ -87,7 +87,20 @@ dispatchRest final priv inter params t =
 
         else if final == 0x57 && params == [ 5 ] then
             -- DECST8C: a stop every eight columns, as Ghostty's tab_reset
-            { t | tabs = Builder.fromArray (Array.initialize t.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
+            { t
+                | tabs =
+                    Builder.fromArray
+                        (Array.initialize t.cols
+                            0
+                            (\i ->
+                                if modBy 8 i == 0 && i > 0 then
+                                    1
+
+                                else
+                                    0
+                            )
+                        )
+            }
 
         else if final == 0x6C then
             Array.foldl (\p acc -> setPrivate p False acc) t params
@@ -487,8 +500,6 @@ takesOne final =
         || final == 0x6B
 
 
-
-
 {-| BS and CUB: `n` columns left. With autowrap and reverse wraparound
 (?45), a move past the first column goes on from the last column of the row
 above if that row wrapped into this one, and stops at the region's top; with
@@ -513,7 +524,18 @@ cursorLeft n t =
     in
     if mode == 0 then
         -- the left margin stops it, unless it starts left of the margin
-        { t | x = max (if t.x < t.left then 0 else t.left) (t.x - n), wrapNext = False }
+        { t
+            | x =
+                max
+                    (if t.x < t.left then
+                        0
+
+                     else
+                        t.left
+                    )
+                    (t.x - n)
+            , wrapNext = False
+        }
 
     else
         let

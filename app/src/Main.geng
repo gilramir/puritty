@@ -41,51 +41,51 @@ import Argparse.Parser
 import Argparse.PrettyPrinter as PP
 import Argparse.Program
 import Array.Builder as Builder exposing (Builder)
-import Bitwise
 import Backend exposing (Backend, Incoming(..))
+import Bitwise
 import Bytes exposing (Bytes)
 import Chord
 import Config exposing (Config)
-import Hosts
-import Schema
-import SettingsProgram
-import SettingsSource exposing (Given, Read(..), Settings, reloadDelayMs, readSettings, settingsFile, watchSettings, overridden)
-import Outbox exposing (Outbox)
 import Console
 import Diag
 import Dialog
-import Restore
-import RestoreFile exposing (TabColor(..))
-import Search
-import TabOrder
 import Dict exposing (Dict)
+import Hosts
 import Int64
 import Keys
-import Os.Env
-import Platform
-import SshAgents
 import Os.Directory as Directory
+import Os.Env
 import Os.Error exposing (Error)
 import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
+import Outbox exposing (Outbox)
+import Platform
 import Process as Sleep
-import Ssh.Session as Session
-import Source exposing (Source)
-import Task exposing (Task)
-import Time
+import Reason
+import Restore
+import RestoreFile exposing (TabColor(..))
+import Schema
+import Search
 import SettingsGui
+import SettingsProgram
+import SettingsSource exposing (Given, Read(..), Settings, overridden, readSettings, reloadDelayMs, settingsFile, watchSettings)
+import Source exposing (Source)
+import Ssh.Session as Session
+import SshAgents
+import TabOrder
+import Task exposing (Task)
 import Text
+import Time
 import TmuxMode
 import Vt
+import Vt.Base64 as Base64
 import Vt.Charset as Charset exposing (Charset)
 import Vt.Mouse as Mouse
 import Vt.Paste as Paste
-import Vt.Base64 as Base64
 import Vt.View as View
 import Window
-import Reason
 
 
 type alias Model =
@@ -109,79 +109,79 @@ type alias Model =
     , charset : Charset
     , decoder : Charset.Decoder
     , replaced : Int
-      -- the mouse (docs/phase3-select.md §4): the buttons held, as bits of
-      -- Ghostty's numbers; the cell last reported, so a motion within it is
-      -- not reported again; whether X sends every motion
+    -- the mouse (docs/phase3-select.md §4): the buttons held, as bits of
+    -- Ghostty's numbers; the cell last reported, so a motion within it is
+    -- not reported again; whether X sends every motion
     , held : Int
     , mouseLast : Maybe Mouse.Cell
     , allMotion : Bool
-      -- every terminal's bells added up when the bell last sounded, so
-      -- that a turn whose total rose rings it (docs/sounds.md SN6)
+    -- every terminal's bells added up when the bell last sounded, so
+    -- that a turn whose total rose rings it (docs/sounds.md SN6)
     , bellsHeard : Int
-      -- the pointer shown (the arrow while the program takes the mouse, a
-      -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
-      -- last place over the window, and whether Shift is held, which takes
-      -- the mouse back (docs/phase3-select.md §21)
+    -- the pointer shown (the arrow while the program takes the mouse, a
+    -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
+    -- last place over the window, and whether Shift is held, which takes
+    -- the mouse back (docs/phase3-select.md §21)
     , pointerShown : Window.Pointer
     , hover : Maybe Window.PointerEvent
     , shiftHeld : Bool
-      -- how many rows the view is scrolled back, 0 at the bottom
-      -- (docs/phase3-select.md §11)
+    -- how many rows the view is scrolled back, 0 at the bottom
+    -- (docs/phase3-select.md §11)
     , back : Int
-      -- the selection (docs/phase3-select.md §14), the last press of the
-      -- left button for double and triple clicks, and a selection to hand
-      -- to the window when the event's model is done
+    -- the selection (docs/phase3-select.md §14), the last press of the
+    -- left button for double and triple clicks, and a selection to hand
+    -- to the window when the event's model is done
     , selection : Maybe Selection
     , clicks : { at : Int, count : Int, cell : Vt.Point }
     , toOwn : Maybe { which : Window.Selection, text : String }
     , wordBoundaries : Array Int
-      -- a paste to ask for when the event's model is done, and one under
-      -- way: whether it is bracketed, decided by mode 2004 when its first
-      -- text comes (docs/phase3-select.md §15)
+    -- a paste to ask for when the event's model is done, and one under
+    -- way: whether it is bracketed, decided by mode 2004 when its first
+    -- text comes (docs/phase3-select.md §15)
     , toPaste : Maybe Window.Selection
     , pasting : Maybe Bool
-      -- OSC 52 (docs/phase3-select.md §16): requests the core made, to be
-      -- done by the loop, and a read under way, its text so far
+    -- OSC 52 (docs/phase3-select.md §16): requests the core made, to be
+    -- done by the loop, and a read under way, its text so far
     , clips : Array Vt.Clip
     , clipRead : Maybe { letter : Int, bel : Bool, text : Bytes }
-      -- where the settings came from, and a change to them followed
-      -- (docs/settings.md ST3)
+    -- where the settings came from, and a change to them followed
+    -- (docs/settings.md ST3)
     , settings : Settings
-      -- with PURITTY_SHOT set, the file each frame's picture is written to,
-      -- for the reload gate (harness/reload.py)
+    -- with PURITTY_SHOT set, the file each frame's picture is written to,
+    -- for the reload gate (harness/reload.py)
     , shotPath : Maybe String
-      -- what was wrong in the settings file when it was last read, the
-      -- first of it shown in the title (docs/settings.md ST17)
+    -- what was wrong in the settings file when it was last read, the
+    -- first of it shown in the title (docs/settings.md ST17)
     , troubles : Array String
-      -- how Ctrl+Comma starts the settings window (docs/settings.md ST9):
-      -- this program's own file, with `settings`, not tied to this one
+    -- how Ctrl+Comma starts the settings window (docs/settings.md ST9):
+    -- this program's own file, with `settings`, not tied to this one
     , settingsWindow : Maybe { cp : Process.Permission, program : String, args : Array String }
-      -- the menu Ctrl+right-click opens, drawn over the screen (ST26), or
-      -- the items of the one the platform shows, and of its system menu
+    -- the menu Ctrl+right-click opens, drawn over the screen (ST26), or
+    -- the items of the one the platform shows, and of its system menu
     , menu : Maybe Menu
     , shownItems : Array MenuItem
-      -- the built-in ssh client's session (docs/ssh-client.md SC18): what
-      -- puritty's own screen shows until the session runs, a question it
-      -- asks, how the session ended
+    -- the built-in ssh client's session (docs/ssh-client.md SC18): what
+    -- puritty's own screen shows until the session runs, a question it
+    -- asks, how the session ended
     , ssh : Maybe SshScreen
-      -- tmux control mode, when `tmux -CC` runs on the terminal
-      -- (docs/tmux.md TM14)
+    -- tmux control mode, when `tmux -CC` runs on the terminal
+    -- (docs/tmux.md TM14)
     , tmux : TmuxMode.State
-      -- whether the last frame had a question's box over it, so that the
-      -- frame it comes or goes in draws every cell (docs/ssh-client.md SC23)
+    -- whether the last frame had a question's box over it, so that the
+    -- frame it comes or goes in draws every cell (docs/ssh-client.md SC23)
     , overlaid : Bool
-      -- scrollback search, while its bar is open, and a drag of the
-      -- scrollbar's thumb going on (docs/phase3-select.md §23)
+    -- scrollback search, while its bar is open, and a drag of the
+    -- scrollbar's thumb going on (docs/phase3-select.md §23)
     , search : Maybe Search.State
     , barDrag : Bool
-      -- the tabs (docs/tabs.md TB2): the shown one's backend and its tab's
-      -- name and marks; the other tabs, each its session's fields, in slots
-      -- (`Nothing` a free one) a tab is swapped in and out of; the tabs'
-      -- ids in the bar's order, and the shown one's place in it, kept
-      -- rather than searched for, so that the order is never empty and a
-      -- read at the place needs no default (TB15); the next tab's id; how
-      -- a tab is started; and the window's rows, of which the bar takes the
-      -- last while it shows
+    -- the tabs (docs/tabs.md TB2): the shown one's backend and its tab's
+    -- name and marks; the other tabs, each its session's fields, in slots
+    -- (`Nothing` a free one) a tab is swapped in and out of; the tabs'
+    -- ids in the bar's order, and the shown one's place in it, kept
+    -- rather than searched for, so that the order is never empty and a
+    -- read at the place needs no default (TB15); the next tab's id; how
+    -- a tab is started; and the window's rows, of which the bar takes the
+    -- last while it shows
     , remote : Backend
     , tab : TabInfo
     , tabs : Builder (Maybe Tab)
@@ -193,24 +193,24 @@ type alias Model =
     , renaming : Maybe { id : Int, typed : String }
     , coloring : Maybe Int
     , closing : Maybe { id : Int, why : String, window : Bool }
-      -- why a new tab did not start, said in a box until it is
-      -- dismissed (docs/tabs.md TB16)
+    -- why a new tab did not start, said in a box until it is
+    -- dismissed (docs/tabs.md TB16)
     , startFailed : Maybe String
     , barClick : { at : Int, id : Int }
-      -- the tabs kept to restore (docs/tabs.md TB10): the state directory,
-      -- none for a window not kept; this window's files once made; what
-      -- was last written; when to look again (-1 never); and whether the
-      -- window was closed by its button, which is remembered only when
-      -- no other window is open
+    -- the tabs kept to restore (docs/tabs.md TB10): the state directory,
+    -- none for a window not kept; this window's files once made; what
+    -- was last written; when to look again (-1 never); and whether the
+    -- window was closed by its button, which is remembered only when
+    -- no other window is open
     , saving : { dir : Maybe Path.Path, window : Maybe Restore.Window, written : String, at : Int }
     , byButton : Bool
     , quietUntil : Int
-      -- tabs closed lately, to open again (docs/tabs.md TB11): five
-      -- slots, each a tab as it was with where it was and when it closed
+    -- tabs closed lately, to open again (docs/tabs.md TB11): five
+    -- slots, each a tab as it was with where it was and when it closed
     , closedTabs : Builder (Maybe Closed)
-      -- the diagnostic log (docs/diagnostics.md DG1): its lines waiting to
-      -- be written, the folder its files go in, the time of the turn the
-      -- lines are written at, and the tab last said to be shown
+    -- the diagnostic log (docs/diagnostics.md DG1): its lines waiting to
+    -- be written, the folder its files go in, the time of the turn the
+    -- lines are written at, and the tab last said to be shown
     , diag : Diag.Log
     , logDir : Maybe String
     , turnMs : Int
@@ -398,8 +398,9 @@ main =
                                 terminalMain (Ssh target) { env | args = Array.dropFirst 2 env.args }
 
                             Nothing ->
-                                meant Reason.FromOutside Console.writeErr "puritty ssh: give where to connect, as user@host:port\n"
-                                    |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
+                                meant Reason.FromOutside
+                                    Console.writeErr "puritty ssh: give where to connect, as user@host:port\n"
+                                        |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
 
                     _ ->
                         meant Reason.NotSet terminalMain Plain env
@@ -455,96 +456,96 @@ settingsCli =
 
 terminalMain : Mode -> Os.Env.Environment -> Task Never {}
 terminalMain mode env =
-                Argparse.Program.runRootWithContext env
-                    { name = "puritty"
-                    , version = "0.1.0"
-                    , command = cli
-                    , init =
-                        \_ ->
-                            Task.map3 (\cp fs vars -> { cp = cp, fs = fs, vars = vars }) Process.initialize File.initialize Os.Env.getEnvironmentVariables
-                    , onCommand =
-                        \_ ctx (Run asked) ->
+    Argparse.Program.runRootWithContext env
+        { name = "puritty"
+        , version = "0.1.0"
+        , command = cli
+        , init =
+            \_ ->
+                Task.map3 (\cp fs vars -> { cp = cp, fs = fs, vars = vars }) Process.initialize File.initialize Os.Env.getEnvironmentVariables
+        , onCommand =
+            \_ ctx (Run asked) ->
+                let
+                    given =
+                        { file = settingsFile ctx.vars asked.config
+                        , fs = ctx.fs
+                        , title = asked.title
+                        , program = asked.program
+                        }
+                in
+                readSettings given
+                    |> Task.andThen
+                        (\read ->
                             let
-                                given =
-                                    { file = settingsFile ctx.vars asked.config
-                                    , fs = ctx.fs
-                                    , title = asked.title
-                                    , program = asked.program
-                                    }
+                                got =
+                                    when read is
+                                        Gave r ->
+                                            r
+
+                                        Unread why ->
+                                            { config = overridden given Config.defaults, problems = [ why ++ "; the defaults are used" ] }
+
+                                chosen =
+                                    choose mode asked got.config
+
+                                listing =
+                                    Array.isEmpty asked.program
+                                        && asked.host == Nothing
+                                        && (mode == HostList || (mode == Plain && got.config.start == "hosts"))
+
+                                -- the state directory, for a window whose tabs can
+                                -- be restored: not one started with a program
+                                -- (docs/tabs.md TB10)
+                                stateDir =
+                                    if Array.isEmpty asked.program then
+                                        Maybe.map Path.fromString (Platform.stateDirectory ctx.vars)
+
+                                    else
+                                        Nothing
+
+                                -- a plain start with restoring on, or `puritty
+                                -- restore`, claims a saved window
+                                claiming =
+                                    when stateDir is
+                                        Just dir ->
+                                            if asked.host == Nothing && (mode == RestoreOne || (mode == Plain && got.config.tabsRestore)) then
+                                                Restore.claim ctx.fs dir
+
+                                            else
+                                                Task.succeed Nothing
+
+                                        Nothing ->
+                                            meant Reason.NotSet Task.succeed Nothing
                             in
-                            readSettings given
+                            claiming
                                 |> Task.andThen
-                                    (\read ->
-                                        let
-                                            got =
-                                                when read is
-                                                    Gave r ->
-                                                        r
+                                    (\claimed ->
+                                        when claimed is
+                                            Just c ->
+                                                say got.problems
+                                                    |> Task.andThen (\_ -> start ctx.cp ctx.vars given got.problems (restoredConfig c.state got.config) { dir = stateDir, claimed = Just c })
 
-                                                    Unread why ->
-                                                        { config = overridden given Config.defaults, problems = [ why ++ "; the defaults are used" ] }
+                                            Nothing ->
+                                                meant Reason.NoMore
+                                                    if mode == RestoreOne then
+                                                        -- none waits: nothing to open
+                                                        Task.succeed {}
 
-                                            chosen =
-                                                choose mode asked got.config
+                                                    else if listing then
+                                                        hostList ctx.cp ctx.fs ctx.vars given asked got
 
-                                            listing =
-                                                Array.isEmpty asked.program
-                                                    && asked.host == Nothing
-                                                    && (mode == HostList || (mode == Plain && got.config.start == "hosts"))
+                                                    else
+                                                        when chosen.config is
+                                                            Err why ->
+                                                                meant Reason.FromOutside Task.fail why
 
-                                            -- the state directory, for a window whose tabs can
-                                            -- be restored: not one started with a program
-                                            -- (docs/tabs.md TB10)
-                                            stateDir =
-                                                if Array.isEmpty asked.program then
-                                                    Maybe.map Path.fromString (Platform.stateDirectory ctx.vars)
-
-                                                else
-                                                    Nothing
-
-                                            -- a plain start with restoring on, or `puritty
-                                            -- restore`, claims a saved window
-                                            claiming =
-                                                when stateDir is
-                                                    Just dir ->
-                                                        if asked.host == Nothing && (mode == RestoreOne || (mode == Plain && got.config.tabsRestore)) then
-                                                            Restore.claim ctx.fs dir
-
-                                                        else
-                                                            Task.succeed Nothing
-
-                                                    Nothing ->
-                                                        meant Reason.NotSet Task.succeed Nothing
-                                        in
-                                        claiming
-                                            |> Task.andThen
-                                                (\claimed ->
-                                                    when claimed is
-                                                        Just c ->
-                                                            say got.problems
-                                                                |> Task.andThen (\_ -> start ctx.cp ctx.vars given got.problems (restoredConfig c.state got.config) { dir = stateDir, claimed = Just c })
-
-                                                        Nothing ->
-                                                            meant Reason.NoMore
-                                                            if mode == RestoreOne then
-                                                                -- none waits: nothing to open
-                                                                Task.succeed {}
-
-                                                            else if listing then
-                                                                hostList ctx.cp ctx.fs ctx.vars given asked got
-
-                                                            else
-                                                            when chosen.config is
-                                                                Err why ->
-                                                                    meant Reason.FromOutside Task.fail why
-
-                                                                Ok config ->
-                                                                    say (got.problems ++ chosen.problems)
-                                                                        |> Task.andThen (\_ -> start ctx.cp ctx.vars given (got.problems ++ chosen.problems) config { dir = stateDir, claimed = Nothing })
-                                                )
+                                                            Ok config ->
+                                                                say (got.problems ++ chosen.problems)
+                                                                    |> Task.andThen (\_ -> start ctx.cp ctx.vars given (got.problems ++ chosen.problems) config { dir = stateDir, claimed = Nothing })
                                     )
-                                |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
-                    }
+                        )
+                    |> Task.mapError (\why -> Argparse.Program.ExitMessageValue { message = "puritty: " ++ why, value = 2 })
+        }
 
 
 {-| How a window's tabs are kept to restore (docs/tabs.md TB10): the
@@ -614,11 +615,11 @@ choose mode asked config =
 
                     Nothing ->
                         meant Reason.NotSet
-                        if String.startsWith "host:" config.start then
-                            to (Hosts.named (String.dropFirst 5 config.start) config)
+                            if String.startsWith "host:" config.start then
+                                to (Hosts.named (String.dropFirst 5 config.start) config)
 
-                        else
-                            { config = Ok config, problems = [] }
+                            else
+                                { config = Ok config, problems = [] }
 
             HostList ->
                 { config = Ok config, problems = [] }
@@ -699,53 +700,86 @@ startIn cp vars given problems locale config restoring =
 terminal of its size, and the loop. -}
 begin : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Window.Cell -> Restoring -> Task String {}
 begin cp vars given problems locale config cell restoring =
-                        let
-                            -- the command, or the platform's programs, the
-                            -- first of them that starts
-                            commands =
-                                if Array.isEmpty config.command then
-                                    Array.map (\program -> [ program ]) (Platform.programs vars)
+    let
+        -- the command, or the platform's programs, the
+        -- first of them that starts
+        commands =
+            if Array.isEmpty config.command then
+                Array.map (\program -> [ program ]) (Platform.programs vars)
 
-                                else
-                                    [ config.command ]
+            else
+                [ config.command ]
 
-                            options =
-                                -- the pty's IUTF8 says whether the program's bytes are UTF-8;
-                                -- a restored local tab in its directory (TB10)
-                                Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
-                                    |> (\o -> { o | workingDirectory = firstDirectory restoring })
+        options =
+            -- the pty's IUTF8 says whether the program's bytes are UTF-8;
+            -- a restored local tab in its directory (TB10)
+            Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
+                |> (\o -> { o | workingDirectory = firstDirectory restoring })
 
-                            charset =
-                                Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
-                        in
-                        Task.map2 (\events self -> { events = events, self = self })
-                            (watchSettings given)
-                            (Os.Env.executable |> Task.map Just |> Task.onError (\_ -> Task.succeed Nothing))
-                            |> Task.andThen
-                                (\w ->
-                                    let
-                                        opener =
-                                            Maybe.map
-                                                (\self ->
-                                                    { cp = cp
-                                                    , program = Path.toString self
-                                                    , args =
-                                                        when given.file is
-                                                            Just f ->
-                                                                if f.required then [ "settings", "--config", Path.toString f.path ] else [ "settings" ]
+        charset =
+            Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
+    in
+    Task.map2 (\events self -> { events = events, self = self })
+        (watchSettings given)
+        (Os.Env.executable |> Task.map Just |> Task.onError (\_ -> Task.succeed Nothing))
+        |> Task.andThen
+            (\w ->
+                let
+                    opener =
+                        Maybe.map
+                            (\self ->
+                                { cp = cp
+                                , program = Path.toString self
+                                , args =
+                                    when given.file is
+                                        Just f ->
+                                            if f.required then
+                                                [ "settings", "--config", Path.toString f.path ]
 
-                                                            Nothing ->
-                                                                meant Reason.NotSet [ "settings" ]
-                                                    }
-                                                )
-                                                w.self
-                                    in
-                                    (when config.remote is
-                                        Just host ->
-                                            sshBackend vars config charset host
+                                            else
+                                                [ "settings" ]
 
                                         Nothing ->
-                                            meant Reason.NotSet spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                                            meant Reason.NotSet [ "settings" ]
+                                }
+                            )
+                            w.self
+                in
+                (when config.remote is
+                    Just host ->
+                        sshBackend vars config charset host
+
+                    Nothing ->
+                        meant Reason.NotSet
+                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                                |> Task.mapError Os.Error.toString
+                                |> Task.andThen
+                                    (\child ->
+                                        when Backend.pty child is
+                                            Nothing ->
+                                                Task.fail "the program has no terminal"
+
+                                            Just remote ->
+                                                Task.succeed { remote = remote, problems = [] }
+                                    )
+                )
+                    |> Task.andThen
+                        (\started ->
+                            let
+                                -- how a new tab starts (docs/tabs.md TB1): the
+                                -- program at the window's size, or another
+                                -- session to the host
+                                localCharset =
+                                    Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
+
+                                starter =
+                                    { local =
+                                        \size ->
+                                            spawnFirst cp
+                                                commands
+                                                (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, utf8 = localCharset == Charset.Utf8 })
+                                                    |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
+                                                )
                                                 |> Task.mapError Os.Error.toString
                                                 |> Task.andThen
                                                     (\child ->
@@ -754,42 +788,15 @@ begin cp vars given problems locale config cell restoring =
                                                                 Task.fail "the program has no terminal"
 
                                                             Just remote ->
-                                                                Task.succeed { remote = remote, problems = [] }
+                                                                Task.succeed remote
                                                     )
-                                    )
-                                        |> Task.andThen
-                                            (\started ->
-                                                let
-                                                    -- how a new tab starts (docs/tabs.md TB1): the
-                                                    -- program at the window's size, or another
-                                                    -- session to the host
-                                                    localCharset =
-                                                        Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
-
-                                                    starter =
-                                                        { local =
-                                                            \size ->
-                                                                spawnFirst cp commands
-                                                                    (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, utf8 = localCharset == Charset.Utf8 })
-                                                                        |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
-                                                                    )
-                                                                    |> Task.mapError Os.Error.toString
-                                                                    |> Task.andThen
-                                                                        (\child ->
-                                                                            when Backend.pty child is
-                                                                                Nothing ->
-                                                                                    Task.fail "the program has no terminal"
-
-                                                                                Just remote ->
-                                                                                    Task.succeed remote
-                                                                        )
-                                                        , ssh = \host -> sshBackend vars config charset host
-                                                        , charset = localCharset
-                                                        }
-                                                in
-                                                run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring (Platform.logDirectory vars)
-                                            )
-                                )
+                                    , ssh = \host -> sshBackend vars config charset host
+                                    , charset = localCharset
+                                    }
+                            in
+                            run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring (Platform.logDirectory vars)
+                        )
+            )
 
 
 {-| The built-in ssh client's session to a host (`docs/ssh-client.md`
@@ -810,31 +817,31 @@ sshBackend vars config charset host =
                 homeOf vars
                     |> Task.andThen
                         (\home ->
-                SshAgents.agents vars
-                    |> Task.andThen
-                        (\agents ->
-                Session.optionsFor permissions
-                    { host = host.host
-                    , user = host.user
-                    , port = host.port
-                    , identity = host.identity
-                    , jump = Hosts.jumpSpec config host
-                    , command = host.command
-                    , home = home
-                    , localUser = localUser
-                    , agents = agents
-                    , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 }
-                    }
-                    |> Task.andThen
-                        (\resolved ->
-                            if Array.any (\o -> o.user == "") (Array.pushFirst resolved.options resolved.jumps) then
-                                Task.fail "no user to log in as: the host gives none, nor does ~/.ssh/config, and neither USER nor USERNAME is set"
+                            SshAgents.agents vars
+                                |> Task.andThen
+                                    (\agents ->
+                                        Session.optionsFor permissions
+                                            { host = host.host
+                                            , user = host.user
+                                            , port = host.port
+                                            , identity = host.identity
+                                            , jump = Hosts.jumpSpec config host
+                                            , command = host.command
+                                            , home = home
+                                            , localUser = localUser
+                                            , agents = agents
+                                            , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 }
+                                            }
+                                            |> Task.andThen
+                                                (\resolved ->
+                                                    if Array.any (\o -> o.user == "") (Array.pushFirst resolved.options resolved.jumps) then
+                                                        Task.fail "no user to log in as: the host gives none, nor does ~/.ssh/config, and neither USER nor USERNAME is set"
 
-                            else
-                                Backend.ssh permissions { options = resolved.options, jumps = resolved.jumps }
-                                    |> Task.map (\remote -> { remote = remote, problems = Array.map (\p -> "~/.ssh/config: " ++ p) resolved.problems })
-                        )
-                        )
+                                                    else
+                                                        Backend.ssh permissions { options = resolved.options, jumps = resolved.jumps }
+                                                            |> Task.map (\remote -> { remote = remote, problems = Array.map (\p -> "~/.ssh/config: " ++ p) resolved.problems })
+                                                )
+                                    )
                         )
             )
 
@@ -846,7 +853,15 @@ homeOf : Dict String String -> Task String String
 homeOf vars =
     let
         set name =
-            Dict.get name vars |> Maybe.andThen (\v -> if v == "" then Nothing else Just v)
+            Dict.get name vars
+                |> Maybe.andThen
+                    (\v ->
+                        if v == "" then
+                            Nothing
+
+                        else
+                            Just v
+                    )
     in
     when set "HOME" is
         Just home ->
@@ -854,12 +869,12 @@ homeOf vars =
 
         Nothing ->
             meant Reason.FromOutside
-            when set "USERPROFILE" is
-                Just home ->
-                    Task.succeed home
+                when set "USERPROFILE" is
+                    Just home ->
+                        Task.succeed home
 
-                Nothing ->
-                    meant Reason.FromOutside (Task.fail "neither HOME nor USERPROFILE is set, so ~/.ssh cannot be found")
+                    Nothing ->
+                        meant Reason.FromOutside (Task.fail "neither HOME nor USERPROFILE is set, so ~/.ssh cannot be found")
 
 
 {-| The first of the commands that starts: one that is not found gives way
@@ -889,105 +904,105 @@ drawn is written to its file as a picture, for the reload gate
 (`harness/reload.py`). -}
 run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
 run imeLog shotPath charset config cell remote starter settings problems opener restoring logDir =
-            -- puritty's own text (its questions, the search bar, the tab
-            -- bar) in the interface font, as the settings window's is, apart
-            -- from the terminal's (docs/tabs.md TB5)
-            Text.interfaceFont Platform.interfaceFont
-                -- the system menu's items, where the platform has one (ST26)
-                |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
-                |> Task.andThen (\_ -> now)
-                |> Task.andThen
-                    (\t0 ->
-                        restoreInto restoring
-                            { config = config
-                            , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
-                            , term =
-                                Vt.new
-                                    { cols = config.columns
-                                    , rows = config.rows
-                                    , scrollbackBytes = Vt.scrollbackBytesFor { cols = config.columns, rows = config.scrollbackLines }
-                                    , pageRows = Vt.defaultPageRows
-                                    , checksums = False
-                                    , cellWidth = cell.width
-                                    , cellHeight = cell.height
-                                    }
-                                    |> Vt.withPalette config.palette
-                                    |> Vt.withEmbedder (embedderOf config)
-                                    -- what was wrong in the settings, before the
-                                    -- program's first output (settings-ui.md §5)
-                                    |> Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems)))
-                            , shadow = View.shadow config.columns config.rows
-                            , focus = View.focused
-                            , last = t0
-                            , pending = -1
-                            , urgent = True
-                            , blinkAt = -1
-                            , syncSince = -1
-                            , title = ""
-                            , closed = False
-                            , lost = False
-                            , out = Outbox.empty
-                            , preedit = { points = [], feedback = [], caret = 0 }
-                            , imeLog = imeLog
-                            , points = config.points
-                            , charset = charset
-                            , decoder = Charset.decoder
-                            , replaced = 0
-                            , held = 0
-                            , mouseLast = Nothing
-                            , allMotion = False
-                            , bellsHeard = 0
-                            , pointerShown = Window.TextPointer
-                            , hover = Nothing
-                            , shiftHeld = False
-                            , back = 0
-                            , selection = Nothing
-                            , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
-                            , toOwn = Nothing
-                            , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
-                            , toPaste = Nothing
-                            , pasting = Nothing
-                            , clips = []
-                            , clipRead = Nothing
-                            , settings = settings
-                            , shotPath = shotPath
-                            , troubles = problems
-                            , settingsWindow = opener
-                            , menu = Nothing
-                            , shownItems = []
-                            , ssh =
-                                Maybe.map
-                                    (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
-                                    config.remote
-                            , tmux = TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
-                            , overlaid = False
-                            , search = Nothing
-                            , barDrag = False
-                            , remote = remote
-                            , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
-                            , tabs = Builder.empty 4
-                            , order = [ 0 ]
-                            , shown = 0
-                            , nextTabId = 1
-                            , starter = starter
-                            , windowRows = config.rows
-                            , renaming = Nothing
-                            , coloring = Nothing
-                            , closing = Nothing
-                            , startFailed = Nothing
-                            , barClick = { at = -1000, id = -1 }
-                            , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
-                            , byButton = False
-                            , quietUntil = -1
-                            , closedTabs = Builder.empty closedSlots
-                            , diag = Diag.off
-                            , logDir = logDir
-                            , turnMs = t0
-                            , loggedTab = -1
+    -- puritty's own text (its questions, the search bar, the tab
+    -- bar) in the interface font, as the settings window's is, apart
+    -- from the terminal's (docs/tabs.md TB5)
+    Text.interfaceFont Platform.interfaceFont
+        -- the system menu's items, where the platform has one (ST26)
+        |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
+        |> Task.andThen (\_ -> now)
+        |> Task.andThen
+            (\t0 ->
+                restoreInto restoring
+                    { config = config
+                    , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
+                    , term =
+                        Vt.new
+                            { cols = config.columns
+                            , rows = config.rows
+                            , scrollbackBytes = Vt.scrollbackBytesFor { cols = config.columns, rows = config.scrollbackLines }
+                            , pageRows = Vt.defaultPageRows
+                            , checksums = False
+                            , cellWidth = cell.width
+                            , cellHeight = cell.height
                             }
-                            |> Task.mapError Os.Error.toString
-                    )
-                |> Task.andThen (\m -> finish m.remote m)
+                            |> Vt.withPalette config.palette
+                            |> Vt.withEmbedder (embedderOf config)
+                            -- what was wrong in the settings, before the
+                            -- program's first output (settings-ui.md §5)
+                            |> Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems)))
+                    , shadow = View.shadow config.columns config.rows
+                    , focus = View.focused
+                    , last = t0
+                    , pending = -1
+                    , urgent = True
+                    , blinkAt = -1
+                    , syncSince = -1
+                    , title = ""
+                    , closed = False
+                    , lost = False
+                    , out = Outbox.empty
+                    , preedit = { points = [], feedback = [], caret = 0 }
+                    , imeLog = imeLog
+                    , points = config.points
+                    , charset = charset
+                    , decoder = Charset.decoder
+                    , replaced = 0
+                    , held = 0
+                    , mouseLast = Nothing
+                    , allMotion = False
+                    , bellsHeard = 0
+                    , pointerShown = Window.TextPointer
+                    , hover = Nothing
+                    , shiftHeld = False
+                    , back = 0
+                    , selection = Nothing
+                    , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
+                    , toOwn = Nothing
+                    , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
+                    , toPaste = Nothing
+                    , pasting = Nothing
+                    , clips = []
+                    , clipRead = Nothing
+                    , settings = settings
+                    , shotPath = shotPath
+                    , troubles = problems
+                    , settingsWindow = opener
+                    , menu = Nothing
+                    , shownItems = []
+                    , ssh =
+                        Maybe.map
+                            (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
+                            config.remote
+                    , tmux = TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
+                    , overlaid = False
+                    , search = Nothing
+                    , barDrag = False
+                    , remote = remote
+                    , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
+                    , tabs = Builder.empty 4
+                    , order = [ 0 ]
+                    , shown = 0
+                    , nextTabId = 1
+                    , starter = starter
+                    , windowRows = config.rows
+                    , renaming = Nothing
+                    , coloring = Nothing
+                    , closing = Nothing
+                    , startFailed = Nothing
+                    , barClick = { at = -1000, id = -1 }
+                    , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
+                    , byButton = False
+                    , quietUntil = -1
+                    , closedTabs = Builder.empty closedSlots
+                    , diag = Diag.off
+                    , logDir = logDir
+                    , turnMs = t0
+                    , loggedTab = -1
+                    }
+                    |> Task.mapError Os.Error.toString
+            )
+        |> Task.andThen (\m -> finish m.remote m)
 
 
 {-| The end: the program's exit status when it ended, 0 when the window
@@ -995,7 +1010,19 @@ was closed, after asking the program to end. -}
 finish : Backend -> (taken m0 : Model) -> Task String {}
 finish remote m0 =
     savedAtEnd m0
-        |> Task.andThen (\m -> writeLog True (logLine "end" (if m.lost then "the window was lost" else "the window ended") m))
+        |> Task.andThen
+            (\m ->
+                writeLog True
+                    (logLine "end"
+                        (if m.lost then
+                            "the window was lost"
+
+                         else
+                            "the window ended"
+                        )
+                        m
+                    )
+            )
         |> Task.mapError Os.Error.toString
         |> Task.andThen (\m -> finishTabs remote m)
 
@@ -1017,7 +1044,14 @@ savedAtEnd m =
 
             else if m.byButton then
                 Restore.others fs dir w
-                    |> Task.andThen (\open -> if open then Restore.forget fs dir w |> Task.map (\_ -> m) else saveNow 0 m)
+                    |> Task.andThen
+                        (\open ->
+                            if open then
+                                Restore.forget fs dir w |> Task.map (\_ -> m)
+
+                            else
+                                saveNow 0 m
+                        )
 
             else
                 Restore.forget fs dir w |> Task.map (\_ -> m)
@@ -1244,7 +1278,14 @@ restoreInto restoring m =
                         when restoring.dir is
                             Just dir ->
                                 Restore.waiting fs dir
-                                    |> Task.andThen (\more -> if more then spawnSelf [ "restore" ] shown else Task.succeed shown)
+                                    |> Task.andThen
+                                        (\more ->
+                                            if more then
+                                                spawnSelf [ "restore" ] shown
+
+                                            else
+                                                Task.succeed shown
+                                        )
 
                             Nothing ->
                                 Task.succeed shown
@@ -1287,7 +1328,14 @@ startSaving m =
 firstDirectory : Restoring -> Maybe Path.Path
 firstDirectory restoring =
     restoring.claimed
-        |> Maybe.andThen (\c -> if c.state.host == Nothing then Array.first c.state.tabs else Nothing)
+        |> Maybe.andThen
+            (\c ->
+                if c.state.host == Nothing then
+                    Array.first c.state.tabs
+
+                else
+                    Nothing
+            )
         |> Maybe.andThen .directory
         |> Maybe.map Path.fromString
 
@@ -1477,7 +1525,21 @@ bellRung m =
     else if total > m.bellsHeard then
         when sound is
             Just id ->
-                Window.sound id |> Task.map (\taken -> logLine "bell" ("rang: " ++ m.config.soundBell ++ (if taken then ", played" else ", not played (no audio, or a sound still playing)")) { m | bellsHeard = total })
+                Window.sound id
+                    |> Task.map
+                        (\taken ->
+                            logLine "bell"
+                                ("rang: "
+                                    ++ m.config.soundBell
+                                    ++ (if taken then
+                                            ", played"
+
+                                        else
+                                            ", not played (no audio, or a sound still playing)"
+                                       )
+                                )
+                                { m | bellsHeard = total }
+                        )
 
             Nothing ->
                 meant Reason.NotSet Task.succeed (logLine "bell" "rang: none chosen" { m | bellsHeard = total })
@@ -1519,7 +1581,14 @@ a key that sends nothing (a modifier alone). -}
 keySound : Config -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Task x {}
 keySound config k bytes =
     if config.soundKeys && k.action /= 0 && not (Bytes.isEmpty bytes) then
-        Window.sound (if k.sym == 0xFF0D || k.sym == 0xFF8D then 1 else 0) |> Task.map (\_ -> {})
+        Window.sound
+            (if k.sym == 0xFF0D || k.sym == 0xFF8D then
+                1
+
+             else
+                0
+            )
+            |> Task.map (\_ -> {})
 
     else
         Task.succeed {}
@@ -1621,7 +1690,12 @@ race remote m0 =
                         Array.mapAndFlatten
                             (\t ->
                                 Array.pushFirst (t.remote.read |> Task.map (\incoming -> Behind { id = t.id, incoming = incoming }))
-                                    (if t.writing then [ t.remote.writable |> Task.map (\_ -> BehindWritable t.id) ] else [])
+                                    (if t.writing then
+                                        [ t.remote.writable |> Task.map (\_ -> BehindWritable t.id) ]
+
+                                     else
+                                        []
+                                    )
                             )
                             (hiddenOf m)
                 in
@@ -1693,7 +1767,24 @@ step remote ms m0 =
         let
             m =
                 if Diag.isOn m0.diag && m0.tab.id /= m0.loggedTab then
-                    { m0 | loggedTab = m0.tab.id, diag = Diag.add ms "tab" ("shown: tab " ++ String.fromInt m0.tab.id ++ " of " ++ String.fromInt (tabCount m0) ++ (if TmuxMode.isOn m0.tmux then ", under tmux -CC" else "")) m0.diag }
+                    { m0
+                        | loggedTab = m0.tab.id
+                        , diag =
+                            Diag.add ms
+                                "tab"
+                                ("shown: tab "
+                                    ++ String.fromInt m0.tab.id
+                                    ++ " of "
+                                    ++ String.fromInt (tabCount m0)
+                                    ++ (if TmuxMode.isOn m0.tmux then
+                                            ", under tmux -CC"
+
+                                        else
+                                            ""
+                                       )
+                                )
+                                m0.diag
+                    }
 
                 else
                     m0
@@ -1704,7 +1795,14 @@ step remote ms m0 =
         if at >= 0 && ms >= at then
             draw ms m
                 |> Task.andThen shoot
-                |> Task.andThen (\next -> if next.lost then Task.succeed next else loop next.remote next)
+                |> Task.andThen
+                    (\next ->
+                        if next.lost then
+                            Task.succeed next
+
+                        else
+                            loop next.remote next
+                    )
 
         else
             loop m.remote m
@@ -1735,13 +1833,25 @@ noticed ms change m =
     in
     when change is
         Just (Directory.Added path) ->
-            if ours path then { m | settings = soon } else m
+            if ours path then
+                { m | settings = soon }
+
+            else
+                m
 
         Just (Directory.Changed path) ->
-            if ours path then { m | settings = soon } else m
+            if ours path then
+                { m | settings = soon }
+
+            else
+                m
 
         Just (Directory.Removed path) ->
-            if ours path then { m | settings = soon } else m
+            if ours path then
+                { m | settings = soon }
+
+            else
+                m
 
         Just Directory.Lost ->
             { m | settings = soon }
@@ -1943,18 +2053,41 @@ beginLog m =
 monthNumber : Time.Month -> Int
 monthNumber month =
     when month is
-        Time.Jan -> 1
-        Time.Feb -> 2
-        Time.Mar -> 3
-        Time.Apr -> 4
-        Time.May -> 5
-        Time.Jun -> 6
-        Time.Jul -> 7
-        Time.Aug -> 8
-        Time.Sep -> 9
-        Time.Oct -> 10
-        Time.Nov -> 11
-        Time.Dec -> 12
+        Time.Jan ->
+            1
+
+        Time.Feb ->
+            2
+
+        Time.Mar ->
+            3
+
+        Time.Apr ->
+            4
+
+        Time.May ->
+            5
+
+        Time.Jun ->
+            6
+
+        Time.Jul ->
+            7
+
+        Time.Aug ->
+            8
+
+        Time.Sep ->
+            9
+
+        Time.Oct ->
+            10
+
+        Time.Nov ->
+            11
+
+        Time.Dec ->
+            12
 
 
 {-| The logs folder's files beyond the newest nineteen removed, so that
@@ -1989,9 +2122,26 @@ pruneLogs fs folder =
 {-| What the log says of the window as it begins. -}
 logHeader : Model -> Array String
 logHeader m =
-    [ (embedderOf m.config).version ++ " on " ++ (if Platform.pathSeparator == "\\" then "Windows" else "Linux")
+    [ (embedderOf m.config).version
+        ++ " on "
+        ++ (if Platform.pathSeparator == "\\" then
+                "Windows"
+
+            else
+                "Linux"
+           )
     , "window " ++ String.fromInt m.term.cols ++ "x" ++ String.fromInt m.windowRows ++ " cells, " ++ String.fromInt (tabCount m) ++ " tabs"
-    , "paste button " ++ (if m.config.pasteButton == 2 then "right" else "middle") ++ ", tmux look " ++ m.config.tmuxLook ++ ", tmux tabs " ++ m.config.tmuxTabs
+    , "paste button "
+        ++ (if m.config.pasteButton == 2 then
+                "right"
+
+            else
+                "middle"
+           )
+        ++ ", tmux look "
+        ++ m.config.tmuxLook
+        ++ ", tmux tabs "
+        ++ m.config.tmuxTabs
     ]
         ++ windowState m
 
@@ -2077,36 +2227,118 @@ windowState : Model -> Array String
 windowState m =
     let
         yes b =
-            if b then "on" else "off"
+            if b then
+                "on"
+
+            else
+                "off"
 
         modes =
             m.term.modes
     in
-    [ "tab " ++ String.fromInt m.tab.id ++ " shown of " ++ String.fromInt (tabCount m) ++ ", " ++ (when m.tab.hostName is
-            Just h -> "host " ++ h
-            Nothing -> meant Reason.NotSet "no host")
+    [ "tab "
+        ++ String.fromInt m.tab.id
+        ++ " shown of "
+        ++ String.fromInt (tabCount m)
+        ++ ", "
+        ++ (when m.tab.hostName is
+                Just h ->
+                    "host " ++ h
+
+                Nothing ->
+                    meant Reason.NotSet "no host"
+           )
     , "focus " ++ yes m.focus.focused ++ ", buttons held " ++ String.fromInt m.held ++ ", shift " ++ yes m.shiftHeld
-    , "paste asked " ++ yes (m.toPaste /= Nothing) ++ ", paste under way " ++ (when m.pasting is
-            Just b -> "yes, " ++ (if b then "bracketed" else "plain")
-            Nothing -> meant Reason.NotOpen "no")
+    , "paste asked "
+        ++ yes (m.toPaste /= Nothing)
+        ++ ", paste under way "
+        ++ (when m.pasting is
+                Just b ->
+                    "yes, "
+                        ++ (if b then
+                                "bracketed"
+
+                            else
+                                "plain"
+                           )
+
+                Nothing ->
+                    meant Reason.NotOpen "no"
+           )
     , "waiting to be sent " ++ String.fromInt (Outbox.size m.out) ++ " bytes"
     , "terminal: paste-brackets " ++ yes (Dict.get 2004 modes == Just True) ++ ", focus-reports " ++ yes (Dict.get 1004 modes == Just True) ++ ", mouse " ++ yes ((Vt.mouseModes m.term).tracking /= Mouse.none) ++ ", alt-screen " ++ yes m.term.alt ++ ", view scrolled back " ++ String.fromInt m.back
-    , "open: " ++ (when Array.keepIf (\x -> x /= "")
-            [ if m.menu /= Nothing then "a menu" else ""
-            , if m.renaming /= Nothing then "the rename box" else ""
-            , if m.coloring /= Nothing then "the color box" else ""
-            , if m.closing /= Nothing then "the close question" else ""
-            , if m.startFailed /= Nothing then "the box saying a tab did not start" else ""
-            , if m.search /= Nothing then "the search bar" else ""
-            , if m.selection /= Nothing then "a selection" else ""
-            ] is
-                [] -> "nothing"
-                open -> String.join ", " open)
-    , "ssh: " ++ (when m.ssh is
-            Just screen -> "to " ++ screen.host ++ (if screen.started then ", started" else ", not started") ++ (if screen.asking /= Nothing then ", asking a question" else "") ++ (when screen.failed is
-                Just why -> ", failed: " ++ why
-                Nothing -> meant Reason.NotOpen "")
-            Nothing -> meant Reason.NotSet "none")
+    , "open: "
+        ++ (when Array.keepIf (\x -> x /= "")
+                [ if m.menu /= Nothing then
+                    "a menu"
+
+                  else
+                    ""
+                , if m.renaming /= Nothing then
+                    "the rename box"
+
+                  else
+                    ""
+                , if m.coloring /= Nothing then
+                    "the color box"
+
+                  else
+                    ""
+                , if m.closing /= Nothing then
+                    "the close question"
+
+                  else
+                    ""
+                , if m.startFailed /= Nothing then
+                    "the box saying a tab did not start"
+
+                  else
+                    ""
+                , if m.search /= Nothing then
+                    "the search bar"
+
+                  else
+                    ""
+                , if m.selection /= Nothing then
+                    "a selection"
+
+                  else
+                    ""
+                ] is
+                [] ->
+                    "nothing"
+
+                open ->
+                    String.join ", " open
+           )
+    , "ssh: "
+        ++ (when m.ssh is
+                Just screen ->
+                    "to "
+                        ++ screen.host
+                        ++ (if screen.started then
+                                ", started"
+
+                            else
+                                ", not started"
+                           )
+                        ++ (if screen.asking /= Nothing then
+                                ", asking a question"
+
+                            else
+                                ""
+                           )
+                        ++ (when screen.failed is
+                                Just why ->
+                                    ", failed: " ++ why
+
+                                Nothing ->
+                                    meant Reason.NotOpen ""
+                           )
+
+                Nothing ->
+                    meant Reason.NotSet "none"
+           )
     ]
 
 
@@ -2128,7 +2360,15 @@ eventLine ev =
             Just { tag = "window", text = "cell " ++ String.fromInt c.width ++ "x" ++ String.fromInt c.height ++ " (another monitor's scale)" }
 
         Window.Focus on ->
-            Just { tag = "window", text = if on then "focus in" else "focus out" }
+            Just
+                { tag = "window"
+                , text =
+                    if on then
+                        "focus in"
+
+                    else
+                        "focus out"
+                }
 
         Window.Close ->
             Just { tag = "window", text = "close asked" }
@@ -2146,7 +2386,17 @@ eventLine ev =
             Just { tag = "select", text = "the selection was taken by another program" }
 
         Window.Pasted more ->
-            Just { tag = "paste", text = "text came" ++ (if more then ", more to come" else "") }
+            Just
+                { tag = "paste"
+                , text =
+                    "text came"
+                        ++ (if more then
+                                ", more to come"
+
+                            else
+                                ""
+                           )
+                }
 
         Window.MenuChosen c ->
             Just { tag = "menu", text = "chosen: menu " ++ String.fromInt c.menu ++ " item " ++ String.fromInt c.index }
@@ -2301,7 +2551,14 @@ applyLook new m =
     )
         |> Task.andThen (\_ -> Text.ligatures new.ligatures)
         |> Task.andThen (\_ -> refontOr new old language applied)
-        |> Task.andThen (\next -> if rebar then relayout next.term.cols next else Task.succeed next)
+        |> Task.andThen
+            (\next ->
+                if rebar then
+                    relayout next.term.cols next
+
+                else
+                    Task.succeed next
+            )
 
 
 {-| The font opened again, or sized again, when the settings ask (ST4). -}
@@ -2320,8 +2577,9 @@ refontOr new old language applied =
                             Task.succeed { applied | points = new.points }
 
                         Err why ->
-                            meant Reason.Refused Console.writeErr ("puritty: " ++ why ++ "; the font in use is kept\n")
-                                |> Task.map (\_ -> { applied | config = { new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb } })
+                            meant Reason.Refused
+                                Console.writeErr ("puritty: " ++ why ++ "; the font in use is kept\n")
+                                    |> Task.map (\_ -> { applied | config = { new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb } })
                 )
 
     else if new.points /= old.points then
@@ -2426,7 +2684,12 @@ menuItems config =
     , { label = "Tab color…", does = Colors }
     , { label = "Reopen closed tab", does = Reopens }
     ]
-        ++ (if config.debugLog then [ { label = "Mark the diagnostic log", does = Marks } ] else [])
+        ++ (if config.debugLog then
+                [ { label = "Mark the diagnostic log", does = Marks } ]
+
+            else
+                []
+           )
         ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
 
 
@@ -2521,7 +2784,11 @@ menuChosen : { menu : Int, index : Int } -> (taken m : Model) -> Task Error Mode
 menuChosen c m =
     let
         items =
-            if c.menu == 1 then menuItems m.config else m.shownItems
+            if c.menu == 1 then
+                menuItems m.config
+
+            else
+                m.shownItems
     in
     when Array.get c.index items is
         Just item ->
@@ -2564,7 +2831,16 @@ menuPaints menu cols rows =
             , col = box.col
             , text =
                 "│"
-                    ++ String.padRight inner ' ' ((if i == menu.selected then " ▸ " else "   ") ++ item.label)
+                    ++ String.padRight inner
+                        ' '
+                        ((if i == menu.selected then
+                            " ▸ "
+
+                          else
+                            "   "
+                         )
+                            ++ item.label
+                        )
                     ++ "│"
             }
     in
@@ -2691,7 +2967,9 @@ feed remote chunk ms m =
             else
                 Diag.addAll ms "tmux<" r.trace m.diag
     in
-    feedTerm remote r.outside ms
+    feedTerm remote
+        r.outside
+        ms
         { m
             | tmux = r.state
             , turnMs = ms
@@ -2767,7 +3045,14 @@ feedTerm remote chunk0 ms m =
                 0
     in
     Task.succeed
-        (Array.foldl (\r acc -> if Outbox.size acc.out >= replyCap then acc else send r acc)
+        (Array.foldl
+            (\r acc ->
+                if Outbox.size acc.out >= replyCap then
+                    acc
+
+                else
+                    send r acc
+            )
             { m
                 | term = taken.term
                 , clips = m.clips ++ taken.clips
@@ -3040,17 +3325,17 @@ sshKey remote k m =
 
                 Nothing ->
                     meant Reason.NotOpen
-                    if screen.failed /= Nothing && letter == "r" then
-                        remote.reconnect { columns = m.term.cols, rows = m.term.rows }
-                            |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
+                        if screen.failed /= Nothing && letter == "r" then
+                            remote.reconnect { columns = m.term.cols, rows = m.term.rows }
+                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
 
-                    else if (screen.failed /= Nothing && enter) || escape then
-                        -- this tab's session given up: the tab closed, and
-                        -- the window only with its last tab
-                        closeShown m
+                        else if (screen.failed /= Nothing && enter) || escape then
+                            -- this tab's session given up: the tab closed, and
+                            -- the window only with its last tab
+                            closeShown m
 
-                    else
-                        Task.succeed m
+                        else
+                            Task.succeed m
 
 
 {-| The question answered: the answer to the session, and a line said. -}
@@ -3103,7 +3388,12 @@ dialogOf screen =
                         { title = "The host " ++ cleanText k.host ++ " is not known"
                         , lines =
                             [ "Its " ++ k.algorithm ++ " key's fingerprint:", "    " ++ k.fingerprint ]
-                                ++ (if Array.isEmpty k.knownTypes then [] else [ "It is known by its " ++ String.join ", " k.knownTypes ++ " key, not this one." ])
+                                ++ (if Array.isEmpty k.knownTypes then
+                                        []
+
+                                    else
+                                        [ "It is known by its " ++ String.join ", " k.knownTypes ++ " key, not this one." ]
+                                   )
                         , field = Nothing
                         , swatches = []
                         , buttons = []
@@ -3128,8 +3418,20 @@ dialogOf screen =
                     when Array.get (Array.length asking.given) r.prompts is
                         Just prompt ->
                             Just
-                                { title = if r.name == "" then "The server asks" else cleanText r.name
-                                , lines = (if r.instruction == "" then [] else [ cleanText r.instruction ]) ++ [ cleanText prompt.text ]
+                                { title =
+                                    if r.name == "" then
+                                        "The server asks"
+
+                                    else
+                                        cleanText r.name
+                                , lines =
+                                    (if r.instruction == "" then
+                                        []
+
+                                     else
+                                        [ cleanText r.instruction ]
+                                    )
+                                        ++ [ cleanText prompt.text ]
                                 , field = Just { typed = asking.typed, hidden = not prompt.echo, caret = String.count asking.typed }
                                 , swatches = []
                                 , buttons = []
@@ -3141,12 +3443,12 @@ dialogOf screen =
 
         Nothing ->
             meant Reason.NotOpen
-            when screen.failed is
-                Just why ->
-                    Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
+                when screen.failed is
+                    Just why ->
+                        Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
 
-                Nothing ->
-                    meant Reason.NotOpen Nothing
+                    Nothing ->
+                        meant Reason.NotOpen Nothing
 
 
 {-| The own screen as a terminal of the window's size: a heading, what has
@@ -3221,8 +3523,16 @@ ownTerm m boxed screen =
                                             meant Reason.NoMore ""
                             in
                             [ line ""
-                            , if r.name == "" then "" else line (bold ("The server asks: " ++ cleanText r.name))
-                            , if r.instruction == "" then "" else line (cleanText r.instruction)
+                            , if r.name == "" then
+                                ""
+
+                              else
+                                line (bold ("The server asks: " ++ cleanText r.name))
+                            , if r.instruction == "" then
+                                ""
+
+                              else
+                                line (cleanText r.instruction)
                             , shown
                             , line ""
                             , line (dim "  Enter: answer    Esc: do not answer")
@@ -3230,12 +3540,12 @@ ownTerm m boxed screen =
 
                 Nothing ->
                     meant Reason.NotOpen
-                    when screen.failed is
-                        Just why ->
-                            [ line "", line (bold "The session could not go on:"), line ("  " ++ why), line "", line "  Enter: close    R: connect again" ]
+                        when screen.failed is
+                            Just why ->
+                                [ line "", line (bold "The session could not go on:"), line ("  " ++ why), line "", line "  Enter: close    R: connect again" ]
 
-                        Nothing ->
-                            meant Reason.NotOpen []
+                            Nothing ->
+                                meant Reason.NotOpen []
 
         -- the cursor only where something is typed
         typingAsked =
@@ -3265,14 +3575,23 @@ ownTerm m boxed screen =
         text =
             String.join ""
                 ([ "\u{001B}[2J\u{001B}[H"
-                 , if typing then "\u{001B}[?25h" else "\u{001B}[?25l"
+                 , if typing then
+                    "\u{001B}[?25h"
+
+                   else
+                    "\u{001B}[?25l"
                  , line (bold ("puritty: ssh to " ++ cleanText screen.host))
                  , line ""
                  ]
                     ++ Array.map (\l -> line (dim ("  " ++ l))) (Array.takeLast (max 1 (m.term.rows - 12)) screen.lines)
                     ++ question
                     -- the cursor back after what is typed (DECRC)
-                    ++ [ if typing then "\u{001B}8" else "" ]
+                    ++ [ if typing then
+                            "\u{001B}8"
+
+                         else
+                            ""
+                       ]
                 )
     in
     Vt.new
@@ -3289,76 +3608,101 @@ ownTerm m boxed screen =
 
 handleOne : Backend -> Int -> Array Window.Event -> Window.Event -> (taken m : Model) -> Task Error Model
 handleOne remote ms rest ev m =
-            when ev is
-                Window.Key k ->
-                  if m.startFailed /= Nothing then
-                    -- the box saying a tab did not start takes the keys
-                    (if k.action /= 0 then startFailedKey k m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
+    when ev is
+        Window.Key k ->
+            if m.startFailed /= Nothing then
+                -- the box saying a tab did not start takes the keys
+                (if k.action /= 0 then
+                    startFailedKey k m
 
-                  else if m.closing /= Nothing then
-                    -- the question before closing takes the keys (TB4)
-                    (if k.action /= 0 then closeKey k m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                  else if m.renaming /= Nothing then
-                    -- the rename box takes the keys while it is open (TB1)
-                    (if k.action /= 0 then renameKey k m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
+            else if m.closing /= Nothing then
+                -- the question before closing takes the keys (TB4)
+                (if k.action /= 0 then
+                    closeKey k m
 
-                  else if m.coloring /= Nothing then
-                    -- and the color box (TB9)
-                    (if k.action /= 0 then colorKey k m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                  else if ownScreenUp m then
-                    -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
-                    (if k.action /= 0 then sshKey remote k m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
+            else if m.renaming /= Nothing then
+                -- the rename box takes the keys while it is open (TB1)
+                (if k.action /= 0 then
+                    renameKey k m
 
-                  else if m.menu /= Nothing && k.action /= 0 then
-                    -- the menu takes the keys while it is open
-                    when m.menu is
-                        Just menu ->
-                            menuKey k.sym menu m |> Task.andThen (\next -> handle remote ms rest next)
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                        Nothing ->
-                            handle remote ms rest m
+            else if m.coloring /= Nothing then
+                -- and the color box (TB9)
+                (if k.action /= 0 then
+                    colorKey k m
 
-                  else if m.search /= Nothing && k.action /= 0 && not (isCopyKey m.config k) then
-                    -- the search bar takes the keys while it is open (§23),
-                    -- but Ctrl+Shift+C, which copies the match
-                    handle remote ms rest (searchKey k m)
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                  else if isSearchKey m.config k && not (TmuxMode.isOn m.tmux) then
-                    handle remote ms rest { m | search = Just Search.start, urgent = True }
+            else if ownScreenUp m then
+                -- puritty's own screen takes the keys (docs/ssh-client.md SC18)
+                (if k.action /= 0 then
+                    sshKey remote k m
 
-                  else if isSettingsKey m.config k then
-                    -- Ctrl+Comma: the settings window (docs/settings.md ST9),
-                    -- which raises one already open
-                    openSettings m |> Task.andThen (\next -> handle remote ms rest next)
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                  else if tabAction k m /= Nothing then
-                    -- the tabs' keys (docs/tabs.md TB1)
-                    when tabAction k m is
-                        Just action ->
-                            tabDo action m |> Task.andThen (\next -> handle next.remote ms rest next)
+            else if m.menu /= Nothing && k.action /= 0 then
+                -- the menu takes the keys while it is open
+                when m.menu is
+                    Just menu ->
+                        menuKey k.sym menu m |> Task.andThen (\next -> handle remote ms rest next)
 
-                        Nothing ->
-                            handle remote ms rest m
+                    Nothing ->
+                        handle remote ms rest m
 
-                  else
-                    when zoomOf m k is
-                        Just points ->
-                            Window.zoom points
-                                |> Task.andThen
-                                    (\_ ->
-                                        -- every cell is drawn again at the new size
-                                        handle remote ms rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
-                                    )
+            else if m.search /= Nothing && k.action /= 0 && not (isCopyKey m.config k) then
+                -- the search bar takes the keys while it is open (§23),
+                -- but Ctrl+Shift+C, which copies the match
+                handle remote ms rest (searchKey k m)
 
-                        Nothing ->
-                            meant Reason.NotKnown
+            else if isSearchKey m.config k && not (TmuxMode.isOn m.tmux) then
+                handle remote ms rest { m | search = Just Search.start, urgent = True }
+
+            else if isSettingsKey m.config k then
+                -- Ctrl+Comma: the settings window (docs/settings.md ST9),
+                -- which raises one already open
+                openSettings m |> Task.andThen (\next -> handle remote ms rest next)
+
+            else if tabAction k m /= Nothing then
+                -- the tabs' keys (docs/tabs.md TB1)
+                when tabAction k m is
+                    Just action ->
+                        tabDo action m |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                    Nothing ->
+                        handle remote ms rest m
+
+            else
+                when zoomOf m k is
+                    Just points ->
+                        Window.zoom points
+                            |> Task.andThen
+                                (\_ ->
+                                    -- every cell is drawn again at the new size
+                                    handle remote ms rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
+                                )
+
+                    Nothing ->
+                        meant Reason.NotKnown
                             if isPasteKey m.config k /= Nothing then
                                 -- Shift+Insert and Ctrl+Shift+V, the
                                 -- terminal's before the program's
@@ -3368,7 +3712,9 @@ handleOne remote ms rest ev m =
                                 -- Ctrl+Shift+C: the selection to CLIPBOARD
                                 -- (docs/user/copy-and-paste.md), the key
                                 -- puritty's with or without one
-                                owned remote ms rest
+                                owned remote
+                                    ms
+                                    rest
                                     (if TmuxMode.isOn m.tmux then
                                         when TmuxMode.selectedText m.tmux is
                                             Just text ->
@@ -3386,216 +3732,260 @@ handleOne remote ms rest ev m =
                                                 meant Reason.NotOpen m
                                     )
 
-                            else
-                                if TmuxMode.isOn m.tmux then
-                                    -- the tabs' keys, then the active pane's
-                                    -- view (docs/tmux.md TM17, TM18)
+                            else if
+                                TmuxMode.isOn m.tmux
+                            then
+                                -- the tabs' keys, then the active pane's
+                                -- view (docs/tmux.md TM17, TM18)
+                                let
+                                    tabbed =
+                                        TmuxMode.tabKey k m.tmux
+                                in
+                                if tabbed.used then
+                                    handle remote ms rest (sendCommands tabbed.commands { m | tmux = tabbed.state, urgent = True })
+
+                                else
                                     let
-                                        tabbed =
-                                            TmuxMode.tabKey k m.tmux
+                                        scrolled =
+                                            TmuxMode.scrollKey k tabbed.state
                                     in
-                                    if tabbed.used then
-                                        handle remote ms rest (sendCommands tabbed.commands { m | tmux = tabbed.state, urgent = True })
+                                    if scrolled.used then
+                                        handle remote ms rest { m | tmux = scrolled.state, urgent = True }
 
                                     else
-                                        let
-                                            scrolled =
-                                                TmuxMode.scrollKey k tabbed.state
-                                        in
-                                        if scrolled.used then
-                                            handle remote ms rest { m | tmux = scrolled.state, urgent = True }
-
-                                        else
-                                            key remote ms rest k { m | tmux = scrolled.state }
-
-                                else
-                                    when scrollKeyOf m k is
-                                        Just back ->
-                                            handle remote ms rest { m | back = back, urgent = True }
-
-                                        Nothing ->
-                                            meant Reason.NotKnown key remote ms rest k m
-
-                Window.Resized size ->
-                    -- every tab at the window's size, less the bar's row
-                    -- while it shows (docs/tabs.md TB2)
-                    relayout size.cols { m | windowRows = size.rows }
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
-
-                Window.Focus on ->
-                    let
-                        report =
-                            if modeOn 1004 m then
-                                if on then
-                                    Bytes.fromString "\u{001B}[I"
-
-                                else
-                                    Bytes.fromString "\u{001B}[O"
+                                        key remote ms rest k { m | tmux = scrolled.state }
 
                             else
-                                Bytes.empty
-                    in
-                    handle remote ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
+                                when scrollKeyOf m k is
+                                    Just back ->
+                                        handle remote ms rest { m | back = back, urgent = True }
 
-                Window.Close ->
-                    -- asked first when a tab is busy (docs/tabs.md TB7)
-                    askCloseWindow m |> Task.andThen (\next -> if next.closed then Task.succeed next else handle next.remote ms rest next)
+                                    Nothing ->
+                                        meant Reason.NotKnown key remote ms rest k m
 
-                Window.MenuChosen c ->
-                    menuChosen c m |> Task.andThen (\next -> handle remote ms rest next)
+        Window.Resized size ->
+            -- every tab at the window's size, less the bar's row
+            -- while it shows (docs/tabs.md TB2)
+            relayout size.cols { m | windowRows = size.rows }
+                |> Task.andThen (\next -> handle next.remote ms rest next)
 
-                Window.Note text ->
-                    -- what the X server did with the window (docs/rhel8-etx.md RE9)
-                    handle remote ms rest (logLine "window" text m)
-
-                Window.Rescaled _ ->
-                    -- the window moved to a monitor of another scale
-                    -- (docs/windows.md WS30): the cell is the window's
-                    -- own, and the Resized that follows draws every cell
-                    handle remote ms rest m
-
-                Window.Commit text ->
-                  if m.renaming /= Nothing then
-                    handle remote ms rest (renameTyped (Bytes.toStringLossy text) m)
-
-                  else if m.coloring /= Nothing then
-                    -- what the IME commits is no answer to the color box
-                    handle remote ms rest m
-
-                  else if ownScreenUp m then
-                    -- what the IME commits, typed into the question
-                    handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
-
-                  else if TmuxMode.isAsking m.tmux then
-                    -- typed into tmux's prompt that puritty asks (TM25)
-                    handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
-
-                  else
-                    -- the key path: the text as typed, never as a paste (V46)
-                    -- one key sound for the commit (feature-plan.md §3)
-                    imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
-                        |> Task.andThen (\_ -> if m.config.soundKeys then Window.sound 0 |> Task.map (\_ -> {}) else Task.succeed {})
-                        |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
-
-                Window.Preedit p ->
-                    let
-                        cps =
-                            Array.map Char.toCode (String.toArray (Bytes.toStringLossy p.text))
-
-                        old =
-                            m.preedit
-
-                        points =
-                            Array.takeFirst p.first old.points ++ cps ++ Array.dropFirst (p.first + p.length) old.points
-
-                        feedback =
-                            Array.takeFirst p.first old.feedback
-                                ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback))
-                                ++ Array.dropFirst (p.first + p.length) old.feedback
-                    in
-                    imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
-                        |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
-
-                Window.ImeReady ->
-                    imeLine m.imeLog "ime ready"
-                        |> Task.andThen (\_ -> handle remote ms rest m)
-
-                Window.PreeditDone ->
-                    imeLine m.imeLog "done"
-                        |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
-
-                Window.Pointer p ->
-                  if p.action == 2 && m.held == 0 && not (if TmuxMode.isOn m.tmux then TmuxMode.anyMotion m.tmux else (Vt.mouseModes m.term).tracking == Mouse.any) then
-                    -- a motion with no button held that nothing asked for,
-                    -- sent for the pointer's shape alone (TM38); under tmux
-                    -- a pane's program may ask (TM61)
-                    handle remote ms rest { m | hover = Just p }
-
-                  else if m.hover /= Just p then
-                    -- the pointer's place kept for its shape, and the event
-                    -- then taken as before
-                    handle remote ms (Array.pushFirst (Window.Pointer p) rest) { m | hover = Just p }
-
-                  else if m.startFailed /= Nothing then
-                    -- and the pointer: its button dismisses it
-                    (if p.action == 0 then startFailedPress p m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
-
-                  else if m.closing /= Nothing then
-                    -- the close question takes the pointer: its buttons
-                    -- answer it, and nothing reaches the terminal (TB12)
-                    (if p.action == 0 then closePress p m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
-
-                  else if m.coloring /= Nothing then
-                    -- the color box takes the presses while it is open (TB9)
-                    (if p.action == 0 then colorPress p m else Task.succeed m)
-                        |> Task.andThen (\next -> handle next.remote ms rest next)
-
-                  else if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
-                    -- a press on the tab bar (docs/tabs.md TB1)
-                    barPress ms p m |> Task.andThen (\next -> handle next.remote ms rest next)
-
-                  else if p.action == 0 && m.menu /= Nothing then
-                    when m.menu is
-                        Just menu ->
-                            menuPress p menu m |> Task.andThen (\next -> handle remote ms rest next)
-
-                        Nothing ->
-                            handle remote ms rest m
-
-                  else if isMenuClick p then
-                    openMenu p m |> Task.andThen (\next -> handle remote ms rest next)
-
-                  else
-                    if isZoomStep p then
-                        -- Ctrl and the wheel: puritty's always, a point a
-                        -- step, the steps that came together one zoom
-                        -- (docs/phase3-select.md §11, §17)
-                        let
-                            steps =
-                                zoomSteps rest (stepOf p)
-
-                            points =
-                                clamp 4 96 (m.points + steps.net)
-                        in
-                        if points == m.points then
-                            handle remote ms steps.rest m
+        Window.Focus on ->
+            let
+                report =
+                    if modeOn 1004 m then
+                        if on then
+                            Bytes.fromString "\u{001B}[I"
 
                         else
-                            Window.zoom points
-                                |> Task.andThen
-                                    (\_ ->
-                                        handle remote ms steps.rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
-                                    )
+                            Bytes.fromString "\u{001B}[O"
 
                     else
-                        owned remote ms rest (pointer ms p m)
+                        Bytes.empty
+            in
+            handle remote ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
 
-                Window.Pasted more ->
-                    Window.pasted
+        Window.Close ->
+            -- asked first when a tab is busy (docs/tabs.md TB7)
+            askCloseWindow m
+                |> Task.andThen
+                    (\next ->
+                        if next.closed then
+                            Task.succeed next
+
+                        else
+                            handle next.remote ms rest next
+                    )
+
+        Window.MenuChosen c ->
+            menuChosen c m |> Task.andThen (\next -> handle remote ms rest next)
+
+        Window.Note text ->
+            -- what the X server did with the window (docs/rhel8-etx.md RE9)
+            handle remote ms rest (logLine "window" text m)
+
+        Window.Rescaled _ ->
+            -- the window moved to a monitor of another scale
+            -- (docs/windows.md WS30): the cell is the window's
+            -- own, and the Resized that follows draws every cell
+            handle remote ms rest m
+
+        Window.Commit text ->
+            if m.renaming /= Nothing then
+                handle remote ms rest (renameTyped (Bytes.toStringLossy text) m)
+
+            else if m.coloring /= Nothing then
+                -- what the IME commits is no answer to the color box
+                handle remote ms rest m
+
+            else if ownScreenUp m then
+                -- what the IME commits, typed into the question
+                handle remote ms rest (sshTyped (Bytes.toStringLossy text) m)
+
+            else if TmuxMode.isAsking m.tmux then
+                -- typed into tmux's prompt that puritty asks (TM25)
+                handle remote ms rest { m | tmux = TmuxMode.typeInto (Bytes.toStringLossy text) m.tmux, urgent = True }
+
+            else
+                -- the key path: the text as typed, never as a paste (V46)
+                -- one key sound for the commit (feature-plan.md §3)
+                imeLine m.imeLog ("commit " ++ Bytes.toStringLossy text)
+                    |> Task.andThen
+                        (\_ ->
+                            if m.config.soundKeys then
+                                Window.sound 0 |> Task.map (\_ -> {})
+
+                            else
+                                Task.succeed {}
+                        )
+                    |> Task.andThen (\_ -> handle remote ms rest (send text { m | urgent = True, back = 0 }))
+
+        Window.Preedit p ->
+            let
+                cps =
+                    Array.map Char.toCode (String.toArray (Bytes.toStringLossy p.text))
+
+                old =
+                    m.preedit
+
+                points =
+                    Array.takeFirst p.first old.points ++ cps ++ Array.dropFirst (p.first + p.length) old.points
+
+                feedback =
+                    Array.takeFirst p.first old.feedback
+                        ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback))
+                        ++ Array.dropFirst (p.first + p.length) old.feedback
+            in
+            imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
+                |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = points, feedback = feedback, caret = p.caret }, urgent = True })
+
+        Window.ImeReady ->
+            imeLine m.imeLog "ime ready"
+                |> Task.andThen (\_ -> handle remote ms rest m)
+
+        Window.PreeditDone ->
+            imeLine m.imeLog "done"
+                |> Task.andThen (\_ -> handle remote ms rest { m | preedit = { points = [], feedback = [], caret = 0 }, urgent = True })
+
+        Window.Pointer p ->
+            if
+                p.action == 2 && m.held == 0 && not
+                                                    (if TmuxMode.isOn m.tmux then
+                                                        TmuxMode.anyMotion m.tmux
+
+                                                     else
+                                                        (Vt.mouseModes m.term).tracking == Mouse.any
+                                                    )
+            then
+                -- a motion with no button held that nothing asked for,
+                -- sent for the pointer's shape alone (TM38); under tmux
+                -- a pane's program may ask (TM61)
+                handle remote ms rest { m | hover = Just p }
+
+            else if m.hover /= Just p then
+                -- the pointer's place kept for its shape, and the event
+                -- then taken as before
+                handle remote ms (Array.pushFirst (Window.Pointer p) rest) { m | hover = Just p }
+
+            else if m.startFailed /= Nothing then
+                -- and the pointer: its button dismisses it
+                (if p.action == 0 then
+                    startFailedPress p m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if m.closing /= Nothing then
+                -- the close question takes the pointer: its buttons
+                -- answer it, and nothing reaches the terminal (TB12)
+                (if p.action == 0 then
+                    closePress p m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if m.coloring /= Nothing then
+                -- the color box takes the presses while it is open (TB9)
+                (if p.action == 0 then
+                    colorPress p m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if p.action == 0 && barRows m > 0 && p.y >= m.term.rows * max 1 p.cellHeight then
+                -- a press on the tab bar (docs/tabs.md TB1)
+                barPress ms p m |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if p.action == 0 && m.menu /= Nothing then
+                when m.menu is
+                    Just menu ->
+                        menuPress p menu m |> Task.andThen (\next -> handle remote ms rest next)
+
+                    Nothing ->
+                        handle remote ms rest m
+
+            else if isMenuClick p then
+                openMenu p m |> Task.andThen (\next -> handle remote ms rest next)
+
+            else if
+                isZoomStep p
+            then
+                -- Ctrl and the wheel: puritty's always, a point a
+                -- step, the steps that came together one zoom
+                -- (docs/phase3-select.md §11, §17)
+                let
+                    steps =
+                        zoomSteps rest (stepOf p)
+
+                    points =
+                        clamp 4 96 (m.points + steps.net)
+                in
+                if points == m.points then
+                    handle remote ms steps.rest m
+
+                else
+                    Window.zoom points
                         |> Task.andThen
-                            (\text ->
-                                handle remote ms rest
-                                    (when m.clipRead is
-                                        Just r ->
-                                            clipReadIn more text r m
-
-                                        Nothing ->
-                                            meant Reason.NotOpen pasteIn more text m
-                                    )
+                            (\_ ->
+                                handle remote ms steps.rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
                             )
 
-                Window.SelectionLost which ->
-                    -- another program's selection now: the highlight goes,
-                    -- as xterm takes it away
-                    handle remote ms rest
-                        (if which == Window.Primary then
-                            { m | selection = Nothing, urgent = True }
+            else
+                owned remote ms rest (pointer ms p m)
 
-                         else
-                            m
-                        )
+        Window.Pasted more ->
+            Window.pasted
+                |> Task.andThen
+                    (\text ->
+                        handle remote
+                            ms
+                            rest
+                            (when m.clipRead is
+                                Just r ->
+                                    clipReadIn more text r m
+
+                                Nothing ->
+                                    meant Reason.NotOpen pasteIn more text m
+                            )
+                    )
+
+        Window.SelectionLost which ->
+            -- another program's selection now: the highlight goes,
+            -- as xterm takes it away
+            handle remote
+                ms
+                rest
+                (if which == Window.Primary then
+                    { m | selection = Nothing, urgent = True }
+
+                 else
+                    m
+                )
 
 
 {-| The events after one that made a selection the window's, or asked
@@ -3619,13 +4009,29 @@ owned remote ms rest m =
 
         Nothing ->
             meant Reason.NoMore
-            when m.toPaste is
-                Just which ->
-                    Window.paste which
-                        |> Task.andThen (\_ -> handle remote ms rest (logLine "paste" ("asked from " ++ (if which == Window.Primary then "the selection (primary)" else "the clipboard")) { m | toPaste = Nothing }))
+                when m.toPaste is
+                    Just which ->
+                        Window.paste which
+                            |> Task.andThen
+                                (\_ ->
+                                    handle remote
+                                        ms
+                                        rest
+                                        (logLine "paste"
+                                            ("asked from "
+                                                ++ (if which == Window.Primary then
+                                                        "the selection (primary)"
 
-                Nothing ->
-                    meant Reason.NoMore handle remote ms rest m
+                                                    else
+                                                        "the clipboard"
+                                                   )
+                                            )
+                                            { m | toPaste = Nothing }
+                                        )
+                                )
+
+                    Nothing ->
+                        meant Reason.NoMore handle remote ms rest m
 
 
 {-| The OSC 52 requests the core made (docs/phase3-select.md §16): a write
@@ -3668,21 +4074,21 @@ clipboardRequests m =
 
                 Nothing ->
                     meant Reason.FromOutside
-                    if rest.config.osc52Read && rest.clipRead == Nothing then
-                        Window.paste which
-                            |> Task.andThen
-                                (\asked ->
-                                    clipboardRequests
-                                        (if asked then
-                                            { rest | clipRead = Just { letter = c.letter, bel = c.bel, text = Bytes.empty } }
+                        if rest.config.osc52Read && rest.clipRead == Nothing then
+                            Window.paste which
+                                |> Task.andThen
+                                    (\asked ->
+                                        clipboardRequests
+                                            (if asked then
+                                                { rest | clipRead = Just { letter = c.letter, bel = c.bel, text = Bytes.empty } }
 
-                                         else
-                                            rest
-                                        )
-                                )
+                                             else
+                                                rest
+                                            )
+                                    )
 
-                    else
-                        clipboardRequests rest
+                        else
+                            clipboardRequests rest
 
 
 {-| An OSC 52 read's text, as it comes; when it is all there, the answer
@@ -3746,9 +4152,17 @@ pasteInto more text m =
 
             else
                 Bytes.flatten
-                    [ if first && bracketed then Paste.bracketStart else Bytes.empty
+                    [ if first && bracketed then
+                        Paste.bracketStart
+
+                      else
+                        Bytes.empty
                     , Paste.piece bracketed text
-                    , if not more && bracketed then Paste.bracketEnd else Bytes.empty
+                    , if not more && bracketed then
+                        Paste.bracketEnd
+
+                      else
+                        Bytes.empty
                     ]
 
         -- under tmux -CC, given to tmux to paste (docs/tmux.md TM64): a
@@ -3759,7 +4173,11 @@ pasteInto more text m =
         -- bracket it, as tmux knows the pane's modes and puritty may not
         -- (3.6, measured)
         tmuxBytes =
-            if empty then Bytes.empty else Paste.piece True text
+            if empty then
+                Bytes.empty
+
+            else
+                Paste.piece True text
 
         updated =
             { m
@@ -3770,31 +4188,49 @@ pasteInto more text m =
                             ++ " bytes, "
                             ++ String.fromInt (Diag.lines text)
                             ++ " lines, "
-                            ++ (if bracketed then "bracketed" else "plain")
+                            ++ (if bracketed then
+                                    "bracketed"
+
+                                else
+                                    "plain"
+                               )
                             ++ (when { first = first, more = more } is
-                                    { first = True, more = False } -> ", in one piece"
-                                    { first = True, more = True } -> ", the first piece"
-                                    { first = False, more = True } -> ", a later piece"
-                                    { first = False, more = False } -> ", the last piece")
+                                    { first = True, more = False } ->
+                                        ", in one piece"
+
+                                    { first = True, more = True } ->
+                                        ", the first piece"
+
+                                    { first = False, more = True } ->
+                                        ", a later piece"
+
+                                    { first = False, more = False } ->
+                                        ", the last piece"
+                               )
                             ++ ", sent "
                             ++ String.fromInt (Bytes.length bytes)
                             ++ " bytes to "
-                            ++ (if TmuxMode.isOn m.tmux then "tmux's active pane" else "the program")
+                            ++ (if TmuxMode.isOn m.tmux then
+                                    "tmux's active pane"
+
+                                else
+                                    "the program"
+                               )
                         )
                         m.diag
-            , pasting =
-                if more then
-                    Just bracketed
+                , pasting =
+                    if more then
+                        Just bracketed
 
-                else
-                    Nothing
-            , back =
-                if empty then
-                    m.back
+                    else
+                        Nothing
+                , back =
+                    if empty then
+                        m.back
 
-                else
-                    0
-            , urgent = True
+                    else
+                        0
+                , urgent = True
             }
     in
     if TmuxMode.isOn updated.tmux then
@@ -3858,7 +4294,12 @@ pointer ms p m =
                 , tmux = r.state
                 , urgent = True
                 , toOwn = Maybe.map (\t -> { which = Window.Primary, text = t }) r.own
-                , toPaste = if r.paste then Just (pasteFrom m.config Window.Primary) else m.toPaste
+                , toPaste =
+                    if r.paste then
+                        Just (pasteFrom m.config Window.Primary)
+
+                    else
+                        m.toPaste
             }
 
     else if m.barDrag || (p.action == 0 && p.button == 1 && barShown m && Dialog.scrollbarHit (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term } { x = p.x, y = p.y } /= Nothing) then
@@ -4093,10 +4534,24 @@ pointAt p m =
             max 1 p.cellHeight
 
         col =
-            clamp 0 (m.term.cols - 1) (if p.x < 0 then 0 else p.x // cw)
+            clamp 0
+                (m.term.cols - 1)
+                (if p.x < 0 then
+                    0
+
+                 else
+                    p.x // cw
+                )
 
         y =
-            clamp 0 (m.term.rows - 1) (if p.y < 0 then 0 else p.y // ch)
+            clamp 0
+                (m.term.rows - 1)
+                (if p.y < 0 then
+                    0
+
+                 else
+                    p.y // ch
+                )
     in
     { row = Vt.rowsPushed m.term + y - viewBack m, col = col }
 
@@ -4279,21 +4734,25 @@ key remote ms rest k m =
     clicked
         |> Task.andThen
             (\_ ->
-    handle remote ms rest
-        (sendKey k bytes ms
-            { m
-                | urgent = True
-                , focus = focus
-                , blinkAt = blinkAt
-                , -- a key that reaches the program brings the view to the bottom
-                  back =
-                    if Bytes.isEmpty bytes then
-                        m.back
+                handle remote
+                    ms
+                    rest
+                    (sendKey k
+                        bytes
+                        ms
+                        { m
+                            | urgent = True
+                            , focus = focus
+                            , blinkAt = blinkAt
+                            -- a key that reaches the program brings the view to the bottom
+                            , back =
+                                if Bytes.isEmpty bytes then
+                                    m.back
 
-                    else
-                        0
-            }
-        )
+                                else
+                                    0
+                        }
+                    )
             )
 
 
@@ -4365,7 +4824,11 @@ searchKey k m =
                     from =
                         when s.match is
                             Just mt ->
-                                if older then mt.start.row - 1 else mt.start.row + 1
+                                if older then
+                                    mt.start.row - 1
+
+                                else
+                                    mt.start.row + 1
 
                             Nothing ->
                                 meant Reason.NotYet viewBottom
@@ -4556,7 +5019,12 @@ draw ms m =
                         (\p ->
                             { title = p.title
                             , lines = []
-                            , field = if p.field then Just { typed = p.typed, hidden = False, caret = p.caret } else Nothing
+                            , field =
+                                if p.field then
+                                    Just { typed = p.typed, hidden = False, caret = p.caret }
+
+                                else
+                                    Nothing
                             , swatches = []
                             , buttons = []
                             , hint = p.hint
@@ -4594,7 +5062,18 @@ draw ms m =
 
             else
                 Maybe.map
-                    (\s -> Dialog.searchBar overlay { query = s.query, note = if s.failed then "No match" else "Enter: older    Shift+Enter: newer    Esc: close", failed = s.failed })
+                    (\s ->
+                        Dialog.searchBar overlay
+                            { query = s.query
+                            , note =
+                                if s.failed then
+                                    "No match"
+
+                                else
+                                    "Enter: older    Shift+Enter: newer    Esc: close"
+                            , failed = s.failed
+                            }
+                    )
                     m.search
 
         -- every cell drawn while anything is over them, and in the frame
@@ -4624,7 +5103,13 @@ draw ms m =
                 m.tmux
 
         spot =
-            View.preeditSpot preedit (if tmuxOn then tmux.canvas else m.term)
+            View.preeditSpot preedit
+                (if tmuxOn then
+                    tmux.canvas
+
+                 else
+                    m.term
+                )
 
         title =
             (if tmuxOn then
@@ -4846,7 +5331,11 @@ tabCount m =
 (`[tabs] bar`). -}
 barRows : Model -> Int
 barRows m =
-    if tabCount m > 1 || m.config.tabsBar == "always" then 1 else 0
+    if tabCount m > 1 || m.config.tabsBar == "always" then
+        1
+
+    else
+        0
 
 
 {-| Where the shown tab is in the bar's order. -}
@@ -5106,7 +5595,12 @@ closeShown m =
     else
         -- where its shell is, read while it runs, to open it there again
         -- (TB11); none for a host's tab
-        (if m.tab.hostName == Nothing then m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing) else Task.succeed Nothing)
+        (if m.tab.hostName == Nothing then
+            m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing)
+
+         else
+            Task.succeed Nothing
+        )
             |> Task.andThen
                 (\dir ->
                     m.remote.kill
@@ -5199,25 +5693,26 @@ openTabWith with m =
                     m.starter.ssh h
 
                 Nothing ->
-                    meant Reason.NotSet here
-                        |> Task.mapError Os.Error.toString
-                        |> Task.andThen
-                            (\dir ->
-                                m.starter.local { columns = cols, rows = rows, directory = dir }
-                                    -- a directory removed under the shown
-                                    -- tab cannot be started in: the
-                                    -- program's own, as when it cannot be
-                                    -- read (TB4, TB16)
-                                    |> Task.onError
-                                        (\why ->
-                                            if dir == Nothing then
-                                                Task.fail why
+                    meant Reason.NotSet
+                        here
+                            |> Task.mapError Os.Error.toString
+                            |> Task.andThen
+                                (\dir ->
+                                    m.starter.local { columns = cols, rows = rows, directory = dir }
+                                        -- a directory removed under the shown
+                                        -- tab cannot be started in: the
+                                        -- program's own, as when it cannot be
+                                        -- read (TB4, TB16)
+                                        |> Task.onError
+                                            (\why ->
+                                                if dir == Nothing then
+                                                    Task.fail why
 
-                                            else
-                                                m.starter.local { columns = cols, rows = rows, directory = Nothing }
-                                        )
-                            )
-                        |> Task.map (\remote -> { remote = remote, problems = [] })
+                                                else
+                                                    m.starter.local { columns = cols, rows = rows, directory = Nothing }
+                                            )
+                                )
+                            |> Task.map (\remote -> { remote = remote, problems = [] })
     in
     starting
         |> Task.map Ok
@@ -5284,7 +5779,12 @@ freshTab id remote host name color cols rows m =
     { info = { id = id, name = name, host = host, hostName = m.tab.hostName, color = color, bells = 0, bell = False, activity = False }
     , remote = remote
     , term = freshTerm m.config m.term cols rows
-    , charset = if host == Nothing then m.starter.charset else m.charset
+    , charset =
+        if host == Nothing then
+            m.starter.charset
+
+        else
+            m.charset
     , decoder = Charset.decoder
     , replaced = 0
     , out = Outbox.empty
@@ -5319,7 +5819,12 @@ reopened k id remote host m =
         | info = { info | id = id, bell = False, activity = False, bells = bells }
         , remote = remote
         , term = Vt.feed (Bytes.fromString reopenedNote) k.term
-        , charset = if host == Nothing then m.starter.charset else m.charset
+        , charset =
+            if host == Nothing then
+                m.starter.charset
+
+            else
+                m.charset
         , decoder = Charset.decoder
         , replaced = 0
         , out = Outbox.empty
@@ -5384,7 +5889,11 @@ while there are fewer than `closedSlots`; else the oldest. -}
 closedSlotFor : Int -> { at : Int, oldest : Int, oldestAt : Int } -> Model -> Int
 closedSlotFor i best m =
     if i >= Builder.length m.closedTabs then
-        if Builder.length m.closedTabs < closedSlots then Builder.length m.closedTabs else best.oldest
+        if Builder.length m.closedTabs < closedSlots then
+            Builder.length m.closedTabs
+
+        else
+            best.oldest
 
     else
         when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
@@ -5392,7 +5901,14 @@ closedSlotFor i best m =
                 meant Reason.Gone i
 
             Just at ->
-                closedSlotFor (i + 1) (if best.oldestAt < 0 || at < best.oldestAt then { best | oldest = i, oldestAt = at } else best) m
+                closedSlotFor (i + 1)
+                    (if best.oldestAt < 0 || at < best.oldestAt then
+                        { best | oldest = i, oldestAt = at }
+
+                     else
+                        best
+                    )
+                    m
 
 
 {-| The slot of the closed tab closed last, if any. -}
@@ -5409,7 +5925,11 @@ newestFrom i best bestAt m =
     else
         when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
             Just at ->
-                if at > bestAt then newestFrom (i + 1) (Just i) at m else newestFrom (i + 1) best bestAt m
+                if at > bestAt then
+                    newestFrom (i + 1) (Just i) at m
+
+                else
+                    newestFrom (i + 1) best bestAt m
 
             Nothing ->
                 meant Reason.Gone newestFrom (i + 1) best bestAt m
@@ -5632,7 +6152,11 @@ endTab id kill m =
                 Just t ->
                     let
                         ending =
-                            if kill then t.remote.kill else t.remote.waitForExit |> Task.map (\_ -> {})
+                            if kill then
+                                t.remote.kill
+
+                            else
+                                t.remote.waitForExit |> Task.map (\_ -> {})
                     in
                     ending
                         |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })
@@ -5665,9 +6189,19 @@ tabLabel info title =
 
                     Nothing ->
                         meant Reason.NotSet
-                        if title /= "" then String.takeFirst 24 (shortTitle title) else "shell"
+                            if title /= "" then
+                                String.takeFirst 24 (shortTitle title)
+
+                            else
+                                "shell"
     in
-    (if info.bell then "! " else "") ++ base
+    (if info.bell then
+        "! "
+
+     else
+        ""
+    )
+        ++ base
 
 
 {-| A title that begins with a Windows program's path, as `cmd.exe`'s does
@@ -5763,15 +6297,39 @@ tabBar m =
                 m.config.tabsLook == "plain"
 
             barBg =
-                if plain then 0x303030 else 0x262626
+                if plain then
+                    0x303030
+
+                else
+                    0x262626
 
             shape t fill =
                 SettingsGui.box
                     { x = t.x
-                    , y = if plain then y else y + 1
-                    , w = if plain then t.w + 1 else t.w
-                    , h = if plain then ch else ch - 2
-                    , r = if plain then 0 else 4
+                    , y =
+                        if plain then
+                            y
+
+                        else
+                            y + 1
+                    , w =
+                        if plain then
+                            t.w + 1
+
+                        else
+                            t.w
+                    , h =
+                        if plain then
+                            ch
+
+                        else
+                            ch - 2
+                    , r =
+                        if plain then
+                            0
+
+                        else
+                            4
                     , color = fill
                     }
 
@@ -5788,7 +6346,11 @@ tabBar m =
                 Bytes.flatten
                     [ shape t
                         (if t.active then
-                            if plain then 0xD0D0D0 else 0xFFAF00
+                            if plain then
+                                0xD0D0D0
+
+                            else
+                                0xFFAF00
 
                          else if t.bell then
                             0xD70000
@@ -5820,7 +6382,11 @@ tabBar m =
             coloredTab t c =
                 let
                     fill =
-                        if t.active then c else mix c barBg
+                        if t.active then
+                            c
+
+                        else
+                            mix c barBg
 
                     ink =
                         Dialog.contrast fill
@@ -5837,7 +6403,33 @@ tabBar m =
                 Bytes.flatten
                     [ shape t fill
                     , if t.active then
-                        SettingsGui.box { x = t.x + (if plain then 0 else 3), y = if plain then y else y + 1, w = t.w - (if plain then 0 else 6), h = max 2 (ch // 8), r = 0, color = ink }
+                        SettingsGui.box
+                            { x =
+                                t.x
+                                    + (if plain then
+                                        0
+
+                                       else
+                                        3
+                                      )
+                            , y =
+                                if plain then
+                                    y
+
+                                else
+                                    y + 1
+                            , w =
+                                t.w
+                                    - (if plain then
+                                        0
+
+                                       else
+                                        6
+                                      )
+                            , h = max 2 (ch // 8)
+                            , r = 0
+                            , color = ink
+                            }
 
                       else
                         Bytes.empty
@@ -5962,7 +6554,12 @@ colorChoices : Model -> Array TabColor
 colorChoices m =
     Array.map Picked tabColors
         ++ [ NoColor ]
-        ++ (if m.tab.hostName /= Nothing then [ HostsColor ] else [])
+        ++ (if m.tab.hostName /= Nothing then
+                [ HostsColor ]
+
+            else
+                []
+           )
 
 
 {-| The color box (docs/tabs.md TB9): the colors as swatches, the one in
@@ -6029,7 +6626,15 @@ colorKey k m =
                 Just HostsColor
 
             else
-                String.toInt typed |> Maybe.andThen (\n -> if n >= 1 && n <= 8 then Array.get (n - 1) choices else Nothing)
+                String.toInt typed
+                    |> Maybe.andThen
+                        (\n ->
+                            if n >= 1 && n <= 8 then
+                                Array.get (n - 1) choices
+
+                            else
+                                Nothing
+                        )
     in
     when chosen is
         Just choice ->
@@ -6038,11 +6643,11 @@ colorKey k m =
         Nothing ->
             -- a modifier alone, as Shift for an H, leaves the box up
             meant Reason.NotKnown
-            if String.isEmpty typed && k.sym /= 0xFF1B && k.sym /= 0xFF0D && k.sym /= 0xFF8D then
-                Task.succeed m
+                if String.isEmpty typed && k.sym /= 0xFF1B && k.sym /= 0xFF0D && k.sym /= 0xFF8D then
+                    Task.succeed m
 
-            else
-                Task.succeed { m | coloring = Nothing, urgent = True }
+                else
+                    Task.succeed { m | coloring = Nothing, urgent = True }
 
 
 {-| A press while the color box is up: on a swatch, its color; anywhere
@@ -6205,29 +6810,43 @@ askClose m =
                 Task.succeed { m | closing = Just { id = id, why = "Its ssh session to " ++ cleanText host ++ " is open.", window = False }, urgent = True }
 
             Nothing ->
-                meant Reason.NotOpen busy
-                    |> Task.map Ok
-                    |> Task.onError (\e -> Task.succeed (Err e))
-                    |> Task.andThen
-                        (\got ->
-                            when got is
-                                Ok Nothing ->
-                                    closeShown m
+                meant Reason.NotOpen
+                    busy
+                        |> Task.map Ok
+                        |> Task.onError (\e -> Task.succeed (Err e))
+                        |> Task.andThen
+                            (\got ->
+                                when got is
+                                    Ok Nothing ->
+                                        closeShown m
 
-                                Ok (Just name) ->
-                                    Task.succeed
-                                        { m
-                                            | closing = Just { id = id, why = (if name == "" then "A program" else cleanText name) ++ " is running in it.", window = False }
-                                            , urgent = True
-                                        }
+                                    Ok (Just name) ->
+                                        Task.succeed
+                                            { m
+                                                | closing =
+                                                    Just
+                                                        { id = id
+                                                        , why =
+                                                            (if name == "" then
+                                                                "A program"
 
-                                Err e ->
-                                    meant Reason.NoMore Task.succeed
-                                        { m
-                                            | closing = Just { id = id, why = "puritty could not tell whether a program runs in it: " ++ Os.Error.toString e, window = False }
-                                            , urgent = True
-                                        }
-                        )
+                                                             else
+                                                                cleanText name
+                                                            )
+                                                                ++ " is running in it."
+                                                        , window = False
+                                                        }
+                                                , urgent = True
+                                            }
+
+                                    Err e ->
+                                        meant Reason.NoMore
+                                            Task.succeed
+                                                { m
+                                                    | closing = Just { id = id, why = "puritty could not tell whether a program runs in it: " ++ Os.Error.toString e, window = False }
+                                                    , urgent = True
+                                                }
+                            )
 
 
 {-| Why a new tab did not start (docs/tabs.md TB16), in a box over the shown tab,
@@ -6300,7 +6919,12 @@ closeBox c =
         { title = "Close the window?"
         , lines =
             String.split "\n" c.why
-                ++ [ if String.contains "\n" c.why then "Closing the window ends them." else "Closing the window ends it." ]
+                ++ [ if String.contains "\n" c.why then
+                        "Closing the window ends them."
+
+                     else
+                        "Closing the window ends it."
+                   ]
         , field = Nothing
         , swatches = []
         , buttons = closeButtons
@@ -6421,7 +7045,12 @@ askCloseWindow m =
                         let
                             shownLines =
                                 Array.takeFirst 6 busy
-                                    ++ (if Array.length busy > 6 then [ "and " ++ String.fromInt (Array.length busy - 6) ++ " more" ] else [])
+                                    ++ (if Array.length busy > 6 then
+                                            [ "and " ++ String.fromInt (Array.length busy - 6) ++ " more" ]
+
+                                        else
+                                            []
+                                       )
                         in
                         { m | closing = Just { id = -1, why = String.join "\n" shownLines, window = True }, urgent = True }
                 )
@@ -6459,9 +7088,21 @@ busyWhy t =
                 Task.succeed Nothing
 
         Nothing ->
-            meant Reason.NotSet t.remote.busy
-                |> Task.map (Maybe.map (\name -> (if name == "" then "a program" else cleanText name) ++ " is running"))
-                |> Task.onError (\e -> Task.succeed (Just ("puritty could not tell what runs: " ++ Os.Error.toString e)))
+            meant Reason.NotSet
+                t.remote.busy
+                    |> Task.map
+                        (Maybe.map
+                            (\name ->
+                                (if name == "" then
+                                    "a program"
+
+                                 else
+                                    cleanText name
+                                )
+                                    ++ " is running"
+                            )
+                        )
+                    |> Task.onError (\e -> Task.succeed (Just ("puritty could not tell what runs: " ++ Os.Error.toString e)))
 
 
 {-| Whether a tab's ssh session failed or dropped: its tab stays, with the
@@ -6480,5 +7121,8 @@ sessionLost ssh =
 {-| A lost session's tab label, with `×` before it. -}
 lostMark : Bool -> String -> String
 lostMark lost label =
-    if lost then "× " ++ label else label
+    if lost then
+        "× " ++ label
 
+    else
+        label

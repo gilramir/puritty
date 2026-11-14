@@ -160,40 +160,43 @@ draw args bytes =
                         failWith ("cannot open the window: " ++ why)
 
                     Ok cell ->
-                      if Array.get 8 args == Just "ui" then
-                        drawList cols rows bytes (arg 9 args)
-                            |> Task.andThen (\_ -> shot args)
+                        if Array.get 8 args == Just "ui" then
+                            drawList cols rows bytes (arg 9 args)
+                                |> Task.andThen (\_ -> shot args)
 
-                      else
-                        Text.ligatures (Array.get 8 args /= Just "noligatures")
-                            |> Task.andThen (\_ -> feedAll
-                            { focused = Array.get 8 args /= Just "unfocused", blinkOn = Array.get 8 args /= Just "blinkoff" }
-                            bytes
-                            (Array.mapAndKeepJust String.toInt (String.split "," (arg 7 args)))
-                            0
-                            { term =
-                                Vt.new
-                                    { cols = cols
-                                    , rows = rows
-                                    , scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = 1000 }
-                                    , pageRows = 256
-                                    , checksums = False
-                                    , cellWidth = cell.width
-                                    , cellHeight = cell.height
-                                    }
-                            , shadow = View.shadow cols rows
-                            }
-                            |> Task.andThen
-                                (\r ->
-                                    if Array.get 8 args == Just "over" then
-                                        -- the interface over the cells (docs/ssh-client.md
-                                        -- SC23): a frame of every cell, its records after
-                                        over cols rows r.term (arg 9 args) (arg 10 args)
+                        else
+                            Text.ligatures (Array.get 8 args /= Just "noligatures")
+                                |> Task.andThen
+                                    (\_ ->
+                                        feedAll
+                                            { focused = Array.get 8 args /= Just "unfocused", blinkOn = Array.get 8 args /= Just "blinkoff" }
+                                            bytes
+                                            (Array.mapAndKeepJust String.toInt (String.split "," (arg 7 args)))
+                                            0
+                                            { term =
+                                                Vt.new
+                                                    { cols = cols
+                                                    , rows = rows
+                                                    , scrollbackBytes = Vt.scrollbackBytesFor { cols = cols, rows = 1000 }
+                                                    , pageRows = 256
+                                                    , checksums = False
+                                                    , cellWidth = cell.width
+                                                    , cellHeight = cell.height
+                                                    }
+                                            , shadow = View.shadow cols rows
+                                            }
+                                            |> Task.andThen
+                                                (\r ->
+                                                    if Array.get 8 args == Just "over" then
+                                                        -- the interface over the cells (docs/ssh-client.md
+                                                        -- SC23): a frame of every cell, its records after
+                                                        over cols rows r.term (arg 9 args) (arg 10 args)
 
-                                    else
-                                        Task.succeed {}
-                                ))
-                            |> Task.andThen (\_ -> shot args)
+                                                    else
+                                                        Task.succeed {}
+                                                )
+                                    )
+                                |> Task.andThen (\_ -> shot args)
             )
 
 

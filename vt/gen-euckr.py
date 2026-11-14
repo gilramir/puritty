@@ -5,6 +5,7 @@
 (lead - 0x81) * 190 + (trail - 0x41), 0 where the index has no code point.
 """
 import pathlib
+import subprocess
 
 here = pathlib.Path(__file__).parent
 table = [0] * (126 * 190)
@@ -20,3 +21,7 @@ with open(here / "src/Vt/EucKrIndex.geng", "w") as f:
     f.write("\n    , ".join(", ".join(str(v) for v in table[i:i + 19]) for i in range(0, len(table), 19)))
     f.write("\n    ]\n")
 print(sum(1 for v in table if v), "code points")
+# formatted as the rest of puritty (scripts/fmt.sh), so that a table made
+# again is the same text
+subprocess.run([str(here / "../scripts/fmt.sh"), str(here / "src/Vt/EucKrIndex.geng")], check=True, stdout=subprocess.DEVNULL)
+

@@ -1,52 +1,52 @@
 module Vt.Resize exposing
-    ( sizeReport
-    , pixelsKnown
-    , savedPoint
-    , withSaved
-    , withState
+    ( Flow
+    , Joined
     , Point
-    , Flow
-    , resizeScreen
-    , redrawMode
-    , clearPrompt
-    , finalRow
-    , promptStartIn
-    , continuationsIn
-    , pullUntil
-    , lineStart
-    , offEdge
-    , ringRowOf
-    , readPages
-    , readBack
-    , reflowed
-    , emptyCell
     , blankRow
     , changeRows
-    , countBlank
-    , shiftPoint
-    , cutCols
-    , unheadAt
-    , cutRow
     , clampPoint
-    , reflowCols
+    , clearPrompt
     , continuations
-    , lastUsed
-    , Joined
-    , joinLines
+    , continuationsIn
+    , countBlank
+    , cutCols
+    , cutRow
+    , emptyCell
     , endColumn
-    , withoutSpacer
-    , trimmed
-    , splitLine
-    , promptAt
-    , splitAt
-    , markOffset
-    , headMarks
-    , markAt
-    , rebuild
-    , pushHistory
-    , writeRows
-    , writeRow
+    , finalRow
     , foundOr
+    , headMarks
+    , joinLines
+    , lastUsed
+    , lineStart
+    , markAt
+    , markOffset
+    , offEdge
+    , pixelsKnown
+    , promptAt
+    , promptStartIn
+    , pullUntil
+    , pushHistory
+    , readBack
+    , readPages
+    , rebuild
+    , redrawMode
+    , reflowCols
+    , reflowed
+    , resizeScreen
+    , ringRowOf
+    , savedPoint
+    , shiftPoint
+    , sizeReport
+    , splitAt
+    , splitLine
+    , trimmed
+    , unheadAt
+    , withSaved
+    , withState
+    , withoutSpacer
+    , writeRow
+    , writeRows
     )
 
 {-| Part of `Vt` (docs/vt-core.md §VC23). -}
@@ -58,20 +58,20 @@ import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
-import Vt.Width as Width
 import Vt.Cell exposing (..)
+import Vt.Cell exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Pages exposing (..)
+import Vt.Reason as Reason
+import Vt.Recut exposing (popLast, recut)
+import Vt.Screen exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Style exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
-import Vt.Screen exposing (..)
-import Vt.Pages exposing (..)
-import Vt.Recut exposing (recut, popLast)
-import Vt.Cell exposing (..)
-import Vt.Style exposing (..)
 import Vt.Term exposing (..)
-import Vt.Screen exposing (..)
-import Vt.Pages exposing (..)
-import Vt.Reason as Reason
+import Vt.Width as Width
 
 
 -- RESIZING
@@ -216,17 +216,17 @@ recutPages pageRows clear keep cols rows cursor saved clusters s pages =
 
         Nothing ->
             meant Reason.NotKnown
-            let
-                r =
-                    pullPages True lossy clear keep cols rows cursor saved clusters s pages
+                let
+                    r =
+                        pullPages True lossy clear keep cols rows cursor saved clusters s pages
 
-                -- the pages not taken back cut again at the new width now,
-                -- on their bytes, as Ghostty reflows every page at a resize
-                -- (V20)
-                cut =
-                    recut pageRows reflowed s.cols cols r.clusters (count - r.taken) pages
-            in
-            { flow = r.flow, pages = cut.pages, clusters = cut.clusters }
+                    -- the pages not taken back cut again at the new width now,
+                    -- on their bytes, as Ghostty reflows every page at a resize
+                    -- (V20)
+                    cut =
+                        recut pageRows reflowed s.cols cols r.clusters (count - r.taken) pages
+                in
+                { flow = r.flow, pages = cut.pages, clusters = cut.clusters }
 
 
 {-| What `resizeScreen` makes when the width stays, or changes without
@@ -253,7 +253,15 @@ pullPages reflow lossy clear keep cols rows cursor saved clusters s pages =
             Array.length pages
 
         r0 =
-            pullUntil reflow keep cols rows cursor saved clusters s pages
+            pullUntil reflow
+                keep
+                cols
+                rows
+                cursor
+                saved
+                clusters
+                s
+                pages
                 (if lossy then
                     count
 
@@ -284,7 +292,20 @@ resized clear keep cols rows before made left =
         -- the pages the resize leaves, under the byte limit as a push
         -- keeps them (V21, §VC32)
         built =
-            rebuild cols rows flow clusters (newScreen cols rows (if keep then rows + 2 * left.pageRows + 1 else rows + 1)) (backOf made.pages left)
+            rebuild cols
+                rows
+                flow
+                clusters
+                (newScreen cols
+                    rows
+                    (if keep then
+                        rows + 2 * left.pageRows + 1
+
+                     else
+                        rows + 1
+                    )
+                )
+                (backOf made.pages left)
 
         c =
             flow.cursor
@@ -369,7 +390,18 @@ clearPrompt clear rows flow =
         flow
 
     else
-        { flow | rows = Array.indexedMap (\i row -> if i >= from && i <= to then { row | cells = [] } else row) flow.rows }
+        { flow
+            | rows =
+                Array.indexedMap
+                    (\i row ->
+                        if i >= from && i <= to then
+                            { row | cells = [] }
+
+                        else
+                            row
+                    )
+                    flow.rows
+        }
 
 
 {-| The row the cursor is on once the resize is made, which Ghostty clears
@@ -837,7 +869,22 @@ reflowCols old cols prefix flow =
         joined =
             -- a prefix's cells begin the first line, the prompt mark of the
             -- last row they came from with them (§VC31)
-            joinLines old cols flow 0 { lines = [], line = prefix.cells, cursor = { line = 0, at = 0 }, saved = { line = -1, at = 0 }, marks = [], lineMarks = if Array.isEmpty prefix.cells then [] else [ { at = 0, mark = prefix.prompt } ] }
+            joinLines old
+                cols
+                flow
+                0
+                { lines = []
+                , line = prefix.cells
+                , cursor = { line = 0, at = 0 }
+                , saved = { line = -1, at = 0 }
+                , marks = []
+                , lineMarks =
+                    if Array.isEmpty prefix.cells then
+                        []
+
+                    else
+                        [ { at = 0, mark = prefix.prompt } ]
+                }
 
         used =
             lastUsed joined.lines (Array.length joined.lines - 1) (max joined.cursor.line joined.saved.line)
@@ -850,8 +897,16 @@ reflowCols old cols prefix flow =
                             Maybe.withDefault (meant Reason.OutOfRange []) (Array.get li joined.lines)
 
                         marks =
-                            [ if joined.cursor.line == li then joined.cursor.at else -1
-                            , if joined.saved.line == li then joined.saved.at else -1
+                            [ if joined.cursor.line == li then
+                                joined.cursor.at
+
+                              else
+                                -1
+                            , if joined.saved.line == li then
+                                joined.saved.at
+
+                              else
+                                -1
                             ]
 
                         cut =
@@ -961,11 +1016,11 @@ joinLines old cols flow i j =
     when Array.get i flow.rows is
         Nothing ->
             meant Reason.NoMore
-            if Array.isEmpty j.line then
-                j
+                if Array.isEmpty j.line then
+                    j
 
-            else
-                { j | lines = Array.pushLast j.line j.lines, line = [], marks = Array.pushLast j.lineMarks j.marks, lineMarks = [] }
+                else
+                    { j | lines = Array.pushLast j.line j.lines, line = [], marks = Array.pushLast j.lineMarks j.marks, lineMarks = [] }
 
         Just row ->
             let
@@ -1098,11 +1153,11 @@ endColumn cols line j p =
     when Array.get j line is
         Nothing ->
             meant Reason.OutOfRange
-            if p >= cols then
-                0
+                if p >= cols then
+                    0
 
-            else
-                p
+                else
+                    p
 
         Just c ->
             if p >= cols then
@@ -1235,7 +1290,25 @@ splitCell cols line starts marks first j p row rows found =
 
         Just c ->
             if p >= cols then
-                splitAt cols line starts (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = row, wrapped = True, prompt = promptAt starts j } rows) (headMarks marks j (first + Array.length rows) (cols - 1) found)
+                splitAt cols
+                    line
+                    starts
+                    (Array.map
+                        (\m ->
+                            if m == -2 - j then
+                                -1
+
+                            else
+                                m
+                        )
+                        marks
+                    )
+                    first
+                    j
+                    0
+                    []
+                    (Array.pushLast { cells = row, wrapped = True, prompt = promptAt starts j } rows)
+                    (headMarks marks j (first + Array.length rows) (cols - 1) found)
 
             else if cellWide c == wideHead && cols == 1 then
                 -- No column holds it: it is an empty cell, its spacer gone,
@@ -1247,7 +1320,25 @@ splitCell cols line starts marks first j p row rows found =
                 -- a mark from a dropped spacer head before it stays on the
                 -- one written here, as Ghostty moves a pin to where the
                 -- next cell goes, here, before the cell wraps (§VC18)
-                splitAt cols line starts (Array.map (\m -> if m == -2 - j then -1 else m) marks) first j 0 [] (Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True, prompt = promptAt starts j } rows) (headMarks marks j (first + Array.length rows) p found)
+                splitAt cols
+                    line
+                    starts
+                    (Array.map
+                        (\m ->
+                            if m == -2 - j then
+                                -1
+
+                            else
+                                m
+                        )
+                        marks
+                    )
+                    first
+                    j
+                    0
+                    []
+                    (Array.pushLast { cells = Array.pushLast (Int64.fromInt spacerHead) row, wrapped = True, prompt = promptAt starts j } rows)
+                    (headMarks marks j (first + Array.length rows) p found)
 
             else
                 splitAt cols line starts marks first (j + 1) (p + 1) (Array.pushLast c row) rows (markAt marks j (j + 1) (first + Array.length rows) p found)
@@ -1367,7 +1458,24 @@ writeRows rows from y count s =
         -- the row's index in `rows`: `from` is a count of rows, far from
         -- `Int`'s end, and `y` within the screen, so the sum cannot wrap
         -- (§VC58)
-        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault (meant Reason.OutOfRange { cells = [], wrapped = False, prompt = 0 }) (Array.get (if from >= 0 && from < 1000000000 then from + y else -1) rows)) s)
+        writeRows rows
+            from
+            (y + 1)
+            count
+            (writeRow (rowOffset s y)
+                (Maybe.withDefault (meant Reason.OutOfRange { cells = [], wrapped = False, prompt = 0 })
+                    (Array.get
+                        (if from >= 0 && from < 1000000000 then
+                            from + y
+
+                         else
+                            -1
+                        )
+                        rows
+                    )
+                )
+                s
+            )
 
 
 writeRow : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> Row -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)

@@ -1,4 +1,4 @@
-module Vt.Keys exposing (Event, Options, encode, defaultOptions)
+module Vt.Keys exposing (Event, Options, defaultOptions, encode)
 
 {-| What a key sends the program (`docs/phase3-input.md` V47): libghostty-vt's
 key encoder (`src/input/key_encode.zig`, `function_keys.zig`, v1.4.0) in Geng,
@@ -114,7 +114,6 @@ effective e =
         Bitwise.and e.mods (Bitwise.complement e.consumed)
 
 
-
 -- ENCODING
 
 
@@ -146,7 +145,6 @@ isControlText s =
 
         _ ->
             False
-
 
 
 -- KITTY
@@ -235,11 +233,11 @@ kitty opts e =
         when entry is
             Nothing ->
                 meant Reason.NotKnown
-                if e.action == 0 then
-                    ""
+                    if e.action == 0 then
+                        ""
 
-                else
-                    e.text
+                    else
+                        e.text
 
             Just en ->
                 kittyEntry opts e en
@@ -254,12 +252,42 @@ kittyEntry opts e en =
         -- KittyMods.fromInput: shift, alt, ctrl, super, caps and num lock,
         -- in the protocol's bit order
         mods =
-            (if has shift e.mods then 1 else 0)
-                + (if has alt e.mods then 2 else 0)
-                + (if has ctrl e.mods then 4 else 0)
-                + (if has super e.mods then 8 else 0)
-                + (if has capsLock e.mods then 64 else 0)
-                + (if has numLock e.mods then 128 else 0)
+            (if has shift e.mods then
+                1
+
+             else
+                0
+            )
+                + (if has alt e.mods then
+                    2
+
+                   else
+                    0
+                  )
+                + (if has ctrl e.mods then
+                    4
+
+                   else
+                    0
+                  )
+                + (if has super e.mods then
+                    8
+
+                   else
+                    0
+                  )
+                + (if has capsLock e.mods then
+                    64
+
+                   else
+                    0
+                  )
+                + (if has numLock e.mods then
+                    128
+
+                   else
+                    0
+                  )
 
         event =
             if has reportEvents flags then
@@ -304,14 +332,15 @@ kittyEntry opts e en =
                         }
 
                     Nothing ->
-                        meant Reason.FromOutside { shifted = 0
-                        , base =
-                            if keyCp /= 0 && keyCp /= en.code then
-                                keyCp
+                        meant Reason.FromOutside
+                            { shifted = 0
+                            , base =
+                                if keyCp /= 0 && keyCp /= en.code then
+                                    keyCp
 
-                            else
-                                0
-                        }
+                                else
+                                    0
+                            }
 
         -- preventsText: alt, ctrl or super (hyper and meta are never set)
         text =
@@ -399,7 +428,6 @@ kittyFull code final mods event alternates text =
     "\u{001B}[" ++ String.fromInt code ++ alts ++ modPart ++ textPart ++ finalOf final
 
 
-
 -- LEGACY
 
 
@@ -476,32 +504,32 @@ afterPc opts e bindingMods =
 
         Nothing ->
             meant Reason.NotSet
-            when ctrlSeq e.key e.text e.unshifted e.mods is
-                Just c ->
-                    if has alt bindingMods then
-                        "\u{001B}" ++ charString c
+                when ctrlSeq e.key e.text e.unshifted e.mods is
+                    Just c ->
+                        if has alt bindingMods then
+                            "\u{001B}" ++ charString c
 
-                    else
-                        charString c
+                        else
+                            charString c
 
-                Nothing ->
-                    meant Reason.NotKnown
-                    if e.text == "" then
-                        Maybe.withDefault (meant Reason.NotSet "") (altPrefix opts e bindingMods)
+                    Nothing ->
+                        meant Reason.NotKnown
+                            if e.text == "" then
+                                Maybe.withDefault (meant Reason.NotSet "") (altPrefix opts e bindingMods)
 
-                    else
-                        when csiU e cps is
-                            Just s ->
-                                s
-
-                            Nothing ->
-                                meant Reason.NotSet
-                                when altPrefix opts e bindingMods is
+                            else
+                                when csiU e cps is
                                     Just s ->
                                         s
 
                                     Nothing ->
-                                        meant Reason.NotSet e.text
+                                        meant Reason.NotSet
+                                            when altPrefix opts e bindingMods is
+                                                Just s ->
+                                                    s
+
+                                                Nothing ->
+                                                    meant Reason.NotSet e.text
 
 
 {-| fixterms' CSI u for a single code point under ctrl, lowercased under
@@ -526,9 +554,24 @@ csiU e cps =
                             cp0
 
                     mods =
-                        (if shifted && e.unshifted == char then 1 else 0)
-                            + (if has alt e.mods then 2 else 0)
-                            + (if has ctrl e.mods then 4 else 0)
+                        (if shifted && e.unshifted == char then
+                            1
+
+                         else
+                            0
+                        )
+                            + (if has alt e.mods then
+                                2
+
+                               else
+                                0
+                              )
+                            + (if has ctrl e.mods then
+                                4
+
+                               else
+                                0
+                              )
                 in
                 Just ("\u{001B}[" ++ String.fromInt char ++ ";" ++ String.fromInt (mods + 1) ++ "u")
 
@@ -556,10 +599,30 @@ the number xterm puts in a modified key's sequence. -}
 modifierCode : Int -> Int
 modifierCode mods =
     -- the list runs shift, alt, shift+alt, ctrl, …: bit 0 shift, 1 alt, 2 ctrl, 3 super
-    (if has shift mods then 1 else 0)
-        + (if has alt mods then 2 else 0)
-        + (if has ctrl mods then 4 else 0)
-        + (if has super mods then 8 else 0)
+    (if has shift mods then
+        1
+
+     else
+        0
+    )
+        + (if has alt mods then
+            2
+
+           else
+            0
+          )
+        + (if has ctrl mods then
+            4
+
+           else
+            0
+          )
+        + (if has super mods then
+            8
+
+           else
+            0
+          )
         + 1
 
 
@@ -594,7 +657,12 @@ ctrlSeq key text unshifted mods =
                 else
                     Nothing
         in
-        when (if fromText /= Nothing then fromText else fromKey) is
+        when (if fromText /= Nothing then
+                fromText
+
+              else
+                fromKey
+             ) is
             Nothing ->
                 meant Reason.NotKnown Nothing
 
@@ -689,7 +757,6 @@ ctrlByte c =
                 Nothing
 
 
-
 -- PC-STYLE FUNCTION KEYS
 
 
@@ -723,10 +790,30 @@ pcForms before after =
 {-| Ghostty's modifier bits for xterm's: shift 1, alt 2, ctrl 4, super 8. -}
 fromXterm : Int -> Int
 fromXterm x =
-    (if has 1 x then shift else 0)
-        + (if has 2 x then alt else 0)
-        + (if has 4 x then ctrl else 0)
-        + (if has 8 x then super else 0)
+    (if has 1 x then
+        shift
+
+     else
+        0
+    )
+        + (if has 2 x then
+            alt
+
+           else
+            0
+          )
+        + (if has 4 x then
+            ctrl
+
+           else
+            0
+          )
+        + (if has 8 x then
+            super
+
+           else
+            0
+          )
 
 
 cursorForms : String -> String -> Array Entry

@@ -1,4 +1,4 @@
-module Search exposing (State, start, find, backFor, matchesIn)
+module Search exposing (State, backFor, find, matchesIn, start)
 
 {-| Scrollback search (`docs/phase3-select.md` §23): the query as typed,
 and the match shown, found row by row in the scrollback and the screen,
@@ -6,9 +6,9 @@ ignoring case. A match is found within one row; its columns count each
 character's cells, so a match after wide characters is where it shows.
 -}
 
+import Reason
 import Vt
 import Vt.Width as Width
-import Reason
 
 
 type alias State =
@@ -67,7 +67,18 @@ findFrom q older row oldest newest t =
                 Just { start = { row = row, col = before }, end = { row = row, col = before + max 1 within - 1 } }
 
             Nothing ->
-                meant Reason.NoMore findFrom q older (if older then row - 1 else row + 1) oldest newest t
+                meant Reason.NoMore
+                    findFrom q
+                        older
+                        (if older then
+                            row - 1
+
+                         else
+                            row + 1
+                        )
+                        oldest
+                        newest
+                        t
 
 
 {-| The cells a piece of text takes. -}
@@ -80,7 +91,13 @@ cells text =
                     Char.toCode c
             in
             -- the table answers from 0x80 up; below, a character is a cell
-            n + (if cp < 0x80 then 1 else Width.width cp)
+            n
+                + (if cp < 0x80 then
+                    1
+
+                   else
+                    Width.width cp
+                  )
         )
         0
         text
@@ -128,7 +145,11 @@ rowMatches query caseless n row t =
             Vt.selectionText { row = row, col = 0 } { row = row, col = t.cols - 1 } t
 
         hay =
-            if caseless then String.toLower text else text
+            if caseless then
+                String.toLower text
+
+            else
+                text
     in
     matchesFrom query n row text hay 0 []
 

@@ -1,11 +1,11 @@
 module Tmux.Bindings exposing
     ( Binding
     , Follow
-    , follow
     , bindingOf
+    , follow
+    , held
     , prefixesOf
     , route
-    , held
     )
 
 {-| tmux's key tables, followed from outside (puritty `docs/tmux.md`
@@ -101,10 +101,18 @@ route name ms modeTable s =
             s.repeatUntil >= 0 && ms <= s.repeatUntil
 
         clientTable =
-            if s.repeatUntil >= 0 && not repeating then "root" else s.table
+            if s.repeatUntil >= 0 && not repeating then
+                "root"
+
+            else
+                s.table
 
         current =
-            if clientTable == "root" && modeTable /= "" then modeTable else clientTable
+            if clientTable == "root" && modeTable /= "" then
+                modeTable
+
+            else
+                clientTable
 
         plain =
             { send = True, reset = False, table = "root", repeatUntil = -1, said = "", held = "", ran = "" }
@@ -121,7 +129,14 @@ route name ms modeTable s =
                 let
                     inTable =
                         Dict.get (current ++ " " ++ key) s.bindings
-                            |> Maybe.andThen (\b -> if repeating && not b.repeat then Nothing else Just b)
+                            |> Maybe.andThen
+                                (\b ->
+                                    if repeating && not b.repeat then
+                                        Nothing
+
+                                    else
+                                        Just b
+                                )
 
                     found =
                         when inTable is
@@ -130,11 +145,11 @@ route name ms modeTable s =
 
                             Nothing ->
                                 meant Reason.NotKnown
-                                if current /= "root" then
-                                    Dict.get ("root " ++ key) s.bindings |> Maybe.map (\b -> { binding = b, table = "root" })
+                                    if current /= "root" then
+                                        Dict.get ("root " ++ key) s.bindings |> Maybe.map (\b -> { binding = b, table = "root" })
 
-                                else
-                                    Nothing
+                                    else
+                                        Nothing
                 in
                 when found is
                     Just f ->
@@ -151,17 +166,17 @@ route name ms modeTable s =
 
                             Nothing ->
                                 meant Reason.NotKnown
-                                when switchedTo f.binding.command is
-                                    Just table ->
-                                        { plain | table = table, ran = f.binding.command }
+                                    when switchedTo f.binding.command is
+                                        Just table ->
+                                            { plain | table = table, ran = f.binding.command }
 
-                                    Nothing ->
-                                        meant Reason.NotKnown
-                                        if f.binding.repeat then
-                                            { plain | table = f.table, repeatUntil = ms + s.repeatMs, ran = f.binding.command }
+                                        Nothing ->
+                                            meant Reason.NotKnown
+                                                if f.binding.repeat then
+                                                    { plain | table = f.table, repeatUntil = ms + s.repeatMs, ran = f.binding.command }
 
-                                        else
-                                            { plain | ran = f.binding.command }
+                                                else
+                                                    { plain | ran = f.binding.command }
 
                     Nothing ->
                         meant Reason.NotKnown plain
@@ -179,7 +194,15 @@ held : String -> Maybe String
 held command =
     let
         words =
-            String.split " " command |> Array.map (\w -> if String.startsWith "{" w then String.dropFirst 1 w else w)
+            String.split " " command
+                |> Array.map
+                    (\w ->
+                        if String.startsWith "{" w then
+                            String.dropFirst 1 w
+
+                        else
+                            w
+                    )
 
         has name =
             Array.member name words
@@ -226,7 +249,6 @@ switchedTo command =
             Nothing
 
 
-
 {-| A `list-keys` line, `bind-key [-r] -T table key command…`, put in the
 bindings by table and key; a key `list-keys` escapes (`\"`, `\#`) without
 its backslash. -}
@@ -242,7 +264,11 @@ bindingOf line d =
                 { first = Just "bind-key", table = Just table, key = Just key } ->
                     let
                         bare =
-                            if String.count key == 2 && String.startsWith "\\" key then String.dropFirst 1 key else key
+                            if String.count key == 2 && String.startsWith "\\" key then
+                                String.dropFirst 1 key
+
+                            else
+                                key
                     in
                     Dict.set (table ++ " " ++ bare)
                         { command = String.join " " (Array.dropFirst (t.index + 3) words)
@@ -271,4 +297,3 @@ leadingDigits text =
             )
             { digits = "", done = False }
         |> .digits
-

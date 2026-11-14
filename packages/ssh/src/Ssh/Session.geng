@@ -48,10 +48,10 @@ import Ssh.Base64 as Base64
 import Ssh.Config as Config
 import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
+import Ssh.Reason as Reason
 import Ssh.Transport as Transport
 import SshCrypto
 import Task exposing (Task)
-import Ssh.Reason as Reason
 
 
 type alias Permissions =
@@ -242,13 +242,14 @@ through : Permissions -> Array Options -> Options -> Source Notice -> Source Inp
 through permissions jumps target notices inputs given =
     when Array.popFirst jumps is
         Nothing ->
-            meant Reason.NoMore connectTo permissions target notices "" given
-                |> Task.andThen
-                    (\link ->
-                        session permissions target Terminal "" link notices
-                            |> Task.andThen (loop (Source.next inputs |> Task.map FromWindow))
-                            |> Task.andThen (\st -> st.link.close)
-                    )
+            meant Reason.NoMore
+                connectTo permissions target notices "" given
+                    |> Task.andThen
+                        (\link ->
+                            session permissions target Terminal "" link notices
+                                |> Task.andThen (loop (Source.next inputs |> Task.map FromWindow))
+                                |> Task.andThen (\st -> st.link.close)
+                        )
 
         Just hop ->
             let
@@ -275,7 +276,11 @@ through permissions jumps target notices inputs given =
                                         Process.spawn (carry pipes.fromInner st)
                                             |> Task.andThen
                                                 (\_ ->
-                                                    through permissions hop.rest target notices inputs
+                                                    through permissions
+                                                        hop.rest
+                                                        target
+                                                        notices
+                                                        inputs
                                                         (Just
                                                             { read = Source.next pipes.toInner |> Task.map (Maybe.withDefault Bytes.empty)
                                                             , write = \bytes -> Source.emit pipes.fromInner bytes
@@ -470,8 +475,7 @@ agentOf permissions options files =
                                             in
                                             Task.succeed
                                                 { link = Just link
-                                                , identities =
-                                                    Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) offered
+                                                , identities = Array.indexedMap (\i k -> { identity = { id = 1000 + i, publicKey = k.publicKey, keyType = KnownHosts.keyTypeOf k.publicKey }, file = Nothing }) offered
                                                 }
 
                                         Err why ->
@@ -500,15 +504,16 @@ agentRead readMore got =
             Task.succeed whole.message
 
         Nothing ->
-            meant Reason.NotYet readMore
-                |> Task.andThen
-                    (\more ->
-                        if Bytes.isEmpty more then
-                            Task.succeed Bytes.empty
+            meant Reason.NotYet
+                readMore
+                    |> Task.andThen
+                        (\more ->
+                            if Bytes.isEmpty more then
+                                Task.succeed Bytes.empty
 
-                        else
-                            agentRead readMore (Bytes.flatten [ got, more ])
-                    )
+                            else
+                                agentRead readMore (Bytes.flatten [ got, more ])
+                        )
 
 
 -- THE LOOP
@@ -1118,7 +1123,11 @@ jumpSpecs value =
                 (\v0 ->
                     let
                         v =
-                            if String.startsWith "ssh://" v0 then String.dropFirst 6 v0 else v0
+                            if String.startsWith "ssh://" v0 then
+                                String.dropFirst 6 v0
+
+                            else
+                                v0
 
                         userAndRest =
                             when String.lastIndexOf "@" v is

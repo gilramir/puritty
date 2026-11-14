@@ -1,36 +1,36 @@
 module Vt.Pages exposing
-    ( pageOut
-    , packRows
-    , packCells
-    , packSpecial
-    , packOther
-    , pushU16
-    , pushUtf8
-    , pushPage
-    , plainPage
+    ( DumpRow
+    , Row
     , backOf
+    , copyPage
+    , copyPages
+    , decodeAt
     , dropOver
     , emptyBack
-    , Row
-    , DumpRow
+    , emptyPage
+    , lastWrapped
+    , ownedAt
+    , packCells
+    , packOther
+    , packRows
+    , packSpecial
+    , pageOut
+    , pagePromptAt
+    , pageRowCount
+    , pageRowsOf
+    , pagedCell
+    , plainPage
+    , pushPage
+    , pushU16
+    , pushUtf8
+    , startsMark
+    , takePages
+    , u16At
     , unpackPage
     , unpackRows
-    , u16At
     , unpackRuns
     , unpackText
-    , startsMark
-    , decodeAt
-    , takePages
-    , copyPages
-    , emptyPage
     , withoutPages
-    , copyPage
-    , ownedAt
-    , pagedCell
-    , pageRowsOf
-    , pageRowCount
-    , pagePromptAt
-    , lastWrapped
     )
 
 {-| Part of `Vt` (docs/vt-core.md §VC23). -}
@@ -43,17 +43,17 @@ import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
-import Vt.Width as Width
 import Vt.Cell exposing (..)
+import Vt.Cell exposing (..)
+import Vt.Reason as Reason
+import Vt.Screen exposing (..)
+import Vt.Screen exposing (..)
+import Vt.Style exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
-import Vt.Screen exposing (..)
-import Vt.Cell exposing (..)
-import Vt.Style exposing (..)
 import Vt.Term exposing (..)
-import Vt.Screen exposing (..)
-import Vt.Reason as Reason
+import Vt.Width as Width
 
 
 -- THE SCROLLBACK
@@ -695,7 +695,17 @@ unpackText text i left acc =
                         Nothing ->
                             meant Reason.OutOfRange False
             in
-            unpackText text (i + 1) left (guarded (n - 1) (if tail then guarded (n - 2) acc else acc))
+            unpackText text
+                (i + 1)
+                left
+                (guarded (n - 1)
+                    (if tail then
+                        guarded (n - 2) acc
+
+                     else
+                        acc
+                    )
+                )
 
         else if d.cp == 0 then
             unpackText text d.next (left - 1) (Array.pushLast { points = [], wide = 0, style = 0 } acc)

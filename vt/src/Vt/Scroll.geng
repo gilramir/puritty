@@ -1,26 +1,26 @@
 module Vt.Scroll exposing
-    ( historyBound
-    , noteReach
-    , freshLine
-    , setMargins
-    , lineFeed
+    ( feedFull
     , feedOther
-    , scrollFull
-    , scrollRegion
-    , scrollOther
-    , keepsScrollback
-    , withScroll
-    , feedFull
     , feedRegion
-    , reverseIndex
-    , regionUp
-    , unwrapRegion
-    , unheadEnd
-    , scrollUpBy
+    , freshLine
+    , historyBound
+    , keepsScrollback
+    , lineFeed
+    , noteReach
     , regionDown
+    , regionUp
     , resizeQuiet
     , resizeTo
     , resized
+    , reverseIndex
+    , scrollFull
+    , scrollOther
+    , scrollRegion
+    , scrollUpBy
+    , setMargins
+    , unheadEnd
+    , unwrapRegion
+    , withScroll
     )
 
 {-| Line feeds, the scrolling regions and the resize of the term's state
@@ -29,26 +29,26 @@ module Vt.Scroll exposing
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
-import Vt.Base64 as Base64
 import Dict exposing (Dict)
 import Int64
 import Math
 import UInt8
-import Vt.Keys as Keys
-import Vt.Width as Width
+import Vt.Base64 as Base64
 import Vt.Cell exposing (..)
+import Vt.Cursor exposing (..)
+import Vt.Dump exposing (..)
+import Vt.Keys as Keys
+import Vt.Pages exposing (..)
+import Vt.Palette exposing (..)
+import Vt.Prompt exposing (..)
+import Vt.Reason as Reason
+import Vt.Recut exposing (recut)
+import Vt.Resize exposing (..)
+import Vt.Screen exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
-import Vt.Screen exposing (..)
-import Vt.Pages exposing (..)
-import Vt.Resize exposing (..)
-import Vt.Recut exposing (recut)
-import Vt.Dump exposing (..)
-import Vt.Palette exposing (..)
-import Vt.Cursor exposing (..)
-import Vt.Prompt exposing (..)
-import Vt.Reason as Reason
+import Vt.Width as Width
 
 
 {-| The rows the scrollback holds at the terminal's width: the ring's and the
@@ -106,7 +106,15 @@ cursor is at the left margin, or in the first column when it is left of the
 margin. -}
 freshLine : (taken t : Term) -> Term
 freshLine t =
-    if t.x == (if t.x < t.left then 0 else t.left) then
+    if
+        t.x
+            == (if t.x < t.left then
+                    0
+
+                else
+                    t.left
+               )
+    then
         t
 
     else
@@ -446,7 +454,8 @@ resizeTo cols rows t =
                     a =
                         resizeScreen 0 False False cols rows here (savedPoint active.saved) m.clusters active (emptyBack (clamp 16 4096 config.pageRows) 0)
                 in
-                resized widened a.cursor.wrap
+                resized widened
+                    a.cursor.wrap
                     { t
                         | screen = withSaved a.saved a.screen
                         , cols = cols
@@ -481,7 +490,8 @@ resizeTo cols rows t =
                     a =
                         resizeScreen 0 False False cols rows t.hidden (savedPoint alt.saved) m.clusters alt (emptyBack (clamp 16 4096 config.pageRows) 0)
                 in
-                resized widened m.cursor.wrap
+                resized widened
+                    m.cursor.wrap
                     { t
                         | screen = withSaved m.saved m.screen
                         , cols = cols
@@ -500,21 +510,23 @@ resizeTo cols rows t =
                     }
 
             Nothing ->
-                meant Reason.NotYet resized widened m.cursor.wrap
-                    { t
-                        | screen = withSaved m.saved m.screen
-                        , cols = cols
-                        , rows = rows
-                        , x = m.cursor.x
-                        , y = m.cursor.y
-                        , top = 0
-                        , bottom = rows - 1
-                        , left = 0
-                        , right = cols - 1
-                        , back = m.back
-                        , clusters = m.clusters
-                        , config = { config | cols = cols, rows = rows }
-                    }
+                meant Reason.NotYet
+                    resized widened
+                        m.cursor.wrap
+                        { t
+                            | screen = withSaved m.saved m.screen
+                            , cols = cols
+                            , rows = rows
+                            , x = m.cursor.x
+                            , y = m.cursor.y
+                            , top = 0
+                            , bottom = rows - 1
+                            , left = 0
+                            , right = cols - 1
+                            , back = m.back
+                            , clusters = m.clusters
+                            , config = { config | cols = cols, rows = rows }
+                        }
 
 
 {-| What follows a resize, the term already its new size with its cursor
@@ -525,7 +537,20 @@ resized widened wrap t0 =
     let
         t =
             if widened then
-                { t0 | tabs = Builder.fromArray (Array.initialize t0.cols 0 (\i -> if modBy 8 i == 0 && i > 0 then 1 else 0)) }
+                { t0
+                    | tabs =
+                        Builder.fromArray
+                            (Array.initialize t0.cols
+                                0
+                                (\i ->
+                                    if modBy 8 i == 0 && i > 0 then
+                                        1
+
+                                    else
+                                        0
+                                )
+                            )
+                }
 
             else
                 t0

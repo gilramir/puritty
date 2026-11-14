@@ -34,10 +34,10 @@ before it sends anything that matters, such as a password.
 
 import Bytes exposing (Bytes)
 import Ssh.Random as Random exposing (Random)
+import Ssh.Reason as Reason
 import Ssh.Wire as Wire exposing (Reader)
 import SshCrypto exposing (Cipher(..))
 import UInt8
-import Ssh.Reason as Reason
 
 
 {-| What the client offers, each list in its order of preference.
@@ -375,11 +375,11 @@ consume st =
             when versionLine st.buffer is
                 Nothing ->
                     meant Reason.NotYet
-                    if Bytes.length st.buffer > 8192 then
-                        fail "no version line in the first 8 KiB" st
+                        if Bytes.length st.buffer > 8192 then
+                            fail "no version line in the first 8 KiB" st
 
-                    else
-                        st
+                        else
+                            st
 
                 Just found ->
                     consume (takeLine found.line { st | buffer = found.rest })
@@ -471,18 +471,18 @@ nextPacket st =
         when st.keysIn is
             Nothing ->
                 meant Reason.NotYet
-                let
-                    length =
-                        Wire.wrapInt (Bytes.slice 0 4 st.buffer)
-                in
-                if length < 12 || length > maxPacket || modBy 8 (length + 4) /= 0 then
-                    Broken ("a packet length of " ++ String.fromInt length)
+                    let
+                        length =
+                            Wire.wrapInt (Bytes.slice 0 4 st.buffer)
+                    in
+                    if length < 12 || length > maxPacket || modBy 8 (length + 4) /= 0 then
+                        Broken ("a packet length of " ++ String.fromInt length)
 
-                else if Bytes.length st.buffer < 4 + length then
-                    NeedMore
+                    else if Bytes.length st.buffer < 4 + length then
+                        NeedMore
 
-                else
-                    unpad (Bytes.slice 0 (4 + length) st.buffer) (Bytes.slice (4 + length) (Bytes.length st.buffer) st.buffer)
+                    else
+                        unpad (Bytes.slice 0 (4 + length) st.buffer) (Bytes.slice (4 + length) (Bytes.length st.buffer) st.buffer)
 
             Just inKeys ->
                 when SshCrypto.openLength { cipher = inKeys.cipher, key = inKeys.key, sequence = st.seqIn } (Bytes.slice 0 4 st.buffer) is

@@ -1,23 +1,23 @@
 module Tmux.Syntax exposing
-    ( Token
-    , tokens
-    , commands
-    , Ask(..)
+    ( Ask(..)
     , Entry(..)
-    , askOf
     , Menu
     , MenuItem
-    , menuOf
-    , ifFormatOf
-    , panesOf
-    , treeOf
-    , listOf
-    , popupOf
+    , Token
+    , askOf
+    , commands
     , customizeOf
-    , retarget
-    , lines
     , fill
+    , ifFormatOf
+    , lines
+    , listOf
+    , menuOf
+    , panesOf
+    , popupOf
+    , retarget
     , serialize
+    , tokens
+    , treeOf
     )
 
 {-| tmux's command language, as much of it as puritty needs to run a
@@ -63,7 +63,8 @@ scan chars i acc =
                     close =
                         closing chars (i + 1) 1
                 in
-                scan chars (close + 1)
+                scan chars
+                    (close + 1)
                     (Array.pushLast
                         { raw = String.fromArray (Array.slice i (close + 1) chars)
                         , value = String.trim (String.fromArray (Array.slice (i + 1) close chars))
@@ -91,7 +92,14 @@ scan chars i acc =
                         else
                             Array.pushLast t acc
                 in
-                scan chars (if w.sepAfter then w.end + 1 else w.end) withSep
+                scan chars
+                    (if w.sepAfter then
+                        w.end + 1
+
+                     else
+                        w.end
+                    )
+                    withSep
 
 
 {-| Where a block's `}` is: braces counted, quotes skipped; the end of
@@ -104,7 +112,11 @@ closing chars i depth =
 
         Just c ->
             if c == '}' then
-                if depth == 1 then i else closing chars (i + 1) (depth - 1)
+                if depth == 1 then
+                    i
+
+                else
+                    closing chars (i + 1) (depth - 1)
 
             else if c == '{' then
                 closing chars (i + 1) (depth + 1)
@@ -286,21 +298,31 @@ askOf command =
                             prompts =
                                 when getFlag 'p' args.values is
                                     Just p ->
-                                        (if literal then [ p ] else String.split "," p) |> Array.map (\q -> q ++ " ")
+                                        (if literal then
+                                            [ p ]
+
+                                         else
+                                            String.split "," p
+                                        )
+                                            |> Array.map (\q -> q ++ " ")
 
                                     Nothing ->
                                         meant Reason.NotSet
-                                        when template is
-                                            Just t ->
-                                                [ "(" ++ firstWord (serialize t) ++ ") " ]
+                                            when template is
+                                                Just t ->
+                                                    [ "(" ++ firstWord (serialize t) ++ ") " ]
 
-                                            Nothing ->
-                                                meant Reason.NotSet [ ":" ]
+                                                Nothing ->
+                                                    meant Reason.NotSet [ ":" ]
 
                             inputs =
                                 when getFlag 'I' args.values is
                                     Just i ->
-                                        if literal then [ i ] else String.split "," i
+                                        if literal then
+                                            [ i ]
+
+                                        else
+                                            String.split "," i
 
                                     Nothing ->
                                         meant Reason.NotSet []
@@ -679,7 +701,14 @@ retargetTokens pane ts =
                     else
                         t.raw
             in
-            { prev = if t.block then "" else t.value, out = Array.pushLast out acc.out }
+            { prev =
+                if t.block then
+                    ""
+
+                else
+                    t.value
+            , out = Array.pushLast out acc.out
+            }
         )
         { prev = "", out = [] }
         ts
@@ -723,7 +752,11 @@ panesOf command =
                                 "select-pane -t '%%'"
 
                             [ one ] ->
-                                if one.block then serialize (tokens one.value) else one.value
+                                if one.block then
+                                    serialize (tokens one.value)
+
+                                else
+                                    one.value
 
                             many ->
                                 serialize many
@@ -782,7 +815,11 @@ treeOf command =
                                 "switch-client -t '%%'"
 
                             [ one ] ->
-                                if one.block then serialize (tokens one.value) else one.value
+                                if one.block then
+                                    serialize (tokens one.value)
+
+                                else
+                                    one.value
 
                             many ->
                                 serialize many
@@ -823,10 +860,24 @@ findFilter bools text =
             has "C" || has "N" || has "T"
 
         suffix =
-            if has "r" && has "i" then "/ri" else if has "r" then "/r" else if has "i" then "/i" else ""
+            if has "r" && has "i" then
+                "/ri"
+
+            else if has "r" then
+                "/r"
+
+            else if has "i" then
+                "/i"
+
+            else
+                ""
 
         star =
-            if has "r" then "" else "*"
+            if has "r" then
+                ""
+
+            else
+                "*"
 
         content =
             "#{C" ++ suffix ++ ":" ++ text ++ "}"
@@ -920,7 +971,11 @@ listOf command =
                         flags "FfKOt" (Array.dropFirst 1 first)
 
                     kind =
-                        if name == "choose-buffer" then "buffer" else "client"
+                        if name == "choose-buffer" then
+                            "buffer"
+
+                        else
+                            "client"
                 in
                 Just
                     { kind = kind
@@ -929,10 +984,18 @@ listOf command =
                     , template =
                         when args.rest is
                             [] ->
-                                if kind == "buffer" then "paste-buffer -p -b '%%'" else "detach-client -t '%%'"
+                                if kind == "buffer" then
+                                    "paste-buffer -p -b '%%'"
+
+                                else
+                                    "detach-client -t '%%'"
 
                             [ one ] ->
-                                if one.block then serialize (tokens one.value) else one.value
+                                if one.block then
+                                    serialize (tokens one.value)
+
+                                else
+                                    one.value
 
                             many ->
                                 serialize many
@@ -988,7 +1051,11 @@ popupOf command =
                                 ""
 
                             [ one ] ->
-                                if one.block then serialize (tokens one.value) else one.value
+                                if one.block then
+                                    serialize (tokens one.value)
+
+                                else
+                                    one.value
 
                             many ->
                                 serialize many

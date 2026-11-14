@@ -1,14 +1,14 @@
 module Tmux.Command exposing
-    ( sendBytes
+    ( clientFlags
+    , continuePane
+    , listPanes
     , pasteBytes
+    , quote
+    , sendBytes
     , sendKey
     , sendKeyTo
-    , typeText
     , size
-    , clientFlags
-    , continuePane
-    , quote
-    , listPanes
+    , typeText
     )
 
 {-| The commands puritty sends tmux in control mode (puritty
@@ -39,7 +39,19 @@ pasteBytes pane piece bytes =
                 |> Array.map (\i -> Bytes.slice (i * 1024) (min count ((i + 1) * 1024)) bytes)
 
         sets =
-            Array.indexedMap (\i chunk -> "set-buffer " ++ (if piece.first && i == 0 then "" else "-a ") ++ "-b puritty-paste " ++ quoteBytes chunk) chunks
+            Array.indexedMap
+                (\i chunk ->
+                    "set-buffer "
+                        ++ (if piece.first && i == 0 then
+                                ""
+
+                            else
+                                "-a "
+                           )
+                        ++ "-b puritty-paste "
+                        ++ quoteBytes chunk
+                )
+                chunks
 
         pasted =
             if piece.last && (not piece.first || count > 0) then
