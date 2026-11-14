@@ -11,6 +11,13 @@ A run passes when the program ends with status 0 and its runner says
 "OK — N passed" with N the count below. A count moves only with the commit
 that moves it, as geng-lang's suites.py holds its suites (D356).
 
+Before the suites, every Geng source is held to `geng fmt`
+(`scripts/fmt.sh --check`), and the whole program to its checks list
+(`scripts/checks.sh`, docs/vt-core.md §VC66): an unformatted file, a new
+fallback that can run and is not meant, an open check, a stale `meant` or
+an unused reason fails the gate. `--no-checks` leaves the checks out on
+purpose, saying so.
+
 Windows is part of the gate: when beelink1 cannot be reached the gate
 fails, and `--no-windows` leaves Windows out on purpose, saying so.
 
@@ -217,6 +224,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-s", "--suite", action="append", choices=[s.name for s in SUITES], help="suite(s) to run")
     ap.add_argument("--no-windows", action="store_true", help="leave Windows out, on purpose")
+    ap.add_argument("--no-checks", action="store_true", help="leave geng checks out, on purpose")
     ap.add_argument("-v", "--verbose", action="store_true", help="print each run's report")
     args = ap.parse_args()
 
@@ -224,6 +232,34 @@ def main() -> int:
         print("units.py: run from puritty's devbox (the X11 build needs its libraries)", file=sys.stderr)
         return 2
     chosen = [s for s in SUITES if not args.suite or s.name in args.suite]
+    formatted = subprocess.run([str(ROOT / "scripts" / "fmt.sh"), "--check"], cwd=ROOT, capture_output=True, text=True)
+    fmt_ok = formatted.returncode == 0
+    print(f"[{'  ok  ' if fmt_ok else ' FAIL '}] {'fmt':<24} {(formatted.stdout + formatted.stderr).strip().splitlines()[-1] if (formatted.stdout + formatted.stderr).strip() else ''}")
+    if not fmt_ok:
+        for line in (formatted.stdout + formatted.stderr).strip().splitlines()[:40]:
+            print("         " + line)
+    checks_ok = True
+    if args.no_checks:
+        print(f"[ skip ] {'checks':<24} left out by --no-checks")
+    else:
+        start_checks = time.monotonic()
+        checked = subprocess.run(
+            ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=16G", "-p", "MemorySwapMax=0",
+             str(ROOT / "scripts" / "checks.sh")],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        text = checked.stdout + checked.stderr
+        (WORK).mkdir(parents=True, exist_ok=True)
+        (WORK / "checks.log").write_text(text)
+        totals = next((l.strip() for l in text.splitlines() if "checks hold" in l and "fallbacks never run" in l), "")
+        against = next((l.strip() for l in text.splitlines() if "entries against" in l), "")
+        checks_ok = checked.returncode == 0
+        print(f"[{'  ok  ' if checks_ok else ' FAIL '}] {'checks':<24} {totals}; {against} ({time.monotonic() - start_checks:.0f} s)")
+        if not checks_ok:
+            for line in [l for l in text.splitlines() if l.startswith(("NEW", "  STALE", "  UNUSED", "  open"))][:40]:
+                print("         " + line)
+            print(f"         the whole report: {(WORK / 'checks.log').relative_to(ROOT)}")
+    sys.stdout.flush()
     why_not = None if args.no_windows else windows_ready()
     start = time.monotonic()
     failed = []
@@ -248,7 +284,9 @@ def main() -> int:
     print(f"\n{total - len(failed)}/{total} runs pass in {time.monotonic() - start:.0f} s")
     if args.no_windows:
         print("Windows was left out (--no-windows): this is not the whole gate.")
-    return 1 if failed else 0
+    if args.no_checks:
+        print("geng checks was left out (--no-checks): this is not the whole gate.")
+    return 1 if failed or not fmt_ok or not checks_ok else 0
 
 
 if __name__ == "__main__":

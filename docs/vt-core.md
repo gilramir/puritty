@@ -4662,3 +4662,20 @@ line, so `EucKrIndex`'s 23,940 entries went from 1,260 lines to 23,949.
 
 `geng checks`: 0 new, the same counts. The unit gate passes and the
 Windows build compiles.
+
+## VC66. The unit gate runs `geng checks` (2026-11-13)
+
+§VC63 began because `geng checks --baseline` "had not been run since
+§VC59": the guard was a command, and nothing ran it. `scripts/checks.sh`
+runs it over the whole program against `corpus/checks/baseline.tsv`, as
+§VC64's runs did, and `harness/units.py` runs it after the format check,
+before the suites. A fallback that can run and is neither marked `meant`
+nor on the list, an open check, a stale mark or an unused reason fails the
+gate; `--no-checks` leaves it out on purpose, saying so. Its line gives
+the totals and the list's count:
+
+    [  ok  ] checks   1985 checks hold    47 fallbacks never run    125 can run    0 open    991 meant; 125 entries against ../../corpus/checks/baseline.tsv: 0 new, 0 gone. (49 s)
+
+Held to fail: with one entry taken out of the list, `scripts/checks.sh`
+exits 1 and names it (`NEW 1 Main atTab the Nothing branch reachable`).
+It takes 49 s, under 16 GB of memory.
