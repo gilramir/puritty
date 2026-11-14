@@ -80,3 +80,45 @@ Snap (a terminal's sandbox keeps it from the system it is for), AppImage
 (little over a tarball of one binary), macOS (puritty has no macOS
 window code). Each distribution whose clang is not 21.1.8 trains its own
 profile or goes without one (RL1).
+
+## RL4 · RL3's builds made (2026-11-14)
+
+Each in `app/distro/` (RL2's shape), built and run here with podman:
+
+| target | image | clang | profile | checked |
+|---|---|---|---|---|
+| `rhel9-x64` | AlmaLinux 9.8 | 21.1.8 | the shared one | `smoke.sh`: drawn, ended by itself |
+| `rhel10-x64` | AlmaLinux 10.2 | 21.1.8 | the shared one | `smoke.sh` under Xwayland (below) |
+| `noble-x64` | Ubuntu 24.04 | 18 | none | `smoke.sh`; the `.deb` installed with apt |
+| `debian13-x64` | Debian 13 | 19 | none | `smoke.sh`; the `.deb` installed with apt |
+| `rhel8-x64` | AlmaLinux 8 | 21.1.8 | the shared one | `smoke.sh` on RHEL 8, Fedora 43, Debian 13, Arch |
+
+- **The plain Linux tarball.** The RHEL8 build ran, drew and ended by itself
+  in Fedora 43, Arch and Debian 13 images (`app/distro/fedora/run`,
+  `arch/run`; run-only folders, which `prerelease.sh` does not take for
+  targets). `prerelease.sh` names it `puritty-TAG-linux-rhel8-x64.tar.gz`,
+  its README says where it was checked, and the notes list it as "Linux,
+  any x86-64 (built on RHEL 8)".
+- **The .debs** (`app/distro/deb.sh NAME [VERSION] [OUT]`): the binary,
+  `puritty.desktop` and the icons under `/usr`, `Depends` read from the
+  binary by `dpkg-shlibdeps` in the build image (noble: libc6 ≥ 2.39,
+  libfontconfig1, libpng16-16t64, libxcb1 and six xcb libraries,
+  libxkbcommon-x11-0, libxkbcommon0, zlib1g), then installed with apt into
+  the plain `ubuntu:24.04` or `debian:13` image, which fetched those, and
+  run there as `smoke.sh` runs a build. `prerelease.sh` makes one for each
+  Ubuntu or Debian target, versioned `0.1.0~TAG`.
+- **Debian and Ubuntu name xcb's parts apart**: `xcb-render`, `xcb-xkb` and
+  `xcb-randr`, which puritty-x11 links, need `libxcb-render0-dev`,
+  `libxcb-xkb-dev` and `libxcb-randr0-dev`, which RHEL's `libxcb-devel`
+  holds in one.
+- **RHEL 10 has no Xvfb** (it dropped the X server). Its run image draws on
+  Xwayland under a headless weston (`xwfb-run`, EPEL), which `smoke.sh`
+  uses where Xvfb is missing. There the picture puritty writes on
+  `PURITTY_SHOT` did not appear, while its `X11_STATS` line said it drew
+  (2 frames, 18 glyphs); xterm ran there as well. So under Xwayland the
+  check is that line. That puritty draws as it should on a Wayland desktop
+  through Xwayland (RHEL 10's GNOME, Ubuntu's) is not yet seen by eye.
+- **The profile**: `prerelease.sh` reads the shared profile only where the
+  build image's clang is the devbox's, compared at build time.
+
+Not run yet: `prerelease.sh` with all targets, end to end.

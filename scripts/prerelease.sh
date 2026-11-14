@@ -6,13 +6,20 @@
 #   scripts/prerelease.sh preview-2026-11-13 windows-x64 rhel8-x64
 #
 # The targets are windows-x64 and NAME-x64 for each Linux distribution
-# folder of app/distro (rhel8-x64 today); with none named, all of them.
-# Each is profile-guided from one training run (harness/bench/pgo.sh); each
-# Linux one passes app/distro/smoke.sh before it is packed. Out come:
+# folder of app/distro with a Containerfile (rhel8, rhel9, rhel10, noble,
+# debian13); with none named, all of them. Each is profile-guided from one
+# training run (harness/bench/pgo.sh) where its clang is the devbox's, and
+# built without one where it is not (noble's, debian13's); each Linux one
+# passes app/distro/smoke.sh before it is packed. The RHEL8 build is also
+# the plain Linux build (docs/releasing.md RL3): it passes smoke.sh on
+# Fedora, Debian 13 and Arch too, and is named for both. Out come:
 #
 #   puritty-TAG-windows-x64.zip       puritty.exe, LICENSE, README.txt
 #   puritty-TAG-NAME-x64.tar.gz       puritty-TAG-NAME-x64/ with puritty,
 #                                     LICENSE, README.txt
+#   puritty-TAG-linux-rhel8-x64.tar.gz  the RHEL8 build, as above
+#   puritty_V_NAME_amd64.deb          for noble and debian13 (deb.sh), each
+#                                     installed with apt and run first
 #   SHA256SUMS, notes.md              the checksums, and the release's text
 #                                     to finish by hand
 #
@@ -82,25 +89,57 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
     *-x64)
         distro=${t%-x64}
         echo "== $t"
-        PURITTY_DISTRO_OUT=$stage/puritty app/distro/build.sh "$distro" "$profile"
+        # the shared profile only where the image's clang is the devbox's
+        podman image exists "puritty-build-$distro" || podman build -q -t "puritty-build-$distro" "app/distro/$distro"
+        theirs=$(podman run --rm "puritty-build-$distro" clang --version | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)
+        ours=$(clang --version | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)
+        if [ "$theirs" = "$ours" ]; then
+            uses=$profile
+        else
+            echo "   $distro's clang is $theirs, not $ours: no profile"
+            uses=
+        fi
+        PURITTY_DISTRO_OUT=$stage/puritty app/distro/build.sh "$distro" $uses
         app/distro/smoke.sh "$distro" "$stage/puritty"
-        readme "$t" "Unpack it anywhere and run ./puritty. It needs the X libraries of a
+        if [ "$distro" = rhel8 ]; then
+            # the plain Linux build: glibc 2.28, older than any distribution's now
+            for other in fedora debian13 arch; do
+                app/distro/smoke.sh "$other" "$stage/puritty"
+            done
+            plain=puritty-$tag-linux-rhel8-x64
+            mv "$stage" "$out/stage/$plain"
+            name=$plain
+            stage=$out/stage/$plain
+            readme "$t" "Unpack it anywhere and run ./puritty. Built on RHEL 8 (glibc 2.28), it runs
+there and on any later x86-64 Linux: checked on RHEL 8, Fedora, Debian 13
+and Arch. It needs the X libraries of a desktop install (xcb, xcb-util,
+xcb-util-image, xcb-util-renderutil, libxkbcommon-x11 and fontconfig);
+\`ldd puritty | grep \"not found\"\` lists any that are missing." >"$stage/README.txt"
+        else
+            readme "$t" "Unpack it anywhere and run ./puritty. It needs the X libraries of a
 desktop install ($distro's xcb, xcb-util, xcb-util-image, xcb-util-renderutil,
 libxkbcommon-x11 and fontconfig); \`ldd puritty | grep \"not found\"\` lists
 any that are missing." >"$stage/README.txt"
+        fi
         tar -C "$out/stage" -czf "$out/$name.tar.gz" "$name"
+        if grep -q '^FROM docker.io/library/\(ubuntu\|debian\):' "app/distro/$distro/Containerfile"; then
+            # a version dpkg takes: digits first, the tag's letters and digits after
+            PURITTY_BIN=$stage/puritty app/distro/deb.sh "$distro" "0.1.0~$(echo "$tag" | tr -cd 'A-Za-z0-9.')" "$out"
+        fi
         ;;
     esac
 done
 rm -rf "$out/stage"
 
-(cd "$out" && sha256sum ./*.zip ./*.tar.gz 2>/dev/null | sed 's| \./| |' >SHA256SUMS)
+(cd "$out" && sha256sum ./*.zip ./*.tar.gz ./*.deb 2>/dev/null | sed 's| \./| |' >SHA256SUMS)
 {
     echo "A preview of puritty, built from commit \`$commit\`."
     echo
     for t in $targets; do
         case $t in
         windows-x64) echo "- **Windows**: \`puritty-$tag-$t.zip\`. Unzip it and run \`puritty.exe\`. Not signed yet: if Windows says \"Windows protected your PC\", choose *More info*, then *Run anyway*." ;;
+        rhel8-x64) echo "- **Linux, any x86-64** (built on RHEL 8): \`puritty-$tag-linux-rhel8-x64.tar.gz\`. Unpack it and run \`./puritty\`." ;;
+        noble-x64|debian13-x64) echo "- **${t%-x64}**: \`puritty-$tag-$t.tar.gz\`, or the \`.deb\`: \`sudo apt install ./puritty_*_${t%-x64}_amd64.deb\`." ;;
         *) echo "- **${t%-x64}**: \`puritty-$tag-$t.tar.gz\`. Unpack it and run \`./puritty\`." ;;
         esac
     done
@@ -120,4 +159,4 @@ ls -l "$out"
 echo
 echo "Write what is new into $out/notes.md, then, when the upload is wanted:"
 echo "  gh release create $tag --draft --prerelease --target $(git rev-parse HEAD) \\"
-echo "    --title \"puritty $tag\" --notes-file $out/notes.md $out/*.zip $out/*.tar.gz $out/SHA256SUMS"
+echo "    --title \"puritty $tag\" --notes-file $out/notes.md $out/*.zip $out/*.tar.gz $out/*.deb $out/SHA256SUMS"

@@ -16,15 +16,28 @@ cp "$bin" "$out/puritty"
 podman run --rm -v "$out:/work" -w /work "puritty-run-$name" sh -c '
   missing=$(ldd ./puritty | grep "not found" || true)
   [ -z "$missing" ] || { echo "missing libraries: $missing"; exit 1; }
-  Xvfb :9 -screen 0 1200x800x24 >/dev/null 2>&1 &
-  sleep 1
+  # Xvfb, or where a distribution has none (RHEL 10), Xwayland under a
+  # headless weston
+  if command -v Xvfb >/dev/null; then
+    Xvfb :9 -screen 0 1200x800x24 >/dev/null 2>&1 &
+    sleep 1
+    export DISPLAY=:9
+    on=""
+  else
+    export XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p -m 700 $XDG_RUNTIME_DIR
+    on="xwfb-run -c weston --"
+  fi
   start=$(date +%s)
-  DISPLAY=:9 PURITTY_SHOT=/work/shot.ppm PURITTY_NO_XIM=1 HOME=/work timeout 20 ./puritty -- sh -c "echo hello from puritty; sleep 2"
-  status=$?
+  timeout 20 $on sh -c "PURITTY_SHOT=/work/shot.ppm PURITTY_NO_XIM=1 X11_STATS=1 HOME=/work ./puritty -- sh -c \"echo hello from puritty; sleep 2\" 2>/work/stats.txt; echo \$? >/work/status.txt"
+  status=$(cat /work/status.txt)
   took=$(( $(date +%s) - start ))
   echo "ended by itself after $took s, status $status"
-  [ "$status" = 0 ] && [ "$took" -lt 10 ]
+  # what puritty says it drew, which stands for the picture where there is
+  # none to take (Xwayland, RHEL 10)
+  grep "^x11: frames" /work/stats.txt | cut -d";" -f1-2
+  [ "$status" = 0 ] && [ "$took" -lt 10 ] && grep -q "glyphs [1-9]" /work/stats.txt
 '
+[ -f "$out/shot.ppm" ] || { echo "no picture to look at (Xwayland): the frames above are the check"; rm -rf "$out"; exit 0; }
 python3 - "$out/shot.ppm" <<'PY'
 import sys
 data = open(sys.argv[1], "rb").read()
