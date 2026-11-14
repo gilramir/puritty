@@ -193,6 +193,9 @@ type alias Model =
     , renaming : Maybe { id : Int, typed : String }
     , coloring : Maybe Int
     , closing : Maybe { id : Int, why : String, window : Bool }
+      -- why a new tab did not start, said in a box until it is
+      -- dismissed (docs/tabs.md TB16)
+    , startFailed : Maybe String
     , barClick : { at : Int, id : Int }
       -- the tabs kept to restore (docs/tabs.md TB10): the state directory,
       -- none for a window not kept; this window's files once made; what
@@ -971,6 +974,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                             , renaming = Nothing
                             , coloring = Nothing
                             , closing = Nothing
+                            , startFailed = Nothing
                             , barClick = { at = -1000, id = -1 }
                             , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
                             , byButton = False
@@ -1539,7 +1543,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -1570,7 +1574,7 @@ so that the window sends every motion: under tmux control mode, with the tab
 bar or the scroll bar shown, or a menu or a question up. -}
 hoverShapes : Model -> Bool
 hoverShapes m =
-    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
 
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
@@ -2092,6 +2096,7 @@ windowState m =
             , if m.renaming /= Nothing then "the rename box" else ""
             , if m.coloring /= Nothing then "the color box" else ""
             , if m.closing /= Nothing then "the close question" else ""
+            , if m.startFailed /= Nothing then "the box saying a tab did not start" else ""
             , if m.search /= Nothing then "the search bar" else ""
             , if m.selection /= Nothing then "a selection" else ""
             ] is
@@ -3286,7 +3291,12 @@ handleOne : Backend -> Int -> Array Window.Event -> Window.Event -> (taken m : M
 handleOne remote ms rest ev m =
             when ev is
                 Window.Key k ->
-                  if m.closing /= Nothing then
+                  if m.startFailed /= Nothing then
+                    -- the box saying a tab did not start takes the keys
+                    (if k.action /= 0 then startFailedKey k m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
+
+                  else if m.closing /= Nothing then
                     -- the question before closing takes the keys (TB4)
                     (if k.action /= 0 then closeKey k m else Task.succeed m)
                         |> Task.andThen (\next -> handle next.remote ms rest next)
@@ -3505,6 +3515,11 @@ handleOne remote ms rest ev m =
                     -- the pointer's place kept for its shape, and the event
                     -- then taken as before
                     handle remote ms (Array.pushFirst (Window.Pointer p) rest) { m | hover = Just p }
+
+                  else if m.startFailed /= Nothing then
+                    -- and the pointer: its button dismisses it
+                    (if p.action == 0 then startFailedPress p m else Task.succeed m)
+                        |> Task.andThen (\next -> handle next.remote ms rest next)
 
                   else if m.closing /= Nothing then
                     -- the close question takes the pointer: its buttons
@@ -4519,7 +4534,10 @@ draw ms m =
 
         -- a question asked in a box over puritty's screen (SC23)
         dialog =
-            if m.closing /= Nothing then
+            if m.startFailed /= Nothing then
+                Maybe.map startFailedBox m.startFailed
+
+            else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
 
             else if m.renaming /= Nothing then
@@ -5183,7 +5201,22 @@ openTabWith with m =
                 Nothing ->
                     meant Reason.NotSet here
                         |> Task.mapError Os.Error.toString
-                        |> Task.andThen (\dir -> m.starter.local { columns = cols, rows = rows, directory = dir })
+                        |> Task.andThen
+                            (\dir ->
+                                m.starter.local { columns = cols, rows = rows, directory = dir }
+                                    -- a directory removed under the shown
+                                    -- tab cannot be started in: the
+                                    -- program's own, as when it cannot be
+                                    -- read (TB4, TB16)
+                                    |> Task.onError
+                                        (\why ->
+                                            if dir == Nothing then
+                                                Task.fail why
+
+                                            else
+                                                m.starter.local { columns = cols, rows = rows, directory = Nothing }
+                                        )
+                            )
                         |> Task.map (\remote -> { remote = remote, problems = [] })
     in
     starting
@@ -5192,8 +5225,10 @@ openTabWith with m =
         |> Task.andThen
             (\started ->
                 when started is
+                    -- said in the window, which a desktop shows, and on
+                    -- standard error for a log (docs/tabs.md TB16)
                     Err why ->
-                        meant Reason.Refused Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> m)
+                        meant Reason.Refused Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> { m | startFailed = Just why, urgent = True })
 
                     Ok begun ->
                         let
@@ -6193,6 +6228,69 @@ askClose m =
                                             , urgent = True
                                         }
                         )
+
+
+{-| Why a new tab did not start (docs/tabs.md TB16), in a box over the shown tab,
+since standard error is not seen from a desktop. -}
+startFailedBox : String -> Dialog.Dialog
+startFailedBox why =
+    { title = "The new tab did not start"
+    , lines = wordLines 60 why
+    , field = Nothing
+    , swatches = []
+    , buttons = [ { label = "OK", primary = True } ]
+    , hint = "Enter or Esc: close this"
+    }
+
+
+{-| A text in lines of at most `width` characters, broken at spaces; a
+longer word has a line of its own. -}
+wordLines : Int -> String -> Array String
+wordLines width text =
+    let
+        put word acc =
+            if acc.line == "" then
+                { acc | line = word }
+
+            else if String.count acc.line + 1 + String.count word <= width then
+                { acc | line = acc.line ++ " " ++ word }
+
+            else
+                { lines = Array.pushLast acc.line acc.lines, line = word }
+
+        done =
+            Array.foldl put { lines = [], line = "" } (String.words text)
+    in
+    if done.line == "" then
+        done.lines
+
+    else
+        Array.pushLast done.line done.lines
+
+
+{-| A key while the box is up: Enter, Esc or Space closes it; any other
+key is ignored, so nothing typed reaches the terminal under it. -}
+startFailedKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
+startFailedKey k m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0xFF1B || k.sym == 0x20 then
+        Task.succeed { m | startFailed = Nothing, urgent = True }
+
+    else
+        Task.succeed m
+
+
+{-| A press while the box is up: on OK, it closes; anywhere else, nothing. -}
+startFailedPress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
+startFailedPress p m =
+    let
+        onOk =
+            p.button == 1 && (Maybe.andThen (\why -> Dialog.buttonAt (overlaySize m) (startFailedBox why) { x = p.x, y = p.y }) m.startFailed /= Nothing)
+    in
+    if onOk then
+        Task.succeed { m | startFailed = Nothing, urgent = True }
+
+    else
+        Task.succeed m
 
 
 {-| The question before closing a busy tab. -}

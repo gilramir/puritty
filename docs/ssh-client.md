@@ -1503,7 +1503,8 @@ its keys are the transport's own, and a test cannot hand it bad ones.
 **Found, not fixed:** a new tab that does not start (an ssh tab refused
 for want of `HOME`, say) is said only on standard error, which a window
 started from a desktop does not show. How the window should show a tab
-that could not start is Gilbert's to decide.
+that could not start is Gilbert's to decide. (Decided and done in
+`docs/tabs.md` TB16: a box in the window.)
 
 `geng checks`: 8 of the 11 left the baseline (125 entries); the other
 three are `Session.resolveOne`'s `String.toInt` defaults for those three

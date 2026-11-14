@@ -705,3 +705,32 @@ new; `neighborId`'s and `shownAt`'s defaults are gone. `bench/tabs`'
 reopening from the menu, had pressed Down five times since TB13 put "New
 tab" above "Reopen closed tab", and reopened nothing; it presses six now.
 App tests 170 on node, natively and on Windows.
+
+## TB16 · A tab that does not start says so in the window (2026-11-13)
+
+Gilbert, on `docs/ssh-client.md` SC27's open question: a new tab that
+does not start "needs to show in a window of some sort where the user can
+see it". It had been said only on standard error, which a window started
+from a desktop does not show.
+
+**Now:** a box over the shown tab, in the dialogs' look (`Dialog`, SC23),
+titled "The new tab did not start", with the reason in lines of at most
+60 characters, an OK button and "Enter or Esc: close this". While it is
+up it takes the keys (Enter, Esc or Space close it; any other key is
+ignored) and the pointer (only OK answers), so nothing typed or clicked
+reaches the terminal under it. It comes before the close question and
+the rename and color boxes. The line on standard error stays, for a log.
+
+**Found while testing it:** a shell in a directory that was removed
+(`mkdir d; cd d; rmdir d`) made every new tab fail. Linux reads the
+directory as `…/d (deleted)`, and starting a program there fails ("spawn
+…/d (deleted): No such file or directory"). TB4 says a new tab starts in
+the shown tab's directory "or the program's own when that cannot be
+read"; one that cannot be started in is now the same: the start is tried
+again in the program's own.
+
+**Measured** on Xvfb (a scratch script with xdotool): before the second
+fix, Ctrl+Shift+T in a removed directory put up the box with the spawn's
+reason, letters typed then did not reach the shell, and Enter took the
+box away; after it, the same keys open a second tab. `geng checks`: 0 new.
+Not yet a harness case.
