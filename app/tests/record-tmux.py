@@ -189,7 +189,7 @@ def main():
     key_rows = table(2)
     command_rows = table(3)
     out = [
-        "module RealTmux exposing (versions, answers, keys, commands)",
+        "module RealTmux exposing (answers, commands, keys, versions)",
         "",
         "{-| Real tmuxes' answers to puritty's questions in FakeTmux's tests'",
         "states, asked through a control client (docs/tmux.md TM68, TM69), and",
@@ -227,4 +227,5 @@ def main():
         print(f"{len(steps)} answers, {len(keys)} bindings and {len(commands)} commands from tmux {version}")
 
 
-main()
+if __name__ == "__main__":
+    main()
