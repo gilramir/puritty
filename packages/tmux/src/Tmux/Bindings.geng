@@ -15,6 +15,7 @@ under control mode it would leave the client answering nothing.
 -}
 
 import Dict exposing (Dict)
+import Tmux.Reason as Reason
 
 
 {-| A key's binding as `list-keys` gives it: its command, and whether it
@@ -54,8 +55,8 @@ prefixesOf line =
             String.split " " line
     in
     { prefixes = Array.keepIf (\w -> w /= "" && w /= "None") (Array.slice 0 2 words)
-    , repeatMs = Maybe.withDefault 500 (Maybe.andThen String.toInt (Array.get 2 words))
-    , byTable = hasSendKeysK (Maybe.withDefault "" (Array.get 3 words))
+    , repeatMs = Maybe.withDefault (meant Reason.FromOutside 500) (Maybe.andThen String.toInt (Array.get 2 words))
+    , byTable = hasSendKeysK (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 3 words))
     }
 
 
@@ -72,13 +73,13 @@ hasSendKeysK version =
                 String.split "." version
 
             major =
-                Maybe.andThen String.toInt (Array.get 0 parts) |> Maybe.withDefault 0
+                Maybe.andThen String.toInt (Array.get 0 parts) |> Maybe.withDefault (meant Reason.FromOutside 0)
 
             minor =
                 Array.get 1 parts
                     |> Maybe.map leadingDigits
                     |> Maybe.andThen String.toInt
-                    |> Maybe.withDefault 0
+                    |> Maybe.withDefault (meant Reason.FromOutside 0)
         in
         major > 3 || (major == 3 && minor >= 4)
 
@@ -110,7 +111,7 @@ route name ms modeTable s =
     in
     when name is
         Nothing ->
-            plain
+            meant Reason.NotKnown plain
 
         Just key ->
             if current /= "prefix" && Array.member key s.prefixes then
@@ -128,6 +129,7 @@ route name ms modeTable s =
                                 Just { binding = b, table = current }
 
                             Nothing ->
+                                meant Reason.NotKnown
                                 if current /= "root" then
                                     Dict.get ("root " ++ key) s.bindings |> Maybe.map (\b -> { binding = b, table = "root" })
 
@@ -148,11 +150,13 @@ route name ms modeTable s =
                                 }
 
                             Nothing ->
+                                meant Reason.NotKnown
                                 when switchedTo f.binding.command is
                                     Just table ->
                                         { plain | table = table, ran = f.binding.command }
 
                                     Nothing ->
+                                        meant Reason.NotKnown
                                         if f.binding.repeat then
                                             { plain | table = f.table, repeatUntil = ms + s.repeatMs, ran = f.binding.command }
 
@@ -160,7 +164,7 @@ route name ms modeTable s =
                                             { plain | ran = f.binding.command }
 
                     Nothing ->
-                        plain
+                        meant Reason.NotKnown plain
 
 
 {-| Why a binding's command is held back, if it is (TM24):
@@ -250,7 +254,7 @@ bindingOf line d =
                     d
 
         Nothing ->
-            d
+            meant Reason.FromOutside d
 
 
 {-| The digits a text begins with: `4` of `4a`. -}

@@ -9,6 +9,7 @@ key, a password) in it.
 
 import Config exposing (Config, Host)
 import Platform
+import Reason
 
 
 {-| The host of this name: the settings' own, or else one of that name
@@ -18,7 +19,7 @@ named : String -> Config -> Host
 named name config =
     Array.findFirst (\h -> h.name == name) config.hosts
         |> Maybe.map .value
-        |> Maybe.withDefault (Config.host name name)
+        |> Maybe.withDefault (meant Reason.NotKnown Config.host name name)
 
 
 {-| A host from what quick connect is given, `user@host:port`, the user
@@ -33,7 +34,7 @@ quick target =
             Maybe.map (\i -> String.takeFirst i target) at
 
         rest =
-            Maybe.map (\i -> String.dropFirst (i + 1) target) at |> Maybe.withDefault target
+            Maybe.map (\i -> String.dropFirst (i + 1) target) at |> Maybe.withDefault (meant Reason.NotSet target)
 
         -- a port after the last colon, unless the host is an IPv6
         -- address, which holds colons of its own and is written [::1]:22
@@ -45,7 +46,7 @@ quick target =
                 String.lastIndexOf ":" rest
 
         address =
-            Maybe.map (\i -> String.takeFirst i rest) portAt |> Maybe.withDefault rest
+            Maybe.map (\i -> String.takeFirst i rest) portAt |> Maybe.withDefault (meant Reason.NotSet rest)
 
         port =
             Maybe.andThen (\i -> String.toInt (String.dropFirst (i + 1) rest)) portAt
@@ -79,7 +80,7 @@ jumpSpec config h =
                     spec found.value
 
                 Nothing ->
-                    j
+                    meant Reason.NotKnown j
         )
         h.jump
 
@@ -106,7 +107,7 @@ sshCommand config h =
                     [ c ]
 
                 Nothing ->
-                    []
+                    meant Reason.NotSet []
            )
 
 
@@ -117,7 +118,7 @@ option flag value =
             [ flag, v ]
 
         Nothing ->
-            []
+            meant Reason.NotSet []
 
 
 {-| A host as `-J` takes it: `user@host:port`. -}
@@ -128,7 +129,7 @@ spec h =
             u ++ "@"
 
         Nothing ->
-            ""
+            meant Reason.NotSet ""
     )
         ++ h.host
         ++ (when h.port is
@@ -136,7 +137,7 @@ spec h =
                     ":" ++ String.fromInt p
 
                 Nothing ->
-                    ""
+                    meant Reason.NotSet ""
            )
 
 
@@ -147,13 +148,13 @@ session : Config -> Host -> Config
 session config h =
     { config
         | command = sshCommand config h
-        , title = Maybe.withDefault h.name h.title
-        , foreground = Maybe.withDefault config.foreground h.foreground
-        , background = Maybe.withDefault config.background h.background
-        , palette = Maybe.withDefault config.palette h.palette
-        , font = Maybe.withDefault config.font h.font
-        , points = Maybe.withDefault config.points h.points
+        , title = Maybe.withDefault (meant Reason.NotSet h.name) h.title
+        , foreground = Maybe.withDefault (meant Reason.NotSet config.foreground) h.foreground
+        , background = Maybe.withDefault (meant Reason.NotSet config.background) h.background
+        , palette = Maybe.withDefault (meant Reason.NotSet config.palette) h.palette
+        , font = Maybe.withDefault (meant Reason.NotSet config.font) h.font
+        , points = Maybe.withDefault (meant Reason.NotSet config.points) h.points
         , charset = if h.charset /= Nothing then h.charset else config.charset
-        , remote = if Maybe.withDefault Platform.defaultClient h.client == "built-in" then Just h else Nothing
+        , remote = if Maybe.withDefault (meant Reason.NotSet Platform.defaultClient) h.client == "built-in" then Just h else Nothing
         , hostName = Just h.name
     }

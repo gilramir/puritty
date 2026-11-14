@@ -85,6 +85,7 @@ import Vt.Paste as Paste
 import Vt.Base64 as Base64
 import Vt.View as View
 import Window
+import Reason
 
 
 type alias Model =
@@ -394,11 +395,11 @@ main =
                                 terminalMain (Ssh target) { env | args = Array.dropFirst 2 env.args }
 
                             Nothing ->
-                                Console.writeErr "puritty ssh: give where to connect, as user@host:port\n"
+                                meant Reason.FromOutside Console.writeErr "puritty ssh: give where to connect, as user@host:port\n"
                                     |> Task.andThen (\_ -> Os.Env.exitWithCode 2)
 
                     _ ->
-                        terminalMain Plain env
+                        meant Reason.NotSet terminalMain Plain env
             )
 
 
@@ -510,7 +511,7 @@ terminalMain mode env =
                                                             Task.succeed Nothing
 
                                                     Nothing ->
-                                                        Task.succeed Nothing
+                                                        meant Reason.NotSet Task.succeed Nothing
                                         in
                                         claiming
                                             |> Task.andThen
@@ -521,6 +522,7 @@ terminalMain mode env =
                                                                 |> Task.andThen (\_ -> start ctx.cp ctx.vars given got.problems (restoredConfig c.state got.config) { dir = stateDir, claimed = Just c })
 
                                                         Nothing ->
+                                                            meant Reason.NoMore
                                                             if mode == RestoreOne then
                                                                 -- none waits: nothing to open
                                                                 Task.succeed {}
@@ -531,7 +533,7 @@ terminalMain mode env =
                                                             else
                                                             when chosen.config is
                                                                 Err why ->
-                                                                    Task.fail why
+                                                                    meant Reason.FromOutside Task.fail why
 
                                                                 Ok config ->
                                                                     say (got.problems ++ chosen.problems)
@@ -564,11 +566,11 @@ restoredConfig state config =
                             Hosts.named name config
 
                          else
-                            Hosts.quick name |> Maybe.withDefault (Hosts.named name config)
+                            Hosts.quick name |> Maybe.withDefault (meant Reason.NotKnown Hosts.named name config)
                         )
 
                 Nothing ->
-                    config
+                    meant Reason.NotSet config
     in
     { base | columns = clamp 10 1000 state.columns, rows = clamp 3 1000 state.rows }
 
@@ -581,7 +583,7 @@ choose : Mode -> { config : Maybe Path.Path, title : Maybe String, host : Maybe 
 choose mode asked config =
     let
         titled c =
-            { c | title = Maybe.withDefault c.title asked.title }
+            { c | title = Maybe.withDefault (meant Reason.NotSet c.title) asked.title }
 
         to h =
             { config = Ok (titled (Hosts.session config h)), problems = [] }
@@ -600,7 +602,7 @@ choose mode asked config =
                         to h
 
                     Nothing ->
-                        { config = Err ("\"" ++ target ++ "\" is not where to connect, as user@host:port"), problems = [] }
+                        meant Reason.FromOutside { config = Err ("\"" ++ target ++ "\" is not where to connect, as user@host:port"), problems = [] }
 
             Plain ->
                 when asked.host is
@@ -608,6 +610,7 @@ choose mode asked config =
                         to (Hosts.named name config)
 
                     Nothing ->
+                        meant Reason.NotSet
                         if String.startsWith "host:" config.start then
                             to (Hosts.named (String.dropFirst 5 config.start) config)
 
@@ -636,12 +639,12 @@ hostList cp fs vars given asked got =
                     SettingsProgram.Session h ->
                         let
                             config =
-                                (\c -> { c | title = Maybe.withDefault c.title asked.title }) (Hosts.session got.config h)
+                                (\c -> { c | title = Maybe.withDefault (meant Reason.NotSet c.title) asked.title }) (Hosts.session got.config h)
                         in
                         Platform.locale vars
                             |> Task.andThen
                                 (\locale ->
-                                    Window.setFont { font = config.font, lang = Maybe.withDefault locale.language config.language, points = config.points, glyphCap = config.glyphCacheMb * 1024 * 1024 }
+                                    Window.setFont { font = config.font, lang = Maybe.withDefault (meant Reason.NotSet locale.language) config.language, points = config.points, glyphCap = config.glyphCacheMb * 1024 * 1024 }
                                         |> Task.andThen
                                             (\done ->
                                                 when done is
@@ -654,7 +657,7 @@ hostList cp fs vars given asked got =
                                                             |> Task.andThen (\_ -> begin cp vars given got.problems locale config cell { dir = Nothing, claimed = Nothing })
 
                                                     Err why ->
-                                                        Task.fail ("cannot open the host's font: " ++ why)
+                                                        meant Reason.Refused Task.fail ("cannot open the host's font: " ++ why)
                                             )
                                 )
             )
@@ -673,7 +676,7 @@ startIn cp vars given problems locale config restoring =
         , rows = config.rows
         , font = config.font
         , points = config.points
-        , lang = Maybe.withDefault locale.language config.language
+        , lang = Maybe.withDefault (meant Reason.NotSet locale.language) config.language
         , glyphCap = config.glyphCacheMb * 1024 * 1024
         , title = config.title
         }
@@ -681,7 +684,7 @@ startIn cp vars given problems locale config restoring =
             (\opened ->
                 when opened is
                     Err why ->
-                        Task.fail ("cannot open the window: " ++ why)
+                        meant Reason.Refused Task.fail ("cannot open the window: " ++ why)
 
                     Ok cell ->
                         Text.ligatures config.ligatures
@@ -710,7 +713,7 @@ begin cp vars given problems locale config cell restoring =
                                     |> (\o -> { o | workingDirectory = firstDirectory restoring })
 
                             charset =
-                                Charset.fromName (Maybe.withDefault locale.charset config.charset)
+                                Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
                         in
                         Task.map2 (\events self -> { events = events, self = self })
                             (watchSettings given)
@@ -729,7 +732,7 @@ begin cp vars given problems locale config cell restoring =
                                                                 if f.required then [ "settings", "--config", Path.toString f.path ] else [ "settings" ]
 
                                                             Nothing ->
-                                                                [ "settings" ]
+                                                                meant Reason.NotSet [ "settings" ]
                                                     }
                                                 )
                                                 w.self
@@ -739,7 +742,7 @@ begin cp vars given problems locale config cell restoring =
                                             sshBackend vars config charset host
 
                                         Nothing ->
-                                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                                            meant Reason.NotSet spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
                                                 |> Task.mapError Os.Error.toString
                                                 |> Task.andThen
                                                     (\child ->
@@ -758,7 +761,7 @@ begin cp vars given problems locale config cell restoring =
                                                     -- program at the window's size, or another
                                                     -- session to the host
                                                     localCharset =
-                                                        Charset.fromName (Maybe.withDefault locale.charset config.charset)
+                                                        Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) config.charset)
 
                                                     starter =
                                                         { local =
@@ -796,10 +799,10 @@ sshBackend vars config charset host =
             (\permissions ->
                 let
                     home =
-                        Dict.get "HOME" vars |> Maybe.withDefault (Dict.get "USERPROFILE" vars |> Maybe.withDefault "")
+                        Dict.get "HOME" vars |> Maybe.withDefault (meant Reason.FromOutside Dict.get "USERPROFILE" vars |> Maybe.withDefault "")
 
                     localUser =
-                        Dict.get "USER" vars |> Maybe.withDefault (Dict.get "USERNAME" vars |> Maybe.withDefault "")
+                        Dict.get "USER" vars |> Maybe.withDefault (meant Reason.FromOutside Dict.get "USERNAME" vars |> Maybe.withDefault "")
                 in
                 SshAgents.agents vars
                     |> Task.andThen
@@ -831,7 +834,7 @@ spawnFirst : Process.Permission -> Array (Array String) -> Process.SpawnOptions 
 spawnFirst cp commands options =
     when Array.popFirst commands is
         Nothing ->
-            Task.fail { kind = Os.Error.NotFound, operation = "spawn", path = Nothing, detail = "no program to run" }
+            meant Reason.NoMore Task.fail { kind = Os.Error.NotFound, operation = "spawn", path = Nothing, detail = "no program to run" }
 
         Just { first, rest } ->
             Process.spawn cp (Maybe.withDefault "" (Array.first first)) (Array.dropFirst 1 first) options
@@ -1012,7 +1015,7 @@ finishShown remote m =
             |> Task.andThen
                 (\_ ->
                     Os.Env.exitWithCode
-                        (m.ssh |> Maybe.andThen .exitStatus |> Maybe.withDefault 0)
+                        (m.ssh |> Maybe.andThen .exitStatus |> Maybe.withDefault (meant Reason.FromOutside 0))
                 )
 
     else
@@ -1213,7 +1216,7 @@ restoreInto restoring m =
                     )
 
         Nothing ->
-            startSaving m
+            meant Reason.NotSet startSaving m
     )
         |> Task.andThen (\next -> barFirst next.remote next)
 
@@ -1235,14 +1238,14 @@ startSaving m =
                                     Task.succeed { m | saving = { dir = Just dir, window = Just w, written = "", at = 0 } }
 
                                 Err e ->
-                                    Console.writeErr ("puritty: the tabs cannot be saved to restore them: " ++ Os.Error.toString e ++ "\n") |> Task.map (\_ -> m)
+                                    meant Reason.Refused Console.writeErr ("puritty: the tabs cannot be saved to restore them: " ++ Os.Error.toString e ++ "\n") |> Task.map (\_ -> m)
                         )
 
             else
                 Task.succeed m
 
         Nothing ->
-            Task.succeed m
+            meant Reason.NotSet Task.succeed m
 
 
 {-| Where the first tab of a restored local window starts. -}
@@ -1365,7 +1368,7 @@ savedHidden i m acc =
                     Array.pushLast { id = t.info.id, name = t.info.name, color = t.info.color, remote = t.remote } acc
 
                 Nothing ->
-                    acc
+                    meant Reason.Gone acc
             )
 
 
@@ -1423,7 +1426,7 @@ bellRung m =
                                 n + t.term.bells
 
                             _ ->
-                                n
+                                meant Reason.Gone n
                     )
                     0
 
@@ -1442,7 +1445,7 @@ bellRung m =
                 Window.sound id |> Task.map (\taken -> logLine "bell" ("rang: " ++ m.config.soundBell ++ (if taken then ", played" else ", not played (no audio, or a sound still playing)")) { m | bellsHeard = total })
 
             Nothing ->
-                Task.succeed (logLine "bell" "rang: none chosen" { m | bellsHeard = total })
+                meant Reason.NotSet Task.succeed (logLine "bell" "rang: none chosen" { m | bellsHeard = total })
 
     else
         Task.succeed { m | bellsHeard = total }
@@ -1518,10 +1521,10 @@ pointerShape m =
                             Window.ArrowPointer
 
                         else
-                            TmuxMode.pointerShape m.shiftHeld p m.tmux |> Maybe.withDefault program
+                            TmuxMode.pointerShape m.shiftHeld p m.tmux |> Maybe.withDefault (meant Reason.NotOpen program)
 
                     Nothing ->
-                        program
+                        meant Reason.OutOfRange program
     in
     if shape == m.pointerShown then
         Task.succeed m
@@ -1572,7 +1575,7 @@ race remote m0 =
                     following =
                         when m.settings.events is
                             Nothing ->
-                                []
+                                meant Reason.NotSet []
 
                             Just events ->
                                 [ Source.next events |> Task.map SettingsChanged ]
@@ -1687,7 +1690,7 @@ noticed ms change m =
                     Path.filename path == Path.filename f.path
 
                 Nothing ->
-                    False
+                    meant Reason.NotSet False
 
         soon =
             { s | at = ms + reloadDelayMs }
@@ -1712,7 +1715,7 @@ noticed ms change m =
             { m | settings = none }
 
         Nothing ->
-            { m | settings = none }
+            meant Reason.NoMore { m | settings = none }
 
 
 {-| The settings read again once a change's delay is up (docs/settings.md
@@ -1768,7 +1771,7 @@ forHost m new =
                         Hosts.named name new
 
                     else
-                        Hosts.quick name |> Maybe.withDefault (Hosts.named name new)
+                        Hosts.quick name |> Maybe.withDefault (meant Reason.NotKnown Hosts.named name new)
 
                 session =
                     Hosts.session new host
@@ -1776,11 +1779,11 @@ forHost m new =
             { session
                 | command = m.config.command
                 , remote = m.config.remote
-                , title = Maybe.withDefault session.title m.settings.given.title
+                , title = Maybe.withDefault (meant Reason.NotSet session.title) m.settings.given.title
             }
 
         Nothing ->
-            new
+            meant Reason.NotSet new
 
 
 {-| Each problem with the settings on standard error. -}
@@ -1843,7 +1846,7 @@ beginLog : (taken m : Model) -> Task Error Model
 beginLog m =
     when m.logDir is
         Nothing ->
-            Task.succeed m
+            meant Reason.NotSet Task.succeed m
 
         Just dir ->
             let
@@ -1996,14 +1999,14 @@ writeLog force m0 =
                                         (\problem ->
                                             when problem is
                                                 Nothing ->
-                                                    m
+                                                    meant Reason.Refused m
 
                                                 Just why ->
                                                     logLine "error" ("the log could not be written: " ++ why) m
                                         )
 
                             Nothing ->
-                                Task.succeed m
+                                meant Reason.NotSet Task.succeed m
                 )
 
     else
@@ -2046,11 +2049,11 @@ windowState m =
     in
     [ "tab " ++ String.fromInt m.tab.id ++ " shown of " ++ String.fromInt (tabCount m) ++ ", " ++ (when m.tab.hostName is
             Just h -> "host " ++ h
-            Nothing -> "no host")
+            Nothing -> meant Reason.NotSet "no host")
     , "focus " ++ yes m.focus.focused ++ ", buttons held " ++ String.fromInt m.held ++ ", shift " ++ yes m.shiftHeld
     , "paste asked " ++ yes (m.toPaste /= Nothing) ++ ", paste under way " ++ (when m.pasting is
             Just b -> "yes, " ++ (if b then "bracketed" else "plain")
-            Nothing -> "no")
+            Nothing -> meant Reason.NotOpen "no")
     , "waiting to be sent " ++ String.fromInt (Outbox.size m.out) ++ " bytes"
     , "terminal: paste-brackets " ++ yes (Dict.get 2004 modes == Just True) ++ ", focus-reports " ++ yes (Dict.get 1004 modes == Just True) ++ ", mouse " ++ yes ((Vt.mouseModes m.term).tracking /= Mouse.none) ++ ", alt-screen " ++ yes m.term.alt ++ ", view scrolled back " ++ String.fromInt m.back
     , "open: " ++ (when Array.keepIf (\x -> x /= "")
@@ -2066,8 +2069,8 @@ windowState m =
     , "ssh: " ++ (when m.ssh is
             Just screen -> "to " ++ screen.host ++ (if screen.started then ", started" else ", not started") ++ (if screen.asking /= Nothing then ", asking a question" else "") ++ (when screen.failed is
                 Just why -> ", failed: " ++ why
-                Nothing -> "")
-            Nothing -> "none")
+                Nothing -> meant Reason.NotOpen "")
+            Nothing -> meant Reason.NotSet "none")
     ]
 
 
@@ -2192,10 +2195,10 @@ applyLook new m =
             m.settings.locale
 
         language c =
-            Maybe.withDefault locale.language c.language
+            Maybe.withDefault (meant Reason.NotSet locale.language) c.language
 
         charset =
-            Charset.fromName (Maybe.withDefault locale.charset new.charset)
+            Charset.fromName (Maybe.withDefault (meant Reason.NotSet locale.charset) new.charset)
 
         term0 =
             if new.palette /= old.palette then
@@ -2281,7 +2284,7 @@ refontOr new old language applied =
                             Task.succeed { applied | points = new.points }
 
                         Err why ->
-                            Console.writeErr ("puritty: " ++ why ++ "; the font in use is kept\n")
+                            meant Reason.Refused Console.writeErr ("puritty: " ++ why ++ "; the font in use is kept\n")
                                 |> Task.map (\_ -> { applied | config = { new | font = old.font, language = old.language, glyphCacheMb = old.glyphCacheMb } })
                 )
 
@@ -2309,7 +2312,7 @@ bound name k =
             Chord.matches chord k
 
         _ ->
-            False
+            meant Reason.NotSet False
 
 
 {-| The settings window started, not tied to this window; a failure said
@@ -2332,7 +2335,7 @@ spawnSelf args m =
                 |> Task.map (\_ -> m)
 
         Nothing ->
-            Console.writeErr "puritty: this program's own file is not known, so no window can be started\n" |> Task.map (\_ -> m)
+            meant Reason.Refused Console.writeErr "puritty: this program's own file is not known, so no window can be started\n" |> Task.map (\_ -> m)
 
 
 -- THE MENU (docs/settings.md ST9, ST26)
@@ -2489,7 +2492,7 @@ menuChosen c m =
             menuDo item m
 
         Nothing ->
-            Task.succeed m
+            meant Reason.OutOfRange Task.succeed m
 
 
 {-| The menu's box: where it is drawn, kept on the screen. -}
@@ -2599,7 +2602,7 @@ shoot m =
             Window.shot path |> Task.map (\_ -> m)
 
         Nothing ->
-            Task.succeed m
+            meant Reason.NotSet Task.succeed m
 
 
 {-| The time told to tmux's control mode, which closes the panes' numbers
@@ -2762,7 +2765,7 @@ handle : Backend -> Int -> Array Window.Event -> (taken m : Model) -> Task Error
 handle remote ms evs m =
     when Array.first evs is
         Nothing ->
-            Task.succeed m
+            meant Reason.NoMore Task.succeed m
 
         Just ev ->
             let
@@ -2782,7 +2785,7 @@ handle remote ms evs m =
                                 Diag.add ms l.tag l.text m.diag
 
                             Nothing ->
-                                m.diag
+                                meant Reason.NotKnown m.diag
                 }
 
 
@@ -2824,7 +2827,7 @@ ownScreenUp m =
             not screen.started || screen.failed /= Nothing || screen.asking /= Nothing
 
         Nothing ->
-            False
+            meant Reason.NotSet False
 
 
 {-| A notice from the session, taken into the screen; when the session
@@ -2850,7 +2853,7 @@ sshNoticed : Session.Notice -> (taken m : Model) -> Model
 sshNoticed told m =
     when m.ssh is
         Nothing ->
-            m
+            meant Reason.NotSet m
 
         Just screen ->
             let
@@ -2885,7 +2888,7 @@ sshNoticed told m =
                                 -- a session that ends without its shell's exit status
                                 -- dropped: its screen stays up to say so, with
                                 -- reconnect (TB8)
-                                { screen | failed = Just (Maybe.withDefault "the connection ended" screen.failed) }
+                                { screen | failed = Just (Maybe.withDefault (meant Reason.FromOutside "the connection ended") screen.failed) }
 
                         Session.Output _ ->
                             screen
@@ -2906,7 +2909,7 @@ endsSession told ssh =
             told == Session.Ended && screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing
 
         Nothing ->
-            False
+            meant Reason.NotSet False
 
 
 {-| Text from the server or the network made safe to show: control
@@ -2948,7 +2951,7 @@ sshKey remote k m =
     in
     when m.ssh is
         Nothing ->
-            Task.succeed m
+            meant Reason.NotSet Task.succeed m
 
         Just screen ->
             when screen.asking is
@@ -3000,6 +3003,7 @@ sshKey remote k m =
                                 Task.succeed (editTyped backspace k m)
 
                 Nothing ->
+                    meant Reason.NotOpen
                     if screen.failed /= Nothing && letter == "r" then
                         remote.reconnect { columns = m.term.cols, rows = m.term.rows }
                             |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
@@ -3044,10 +3048,10 @@ updateTyped f m =
                     { m | ssh = Just { screen | asking = Just { asking | typed = f asking.typed } }, urgent = True }
 
                 Nothing ->
-                    m
+                    meant Reason.NotOpen m
 
         Nothing ->
-            m
+            meant Reason.NotSet m
 
 
 {-| A question of the ssh session, or why it failed, as a box over the
@@ -3097,15 +3101,16 @@ dialogOf screen =
                                 }
 
                         Nothing ->
-                            Nothing
+                            meant Reason.NoMore Nothing
 
         Nothing ->
+            meant Reason.NotOpen
             when screen.failed is
                 Just why ->
                     Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
 
                 Nothing ->
-                    Nothing
+                    meant Reason.NotOpen Nothing
 
 
 {-| The own screen as a terminal of the window's size: a heading, what has
@@ -3177,7 +3182,7 @@ ownTerm m boxed screen =
                                                 )
 
                                         Nothing ->
-                                            ""
+                                            meant Reason.NoMore ""
                             in
                             [ line ""
                             , if r.name == "" then "" else line (bold ("The server asks: " ++ cleanText r.name))
@@ -3188,12 +3193,13 @@ ownTerm m boxed screen =
                             ]
 
                 Nothing ->
+                    meant Reason.NotOpen
                     when screen.failed is
                         Just why ->
                             [ line "", line (bold "The session could not go on:"), line ("  " ++ why), line "", line "  Enter: close    R: connect again" ]
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
         -- the cursor only where something is typed
         typingAsked =
@@ -3207,7 +3213,7 @@ ownTerm m boxed screen =
                             True
 
                 Nothing ->
-                    False
+                    meant Reason.NotOpen False
 
         -- a question in a box over the screen is not on it (SC23)
         question =
@@ -3311,6 +3317,7 @@ handleOne remote ms rest ev m =
                                     )
 
                         Nothing ->
+                            meant Reason.NotKnown
                             if isPasteKey m.config k /= Nothing then
                                 -- Shift+Insert and Ctrl+Shift+V, the
                                 -- terminal's before the program's
@@ -3327,7 +3334,7 @@ handleOne remote ms rest ev m =
                                                 { m | toOwn = Just { which = Window.Clipboard, text = text } }
 
                                             Nothing ->
-                                                m
+                                                meant Reason.NotOpen m
 
                                      else
                                         when m.selection is
@@ -3335,7 +3342,7 @@ handleOne remote ms rest ev m =
                                                 { m | toOwn = Just { which = Window.Clipboard, text = Vt.selectionText s.anchor s.head m.term } }
 
                                             Nothing ->
-                                                m
+                                                meant Reason.NotOpen m
                                     )
 
                             else
@@ -3366,7 +3373,7 @@ handleOne remote ms rest ev m =
                                             handle remote ms rest { m | back = back, urgent = True }
 
                                         Nothing ->
-                                            key remote ms rest k m
+                                            meant Reason.NotKnown key remote ms rest k m
 
                 Window.Resized size ->
                     -- every tab at the window's size, less the bar's row
@@ -3442,7 +3449,7 @@ handleOne remote ms rest ev m =
 
                         feedback =
                             Array.takeFirst p.first old.feedback
-                                ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault 0 (Array.get i p.feedback))
+                                ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback))
                                 ++ Array.dropFirst (p.first + p.length) old.feedback
                     in
                     imeLine m.imeLog ("preedit " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode points) ++ " caret " ++ String.fromInt p.caret ++ " feedback " ++ String.join " " (Array.map String.fromInt feedback))
@@ -3529,7 +3536,7 @@ handleOne remote ms rest ev m =
                                             clipReadIn more text r m
 
                                         Nothing ->
-                                            pasteIn more text m
+                                            meant Reason.NotOpen pasteIn more text m
                                     )
                             )
 
@@ -3565,13 +3572,14 @@ owned remote ms rest m =
                 |> Task.andThen (\_ -> owned remote ms rest { m | toOwn = next })
 
         Nothing ->
+            meant Reason.NoMore
             when m.toPaste is
                 Just which ->
                     Window.paste which
                         |> Task.andThen (\_ -> handle remote ms rest (logLine "paste" ("asked from " ++ (if which == Window.Primary then "the selection (primary)" else "the clipboard")) { m | toPaste = Nothing }))
 
                 Nothing ->
-                    handle remote ms rest m
+                    meant Reason.NoMore handle remote ms rest m
 
 
 {-| The OSC 52 requests the core made (docs/phase3-select.md §16): a write
@@ -3584,7 +3592,7 @@ clipboardRequests : (taken m : Model) -> Task x Model
 clipboardRequests m =
     when Array.first m.clips is
         Nothing ->
-            Task.succeed m
+            meant Reason.NoMore Task.succeed m
 
         Just c ->
             let
@@ -3613,6 +3621,7 @@ clipboardRequests m =
                             )
 
                 Nothing ->
+                    meant Reason.FromOutside
                     if rest.config.osc52Read && rest.clipRead == Nothing then
                         Window.paste which
                             |> Task.andThen
@@ -3644,7 +3653,7 @@ clipReadIn more text r m =
     else
         sendRaw
             (Bytes.flatten
-                [ Bytes.fromString ("\u{001B}]52;" ++ String.fromChar (Maybe.withDefault 'c' (Char.fromCode r.letter)) ++ ";")
+                [ Bytes.fromString ("\u{001B}]52;" ++ String.fromChar (Maybe.withDefault (meant Reason.FromOutside 'c') (Char.fromCode r.letter)) ++ ";")
                 , Base64.encode all
                 , Bytes.fromString
                     (if r.bel then
@@ -3680,7 +3689,7 @@ pasteInto more text m =
             m.pasting == Nothing
 
         bracketed =
-            Maybe.withDefault (modeOn 2004 m) m.pasting
+            Maybe.withDefault (meant Reason.NotYet modeOn 2004 m) m.pasting
 
         empty =
             first && not more && Bytes.isEmpty text
@@ -3812,7 +3821,7 @@ pointer ms p m =
         let
             back =
                 Dialog.scrollbarHit (overlaySize m) { back = viewBack m, most = Vt.scrollbackRows m.term } { x = 1000000, y = p.y }
-                    |> Maybe.withDefault m.back
+                    |> Maybe.withDefault (meant Reason.OutOfRange m.back)
         in
         { m | held = held, back = back, barDrag = held /= 0, urgent = True }
 
@@ -3965,7 +3974,7 @@ selecting ms p held m =
                     { m | held = held, selection = Just (extended at s m), urgent = True }
 
             Nothing ->
-                { m | held = held }
+                meant Reason.NotOpen { m | held = held }
 
     else if p.button == 1 && p.action == 1 then
         when m.selection is
@@ -3989,7 +3998,7 @@ selecting ms p held m =
                     }
 
             Nothing ->
-                { m | held = held }
+                meant Reason.NotOpen { m | held = held }
 
     else
         { m | held = held }
@@ -4012,7 +4021,7 @@ extended at s m =
                     Vt.lineAt at m.term
 
             w =
-                Maybe.withDefault { start = at, end = at } span
+                Maybe.withDefault (meant Reason.OutOfRange { start = at, end = at }) span
         in
         if before w.start s.first then
             { s | anchor = s.last, head = w.start }
@@ -4075,7 +4084,7 @@ kept : Maybe Selection -> Vt.Term -> Maybe Selection
 kept sel t =
     when sel is
         Nothing ->
-            Nothing
+            meant Reason.NotOpen Nothing
 
         Just s ->
             if s.alt /= t.alt then
@@ -4104,7 +4113,7 @@ highlightOf : Model -> View.Highlight
 highlightOf m =
     when m.selection is
         Nothing ->
-            View.noHighlight
+            meant Reason.NotOpen View.noHighlight
 
         Just s ->
             let
@@ -4181,7 +4190,7 @@ zoomSteps evs net =
                 { net = net, rest = evs }
 
         _ ->
-            { net = net, rest = evs }
+            meant Reason.NoMore { net = net, rest = evs }
 
 
 lowestHeld : Int -> Int -> Int
@@ -4203,7 +4212,7 @@ key remote ms rest k m =
         -- under tmux control mode, by the active pane's modes (docs/tmux.md TM16)
         bytes =
             if TmuxMode.isOn m.tmux then
-                Maybe.withDefault Bytes.empty (TmuxMode.encodeKey k m.tmux)
+                Maybe.withDefault (meant Reason.NotYet Bytes.empty) (TmuxMode.encodeKey k m.tmux)
 
             else
                 Keys.encode m.term k
@@ -4313,7 +4322,7 @@ searchKey k m =
                                 if older then mt.start.row - 1 else mt.start.row + 1
 
                             Nothing ->
-                                viewBottom
+                                meant Reason.NotYet viewBottom
                 in
                 found s (Search.find s.query older from m.term) m
 
@@ -4354,7 +4363,7 @@ found s match m =
             { m | search = Just { s | match = Just mt, failed = False }, selection = Just { sel | hashes = hashes }, back = back, urgent = True }
 
         Nothing ->
-            { m | search = Just { s | failed = s.query /= "" }, urgent = True }
+            meant Reason.NoMore { m | search = Just { s | failed = s.query /= "" }, urgent = True }
 
 
 {-| What puritty draws over the cells is sized by: the window in cells and
@@ -4601,7 +4610,7 @@ draw ms m =
                                 ++ "]"
 
                         Nothing ->
-                            ""
+                            meant Reason.NoMore ""
                    )
 
         f =
@@ -4624,8 +4633,8 @@ draw ms m =
                         else
                             View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, Maybe.withDefault Bytes.empty (Maybe.map .list searchDrawn), Maybe.withDefault Bytes.empty (Maybe.map .list boxDrawn) ])
-        |> Task.andThen (\up -> Window.spot (Maybe.withDefault (Maybe.withDefault spot (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
+    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list searchDrawn), Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list boxDrawn) ])
+        |> Task.andThen (\up -> Window.spot (Maybe.withDefault (meant Reason.NotOpen Maybe.withDefault (meant Reason.NotOpen spot) (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
                 (if title /= m.title then
@@ -4638,7 +4647,7 @@ draw ms m =
                         (\_ ->
                             let
                                 shadow =
-                                    View.inked (Maybe.withDefault Bytes.empty up) f.shadow
+                                    View.inked (Maybe.withDefault (meant Reason.Gone Bytes.empty) up) f.shadow
 
                                 -- The view asks for a frame at once when new
                                 -- ink lands on a glyph it did not draw (V40).
@@ -4848,7 +4857,7 @@ hiddenFrom i m acc =
                     Array.pushLast { id = t.info.id, remote = t.remote, writing = not (Outbox.isEmpty t.out) } acc
 
                 Nothing ->
-                    acc
+                    meant Reason.Gone acc
             )
 
 
@@ -4866,7 +4875,7 @@ labelsOf i m acc =
                     Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
 
                 Nothing ->
-                    acc
+                    meant Reason.Gone acc
             )
 
 
@@ -4975,7 +4984,7 @@ showTab id m =
                         { m | tabs = out.builder }
 
             Nothing ->
-                m
+                meant Reason.Gone m
 
 
 {-| The shown tab moved `by` places along the bar, round past the ends. -}
@@ -5035,7 +5044,7 @@ dropShownFrom dir m =
                     Task.succeed { m | tabs = out.builder }
 
         Nothing ->
-            Task.succeed m
+            meant Reason.Gone Task.succeed m
 
 
 {-| Ctrl+Shift+W: the shown tab's program ended, and its tab gone; with one
@@ -5077,7 +5086,7 @@ isFree : Maybe Tab -> Bool
 isFree slot =
     when slot is
         Nothing ->
-            True
+            meant Reason.Gone True
 
         Just _ ->
             False
@@ -5133,7 +5142,7 @@ openTabWith with m =
                     Task.succeed given
 
                 Nothing ->
-                    m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing)
+                    meant Reason.NotSet m.remote.directory |> Task.onError (\_ -> Task.succeed Nothing)
 
         starting =
             when host is
@@ -5141,7 +5150,7 @@ openTabWith with m =
                     m.starter.ssh h
 
                 Nothing ->
-                    here |> Task.mapError Os.Error.toString |> Task.andThen (\dir -> m.starter.local { columns = cols, rows = rows, directory = dir })
+                    meant Reason.NotSet here |> Task.mapError Os.Error.toString |> Task.andThen (\dir -> m.starter.local { columns = cols, rows = rows, directory = dir })
     in
     starting
         |> Task.map Ok
@@ -5150,7 +5159,7 @@ openTabWith with m =
             (\started ->
                 when started is
                     Err why ->
-                        Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> m)
+                        meant Reason.Refused Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> m)
 
                     Ok remote ->
                         let
@@ -5166,7 +5175,7 @@ openTabWith with m =
                                         reopened k id remote host m
 
                                     Nothing ->
-                                        freshTab id remote host with.name with.color cols rows m
+                                        meant Reason.NotSet freshTab id remote host with.name with.color cols rows m
 
                             r =
                                 swapTab tab { m | nextTabId = id + 1, order = Array.pushLast id m.order, shown = Array.length m.order }
@@ -5293,7 +5302,7 @@ closedSlotFor i best m =
     else
         when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
             Nothing ->
-                i
+                meant Reason.Gone i
 
             Just at ->
                 closedSlotFor (i + 1) (if best.oldestAt < 0 || at < best.oldestAt then { best | oldest = i, oldestAt = at } else best) m
@@ -5316,7 +5325,7 @@ newestFrom i best bestAt m =
                 if at > bestAt then newestFrom (i + 1) (Just i) at m else newestFrom (i + 1) best bestAt m
 
             Nothing ->
-                newestFrom (i + 1) best bestAt m
+                meant Reason.Gone newestFrom (i + 1) best bestAt m
 
 
 {-| Whether a closed tab waits to be opened again. -}
@@ -5343,7 +5352,7 @@ closedDueFrom i due m =
                     soonest due (at + closedKeepMs)
 
                 Nothing ->
-                    due
+                    meant Reason.Gone due
             )
             m
 
@@ -5395,7 +5404,7 @@ reopenTab m =
                     Task.succeed { m | closedTabs = out.builder }
 
         Nothing ->
-            Task.succeed m
+            meant Reason.NoMore Task.succeed m
 
 
 {-| Every tab at `cols` by the window's rows, less the bar's while it shows,
@@ -5468,7 +5477,7 @@ atTab id work m =
                     Task.succeed { m | tabs = out.builder }
 
         Nothing ->
-            Task.succeed m
+            meant Reason.Gone Task.succeed m
 
 
 {-| What a tab not shown read: its terminal fed, and its marks set; its
@@ -5547,7 +5556,7 @@ endTab id kill m =
                     Task.succeed rest
 
         Nothing ->
-            Task.succeed m
+            meant Reason.Gone Task.succeed m
 
 
 -- THE BAR
@@ -5568,6 +5577,7 @@ tabLabel info title =
                         h.name
 
                     Nothing ->
+                        meant Reason.NotSet
                         if title /= "" then String.takeFirst 24 (shortTitle title) else "shell"
     in
     (if info.bell then "! " else "") ++ base
@@ -5767,7 +5777,7 @@ tabBar m =
                                 coloredTab t c
 
                             Nothing ->
-                                plainTab t
+                                meant Reason.NotSet plainTab t
                     )
                     (barTabs m)
             )
@@ -5817,7 +5827,7 @@ barPress ms p m =
                 Task.succeed (showTab hit.value.id m)
 
         Nothing ->
-            Task.succeed m
+            meant Reason.OutOfRange Task.succeed m
 
 
 {-| The rename box opened over the shown tab. -}
@@ -5888,7 +5898,7 @@ colorBox m =
                     { color = 0x3A3A3A, label = "0", marked = info.color == NoColor || (info.color == HostsColor && hostOwn == Nothing) }
 
                 HostsColor ->
-                    { color = Maybe.withDefault 0x3A3A3A hostOwn, label = "H", marked = info.color == HostsColor && hostOwn /= Nothing }
+                    { color = Maybe.withDefault (meant Reason.NotSet 0x3A3A3A) hostOwn, label = "H", marked = info.color == HostsColor && hostOwn /= Nothing }
     in
     { title = "The tab's color"
     , lines =
@@ -5897,7 +5907,7 @@ colorBox m =
                 [ "H gives it the color of " ++ name ++ "'s tabs in the settings." ]
 
             Nothing ->
-                [ "A color for this tab in the bar." ]
+                meant Reason.NotSet [ "A color for this tab in the bar." ]
     , field = Nothing
     , swatches = Array.map swatch (colorChoices m)
     , buttons = []
@@ -5940,6 +5950,7 @@ colorKey k m =
 
         Nothing ->
             -- a modifier alone, as Shift for an H, leaves the box up
+            meant Reason.NotKnown
             if String.isEmpty typed && k.sym /= 0xFF1B && k.sym /= 0xFF0D && k.sym /= 0xFF8D then
                 Task.succeed m
 
@@ -5967,7 +5978,7 @@ colorPress p m =
             colorTab choice m
 
         Nothing ->
-            Task.succeed { m | coloring = Nothing, urgent = True }
+            meant Reason.OutOfRange Task.succeed { m | coloring = Nothing, urgent = True }
 
 
 {-| The tab the box is for given a color, and the box closed. -}
@@ -6090,7 +6101,7 @@ askClose m =
                         Nothing
 
                 Nothing ->
-                    Nothing
+                    meant Reason.NotSet Nothing
 
         busy =
             m.remote.busy
@@ -6107,7 +6118,7 @@ askClose m =
                 Task.succeed { m | closing = Just { id = id, why = "Its ssh session to " ++ cleanText host ++ " is open.", window = False }, urgent = True }
 
             Nothing ->
-                busy
+                meant Reason.NotOpen busy
                     |> Task.map Ok
                     |> Task.onError (\e -> Task.succeed (Err e))
                     |> Task.andThen
@@ -6124,7 +6135,7 @@ askClose m =
                                         }
 
                                 Err e ->
-                                    Task.succeed
+                                    meant Reason.NoMore Task.succeed
                                         { m
                                             | closing = Just { id = id, why = "puritty could not tell whether a program runs in it: " ++ Os.Error.toString e, window = False }
                                             , urgent = True
@@ -6184,7 +6195,7 @@ closePress p m =
             closeAnswer False m
 
         Nothing ->
-            Task.succeed m
+            meant Reason.OutOfRange Task.succeed m
 
 
 {-| The close question answered: yes closes the window, or the tab asked
@@ -6280,7 +6291,7 @@ busyCandidates i m acc =
                     Array.pushLast { label = tabLabel t.info t.term.title, ssh = t.ssh, remote = t.remote } acc
 
                 Nothing ->
-                    acc
+                    meant Reason.Gone acc
             )
 
 
@@ -6298,7 +6309,7 @@ busyWhy t =
                 Task.succeed Nothing
 
         Nothing ->
-            t.remote.busy
+            meant Reason.NotSet t.remote.busy
                 |> Task.map (Maybe.map (\name -> (if name == "" then "a program" else cleanText name) ++ " is running"))
                 |> Task.onError (\e -> Task.succeed (Just ("puritty could not tell what runs: " ++ Os.Error.toString e)))
 
@@ -6313,7 +6324,7 @@ sessionLost ssh =
             screen.failed /= Nothing
 
         Nothing ->
-            False
+            meant Reason.NotSet False
 
 
 {-| A lost session's tab label, with `×` before it. -}

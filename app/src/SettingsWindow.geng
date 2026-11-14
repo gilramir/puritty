@@ -27,6 +27,7 @@ import Config exposing (Config)
 import Hosts
 import Schema exposing (Kind(..), Setting, Value(..))
 import Words exposing (Message)
+import Reason
 
 
 type Focus
@@ -157,7 +158,7 @@ init r =
                     )
 
             Nothing ->
-                Nothing
+                meant Reason.NoMore Nothing
     }
 
 
@@ -214,7 +215,7 @@ listed m =
                     []
 
             Nothing ->
-                []
+                meant Reason.NotOpen []
 
     else
         listedSettings m query
@@ -281,14 +282,14 @@ hostRows m =
             Array.map
                 (\h ->
                     { name = h.name
-                    , detail = Words.plain (Maybe.withDefault "" (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ Maybe.withDefault "" (Maybe.map (\p -> ":" ++ String.fromInt p) h.port))
+                    , detail = Words.plain (Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\u -> u ++ "@") h.user) ++ h.host ++ Maybe.withDefault (meant Reason.NotSet "") (Maybe.map (\p -> ":" ++ String.fromInt p) h.port))
                     , from =
                         when h.jump is
                             Just jump ->
                                 Words.message "message.hostThrough" |> Words.with "jump" jump
 
                             Nothing ->
-                                Words.message "message.hostFromSettings"
+                                meant Reason.NotSet Words.message "message.hostFromSettings"
                     , own = True
                     }
                 )
@@ -340,7 +341,7 @@ copyName m name =
         |> Array.map (\n -> name ++ "-" ++ String.fromInt n)
         |> Array.findFirst (\n -> hostNamed m n == Nothing)
         |> Maybe.map .value
-        |> Maybe.withDefault (name ++ "-copy")
+        |> Maybe.withDefault (meant Reason.NoMore name ++ "-copy")
 
 
 {-| How many rows the settings' side has: the settings listed, or quick
@@ -370,6 +371,7 @@ update input m =
                     typed (insert text t) m
 
                 Nothing ->
+                    meant Reason.NotOpen
                     if m.focus == OnSearch then
                         done (searched (m.search ++ String.toArray text) m)
 
@@ -392,7 +394,7 @@ update input m =
                     choosingKey { sym = if steps < 0 then sym.up else sym.down, mods = 0, text = "" } pick m
 
                 Nothing ->
-                    done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
+                    meant Reason.NotOpen done { m | scroll = max 0 (min most (m.scroll + linesPerRow * steps)) }
 
         Key pressed ->
             let
@@ -404,6 +406,7 @@ update input m =
                     choosingKey k pick m
 
                 Nothing ->
+                    meant Reason.NotOpen
                     if Bitwise.and k.mods 2 /= 0 then
                         control k m
 
@@ -420,6 +423,7 @@ keyed k m =
             typingKey k t m
 
         Nothing ->
+            meant Reason.NotOpen
             when m.focus is
                 OnSearch ->
                     searchKey k m
@@ -548,7 +552,7 @@ control k m =
                         Just n
 
                     Nothing ->
-                        hostAt m m.row |> Maybe.andThen (\h -> if h.own then Just h.name else Nothing)
+                        meant Reason.NotOpen hostAt m m.row |> Maybe.andThen (\h -> if h.own then Just h.name else Nothing)
         in
         when Maybe.andThen (hostNamed m) name is
             Just h ->
@@ -565,7 +569,7 @@ control k m =
                 { made | model = keepInView { r | form = Just copy.name, row = 0, scroll = 0 } }
 
             Nothing ->
-                done m
+                meant Reason.NotKnown done m
 
     else
         done m
@@ -578,6 +582,7 @@ searchKey k m =
             done moved
 
         Nothing ->
+            meant Reason.NotKnown
             if k.sym == sym.escape then
                 if Array.isEmpty m.search then
                     { model = m, effects = [ Close ] }
@@ -610,6 +615,7 @@ pagesKey k m =
             done moved
 
         Nothing ->
+            meant Reason.NotKnown
             if k.sym == sym.up then
                 done (keepInView { m | page = max 0 (m.page - 1), row = 0, scroll = 0 })
 
@@ -637,6 +643,7 @@ rowsKey k m =
             done moved
 
         Nothing ->
+            meant Reason.NotKnown
             if k.sym == sym.up then
                 done (keepInView { m | row = max 0 (m.row - 1) })
 
@@ -680,7 +687,7 @@ rowsKey k m =
                             { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }, effects = [ ConnectHost h.name ] }
 
                         Nothing ->
-                            done m
+                            meant Reason.OutOfRange done m
 
             else if k.sym == sym.right && inList m then
                 -- a host's form; one of ~/.ssh/config's is saved as a host first
@@ -700,7 +707,7 @@ rowsKey k m =
                             { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
 
                     Nothing ->
-                        done m
+                        meant Reason.OutOfRange done m
 
             else if (k.sym == sym.left || k.sym == sym.escape) && onHosts m && m.form /= Nothing then
                 -- back to the list, on the host the form was of
@@ -712,7 +719,7 @@ rowsKey k m =
                         { m | form = Nothing, message = Nothing }
 
                     row =
-                        Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault 0
+                        Array.findFirst (\h -> h.name == name) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault (meant Reason.Gone 0)
                 in
                 done (keepInView { back | row = row })
 
@@ -726,7 +733,7 @@ rowsKey k m =
                             done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
 
                     Nothing ->
-                        done m
+                        meant Reason.OutOfRange done m
 
             else if isEnter k.sym || k.sym == sym.space then
                 when focused m is
@@ -734,7 +741,7 @@ rowsKey k m =
                         change s m
 
                     Nothing ->
-                        done m
+                        meant Reason.NotOpen done m
 
             else if k.sym == sym.delete || k.sym == sym.backspace then
                 when focused m is
@@ -749,7 +756,7 @@ rowsKey k m =
                             set s (if s.page == Schema.HostsPage then Unset else s.get Config.defaults) { m | message = Just (Words.message "message.isDefault" |> Words.with "key" (Schema.keyName s)) }
 
                     Nothing ->
-                        done m
+                        meant Reason.NotOpen done m
 
             else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
                 -- typing from the list searches, as a settings editor's does
@@ -819,7 +826,7 @@ choosingKey k pick m =
                 done m
 
         Nothing ->
-            done { m | choosing = Nothing }
+            meant Reason.NotOpen done { m | choosing = Nothing }
 
 
 {-| The focused choice setting given its `i`th choice, and the list
@@ -837,10 +844,10 @@ chosen i m =
                     set s v closed
 
                 Nothing ->
-                    done closed
+                    meant Reason.OutOfRange done closed
 
         Nothing ->
-            done closed
+            meant Reason.NotOpen done closed
 
 
 {-| Enter on a setting: on and off change at once, a choice opens its
@@ -858,7 +865,7 @@ change s m =
         OneOf _ ->
             let
                 at =
-                    Array.findFirst (\c -> c == now) (choicesOf s) |> Maybe.map .index |> Maybe.withDefault 0
+                    Array.findFirst (\c -> c == now) (choicesOf s) |> Maybe.map .index |> Maybe.withDefault (meant Reason.NotKnown 0)
             in
             done { m | choosing = Just at, message = Nothing }
 
@@ -916,7 +923,7 @@ undo m =
                     }
 
         Nothing ->
-            done { m | message = Just (Words.message "message.nothingToUndo") }
+            meant Reason.NoMore done { m | message = Just (Words.message "message.nothingToUndo") }
 
 
 typingKey : { sym : Int, mods : Int, text : String } -> Typing -> Model -> { model : Model, effects : Array Effect }
@@ -968,7 +975,7 @@ typingKey k t m =
                 }
 
             Nothing ->
-                done { m | typing = Nothing }
+                meant Reason.NotOpen done { m | typing = Nothing }
 
     else if (isEnter k.sym || k.sym == sym.tab) && isFamily m then
         -- a font is written when it is chosen, not as its name is typed
@@ -976,7 +983,7 @@ typingKey k t m =
             Just s ->
                 let
                     name =
-                        Maybe.withDefault (String.trim (String.fromArray t.chars)) (Array.get t.pick (suggestions m t))
+                        Maybe.withDefault (meant Reason.OutOfRange String.trim (String.fromArray t.chars)) (Array.get t.pick (suggestions m t))
                 in
                 if name == "" then
                     done { m | message = Just (Words.message "problem.noFont") }
@@ -1000,6 +1007,7 @@ typingKey k t m =
                 done { m | message = Just why }
 
             Nothing ->
+                meant Reason.NotOpen
                 when focused m is
                     Just s ->
                         let
@@ -1014,7 +1022,7 @@ typingKey k t m =
                             }
 
                     Nothing ->
-                        done { m | typing = Nothing }
+                        meant Reason.NotOpen done { m | typing = Nothing }
 
     else if k.sym == sym.left then
         done { m | typing = Just { t | caret = max 0 (t.caret - 1) } }
@@ -1097,7 +1105,7 @@ quickKey k t m =
                 { model = { m | typing = Nothing, message = Just (Words.message "message.connecting" |> Words.with "name" text) }, effects = [ ConnectQuick text ] }
 
             Nothing ->
-                done { m | message = Just (Words.message "message.notAnAddress" |> Words.with "text" text) }
+                meant Reason.FromOutside done { m | message = Just (Words.message "message.notAnAddress" |> Words.with "text" text) }
 
     else if k.sym == sym.backspace && t.caret > 0 then
         edited (Array.slice 0 (t.caret - 1) t.chars ++ Array.slice t.caret (Array.length t.chars) t.chars) (t.caret - 1)
@@ -1157,10 +1165,10 @@ typedSetting t m =
                     { model = { m | config = s.set v m.config, typing = Just { t | problem = Nothing }, message = Nothing }, effects = writes }
 
                 Err why ->
-                    done { m | typing = Just { t | problem = Just why }, message = Just why }
+                    meant Reason.FromOutside done { m | typing = Just { t | problem = Just why }, message = Just why }
 
         Nothing ->
-            done { m | typing = Nothing }
+            meant Reason.NotOpen done { m | typing = Nothing }
 
 
 {-| A click on a drawn target, through the paths the keys take. What is
@@ -1205,10 +1213,10 @@ hit h m =
                                         { model = back.model, effects = kept.effects ++ back.effects }
 
                                     Nothing ->
-                                        kept
+                                        meant Reason.NotOpen kept
 
                             Nothing ->
-                                done m
+                                meant Reason.NotOpen done m
 
                     after =
                         hitOn h finished.model
@@ -1287,7 +1295,7 @@ isHostName m =
             s.kind == Schema.HostName
 
         Nothing ->
-            False
+            meant Reason.NotOpen False
 
 
 {-| Whether a font is being typed. -}
@@ -1298,7 +1306,7 @@ isFamily m =
             s.kind == FontFamily
 
         Nothing ->
-            False
+            meant Reason.NotOpen False
 
 
 {-| The system's fonts whose names hold what is typed; all of them while the
@@ -1329,7 +1337,7 @@ linesPerRow =
 fewer than `linesPerRow`. -}
 rowLines : Model -> Int -> Int
 rowLines m i =
-    max linesPerRow (Maybe.withDefault linesPerRow (Array.get i m.lines))
+    max linesPerRow (Maybe.withDefault (meant Reason.NotYet linesPerRow) (Array.get i m.lines))
 
 
 {-| The line row `i` starts on, counted from the first row's. -}

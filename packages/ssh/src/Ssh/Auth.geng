@@ -32,6 +32,7 @@ passphrase is unlocked only when the server has said it would take it.
 import Bytes exposing (Bytes)
 import Ssh.Wire as Wire
 import UInt8
+import Ssh.Reason as Reason
 
 
 {-| A key the client may offer: an id the caller knows it by, its public
@@ -167,7 +168,7 @@ isAuthMessage : Bytes -> Bool
 isAuthMessage payload =
     let
         n =
-            Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+            Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault (meant Reason.FromOutside -1)
     in
     n == msgServiceAccept || (n >= 50 && n <= 79)
 
@@ -239,7 +240,7 @@ received payload (Auth st) =
                 finish (emit (Banner banner.value) st)
 
             Err _ ->
-                finish st
+                meant Reason.FromOutside finish st
 
     else if n == msgSuccess then
         finish (emit Authenticated { st | attempt = Done })
@@ -250,7 +251,7 @@ received payload (Auth st) =
                 finish (failed failure st)
 
             Err _ ->
-                finish (next { st | allowed = [] })
+                meant Reason.FromOutside finish (next { st | allowed = [] })
 
     else if n == msgSixty then
         finish (sixty payload st)
@@ -324,7 +325,7 @@ next st =
         choose methods =
             when Array.popFirst methods is
                 Nothing ->
-                    emit (Exhausted { allowed = st.allowed }) { st | attempt = Done }
+                    meant Reason.NoMore emit (Exhausted { allowed = st.allowed }) { st | attempt = Done }
 
                 Just m ->
                     when m.first is
@@ -334,7 +335,7 @@ next st =
                                     queue (query st identity) { st | attempt = Querying identity }
 
                                 Nothing ->
-                                    choose m.rest
+                                    meant Reason.NoMore choose m.rest
 
                         "keyboard-interactive" ->
                             if st.keyboardTried then
@@ -411,7 +412,7 @@ sixty payload st =
             -- PASSWD_CHANGEREQ, which this client does not answer
             let
                 prompt =
-                    body |> Result.andThen Wire.name |> Result.map .value |> Result.withDefault ""
+                    body |> Result.andThen Wire.name |> Result.map .value |> Result.withDefault (meant Reason.FromOutside "")
             in
             next (emit (PasswordChange prompt) { st | passwords = st.config.passwordTries })
 
@@ -426,7 +427,7 @@ sixty payload st =
                         ask (NeedResponses request) { st | attempt = AwaitingResponses }
 
                 Err _ ->
-                    next st
+                    meant Reason.FromOutside next st
 
         _ ->
             st
@@ -527,7 +528,7 @@ withPassword password (Auth st) =
                     )
 
             Nothing ->
-                finish (next { st | passwords = st.config.passwordTries })
+                meant Reason.FromOutside finish (next { st | passwords = st.config.passwordTries })
 
 
 {-| The answers to the server's prompts, in their order, or `Nothing` to
@@ -549,7 +550,7 @@ responses answers (Auth st) =
                     )
 
             Nothing ->
-                finish (next st)
+                meant Reason.FromOutside finish (next st)
 
 
 {-| The signature algorithms the server takes, from its `EXT_INFO`, which

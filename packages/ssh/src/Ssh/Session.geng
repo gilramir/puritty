@@ -51,6 +51,7 @@ import Ssh.KnownHosts as KnownHosts
 import Ssh.Transport as Transport
 import SshCrypto
 import Task exposing (Task)
+import Ssh.Reason as Reason
 
 
 type alias Permissions =
@@ -241,7 +242,7 @@ through : Permissions -> Array Options -> Options -> Source Notice -> Source Inp
 through permissions jumps target notices inputs given =
     when Array.popFirst jumps is
         Nothing ->
-            connectTo permissions target notices "" given
+            meant Reason.NoMore connectTo permissions target notices "" given
                 |> Task.andThen
                     (\link ->
                         session permissions target Terminal "" link notices
@@ -252,7 +253,7 @@ through permissions jumps target notices inputs given =
         Just hop ->
             let
                 next =
-                    Array.first hop.rest |> Maybe.withDefault target
+                    Array.first hop.rest |> Maybe.withDefault (meant Reason.NoMore target)
 
                 label =
                     "jump host " ++ hop.first.host ++ ": "
@@ -335,7 +336,7 @@ connectTo permissions options notices label given =
                         Task.succeed link
 
                     Nothing ->
-                        Net.connect permissions.net { host = options.host, port = options.port } |> Task.map socketLink
+                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.map socketLink
             )
 
 
@@ -345,7 +346,7 @@ session : Permissions -> Options -> Role -> String -> Link -> Source Notice -> T
 session permissions options role label link notices =
     let
         lookupName =
-            KnownHosts.lookupName { host = Maybe.withDefault options.host options.hostKeyAlias, port = options.port }
+            KnownHosts.lookupName { host = Maybe.withDefault (meant Reason.NotSet options.host) options.hostKeyAlias, port = options.port }
     in
     readKnownHosts permissions options
         |> Task.andThen
@@ -425,7 +426,7 @@ identitiesOf permissions options =
                                     [ { identity = { id = i, publicKey = info.publicKey, keyType = KnownHosts.keyTypeOf info.publicKey }, file = Just { path = path, text = text } } ]
 
                                 Nothing ->
-                                    []
+                                    meant Reason.FromOutside []
                         )
                     |> Task.onError (\_ -> Task.succeed [])
             )
@@ -445,7 +446,7 @@ agentOf : Permissions -> Options -> Array Identity -> Task x { link : Maybe Agen
 agentOf permissions options files =
     when Array.popFirst options.agents is
         Nothing ->
-            Task.succeed { link = Nothing, identities = [] }
+            meant Reason.NoMore Task.succeed { link = Nothing, identities = [] }
 
         Just candidate ->
             linkTo permissions candidate.first
@@ -474,7 +475,7 @@ agentOf permissions options files =
                                                 }
 
                                         Err why ->
-                                            Task.fail { kind = Os.Error.Other, operation = "agent", path = Nothing, detail = why }
+                                            meant Reason.FromOutside Task.fail { kind = Os.Error.Other, operation = "agent", path = Nothing, detail = why }
                                 )
                     )
                 |> Task.onError (\_ -> agentOf permissions { options | agents = candidate.rest } files)
@@ -499,7 +500,7 @@ agentRead readMore got =
             Task.succeed whole.message
 
         Nothing ->
-            readMore
+            meant Reason.NotYet readMore
                 |> Task.andThen
                     (\more ->
                         if Bytes.isEmpty more then
@@ -607,7 +608,7 @@ onInput input st =
                 Nothing ->
                     -- not connected yet: the size is the one the pty-req
                     -- will ask for
-                    Task.succeed { st | options = resized size st.options }
+                    meant Reason.NotYet Task.succeed { st | options = resized size st.options }
 
         { input = Hangup } ->
             onTransport (Transport.disconnect 11 "the window closed" st.transport) { st | done = True }
@@ -637,7 +638,7 @@ withConnection f st =
             onConnection (f c) st
 
         Nothing ->
-            Task.succeed st
+            meant Reason.NotYet Task.succeed st
 
 
 onTransport : Transport.Step -> State -> Task Os.Error.Error State
@@ -679,7 +680,7 @@ onEvent event st =
                 algorithms =
                     Array.findFirst (\x -> x.name == "server-sig-algs") extensions
                         |> Maybe.map (\x -> String.split "," (Bytes.toStringLossy x.value.value))
-                        |> Maybe.withDefault []
+                        |> Maybe.withDefault (meant Reason.FromOutside [])
             in
             Task.succeed { st | auth = Maybe.map (Auth.withServerSigAlgs algorithms) st.auth }
 
@@ -719,7 +720,7 @@ hostKey : { algorithm : String, key : Bytes } -> State -> Task Os.Error.Error St
 hostKey shown st =
     let
         name =
-            KnownHosts.lookupName { host = Maybe.withDefault st.options.host st.options.hostKeyAlias, port = st.options.port }
+            KnownHosts.lookupName { host = Maybe.withDefault (meant Reason.NotSet st.options.host) st.options.hostKeyAlias, port = st.options.port }
 
         printed =
             fingerprint shown.key
@@ -775,7 +776,7 @@ remember : String -> Bytes -> State -> Task Os.Error.Error State
 remember name key st =
     when Array.first st.options.knownHostsFiles is
         Nothing ->
-            Task.succeed st
+            meant Reason.NotSet Task.succeed st
 
         Just file ->
             let
@@ -876,7 +877,7 @@ onRequest request st =
                                                 Auth.signed need.id signature auth
 
                                             Err _ ->
-                                                Auth.unsigned need.id auth
+                                                meant Reason.Refused Auth.unsigned need.id auth
                                     )
                                 |> Task.onError (\_ -> Task.succeed (Auth.unsigned need.id auth))
                                 |> Task.andThen (\step -> onAuth step st)
@@ -890,7 +891,7 @@ onRequest request st =
                             tell (Asking (Passphrase { file = file.path })) { st | waiting = ForPassphrase { need = need, text = file.text, tries = 0 } }
 
                         _ ->
-                            signWith need file.text Bytes.empty st
+                            meant Reason.NotSet signWith need file.text Bytes.empty st
 
         { request = Auth.NeedPassword need } ->
             tell (Asking (Password { prompt = need.prompt })) { st | waiting = ForPassword }
@@ -1049,7 +1050,7 @@ isJust m =
             True
 
         Nothing ->
-            False
+            meant Reason.NotYet False
 
 
 -- OPTIONS FROM ~/.ssh/config
@@ -1117,7 +1118,7 @@ jumpSpecs value =
                                     { user = Just (String.takeFirst at v), rest = String.dropFirst (at + 1) v }
 
                                 Nothing ->
-                                    { user = Nothing, rest = v }
+                                    meant Reason.NotSet { user = Nothing, rest = v }
 
                         rest =
                             userAndRest.rest
@@ -1130,7 +1131,7 @@ jumpSpecs value =
                                         { host = String.slice 1 close rest, port = String.toInt (String.dropFirst (close + 2) rest) }
 
                                     Nothing ->
-                                        { host = rest, port = Nothing }
+                                        meant Reason.FromOutside { host = rest, port = Nothing }
 
                             else
                                 when String.lastIndexOf ":" rest is
@@ -1138,7 +1139,7 @@ jumpSpecs value =
                                         { host = String.takeFirst colon rest, port = String.toInt (String.dropFirst (colon + 1) rest) }
 
                                     Nothing ->
-                                        { host = rest, port = Nothing }
+                                        meant Reason.NotSet { host = rest, port = Nothing }
                     in
                     { host = hostAndPort.host, user = userAndRest.user, port = hostAndPort.port }
                 )
@@ -1161,7 +1162,7 @@ resolveOne permissions given =
             , Maybe.map (\i -> { file = "puritty", lineNumber = 0, keyword = "identityfile", args = [ i ] }) given.identity
             , Maybe.map (\j -> { file = "puritty", lineNumber = 0, keyword = "proxyjump", args = [ j ] }) given.jump
             ]
-                |> Array.mapAndFlatten (\m -> Maybe.map (\d -> [ d ]) m |> Maybe.withDefault [])
+                |> Array.mapAndFlatten (\m -> Maybe.map (\d -> [ d ]) m |> Maybe.withDefault (meant Reason.NotSet []))
     in
     readConfigFile permissions userFile
         |> Task.andThen
@@ -1186,10 +1187,10 @@ resolveOne permissions given =
                                     Config.resolve { host = given.host, localUser = given.localUser, home = given.home } source (entry ++ parsed.directives) []
 
                                 one key fallback =
-                                    Dict.get key settings.values |> Maybe.andThen Array.first |> Maybe.withDefault fallback
+                                    Dict.get key settings.values |> Maybe.andThen Array.first |> Maybe.withDefault (meant Reason.NotSet fallback)
 
                                 all key =
-                                    Dict.get key settings.values |> Maybe.withDefault []
+                                    Dict.get key settings.values |> Maybe.withDefault (meant Reason.NotSet [])
 
                                 expand path =
                                     if String.startsWith "~/" path then
@@ -1237,7 +1238,7 @@ resolveOne permissions given =
                                                 [ LocalSocket (expand path) ]
 
                                         Nothing ->
-                                            given.agents
+                                            meant Reason.NotSet given.agents
 
                                 remoteCommand =
                                     when given.command is
@@ -1245,7 +1246,7 @@ resolveOne permissions given =
                                             Just c
 
                                         Nothing ->
-                                            Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first
+                                            meant Reason.NotSet Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first
                             in
                             { options =
                                 { host = one "hostname" given.host
@@ -1322,7 +1323,7 @@ includedFiles permissions home directives found depth =
                             Path.fromString pattern
 
                         directory =
-                            Path.parent path |> Maybe.withDefault path
+                            Path.parent path |> Maybe.withDefault (meant Reason.OutOfRange path)
                     in
                     Directory.list permissions.fs directory
                         |> Task.map (\entries -> Array.keepIf (matchesPath pattern) (Array.map (\e -> Path.toString e.path) entries))
@@ -1357,7 +1358,7 @@ globPath : Array Char -> Array Char -> Bool
 globPath pattern name =
     when Array.popFirst pattern is
         Nothing ->
-            Array.isEmpty name
+            meant Reason.NoMore Array.isEmpty name
 
         Just p ->
             if p.first == '*' then
@@ -1367,7 +1368,7 @@ globPath pattern name =
                                 n.first /= '/' && globPath pattern n.rest
 
                             Nothing ->
-                                False
+                                meant Reason.NoMore False
                        )
 
             else
@@ -1376,4 +1377,4 @@ globPath pattern name =
                         (p.first == '?' || p.first == n.first) && globPath p.rest n.rest
 
                     Nothing ->
-                        False
+                        meant Reason.NoMore False

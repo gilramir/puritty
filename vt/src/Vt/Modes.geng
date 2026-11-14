@@ -53,6 +53,7 @@ import Vt.Prompt exposing (..)
 import Vt.Scroll exposing (..)
 import Vt.Sgr exposing (..)
 import Vt.Edit exposing (..)
+import Vt.Reason as Reason
 
 
 fresh : (config : Config where 1 <= config.cols && config.cols <= 1000 && 1 <= config.rows && config.rows <= 1000 && 16 <= config.pageRows && config.pageRows <= 4096) -> Term
@@ -341,6 +342,7 @@ restoreMode p t =
             setPrivate p on t
 
         Nothing ->
+            meant Reason.NotSet
             let
                 state =
                     privateState p (fresh t.config)
@@ -384,6 +386,7 @@ privateState p t =
                 of on
 
             Nothing ->
+                meant Reason.NotSet
                 if Array.member p [ 1007, 1035, 1036 ] then
                     -- set until changed, as Ghostty's defaults
                     1
@@ -433,7 +436,7 @@ ansiState p t =
         of t.newline
 
     else if p == 2 || p == 12 then
-        of (Maybe.withDefault (p == 12) (Dict.get (ansiKey p) t.modes))
+        of (Maybe.withDefault (meant Reason.NotSet p == 12) (Dict.get (ansiKey p) t.modes))
 
     else if Array.member p [ 1, 5, 7, 10, 11, 13, 14, 15, 16, 17, 18, 19 ] then
         -- GATM, SRTM, VEM, HEM, PUM, FEAM, FETM, MATM, TTM, SATM, TSM and EBM
@@ -499,7 +502,7 @@ altScreen clear cols rows mode erase other =
                 newScreen cols rows (rows + 1)
 
         Nothing ->
-            newScreen cols rows (rows + 1)
+            meant Reason.NotYet newScreen cols rows (rows + 1)
 
 
 {-| The main screen shown again, the alternate cleared first when `clear`

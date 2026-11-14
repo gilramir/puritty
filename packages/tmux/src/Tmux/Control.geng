@@ -24,6 +24,7 @@ the first bytes of `ESC P 1000 p`) is kept for the next read.
 
 import Bytes exposing (Bytes)
 import UInt8
+import Tmux.Reason as Reason
 
 
 {-| Where reading has got to. -}
@@ -222,9 +223,10 @@ line bytes block events =
                         { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
 
                 Nothing ->
-                    { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
+                    meant Reason.NotKnown { block = Just { open | lines = Array.pushLast bytes open.lines }, events = events }
 
         Nothing ->
+            meant Reason.NotOpen
             when guard bytes is
                 Just g ->
                     if g.kind == "%begin" then
@@ -235,7 +237,7 @@ line bytes block events =
                         { block = Nothing, events = events }
 
                 Nothing ->
-                    { block = Nothing, events = Array.pushLast (Notice (notice bytes)) events }
+                    meant Reason.NotKnown { block = Nothing, events = Array.pushLast (Notice (notice bytes)) events }
 
 
 {-| `%begin`, `%end` or `%error`, with their time, number and flags. -}
@@ -326,7 +328,7 @@ output at extended bytes =
                 Output { pane = p, bytes = unescape (Bytes.slice dataAt (Bytes.length bytes) bytes) }
 
         Nothing ->
-            Unknown (Bytes.toStringLossy bytes)
+            meant Reason.FromOutside Unknown (Bytes.toStringLossy bytes)
 
 
 {-| A notification other than output, from its text. -}
@@ -337,7 +339,7 @@ named text =
             String.split " " text
 
         word i =
-            Maybe.withDefault "" (Array.get i words)
+            Maybe.withDefault (meant Reason.FromOutside "") (Array.get i words)
 
         -- the text after the first `k` words, spaces kept
         rest k =
@@ -352,7 +354,7 @@ named text =
                 LayoutChange { window = w, layout = word 2, visible = word 3, flags = word 4 }
 
             Nothing ->
-                Unknown text
+                meant Reason.FromOutside Unknown text
 
     else if name == "%window-pane-changed" then
         when { w = id (word 1), p = id (word 2) } is
@@ -380,7 +382,7 @@ named text =
                     SessionRenamed { session = s, name = rest 2 }
 
             Nothing ->
-                Unknown text
+                meant Reason.FromOutside Unknown text
 
     else if name == "%client-session-changed" then
         when id (word 2) is
@@ -388,7 +390,7 @@ named text =
                 ClientSessionChanged { client = word 1, session = s, name = rest 3 }
 
             Nothing ->
-                Unknown text
+                meant Reason.FromOutside Unknown text
 
     else if name == "%window-renamed" || name == "%unlinked-window-renamed" then
         when id (word 1) is
@@ -400,15 +402,15 @@ named text =
                     UnlinkedWindowRenamed { window = w, name = rest 2 }
 
             Nothing ->
-                Unknown text
+                meant Reason.FromOutside Unknown text
 
     else if name == "%subscription-changed" then
         when String.firstIndexOf " : " text is
             Just i ->
-                SubscriptionChanged { name = word 1, window = Maybe.withDefault -1 (id (word 3)), pane = Maybe.withDefault -1 (id (word 5)), value = String.dropFirst (i + 3) text }
+                SubscriptionChanged { name = word 1, window = Maybe.withDefault (meant Reason.FromOutside -1) (id (word 3)), pane = Maybe.withDefault (meant Reason.FromOutside -1) (id (word 5)), value = String.dropFirst (i + 3) text }
 
             Nothing ->
-                Unknown text
+                meant Reason.FromOutside Unknown text
 
     else if name == "%sessions-changed" then
         SessionsChanged
@@ -459,7 +461,7 @@ named text =
                     Unknown text
 
             Nothing ->
-                Unknown text
+                meant Reason.FromOutside Unknown text
 
 
 {-| `%3`, `@3` or `$3` as 3. -}
@@ -588,4 +590,4 @@ byteAt i bytes =
             UInt8.toInt v
 
         Nothing ->
-            -1
+            meant Reason.OutOfRange -1

@@ -106,6 +106,7 @@ import Vt.Style exposing (Attrs, Clusters, Styles, cellPoints, styleOf)
 import Vt.Palette exposing (programColor, paletteColor)
 import Vt.Width as Width
 import Dict
+import Vt.Reason as Reason
 
 
 type alias Shadow =
@@ -212,7 +213,7 @@ graphemes p =
                         Width.width cp
 
                 fb =
-                    Maybe.withDefault 0 (Array.get i p.feedback)
+                    Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback)
             in
             when Array.last acc is
                 Just g ->
@@ -223,7 +224,7 @@ graphemes p =
                         Array.pushLast { points = [ cp ], feedback = fb, width = w, caret = i == p.caret } acc
 
                 Nothing ->
-                    Array.pushLast { points = [ cp ], feedback = fb, width = max 1 w, caret = i == p.caret } acc
+                    meant Reason.OutOfRange Array.pushLast { points = [ cp ], feedback = fb, width = max 1 w, caret = i == p.caret } acc
     in
     Array.indexedMap (\i cp -> { i = i, cp = cp }) cps
         |> Array.foldl (\e acc -> step e.i e.cp acc) []
@@ -620,9 +621,9 @@ scanY k y end start score current hashes best =
     else
         let
             h =
-                Maybe.withDefault -2 (Array.get y current)
+                Maybe.withDefault (meant Reason.OutOfRange -2) (Array.get y current)
         in
-        if h == Maybe.withDefault -3 (Builder.get (y + k) hashes) then
+        if h == Maybe.withDefault (meant Reason.OutOfRange -3) (Builder.get (y + k) hashes) then
             scanY k (y + 1) end (if start < 0 then y else start) (if h == 7 then score else score + 1) current hashes best
 
         else
@@ -683,7 +684,7 @@ cells a run gives it, so a cell is drawn with its whole word (see
 [`spread`](#spread)). -}
 inWord : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> (y : Int where 0 <= y && y < 1000) -> (cols : Int where 1 <= cols && cols <= 1000) -> (x : Int where 0 <= x) -> Builder Int64 -> Bool
 inWord s o ext y cols x cells =
-    hasGlyph (cellOf s o ext x) || (x <= 1000 && hasGlyph (Maybe.withDefault unknown (Builder.get (rowStart y cols + x) cells)))
+    hasGlyph (cellOf s o ext x) || (x <= 1000 && hasGlyph (Maybe.withDefault (meant Reason.NotYet unknown) (Builder.get (rowStart y cols + x) cells)))
 
 
 wordLeft : (s : Screen) -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> (y : Int where 0 <= y && y < 1000) -> (cols : Int where 1 <= cols && cols <= 1000) -> Int -> Builder Int64 -> Int
@@ -812,7 +813,7 @@ overlap rows cols i bits stamp drawnIn d r =
         n =
             neighbor rows cols i d
     in
-    if n >= 0 && hasAll d.out bits && Builder.get n drawnIn /= Just stamp && hasGlyph (Maybe.withDefault unknown (Builder.get n r.cells)) then
+    if n >= 0 && hasAll d.out bits && Builder.get n drawnIn /= Just stamp && hasGlyph (Maybe.withDefault (meant Reason.NotYet unknown) (Builder.get n r.cells)) then
         { r | cells = Builder.set n unknown r.cells, pending = True }
 
     else
@@ -844,7 +845,7 @@ inkAt i ink =
         0
 
     else
-        Maybe.withDefault 0 (Builder.get i ink)
+        Maybe.withDefault (meant Reason.OutOfRange 0) (Builder.get i ink)
 
 
 has : Int -> Int -> Bool
@@ -973,7 +974,7 @@ collectRow s cursor o ext y x cols w =
 
 differs : (s : Screen) -> Cursor -> (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> (ext : Int where ext <= s.cols) -> (y : Int where 0 <= y && y < 1000) -> (cols : Int where 1 <= cols && cols <= 1000) -> (x : Int where 0 <= x && x <= 1000) -> Builder Int64 -> Bool
 differs s cursor o ext y cols x cells =
-    drawnAs s cursor o ext (rowStart y cols) x /= Maybe.withDefault unknown (Builder.get (rowStart y cols + x) cells)
+    drawnAs s cursor o ext (rowStart y cols) x /= Maybe.withDefault (meant Reason.NotYet unknown) (Builder.get (rowStart y cols + x) cells)
 
 
 {-| A neighbor of a cell: where it is, the edges a cell's ink crosses to
@@ -1025,7 +1026,7 @@ spreadWork : Screen -> Int -> (cols : Int where 1 <= cols && cols <= 1000) -> Bo
 spreadWork s rows cols inked0 ink w =
     when Array.last w.work is
         Nothing ->
-            w.cells
+            meant Reason.NoMore w.cells
 
         Just j ->
             let
@@ -1071,7 +1072,7 @@ spreadWork s rows cols inked0 ink w =
                                 forgetWord (y * cols + ends.l) (y * cols + ends.r) j popped
 
                             Nothing ->
-                                popped
+                                meant Reason.NotKnown popped
                 in
                 spreadWork s
                     rows
@@ -1193,7 +1194,7 @@ diffRow s clusters cursor o ext y x0 cols sh list =
     if x0 >= cols then
         { shadow = sh, list = list }
 
-    else if drawnAs s cursor o ext (rowStart y cols) x0 == Maybe.withDefault unknown (Builder.get (rowStart y cols + x0) sh.cells) then
+    else if drawnAs s cursor o ext (rowStart y cols) x0 == Maybe.withDefault (meant Reason.NotYet unknown) (Builder.get (rowStart y cols + x0) sh.cells) then
         diffRow s clusters cursor o ext y (x0 + 1) cols sh list
 
     else
@@ -1259,7 +1260,7 @@ runEnd s cursor o ext y x last cols cells =
     if x >= cols || x - last > 1 then
         last + 1
 
-    else if drawnAs s cursor o ext (rowStart y cols) x == Maybe.withDefault unknown (Builder.get (rowStart y cols + x) cells) then
+    else if drawnAs s cursor o ext (rowStart y cols) x == Maybe.withDefault (meant Reason.NotYet unknown) (Builder.get (rowStart y cols + x) cells) then
         runEnd s cursor o ext y (x + 1) last cols cells
 
     else
@@ -1279,7 +1280,7 @@ writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
                 cellAt s cursor o ext row x
 
             points =
-                Array.takeFirst 63 (Maybe.withDefault (cellPoints c clusters) (preCellPoints cursor (row + x)))
+                Array.takeFirst 63 (Maybe.withDefault (meant Reason.NotOpen cellPoints c clusters) (preCellPoints cursor (row + x)))
 
             under =
                 isCursor cursor (row + x)
@@ -1491,7 +1492,7 @@ styleRecord look t shape id b =
                 colorOf look t True False a.ulc
 
         cursorColor =
-            Maybe.withDefault fg (programColor 12 t)
+            Maybe.withDefault (meant Reason.NotSet fg) (programColor 12 t)
 
         out =
             if cursorShape == 1 then
@@ -1534,10 +1535,10 @@ colorOf : Look -> Term -> Bool -> Bool -> Int -> Int
 colorOf look t isFg bold c =
     if c == 0 then
         if isFg then
-            Maybe.withDefault look.foreground (programColor 10 t)
+            Maybe.withDefault (meant Reason.NotSet look.foreground) (programColor 10 t)
 
         else
-            Maybe.withDefault look.background (programColor 11 t)
+            Maybe.withDefault (meant Reason.NotSet look.background) (programColor 11 t)
 
     else if c <= 256 then
         let

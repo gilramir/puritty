@@ -29,6 +29,7 @@ is read as tmux syntax.
 -}
 
 import Tmux.Command as Command
+import Tmux.Reason as Reason
 
 
 {-| A word as written (`raw`), what it says with its quotes and escapes
@@ -48,7 +49,7 @@ scan : Array Char -> Int -> Array Token -> Array Token
 scan chars i acc =
     when Array.get i chars is
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
         Just c ->
             if c == ' ' || c == '\t' || c == '\n' then
@@ -99,7 +100,7 @@ closing : Array Char -> Int -> Int -> Int
 closing chars i depth =
     when Array.get i chars is
         Nothing ->
-            i
+            meant Reason.FromOutside i
 
         Just c ->
             if c == '}' then
@@ -125,7 +126,7 @@ skipTo : Array Char -> Int -> Char -> Int
 skipTo chars i q =
     when Array.get i chars is
         Nothing ->
-            i
+            meant Reason.FromOutside i
 
         Just c ->
             if c == q then
@@ -144,7 +145,7 @@ word : Array Char -> Int -> { value : String, quote : Char } -> { value : String
 word chars i st =
     when Array.get i chars is
         Nothing ->
-            { value = st.value, end = i, sepAfter = False }
+            meant Reason.NoMore { value = st.value, end = i, sepAfter = False }
 
         Just c ->
             if st.quote == '\'' then
@@ -159,7 +160,7 @@ word chars i st =
                     word chars (i + 1) { st | quote = ' ' }
 
                 else if c == '\\' then
-                    word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault "") }
+                    word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault (meant Reason.FromOutside "")) }
 
                 else
                     word chars (i + 1) { st | value = st.value ++ String.fromChar c }
@@ -174,7 +175,7 @@ word chars i st =
                 word chars (i + 1) { st | quote = c }
 
             else if c == '\\' then
-                word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault "") }
+                word chars (i + 2) { st | value = st.value ++ (Array.get (i + 1) chars |> Maybe.map String.fromChar |> Maybe.withDefault (meant Reason.FromOutside "")) }
 
             else
                 word chars (i + 1) { st | value = st.value ++ String.fromChar c }
@@ -247,7 +248,7 @@ askOf command =
                                 runOf args.rest
 
                             key =
-                                Maybe.withDefault "y" (getFlag 'c' args.values)
+                                Maybe.withDefault (meant Reason.NotSet "y") (getFlag 'c' args.values)
                         in
                         Just
                             { ask =
@@ -258,7 +259,7 @@ askOf command =
                                                 p ++ " "
 
                                             Nothing ->
-                                                "Confirm '" ++ firstWord run ++ "'? (" ++ key ++ "/n) "
+                                                meant Reason.NotSet "Confirm '" ++ firstWord run ++ "'? (" ++ key ++ "/n) "
                                     , run = run
                                     , key = key
                                     , enterYes = String.contains "y" args.bools
@@ -288,12 +289,13 @@ askOf command =
                                         (if literal then [ p ] else String.split "," p) |> Array.map (\q -> q ++ " ")
 
                                     Nothing ->
+                                        meant Reason.NotSet
                                         when template is
                                             Just t ->
                                                 [ "(" ++ firstWord (serialize t) ++ ") " ]
 
                                             Nothing ->
-                                                [ ":" ]
+                                                meant Reason.NotSet [ ":" ]
 
                             inputs =
                                 when getFlag 'I' args.values is
@@ -301,7 +303,7 @@ askOf command =
                                         if literal then [ i ] else String.split "," i
 
                                     Nothing ->
-                                        []
+                                        meant Reason.NotSet []
 
                             entry =
                                 if String.contains "1" args.bools then
@@ -328,7 +330,7 @@ askOf command =
                     Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| A menu a binding shows (`display-menu`, puritty `docs/tmux.md` TM27):
@@ -369,7 +371,7 @@ menuOf command =
                         flags "bcCHsStTxy" (Array.dropFirst 1 first)
 
                     value c =
-                        Maybe.withDefault "" (getFlag c args.values)
+                        Maybe.withDefault (meant Reason.NotSet "") (getFlag c args.values)
                 in
                 Just
                     { menu =
@@ -386,7 +388,7 @@ menuOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| A menu's items from its words: a name, a key and a command each, or an
@@ -395,7 +397,7 @@ itemsOf : Array Token -> Array MenuItem -> Array MenuItem
 itemsOf ts acc =
     when Array.first ts is
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
         Just name ->
             if name.value == "" && not name.block then
@@ -404,7 +406,7 @@ itemsOf ts acc =
             else
                 let
                     key =
-                        Array.get 1 ts |> Maybe.map .value |> Maybe.withDefault ""
+                        Array.get 1 ts |> Maybe.map .value |> Maybe.withDefault (meant Reason.FromOutside "")
 
                     command =
                         when Array.get 2 ts is
@@ -416,7 +418,7 @@ itemsOf ts acc =
                                     c.value
 
                             Nothing ->
-                                ""
+                                meant Reason.FromOutside ""
                 in
                 itemsOf (Array.dropFirst 3 ts) (Array.pushLast { name = name.value, key = key, command = command } acc)
 
@@ -449,10 +451,10 @@ ifFormatOf command =
                 if String.contains "F" args.bools then
                     when args.rest is
                         [ condition, yes ] ->
-                            Just { target = Maybe.withDefault "" (getFlag 't' args.values), condition = condition.value, yes = branch yes, no = "", after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; " }
+                            Just { target = Maybe.withDefault (meant Reason.NotSet "") (getFlag 't' args.values), condition = condition.value, yes = branch yes, no = "", after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; " }
 
                         [ condition, yes, no ] ->
-                            Just { target = Maybe.withDefault "" (getFlag 't' args.values), condition = condition.value, yes = branch yes, no = branch no, after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; " }
+                            Just { target = Maybe.withDefault (meant Reason.NotSet "") (getFlag 't' args.values), condition = condition.value, yes = branch yes, no = branch no, after = Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; " }
 
                         _ ->
                             Nothing
@@ -464,7 +466,7 @@ ifFormatOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| The flags of a command's arguments: the ones without a value, run
@@ -511,13 +513,13 @@ flags valued ts =
                                     go (i + 1) { acc | bools = acc.bools ++ found.bools, values = Array.pushLast { flag = f, value = found.tail } acc.values }
 
                                 else
-                                    go (i + 2) { acc | bools = acc.bools ++ found.bools, values = Array.pushLast { flag = f, value = Array.get (i + 1) ts |> Maybe.map .value |> Maybe.withDefault "" } acc.values }
+                                    go (i + 2) { acc | bools = acc.bools ++ found.bools, values = Array.pushLast { flag = f, value = Array.get (i + 1) ts |> Maybe.map .value |> Maybe.withDefault (meant Reason.FromOutside "") } acc.values }
 
                             Nothing ->
-                                go (i + 1) { acc | bools = acc.bools ++ found.bools }
+                                meant Reason.NotSet go (i + 1) { acc | bools = acc.bools ++ found.bools }
 
                 Nothing ->
-                    { acc | rest = [] }
+                    meant Reason.NoMore { acc | rest = [] }
     in
     go 0 { bools = "", values = [], rest = [] }
 
@@ -601,7 +603,7 @@ substitute : String -> Array String -> String
 substitute value answers =
     let
         first =
-            Maybe.withDefault "" (Array.get 0 answers)
+            Maybe.withDefault (meant Reason.FromOutside "") (Array.get 0 answers)
 
         once =
             if String.contains "%%%" value then
@@ -617,7 +619,7 @@ substitute value answers =
         (\pair v ->
             let
                 answer =
-                    Maybe.withDefault "" (Array.get pair.index answers)
+                    Maybe.withDefault (meant Reason.FromOutside "") (Array.get pair.index answers)
 
                 mark =
                     "%" ++ pair.digit
@@ -732,7 +734,7 @@ panesOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| What a binding's `choose-tree` asks (puritty `docs/tmux.md` TM32), or
@@ -750,7 +752,7 @@ treeOf command =
             commands (tokens command)
 
         name =
-            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault (meant Reason.FromOutside "")
 
         after =
             Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
@@ -772,7 +774,7 @@ treeOf command =
 
                         else
                             2
-                    , filter = Maybe.withDefault "" (getFlag 'f' args.values)
+                    , filter = Maybe.withDefault (meant Reason.NotSet "") (getFlag 'f' args.values)
                     , zoom = String.contains "Z" args.bools
                     , template =
                         when args.rest is
@@ -804,7 +806,7 @@ treeOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| The filter `find-window` gives tree mode for its text, as
@@ -866,7 +868,7 @@ customizeOf command =
             commands (tokens command)
 
         name =
-            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault (meant Reason.FromOutside "")
 
         after =
             Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
@@ -879,7 +881,7 @@ customizeOf command =
                         flags "Fft" (Array.dropFirst 1 first)
                 in
                 Just
-                    { filter = Maybe.withDefault "" (getFlag 'f' args.values)
+                    { filter = Maybe.withDefault (meant Reason.NotSet "") (getFlag 'f' args.values)
                     , zoom = String.contains "Z" args.bools
                     , noPreview = String.contains "N" args.bools
                     , yes = String.contains "y" args.bools
@@ -890,7 +892,7 @@ customizeOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| What a binding's `choose-buffer` or `choose-client` asks (puritty
@@ -905,7 +907,7 @@ listOf command =
             commands (tokens command)
 
         name =
-            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault (meant Reason.FromOutside "")
 
         after =
             Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
@@ -922,7 +924,7 @@ listOf command =
                 in
                 Just
                     { kind = kind
-                    , filter = Maybe.withDefault "" (getFlag 'f' args.values)
+                    , filter = Maybe.withDefault (meant Reason.NotSet "") (getFlag 'f' args.values)
                     , zoom = String.contains "Z" args.bools
                     , template =
                         when args.rest is
@@ -941,7 +943,7 @@ listOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| What a binding's `display-popup` (`popup`) asks (puritty `docs/tmux.md`
@@ -957,7 +959,7 @@ popupOf command =
             commands (tokens command)
 
         name =
-            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault ""
+            Array.first cmds |> Maybe.andThen Array.first |> Maybe.map .value |> Maybe.withDefault (meant Reason.FromOutside "")
 
         after =
             Array.dropFirst 1 cmds |> Array.map serialize |> String.join " ; "
@@ -970,7 +972,7 @@ popupOf command =
                         flags "bcdehsStTwxy" (Array.dropFirst 1 first)
 
                     value c fallback =
-                        Maybe.withDefault fallback (getFlag c args.values)
+                        Maybe.withDefault (meant Reason.NotSet fallback) (getFlag c args.values)
                 in
                 Just
                     { width = value 'w' "50%"
@@ -997,4 +999,4 @@ popupOf command =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing

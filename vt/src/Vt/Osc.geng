@@ -50,6 +50,7 @@ import Vt.Edit exposing (..)
 import Vt.Modes exposing (..)
 import Vt.Print exposing (..)
 import Vt.Dcs exposing (..)
+import Vt.Reason as Reason
 
 
 {-| Whether the OSC kept so far is `52`, its `;` next. -}
@@ -116,7 +117,7 @@ clipDispatch bel t =
     in
     when parsed is
         Nothing ->
-            cleared
+            meant Reason.FromOutside cleared
 
         Just p ->
             let
@@ -139,7 +140,7 @@ clipDispatch bel t =
                     { cleared | osc52 = { noOsc52 | requests = Array.pushLast r requests } }
 
                 Nothing ->
-                    cleared
+                    meant Reason.FromOutside cleared
 
 
 {-| An OSC's command number as Ghostty reads one: digits only, and no
@@ -179,7 +180,7 @@ oscDispatch end t0 =
                     decoded
 
                 Nothing ->
-                    stringOf (Array.map lowByte taken.text)
+                    meant Reason.FromOutside stringOf (Array.map lowByte taken.text)
 
         parts =
             String.split ";" text
@@ -209,7 +210,7 @@ oscDispatch end t0 =
             resetPalette (Array.dropFirst 1 parts) t
 
         Just 133 ->
-            semanticPrompt (Maybe.withDefault "" (Array.get 1 parts)) (Array.dropFirst 2 parts) (rest == "L") t
+            semanticPrompt (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)) (Array.dropFirst 2 parts) (rest == "L") t
 
         Just 9 ->
             -- ConEmu's mark of a prompt's start, Ghostty's 133;A
@@ -231,7 +232,7 @@ oscDispatch end t0 =
                 t
 
         Nothing ->
-            t
+            meant Reason.FromOutside t
 
 
 {-| OSC 4: pairs of an index and a color or `?`, each set or answered in
@@ -258,7 +259,7 @@ paletteColors end words answers t =
                         paletteColors end (Array.dropFirst 2 words) answers { t | colors = Dict.set i c t.colors }
 
                     Nothing ->
-                        withAnswers answers t
+                        meant Reason.FromOutside withAnswers answers t
 
         _ ->
             withAnswers answers t
@@ -279,7 +280,7 @@ dynamicColors end c words answers t =
                                 answers ++ "\u{001B}]" ++ String.fromInt c ++ ";" ++ rgb16 v ++ end
 
                             Nothing ->
-                                answers
+                                meant Reason.NotSet answers
                 in
                 nextDynamic end c words more t
 
@@ -293,10 +294,10 @@ dynamicColors end c words answers t =
                             nextDynamic end c words answers t
 
                     Nothing ->
-                        withAnswers answers t
+                        meant Reason.FromOutside withAnswers answers t
 
         Nothing ->
-            withAnswers answers t
+            meant Reason.NoMore withAnswers answers t
 
 
 {-| The next dynamic color's word, or the end after OSC 19's. A function of
@@ -467,7 +468,7 @@ intensity text =
                 Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| OSC 133, the semantic prompts (§VC22), as Ghostty takes them: `A` and

@@ -19,6 +19,7 @@ import Os.Path as Path exposing (Path)
 import Os.Random
 import RestoreFile exposing (State, decode)
 import Task exposing (Task)
+import Reason
 
 
 {-| A window's files: its id, and the handle whose lock it holds. -}
@@ -90,7 +91,7 @@ claimFrom : File.Permission -> Path -> Array String -> Task x (Maybe { window : 
 claimFrom fs dir ids =
     when Array.popFirst ids is
         Nothing ->
-            Task.succeed Nothing
+            meant Reason.NoMore Task.succeed Nothing
 
         Just { first, rest } ->
             take fs dir first
@@ -98,11 +99,11 @@ claimFrom fs dir ids =
                     (\got ->
                         when got is
                             Nothing ->
-                                claimFrom fs dir rest
+                                meant Reason.Refused claimFrom fs dir rest
 
                             Just handle ->
                                 File.readFile fs (stateOf dir first)
-                                    |> Task.map (\bytes -> Bytes.toString bytes |> Maybe.withDefault "" |> decode)
+                                    |> Task.map (\bytes -> Bytes.toString bytes |> Maybe.withDefault (meant Reason.FromOutside "") |> decode)
                                     |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
                                     |> Task.andThen
                                         (\read ->
@@ -111,7 +112,7 @@ claimFrom fs dir ids =
                                                     Task.succeed (Just { window = { id = first, lock = handle }, state = s })
 
                                                 Err _ ->
-                                                    forget fs dir { id = first, lock = handle } |> Task.andThen (\_ -> claimFrom fs dir rest)
+                                                    meant Reason.FromOutside forget fs dir { id = first, lock = handle } |> Task.andThen (\_ -> claimFrom fs dir rest)
                                         )
                     )
 
@@ -127,7 +128,7 @@ anyGone : File.Permission -> Path -> Array String -> Task x Bool
 anyGone fs dir ids =
     when Array.popFirst ids is
         Nothing ->
-            Task.succeed False
+            meant Reason.NoMore Task.succeed False
 
         Just { first, rest } ->
             take fs dir first
@@ -138,7 +139,7 @@ anyGone fs dir ids =
                                 File.close handle |> Task.onError (\_ -> Task.succeed {}) |> Task.map (\_ -> True)
 
                             Nothing ->
-                                anyGone fs dir rest
+                                meant Reason.Refused anyGone fs dir rest
                     )
 
 
@@ -206,7 +207,7 @@ anyRunning : File.Permission -> Path -> Array String -> Task x Bool
 anyRunning fs dir ids =
     when Array.popFirst ids is
         Nothing ->
-            Task.succeed False
+            meant Reason.NoMore Task.succeed False
 
         Just { first, rest } ->
             take fs dir first
@@ -214,7 +215,7 @@ anyRunning fs dir ids =
                     (\got ->
                         when got is
                             Nothing ->
-                                Task.succeed True
+                                meant Reason.Refused Task.succeed True
 
                             Just handle ->
                                 File.exists fs (stateOf dir first)

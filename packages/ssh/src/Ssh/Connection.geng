@@ -34,6 +34,7 @@ payloads to send and what happened.
 import Bytes exposing (Bytes)
 import Ssh.Wire as Wire
 import UInt8
+import Ssh.Reason as Reason
 
 
 {-| What the session is: the terminal, if it has one (its type, size and
@@ -205,7 +206,7 @@ isConnectionMessage payload =
 
 numberOf : Bytes -> Int
 numberOf payload =
-    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault -1
+    Bytes.get 0 payload |> Maybe.map UInt8.toInt |> Maybe.withDefault (meant Reason.FromOutside -1)
 
 
 finish : State -> Step
@@ -329,7 +330,7 @@ afterOpen st =
                     ]
 
                 Nothing ->
-                    []
+                    meant Reason.NotSet []
 
         variables =
             Array.map
@@ -342,13 +343,13 @@ afterOpen st =
                     { payload = channelRequest st "exec" True (Wire.writeText command), awaits = Just "the command" }
 
                 Nothing ->
-                    { payload = channelRequest st "shell" True Bytes.empty, awaits = Just "the shell" }
+                    meant Reason.NotSet { payload = channelRequest st "shell" True Bytes.empty, awaits = Just "the shell" }
 
         all =
             terminal ++ variables ++ [ run ]
     in
     Array.foldl (\r acc -> queue r.payload acc)
-        { st | phase = Requesting (Array.mapAndFlatten (\r -> Maybe.map (\a -> [ a ]) r.awaits |> Maybe.withDefault []) all) }
+        { st | phase = Requesting (Array.mapAndFlatten (\r -> Maybe.map (\a -> [ a ]) r.awaits |> Maybe.withDefault (meant Reason.NotSet [])) all) }
         all
 
 
@@ -376,7 +377,7 @@ received payload (Connection st) =
                     )
 
             Err _ ->
-                finish st
+                meant Reason.FromOutside finish st
 
     else if n == msgRequestSuccess || n == msgRequestFailure then
         -- a keepalive answered
@@ -420,10 +421,10 @@ onChannel n body st =
                             flush (emit Started { open1 | phase = Running })
 
                         Nothing ->
-                            afterOpen open1
+                            meant Reason.NotSet afterOpen open1
 
             Err _ ->
-                ended (emit (Refused "a channel confirmation that does not read") st)
+                meant Reason.FromOutside ended (emit (Refused "a channel confirmation that does not read") st)
 
     else if n == msgOpenFailure then
         let
@@ -433,7 +434,7 @@ onChannel n body st =
                 afterChannel
                     |> Result.andThen (\c -> Wire.uint32 c.next)
                     |> Result.andThen (\code -> Wire.name code.next |> Result.map (\text -> { code = code.value, text = String.trim text.value }))
-                    |> Result.withDefault { code = 0, text = "" }
+                    |> Result.withDefault (meant Reason.FromOutside { code = 0, text = "" })
 
             reason =
                 when failure.code is
@@ -463,7 +464,7 @@ onChannel n body st =
                             "the server would not connect to " ++ target.host ++ ":" ++ String.fromInt target.port ++ ": " ++ why
 
                         Nothing ->
-                            "the server would not open a session: " ++ why
+                            meant Reason.NotSet "the server would not open a session: " ++ why
                     )
                 )
                 st
@@ -552,7 +553,7 @@ replied ok st =
                         { st | phase = Requesting a.rest }
 
                 Nothing ->
-                    st
+                    meant Reason.FromOutside st
 
         _ ->
             st
@@ -570,7 +571,7 @@ channelRequestFromServer afterChannel st =
                         emit (Exited status.value) st
 
                     Err _ ->
-                        st
+                        meant Reason.FromOutside st
 
             else if request.name == "exit-signal" then
                 when Wire.name request.rest |> Result.andThen (\signal -> Wire.boolean signal.next |> Result.andThen (\core -> Wire.name core.next) |> Result.map (\message -> { signal = signal.value, message = message.value })) is
@@ -578,7 +579,7 @@ channelRequestFromServer afterChannel st =
                         emit (Killed signal) st
 
                     Err _ ->
-                        st
+                        meant Reason.FromOutside st
 
             else if request.want then
                 queue (Bytes.flatten [ Wire.writeByte msgFailure, Wire.writeUint32 st.remote ]) st
@@ -587,7 +588,7 @@ channelRequestFromServer afterChannel st =
                 st
 
         Err _ ->
-            st
+            meant Reason.FromOutside st
 
 
 {-| What waits, sent as far as the server's window and largest packet let

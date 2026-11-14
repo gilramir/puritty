@@ -56,6 +56,7 @@ import Dict exposing (Dict)
 import Tmux.Command as Command
 import Tmux.CustomizeTables as Tables
 import Tmux.Syntax as Syntax
+import Tmux.Reason as Reason
 
 
 
@@ -112,7 +113,7 @@ table version =
                         Just found.value
 
                     Nothing ->
-                        Array.last Tables.older
+                        meant Reason.OutOfRange Array.last Tables.older
 
         merged =
             when diff is
@@ -129,7 +130,7 @@ table version =
                         (rowsIn d.rows)
 
                 Nothing ->
-                    base
+                    meant Reason.NotYet base
     in
     Dict.foldl (\_ row acc -> addRow row acc) { version = version, infos = Dict.empty, defaults = Dict.empty, keys = Dict.empty } merged
 
@@ -193,7 +194,7 @@ addRow row t =
                     { t | defaults = Dict.set (o.name ++ (if o.key == "" then "" else "[" ++ o.key ++ "]")) o.value t.defaults }
 
                 Nothing ->
-                    t
+                    meant Reason.NotKnown t
 
         Just "K" ->
             when bindingOfFormat (String.dropFirst 2 row) is
@@ -201,10 +202,10 @@ addRow row t =
                     { t | keys = Dict.set (b.table ++ "\t" ++ b.key) b t.keys }
 
                 Nothing ->
-                    t
+                    meant Reason.NotKnown t
 
         _ ->
-            t
+            meant Reason.NotKnown t
 
 
 
@@ -232,7 +233,7 @@ shownOf line =
                     { word = String.takeFirst at line, rest = Just (String.dropFirst (at + 1) line) }
 
                 Nothing ->
-                    { word = line, rest = Nothing }
+                    meant Reason.NoMore { word = line, rest = Nothing }
 
         named =
             when String.firstIndexOf "[" head.word is
@@ -244,7 +245,7 @@ shownOf line =
                         { name = head.word, key = "" }
 
                 Nothing ->
-                    { name = head.word, key = "" }
+                    meant Reason.NoMore { name = head.word, key = "" }
     in
     if head.word == "" then
         Nothing
@@ -255,7 +256,7 @@ shownOf line =
                 Just { name = named.name, key = named.key, value = unquoted rest, bare = False }
 
             Nothing ->
-                Just { name = named.name, key = named.key, value = "", bare = True }
+                meant Reason.NoMore Just { name = named.name, key = named.key, value = "", bare = True }
 
 
 {-| A value as `show-options` prints it, read as tmux's parser would: a
@@ -284,7 +285,7 @@ optionsOf shown =
                                     { had | items = Array.pushLast { key = o.key, value = o.value } had.items, array = True }
 
                                 Nothing ->
-                                    { value = "", items = [ { key = o.key, value = o.value } ], array = True }
+                                    meant Reason.NotKnown { value = "", items = [ { key = o.key, value = o.value } ], array = True }
                             )
                             acc
 
@@ -292,7 +293,7 @@ optionsOf shown =
                         Dict.set o.name { value = o.value, items = [], array = o.bare } acc
 
                 Nothing ->
-                    acc
+                    meant Reason.FromOutside acc
         )
         Dict.empty
         shown
@@ -343,10 +344,10 @@ bindingsOfText listed notes =
     let
         noteOf tableName keyName =
             Dict.get tableName notes
-                |> Maybe.withDefault []
+                |> Maybe.withDefault (meant Reason.NotKnown [])
                 |> Array.findFirst (\l -> Array.first (String.words (String.trim l)) == Just keyName)
                 |> Maybe.map (\found -> String.trim (String.dropFirst (String.count keyName) (String.trim found.value)))
-                |> Maybe.withDefault ""
+                |> Maybe.withDefault (meant Reason.NotKnown "")
     in
     Array.mapAndKeepJust
         (\line ->
@@ -355,7 +356,7 @@ bindingsOfText listed notes =
                     Just { b | note = noteOf b.table b.key }
 
                 Nothing ->
-                    Nothing
+                    meant Reason.FromOutside Nothing
         )
         listed
 
@@ -412,7 +413,7 @@ bindLine line =
                     quoted '"' (flagged.at + 1) []
 
                 _ ->
-                    bare flagged.at []
+                    meant Reason.NotKnown bare flagged.at []
 
         quoted q i acc =
             when Array.get i chars is
@@ -421,13 +422,13 @@ bindLine line =
                         { key = String.fromArray acc, next = i + 1 }
 
                     else if q == '"' && c == '\\' then
-                        quoted q (i + 2) (Array.pushLast (Array.get (i + 1) chars |> Maybe.withDefault c) acc)
+                        quoted q (i + 2) (Array.pushLast (Array.get (i + 1) chars |> Maybe.withDefault (meant Reason.FromOutside c)) acc)
 
                     else
                         quoted q (i + 1) (Array.pushLast c acc)
 
                 Nothing ->
-                    { key = String.fromArray acc, next = i }
+                    meant Reason.FromOutside { key = String.fromArray acc, next = i }
 
         bare i acc =
             when Array.get i chars is
@@ -436,13 +437,13 @@ bindLine line =
                         { key = String.fromArray acc, next = i }
 
                     else if c == '\\' then
-                        bare (i + 2) (Array.pushLast (Array.get (i + 1) chars |> Maybe.withDefault c) acc)
+                        bare (i + 2) (Array.pushLast (Array.get (i + 1) chars |> Maybe.withDefault (meant Reason.FromOutside c)) acc)
 
                     else
                         bare (i + 1) (Array.pushLast c acc)
 
                 Nothing ->
-                    { key = String.fromArray acc, next = i }
+                    meant Reason.NoMore { key = String.fromArray acc, next = i }
     in
     if wordAt 0 /= "bind-key" || flagged.table == "" then
         Nothing
@@ -489,7 +490,7 @@ envOf shown hiddenShown =
                         Just { name = String.takeFirst at line, value = Just (String.dropFirst (at + 1) line), hidden = hide }
 
                     Nothing ->
-                        Nothing
+                        meant Reason.FromOutside Nothing
     in
     Array.mapAndKeepJust (read False) shown
         ++ Array.mapAndKeepJust (read True) hiddenShown
@@ -603,7 +604,7 @@ entries t d o =
                     Array.member id ids
 
                 Nothing ->
-                    True
+                    meant Reason.NotSet True
 
         section title tag kids =
             if o.changedOnly && Array.isEmpty kids then
@@ -754,7 +755,7 @@ optionNodes t d o keep hooks levels =
             Array.foldr (\level found -> if found == 0 && Dict.member name (levelOf d level) then level else found) 0 levels
 
         isHook name =
-            Dict.get name t.infos |> Maybe.map .hook |> Maybe.withDefault False
+            Dict.get name t.infos |> Maybe.map .hook |> Maybe.withDefault (meant Reason.NotKnown False)
     in
     (userNames ++ tableNames)
         |> Array.mapAndKeepJust
@@ -773,10 +774,10 @@ optionNodes t d o keep hooks levels =
                         Dict.get name t.infos
 
                     isArray =
-                        held.array || (info |> Maybe.map .array |> Maybe.withDefault False)
+                        held.array || (info |> Maybe.map .array |> Maybe.withDefault (meant Reason.NotKnown False))
 
                     unit =
-                        info |> Maybe.map .unit |> Maybe.withDefault ""
+                        info |> Maybe.map .unit |> Maybe.withDefault (meant Reason.NotKnown "")
 
                     id =
                         "O:" ++ String.fromInt globalLevel ++ ":" ++ name
@@ -841,7 +842,7 @@ changedOption t name held =
                 Dict.get name t.defaults /= Just held.value
 
         Nothing ->
-            True
+            meant Reason.NotKnown True
 
 
 changedItem : Table -> String -> { key : String, value : String } -> Bool
@@ -851,7 +852,7 @@ changedItem t name item =
             Dict.get (name ++ "[" ++ item.key ++ "]") t.defaults /= Just item.value
 
         Nothing ->
-            True
+            meant Reason.NotKnown True
 
 
 {-| Whether a key differs from tmux's default binding
@@ -863,7 +864,7 @@ changedKey t b =
             was.repeat /= b.repeat || was.note /= b.note || was.command /= b.command
 
         Nothing ->
-            True
+            meant Reason.NotKnown True
 
 
 envNodes : Table -> Data -> (String -> Bool) -> Int -> Array Env -> Array Node
@@ -989,7 +990,7 @@ lines v all =
             else
                 let
                     isOpen =
-                        Dict.get e.id v.open |> Maybe.withDefault e.open
+                        Dict.get e.id v.open |> Maybe.withDefault (meant Reason.NotSet e.open)
                 in
                 { shown = Array.pushLast { entry = e, expanded = isOpen } acc.shown
                 , skip = if isOpen || not e.children then -1 else e.depth
@@ -1195,7 +1196,7 @@ preview t d detail e box =
                             keyPreview t found.value say labelled (skipLine box.height) start
 
                         Nothing ->
-                            start
+                            meant Reason.Gone start
 
                 Variable v ->
                     envPreview d v say labelled (skipLine box.height) start
@@ -1230,20 +1231,21 @@ optionPreview t d detail o say labelled skip height start =
             Dict.get o.name t.infos
 
         held =
-            Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault { value = "", items = [], array = False }
+            Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault (meant Reason.Gone { value = "", items = [], array = False })
 
         isHook =
-            info |> Maybe.map .hook |> Maybe.withDefault False
+            info |> Maybe.map .hook |> Maybe.withDefault (meant Reason.NotKnown False)
 
         isArray =
-            info |> Maybe.map .array |> Maybe.withDefault held.array
+            info |> Maybe.map .array |> Maybe.withDefault (meant Reason.NotKnown held.array)
 
         value =
             when o.key is
                 Just k ->
-                    Array.findFirst (\i -> i.key == k) held.items |> Maybe.map (\found -> found.value.value) |> Maybe.withDefault ""
+                    Array.findFirst (\i -> i.key == k) held.items |> Maybe.map (\found -> found.value.value) |> Maybe.withDefault (meant Reason.Gone "")
 
                 Nothing ->
+                    meant Reason.NotSet
                     if isArray then
                         Array.map .value held.items |> String.join " "
 
@@ -1251,7 +1253,7 @@ optionPreview t d detail o say labelled skip height start =
                         held.value
 
         unit =
-            info |> Maybe.map .unit |> Maybe.withDefault ""
+            info |> Maybe.map .unit |> Maybe.withDefault (meant Reason.NotKnown "")
 
         withUnit v =
             v ++ (if unit == "" then "" else " " ++ unit)
@@ -1262,7 +1264,7 @@ optionPreview t d detail o say labelled skip height start =
                     if i.text == "" then "This option doesn't have a description." else i.text
 
                 Nothing ->
-                    "This option doesn't have a description."
+                    meant Reason.NotKnown "This option doesn't have a description."
 
         what =
             when info is
@@ -1280,7 +1282,7 @@ optionPreview t d detail o say labelled skip height start =
                         "server"
 
                 Nothing ->
-                    "user"
+                    meant Reason.NotKnown "user"
 
         fires w =
             when detail |> Maybe.andThen .fires is
@@ -1292,7 +1294,7 @@ optionPreview t d detail o say labelled skip height start =
                         say False "" ("This hook has been fired " ++ String.fromInt f.count ++ " times.") w
 
                 Nothing ->
-                    w
+                    meant Reason.NotYet w
 
         head =
             start
@@ -1315,7 +1317,7 @@ optionPreview t d detail o say labelled skip height start =
                             say False "" (if newer then "This is an array option, key " ++ k ++ "." else "This is an array option, index " ++ k ++ ".") w
 
                         Nothing ->
-                            say False "" "This is an array option." w |> (\x -> { x | stopped = True })
+                            meant Reason.NotSet say False "" "This is an array option." w |> (\x -> { x | stopped = True })
 
             else
                 w
@@ -1327,6 +1329,7 @@ optionPreview t d detail o say labelled skip height start =
                         if dv == value then Nothing else Just dv
 
                     Nothing ->
+                        meant Reason.NotKnown
                         if isArray then
                             let
                                 prefix =
@@ -1359,7 +1362,7 @@ optionPreview t d detail o say labelled skip height start =
                                 if x /= value then labelled "This expands to: " x else identity
 
                             Nothing ->
-                                identity
+                                meant Reason.NotYet identity
 
                     else
                         identity
@@ -1370,7 +1373,7 @@ optionPreview t d detail o say labelled skip height start =
                             if i.kind == "choice" then labelled "Available values are: " (String.join ", " i.choices) else identity
 
                         Nothing ->
-                            identity
+                            meant Reason.NotKnown identity
 
                 example label style =
                     \w2 -> w2 |> say True "" label |> say False style "EXAMPLE"
@@ -1382,13 +1385,13 @@ optionPreview t d detail o say labelled skip height start =
                                 example "This is a colour option: " ("fg=" ++ value)
 
                             else if i.style then
-                                example "This is a style option: " (detail |> Maybe.andThen .expanded |> Maybe.withDefault value)
+                                example "This is a style option: " (detail |> Maybe.andThen .expanded |> Maybe.withDefault (meant Reason.NotYet value))
 
                             else
                                 identity
 
                         Nothing ->
-                            identity
+                            meant Reason.NotKnown identity
 
                 defaultPart =
                     when defaultValue is
@@ -1396,7 +1399,7 @@ optionPreview t d detail o say labelled skip height start =
                             labelled "The default is: " (withUnit dv)
 
                         Nothing ->
-                            identity
+                            meant Reason.NotSet identity
             in
             shown |> expands |> choices |> colourPart |> defaultPart
 
@@ -1430,14 +1433,14 @@ optionPreview t d detail o say labelled skip height start =
                                 labelled ("Window value (from window " ++ String.fromInt d.windowIndex ++ "): ") (withUnit v) below
 
                             Nothing ->
-                                below
+                                meant Reason.NotSet below
                 in
                 when globalValue is
                     Just v ->
                         labelled "Global value: " (withUnit v) windowed
 
                     Nothing ->
-                        windowed
+                        meant Reason.NotSet windowed
     in
     head |> arrayPart |> skip |> valuePart |> parents
 
@@ -1460,7 +1463,7 @@ keyPreview t b say labelled skip start =
                     if was.command /= b.command then labelled "The default is: " was.command w else w
 
                 Nothing ->
-                    w
+                    meant Reason.NotKnown w
     in
     start
         |> say False "" (note ++ period)
@@ -1496,7 +1499,7 @@ envPreview d v say labelled skip start =
                             labelled "Variable value: " x head
 
                         Nothing ->
-                            say False "" "Variable is removed." head
+                            meant Reason.Gone say False "" "Variable is removed." head
             in
             if v.scope == 7 then
                 valued
@@ -1509,13 +1512,13 @@ envPreview d v say labelled skip start =
                                 labelled "Global value: " x valued
 
                             Nothing ->
-                                say False "" "Global variable is removed." valued
+                                meant Reason.Gone say False "" "Global variable is removed." valued
 
                     Nothing ->
-                        valued
+                        meant Reason.NotSet valued
 
         Nothing ->
-            start
+            meant Reason.Gone start
 
 
 {-| The description box's title: the chosen row's name, or its parent's
@@ -1523,7 +1526,7 @@ for a key's three rows (`mode_tree_draw`). -}
 previewTitle : Array Line -> Entry -> String
 previewTitle shown e =
     if e.asParent then
-        Array.findFirst (\l -> l.entry.id == e.parent) shown |> Maybe.map (\found -> found.value.entry.name) |> Maybe.withDefault e.name
+        Array.findFirst (\l -> l.entry.id == e.parent) shown |> Maybe.map (\found -> found.value.entry.name) |> Maybe.withDefault (meant Reason.NotKnown e.name)
 
     else
         e.name
@@ -1577,7 +1580,7 @@ variablesOf t d e =
                     Dict.get o.name t.infos
 
                 held =
-                    Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault { value = "", items = [], array = False }
+                    Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault (meant Reason.Gone { value = "", items = [], array = False })
 
                 global =
                     o.scope == 1 || o.scope == 2 || o.scope == 4
@@ -1589,15 +1592,15 @@ variablesOf t d e =
             , { name = "option_value", value = held.value }
             , { name = "option_is_global", value = flag global }
             , { name = "option_is_array", value = flag held.array }
-            , { name = "option_is_hook", value = flag (info |> Maybe.map .hook |> Maybe.withDefault False) }
+            , { name = "option_is_hook", value = flag (info |> Maybe.map .hook |> Maybe.withDefault (meant Reason.NotKnown False)) }
             , { name = "option_scope", value = scopeText d o.scope }
-            , { name = "option_unit", value = info |> Maybe.map .unit |> Maybe.withDefault "" }
+            , { name = "option_unit", value = info |> Maybe.map .unit |> Maybe.withDefault (meant Reason.NotKnown "") }
             ]
 
         Key k ->
             let
                 note =
-                    Array.findFirst (\b -> b.table == k.table && b.key == k.key) d.keys |> Maybe.map (\found -> found.value.note) |> Maybe.withDefault ""
+                    Array.findFirst (\b -> b.table == k.table && b.key == k.key) d.keys |> Maybe.map (\found -> found.value.note) |> Maybe.withDefault (meant Reason.Gone "")
             in
             [ { name = "is_option", value = "0" }
             , { name = "is_key", value = "1" }
@@ -1615,10 +1618,10 @@ variablesOf t d e =
             , { name = "is_key", value = "0" }
             , { name = "is_environment", value = "1" }
             , { name = "environment_name", value = v.name }
-            , { name = "environment_value", value = found |> Maybe.andThen .value |> Maybe.withDefault "" }
+            , { name = "environment_value", value = found |> Maybe.andThen .value |> Maybe.withDefault (meant Reason.Gone "") }
             , { name = "environment_is_global", value = flag (v.scope == 7) }
             , { name = "environment_scope", value = scopeText d v.scope }
-            , { name = "environment_hidden", value = flag (found |> Maybe.map .hidden |> Maybe.withDefault False) }
+            , { name = "environment_hidden", value = flag (found |> Maybe.map .hidden |> Maybe.withDefault (meant Reason.Gone False)) }
             , { name = "environment_removed", value = flag ((found |> Maybe.andThen .value) == Nothing) }
             ]
 
@@ -1694,7 +1697,7 @@ optionName name key =
             name ++ "[" ++ k ++ "]"
 
         Nothing ->
-            name
+            meant Reason.NotSet name
 
 
 {-| An option's value as its row shows it: an array item's, an array's
@@ -1703,13 +1706,14 @@ optionValue : Data -> { scope : Int, name : String, key : Maybe String } -> Stri
 optionValue d o =
     let
         held =
-            Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault { value = "", items = [], array = False }
+            Dict.get o.name (levelOf d o.scope) |> Maybe.withDefault (meant Reason.Gone { value = "", items = [], array = False })
     in
     when o.key is
         Just k ->
             itemValue d o.scope o.name k
 
         Nothing ->
+            meant Reason.NotSet
             if held.array then Array.map .value held.items |> String.join " " else held.value
 
 
@@ -1744,7 +1748,7 @@ effective d scope name =
                     found
 
                 Nothing ->
-                    Dict.get name (levelOf d level) |> Maybe.map .value
+                    meant Reason.NotSet Dict.get name (levelOf d level) |> Maybe.map .value
         )
         Nothing
         chain
@@ -1771,7 +1775,7 @@ actOn : Table -> Data -> Bool -> String -> Array Target -> Maybe Entry -> Act
 actOn t d newer keyName tagged chosen =
     when chosen is
         Nothing ->
-            Stay
+            meant Reason.NotOpen Stay
 
         Just e ->
             when e.target is
@@ -1809,7 +1813,7 @@ actOn t d newer keyName tagged chosen =
                                     }
 
                             Nothing ->
-                                Stay
+                                meant Reason.NotSet Stay
 
                     else
                         manyAct keyName tagged
@@ -1844,7 +1848,7 @@ actOn t d newer keyName tagged chosen =
                                 manyAct keyName tagged
 
                         Nothing ->
-                            Stay
+                            meant Reason.Gone Stay
 
                 Variable v ->
                     when Array.findFirst (\x -> x.name == v.name) (if v.scope == 7 then d.globalEnv else d.sessionEnv) is
@@ -1863,7 +1867,7 @@ actOn t d newer keyName tagged chosen =
                                     if scope == 8 then "(" ++ v.name ++ ", for " ++ scopeText d 8 ++ ") " else "(" ++ v.name ++ ", global) "
                             in
                             if keyName == "Enter" || keyName == "s" || global then
-                                Ask { label = label, first = Maybe.withDefault "" var.value, single = False, asks = SetVariable { scope = scope, name = v.name, hidden = var.hidden } }
+                                Ask { label = label, first = Maybe.withDefault (meant Reason.Gone "") var.value, single = False, asks = SetVariable { scope = scope, name = v.name, hidden = var.hidden } }
 
                             else if keyName == "u" then
                                 Ask { label = "Unset " ++ v.name ++ "? ", first = "", single = True, asks = Unset [ e.target ] }
@@ -1872,7 +1876,7 @@ actOn t d newer keyName tagged chosen =
                                 manyAct keyName tagged
 
                         Nothing ->
-                            Stay
+                            meant Reason.Gone Stay
 
 
 {-| `D` and `U`: reset or unset the tagged rows, when there are any. -}
@@ -1900,7 +1904,7 @@ itemValue d scope name k =
     Dict.get name (levelOf d scope)
         |> Maybe.andThen (\held -> Array.findFirst (\i -> i.key == k) held.items)
         |> Maybe.map (\found -> found.value.value)
-        |> Maybe.withDefault ""
+        |> Maybe.withDefault (meant Reason.Gone "")
 
 
 {-| Enter on a section's title (3.8, `window_customize_add_current`): a
@@ -1949,10 +1953,10 @@ setOption t d o global allowPane =
             Dict.get o.name t.infos
 
         isArray =
-            info |> Maybe.map .array |> Maybe.withDefault False
+            info |> Maybe.map .array |> Maybe.withDefault (meant Reason.NotKnown False)
 
         pane =
-            allowPane && (info |> Maybe.map (\i -> String.contains "p" i.scopes) |> Maybe.withDefault True)
+            allowPane && (info |> Maybe.map (\i -> String.contains "p" i.scopes) |> Maybe.withDefault (meant Reason.NotKnown True))
 
         scope =
             if isArray then
@@ -1971,10 +1975,10 @@ setOption t d o global allowPane =
                 o.scope
 
         now =
-            effective d scope o.name |> Maybe.withDefault ""
+            effective d scope o.name |> Maybe.withDefault (meant Reason.NotSet "")
 
         kind =
-            info |> Maybe.map .kind |> Maybe.withDefault "string"
+            info |> Maybe.map .kind |> Maybe.withDefault (meant Reason.NotKnown "string")
 
         set value =
             "set-option " ++ levelFlags d.paneId scope ++ " " ++ Command.quote o.name ++ " " ++ Command.quote value
@@ -1993,7 +1997,7 @@ setOption t d o global allowPane =
                         "(" ++ o.name ++ "[" ++ k ++ "]" ++ where_ ++ ") "
 
                     Nothing ->
-                        "(" ++ o.name ++ "[+]" ++ where_ ++ ") "
+                        meant Reason.NotSet "(" ++ o.name ++ "[+]" ++ where_ ++ ") "
 
             else
                 "(" ++ o.name ++ where_ ++ ") "
@@ -2004,6 +2008,7 @@ setOption t d o global allowPane =
                     itemValue d o.scope o.name k
 
                 Nothing ->
+                    meant Reason.NotSet
                     if isArray then
                         ""
 
@@ -2028,7 +2033,7 @@ setOption t d o global allowPane =
                 Array.map2 (\c following -> { choice = c, after = following }) choices after
                     |> Array.findFirst (\p -> p.choice == now)
                     |> Maybe.map (\found -> found.value.after)
-                    |> Maybe.withDefaultLazy (\_ -> Array.first choices |> Maybe.withDefault now)
+                    |> Maybe.withDefaultLazy (\_ -> meant Reason.NotKnown Array.first choices |> Maybe.withDefault (meant Reason.NoMore now))
         in
         Run [ set next ]
 
@@ -2065,7 +2070,7 @@ answered t d p given =
         nextIndex name scope =
             let
                 held =
-                    Dict.get name (levelOf d scope) |> Maybe.map .items |> Maybe.withDefault []
+                    Dict.get name (levelOf d scope) |> Maybe.map .items |> Maybe.withDefault (meant Reason.NotSet [])
 
                 taken k =
                     Array.any (\i -> i.key == String.fromInt k) held
@@ -2081,7 +2086,7 @@ answered t d p given =
                     { word = String.takeFirst at text, rest = String.trimLeft (String.dropFirst at text) }
 
                 Nothing ->
-                    { word = text, rest = "" }
+                    meant Reason.FromOutside { word = text, rest = "" }
     in
     when p.asks is
         SetVariable v ->
@@ -2097,11 +2102,11 @@ answered t d p given =
                     SetOption o ->
                         let
                             isArray =
-                                Dict.get o.name t.infos |> Maybe.map .array |> Maybe.withDefault False
+                                Dict.get o.name t.infos |> Maybe.map .array |> Maybe.withDefault (meant Reason.NotKnown False)
 
                             key =
                                 if isArray then
-                                    Just (Maybe.withDefault (nextIndex o.name o.scope) o.key)
+                                    Just (Maybe.withDefault (meant Reason.NotSet nextIndex o.name o.scope) o.key)
 
                                 else
                                     o.key
@@ -2146,7 +2151,7 @@ answered t d p given =
                                         Run [ "set-environment " ++ envFlags scope ++ " " ++ Command.quote (String.takeFirst at given) ++ " " ++ Command.quote (String.dropFirst (at + 1) given) ]
 
                                 Nothing ->
-                                    Say "Environment variable must be NAME=value"
+                                    meant Reason.FromOutside Say "Environment variable must be NAME=value"
 
                     AddKey tableName ->
                         let
@@ -2162,7 +2167,7 @@ answered t d p given =
                     ArrayKey a ->
                         let
                             held =
-                                Dict.get a.name (levelOf d a.scope) |> Maybe.map .items |> Maybe.withDefault []
+                                Dict.get a.name (levelOf d a.scope) |> Maybe.map .items |> Maybe.withDefault (meant Reason.NotSet [])
                         in
                         if Array.any (\i -> i.key == given) held then
                             Stay
@@ -2235,7 +2240,7 @@ resetCommands t d target =
                     [ bindCommand was ]
 
                 Nothing ->
-                    [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
+                    meant Reason.NotKnown [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
 
         _ ->
             []

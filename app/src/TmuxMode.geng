@@ -60,6 +60,7 @@ import Vt
 import Vt.Width as Width
 import Vt.Mouse as Mouse
 import Window
+import Reason
 
 
 type alias State =
@@ -417,7 +418,7 @@ colorsOf status =
                     if String.trim v == "" then fallback else Style.sgr (Style.apply v Style.plain)
 
                 Nothing ->
-                    fallback
+                    meant Reason.NotSet fallback
         -- a color option's value, or tmux's default
         colour name fallback =
             when Dict.get name status.options is
@@ -425,7 +426,7 @@ colorsOf status =
                     if String.trim v == "" then fallback else String.trim v
 
                 Nothing ->
-                    fallback
+                    meant Reason.NotSet fallback
     in
     { message = styled "message-style" messageColor
     , mode = styled "mode-style" messageColor
@@ -443,10 +444,10 @@ colorsOf status =
                     "\u{001B}[0;38;5;249;48;5;235m"
 
                 else
-                    Style.sgr (Style.apply v (Style.apply (Maybe.withDefault "" (Dict.get "menu-style" status.options)) Style.plain))
+                    Style.sgr (Style.apply v (Style.apply (Maybe.withDefault (meant Reason.NotSet "") (Dict.get "menu-style" status.options)) Style.plain))
 
             Nothing ->
-                "\u{001B}[0;38;5;249;48;5;235m"
+                meant Reason.NotSet "\u{001B}[0;38;5;249;48;5;235m"
     , treeBorder = styled "tree-mode-border-style" "\u{001B}[0m"
     }
 
@@ -743,7 +744,7 @@ traced e acc =
                         { (endRun acc) | run = Just { pane = o.pane, count = 1, bytes = n } }
 
                 Nothing ->
-                    { acc | run = Just { pane = o.pane, count = 1, bytes = n } }
+                    meant Reason.NotOpen { acc | run = Just { pane = o.pane, count = 1, bytes = n } }
 
         _ ->
             let
@@ -764,7 +765,7 @@ endRun acc =
             { acc | trace = Array.pushLast ("output %" ++ String.fromInt r.pane ++ " " ++ String.fromInt r.bytes ++ " bytes" ++ (if r.count > 1 then " in " ++ String.fromInt r.count ++ " lines" else "")) acc.trace, run = Nothing }
 
         Nothing ->
-            acc
+            meant Reason.NotOpen acc
 
 
 {-| An event other than a pane's output, as the log says it. -}
@@ -801,7 +802,7 @@ describe next e =
                         "not puritty's command"
 
                     else
-                        "for " ++ Maybe.withDefault "nothing waited for" (Maybe.map expectName next)
+                        "for " ++ Maybe.withDefault (meant Reason.FromOutside "nothing waited for") (Maybe.map expectName next)
 
                 head =
                     "reply #" ++ String.fromInt r.number ++ (if r.ok then " ok" else " ERROR") ++ ", " ++ String.fromInt (Array.length r.lines) ++ " lines, " ++ String.fromInt total ++ " bytes, " ++ whose
@@ -824,7 +825,7 @@ describe next e =
                             Just ForDayTime -> Array.takeFirst 1 r.lines
                             Just ForTheme -> Array.takeFirst 1 r.lines
                             Just ForClientName -> Array.takeFirst 1 r.lines
-                            _ -> []
+                            _ -> meant Reason.NotKnown []
             in
             Array.pushFirst head (Array.map (\l -> "  | " ++ cut 160 (Bytes.toStringLossy l)) shown)
 
@@ -1008,18 +1009,18 @@ paneSaid s id =
                         ++ "x"
                         ++ String.fromInt t.rows
                 )
-                |> Maybe.withDefault "no terminal"
+                |> Maybe.withDefault (meant Reason.Gone "no terminal")
 
         extra =
             [ when Dict.get id s.paneModes is
                 Just mode -> if mode == "" then "" else ", mode " ++ mode
-                Nothing -> ""
+                Nothing -> meant Reason.NotYet ""
             , when Dict.get id s.modes is
                 Just table -> if table == "" then "" else ", key table " ++ table
-                Nothing -> ""
+                Nothing -> meant Reason.NotYet ""
             , when Dict.get id s.back is
                 Just b -> if b == 0 then "" else ", view scrolled back " ++ String.fromInt b
-                Nothing -> ""
+                Nothing -> meant Reason.NotOpen ""
             , if Dict.member id s.copy then ", copy mode" else ""
             , if Dict.member id s.nested then ", NESTED control mode (output dropped)" else ""
             ]
@@ -1035,7 +1036,7 @@ panesSaid ids s =
             Array.pushFirst (paneSaid s id) (panesSaid (Array.dropFirst 1 ids) s)
 
         Nothing ->
-            []
+            meant Reason.NoMore []
 
 
 {-| What the diagnostic log's mark says of control mode
@@ -1069,9 +1070,9 @@ diagnose s =
         , "  open: " ++ (if Array.isEmpty open then "nothing" else String.join ", " open)
         , "  selection " ++ (when s.selection is
                 Just sel -> "made in pane %" ++ String.fromInt sel.pane
-                Nothing -> "none") ++ (when s.grab is
+                Nothing -> meant Reason.NotOpen "none") ++ (when s.grab is
                 Just g -> ", pointer held by pane %" ++ String.fromInt g
-                Nothing -> "")
+                Nothing -> meant Reason.NotOpen "")
         ]
             ++ panesSaid s.ids s
 
@@ -1105,7 +1106,7 @@ barPlaced : (taken s : State) -> State
 barPlaced s =
     let
         position =
-            Maybe.withDefault "" (Dict.get "status-position" s.status.options)
+            Maybe.withDefault (meant Reason.NotSet "") (Dict.get "status-position" s.status.options)
     in
     { s | barTop = if s.lookTmux && position /= "" then position == "top" else s.barTopConfig }
 
@@ -1167,7 +1168,7 @@ typeInto text s =
                 s
 
         Nothing ->
-            typeIntoPrompt text s
+            meant Reason.NotOpen typeIntoPrompt text s
 
 
 typeIntoPrompt : String -> (taken s : State) -> State
@@ -1193,7 +1194,7 @@ typeIntoPrompt text s =
                     s
 
         Nothing ->
-            s
+            meant Reason.NotOpen s
 
 
 {-| tmux's prompts and messages in tmux's look (`True`) or puritty's. -}
@@ -1213,10 +1214,10 @@ statusRows s =
                 0
 
             Just v ->
-                clamp 1 5 (Maybe.withDefault 1 (String.toInt v))
+                clamp 1 5 (Maybe.withDefault (meant Reason.FromOutside 1) (String.toInt v))
 
             Nothing ->
-                1
+                meant Reason.NotSet 1
 
     else
         1
@@ -1275,7 +1276,7 @@ scrollbarPieces s p =
             scrollbarOf s
 
         inMode =
-            Maybe.withDefault "" (Dict.get p.id s.paneModes) /= ""
+            Maybe.withDefault (meant Reason.NotYet "") (Dict.get p.id s.paneModes) /= ""
 
         alt =
             withPane p.id s (\t -> t.alt) == Just True
@@ -1296,9 +1297,10 @@ scrollbarPieces s p =
                     { h = sliderH, y = min (h - 1) (((h + 1) * (c.hsize - c.scroll)) // max 1 total) }
 
                 Nothing ->
+                    meant Reason.NotOpen
                     let
                         hsize =
-                            Maybe.withDefault 0 (withPane p.id s Vt.scrollbackRows)
+                            Maybe.withDefault (meant Reason.Gone 0) (withPane p.id s Vt.scrollbackRows)
 
                         sliderH =
                             max 1 ((h * h) // max 1 (h + hsize))
@@ -1365,7 +1367,7 @@ scrollbarOf : State -> { on : Bool, modal : Bool, left : Bool, width : Int, pad 
 scrollbarOf s =
     let
         option name =
-            Maybe.withDefault "" (Dict.get name s.status.options)
+            Maybe.withDefault (meant Reason.NotSet "") (Dict.get name s.status.options)
 
         style =
             option "pane-scrollbars-style"
@@ -1374,7 +1376,7 @@ scrollbarOf s =
             String.split "," style
                 |> Array.mapAndKeepJust (\w -> if String.startsWith (key ++ "=") (String.trim w) then String.toInt (String.dropFirst (String.count key + 1) (String.trim w)) else Nothing)
                 |> Array.first
-                |> Maybe.withDefault fallback
+                |> Maybe.withDefault (meant Reason.NotSet fallback)
 
         width =
             clamp 1 16 (part "width" 1)
@@ -1531,7 +1533,7 @@ event size e acc =
                             Array.map (\l -> Bytes.fromString (l ++ "\r\n")) lines
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
             in
             { acc | state = { st | on = False, starting = Nothing, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing }, outside = acc.outside ++ said }
 
@@ -1553,7 +1555,7 @@ event size e acc =
                             { acc | state = { st | starting = Just (lines ++ Array.map Bytes.toStringLossy r.lines) } }
 
                 Nothing ->
-                    reply r acc
+                    meant Reason.NotOpen reply r acc
 
         Notice n ->
             when { starting = starting, n = n } is
@@ -1603,6 +1605,7 @@ reply r acc =
                 -- writes what `display-message` says to this client (TM24)
                 when Array.findLast (\line -> String.startsWith "%message " (Bytes.toStringLossy line)) r.lines is
                     Nothing ->
+                        meant Reason.NoMore
                         if r.ok then
                             -- what a binding printed (`list-keys -N`,
                             -- `list-buffers`, `show-messages`), which a
@@ -1624,7 +1627,7 @@ reply r acc =
                                 st =
                                     acc.state
                             in
-                            { acc | state = { st | said = Array.first r.lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault st.said } }
+                            { acc | state = { st | said = Array.first r.lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside st.said) } }
 
                     Just m ->
                         let
@@ -1639,7 +1642,7 @@ reply r acc =
                         acc.state
 
                     expect =
-                        Maybe.withDefault ForNothing (Array.first st.expecting)
+                        Maybe.withDefault (meant Reason.FromOutside ForNothing) (Array.first st.expecting)
 
                     popped =
                         { acc | state = { st | expecting = Array.dropFirst 1 st.expecting } }
@@ -1683,13 +1686,13 @@ replied expect ok lines acc =
                             when String.split " " (Bytes.toStringLossy line) |> Array.popFirst is
                                 Just { first = "T", rest = rest } ->
                                     Just
-                                        { id = idOf (Maybe.withDefault "" (Array.get 0 rest))
-                                        , index = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "" (Array.get 1 rest)))
+                                        { id = idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 0 rest))
+                                        , index = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 rest)))
                                         , name = String.join " " (Array.dropFirst 2 rest)
                                         }
 
                                 _ ->
-                                    Nothing
+                                    meant Reason.FromOutside Nothing
                         )
                         lines
             in
@@ -1720,7 +1723,7 @@ replied expect ok lines acc =
                     { acc | state = { st | info = Dict.set pane d.info st.info } }
 
                 Nothing ->
-                    { acc | state = st }
+                    meant Reason.FromOutside { acc | state = st }
 
         ForSaved pane ->
             let
@@ -1749,13 +1752,13 @@ replied expect ok lines acc =
                     acc.state
 
                 got =
-                    Bindings.prefixesOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "")
+                    Bindings.prefixesOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside ""))
 
                 tables =
                     st.keys
             in
             if ok then
-                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs, byTable = got.byTable }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "" |> String.split " " |> Array.last |> Maybe.withDefault "") } }
+                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs, byTable = got.byTable }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> String.split " " |> Array.last |> Maybe.withDefault "") } }
 
             else
                 { acc | state = st }
@@ -1837,7 +1840,7 @@ replied expect ok lines acc =
                     acc.state
 
                 first =
-                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "" |> asTmuxSays
+                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> asTmuxSays
 
                 more =
                     Array.length lines - 1
@@ -1853,7 +1856,7 @@ replied expect ok lines acc =
                         { acc | state = { st | said = String.dropFirst 9 (Bytes.toStringLossy m.value) } }
 
                     Nothing ->
-                        { acc | state = { st | view = Just (viewOf lines) } }
+                        meant Reason.NoMore { acc | state = { st | view = Just (viewOf lines) } }
 
             else
                 { acc | state = { st | said = if more > 0 then first ++ " (" ++ String.fromInt more ++ " more lines)" else first } }
@@ -1863,7 +1866,7 @@ replied expect ok lines acc =
             -- commands after it (TM27)
             let
                 value =
-                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault ""
+                    Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "")
 
                 ctx =
                     { pane = c.pane, mouse = c.mouse }
@@ -1889,7 +1892,7 @@ replied expect ok lines acc =
                         (\line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
                                 [ "S", id, attached, count, activity, name, text ] ->
-                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault 0 (String.toInt count), activity = Maybe.withDefault 0 (String.toInt activity), name = name, text = text }
+                                    Just { id = idOf id, attached = attached /= "0", windows = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt count), activity = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt activity), name = name, text = text }
 
                                 _ ->
                                     Nothing
@@ -1911,10 +1914,10 @@ replied expect ok lines acc =
                                     Just
                                         { session = idOf session
                                         , id = idOf id
-                                        , index = Maybe.withDefault 0 (String.toInt index)
+                                        , index = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt index)
                                         , active = active == "1"
-                                        , panes = Maybe.withDefault 1 (String.toInt panes)
-                                        , activity = Maybe.withDefault 0 (String.toInt activity)
+                                        , panes = Maybe.withDefault (meant Reason.FromOutside 1) (String.toInt panes)
+                                        , activity = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt activity)
                                         , name = name
                                         , text = text
                                         }
@@ -1962,7 +1965,7 @@ replied expect ok lines acc =
                         (\i line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
                                 [ "L", name, created, size, activity, text, control ] ->
-                                    Just { name = name, text = text, created = Maybe.withDefault 0 (String.toInt created), size = Maybe.withDefault 0 (String.toInt size), activity = Maybe.withDefault 0 (String.toInt activity), control = control == "1", seq = i }
+                                    Just { name = name, text = text, created = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt created), size = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt size), activity = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt activity), control = control == "1", seq = i }
 
                                 _ ->
                                     Nothing
@@ -1990,7 +1993,7 @@ replied expect ok lines acc =
                                     -- same place; inside the rows, or 0 when there
                                     -- are none (it was -1 then)
                                     found =
-                                        Array.findFirst (\r -> Just r.name == chosen) (listRows next) |> Maybe.map .index |> Maybe.withDefault l.selected
+                                        Array.findFirst (\r -> Just r.name == chosen) (listRows next) |> Maybe.map .index |> Maybe.withDefault (meant Reason.Gone l.selected)
                                 in
                                 { next | selected = clamp 0 (max 0 (Array.length next.rows - 1)) found }
                             )
@@ -2088,7 +2091,7 @@ replied expect ok lines acc =
                         (\line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
                                 [ "P", window, id, index, cmd, text ] ->
-                                    Just { window = idOf window, id = idOf id, index = Maybe.withDefault 0 (String.toInt index), command = cmd, text = text }
+                                    Just { window = idOf window, id = idOf id, index = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt index), command = cmd, text = text }
 
                                 _ ->
                                     Nothing
@@ -2125,7 +2128,7 @@ replied expect ok lines acc =
                             { acc | state = { st | tree = Just { t | preview = { pv | items = items } } } }
 
                     Nothing ->
-                        { acc | state = st }
+                        meant Reason.NotOpen { acc | state = st }
 
         ForTreeInfo serial ->
             let
@@ -2143,12 +2146,12 @@ replied expect ok lines acc =
                                 t.preview
 
                             info =
-                                Array.first lines |> Maybe.map (\l -> String.split "\t" (Bytes.toStringLossy l)) |> Maybe.withDefault []
+                                Array.first lines |> Maybe.map (\l -> String.split "\t" (Bytes.toStringLossy l)) |> Maybe.withDefault (meant Reason.FromOutside [])
                         in
                         { acc | state = { st | tree = Just { t | preview = { pv | info = info } } } }
 
                 Nothing ->
-                    { acc | state = st }
+                    meant Reason.NotOpen { acc | state = st }
 
         ForPreviewCapture c ->
             let
@@ -2175,14 +2178,14 @@ replied expect ok lines acc =
                         { acc | state = { st | tree = Just { t | preview = { pv | items = Array.update c.index (\item -> { item | lines = shown }) pv.items } } } }
 
                     Nothing ->
-                        { acc | state = st }
+                        meant Reason.NotOpen { acc | state = st }
 
         ForClientName ->
             let
                 st =
                     acc.state
             in
-            { acc | state = { st | clientName = Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault "" } }
+            { acc | state = { st | clientName = Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") } }
 
         ForTheme ->
             let
@@ -2198,7 +2201,7 @@ replied expect ok lines acc =
                                 |> Array.map (\v -> if Style.isColor v && not (String.startsWith "theme" (String.toLower v)) then v else "default")
 
                         Nothing ->
-                            []
+                            meant Reason.FromOutside []
             in
             if Array.length colors == 20 then
                 let
@@ -2221,7 +2224,7 @@ replied expect ok lines acc =
                             Just ((h * 60 + m) * 60 + sec)
 
                         _ ->
-                            Nothing
+                            meant Reason.FromOutside Nothing
             in
             { acc | state = { st | dayOffset = Maybe.map (\day -> day * 1000 - modBy 86400000 st.clock) seconds } }
 
@@ -2265,7 +2268,7 @@ replied expect ok lines acc =
                 st =
                     acc.state
             in
-            { acc | state = { st | panesMs = Array.first lines |> Maybe.andThen (\l -> String.toInt (Bytes.toStringLossy l)) |> Maybe.withDefault st.panesMs } }
+            { acc | state = { st | panesMs = Array.first lines |> Maybe.andThen (\l -> String.toInt (Bytes.toStringLossy l)) |> Maybe.withDefault (meant Reason.FromOutside st.panesMs) } }
 
         ForMenuTitle serial ->
             { acc | state = menuPart serial (\m -> { m | title = firstLine ok lines m.title }) acc.state }
@@ -2305,14 +2308,14 @@ paneLine bytes =
             String.split " " (Bytes.toStringLossy bytes)
 
         int i =
-            Maybe.withDefault 0 (String.toInt (Maybe.withDefault "" (Array.get i words)))
+            Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt (Maybe.withDefault (meant Reason.FromOutside "") (Array.get i words)))
     in
     if Array.get 0 words /= Just "P" then
         Nothing
 
     else
         Just
-            { id = idOf (Maybe.withDefault "" (Array.get 1 words))
+            { id = idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 words))
             , info =
                 { w = int 2
                 , h = int 3
@@ -2324,7 +2327,7 @@ paneLine bytes =
                 , modes =
                     let
                         private =
-                            String.split "," (Maybe.withDefault "" (Array.get 9 words)) |> Array.mapAndKeepJust String.toInt
+                            String.split "," (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 9 words)) |> Array.mapAndKeepJust String.toInt
 
                         -- before 3.8 `pane_private_modes` is empty: the
                         -- modes from tmux's older flags (TM61; measured on
@@ -2351,7 +2354,7 @@ rebuild : Int -> Array Bytes -> (taken s : State) -> State
 rebuild pane lines s =
     when Dict.get pane s.info is
         Nothing ->
-            s
+            meant Reason.NotYet s
 
         Just i ->
             let
@@ -2388,7 +2391,7 @@ rebuild pane lines s =
                     { s | panes = Builder.set found.index term s.panes }
 
                 Nothing ->
-                    { s | ids = Array.pushLast pane s.ids, panes = Builder.pushLast term s.panes }
+                    meant Reason.NotYet { s | ids = Array.pushLast pane s.ids, panes = Builder.pushLast term s.panes }
 
 
 {-| A line of `modeFormat`: the pane's mode's key table kept, copy mode's
@@ -2426,10 +2429,10 @@ replyLine bytes s =
             -- (TM24)
             let
                 shown =
-                    showWindow (idOf (Maybe.withDefault "" (Array.get 1 words))) (Maybe.withDefault "" (Array.get 3 words)) (String.join " " (Array.dropFirst 4 words)) s
+                    showWindow (idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 words))) (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 3 words)) (String.join " " (Array.dropFirst 4 words)) s
 
                 pane =
-                    idOf (Maybe.withDefault "" (Array.get 2 words))
+                    idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 2 words))
             in
             if pane >= 0 then
                 { shown | active = pane }
@@ -2438,12 +2441,12 @@ replyLine bytes s =
                 shown
 
         _ ->
-            s
+            meant Reason.FromOutside s
 
 
 idOf : String -> Int
 idOf w =
-    Maybe.withDefault -1 (String.toInt (String.dropFirst 1 w))
+    Maybe.withDefault (meant Reason.FromOutside -1) (String.toInt (String.dropFirst 1 w))
 
 
 showWindow : Int -> String -> String -> (taken s : State) -> State
@@ -2480,6 +2483,7 @@ notice n acc =
                     { acc | state = feedPane o.pane (outsideOf fed.events) { st | nested = nested } }
 
                 Nothing ->
+                    meant Reason.NotOpen
                     if Control.startsControl o.bytes then
                         -- `tmux -CC` run inside a pane (TM19): an empty line
                         -- detaches that client, what it sends in control mode
@@ -2639,7 +2643,7 @@ feedPane id bytes s =
                 fed
 
         Nothing ->
-            { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
+            meant Reason.NotYet { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
 
 
 {-| A layout: its panes' terminals made or sized to their boxes. -}
@@ -2660,12 +2664,12 @@ applyLayout text s =
                             a.value.id
 
                         Nothing ->
-                            s.active
+                            meant Reason.FromOutside s.active
             in
             { s | layout = Just cell, ids = sized.ids, panes = sized.panes, active = active }
 
         Err _ ->
-            s
+            meant Reason.FromOutside s
 
 
 {-| Every pane sized again to the layout as it is placed now. -}
@@ -2683,7 +2687,7 @@ refit s =
             { s | ids = sized.ids, panes = sized.panes }
 
         Nothing ->
-            s
+            meant Reason.NotYet s
 
 
 {-| Every pane of the layout sized, or made, in turn: a loop rather than a
@@ -2696,7 +2700,7 @@ sizeAll acc boxes =
             sizeAll (sizePane first acc) rest
 
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
 
 sizePane : Layout.Pane -> (taken acc : { ids : Array Int, panes : Builder Vt.Term } where Array.length acc.ids == Builder.length acc.panes) -> (r : { ids : Array Int, panes : Builder Vt.Term } where Array.length r.ids == Builder.length r.panes)
@@ -2717,7 +2721,7 @@ sizePane place acc =
             }
 
         Nothing ->
-            { ids = Array.pushLast place.id acc.ids, panes = Builder.pushLast (blank place.w place.h) acc.panes }
+            meant Reason.NotYet { ids = Array.pushLast place.id acc.ids, panes = Builder.pushLast (blank place.w place.h) acc.panes }
 
 
 {-| The window's picture made again: the tiled panes with lines between,
@@ -2727,7 +2731,7 @@ paint : (taken s : State) -> State
 paint s =
     when s.layout is
         Nothing ->
-            s
+            meant Reason.NotYet s
 
         Just cell ->
             let
@@ -2800,7 +2804,7 @@ paint s =
                                 []
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 tmuxLine =
                     if not s.lookTmux then
@@ -2819,6 +2823,7 @@ paint s =
                                     [ { row = promptAt.row, col = promptAt.col, text = String.padRight promptAt.width ' ' (String.takeFirst promptAt.width (a.label ++ String.fromArray a.chars)) } ]
 
                             Nothing ->
+                                meant Reason.NotOpen
                                 if s.said == "" then
                                     []
 
@@ -2839,7 +2844,7 @@ paint s =
                                 []
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 shownCursor =
                     when { asking = s.asking, view = s.view, menu = if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing || s.customizing /= Nothing then Just {} else Nothing } is
@@ -2858,7 +2863,7 @@ paint s =
                 -- tmux's other modes (TM32): the clock drawn, the others
                 -- said; and the tree puritty shows for `choose-tree`
                 modesDrawn =
-                    Array.mapAndFlatten (\p -> modeOverlay (colorsOf s.status) s.lookTmux (p.id == active) (Maybe.withDefault "" (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
+                    Array.mapAndFlatten (\p -> modeOverlay (colorsOf s.status) s.lookTmux (p.id == active) (Maybe.withDefault (meant Reason.NotYet "") (Dict.get p.id s.paneModes)) (clockText s) p) (tiled ++ floating)
 
                 treeDrawn =
                     when s.tree is
@@ -2876,10 +2881,10 @@ paint s =
                                         drawTree (themeOf s) (colorsOf s.status) s.lookTmux s.version place t
 
                                     Nothing ->
-                                        []
+                                        meant Reason.Gone []
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 -- choose-buffer's or choose-client's list (TM55)
                 listingDrawn =
@@ -2898,10 +2903,10 @@ paint s =
                                         drawListing (colorsOf s.status) s.lookTmux s.version place l
 
                                     Nothing ->
-                                        []
+                                        meant Reason.Gone []
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 -- customize-mode (TM62)
                 customizeDrawn =
@@ -2920,10 +2925,10 @@ paint s =
                                         drawCustomize (themeOf s) s.lookTmux place c
 
                                     Nothing ->
-                                        []
+                                        meant Reason.Gone []
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 -- the panes' numbers (TM28)
                 numbersDrawn =
@@ -2932,7 +2937,7 @@ paint s =
                             Array.mapAndFlatten (\p -> paneNumber s.version (colorsOf s.status) s.lookTmux (p.id == active) n p) (tiled ++ floating)
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 -- the bar in tmux's look, tmux's status line (TM29)
                 tmuxLook =
@@ -2953,7 +2958,7 @@ paint s =
                                 drawMenu (colorsOf s.status) s.lookTmux (menuPlace cols rows s m) m
 
                         Nothing ->
-                            []
+                            meant Reason.NotOpen []
 
                 -- a view of what tmux printed (TM26): over the active pane
                 -- in tmux's look, in a box over the panes in puritty's
@@ -2966,13 +2971,13 @@ paint s =
                                         tmuxView (colorsOf s.status) place.value v
 
                                     Nothing ->
-                                        boxView cols rows s.barTop v
+                                        meant Reason.Gone boxView cols rows s.barTop v
 
                             else
                                 boxView cols rows s.barTop v
 
                         Nothing ->
-                            { rows = 0, pieces = [] }
+                            meant Reason.NotOpen { rows = 0, pieces = [] }
 
                 -- what tmux or puritty said, at the bar's right (TM24)
                 saidPiece =
@@ -3049,7 +3054,7 @@ paint s =
                             }
 
                         Nothing ->
-                            drawn
+                            meant Reason.NotSet drawn
 
                 cursor =
                     when { copying = Dict.get s.active s.copy, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
@@ -3058,7 +3063,7 @@ paint s =
                             "\u{001B}[" ++ String.fromInt (place.value.y + c.cy + 1) ++ ";" ++ String.fromInt (place.value.x + c.cx + 1) ++ "H\u{001B}[?25h"
 
                         _ ->
-                            if not (String.startsWith "copy-mode" (Maybe.withDefault "" (Dict.get s.active s.paneModes)) || Maybe.withDefault "" (Dict.get s.active s.paneModes) == "") then
+                            if not (String.startsWith "copy-mode" (Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.paneModes)) || Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.paneModes) == "") then
                                 -- the clock and the modes puritty does not
                                 -- draw show no cursor, as in tmux (TM32)
                                 "\u{001B}[?25l"
@@ -3118,7 +3123,7 @@ paint s =
                 -- each floating pane's frame color, read before the canvas
                 -- is drawn on
                 frameColors =
-                    Array.foldl (\p d -> Dict.set p.id (Maybe.withDefault (floatFrameColor s active p) panesBorder) d) Dict.empty floating
+                    Array.foldl (\p d -> Dict.set p.id (Maybe.withDefault (meant Reason.NotSet floatFrameColor s active p) panesBorder) d) Dict.empty floating
 
                 -- the tiled panes and their dividers, then each floating
                 -- pane in its box, the bottom one first
@@ -3235,6 +3240,7 @@ floatFrameColor s active p =
                 Style.sgr (Style.apply own.border (Style.apply s.status.borderStyle Style.plain))
 
             Nothing ->
+                meant Reason.NotYet
                 if p.id == active then activeColor else boxColor
 
     else if p.id == active then
@@ -3382,12 +3388,12 @@ keyByTable k bytes ms s =
             when keyName k is
                 Just name ->
                     s.keys.table == "root"
-                        && Maybe.withDefault "" (Dict.get s.active s.modes) == ""
+                        && Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.modes) == ""
                         && not (Array.member name s.keys.prefixes)
                         && Dict.get ("root " ++ name) s.keys.bindings == Nothing
 
                 Nothing ->
-                    False
+                    meant Reason.NotKnown False
 
         commands =
             if s.keys.byTable && nobodyBinds then
@@ -3400,7 +3406,7 @@ keyByTable k bytes ms s =
                         [ Command.sendKeyTo s.active (if name == "KPEnter" then "Enter" else name) ]
 
                     Nothing ->
-                        byName k bytes s.active
+                        meant Reason.NotKnown byName k bytes s.active
 
             else if s.keys.byTable then
                 byName k bytes s.active
@@ -3411,7 +3417,7 @@ keyByTable k bytes ms s =
                 Command.sendBytes s.active bytes
 
         modeTable =
-            Maybe.withDefault "" (Dict.get s.active s.modes)
+            Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.modes)
 
         way =
             if s.keys.byTable then
@@ -3512,7 +3518,7 @@ stepTo step answers a =
                     { label = c.prompt, input = "" }
 
                 Syntax.Prompt p ->
-                    { label = Maybe.withDefault "" (Array.get step p.prompts), input = Maybe.withDefault "" (Array.get step p.inputs) }
+                    { label = Maybe.withDefault (meant Reason.OutOfRange "") (Array.get step p.prompts), input = Maybe.withDefault (meant Reason.NotSet "") (Array.get step p.inputs) }
 
         expand text expect =
             if String.contains "#" text then
@@ -3548,7 +3554,7 @@ versionOf text =
                     String.toArray part
 
                 upTo =
-                    Array.findFirst (\c -> not (Char.isDigit c)) chars |> Maybe.map .index |> Maybe.withDefault (Array.length chars)
+                    Array.findFirst (\c -> not (Char.isDigit c)) chars |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore Array.length chars)
             in
             String.toInt (String.fromArray (Array.takeFirst upTo chars))
     in
@@ -3620,7 +3626,7 @@ incrementally prefix a =
                         []
 
                 Nothing ->
-                    []
+                    meant Reason.NotSet []
 
         Syntax.Confirm _ ->
             []
@@ -3639,7 +3645,7 @@ promptKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted
 promptKey k bytes ms a s =
     let
         name =
-            Maybe.withDefault "" (lookupName k)
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
 
         text =
             Bytes.toStringLossy k.text
@@ -3798,7 +3804,7 @@ completed names a =
                             matches
 
                     Nothing ->
-                        soFar
+                        meant Reason.NoMore soFar
 
             word =
                 when matches is
@@ -3888,7 +3894,7 @@ editLine name a history =
                     String.fromArray a.chars
 
                 at =
-                    clamp 0 (Array.length history) (Array.findLast (\h -> h == current) history |> Maybe.map .index |> Maybe.withDefault (Array.length history))
+                    clamp 0 (Array.length history) (Array.findLast (\h -> h == current) history |> Maybe.map .index |> Maybe.withDefault (meant Reason.NotKnown Array.length history))
 
                 -- one back or one on, written so that neither can wrap
                 to =
@@ -3906,6 +3912,7 @@ editLine name a history =
                     { a | chars = String.toArray h, caret = String.count h, edited = True }
 
                 Nothing ->
+                    meant Reason.OutOfRange
                     if to >= Array.length history then
                         { a | chars = [], caret = 0, edited = True }
 
@@ -4014,7 +4021,7 @@ answer given a s =
                                 Syntax.fill t answers
 
                             Nothing ->
-                                given
+                                meant Reason.NotSet given
                 in
                 closePrompt (if String.trim line == "" then [] else [ line ]) a { s | history = history }
 
@@ -4063,7 +4070,7 @@ asTmuxSays text =
             String.toUpper (String.fromChar first) ++ rest
 
         Nothing ->
-            bare
+            meant Reason.FromOutside bare
 
 
 {-| Commands sent, each with what its reply is for. -}
@@ -4097,6 +4104,7 @@ byName k bytes pane =
             [ Command.sendKey name ]
 
         Nothing ->
+            meant Reason.NotKnown
             if Bitwise.and (Bitwise.and k.mods 15) 14 == 0 && not (Bytes.isEmpty k.text) then
                 Command.typeText k.text
 
@@ -4113,6 +4121,7 @@ lookupName k =
             Just name
 
         Nothing ->
+            meant Reason.NotKnown
             let
                 text =
                     Bytes.toStringLossy k.text
@@ -4167,6 +4176,7 @@ keyName k =
                 Just (lead ++ (if shift then "S-" else "") ++ name)
 
             Nothing ->
+                meant Reason.NotKnown
                 if ctrl then
                     when Char.fromCode k.unshifted is
                         Just c ->
@@ -4180,7 +4190,7 @@ keyName k =
                                 Nothing
 
                         Nothing ->
-                            Nothing
+                            meant Reason.FromOutside Nothing
 
                 else if alt then
                     if text == " " then
@@ -4297,13 +4307,13 @@ withPane pane s f =
                     Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.Gone Nothing
 
 
 {-| How far back a pane's view is scrolled. -}
 backOf : Int -> State -> Int
 backOf pane s =
-    Maybe.withDefault 0 (Dict.get pane s.back)
+    Maybe.withDefault (meant Reason.NotOpen 0) (Dict.get pane s.back)
 
 
 {-| The cells of the canvas a pane's part of the selection covers, row by
@@ -4316,7 +4326,7 @@ spans q s =
             copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, search = "" } (Dict.get q.id s.copy)) sel
 
         Nothing ->
-            ownSpans q s
+            meant Reason.NotOpen ownSpans q s
 
 
 {-| Copy mode's selection on the canvas (TM31): tmux's lines made the view's
@@ -4363,7 +4373,7 @@ ownSpans q s =
                 []
 
             else
-                Maybe.withDefault []
+                Maybe.withDefault (meant Reason.Gone [])
                     (withPane q.id s
                         (\t ->
                             let
@@ -4389,7 +4399,7 @@ ownSpans q s =
                     )
 
         Nothing ->
-            []
+            meant Reason.NotOpen []
 
 
 placesOf : Array Layout.Pane -> State -> Array { index : Int, x : Int, y : Int, back : Int, fg : Int, bg : Int }
@@ -4402,15 +4412,15 @@ placesOf panes s =
         styleFor id active =
             let
                 own =
-                    Dict.get id s.status.panes |> Maybe.map (\q -> String.split "\t" q.style) |> Maybe.withDefault []
+                    Dict.get id s.status.panes |> Maybe.map (\q -> String.split "\t" q.style) |> Maybe.withDefault (meant Reason.NotYet [])
 
                 option index name =
                     when Array.get index own is
                         Just v ->
-                            if v == "" then Maybe.withDefault "default" (Dict.get name s.status.options) else v
+                            if v == "" then Maybe.withDefault (meant Reason.NotSet "default") (Dict.get name s.status.options) else v
 
                         Nothing ->
-                            Maybe.withDefault "default" (Dict.get name s.status.options)
+                            meant Reason.NotSet (Maybe.withDefault (meant Reason.NotSet "default") (Dict.get name s.status.options))
 
                 base =
                     Style.apply (option 0 "window-style") Style.plain
@@ -4511,7 +4521,7 @@ pointer : { ms : Int, held : Int, select : Bool, boundaries : Array Int, pasteBu
 pointer how p s =
     when s.layout is
         Nothing ->
-            { state = s, commands = [], own = Nothing, paste = False }
+            meant Reason.NotYet { state = s, commands = [], own = Nothing, paste = False }
 
         Just cell ->
             let
@@ -4570,7 +4580,7 @@ pointer how p s =
                             Array.findFirst (\q -> q.id == g) order |> Maybe.map .value
 
                         Nothing ->
-                            under
+                            meant Reason.NotOpen under
 
                 plain r =
                     { state = r.state, commands = r.commands, own = Nothing, paste = False }
@@ -4590,13 +4600,14 @@ pointer how p s =
                                 (tabsOf (p.width // max 1 p.cellWidth) barRow s).hits
 
                             firstCol =
-                                Array.first hits |> Maybe.map .from |> Maybe.withDefault 0
+                                Array.first hits |> Maybe.map .from |> Maybe.withDefault (meant Reason.NoMore 0)
                         in
                         when Array.findFirst (\h -> col >= h.from && col <= h.to) hits is
                             Just h ->
                                 Dict.get "root MouseDown3Status" s.keys.bindings |> Maybe.map (\b -> Syntax.retarget ("@" ++ String.fromInt h.value.window) b.command)
 
                             Nothing ->
+                                meant Reason.OutOfRange
                                 if col < firstCol then
                                     Dict.get "root MouseDown3StatusLeft" s.keys.bindings |> Maybe.map .command
 
@@ -4626,9 +4637,10 @@ pointer how p s =
                             plain { state = { s | drag = Just d }, commands = [] }
 
                         Nothing ->
+                            meant Reason.OutOfRange
                             when target is
                                 Nothing ->
-                                    { state = s, commands = [], own = Nothing, paste = False }
+                                    meant Reason.OutOfRange { state = s, commands = [], own = Nothing, paste = False }
 
                                 Just q ->
                                     if p.action == 0 && p.button == 1 && onBox q then
@@ -4736,7 +4748,7 @@ pointerShape : Bool -> Window.PointerEvent -> State -> Maybe Window.Pointer
 pointerShape select p s =
     when s.layout is
         Nothing ->
-            Nothing
+            meant Reason.NotYet Nothing
 
         Just cell ->
             let
@@ -4770,6 +4782,7 @@ pointerShape select p s =
                         dragShape d.kind
 
                     Nothing ->
+                        meant Reason.NotOpen
                         if s.menu /= Nothing || s.tree /= Nothing || s.listing /= Nothing || s.customizing /= Nothing || row == barRow then
                             Window.ArrowPointer
 
@@ -4786,12 +4799,13 @@ pointerShape select p s =
                                         Window.TextPointer
 
                                 Nothing ->
+                                    meant Reason.OutOfRange
                                     when line is
                                         Just kind ->
                                             dragShape kind
 
                                         Nothing ->
-                                            Window.TextPointer
+                                            meant Reason.OutOfRange Window.TextPointer
                 )
 
 
@@ -4802,7 +4816,7 @@ paneTakesMouse target s =
             withPane q.id s (\t -> (Vt.mouseModes t).tracking /= Mouse.none) == Just True
 
         Nothing ->
-            False
+            meant Reason.OutOfRange False
 
 
 {-| The pointer over a pane whose program does not take the mouse, or with
@@ -4812,7 +4826,7 @@ selecting : { ms : Int, held : Int, select : Bool, boundaries : Array Int, paste
 selecting how p col row q s =
     let
         at =
-            Maybe.withDefault { row = 0, col = 0 }
+            Maybe.withDefault (meant Reason.Gone { row = 0, col = 0 })
                 (withPane q.id s (\t -> { row = Vt.rowsPushed t + clamp 0 (q.h - 1) (row - q.y) - backOf q.id s, col = clamp 0 (q.w - 1) (col - q.x) }))
 
         none r =
@@ -4826,10 +4840,10 @@ selecting how p col row q s =
         -- when tmux has the mouse on (TM27)
         let
             word =
-                withPane q.id s (\t -> Vt.wordAt how.boundaries at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault ""
+                withPane q.id s (\t -> Vt.wordAt how.boundaries at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault (meant Reason.OutOfRange "")
 
             line =
-                withPane q.id s (\t -> Vt.lineAt at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault ""
+                withPane q.id s (\t -> Vt.lineAt at t |> Maybe.map (\w -> Vt.selectionText w.start w.end t)) |> Maybe.andThen identity |> Maybe.withDefault (meant Reason.OutOfRange "")
 
             binding =
                 Dict.get "root MouseDown3Pane" s.keys.bindings |> Maybe.map .command |> Maybe.withDefault ""
@@ -4864,7 +4878,7 @@ selecting how p col row q s =
                     |> Maybe.andThen identity
 
             most =
-                Maybe.withDefault 0 (withPane q.id s Vt.scrollbackRows)
+                Maybe.withDefault (meant Reason.Gone 0) (withPane q.id s Vt.scrollbackRows)
         in
         when arrows is
             Just keyed ->
@@ -4875,6 +4889,7 @@ selecting how p col row q s =
                 { state = r.state, commands = r.commands, own = Nothing, paste = False }
 
             Nothing ->
+                meant Reason.NotOpen
                 let
                     now =
                         backOf q.id s
@@ -4928,7 +4943,7 @@ selecting how p col row q s =
                     none { s | selection = Just (extended how.boundaries at sel s) }
 
             Nothing ->
-                none s
+                meant Reason.NotOpen none s
 
     else if p.action == 1 && p.button == 1 then
         when s.selection is
@@ -4943,12 +4958,12 @@ selecting how p col row q s =
                 else
                     let
                         text =
-                            Maybe.withDefault "" (withPane sel.pane s (Vt.selectionText sel.anchor sel.head))
+                            Maybe.withDefault (meant Reason.Gone "") (withPane sel.pane s (Vt.selectionText sel.anchor sel.head))
                     in
                     { state = { s | grab = Nothing, selection = Just { sel | made = True, text = text } }, commands = [], own = Just text, paste = False }
 
             Nothing ->
-                none { s | grab = Nothing }
+                meant Reason.NotOpen none { s | grab = Nothing }
 
     else
         none
@@ -4979,7 +4994,7 @@ extended boundaries at sel s =
                             Vt.lineAt at t
                     )
                     |> Maybe.andThen identity
-                    |> Maybe.withDefault { start = at, end = at }
+                    |> Maybe.withDefault (meant Reason.Gone { start = at, end = at })
         in
         if before w.start sel.first then
             { sel | anchor = sel.last, head = w.start }
@@ -5008,7 +5023,7 @@ puritySTabs cols row s =
         marksOf t =
             Dict.get t.id s.status.windows
                 |> Maybe.map (\w -> String.toArray w.flags |> Array.keepIf (\c -> c == '!' || c == '#' || c == '~' || c == 'M' || c == 'Z') |> String.fromArray)
-                |> Maybe.withDefault ""
+                |> Maybe.withDefault (meant Reason.NotYet "")
 
         labels =
             Array.map (\t -> { window = t.id, marks = marksOf t, text = " " ++ String.fromInt t.index ++ ":" ++ t.name ++ (if marksOf t == "" then "" else " " ++ marksOf t) ++ " " }) s.tabs
@@ -5065,7 +5080,7 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
             Style.apply status.borderStyle Style.plain
 
         own p =
-            Maybe.withDefault { title = "", border = "", marked = False, style = "" } (Dict.get p.id status.panes)
+            Maybe.withDefault (meant Reason.NotYet { title = "", border = "", marked = False, style = "" }) (Dict.get p.id status.panes)
 
         frameColor p =
             if (own p).marked then
@@ -5150,12 +5165,12 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
                 { cols = Array.foldl (\p m -> max m (p.x + p.w)) 0 cells
                 , rows = Array.foldl (\p m -> max m (p.y + p.h)) 0 cells
                 , active = active
-                , marked = Array.findFirst (\p -> (own p).marked) tiled |> Maybe.map (\f -> f.value.id) |> Maybe.withDefault -1
+                , marked = Array.findFirst (\p -> (own p).marked) tiled |> Maybe.map (\f -> f.value.id) |> Maybe.withDefault (meant Reason.NotSet -1)
                 , paneStatus = if status.borderStatus == "" then "off" else status.borderStatus
-                , lines = Maybe.withDefault "single" (Dict.get "pane-border-lines" status.options)
-                , indicators = Maybe.withDefault "colour" (Dict.get "pane-border-indicators" status.options)
+                , lines = Maybe.withDefault (meant Reason.NotSet "single") (Dict.get "pane-border-lines" status.options)
+                , indicators = Maybe.withDefault (meant Reason.NotSet "colour") (Dict.get "pane-border-indicators" status.options)
                 , borderStyle = status.borderStyle
-                , activeStyle = Array.findFirst (\p -> p.id == active) tiled |> Maybe.map (\f -> (own f.value).border) |> Maybe.withDefault "fg=green"
+                , activeStyle = Array.findFirst (\p -> p.id == active) tiled |> Maybe.map (\f -> (own f.value).border) |> Maybe.withDefault (meant Reason.NotKnown "fg=green")
                 }
                 (Array.keepIf (\p -> p.z == Nothing) cells)
                 ++ Array.mapAndFlatten titleOf tiled
@@ -5338,7 +5353,7 @@ subscribed name window pane value status =
             { status
                 | panes =
                     Dict.set pane
-                        (change (Maybe.withDefault { title = "", border = "", marked = False, style = "" } (Dict.get pane status.panes)))
+                        (change (Maybe.withDefault (meant Reason.NotYet { title = "", border = "", marked = False, style = "" }) (Dict.get pane status.panes)))
                         status.panes
             }
 
@@ -5346,7 +5361,7 @@ subscribed name window pane value status =
             { status
                 | windows =
                     Dict.set window
-                        (change (Maybe.withDefault { text = "", style = "", flags = "" } (Dict.get window status.windows)))
+                        (change (Maybe.withDefault (meant Reason.NotYet { text = "", style = "", flags = "" }) (Dict.get window status.windows)))
                         status.windows
             }
     in
@@ -5470,7 +5485,7 @@ extraStatus cols barRow s =
                         barRow + i
 
                     text =
-                        Maybe.withDefault "" (Dict.get i s.status.extra)
+                        Maybe.withDefault (meant Reason.NotYet "") (Dict.get i s.status.extra)
                             |> String.replace "#[list=left-marker]<" "#[list=left-marker]"
                             |> String.replace "#[list=right-marker]>" "#[list=right-marker]"
                 in
@@ -5509,7 +5524,7 @@ tmuxBar cols row s =
                 (\t acc ->
                     let
                         own =
-                            Maybe.withDefault { text = "", style = "", flags = "" } (Dict.get t.id s.status.windows)
+                            Maybe.withDefault (meant Reason.NotYet { text = "", style = "", flags = "" }) (Dict.get t.id s.status.windows)
 
                         text =
                             if own.text == "" then
@@ -5564,7 +5579,7 @@ tmuxBar cols row s =
         focus =
             Array.findFirst (\h -> h.window == s.window) windows.hits
                 |> Maybe.map (\f -> f.value.from + (f.value.to + 1 - f.value.from) // 2)
-                |> Maybe.withDefault 0
+                |> Maybe.withDefault (meant Reason.NotKnown 0)
 
         start0 =
             if listW >= listFull then
@@ -5583,7 +5598,7 @@ tmuxBar cols row s =
         -- (measured, TM49): after status-left, centered between the two
         -- sides, against status-right, or centered on the whole row
         justify =
-            Maybe.withDefault "left" (Dict.get "status-justify" s.status.options)
+            Maybe.withDefault (meant Reason.NotSet "left") (Dict.get "status-justify" s.status.options)
 
         listAt =
             if justify == "right" then
@@ -5768,7 +5783,7 @@ runLine ctx line s =
                     runLine ctx inner.value s
 
             Nothing ->
-                plainLines ctx fixed s
+                meant Reason.FromOutside plainLines ctx fixed s
 
     else
         when Syntax.askOf fixed is
@@ -5780,6 +5795,7 @@ runLine ctx line s =
                 sendAsking opened.expand { s | said = "", asking = Just opened.asking }
 
             Nothing ->
+                meant Reason.NotKnown
                 when { menu = Syntax.menuOf fixed, panes = Syntax.panesOf fixed } is
                     { menu = Just m, panes = _ } ->
                         openMenu ctx m.menu m.after s
@@ -5815,7 +5831,7 @@ runLine ctx line s =
                             opened =
                                 sendAsking
                                     [ { command = "list-panes -F " ++ Command.quote "N #{pane_id} #{pane_index}", expect = ForNumbers } ]
-                                    { s | said = "", numbers = Just { indexes = [], until = s.clock + Maybe.withDefault s.panesMs d.duration, template = d.template, keys = d.keys, pane = ctx.pane } }
+                                    { s | said = "", numbers = Just { indexes = [], until = s.clock + Maybe.withDefault (meant Reason.NotSet s.panesMs) d.duration, template = d.template, keys = d.keys, pane = ctx.pane } }
 
                             ran =
                                 runLine ctx d.after opened.state
@@ -5837,6 +5853,7 @@ plainLines ctx fixed s =
                                     s
 
                             Nothing ->
+                                meant Reason.NotKnown
                                 when Array.popFirst (Syntax.lines fixed) is
                                     Just { first, rest } ->
                                         let
@@ -5849,7 +5866,7 @@ plainLines ctx fixed s =
                                         { state = others.state, commands = one.commands ++ others.commands }
 
                                     Nothing ->
-                                        { state = s, commands = [] }
+                                        meant Reason.NoMore { state = s, commands = [] }
 
 
 {-| One plain command of `runLine`'s. -}
@@ -5860,7 +5877,7 @@ runOne command s =
             String.split " " command |> Array.keepIf (\w -> w /= "")
 
         name =
-            Maybe.withDefault "" (Array.first words)
+            Maybe.withDefault (meant Reason.FromOutside "") (Array.first words)
 
         mouseKeys =
             (name == "send-keys" || name == "send") && Array.any (\w -> String.startsWith "-" w && not (String.startsWith "--" w) && String.contains "M" w) words
@@ -5874,7 +5891,7 @@ runOne command s =
                 { state = { s | said = "puritty: " ++ why }, commands = [] }
 
             Nothing ->
-                sendAsking [ { command = command, expect = ForRan } ] s
+                meant Reason.NotKnown sendAsking [ { command = command, expect = ForRan } ] s
 
 
 {-| A menu opened (TM27): its title, names and commands that hold a
@@ -5939,7 +5956,7 @@ readied m =
         m
 
     else
-        { m | selected = Array.findFirst .enabled (menuRows m) |> Maybe.map (\r -> r.value.index) |> Maybe.withDefault -1 }
+        { m | selected = Array.findFirst .enabled (menuRows m) |> Maybe.map (\r -> r.value.index) |> Maybe.withDefault (meant Reason.NoMore -1) }
 
 
 {-| One of a menu's formats answered: its first line, or what was written
@@ -5947,7 +5964,7 @@ when tmux could not expand it. -}
 firstLine : Bool -> Array Bytes -> String -> String
 firstLine ok lines written =
     if ok then
-        Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault ""
+        Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "")
 
     else
         written
@@ -5964,7 +5981,7 @@ menuPart serial change s =
                 s
 
         Nothing ->
-            s
+            meant Reason.NotOpen s
 
 
 {-| Text without tmux's styles (`#[align=centre]`), and `##` as `#`. -}
@@ -6013,7 +6030,7 @@ menuRows m =
                                             if last.line then acc else Array.pushLast { index = i, line = True, text = "", key = "", enabled = False } acc
 
                                         Nothing ->
-                                            acc
+                                            meant Reason.OutOfRange acc
 
                                 else if String.startsWith "-" name then
                                     Array.pushLast { index = i, line = False, text = String.dropFirst 1 name, key = "", enabled = False } acc
@@ -6031,7 +6048,7 @@ menuRows m =
             if last.line then Array.dropLast 1 rows else rows
 
         Nothing ->
-            rows
+            meant Reason.NoMore rows
 
 
 {-| Where a menu goes and its size (TM27): as wide as its widest item and
@@ -6076,16 +6093,16 @@ menuPlace cols rows s m =
                     Array.findFirst (\q -> q.id == m.pane) (placedPanes s cell (Layout.tiled cell ++ Layout.floating cell)) |> Maybe.map .value
 
                 Nothing ->
-                    Nothing
+                    meant Reason.NotYet Nothing
 
         barRow =
             if s.barTop then 0 else rows - max 1 (statusRows s)
 
         tab =
-            Array.findFirst (\hit -> hit.window == s.window) (tabsOf cols barRow s).hits |> Maybe.map (\f -> f.value.from) |> Maybe.withDefault 0
+            Array.findFirst (\hit -> hit.window == s.window) (tabsOf cols barRow s).hits |> Maybe.map (\f -> f.value.from) |> Maybe.withDefault (meant Reason.NotKnown 0)
 
         mouse =
-            Maybe.withDefault { col = (cols - w) // 2, row = areaTop + (areaH - h) // 2 } m.mouse
+            Maybe.withDefault (meant Reason.NotSet { col = (cols - w) // 2, row = areaTop + (areaH - h) // 2 }) m.mouse
 
         x =
             when m.x is
@@ -6093,7 +6110,7 @@ menuPlace cols rows s m =
                     cols - w
 
                 "P" ->
-                    Maybe.withDefault 0 (Maybe.map .x pane)
+                    Maybe.withDefault (meant Reason.Gone 0) (Maybe.map .x pane)
 
                 "M" ->
                     mouse.col
@@ -6102,12 +6119,12 @@ menuPlace cols rows s m =
                     tab
 
                 other ->
-                    Maybe.withDefault ((cols - w) // 2) (String.toInt other)
+                    Maybe.withDefault (meant Reason.FromOutside (cols - w) // 2) (String.toInt other)
 
         y =
             when m.y is
                 "P" ->
-                    Maybe.withDefault areaTop (Maybe.map (\q -> q.y + q.h - h) pane)
+                    Maybe.withDefault (meant Reason.Gone areaTop) (Maybe.map (\q -> q.y + q.h - h) pane)
 
                 "M" ->
                     mouse.row
@@ -6119,7 +6136,7 @@ menuPlace cols rows s m =
                     if s.barTop then areaTop else areaTop + areaH - h
 
                 other ->
-                    Maybe.withDefault (areaTop + (areaH - h) // 2) (String.toInt other)
+                    Maybe.withDefault (meant Reason.FromOutside areaTop + (areaH - h) // 2) (String.toInt other)
     in
     { x = clamp 0 (max 0 (cols - w)) x
     , y = clamp areaTop (max areaTop (areaTop + areaH - h)) y
@@ -6200,7 +6217,7 @@ drawMenu colors tmuxLook place m =
                                     ]
 
                             Nothing ->
-                                []
+                                meant Reason.OutOfRange []
                     )
     in
     [ { row = place.y, col = place.x, color = edge, text = top } ]
@@ -6216,7 +6233,7 @@ menuKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted :
 menuKey k m s =
     let
         name =
-            Maybe.withDefault "" (lookupName k)
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
 
         choosable =
             Array.keepIf .enabled (menuRows m)
@@ -6228,7 +6245,7 @@ menuKey k m s =
             Array.length choosable
 
         moveTo i st =
-            { state = { st | menu = Just { m | selected = Array.get (modBy (max 1 count) i) choosable |> Maybe.map .index |> Maybe.withDefault -1 } }, commands = [] }
+            { state = { st | menu = Just { m | selected = Array.get (modBy (max 1 count) i) choosable |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore -1) } }, commands = [] }
     in
     if m.pending > 0 then
         if name == "Escape" || name == "q" || name == "C-c" then
@@ -6243,14 +6260,15 @@ menuKey k m s =
                 chooseItem r.value.index m s
 
             Nothing ->
+                meant Reason.NotKnown
                 if name == "Escape" || name == "q" || name == "C-c" then
                     { state = { s | menu = Nothing }, commands = [] }
 
                 else if name == "Up" || name == "k" || name == "BTab" then
-                    moveTo (Maybe.withDefault 0 at - 1) s
+                    moveTo (Maybe.withDefault (meant Reason.NotYet 0) at - 1) s
 
                 else if name == "Down" || name == "j" || name == "Tab" then
-                    moveTo (Maybe.withDefault -1 at + 1) s
+                    moveTo (Maybe.withDefault (meant Reason.NotYet -1) at + 1) s
 
                 else if name == "Home" || name == "g" then
                     moveTo 0 s
@@ -6303,7 +6321,7 @@ menuPointer p col row m s =
 
     else if p.action == 0 then
         if inside then
-            { state = { s | menu = Just { m | armed = True, selected = Maybe.withDefault m.selected under } }, commands = [] }
+            { state = { s | menu = Just { m | armed = True, selected = Maybe.withDefault (meant Reason.OutOfRange m.selected) under } }, commands = [] }
 
         else
             { state = { s | menu = Nothing }, commands = [] }
@@ -6318,10 +6336,10 @@ menuPointer p col row m s =
                     { state = s, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else
-        { state = { s | menu = Just { m | armed = m.armed || moved, selected = Maybe.withDefault m.selected under } }, commands = [] }
+        { state = { s | menu = Just { m | armed = m.armed || moved, selected = Maybe.withDefault (meant Reason.OutOfRange m.selected) under } }, commands = [] }
 
 
 -- THE PANES' NUMBERS (TM28)
@@ -6348,7 +6366,7 @@ numberKey k n s =
             runLine { pane = n.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens n.template) [ text ]) { s | numbers = Nothing }
 
         Nothing ->
-            { state = { s | numbers = Nothing }, commands = [] }
+            meant Reason.NotKnown { state = { s | numbers = Nothing }, commands = [] }
 
 
 {-| The time puritty's loop should wake to close the panes' numbers, -1
@@ -6362,7 +6380,7 @@ dueAt s =
                 -- when it shows seconds
                 let
                     step =
-                        if String.endsWith "-with-seconds" (Maybe.withDefault "" (Dict.get "clock-mode-style" s.status.options)) then 1000 else 60000
+                        if String.endsWith "-with-seconds" (Maybe.withDefault (meant Reason.NotSet "") (Dict.get "clock-mode-style" s.status.options)) then 1000 else 60000
                 in
                 s.clock + step - modBy step (s.clock + Maybe.withDefault 0 s.dayOffset)
 
@@ -6374,7 +6392,7 @@ dueAt s =
             if clockDue >= 0 then min n.until clockDue else n.until
 
         Nothing ->
-            clockDue
+            meant Reason.NotOpen clockDue
 
 
 {-| The time, from the loop: the panes' numbers closed once it is past
@@ -6386,7 +6404,7 @@ tick ms s =
             if ms >= n.until then { s | numbers = Nothing, clock = ms } else { s | clock = ms }
 
         Nothing ->
-            { s | clock = ms }
+            meant Reason.NotOpen { s | clock = ms }
 
 
 {-| A pane's number as tmux draws it (`window_clock_table`'s digits, five
@@ -6399,7 +6417,7 @@ paneNumber : Int -> Colors -> Bool -> Bool -> Numbering -> Layout.Pane -> Array 
 paneNumber version colors tmuxLook isActive n p =
     when Array.findFirst (\e -> e.id == p.id) n.indexes is
         Nothing ->
-            []
+            meant Reason.NotYet []
 
         Just found ->
             let
@@ -6590,10 +6608,10 @@ openPopup ctx pop s =
         -- a size as new-pane takes it, and in cells for placing it
         cells size whole =
             if String.endsWith "%" size then
-                Maybe.withDefault 50 (String.toInt (String.dropLast 1 size)) * whole // 100
+                Maybe.withDefault (meant Reason.FromOutside 50) (String.toInt (String.dropLast 1 size)) * whole // 100
 
             else
-                Maybe.withDefault (whole // 2) (String.toInt size)
+                Maybe.withDefault (meant Reason.FromOutside whole // 2) (String.toInt size)
 
         -- `C` (the middle) or anything puritty does not place: centered
         place given size whole =
@@ -6601,7 +6619,7 @@ openPopup ctx pop s =
                 given
 
             else if String.endsWith "%" size then
-                String.fromInt ((100 - Maybe.withDefault 50 (String.toInt (String.dropLast 1 size))) // 2) ++ "%"
+                String.fromInt ((100 - Maybe.withDefault (meant Reason.FromOutside 50) (String.toInt (String.dropLast 1 size))) // 2) ++ "%"
 
             else
                 String.fromInt (max 0 ((whole - cells size whole) // 2))
@@ -6722,7 +6740,7 @@ listRows l =
                     Array.keepIf (\r -> Array.member r.name names) l.rows
 
                 Nothing ->
-                    l.rows
+                    meant Reason.NotOpen l.rows
 
         flip o =
             if l.reversed then
@@ -6792,10 +6810,10 @@ listPreviewAsk s =
                         { state = s, commands = [] }
 
                 Nothing ->
-                    { state = s, commands = [] }
+                    meant Reason.OutOfRange { state = s, commands = [] }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 listPreviewAfter : (taken r0 : { state : State, commands : Array String }) -> { state : State, commands : Array String }
@@ -6825,7 +6843,7 @@ listKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted :
 listKey k l s =
     let
         name =
-            Maybe.withDefault "" (lookupName k)
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
 
         rows =
             listRows l
@@ -6875,7 +6893,7 @@ listKey k l s =
                 { state = { s | listing = Just { l | tagged = if Array.member r.name l.tagged then Array.keepIf (\x -> x /= r.name) l.tagged else Array.pushLast r.name l.tagged, selected = min (count - 1) (l.selected + 1) } }, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "T" then
         { state = { s | listing = Just { l | tagged = [] } }, commands = [] }
@@ -6910,7 +6928,7 @@ listKey k l s =
                 chosen r s
 
             Nothing ->
-                { state = { s | listing = Nothing }, commands = [] }
+                meant Reason.OutOfRange { state = { s | listing = Nothing }, commands = [] }
 
     else if buffer && name == "P" then
         listRun (Array.map (\t -> Syntax.fill (Syntax.tokens l.template) [ t ]) targets) l s
@@ -6921,7 +6939,7 @@ listKey k l s =
                 listRun [ "delete-buffer -b " ++ Command.quote r.name ] l s
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if buffer && name == "D" then
         listRun (Array.map (\t -> "delete-buffer -b " ++ Command.quote t) targets) l s
@@ -6938,7 +6956,7 @@ listKey k l s =
                     listRun [ clientCommand name r.name ] l s
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if not buffer && (name == "D" || name == "X" || name == "Z") then
         listRun (Array.map (\t -> clientCommand (String.toLower name) t) (if name == "Z" then Array.keepIf (\t -> not (Array.any (\r -> r.name == t && r.control) rows)) targets else targets)) l s
@@ -6954,7 +6972,7 @@ listKey k l s =
                         { state = s, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.NotKnown { state = s, commands = [] }
 
 
 {-| A client's key's command, as `window_client_do_detach`: `d` detach, `x`
@@ -7006,7 +7024,7 @@ searchListing forward l =
                 { l | selected = clamp 0 (max 0 (Array.length l.rows - 1)) found.value }
 
             Nothing ->
-                l
+                meant Reason.NoMore l
 
 
 {-| The list's own questions answered: a search (11) or a filter (12). -}
@@ -7024,7 +7042,7 @@ listAnswered purpose given s =
                 sendAsking [ listFilterQuery l.kind given ] { s | listing = Just { l | filter = given } }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| The list's cells, as tmux's mode tree draws a flat list (TM55): each
@@ -7070,10 +7088,10 @@ drawListing colors tmuxLook version place l =
             if l.selected < listHeight then 0 else l.selected - listHeight + 1
 
         chosenName =
-            Array.get l.selected rows |> Maybe.map .name |> Maybe.withDefault ""
+            Array.get l.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")
 
         sortName =
-            Array.get l.sort (listSortNames version l.kind) |> Maybe.withDefault ""
+            Array.get l.sort (listSortNames version l.kind) |> Maybe.withDefault (meant Reason.OutOfRange "")
 
         plainInk =
             if tmuxLook then "\u{001B}[0m" else viewTextColor
@@ -7093,7 +7111,7 @@ drawListing colors tmuxLook version place l =
                                         String.padRight (keyWidth + 2) ' ' ("(" ++ k ++ ")") ++ " "
 
                                     Nothing ->
-                                        String.repeat (keyWidth + 3) " "
+                                        meant Reason.OutOfRange String.repeat (keyWidth + 3) " "
 
                             tag =
                                 if Array.member r.name l.tagged then "*" else ""
@@ -7269,16 +7287,16 @@ customizeGot part text s =
                     if part >= 7 && part <= 10 then Dict.set part text c.envRaw else c.envRaw
 
                 envOf a b =
-                    Customize.envOf (Maybe.withDefault [] (Dict.get a envRaw)) (Maybe.withDefault [] (Dict.get b envRaw))
+                    Customize.envOf (Maybe.withDefault (meant Reason.NotYet []) (Dict.get a envRaw)) (Maybe.withDefault (meant Reason.NotYet []) (Dict.get b envRaw))
 
                 data =
                     if part == 0 then
                         when Array.first text |> Maybe.map (String.split "\t") is
                             Just [ paneIndex, windowIndex, sessionName ] ->
-                                { d | paneIndex = Maybe.withDefault 0 (String.toInt paneIndex), windowIndex = Maybe.withDefault 0 (String.toInt windowIndex), sessionName = sessionName }
+                                { d | paneIndex = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt paneIndex), windowIndex = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt windowIndex), sessionName = sessionName }
 
                             _ ->
-                                d
+                                meant Reason.FromOutside d
 
                     else if part == 1 then
                         { d | server = Customize.optionsOf text }
@@ -7329,7 +7347,7 @@ customizeGot part text s =
             customizeSettled notes
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| 3.6's notes for a table taken in, its keys read again with them. -}
@@ -7347,7 +7365,7 @@ customizeNotes tableName text s =
             customizeSettled { state = { s | customizing = Just { c | notesRaw = notesRaw, data = { d | keys = Customize.bindingsOfText c.keysRaw notesRaw }, loaded = c.loaded + 1 } }, commands = [] }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| Once every answer is in: the filter asked again if there is one, the
@@ -7382,7 +7400,7 @@ customizeSettled r0 =
                 { state = detailed.state, commands = r0.commands ++ detailed.commands }
 
         Nothing ->
-            { state = s, commands = r0.commands }
+            meant Reason.NotOpen { state = s, commands = r0.commands }
 
 
 {-| The rows of the tree, and those shown. -}
@@ -7412,7 +7430,7 @@ customizePlaced height c =
                     found.index
 
                 Nothing ->
-                    clamp 0 (max 0 (count - 1)) c.at
+                    meant Reason.NotKnown clamp 0 (max 0 (count - 1)) c.at
     in
     customizeAt height at c.view.offset c
 
@@ -7440,7 +7458,7 @@ customizeAt height at offset0 c =
         v =
             c.view
     in
-    { c | at = at, view = { v | current = Array.get at shown |> Maybe.map (\l -> l.entry.id) |> Maybe.withDefault "", offset = max 0 offset } }
+    { c | at = at, view = { v | current = Array.get at shown |> Maybe.map (\l -> l.entry.id) |> Maybe.withDefault (meant Reason.OutOfRange ""), offset = max 0 offset } }
 
 
 {-| The list's height where customize-mode is drawn, for its scrolling. -}
@@ -7448,7 +7466,7 @@ customizeHeight : State -> Customizing -> Int
 customizeHeight s c =
     customizeArea s c
         |> Maybe.map (\a -> customizeListHeight c.view.preview (if s.lookTmux then max 0 a.h else if a.h > 2 then a.h - 2 else 0))
-        |> Maybe.withDefault 10
+        |> Maybe.withDefault (meant Reason.Gone 10)
 
 
 {-| The filter asked of tmux (`f`): each option's, key's and variable's
@@ -7494,7 +7512,7 @@ customizeFiltered f ok text s =
             else
                 let
                     answers =
-                        Array.first text |> Maybe.withDefault "" |> String.toArray
+                        Array.first text |> Maybe.withDefault (meant Reason.FromOutside "") |> String.toArray
 
                     keptIds =
                         Array.indexedMap (\i id -> if Array.get i answers == Just '1' then Just id else Nothing) f.ids |> Array.mapAndKeepJust identity
@@ -7508,7 +7526,7 @@ customizeFiltered f ok text s =
                 customizeSettled { state = { s | customizing = Just { c | view = { v | passing = if none then Nothing else Just keptIds, noMatches = none } } }, commands = [] }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| The chosen row's details asked of tmux, when it is not the row they are
@@ -7567,10 +7585,10 @@ customizeDetailAsk s =
                                 { state = { s | customizing = Just { c | detail = Just fresh } }, commands = [] }
 
                 Nothing ->
-                    { state = s, commands = [] }
+                    meant Reason.OutOfRange { state = s, commands = [] }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 customizeDetailGot : { id : String, part : Int } -> Bool -> Array String -> (taken s : State) -> State
@@ -7588,16 +7606,16 @@ customizeDetailGot asked ok text s =
                     else
                         when Array.first text |> Maybe.map (String.split "\t") is
                             Just [ count, when_, pretty ] ->
-                                { s | customizing = Just { c | detail = Just { d | fires = Just { count = Maybe.withDefault 0 (String.toInt count), last = if when_ == "" || when_ == "0" then "" else pretty } } } }
+                                { s | customizing = Just { c | detail = Just { d | fires = Just { count = Maybe.withDefault (meant Reason.FromOutside 0) (String.toInt count), last = if when_ == "" || when_ == "0" then "" else pretty } } } }
 
                             _ ->
-                                s
+                                meant Reason.FromOutside s
 
                 Nothing ->
-                    s
+                    meant Reason.NotOpen s
 
         Nothing ->
-            s
+            meant Reason.NotOpen s
 
 
 {-| The list's height in the pane: all of it, or less the twelve rows of
@@ -7636,7 +7654,7 @@ customizeArea s c =
                     |> Maybe.map (\found -> { x = found.value.x, y = found.value.y, w = found.value.w, h = found.value.h })
 
             Nothing ->
-                Nothing
+                meant Reason.NotYet Nothing
 
 
 {-| A key while customize-mode is shown, as `mode_tree_key` then
@@ -7645,7 +7663,7 @@ customizeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshif
 customizeKey k c s =
     let
         name =
-            Maybe.withDefault "" (lookupName k)
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
 
         both =
             customizeShown c
@@ -7692,7 +7710,7 @@ customizeKey k c s =
                             if e.parent == "" then acc else up e.parent (Array.pushLast e.parent acc)
 
                         Nothing ->
-                            acc
+                            meant Reason.NotKnown acc
             in
             up id []
 
@@ -7712,6 +7730,7 @@ customizeKey k c s =
             customizeAct "Enter" (customizeAt listHeight found.value v.offset c) s
 
         Nothing ->
+            meant Reason.NotKnown
             if name == "q" || name == "Escape" || name == "C-[" || name == "C-g" then
                 { state = { s | customizing = Nothing }, commands = [] }
 
@@ -7753,7 +7772,7 @@ customizeKey k c s =
                             { state = { s | customizing = Just (withView { v | tagged = Array.pushLast l.entry.id (Array.keepIf (\x -> not (Array.member x linked)) v.tagged) }) }, commands = [] }
 
                     Nothing ->
-                        { state = s, commands = [] }
+                        meant Reason.OutOfRange { state = s, commands = [] }
 
             else if name == "T" then
                 { state = { s | customizing = Just (withView { v | tagged = [] }) }, commands = [] }
@@ -7784,7 +7803,7 @@ customizeKey k c s =
                             rebuilt (withView { v | open = Dict.set l.entry.id False v.open }) s
 
                     Nothing ->
-                        { state = s, commands = [] }
+                        meant Reason.OutOfRange { state = s, commands = [] }
 
             else if name == "Right" || name == "l" || name == "+" then
                 when line is
@@ -7796,7 +7815,7 @@ customizeKey k c s =
                             rebuilt (withView { v | open = Dict.set l.entry.id True v.open }) s
 
                     Nothing ->
-                        { state = s, commands = [] }
+                        meant Reason.OutOfRange { state = s, commands = [] }
 
             else if name == "M--" || name == "M-+" then
                 let
@@ -7909,7 +7928,7 @@ customizeAnswered purpose given s =
                         customizeOutcome (if purpose == 22 then Customize.confirmed c.table c.data p given else Customize.answered c.table c.data p given) c s
 
                     Nothing ->
-                        { state = s, commands = [] }
+                        meant Reason.NotOpen { state = s, commands = [] }
 
             else if purpose == 23 then
                 if given == "" then
@@ -7925,7 +7944,7 @@ customizeAnswered purpose given s =
                 customizeFilterAsk { c | view = { v | filter = given, passing = Nothing, noMatches = False } } s
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| The next row whose name holds the search, through every row, folded
@@ -7953,7 +7972,7 @@ customizeSearch forward c s =
             if caseless then String.contains v.search (String.toLower e.name) else String.contains v.search e.name
 
         from =
-            Array.findFirst (\e -> e.id == v.current) all |> Maybe.map .index |> Maybe.withDefault 0
+            Array.findFirst (\e -> e.id == v.current) all |> Maybe.map .index |> Maybe.withDefault (meant Reason.NotKnown 0)
 
         order =
             Array.range 1 (n - 1) |> Array.map (\k -> if forward then modBy n (from + k) else modBy n (from - k + n))
@@ -7966,7 +7985,7 @@ customizeSearch forward c s =
                             if e.parent == "" then acc else up e.parent (Array.pushLast e.parent acc)
 
                         Nothing ->
-                            acc
+                            meant Reason.NotKnown acc
             in
             up id []
     in
@@ -7979,7 +7998,7 @@ customizeSearch forward c s =
                 customizeDetailAsk { s | customizing = Just (customizePlaced (customizeHeight s c) { c | view = { v | current = e.id, open = Array.foldl (\p acc -> Dict.set p True acc) v.open (parentsOf e.id) } }) }
 
             Nothing ->
-                { state = { s | customizing = Just c }, commands = [] }
+                meant Reason.NoMore { state = { s | customizing = Just c }, commands = [] }
 
 
 {-| customize-mode's cells (TM62), as tmux's mode tree draws it: each row's
@@ -8033,11 +8052,11 @@ drawCustomize theme tmuxLook place c =
         -- mode-style as the pane sees it, tmux's default when unset
         modeSpec =
             Customize.effectiveValue c.data 6 (if newer then "tree-mode-selection-style" else "mode-style")
-                |> Maybe.map (\x -> if String.contains "#{E:mode-style}" x then Maybe.withDefault "" (Customize.effectiveValue c.data 6 "mode-style") else x)
-                |> Maybe.withDefault (Maybe.withDefault "bg=yellow,fg=black" (Dict.get "mode-style" c.table.defaults))
+                |> Maybe.map (\x -> if String.contains "#{E:mode-style}" x then Maybe.withDefault (meant Reason.NotSet "") (Customize.effectiveValue c.data 6 "mode-style") else x)
+                |> Maybe.withDefault (meant Reason.NotSet (Maybe.withDefault (meant Reason.NotKnown "bg=yellow,fg=black") (Dict.get "mode-style" c.table.defaults)))
 
         borderSpec =
-            if newer then Customize.effectiveValue c.data 6 "tree-mode-border-style" |> Maybe.withDefault "" else ""
+            if newer then Customize.effectiveValue c.data 6 "tree-mode-border-style" |> Maybe.withDefault (meant Reason.NotSet "") else ""
 
         -- the chosen row is all mode-style, its pieces' own colors not
         -- drawn but the level's reverse (measured, 3.8)
@@ -8084,7 +8103,7 @@ drawCustomize theme tmuxLook place c =
                             String.padRight keyLen ' ' ("(" ++ k ++ ")")
 
                         Nothing ->
-                            String.repeat keyLen " "
+                            meant Reason.OutOfRange String.repeat keyLen " "
 
                 lead =
                     if e.depth == 0 then
@@ -8114,7 +8133,7 @@ drawCustomize theme tmuxLook place c =
                                 ++ [ { text = t, style = if e.grey then grey else "" } ]
 
                         Nothing ->
-                            []
+                            meant Reason.NotSet []
             in
             [ { text = key ++ lead, style = grey } ]
                 ++ symbol
@@ -8185,7 +8204,7 @@ drawCustomize theme tmuxLook place c =
                         ink False borderSpec
 
                     boxName =
-                        " " ++ (Maybe.map (Customize.previewTitle shown) chosen |> Maybe.withDefault "")
+                        " " ++ (Maybe.map (Customize.previewTitle shown) chosen |> Maybe.withDefault (meant Reason.OutOfRange ""))
 
                     note =
                         if c.view.filter /= "" && inner >= String.count boxName + 10 + (if c.view.noMatches then 10 else 6) + 2 then
@@ -8200,11 +8219,11 @@ drawCustomize theme tmuxLook place c =
                     described =
                         when chosen is
                             Just e ->
-                                Customize.preview c.table c.data (if Maybe.map .id c.detail == Just e.id then c.detail else Nothing) (if e.asParent then Array.findFirst (\l -> l.entry.id == e.parent) shown |> Maybe.map (\found -> found.value.entry) |> Maybe.withDefault e else e) { width = width - 4, height = boxH - 2 }
+                                Customize.preview c.table c.data (if Maybe.map .id c.detail == Just e.id then c.detail else Nothing) (if e.asParent then Array.findFirst (\l -> l.entry.id == e.parent) shown |> Maybe.map (\found -> found.value.entry) |> Maybe.withDefault (meant Reason.NotKnown e) else e) { width = width - 4, height = boxH - 2 }
                                     |> Array.map (\p -> { row = boxRow + 1 + p.row, col = area.x + 2 + p.col, color = ink False p.style, text = clipCells (min (max 0 (width - 4 - p.col)) (cellCount (shownLine p.text))) (shownLine p.text) })
 
                             Nothing ->
-                                []
+                                meant Reason.OutOfRange []
                 in
                 [ { row = boxRow, col = area.x, color = edge, text = "┌" ++ String.repeat inner "─" ++ "┐" } ]
                     ++ (Array.range 1 (boxH - 2) |> Array.mapAndFlatten (\r -> [ { row = boxRow + r, col = area.x, color = edge, text = "│" }, { row = boxRow + r, col = area.x + 1, color = ink False "", text = String.repeat inner " " }, { row = boxRow + r, col = area.x + width - 1, color = edge, text = "│" } ]))
@@ -8278,17 +8297,17 @@ treeLoaded shown active t =
                         { again | selected = found.index }
 
                     Nothing ->
-                        keepSelected again
+                        meant Reason.Gone keepSelected again
 
             Nothing ->
-                treeOpened shown active t
+                meant Reason.NotOpen treeOpened shown active t
 
 
 treeOpened : Int -> Int -> Tree -> Tree
 treeOpened shown active t =
         let
             current =
-                Array.findFirst (\w -> w.id == shown) t.windows |> Maybe.map (\w -> w.value.session) |> Maybe.withDefault -1
+                Array.findFirst (\w -> w.id == shown) t.windows |> Maybe.map (\w -> w.value.session) |> Maybe.withDefault (meant Reason.Gone -1)
 
             open =
                 if t.start == 0 then
@@ -8323,7 +8342,7 @@ treeOpened shown active t =
                 else
                     Array.findFirst (\r -> r.pane == active) rows
         in
-        { opened | selected = found |> Maybe.map .index |> Maybe.withDefault 0 }
+        { opened | selected = found |> Maybe.map .index |> Maybe.withDefault (meant Reason.NotKnown 0) }
 
 
 {-| The tree's filter asked of tmux: the panes for which it is true. -}
@@ -8345,7 +8364,7 @@ treeAnswered purpose given s =
                         if given == "y" then reloadTree [ killOf (rowTarget r) ] t s else { state = s, commands = [] }
 
                     Nothing ->
-                        { state = s, commands = [] }
+                        meant Reason.OutOfRange { state = s, commands = [] }
 
             else if purpose == 4 then
                 if given == "y" then reloadTree (Array.map killOf t.tagged) t s else { state = s, commands = [] }
@@ -8356,7 +8375,7 @@ treeAnswered purpose given s =
                 let
                     targets =
                         if Array.isEmpty t.tagged then
-                            Array.get t.selected (treeRows t) |> Maybe.map (\r -> [ rowTarget r ]) |> Maybe.withDefault []
+                            Array.get t.selected (treeRows t) |> Maybe.map (\r -> [ rowTarget r ]) |> Maybe.withDefault (meant Reason.OutOfRange [])
 
                         else
                             t.tagged
@@ -8377,7 +8396,7 @@ treeAnswered purpose given s =
                 sendAsking [ filterQuery given ] { s | tree = Just { t | filter = given } }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| The tree with the panes a filter keeps, as tmux rebuilds it (TM45,
@@ -8413,10 +8432,10 @@ refiltered passing t =
 
                 Nothing ->
                     -- gone: the first row, as tmux's
-                    { opened | selected = 0 }
+                    meant Reason.Gone { opened | selected = 0 }
 
         Nothing ->
-            { opened | selected = 0 }
+            meant Reason.OutOfRange { opened | selected = 0 }
 
 
 {-| The tree's orders as tmux names them: 3.6's `window_tree_sort_list`,
@@ -8488,7 +8507,7 @@ searchTree forward t =
                 Array.get t.selected (treeRows t)
                     |> Maybe.andThen (\r -> Array.findFirst (\i -> i.session == r.session && i.window == r.window && i.pane == r.pane) items)
                     |> Maybe.map .index
-                    |> Maybe.withDefault 0
+                    |> Maybe.withDefault (meant Reason.NotKnown 0)
 
             order =
                 Array.range 1 n
@@ -8511,11 +8530,11 @@ searchTree forward t =
                     | selected =
                         Array.findFirst (\r -> r.session == it.session && r.window == it.window && r.pane == it.pane) (treeRows opened)
                             |> Maybe.map .index
-                            |> Maybe.withDefault t.selected
+                            |> Maybe.withDefault (meant Reason.NotKnown t.selected)
                 }
 
             Nothing ->
-                t
+                meant Reason.NoMore t
 
 
 {-| The rows the filter keeps, in the tree's order (`O`, `r`), as
@@ -8601,7 +8620,7 @@ kept t =
             { sessions = sessions, windows = windows, panes = panes }
 
         Nothing ->
-            { sessions = t.sessions, windows = t.windows, panes = t.panes }
+            meant Reason.NotOpen { sessions = t.sessions, windows = t.windows, panes = t.panes }
 
 
 {-| The preview asked for in a reply's turn. -}
@@ -8645,7 +8664,7 @@ askPreview s =
                                 rowTarget r
 
                             Nothing ->
-                                ""
+                                meant Reason.OutOfRange ""
 
                     isSession =
                         String.startsWith "$" target
@@ -8673,7 +8692,7 @@ askPreview s =
                         |> (\r -> if t.info then infoAsked r else r)
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotOpen { state = s, commands = [] }
 
 
 {-| Which of a session's windows the preview shows, as tmux's
@@ -8712,7 +8731,7 @@ sessionSpan width total current offset0 =
 {-| The index of the active item, 0 when none is. -}
 activeIndex : Array PreviewItem -> Int
 activeIndex items =
-    Array.findFirst .active items |> Maybe.map .index |> Maybe.withDefault 0
+    Array.findFirst .active items |> Maybe.map .index |> Maybe.withDefault (meant Reason.FromOutside 0)
 
 
 {-| The preview's width in cells, as `drawTree` gives it, where the tree
@@ -8731,7 +8750,7 @@ treePreviewWidth s t =
                             |> Maybe.map (\found -> found.value.w)
 
                     Nothing ->
-                        Nothing
+                        meant Reason.NotYet Nothing
     in
     Maybe.map (\w -> (if s.lookTmux then w else w - 4) - 4) placeWidth
 
@@ -8814,7 +8833,7 @@ infoAsked r =
                 { state = asked.state, commands = r.commands ++ asked.commands }
 
         Nothing ->
-            r
+            meant Reason.NotOpen r
 
 
 {-| A line of the preview's list: `Q id x y w h active label`, a tab,
@@ -8832,10 +8851,10 @@ previewItem line =
         Just { first = "Q", rest = rest } ->
             let
                 num i =
-                    Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i rest))
+                    Maybe.withDefault (meant Reason.FromOutside 0) (Maybe.andThen String.toInt (Array.get i rest))
             in
             Just
-                { id = Maybe.withDefault "" (Array.get 0 rest)
+                { id = Maybe.withDefault (meant Reason.FromOutside "") (Array.get 0 rest)
                 , x = num 1
                 , y = num 2
                 , w = max 1 (num 3)
@@ -8847,7 +8866,7 @@ previewItem line =
                 }
 
         _ ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
 
 {-| A capture's lines without the blank ones at its end, so that the
@@ -8859,7 +8878,7 @@ trimBlank lines =
             if String.trim l == "" then trimBlank (Array.dropLast 1 lines) else lines
 
         Nothing ->
-            []
+            meant Reason.NoMore []
 
 
 {-| A line cut to `n` cells and padded to them: a wide character (Hangul,
@@ -9020,7 +9039,7 @@ treeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted :
 treeKey k t s =
     let
         name =
-            Maybe.withDefault "" (lookupName k)
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
 
         rows =
             treeRows t
@@ -9069,7 +9088,7 @@ treeKey k t s =
                     { state = { s | tree = Just (setOpen True r t) }, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "Left" || name == "h" || name == "-" then
         -- an open row closes; any other closes its parent and goes to it,
@@ -9097,7 +9116,7 @@ treeKey k t s =
                     { state = { s | tree = Just { closed | selected = rowIndex parent closed } }, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "M-+" then
         { state = { s | tree = Just { t | open = Array.foldl (\x d -> Dict.set x.id True d) Dict.empty t.sessions } }, commands = [] }
@@ -9110,7 +9129,7 @@ treeKey k t s =
             session =
                 Maybe.map .session at
         in
-        { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> Just x.session == session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault 0 } }, commands = [] }
+        { state = { s | tree = Just { closed | selected = Array.findFirst (\x -> Just x.session == session) (treeRows closed) |> Maybe.map .index |> Maybe.withDefault (meant Reason.OutOfRange 0) } }, commands = [] }
 
     else if name == "t" then
         -- tag the row, its parents and children untagged, and go down;
@@ -9130,7 +9149,7 @@ treeKey k t s =
                 { state = { s | tree = Just { t | tagged = tagged, selected = min (count - 1) (t.selected + 1) } }, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "T" then
         { state = { s | tree = Just { t | tagged = [] } }, commands = [] }
@@ -9155,7 +9174,7 @@ treeKey k t s =
                 { state = { s | asking = Just (treeQuestion s.version 3 question Syntax.Single) }, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "X" then
         if Array.isEmpty t.tagged then
@@ -9173,7 +9192,7 @@ treeKey k t s =
                 reloadTree [ "select-pane -m -t " ++ Command.quote (rowTarget r) ] t s
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "M" then
         reloadTree [ "select-pane -M" ] t s
@@ -9190,12 +9209,12 @@ treeKey k t s =
                         { t | open = Dict.set w.session True t.open, openWindows = Dict.set w.id True t.openWindows }
 
                     Nothing ->
-                        t
+                        meant Reason.NotKnown t
 
             found =
                 Array.findFirst (\r -> r.pane == s.active) (treeRows opened)
                     |> Maybe.map .index
-                    |> Maybe.withDefault opened.selected
+                    |> Maybe.withDefault (meant Reason.NotKnown opened.selected)
         in
         { state = { s | tree = Just { opened | selected = found } }, commands = [] }
 
@@ -9218,7 +9237,7 @@ treeKey k t s =
                         if pv.session then (sessionSpan w (Array.length pv.items) (activeIndex pv.items) stepped).offset else 0
 
                     Nothing ->
-                        stepped
+                        meant Reason.NotOpen stepped
         in
         { state = { s | tree = Just { t | preview = { pv | offset = offset } } }, commands = [] }
 
@@ -9261,10 +9280,10 @@ treeKey k t s =
                             { state = s, commands = [] }
 
                     Nothing ->
-                        { state = s, commands = [] }
+                        meant Reason.OutOfRange { state = s, commands = [] }
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "C-h" && (s.version == 0 || s.version >= 37) then
         -- the keys, as mode_tree's help lists them (3.7 on)
@@ -9291,7 +9310,7 @@ treeKey k t s =
                 chooseRow (Array.get found.value rows) t s
 
             Nothing ->
-                { state = s, commands = [] }
+                meant Reason.NotKnown { state = s, commands = [] }
 
 
 {-| The tree's keys as tmux's help shows them (`mode_tree_help_start`,
@@ -9413,7 +9432,7 @@ keepChosen at t =
             { t | selected = rowIndex r t }
 
         Nothing ->
-            keepSelected t
+            meant Reason.OutOfRange keepSelected t
 
 
 {-| Commands run, and the tree's lists asked again, its rows kept open and
@@ -9447,7 +9466,7 @@ rowIndex : TreeRow -> Tree -> Int
 rowIndex r t =
     Array.findFirst (\x -> x.session == r.session && x.window == r.window && x.pane == r.pane) (treeRows t)
         |> Maybe.map .index
-        |> Maybe.withDefault 0
+        |> Maybe.withDefault (meant Reason.Gone 0)
 
 
 {-| A row's key, as tmux's tree mode numbers its rows: `0` to `9`, then
@@ -9473,7 +9492,7 @@ chooseRow row t s =
             runLine { pane = t.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens t.template) [ rowTarget r ]) { s | tree = Nothing }
 
         Nothing ->
-            { state = { s | tree = Nothing }, commands = [] }
+            meant Reason.OutOfRange { state = { s | tree = Nothing }, commands = [] }
 
 
 {-| The tree's cells (TM32): in tmux's look as tmux's tree mode lists it,
@@ -9532,10 +9551,10 @@ drawTree theme colors tmuxLook version place t =
             max 1 listHeight
 
         chosenName =
-            Array.get t.selected rows |> Maybe.map .name |> Maybe.withDefault ""
+            Array.get t.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")
 
         sortName =
-            Array.get t.sort (sortNames version) |> Maybe.withDefault "index"
+            Array.get t.sort (sortNames version) |> Maybe.withDefault (meant Reason.OutOfRange "index")
 
         previewDrawn =
             if withPreview then
@@ -9641,7 +9660,7 @@ drawTree theme colors tmuxLook version place t =
                                 String.padRight keyWidth ' ' k ++ "  "
 
                         Nothing ->
-                            String.repeat (if tmuxLook then keyWidth + 3 else keyWidth + 2) " "
+                            meant Reason.OutOfRange String.repeat (if tmuxLook then keyWidth + 3 else keyWidth + 2) " "
 
                 symbol =
                     if not r.children then
@@ -10024,7 +10043,7 @@ clockText s =
                 -- `24` HH:MM, `12` with `%l` (a space before one digit)
                 -- and AM or PM, either `-with-seconds`
                 style =
-                    Maybe.withDefault "24" (Dict.get "clock-mode-style" s.status.options)
+                    Maybe.withDefault (meant Reason.NotSet "24") (Dict.get "clock-mode-style" s.status.options)
 
                 withSeconds =
                     String.endsWith "-with-seconds" style
@@ -10039,7 +10058,7 @@ clockText s =
                 two hour ++ ":" ++ two minute ++ secs
 
         Nothing ->
-            ""
+            meant Reason.NotYet ""
 
 
 {-| What a pane in one of tmux's modes shows (TM32): the clock (`clock-mode`)
@@ -10121,7 +10140,7 @@ copyFormat =
 
 inCopy : Int -> State -> Bool
 inCopy pane s =
-    String.startsWith "copy-mode" (Maybe.withDefault "" (Dict.get pane s.modes))
+    String.startsWith "copy-mode" (Maybe.withDefault (meant Reason.NotYet "") (Dict.get pane s.modes))
 
 
 {-| A pane in copy mode asked where it is; if a question is out already,
@@ -10174,13 +10193,13 @@ searchMarks panes s =
                                             }
                                         )
                             )
-                            |> Maybe.withDefault []
+                            |> Maybe.withDefault (meant Reason.Gone [])
 
                     else
                         []
 
                 Nothing ->
-                    []
+                    meant Reason.NotOpen []
         )
         panes
 
@@ -10194,13 +10213,13 @@ copyLine bytes s =
             String.split " " (Bytes.toStringLossy bytes)
 
         num i =
-            Maybe.withDefault 0 (Maybe.andThen String.toInt (Array.get i words))
+            Maybe.withDefault (meant Reason.FromOutside 0) (Maybe.andThen String.toInt (Array.get i words))
     in
     when Array.get 0 words is
         Just "C" ->
             let
                 pane =
-                    idOf (Maybe.withDefault "" (Array.get 1 words))
+                    idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 words))
 
                 answered =
                     { s | copyAsked = Dict.remove pane s.copyAsked }
@@ -10226,12 +10245,12 @@ copyLine bytes s =
                         }
 
                     most =
-                        Maybe.withDefault 0 (withPane pane answered Vt.scrollbackRows)
+                        Maybe.withDefault (meant Reason.Gone 0) (withPane pane answered Vt.scrollbackRows)
                 in
                 { answered | copy = Dict.set pane c answered.copy, back = Dict.set pane (min most c.scroll) answered.back }
 
         _ ->
-            s
+            meant Reason.FromOutside s
 
 
 -- VIEWS (TM26)
@@ -10283,7 +10302,7 @@ ownCommandsOut s lines =
                             Array.any (\r -> String.contains command r) ran
 
                     Nothing ->
-                        True
+                        meant Reason.NotKnown True
         in
         Array.keepIf keep lines
 
@@ -10345,7 +10364,7 @@ viewKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted :
 viewKey k v =
     let
         name =
-            Maybe.withDefault "" (lookupName k)
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
     in
     if v.filtering then
         if name == "Escape" || name == "C-c" then
@@ -10462,7 +10481,7 @@ tmuxView colors p v =
                 |> Array.mapAndFlatten
                     (\r ->
                         [ { row = p.y + r, col = p.x, color = "\u{001B}[0m", text = String.repeat p.w " " }
-                        , { row = p.y + r, col = p.x, color = "\u{001B}[0m", text = String.takeFirst p.w (Maybe.withDefault "" (Array.get r inView)) }
+                        , { row = p.y + r, col = p.x, color = "\u{001B}[0m", text = String.takeFirst p.w (Maybe.withDefault (meant Reason.OutOfRange "") (Array.get r inView)) }
                         ]
                     )
     in
@@ -10556,7 +10575,7 @@ boxView cols rows barTop v =
                 |> Array.mapAndFlatten
                     (\r ->
                         [ { row = y0 + 1 + r, col = x0, color = viewEdgeColor, text = "│" ++ String.repeat (w - 2) " " }
-                        , { row = y0 + 1 + r, col = x0 + 2, color = viewTextColor, text = String.takeFirst (w - 4) (Maybe.withDefault "" (Array.get r inView)) }
+                        , { row = y0 + 1 + r, col = x0 + 2, color = viewTextColor, text = String.takeFirst (w - 4) (Maybe.withDefault (meant Reason.OutOfRange "") (Array.get r inView)) }
                         , { row = y0 + 1 + r, col = x0 + w - 1, color = viewEdgeColor, text = "│" }
                         ]
                     )
@@ -10702,7 +10721,7 @@ tabKey k s =
             { state = r.state, commands = r.commands, used = True }
 
         Nothing ->
-            { state = s, commands = [], used = False }
+            meant Reason.NotKnown { state = s, commands = [], used = False }
 
 
 {-| The selection's text, for Ctrl+Shift+C. -}
@@ -10718,7 +10737,7 @@ scrollKey k s =
     let
         sizes =
             withPane s.active s (\t -> { most = Vt.scrollbackRows t, page = t.rows })
-                |> Maybe.withDefault { most = 0, page = 0 }
+                |> Maybe.withDefault (meant Reason.Gone { most = 0, page = 0 })
 
         now =
             backOf s.active s
@@ -10747,7 +10766,7 @@ scrollKey k s =
             { state = { s | back = Dict.set s.active b s.back }, used = True }
 
         Nothing ->
-            { state = s, used = False }
+            meant Reason.NotKnown { state = s, used = False }
 
 
 {-| `select-pane` when the pane is not already the active one. -}
@@ -10918,7 +10937,7 @@ report held p q s =
                 sent (Command.sendBytes q.id r.bytes) { s | mouseLast = r.last }
 
         Nothing ->
-            { state = s, commands = [] }
+            meant Reason.NotKnown { state = s, commands = [] }
 
 
 {-| The window at a new size: the canvas, and tmux told. -}

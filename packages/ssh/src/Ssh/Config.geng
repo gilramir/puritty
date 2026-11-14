@@ -27,6 +27,7 @@ names, through [`Source`](#Source).
 -}
 
 import Dict exposing (Dict)
+import Ssh.Reason as Reason
 
 
 {-| One line that says something: where it is, its keyword in lower case,
@@ -56,7 +57,7 @@ parse file text =
                                     acc
 
                         Err why ->
-                            { acc | problems = Array.pushLast (file ++ ":" ++ String.fromInt l.lineNumber ++ ": " ++ why) acc.problems }
+                            meant Reason.FromOutside { acc | problems = Array.pushLast (file ++ ":" ++ String.fromInt l.lineNumber ++ ": " ++ why) acc.problems }
             )
             { directives = [], problems = [] }
 
@@ -72,7 +73,7 @@ tokens text =
         keywordEnd =
             Array.findFirst (\c -> c == ' ' || c == '\t' || c == '=') chars
                 |> Maybe.map .index
-                |> Maybe.withDefault (Array.length chars)
+                |> Maybe.withDefault (meant Reason.NoMore Array.length chars)
 
         keyword =
             String.fromArray (Array.takeFirst keywordEnd chars)
@@ -95,6 +96,7 @@ splitArgs : Array Char -> String -> Bool -> Bool -> Array String -> Result Strin
 splitArgs chars current started quoted acc =
     when Array.popFirst chars is
         Nothing ->
+            meant Reason.NoMore
             if quoted then
                 Err "a quote that does not end"
 
@@ -226,7 +228,7 @@ apply context source d r =
                 r
 
             else if Array.member keyword multi then
-                { r | values = Dict.update keyword (\old -> Just (Maybe.withDefault [] old ++ d.args)) r.values }
+                { r | values = Dict.update keyword (\old -> Just (Maybe.withDefault (meant Reason.NotSet []) old ++ d.args)) r.values }
 
             else if Dict.member keyword r.values then
                 r
@@ -274,15 +276,15 @@ matchLine context r d =
             Dict.get "hostname" r.values
                 |> Maybe.andThen Array.first
                 |> Maybe.map (\h -> expandHost context h)
-                |> Maybe.withDefault (String.toLower context.host)
+                |> Maybe.withDefault (meant Reason.NotSet String.toLower context.host)
 
         userSoFar =
-            Dict.get "user" r.values |> Maybe.andThen Array.first |> Maybe.withDefault context.localUser
+            Dict.get "user" r.values |> Maybe.andThen Array.first |> Maybe.withDefault (meant Reason.NotSet context.localUser)
 
         judge criteria acc =
             when Array.popFirst criteria is
                 Nothing ->
-                    acc
+                    meant Reason.NoMore acc
 
                 Just c ->
                     let
@@ -333,7 +335,7 @@ matchLine context r d =
                             withArgument (patternsHold context.localUser)
 
                         "tagged" ->
-                            withArgument (patternsHold (Dict.get "tag" r.values |> Maybe.andThen Array.first |> Maybe.withDefault ""))
+                            withArgument (patternsHold (Dict.get "tag" r.values |> Maybe.andThen Array.first |> Maybe.withDefault (meant Reason.NotSet "")))
 
                         _ ->
                             judge (Array.dropFirst 1 c.rest)
@@ -363,7 +365,7 @@ globFrom : Array Char -> Array Char -> Bool
 globFrom pattern name =
     when Array.popFirst pattern is
         Nothing ->
-            Array.isEmpty name
+            meant Reason.NoMore Array.isEmpty name
 
         Just p ->
             if p.first == '*' then
@@ -373,7 +375,7 @@ globFrom pattern name =
                                 globFrom pattern n.rest
 
                             Nothing ->
-                                False
+                                meant Reason.NoMore False
                        )
 
             else
@@ -382,7 +384,7 @@ globFrom pattern name =
                         (p.first == '?' || p.first == n.first) && globFrom p.rest n.rest
 
                     Nothing ->
-                        False
+                        meant Reason.NoMore False
 
 
 {-| What OpenSSH fills in for what no line set. -}
@@ -398,7 +400,7 @@ defaults context values =
 
         withHost =
             Dict.set "hostname"
-                [ Dict.get "hostname" values |> Maybe.andThen Array.first |> Maybe.map (expandHost context) |> Maybe.withDefault (String.toLower context.host) ]
+                [ Dict.get "hostname" values |> Maybe.andThen Array.first |> Maybe.map (expandHost context) |> Maybe.withDefault (meant Reason.NotSet String.toLower context.host) ]
                 values
 
         filled =
@@ -454,16 +456,16 @@ tokensIn : Dict Char String -> Array Char -> String -> String
 tokensIn table chars acc =
     when Array.popFirst chars is
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
         Just c ->
             if c.first == '%' then
                 when Array.popFirst c.rest is
                     Just t ->
-                        tokensIn table t.rest (acc ++ (Dict.get t.first table |> Maybe.withDefault ("%" ++ String.fromChar t.first)))
+                        tokensIn table t.rest (acc ++ (Dict.get t.first table |> Maybe.withDefault (meant Reason.NotKnown "%" ++ String.fromChar t.first)))
 
                     Nothing ->
-                        acc ++ "%"
+                        meant Reason.OutOfRange acc ++ "%"
 
             else
                 tokensIn table c.rest (acc ++ String.fromChar c.first)
@@ -479,7 +481,7 @@ toLines settings =
             Dict.get key settings.values
 
         one key normalize fallback =
-            [ key ++ " " ++ (get key |> Maybe.andThen Array.first |> Maybe.map (normalize << String.toLower) |> Maybe.withDefault fallback) ]
+            [ key ++ " " ++ (get key |> Maybe.andThen Array.first |> Maybe.map (normalize << String.toLower) |> Maybe.withDefault (meant Reason.NotSet fallback)) ]
 
         raw key =
             when get key is
@@ -487,10 +489,10 @@ toLines settings =
                     [ key ++ " " ++ String.join " " values ]
 
                 Nothing ->
-                    []
+                    meant Reason.NotSet []
 
         each key =
-            get key |> Maybe.withDefault [] |> Array.map (\v -> key ++ " " ++ v)
+            get key |> Maybe.withDefault (meant Reason.NotSet []) |> Array.map (\v -> key ++ " " ++ v)
 
         yesNo v =
             if v == "yes" || v == "true" then

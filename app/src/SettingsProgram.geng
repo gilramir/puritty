@@ -37,6 +37,7 @@ import Task exposing (Task)
 import Time
 import Toml
 import Window
+import Reason
 
 
 type alias State =
@@ -152,7 +153,7 @@ openWindow r given locale =
                                     (\opened ->
                                         when opened is
                                             Err why ->
-                                                Task.fail ("cannot open the window: " ++ why)
+                                                meant Reason.Refused Task.fail ("cannot open the window: " ++ why)
 
                                             Ok cell ->
                                                 Task.map3 (\events fonts aliases -> { events = events, fonts = fonts, aliases = aliases })
@@ -174,7 +175,7 @@ openWindow r given locale =
                                                                     Session h
 
                                                                 Nothing ->
-                                                                    Closed
+                                                                    meant Reason.NotSet Closed
                                                         )
                                     )
                         )
@@ -190,7 +191,7 @@ sshAliases r =
                 |> Task.onError (\_ -> Task.succeed [])
 
         Nothing ->
-            Task.succeed []
+            meant Reason.NotSet Task.succeed []
 
 
 first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String } -> Maybe String -> Words.Lang -> State
@@ -205,7 +206,7 @@ first r given read cell w shotPath lang =
                     { config = Config.defaults, problems = [ why ] }
 
         path =
-            Maybe.map (\f -> Path.toString f.path) given.file |> Maybe.withDefault "(no settings file)"
+            Maybe.map (\f -> Path.toString f.path) given.file |> Maybe.withDefault (meant Reason.NotSet "(no settings file)")
     in
     { window =
         SettingsWindow.init
@@ -253,7 +254,7 @@ loop s0 =
                                     [ Source.next events |> Task.map FileChanged ]
 
                                 Nothing ->
-                                    []
+                                    meant Reason.NotSet []
                     in
                     Task.race (Window.events |> Task.map WindowEvents) file
                         |> Task.andThen
@@ -299,7 +300,7 @@ draw s =
                         Window.shot path |> Task.map (\_ -> up)
 
                     Nothing ->
-                        Task.succeed up
+                        meant Reason.NotSet Task.succeed up
             )
         |> Task.map (\up -> { s | window = window, hits = frame.hits, lost = s.lost || up == Nothing })
 
@@ -308,7 +309,7 @@ handle : Array Window.Event -> State -> Task String State
 handle evs s =
     when Array.popFirst evs is
         Nothing ->
-            Task.succeed s
+            meant Reason.NoMore Task.succeed s
 
         Just { first = ev, rest } ->
             one ev s |> Task.andThen (handle rest)
@@ -340,7 +341,7 @@ one ev s =
 
                 feedback =
                     Array.takeFirst p.first old.feedback
-                        ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault 0 (Array.get i p.feedback))
+                        ++ Array.initialize (Array.length cps) 0 (\i -> Maybe.withDefault (meant Reason.FromOutside 0) (Array.get i p.feedback))
                         ++ Array.dropFirst (p.first + p.length) old.feedback
             in
             Task.succeed { s | preedit = { points = points, feedback = feedback, caret = p.caret } }
@@ -389,7 +390,7 @@ one ev s =
                                     input (SettingsWindow.Hit { target = t, count = count }) pressed
 
                                 Nothing ->
-                                    Task.succeed pressed
+                                    meant Reason.OutOfRange Task.succeed pressed
                         )
 
             else if p.action == 0 && (p.button == 4 || p.button == 5) then
@@ -458,7 +459,7 @@ writeWith : (Toml.Document -> Toml.Document) -> State -> Task String State
 writeWith edit s =
     when s.store is
         Nothing ->
-            Task.succeed { s | window = SettingsWindow.told (Words.message "message.noFile") s.window }
+            meant Reason.NotSet Task.succeed { s | window = SettingsWindow.told (Words.message "message.noFile") s.window }
 
         Just store ->
             SettingsFile.change edit store
@@ -471,7 +472,7 @@ writeWith edit s =
                                 Task.succeed { s | store = Just st }
 
                             Err why ->
-                                Task.succeed { s | window = SettingsWindow.told (Words.message "message.notWritten" |> Words.with "why" why) s.window }
+                                meant Reason.Refused Task.succeed { s | window = SettingsWindow.told (Words.message "message.notWritten" |> Words.with "why" why) s.window }
                     )
 
 
@@ -485,7 +486,7 @@ connect h args s =
     else
         when s.opener is
             Just o ->
-                Process.spawn o.cp o.program (args ++ Maybe.withDefault [] (Maybe.map (\c -> [ "--config", c ]) o.config)) (Process.defaultSpawnOptions Process.Ignored)
+                Process.spawn o.cp o.program (args ++ Maybe.withDefault (meant Reason.NotSet []) (Maybe.map (\c -> [ "--config", c ]) o.config)) (Process.defaultSpawnOptions Process.Ignored)
                     |> Task.map (\_ -> Nothing)
                     |> Task.onError (\e -> Task.succeed (Just (Os.Error.toString e)))
                     |> Task.map
@@ -495,11 +496,11 @@ connect h args s =
                                     { s | window = SettingsWindow.told (Words.message "message.notStarted" |> Words.with "why" why) s.window }
 
                                 Nothing ->
-                                    s
+                                    meant Reason.NotKnown s
                         )
 
             Nothing ->
-                Task.succeed { s | window = SettingsWindow.told (Words.message "message.noExecutable") s.window }
+                meant Reason.Refused Task.succeed { s | window = SettingsWindow.told (Words.message "message.noExecutable") s.window }
 
 
 {-| The file changed: read again, and its settings shown. The window's own
@@ -513,7 +514,7 @@ fileChanged change s =
                     Path.filename path == Path.filename f.path
 
                 Nothing ->
-                    False
+                    meant Reason.NotSet False
 
         again =
             when change is
@@ -530,7 +531,7 @@ fileChanged change s =
                     Just True
 
                 _ ->
-                    Nothing
+                    meant Reason.NoMore Nothing
     in
     when again is
         Just True ->
@@ -550,4 +551,4 @@ fileChanged change s =
             Task.succeed s
 
         Nothing ->
-            Task.succeed { s | events = Nothing }
+            meant Reason.NoMore Task.succeed { s | events = Nothing }

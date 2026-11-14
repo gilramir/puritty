@@ -4549,3 +4549,91 @@ same update.
 
 Tested: the unit gate (`harness/units.py`) 15 of 15 on node, Linux and
 Windows, before the tmux count moved to 100.
+
+## VC64. Every fallback that can run, meant or listed (2026-11-13)
+
+Gilbert: apply `meant` (geng-lang `m4-refine-t1.md` TO23, TO24) to
+puritty and check the reports. Each of §VC63's 1,114 fallbacks that can
+run was read, in six groups, and given a reason and one of three
+verdicts: meant (the fallback is how the program answers that case),
+provable (it can never run, and a rule the checker cannot yet see says
+why), or a bug (it hides something that should be reported).
+
+| | §VC63 | after |
+|---|---:|---:|
+| checks hold | 1,948 | 1,985 |
+| fallbacks never run | 47 | 47 |
+| fallbacks can run, listed | 1,114 | 133 |
+| meant | — | 981 |
+| open | 0 | 0 |
+
+(1,948 to 1,985 is the TB15 tab order, before this work.)
+
+**The reasons.** One `Reason` type per package, each variant with its
+words (`Reason`, `Vt.Reason`, `Tmux.Reason`, `Ssh.Reason`,
+`X11.Reason`), each holding only the reasons its package uses, since an
+unused one fails `geng checks`:
+
+| reason | words | app | tmux | vt | ssh |
+|---|---|---:|---:|---:|---:|
+| `FromOutside` | what came from outside was short, missing or not what was asked | 92 | 50 | 16 | 29 |
+| `NotSet` | a setting or option is not set, so its default applies | 125 | 31 | 26 | 27 |
+| `NotOpen` | a part of the model is empty because its menu, search, dialog, prompt or mode is not open | 98 | 2 | 2 | 1 |
+| `NotKnown` | a name, key or id is not in the program's own tables | 66 | 45 | 23 | 1 |
+| `OutOfRange` | an index or position is past an edge, and this is the edge's answer | 68 | 2 | 38 | 5 |
+| `NoMore` | a scan, list or queue ended, and this is its end | 43 | 11 | 27 | 18 |
+| `NotYet` | it is not known yet; a later event fills it in | 40 | 4 | 7 | 10 |
+| `Gone` | a pane, tab, window or session closed before an event about it was handled | 38 | 15 | — | — |
+| `Refused` | a call to the OS, a file or the network failed | 13 | — | — | 1 |
+
+(`app` counts `TmuxMode` and `Platform`; x11 has one, `FromOutside`.
+Counts are as first applied, before seven hand-placed marks.)
+
+The report reads, for each: `meant  differs:977  the default of
+Maybe.withDefault is used when …, meant: Vt.Reason.NotYet (it is not
+known yet; a later event fills it in)`.
+
+**What stays in `corpus/checks/baseline.tsv`** (133 entries) is what
+should not be called meant:
+
+- **121 provable**, where the fallback cannot run but the checker cannot
+  see why. The commonest: `String.split` never answers an empty array
+  (`Array.first`/`last` of one, a dozen places); an index found in one
+  array read from a parallel one (`TmuxMode`'s `ids` and `panes`); a
+  `when` on a field just tested `/= Nothing` (`Main`'s menu, search,
+  rename, close and color modes, each with a caller that only runs it
+  when its mode is open); `slotOf` having found a filled slot (four in
+  `Main`); `Vt.Recut`'s page index from an `Array.get` on the same
+  pages that succeeded. By module: `Main` 27, `TmuxMode` 24, `Schema` 9,
+  `Ssh.Session` 6, `Vt.Recut` 6, `Ssh.Transport` 5, `Tmux.Customize` 5,
+  the rest three or fewer.
+- **11 bugs**, found by reading and checked against the code, not yet
+  fixed:
+  - `Main.sshBackend`: with neither `HOME` nor `USERPROFILE` set, home
+    is `""` and `~/.ssh/config` is read as `/.ssh/config`; with neither
+    `USER` nor `USERNAME`, `""` is the login name. Both should be said.
+  - `Ssh.Session.resolveOne`: a `Port`, `ServerAliveInterval` or
+    `ServerAliveCountMax` that is not a number becomes 22, 0 or 3
+    without a word.
+  - `Ssh.Config.matchLine`: a `Match` criterion with no argument is
+    matched against `""` rather than reported.
+  - `Ssh.Connection.onChannel`: a `WINDOW_ADJUST`, `CHANNEL_DATA` or
+    `EXTENDED_DATA` that does not read is dropped (`Err _ -> st`), so
+    output is lost or sending stalls; an unreadable confirmation ends
+    the channel, and these should too.
+  - `Ssh.Session.remember`: a known_hosts path with no parent makes a
+    directory at the file's own path, and the append then fails.
+  - `Ssh.Transport.sendPacket`: a failed seal sends nothing but still
+    counts the sequence number, so the next packet's MAC is wrong.
+
+**Seen while reading, kept meant:** `Vt.Resize.promptIn` reads
+`Array.get (lo - 1)`, and core's `Array.get` counts a negative index
+from the end, so at `lo = 0` it would read the last start; it is safe
+only because the first start is always at 0. A `Maybe` used as yes/no
+(`writeLog`'s `Nothing` is success, `moveFocus`'s is "not Tab") has no
+reason that fits; those are `NotKnown` or `Refused`, and a `Result` or
+`Bool` would say it better.
+
+**From now on** a new fallback that can run fails `geng checks` unless it
+is marked `meant` or recorded, as before, and a mark whose fallback stops
+running fails it too.

@@ -41,6 +41,7 @@ import Vt.Modes exposing (..)
 import Vt.Print exposing (..)
 import Vt.Dcs exposing (..)
 import Vt.Osc exposing (..)
+import Vt.Reason as Reason
 
 
 {-| A CSI sequence's action. SGR and CUP, most of what a program sends, are
@@ -115,7 +116,7 @@ dispatchRest final priv inter params t =
                     reply answer t
 
                 Nothing ->
-                    t
+                    meant Reason.NotSet t
 
         else if final == 0x6E && param 0 0 params == 6 then
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
@@ -445,7 +446,7 @@ dispatchRare final params t =
 count0 : Array Int -> (r : Int where 0 <= r && r <= 65535)
 count0 params =
     -- the parser keeps each parameter to 0..65535 (`Vt.Parse.csi`)
-    clamp 0 65535 (Maybe.withDefault 1 (Array.first params))
+    clamp 0 65535 (Maybe.withDefault (meant Reason.NotSet 1) (Array.first params))
 
 
 {-| The finals whose count of 0 does nothing, as in Ghostty, where for the

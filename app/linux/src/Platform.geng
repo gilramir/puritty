@@ -7,6 +7,7 @@ window (`docs/windows.md` WS10, V55): this module is `app/linux`'s, and
 
 import Dict exposing (Dict)
 import Task exposing (Task)
+import Reason
 
 
 {-| The directory of the settings file: `$XDG_CONFIG_HOME/puritty`, or
@@ -22,7 +23,7 @@ settingsDirectory vars =
             Just (d ++ "/puritty")
 
         Nothing ->
-            Maybe.map (\h -> h ++ "/.config/puritty") (set "HOME")
+            meant Reason.NotSet Maybe.map (\h -> h ++ "/.config/puritty") (set "HOME")
 
 
 {-| Where each window's tabs are kept to restore them (docs/tabs.md TB10):
@@ -38,7 +39,7 @@ stateDirectory vars =
             Just (d ++ "/puritty/windows")
 
         Nothing ->
-            Maybe.map (\h -> h ++ "/.local/state/puritty/windows") (set "HOME")
+            meant Reason.NotSet Maybe.map (\h -> h ++ "/.local/state/puritty/windows") (set "HOME")
 
 
 {-| Where the diagnostic logs are written (docs/diagnostics.md DG1):
@@ -66,7 +67,7 @@ programs vars =
                 [ s ]
 
         Nothing ->
-            [ "/bin/sh" ]
+            meant Reason.NotSet [ "/bin/sh" ]
 
 
 {-| The font drawn when the settings name none. -}
@@ -100,12 +101,12 @@ charsetOf vars =
                 |> Array.mapAndKeepJust (\name -> Dict.get name vars)
                 |> Array.findFirst (\v -> v /= "")
                 |> Maybe.map .value
-                |> Maybe.withDefault ""
+                |> Maybe.withDefault (meant Reason.NotSet "")
 
         codeset =
             String.split "." posix
                 |> Array.get 1
-                |> Maybe.withDefault ""
+                |> Maybe.withDefault (meant Reason.NotSet "")
                 |> String.split "@"
                 |> Array.first
                 |> Maybe.withDefault ""
@@ -135,7 +136,7 @@ languageOf vars =
                 |> Array.mapAndKeepJust (\name -> Dict.get name vars)
                 |> Array.findFirst (\v -> v /= "")
                 |> Maybe.map .value
-                |> Maybe.withDefault ""
+                |> Maybe.withDefault (meant Reason.NotSet "")
 
         base =
             posix

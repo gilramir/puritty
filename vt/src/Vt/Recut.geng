@@ -40,6 +40,7 @@ import Vt.Cell exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Pages exposing (..)
+import Vt.Reason as Reason
 
 
 {-| The pages being written: those done, and the one being written, its
@@ -105,7 +106,7 @@ plainsOf n pages i acc =
 walks. -}
 plainAt : Array Bool -> Int -> Bool
 plainAt plains pi =
-    Maybe.withDefault False (Array.get pi plains)
+    Maybe.withDefault (meant Reason.OutOfRange False) (Array.get pi plains)
 
 
 {-| A page of `pageRows` rows begun after `done`. -}
@@ -175,7 +176,7 @@ lines : (Int -> Int -> Array Row -> Array Row) -> Int -> Int -> Array Bool -> Ar
 lines reflow old cols plains pages pi h ti r clusters o =
     when (if pi < Array.length plains then Array.get pi pages else Nothing) is
         Nothing ->
-            { out = o, clusters = clusters }
+            meant Reason.NoMore { out = o, clusters = clusters }
 
         Just page ->
             if h >= Owned.length page.heads then
@@ -187,7 +188,7 @@ lines reflow old cols plains pages pi h ti r clusters o =
                         lines reflow old cols plains pages plain.pi plain.h plain.ti 0 clusters (plainLine cols pages plain.spans plain.last o)
 
                     Nothing ->
-                        anyLine reflow old cols plains pages pi h ti r clusters o
+                        meant Reason.NotKnown anyLine reflow old cols plains pages pi h ti r clusters o
 
 
 {-| The line from page `pi`, header `h`, text `ti` and runs `r`, cut on its
@@ -218,7 +219,7 @@ gather : Array Bool -> Array Page -> Int -> Int -> Int -> Int -> Array Source ->
 gather plains pages pi h ti r acc =
     when (if pi < Array.length plains then Array.get pi pages else Nothing) is
         Nothing ->
-            { rows = acc, pi = pi, h = h, ti = ti, r = r }
+            meant Reason.NoMore { rows = acc, pi = pi, h = h, ti = ti, r = r }
 
         Just page ->
             if h >= Owned.length page.heads then
@@ -341,7 +342,7 @@ popLast clusters pages =
         last =
             when Array.last pages is
                 Nothing ->
-                    Nothing
+                    meant Reason.NoMore Nothing
 
                 Just page ->
                     let
@@ -367,7 +368,7 @@ popLast clusters pages =
     in
     when last is
         Nothing ->
-            { pages = pages, prefix = { cells = [], wrapped = False, prompt = 0 }, clusters = clusters }
+            meant Reason.NoMore { pages = pages, prefix = { cells = [], wrapped = False, prompt = 0 }, clusters = clusters }
 
         Just l ->
             { pages = Array.takeFirst (count - 1) pages ++ l.rest
@@ -444,9 +445,10 @@ plainSpans old plains pages pi h ti from acc =
         Nothing ->
             -- the pages end inside the line: every row of it wraps, and
             -- none has its empty cells trimmed
+            meant Reason.NoMore
             when Array.last acc is
                 Nothing ->
-                    Nothing
+                    meant Reason.NoMore Nothing
 
                 Just span ->
                     Just { spans = acc, last = span.to, pi = pi, h = h, ti = ti }
@@ -591,7 +593,7 @@ takeSpans pages spans n j at o =
     else
         when Array.get j spans is
             Nothing ->
-                { out = o, j = j, at = at }
+                meant Reason.NoMore { out = o, j = j, at = at }
 
             Just span ->
                 let
@@ -982,7 +984,7 @@ rowAt page src clusters =
                 (\c acc ->
                     let
                         k =
-                            pagedCell { c | style = Maybe.withDefault 0 (Array.get (Array.length acc.cells) styles) } acc.clusters
+                            pagedCell { c | style = Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (Array.length acc.cells) styles) } acc.clusters
                     in
                     { cells = Array.pushLast k.cell acc.cells, clusters = k.clusters }
                 )
@@ -1023,6 +1025,7 @@ packArray : Clusters -> Array Int64 -> Int -> (taken text : Builder UInt8) -> (t
 packArray clusters cells i text runs style count wrote =
     when Array.get i cells is
         Nothing ->
+            meant Reason.NoMore
             if count == 0 || (style == 0 && not wrote) then
                 { text = text, runs = runs, styled = False }
 

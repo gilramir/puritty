@@ -8,6 +8,7 @@ punctuation character. An empty name is no key at all.
 -}
 
 import Bitwise
+import Reason
 
 
 {-| The modifiers as the window's key records carry them (Shift 1, Ctrl 2,
@@ -61,7 +62,7 @@ parse text =
                                                 Ok (Bitwise.or mods bit)
 
                                         Nothing ->
-                                            Err ("\"" ++ name ++ "\" in \"" ++ text ++ "\" is not Ctrl, Shift, Alt or Super")
+                                            meant Reason.NotKnown Err ("\"" ++ name ++ "\" in \"" ++ text ++ "\" is not Ctrl, Shift, Alt or Super")
                                 )
                     )
                     (Ok 0)
@@ -73,7 +74,7 @@ parse text =
                                     Ok (Just { mods = mods, sym = sym })
 
                                 Nothing ->
-                                    Err ("\"" ++ last ++ "\" in \"" ++ text ++ "\" is not a key puritty knows")
+                                    meant Reason.NotKnown Err ("\"" ++ last ++ "\" in \"" ++ text ++ "\" is not a key puritty knows")
                         )
 
 
@@ -152,6 +153,7 @@ keySym name =
             Just found.value.sym
 
         Nothing ->
+            meant Reason.NotKnown
             when codes is
                 [ c ] ->
                     if c >= 0x61 && c <= 0x7A then
@@ -172,7 +174,7 @@ keySym name =
                                 if n >= 1 && n <= 24 then Just (0xFFBE + n - 1) else Nothing
 
                             Nothing ->
-                                Nothing
+                                meant Reason.NotKnown Nothing
 
                     else
                         Nothing
@@ -192,11 +194,12 @@ show c =
                     showName found.value.name
 
                 Nothing ->
+                    meant Reason.NotKnown
                     if c.sym >= 0xFFBE && c.sym <= 0xFFD5 then
                         "F" ++ String.fromInt (c.sym - 0xFFBE + 1)
 
                     else
-                        Char.fromCode c.sym |> Maybe.map String.fromChar |> Maybe.withDefault "?"
+                        Char.fromCode c.sym |> Maybe.map String.fromChar |> Maybe.withDefault (meant Reason.OutOfRange "?")
     in
     String.join "+" (mod 2 "Ctrl" ++ mod 4 "Alt" ++ mod 1 "Shift" ++ mod 8 "Super" ++ [ key ])
 

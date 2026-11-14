@@ -17,6 +17,7 @@ import Os.File as File
 import Os.Path as Path exposing (Path)
 import Task exposing (Task)
 import Toml
+import Reason
 
 
 {-| A settings file being changed, and whether this session has kept a
@@ -50,10 +51,10 @@ change edit s =
                     if Path.toString d == "" then Nothing else Just d
 
                 Nothing ->
-                    Nothing
+                    meant Reason.NotSet Nothing
 
         beside suffix =
-            Path.append (Path.fromString (Path.filename s.path ++ suffix)) (Maybe.withDefault (Path.fromString ".") dir)
+            Path.append (Path.fromString (Path.filename s.path ++ suffix)) (Maybe.withDefault (meant Reason.NotSet Path.fromString ".") dir)
     in
     File.readFile s.fs s.path
         |> Task.map Just
@@ -67,9 +68,9 @@ change edit s =
             )
         |> Task.andThen
             (\old ->
-                when Toml.parseBytes (Maybe.withDefault Bytes.empty old) is
+                when Toml.parseBytes (Maybe.withDefault (meant Reason.NotYet Bytes.empty) old) is
                     Err e ->
-                        Task.fail (name ++ " line " ++ String.fromInt e.row ++ " is not TOML, or not UTF-8: " ++ Toml.errorToString e ++ "; nothing is written")
+                        meant Reason.FromOutside Task.fail (name ++ " line " ++ String.fromInt e.row ++ " is not TOML, or not UTF-8: " ++ Toml.errorToString e ++ "; nothing is written")
 
                     Ok doc ->
                         let
@@ -94,8 +95,9 @@ change edit s =
                                         File.writeFile s.fs bytes (beside ".bak")
 
                                 Nothing ->
+                                    meant Reason.NotYet
                                     Maybe.map (Directory.createAll s.fs) dir
-                                        |> Maybe.withDefault (Task.succeed {})
+                                        |> Maybe.withDefault (meant Reason.NotSet (Task.succeed {}))
                             )
                                 |> Task.andThen (\_ -> File.writeFile s.fs (Toml.toBytes edited) (beside ".new"))
                                 |> Task.andThen (\_ -> File.move s.fs { from = beside ".new", to = s.path })

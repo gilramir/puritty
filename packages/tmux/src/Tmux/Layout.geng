@@ -19,6 +19,7 @@ the tiled panes at its own box, not laid out by its parent.
 -}
 
 import Json.Decode as Decode exposing (Decoder)
+import Tmux.Reason as Reason
 
 
 {-| A pane: its id (`%id`), its box, whether it is the window's active
@@ -130,7 +131,7 @@ paneDecoder =
                                 Decode.succeed n
 
                             Nothing ->
-                                Decode.fail ("a pane id " ++ s)
+                                meant Reason.FromOutside Decode.fail ("a pane id " ++ s)
                     )
             )
             (Decode.maybe (Decode.field "a" Decode.bool) |> Decode.map (Maybe.withDefault False))
@@ -162,7 +163,7 @@ oldForm text =
                     Err ("more after the layout: " ++ text)
 
             Err why ->
-                Err why
+                meant Reason.FromOutside Err why
 
 
 {-| A place or a size kept inside what a pane's box may hold. -}
@@ -196,7 +197,7 @@ oldRest chars box at =
                 |> Result.map (\c -> { cell = Split { leftRight = False, w = box.w, h = box.h, x = box.x, y = box.y, children = c.cells }, at = c.at })
 
         _ ->
-            Err ("a layout cell with no pane and no children at " ++ String.fromInt at)
+            meant Reason.FromOutside Err ("a layout cell with no pane and no children at " ++ String.fromInt at)
 
 
 children : Array Int -> Int -> Int -> Array Cell -> Result String { cells : Array Cell, at : Int }
@@ -215,10 +216,10 @@ children chars at close cells =
                         Err ("a layout's children end badly at " ++ String.fromInt got.at)
 
                 Nothing ->
-                    Err "a layout's children do not end"
+                    meant Reason.FromOutside Err "a layout's children do not end"
 
         Err why ->
-            Err why
+            meant Reason.FromOutside Err why
 
 
 expect : Int -> Array Int -> Int -> Result String Int
@@ -249,6 +250,7 @@ numberFrom chars start at value =
                 Err ("a layout wants a number at " ++ String.fromInt at)
 
         Nothing ->
+            meant Reason.NoMore
             if at > start then
                 Ok { value = value, at = at }
 

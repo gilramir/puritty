@@ -71,6 +71,7 @@ import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Screen exposing (..)
 import Vt.Pages exposing (..)
+import Vt.Reason as Reason
 
 
 -- RESIZING
@@ -214,6 +215,7 @@ recutPages pageRows clear keep cols rows cursor saved clusters s pages =
             o
 
         Nothing ->
+            meant Reason.NotKnown
             let
                 r =
                     pullPages True lossy clear keep cols rows cursor saved clusters s pages
@@ -397,7 +399,7 @@ promptStartIn rows y =
         when Array.get y rows is
             Nothing ->
                 -- no row has no mark
-                promptStartIn rows (y - 1)
+                meant Reason.OutOfRange promptStartIn rows (y - 1)
 
             Just row ->
                 if row.prompt == 0 then
@@ -587,7 +589,7 @@ readSlots cols back i acc =
             readSlots cols back (i + 1) (readStep cols page acc)
 
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
 
 type alias Read =
@@ -606,7 +608,7 @@ readFrom cols pages i acc =
             readFrom cols pages (i + 1) (readStep cols page acc)
 
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
 
 readStep : Int -> Page -> Read -> Read
@@ -778,7 +780,7 @@ unheadAt x cells =
                 cells
 
         Nothing ->
-            cells
+            meant Reason.OutOfRange cells
 
 
 cutRow : Int -> Array Int64 -> Array Int64
@@ -800,7 +802,7 @@ cutRow cols cells =
                     kept
 
             Nothing ->
-                kept
+                meant Reason.OutOfRange kept
 
 
 clampPoint : Int -> Point -> Point
@@ -845,7 +847,7 @@ reflowCols old cols prefix flow =
                 (\li acc ->
                     let
                         line =
-                            Maybe.withDefault [] (Array.get li joined.lines)
+                            Maybe.withDefault (meant Reason.OutOfRange []) (Array.get li joined.lines)
 
                         marks =
                             [ if joined.cursor.line == li then joined.cursor.at else -1
@@ -853,7 +855,7 @@ reflowCols old cols prefix flow =
                             ]
 
                         cut =
-                            splitLine cols line (Maybe.withDefault [] (Array.get li joined.marks)) marks (Array.length acc.rows)
+                            splitLine cols line (Maybe.withDefault (meant Reason.OutOfRange []) (Array.get li joined.marks)) marks (Array.length acc.rows)
                     in
                     -- a line the cursor is not on finds it at row -1, and
                     -- leaves where an earlier line found it (§VC16)
@@ -958,6 +960,7 @@ joinLines : Int -> Int -> Flow -> Int -> Joined -> Joined
 joinLines old cols flow i j =
     when Array.get i flow.rows is
         Nothing ->
+            meant Reason.NoMore
             if Array.isEmpty j.line then
                 j
 
@@ -1094,6 +1097,7 @@ endColumn : Int -> Array Int64 -> Int -> Int -> Int
 endColumn cols line j p =
     when Array.get j line is
         Nothing ->
+            meant Reason.OutOfRange
             if p >= cols then
                 0
 
@@ -1125,7 +1129,7 @@ withoutSpacer cells =
                 cells
 
         Nothing ->
-            cells
+            meant Reason.OutOfRange cells
 
 
 trimmed : (cells : Array Int64) -> (n : Int where n <= Array.length cells) -> Array Int64
@@ -1171,7 +1175,7 @@ promptIn starts k lo hi =
                 st.mark
 
             Nothing ->
-                0
+                meant Reason.OutOfRange 0
 
     else
         let
@@ -1227,7 +1231,7 @@ splitCell cols line starts marks first j p row rows found =
             -- a mark from a dropped spacer head at the end goes where a
             -- next cell would, or on the last one written when the row is
             -- full, as the oracle's reflow moves a pin (patch 0006, §VC18)
-            { rows = Array.pushLast { cells = row, wrapped = False, prompt = promptAt starts (j - 1) } rows, found = headMarks marks j (first + Array.length rows) (min p (cols - 1)) found }
+            meant Reason.OutOfRange { rows = Array.pushLast { cells = row, wrapped = False, prompt = promptAt starts (j - 1) } rows, found = headMarks marks j (first + Array.length rows) (min p (cols - 1)) found }
 
         Just c ->
             if p >= cols then
@@ -1292,7 +1296,7 @@ anyIn : Array Int -> Int -> Int -> Int -> Bool
 anyIn marks from to k =
     when Array.get k marks is
         Nothing ->
-            False
+            meant Reason.NoMore False
 
         Just m ->
             let
@@ -1349,7 +1353,7 @@ pushHistory clusters rows i stop s back =
     else
         let
             written =
-                writeRow (rowOffset s 0) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get i rows)) s
+                writeRow (rowOffset s 0) (Maybe.withDefault (meant Reason.OutOfRange { cells = [], wrapped = False, prompt = 0 }) (Array.get i rows)) s
         in
         pushHistory clusters rows (i + 1) stop { written | base = phys written 1, hist = written.hist + 1 } back
 
@@ -1363,7 +1367,7 @@ writeRows rows from y count s =
         -- the row's index in `rows`: `from` is a count of rows, far from
         -- `Int`'s end, and `y` within the screen, so the sum cannot wrap
         -- (§VC58)
-        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault { cells = [], wrapped = False, prompt = 0 } (Array.get (if from >= 0 && from < 1000000000 then from + y else -1) rows)) s)
+        writeRows rows from (y + 1) count (writeRow (rowOffset s y) (Maybe.withDefault (meant Reason.OutOfRange { cells = [], wrapped = False, prompt = 0 }) (Array.get (if from >= 0 && from < 1000000000 then from + y else -1) rows)) s)
 
 
 writeRow : (o : Int where 0 <= o && o + s.stride <= Builder.length s.cells) -> Row -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)
@@ -1397,4 +1401,4 @@ foundOr before found =
                 before
 
         Nothing ->
-            before
+            meant Reason.NoMore before

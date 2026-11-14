@@ -26,6 +26,7 @@ import UInt8
 import Vt.Width as Width
 import Vt.Cell exposing (..)
 import Vt.Cell exposing (..)
+import Vt.Reason as Reason
 
 
 -- STYLES
@@ -79,7 +80,7 @@ intern a styles =
             styleKey a
 
         same =
-            Maybe.withDefault [] (Dict.get key styles.ids)
+            Maybe.withDefault (meant Reason.NotKnown []) (Dict.get key styles.ids)
 
         found =
             Array.findFirst (\id -> (Maybe.withDefault plainAttrs (Array.get id styles.table)).ulc == a.ulc) same
@@ -89,6 +90,7 @@ intern a styles =
             { id = f.value, styles = styles }
 
         Nothing ->
+            meant Reason.NotKnown
             let
                 id =
                     Array.length styles.table
@@ -107,7 +109,7 @@ intern a styles =
 
 styleOf : Int -> Styles -> Attrs
 styleOf id styles =
-    Maybe.withDefault plainAttrs (Array.get id styles.table)
+    Maybe.withDefault (meant Reason.NotKnown plainAttrs) (Array.get id styles.table)
 
 
 -- CLUSTERS
@@ -146,7 +148,7 @@ internCluster points clusters =
                 Just { id = id, clusters = clusters }
 
             Nothing ->
-                newCluster points (\id c -> { c | pairs = Dict.set key id c.pairs }) clusters
+                meant Reason.NotKnown newCluster points (\id c -> { c | pairs = Dict.set key id c.pairs }) clusters
 
     else
         let
@@ -158,7 +160,7 @@ internCluster points clusters =
                 Just { id = id, clusters = clusters }
 
             Nothing ->
-                newCluster points (\id c -> { c | ids = Dict.set key id c.ids }) clusters
+                meant Reason.NotKnown newCluster points (\id c -> { c | ids = Dict.set key id c.ids }) clusters
 
 
 newCluster : Array Int -> (Int -> Clusters -> Clusters) -> Clusters -> Maybe { id : Int, clusters : Clusters }
@@ -178,7 +180,7 @@ newCluster points index clusters =
 cellPoints : Int64 -> Clusters -> Array Int
 cellPoints c clusters =
     if cellIsCluster c then
-        Maybe.withDefault [] (Array.get (cellPoint c) clusters.table)
+        Maybe.withDefault (meant Reason.NotKnown []) (Array.get (cellPoint c) clusters.table)
 
     else if cellPoint c == 0 then
         []

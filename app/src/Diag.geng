@@ -24,6 +24,7 @@ them to the file (`take`), at most every quarter second.
 
 import Bitwise
 import Bytes exposing (Bytes)
+import Reason
 
 
 {-| Where the lines go (`Nothing` while the log is off), the next line's
@@ -160,6 +161,7 @@ key k =
                         Just name
 
                     Nothing ->
+                        meant Reason.NotKnown
                         if k.unshifted >= 0x21 && k.unshifted <= 0x7E then
                             Maybe.map (\c -> String.toUpper (String.fromChar c)) (Char.fromCode k.unshifted)
 
@@ -241,7 +243,7 @@ command c =
                     if String.startsWith "set-buffer " c then Just (String.takeFirst at c ++ "<" ++ String.fromInt (String.count c - at) ++ " chars>") else Nothing
 
                 Nothing ->
-                    Nothing
+                    meant Reason.NoMore Nothing
 
         redacted =
             when String.split " -H " c is
@@ -267,6 +269,7 @@ command c =
             shown
 
         Nothing ->
+            meant Reason.NotKnown
             if String.count redacted > 300 then
                 String.takeFirst 300 redacted ++ "…"
 
@@ -287,7 +290,7 @@ isId w =
             (c == '%' || c == '@' || c == '$') && rest /= "" && String.all Char.isDigit rest
 
         Nothing ->
-            False
+            meant Reason.OutOfRange False
 
 
 {-| A key's name as tmux writes it: a named key (`Up`, `BSpace`, `F5`),

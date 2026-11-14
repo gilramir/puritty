@@ -62,6 +62,7 @@ import Vt.Modes exposing (fresh, modifyOtherKeysKey, privateState)
 import Vt.Print exposing (wrapped)
 import Vt.Parse as Parse
 import Vt.Edit as Edit
+import Vt.Reason as Reason
 
 
 {-| A terminal (`Vt.Term.Term`). -}
@@ -211,7 +212,7 @@ invert spans t =
                                                         { cells = Array.set x (Bitwise.or (styleBits interned.id) (Bitwise.and (Bitwise.complement (styleBits 0xFFFF)) c)) a.cells, styles = interned.styles }
 
                                                     Nothing ->
-                                                        a
+                                                        meant Reason.OutOfRange a
                                             )
                                             { cells = cells, styles = acc.styles }
                                             (Array.range (max 0 sp.from) (min (cols - 1) sp.to))
@@ -219,7 +220,7 @@ invert spans t =
                                 { rows = Array.set sp.row turned.cells acc.rows, styles = turned.styles }
 
                             Nothing ->
-                                acc
+                                meant Reason.OutOfRange acc
                     )
                     start
                     spans
@@ -280,7 +281,7 @@ composeStyled panes places t =
                             composePane cols rows pane place.x place.y place.back { fg = place.fg, bg = place.bg } acc
 
                         Nothing ->
-                            acc
+                            meant Reason.NotKnown acc
                 )
                 start
                 places
@@ -380,7 +381,7 @@ composeCell base paneStyles paneClusters c styles clusters =
 
             Nothing ->
                 -- no room for another cluster: its first code point alone
-                { cell = Bitwise.or (Int64.fromInt (Maybe.withDefault 32 (Array.first (cellPoints c paneClusters)))) (Bitwise.and (Bitwise.complement 0xFFFFFF) styled), styles = interned.styles, clusters = clusters }
+                meant Reason.NoMore { cell = Bitwise.or (Int64.fromInt (Maybe.withDefault (meant Reason.NotKnown 32) (Array.first (cellPoints c paneClusters)))) (Bitwise.and (Bitwise.complement 0xFFFFFF) styled), styles = interned.styles, clusters = clusters }
 
     else
         { cell = styled, styles = interned.styles, clusters = clusters }
@@ -476,7 +477,7 @@ mendAt i half cells =
                 cells
 
         Nothing ->
-            cells
+            meant Reason.OutOfRange cells
 
 
 {-| `count` rows of the main screen and its scrollback from logical row `first`
@@ -578,7 +579,7 @@ textOfRows : Array Row -> Clusters -> Int -> Int -> Int -> Int -> String -> Stri
 textOfRows rows clusters lo hi cols i acc =
     when Array.get i rows is
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
         Just row ->
             let
@@ -630,7 +631,7 @@ cellsText cells clusters x to acc =
                     0
 
                 else
-                    Maybe.withDefault 0 (Array.get x cells)
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get x cells)
 
             w =
                 cellWide c
@@ -672,7 +673,7 @@ wordAt boundaries p t =
     in
     when Maybe.andThen identity (Array.get line.at line.cps) is
         Nothing ->
-            Nothing
+            meant Reason.OutOfRange Nothing
 
         Just cp ->
             let
@@ -716,7 +717,7 @@ runEdge boundaries want cps i step =
                 i
 
         Nothing ->
-            i
+            meant Reason.OutOfRange i
 
 
 {-| The line under a point for a triple click: its rows, from the first
@@ -742,7 +743,7 @@ lineAt p t =
                     Nothing
 
         Nothing ->
-            Nothing
+            meant Reason.NoMore Nothing
 
 
 inkFrom : Array (Maybe Int) -> Int -> Int -> Int -> Maybe Int
@@ -760,7 +761,7 @@ inkFrom cps i step n =
                     inkFrom cps (i + step) step n
 
             Nothing ->
-                inkFrom cps (i + step) step n
+                meant Reason.OutOfRange inkFrom cps (i + step) step n
 
 
 type alias LineCells =
@@ -824,14 +825,14 @@ lineCps rows clusters cols r bottom acc =
     else
         let
             cells =
-                Maybe.withDefault [] (Maybe.map .cells (Array.get r rows))
+                Maybe.withDefault (meant Reason.OutOfRange []) (Maybe.map .cells (Array.get r rows))
 
             next =
                 -- the row after `r`, which there is none of unless `r` is
                 -- one of the rows, so that `r + 1` is no wider than their
                 -- count
                 if r < Array.length rows then
-                    Maybe.withDefault [] (Maybe.map .cells (Array.get (r + 1) rows))
+                    Maybe.withDefault (meant Reason.OutOfRange []) (Maybe.map .cells (Array.get (r + 1) rows))
 
                 else
                     []
@@ -842,7 +843,7 @@ lineCps rows clusters cols r bottom acc =
                         -- a cell past the row's extent is empty
                         when Array.get x cells is
                             Nothing ->
-                                0
+                                meant Reason.OutOfRange 0
 
                             Just c ->
                                 let
@@ -853,7 +854,7 @@ lineCps rows clusters cols r bottom acc =
                                     Array.getProven (x - 1) cells
 
                                 else if w == spacerHead then
-                                    Maybe.withDefault 0 (Array.get 0 next)
+                                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get 0 next)
 
                                 else
                                     c
@@ -958,7 +959,7 @@ promptJump delta back0 t =
                 0 - y
 
             Nothing ->
-                back
+                meant Reason.NoMore back
 
     else
         let
@@ -974,7 +975,7 @@ promptJump delta back0 t =
                 max 0 (0 - y)
 
             Nothing ->
-                back
+                meant Reason.NoMore back
 
 
 -- 536,880,105 is 2^29 + 9,193: the most rows the pages count (`Back`,
@@ -1033,7 +1034,7 @@ pagedPrompt : Back -> Int -> Int -> Int -> Int
 pagedPrompt b i start at =
     when Builder.get i b.pages is
         Nothing ->
-            0
+            meant Reason.OutOfRange 0
 
         Just page ->
             let
@@ -1058,7 +1059,7 @@ viewPages b i start at want clusters acc =
     else
         when Builder.get i b.pages is
             Nothing ->
-                { rows = acc, clusters = clusters }
+                meant Reason.NoMore { rows = acc, clusters = clusters }
 
             Just page ->
                 let
@@ -1184,7 +1185,7 @@ withEmbedder embedder t =
                 told
 
         Nothing ->
-            told
+            meant Reason.NotSet told
 
 
 {-| The terminal with its 16 named colors as its embedder's (puritty's
@@ -1193,7 +1194,7 @@ of them, up to 16, in place of libghostty-vt's; the rest are kept. They are
 what OSC 4 answers and what OSC 104 and RIS go back to. -}
 withPalette : Array Int -> (taken t : Term) -> Term
 withPalette colors t =
-    { t | named = Array.indexedMap (\i d -> Maybe.withDefault d (Array.get i colors)) t.named }
+    { t | named = Array.indexedMap (\i d -> Maybe.withDefault (meant Reason.NotSet d) (Array.get i colors)) t.named }
 
 
 {-| The terminal with its 16 named colors as its embedder's, over
@@ -1203,7 +1204,7 @@ palette changed while the terminal runs (puritty's settings reloaded,
 goes back to its default. Colors a program set with OSC 4 stay its. -}
 setPalette : Array Int -> (taken t : Term) -> Term
 setPalette colors t =
-    { t | named = Array.indexedMap (\i d -> Maybe.withDefault d (Array.get i colors)) namedColors }
+    { t | named = Array.indexedMap (\i d -> Maybe.withDefault (meant Reason.NotSet d) (Array.get i colors)) namedColors }
 
 
 {-| The most bytes the scrollback's pages may hold, changed while the

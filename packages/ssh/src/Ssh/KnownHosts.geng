@@ -31,6 +31,7 @@ import Bytes exposing (Bytes)
 import Ssh.Base64 as Base64
 import Ssh.Wire as Wire
 import SshCrypto
+import Ssh.Reason as Reason
 
 
 type Marker
@@ -67,7 +68,7 @@ parse text =
                             { acc | entries = Array.pushLast entry acc.entries }
 
                         Err problem ->
-                            { acc | problems = Array.pushLast { lineNumber = l.lineNumber, problem = problem } acc.problems }
+                            meant Reason.FromOutside { acc | problems = Array.pushLast { lineNumber = l.lineNumber, problem = problem } acc.problems }
             )
             { entries = [], problems = [] }
 
@@ -87,7 +88,7 @@ parseLine lineNumber text =
                     { marker = CertAuthority, rest = Array.dropFirst 1 words }
 
                 _ ->
-                    { marker = Plain, rest = words }
+                    meant Reason.NotSet { marker = Plain, rest = words }
     in
     when Array.takeFirst 3 marked.rest is
         [ hosts, keyType, encoded ] ->
@@ -147,7 +148,7 @@ lookupName target =
 `ssh-rsa` and so on; empty for one that does not read. -}
 keyTypeOf : Bytes -> String
 keyTypeOf blob =
-    Wire.reader blob |> Wire.name |> Result.map .value |> Result.withDefault ""
+    Wire.reader blob |> Wire.name |> Result.map .value |> Result.withDefault (meant Reason.FromOutside "")
 
 
 {-| Whether a line's names take the lookup name. -}
@@ -186,7 +187,7 @@ globFrom : Array Char -> Array Char -> Bool
 globFrom pattern name =
     when Array.popFirst pattern is
         Nothing ->
-            Array.isEmpty name
+            meant Reason.NoMore Array.isEmpty name
 
         Just p ->
             if p.first == '*' then
@@ -196,7 +197,7 @@ globFrom pattern name =
                                 globFrom pattern n.rest
 
                             Nothing ->
-                                False
+                                meant Reason.NoMore False
                        )
 
             else
@@ -205,7 +206,7 @@ globFrom pattern name =
                         (p.first == '?' || p.first == n.first) && globFrom p.rest n.rest
 
                     Nothing ->
-                        False
+                        meant Reason.NoMore False
 
 
 {-| What the file says of the key a server showed:
@@ -301,6 +302,6 @@ line target key =
                     "|1|" ++ Base64.encode salt ++ "|" ++ Base64.encode (SshCrypto.hmac SshCrypto.HmacSha1 salt (Bytes.fromString target.name))
 
                 Nothing ->
-                    target.name
+                    meant Reason.NotSet target.name
     in
     names ++ " " ++ keyTypeOf key ++ " " ++ Base64.encode key ++ "\n"

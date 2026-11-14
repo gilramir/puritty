@@ -37,6 +37,7 @@ import Ssh.Random as Random exposing (Random)
 import Ssh.Wire as Wire exposing (Reader)
 import SshCrypto exposing (Cipher(..))
 import UInt8
+import Ssh.Reason as Reason
 
 
 {-| What the client offers, each list in its order of preference.
@@ -373,6 +374,7 @@ consume st =
         AwaitingVersion ->
             when versionLine st.buffer is
                 Nothing ->
+                    meant Reason.NotYet
                     if Bytes.length st.buffer > 8192 then
                         fail "no version line in the first 8 KiB" st
 
@@ -468,6 +470,7 @@ nextPacket st =
     else
         when st.keysIn is
             Nothing ->
+                meant Reason.NotYet
                 let
                     length =
                         Wire.wrapInt (Bytes.slice 0 4 st.buffer)
@@ -484,7 +487,7 @@ nextPacket st =
             Just inKeys ->
                 when SshCrypto.openLength { cipher = inKeys.cipher, key = inKeys.key, sequence = st.seqIn } (Bytes.slice 0 4 st.buffer) is
                     Nothing ->
-                        Broken "a packet length that does not read"
+                        meant Reason.FromOutside Broken "a packet length that does not read"
 
                     Just length ->
                         let
@@ -500,7 +503,7 @@ nextPacket st =
                         else
                             when SshCrypto.open { cipher = inKeys.cipher, key = inKeys.key, iv = inKeys.iv, sequence = st.seqIn, count = st.countIn } (Bytes.slice 0 whole st.buffer) is
                                 Nothing ->
-                                    Broken "a packet whose MAC does not hold"
+                                    meant Reason.FromOutside Broken "a packet whose MAC does not hold"
 
                                 Just plain ->
                                     unpad plain (Bytes.slice whole (Bytes.length st.buffer) st.buffer)
@@ -574,7 +577,7 @@ dispatch seq payload st =
                 emit (Closed closed) { st | phase = Dead }
 
             Err _ ->
-                emit (Closed { code = 0, description = "" }) { st | phase = Dead }
+                meant Reason.FromOutside emit (Closed { code = 0, description = "" }) { st | phase = Dead }
 
     else if n == msgIgnore || n == msgDebug then
         st
@@ -620,7 +623,7 @@ unimplemented payload st =
                 st
 
         Nothing ->
-            st
+            meant Reason.NotOpen st
 
 
 skip : Int -> Reader -> Result String Reader
@@ -859,7 +862,7 @@ ecdhReply payload st =
         { kex = Just { ours = ours, oursSeq = oursSeq, theirs = Just theirs, secret = Just secret, chosen = Just chosen }, parsed = Ok reply } ->
             when SshCrypto.x25519Shared secret reply.theirPublic is
                 Nothing ->
-                    fail "the server's X25519 value gives no shared secret" st
+                    meant Reason.FromOutside fail "the server's X25519 value gives no shared secret" st
 
                 Just shared ->
                     let
@@ -884,7 +887,7 @@ ecdhReply payload st =
                             SshCrypto.verify { algorithm = chosen.hostKey, publicKey = reply.hostKey, signature = reply.signature, data = exchangeHash }
 
                         session =
-                            Maybe.withDefault exchangeHash st.sessionId
+                            Maybe.withDefault (meant Reason.NotYet exchangeHash) st.sessionId
 
                         keysFor letters cipherName =
                             keys shared exchangeHash session letters cipherName
@@ -976,7 +979,7 @@ theirNewkeys : State -> State
 theirNewkeys st =
     when Maybe.andThen .incoming st.kex is
         Nothing ->
-            fail "a NEWKEYS out of turn" st
+            meant Reason.FromOutside fail "a NEWKEYS out of turn" st
 
         Just incoming ->
             let
@@ -1036,7 +1039,7 @@ extInfo payload st =
             emit (ExtInfo extensions) st
 
         Err why ->
-            fail ("an EXT_INFO that does not read: " ++ why) st
+            meant Reason.FromOutside fail ("an EXT_INFO that does not read: " ++ why) st
 
 
 -- SENDING
@@ -1049,7 +1052,7 @@ sendPacket payload st =
         block =
             when st.keysOut is
                 Nothing ->
-                    8
+                    meant Reason.NotYet 8
 
                 Just k ->
                     SshCrypto.blockSize k.cipher
@@ -1080,7 +1083,7 @@ sendPacket payload st =
         wire =
             when st.keysOut is
                 Nothing ->
-                    plain
+                    meant Reason.NotYet plain
 
                 Just k ->
                     SshCrypto.seal { cipher = k.cipher, key = k.key, iv = k.iv, sequence = st.seqOut, count = st.countOut } plain

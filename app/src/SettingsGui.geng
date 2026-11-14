@@ -18,6 +18,7 @@ import SettingsWindow exposing (Focus(..), Model, Target(..))
 import Text
 import UInt8
 import Words exposing (Lang)
+import Reason
 
 
 {-| The window: its cells, and a cell's size in pixels. -}
@@ -747,6 +748,7 @@ valueOf lang m s b typing preedit px body d =
             typingField b t preedit (if t.problem /= Nothing then look.error else look.accent) px body d
 
         Nothing ->
+            meant Reason.NotOpen
             when s.get m.config is
                 Flag on ->
                     d
@@ -838,7 +840,7 @@ hostRow lang m i y rowH x0 vx valueW fieldH px body small here preedit d =
                     typingField valueBox t preedit look.accent px body dd
 
                 Nothing ->
-                    dd
+                    meant Reason.NotOpen dd
                         |> draw (framed { x = valueBox.x, y = valueBox.y, w = valueBox.w, h = valueBox.h, r = px 4, color = look.field, border = look.fieldLine })
                         |> draw (text { x = valueBox.x + px 10, y = valueBox.y + fieldH // 2 + body // 3, size = body, color = look.dim, text = placeholder })
     in
@@ -917,7 +919,7 @@ suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
                         { x = vx, y = top, w = valueW, h = listH }
 
                     sampleFont =
-                        Array.get t.pick offered |> Maybe.withDefault (String.trim (String.fromArray t.chars))
+                        Array.get t.pick offered |> Maybe.withDefault (meant Reason.OutOfRange String.trim (String.fromArray t.chars))
 
                     sampleY =
                         top + px 4 + itemsH
@@ -964,7 +966,7 @@ suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
                 d
 
         Nothing ->
-            d
+            meant Reason.NotOpen d
 
 
 {-| A choice setting's list, open (SG13): every choice the window has room
@@ -1091,6 +1093,7 @@ footer lang m size px small d =
                     if SettingsWindow.isFamily m then said.hintFont else if SettingsWindow.inList m && m.row == 0 then said.hintQuick else said.hintTyping
 
                 Nothing ->
+                    meant Reason.NotOpen
                     when m.focus is
                         OnSearch ->
                             said.hintSearch
@@ -1114,7 +1117,7 @@ footer lang m size px small d =
                     Words.say lang message
 
                 Nothing ->
-                    hint
+                    meant Reason.NotOpen hint
     in
     d
         |> draw (box { x = 0, y = y, w = w, h = 1, r = 0, color = look.line })

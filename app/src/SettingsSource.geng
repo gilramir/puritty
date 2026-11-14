@@ -17,6 +17,7 @@ import Platform
 import Schema
 import Source exposing (Source)
 import Task exposing (Task)
+import Reason
 
 
 {-| What the command line gave: the settings file, if any (one it names
@@ -66,7 +67,7 @@ settingsFile vars named =
             Just { path = p, required = True }
 
         Nothing ->
-            Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) (Platform.settingsDirectory vars)
+            meant Reason.NotSet Maybe.map (\d -> { path = Path.append (Path.fromString "config.toml") (Path.fromString d), required = False }) (Platform.settingsDirectory vars)
 
 
 {-| The settings: the file's, leniently (`Schema.decode`), or the defaults
@@ -76,7 +77,7 @@ readSettings : Given -> Task String Read
 readSettings given =
     when given.file is
         Nothing ->
-            Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
+            meant Reason.NotSet Task.succeed (Gave { config = overridden given Config.defaults, problems = [] })
 
         Just f ->
             let
@@ -94,7 +95,7 @@ readSettings given =
                                     }
 
                             Err r ->
-                                Unread (path ++ " line " ++ String.fromInt r.line ++ " is not TOML: " ++ r.message)
+                                meant Reason.FromOutside Unread (path ++ " line " ++ String.fromInt r.line ++ " is not TOML: " ++ r.message)
                     )
                 |> Task.onError
                     (\err ->
@@ -113,7 +114,7 @@ readSettings given =
 overridden : Given -> Config -> Config
 overridden given config =
     { config
-        | title = Maybe.withDefault config.title given.title
+        | title = Maybe.withDefault (meant Reason.NotSet config.title) given.title
         , command = if Array.isEmpty given.program then config.command else given.program
     }
 
@@ -131,7 +132,7 @@ directoryOf path =
                 d
 
         Nothing ->
-            Path.fromString "."
+            meant Reason.NotSet Path.fromString "."
 
 
 {-| The settings file's directory watched, into a source of its own: the
@@ -142,7 +143,7 @@ watchSettings : Given -> Task x (Maybe (Source Directory.Change))
 watchSettings given =
     when given.file is
         Nothing ->
-            Task.succeed Nothing
+            meant Reason.NotSet Task.succeed Nothing
 
         Just f ->
             let

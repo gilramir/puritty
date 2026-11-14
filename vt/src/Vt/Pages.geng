@@ -53,6 +53,7 @@ import Vt.Cell exposing (..)
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Screen exposing (..)
+import Vt.Reason as Reason
 
 
 -- THE SCROLLBACK
@@ -353,7 +354,7 @@ copySlots back i acc =
             copySlots back (i + 1) (Array.pushLast (copyPage page) acc)
 
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
 
 {-| A page with no rows, which holds no bytes: a slot a dropped page
@@ -398,7 +399,7 @@ ownedAt bytes i =
             UInt8.toInt b
 
         Nothing ->
-            -1
+            meant Reason.OutOfRange -1
 
 
 {-| The oldest pages dropped while the pages hold more bytes than the limit
@@ -455,7 +456,7 @@ rowsIn pages i n =
             rowsIn pages (i + 1) (addRows n (pageRowCount page))
 
         Nothing ->
-            n
+            meant Reason.NoMore n
 
 
 compact : (taken back : Back) -> Back
@@ -573,7 +574,7 @@ pagedCell c clusters =
                     { cell = Bitwise.or high (Int64.fromInt (Bitwise.or clusterBit k.id)), clusters = k.clusters }
 
                 Nothing ->
-                    { cell = Bitwise.or high (Int64.fromInt (Maybe.withDefault 0 (Array.first c.points))), clusters = clusters }
+                    meant Reason.NoMore { cell = Bitwise.or high (Int64.fromInt (Maybe.withDefault 0 (Array.first c.points))), clusters = clusters }
 
 
 {-| A row as the dump reads it: its cells, each its code points, width
@@ -616,7 +617,7 @@ unpackRows page h r ti acc =
                 unpackText page.text ti ext []
 
             cells =
-                Array.indexedMap (\x c -> { c | style = Maybe.withDefault 0 (Array.get x styles.styles) }) row.cells
+                Array.indexedMap (\x c -> { c | style = Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get x styles.styles) }) row.cells
         in
         unpackRows page (h + 2) styles.next row.next (Array.pushLast { cells = cells, wrapped = Bitwise.and 0x8000 header /= 0, prompt = Bitwise.and 3 (Bitwise.shiftRightZfBy 10 header) } acc)
 
@@ -684,7 +685,7 @@ unpackText text i left acc =
                             Array.set k { cell | wide = Bitwise.or (Int64.toIntWrap protectBit) cell.wide } a
 
                         Nothing ->
-                            a
+                            meant Reason.OutOfRange a
 
                 tail =
                     when Array.get (n - 1) acc is
@@ -692,7 +693,7 @@ unpackText text i left acc =
                             last.wide == wideTail
 
                         Nothing ->
-                            False
+                            meant Reason.OutOfRange False
             in
             unpackText text (i + 1) left (guarded (n - 1) (if tail then guarded (n - 2) acc else acc))
 
@@ -716,14 +717,14 @@ unpackText text i left acc =
                                 n - 1
 
                         Nothing ->
-                            -1
+                            meant Reason.OutOfRange -1
             in
             when Array.get at acc is
                 Just cell ->
                     unpackText text d.next left (Array.set at { cell | points = Array.pushLast d.cp cell.points } acc)
 
                 Nothing ->
-                    unpackText text d.next left acc
+                    meant Reason.OutOfRange unpackText text d.next left acc
 
         else if d.cp >= 0x80 && Width.width d.cp == 2 then
             unpackText text d.next (left - 2) (Array.pushLast { points = [], wide = wideTail, style = 0 } (Array.pushLast { points = [ d.cp ], wide = wideHead, style = 0 } acc))
