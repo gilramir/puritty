@@ -691,46 +691,56 @@ hostList cp fs vars given asked got =
                         Task.succeed {}
 
                     SettingsProgram.Session h ->
-                        let
-                            config =
-                                (\c -> { c | title = Maybe.withDefault (meant Reason.NotSet c.title) asked.title }) (Hosts.session got.config h)
-                        in
-                        Platform.locale vars
-                            |> Task.andThen
-                                (\locale ->
-                                    Window.setFont { font = config.font, lang = Maybe.withDefault (meant Reason.NotSet locale.language) config.language, points = config.points, glyphCap = config.glyphCacheMb * 1024 * 1024 }
+                        becomeSession cp fs vars given asked got (Hosts.session got.config h)
+
+                    SettingsProgram.LocalShell ->
+                        -- the local shell the list offers (SG15)
+                        becomeSession cp fs vars given asked got got.config
+            )
+
+
+{-| The host list's window becoming the session chosen in it, a host's or
+the local shell: its font, the session's size or the last window's,
+maximized as it was (WP8), and the session begun. -}
+becomeSession : Process.Permission -> File.Permission -> Dict String String -> Given -> { config : Maybe Path.Path, title : Maybe String, host : Maybe String, program : Array String } -> { config : Config, problems : Array String } -> Config -> Task String {}
+becomeSession cp fs vars given asked got chosen =
+    let
+        config =
+            { chosen | title = Maybe.withDefault (meant Reason.NotSet chosen.title) asked.title }
+    in
+    Platform.locale vars
+        |> Task.andThen
+            (\locale ->
+                Window.setFont { font = config.font, lang = Maybe.withDefault (meant Reason.NotSet locale.language) config.language, points = config.points, glyphCap = config.glyphCacheMb * 1024 * 1024 }
+                    |> Task.andThen
+                        (\done ->
+                            when done is
+                                Ok cell ->
+                                    -- the host list's window, the settings
+                                    -- window's shape, becomes a terminal's
+                                    -- (SG11)
+                                    lastWindow fs vars { dir = Nothing, claimed = Nothing }
                                         |> Task.andThen
-                                            (\done ->
-                                                when done is
-                                                    Ok cell ->
-                                                        -- the host list's window, the settings
-                                                        -- window's shape, becomes a terminal's:
-                                                        -- the session's size (SG11)
-                                                        -- the session's size, or the last window's,
-                                                        -- maximized as it was (WP8)
-                                                        lastWindow fs vars { dir = Nothing, claimed = Nothing }
-                                                            |> Task.andThen
-                                                                (\last ->
-                                                                    let
-                                                                        sized =
-                                                                            when last is
-                                                                                Just l ->
-                                                                                    { config | columns = l.columns, rows = l.rows }
+                                            (\last ->
+                                                let
+                                                    sized =
+                                                        when last is
+                                                            Just l ->
+                                                                { config | columns = l.columns, rows = l.rows }
 
-                                                                                Nothing ->
-                                                                                    -- the first window: the settings' size
-                                                                                    meant Reason.NotSet config
-                                                                    in
-                                                                    Window.resize { cols = sized.columns, rows = sized.rows }
-                                                                        |> Task.andThen (\_ -> Window.setMaximized (Maybe.map .maximized last |> Maybe.withDefault (meant Reason.NotSet False)))
-                                                                        |> Task.andThen (\_ -> Text.ligatures sized.ligatures)
-                                                                        |> Task.andThen (\_ -> begin cp vars given got.problems locale sized cell { dir = Nothing, claimed = Nothing })
-                                                                )
-
-                                                    Err why ->
-                                                        meant Reason.Refused Task.fail ("cannot open the host's font: " ++ why)
+                                                            Nothing ->
+                                                                -- the first window: the settings' size
+                                                                meant Reason.NotSet config
+                                                in
+                                                Window.resize { cols = sized.columns, rows = sized.rows }
+                                                    |> Task.andThen (\_ -> Window.setMaximized (Maybe.map .maximized last |> Maybe.withDefault (meant Reason.NotSet False)))
+                                                    |> Task.andThen (\_ -> Text.ligatures sized.ligatures)
+                                                    |> Task.andThen (\_ -> begin cp vars given got.problems locale sized cell { dir = Nothing, claimed = Nothing })
                                             )
-                                )
+
+                                Err why ->
+                                    meant Reason.Refused Task.fail ("cannot open the session's font: " ++ why)
+                        )
             )
 
 
@@ -2858,7 +2868,7 @@ menuItems config =
     [ { label = "Settings…", does = Starts [ "settings" ] }
     , { label = "Hosts…", does = Starts [ "hosts" ] }
     , { label = "New tab", does = OpensTab }
-    , { label = "New window", does = Starts [ "shell" ] }
+    , { label = "New local window", does = Starts [ "shell" ] }
     , { label = "Rename tab…", does = Renames }
     , { label = "Tab color…", does = Colors }
     , { label = "Reopen closed tab", does = Reopens }

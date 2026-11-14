@@ -434,3 +434,23 @@ client, is the host list with made-up hosts.
 before this work too: in each, one puritty starts another, which runs no
 ssh. The gate is not in the unit gate; left to look into.
 
+
+## SG15 · The local shell in the host list (2026-11-14)
+
+Gilbert, on Windows, where puritty opens on the host list: nothing in it
+said how to open a session on this computer instead, which puritty calls
+the **local shell** (`puritty shell`, `start = "shell"`). The list's third
+fixed row is now "Local shell", "A shell on this computer, not over ssh",
+"this computer"; Enter or a click opens it, in the host list's own window
+(`SettingsProgram.LocalShell`, which `Main.becomeSession` begins as it
+begins a host's) or, from the settings window of a terminal, in a window of
+its own (`puritty shell`). The hosts are a row lower. The terminal's menu
+says "New local window" where it said "New window".
+
+The quick connect and new connection fields now take Home, End and Delete,
+which they had not (Gilbert).
+
+**Checked:** app tests 183 (the local shell's Enter, and Right and Delete
+doing nothing on it; the host tests a row lower); the settings gate 20 of
+20 and the hosts gate's `host-list`, a row lower; and run: `puritty hosts`,
+Down, Down, Enter became a shell, which ran what was typed.

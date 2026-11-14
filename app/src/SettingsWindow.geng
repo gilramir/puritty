@@ -153,6 +153,7 @@ type Effect
     | RenameHost { from : String, to : String }
     | Hear { setting : Setting, value : Value }
     | ForgetRecent Recent
+    | OpenLocal
 
 
 init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, launcher : Bool } -> Model
@@ -390,10 +391,17 @@ inList m =
     onHosts m && m.form == Nothing
 
 
-{-| The host on a row of the list (quick connect and New host come first). -}
+{-| The host on a row of the list (quick connect, New connection and the
+local shell come first). -}
 hostAt : Model -> Int -> Maybe { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent }
 hostAt m row =
-    Array.get (row - 2) (hostRows m)
+    -- below the three fixed rows; Array.get would count a negative place
+    -- from the end
+    if row < 3 then
+        Nothing
+
+    else
+        Array.get (row - 3) (hostRows m)
 
 
 {-| Right on a recent connection (SG14): a saved host's form, as Right on
@@ -493,7 +501,7 @@ connect, New host and the hosts. -}
 rowCount : Model -> Int
 rowCount m =
     if inList m then
-        2 + Array.length (hostRows m)
+        3 + Array.length (hostRows m)
 
     else
         Array.length (listed m)
@@ -872,6 +880,10 @@ rowsKey k m =
                         -- quick connect, or a new host's name
                         done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
 
+                    else if m.row == 2 then
+                        -- the local shell (SG15)
+                        { model = { m | message = Just (Words.message "message.openingLocal") }, effects = [ OpenLocal ] }
+
                     else
                         when hostAt m m.row is
                             Just h ->
@@ -917,7 +929,7 @@ rowsKey k m =
                             { m | form = Nothing, message = Nothing }
 
                         row =
-                            Array.findFirst (\h -> h.name == name && h.recent == Nothing) (hostRows back) |> Maybe.map (\f -> f.index + 2) |> Maybe.withDefault (meant Reason.Gone 0)
+                            Array.findFirst (\h -> h.name == name && h.recent == Nothing) (hostRows back) |> Maybe.map (\f -> f.index + 3) |> Maybe.withDefault (meant Reason.Gone 0)
                     in
                     done (keepInView { back | row = row })
 
@@ -1462,6 +1474,15 @@ quickKey k t m =
 
     else if k.sym == sym.right then
         edited t.chars (min (Array.length t.chars) (t.caret + 1))
+
+    else if k.sym == sym.home then
+        edited t.chars 0
+
+    else if k.sym == sym.end then
+        edited t.chars (Array.length t.chars)
+
+    else if k.sym == sym.delete && t.caret < Array.length t.chars then
+        edited (Array.slice 0 t.caret t.chars ++ Array.slice (t.caret + 1) (Array.length t.chars) t.chars) t.caret
 
     else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
         let

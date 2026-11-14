@@ -66,7 +66,7 @@ CASES = [
     # the host list (V65): quick connect and New host come first; Enter on
     # the first host makes the same window
     # its session, so there is one window, with the host's title and colors
-    ("host-list", None, ["hosts"], ("puritty hosts", ["Down", "Down", "Return"])),
+    ("host-list", None, ["hosts"], ("puritty hosts", ["Down", "Down", "Down", "Return"])),
     ("start-hosts", 'start = "hosts"', [], ("puritty hosts", [])),
     # from the settings window, a session opens a window of its own and the
     # settings window stays

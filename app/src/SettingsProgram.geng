@@ -64,7 +64,7 @@ type alias State =
     , launcher : Bool
     -- where the recent connections are kept (SG14)
     , stateDir : Maybe Path.Path
-    , outcome : Maybe Config.Host
+    , outcome : Outcome
     -- the last left press, to count a double click (ST27)
     , lastPress : { at : Int, row : Int, col : Int, count : Int }
     }
@@ -85,6 +85,7 @@ host, whose session the same window becomes (V65). -}
 type Outcome
     = Closed
     | Session Config.Host
+    | LocalShell
 
 
 {-| The window's size in the terminal font's cells: narrower and taller
@@ -183,15 +184,7 @@ openWindow r given locale =
                                         -- and the I-beam back for a session that takes this
                                         -- window, whose loop begins with one
                                         |> Task.andThen (\s -> Window.setPointer Window.TextPointer |> Task.map (\_ -> s))
-                                        |> Task.map
-                                            (\s ->
-                                                when s.outcome is
-                                                    Just h ->
-                                                        Session h
-
-                                                    Nothing ->
-                                                        meant Reason.NotSet Closed
-                                            )
+                                        |> Task.map .outcome
                         )
             )
 
@@ -272,7 +265,7 @@ first r given read cell w shotPath lang =
     , shotPath = shotPath
     , opener = r.opener
     , launcher = r.launcher
-    , outcome = Nothing
+    , outcome = Closed
     , lastPress = { at = -1000, row = -1, col = -1, count = 0 }
     }
 
@@ -511,6 +504,15 @@ effect e s =
         SettingsWindow.Hear w ->
             hear w |> Task.map (\_ -> s)
 
+        SettingsWindow.OpenLocal ->
+            -- the local shell (SG15): this window's session in the host
+            -- list, or a window of its own
+            if s.launcher then
+                Task.succeed { s | outcome = LocalShell, closed = True }
+
+            else
+                connect (Config.host "" "") [ "shell" ] s
+
         SettingsWindow.ForgetRecent recent ->
             when s.stateDir is
                 Just dir ->
@@ -524,7 +526,7 @@ effect e s =
 starting another puritty is remembered by it. -}
 whenLauncher : Recent -> State -> Task String State
 whenLauncher recent s =
-    if s.launcher && s.outcome /= Nothing then
+    if s.launcher && s.outcome /= Closed then
         remembered recent s
 
     else
@@ -580,7 +582,7 @@ it in a window of its own, this program again with `args`. -}
 connect : Config.Host -> Array String -> State -> Task String State
 connect h args s =
     if s.launcher then
-        Task.succeed { s | outcome = Just h, closed = True }
+        Task.succeed { s | outcome = Session h, closed = True }
 
     else
         when s.opener is

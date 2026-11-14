@@ -72,9 +72,9 @@ CASES = [
     # a host removed, one renamed with the table under it, one copied
     ("host-new", None, TO_HOSTS + [DOWN, ENTER, ("type", "lab"), ENTER, ENTER] + [BACKSPACE] * 3
                        + [("type", "lab.example.com"), ENTER, DOWN, ENTER, ("type", "me"), ENTER]),
-    ("host-removed", HOSTS, TO_HOSTS + [DOWN, DOWN, "Delete"]),
-    ("host-renamed", HOSTS, TO_HOSTS + [DOWN, DOWN, "Right", "Up", ENTER] + [BACKSPACE] * 3 + [("type", "lab"), ENTER]),
-    ("host-copied", HOSTS, TO_HOSTS + [DOWN, DOWN, "ctrl+d"]),
+    ("host-removed", HOSTS, TO_HOSTS + [DOWN, DOWN, DOWN, "Delete"]),
+    ("host-renamed", HOSTS, TO_HOSTS + [DOWN, DOWN, DOWN, "Right", "Up", ENTER] + [BACKSPACE] * 3 + [("type", "lab"), ENTER]),
+    ("host-copied", HOSTS, TO_HOSTS + [DOWN, DOWN, DOWN, "ctrl+d"]),
     # the mouse (ST27): a click on a value changes it, one on the reset
     # mark resets it, a click on a page shows it. Clicks are at pixels of the
     # drawn window (docs/settings-gui.md SG3, SG8): at the gate's font a

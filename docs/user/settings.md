@@ -121,7 +121,8 @@ tab = "#c62828"                  # its tabs' color in the bar
 A name the file doesn't have is looked up in `~/.ssh/config`, so your
 aliases work as they are.
 
-The host list offers the connections you made last first (eight, or as
+The host list's **Local shell** opens a shell on this computer instead of
+a host (on Windows, PowerShell). It offers the connections you made last first (eight, or as
 many as `[connections] recent` says; 0 for none): Enter makes one again,
 Delete forgets it, and Right saves a quick one as a host. In quick connect,
 anything after a space is a command to run there, as with `ssh`:
