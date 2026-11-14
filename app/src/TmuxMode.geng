@@ -45,6 +45,7 @@ The panes' terminals answer nothing: tmux answered their programs already.
 import Array.Builder as Builder exposing (Builder)
 import Bitwise
 import Bytes exposing (Bytes)
+import Clock
 import Dict exposing (Dict)
 import Keys
 import Reason
@@ -166,10 +167,11 @@ type alias State =
     , copy : Dict Int Copying
     , copyAsked : Dict Int Bool
     -- each pane's mode by tmux's name for it (`clock-mode`), the time
-    -- of day less the loop's clock for the clock (TM32), and the tree
+    -- of day in ms at a reading of the loop's clock for the clock (TM32,
+    -- RE11), and the tree
     -- puritty shows for `choose-tree`
     , paneModes : Dict Int String
-    , dayOffset : Maybe Int
+    , dayAt : Maybe { clock : Int, ms : Int }
     , tree : Maybe Tree
     -- choose-buffer's or choose-client's list, drawn by puritty (TM55)
     , listing : Maybe Listing
@@ -679,7 +681,7 @@ idle _ =
     , copy = Dict.empty
     , copyAsked = Dict.empty
     , paneModes = Dict.empty
-    , dayOffset = Nothing
+    , dayAt = Nothing
     , tree = Nothing
     , listing = Nothing
     , commandNames = []
@@ -2132,9 +2134,18 @@ replied expect ok lines acc =
                 asked =
                     Array.foldl (\pane a -> askCopy pane a) { acc | state = cleared } entered
             in
-            if clocked && asked.state.dayOffset == Nothing then
+            if clocked && asked.state.dayAt == Nothing then
                 -- the time of day, for the clock (TM32)
                 ask [ { command = "display-message -p " ++ Command.quote "D %H %M %S", expect = ForDayTime } ] asked
+
+            else if not clocked then
+                -- asked again when a clock is shown again, since the
+                -- loop's clock starts over (RE11)
+                let
+                    without =
+                        asked.state
+                in
+                { asked | state = { without | dayAt = Nothing } }
 
             else
                 asked
@@ -2660,7 +2671,7 @@ replied expect ok lines acc =
                         _ ->
                             meant Reason.FromOutside Nothing
             in
-            { acc | state = { st | dayOffset = Maybe.map (\day -> day * 1000 - modBy 86400000 st.clock) seconds } }
+            { acc | state = { st | dayAt = Maybe.map (\day -> { clock = st.clock, ms = day * 1000 }) seconds } }
 
         ForCopy ->
             let
@@ -5819,7 +5830,7 @@ selecting how p col row q s =
     else if p.action == 0 && p.button == 1 then
         let
             count =
-                if how.ms - s.clicks.at <= 500 && s.clicks.pane == q.id && s.clicks.point == at then
+                if s.clicks.count > 0 && Clock.since s.clicks.at how.ms <= 500 && s.clicks.pane == q.id && s.clicks.point == at then
                     modBy 3 s.clicks.count + 1
 
                 else
@@ -6899,7 +6910,7 @@ runLine ctx line s =
                                 opened =
                                     sendAsking
                                         [ { command = "list-panes -F " ++ Command.quote "N #{pane_id} #{pane_index}", expect = ForNumbers } ]
-                                        { s | said = "", numbers = Just { indexes = [], until = s.clock + Maybe.withDefault (meant Reason.NotSet s.panesMs) d.duration, template = d.template, keys = d.keys, pane = ctx.pane } }
+                                        { s | said = "", numbers = Just { indexes = [], until = Clock.after s.clock (Maybe.withDefault (meant Reason.NotSet s.panesMs) d.duration), template = d.template, keys = d.keys, pane = ctx.pane } }
 
                                 ran =
                                     runLine ctx d.after opened.state
@@ -7553,7 +7564,7 @@ dueAt : State -> Int
 dueAt s =
     let
         clockDue =
-            if s.dayOffset /= Nothing && Array.any (\m -> m == "clock-mode") (Dict.values s.paneModes) then
+            if s.dayAt /= Nothing && Array.any (\m -> m == "clock-mode") (Dict.values s.paneModes) then
                 -- the clock drawn again as the minute turns, or the second
                 -- when it shows seconds
                 let
@@ -7564,7 +7575,7 @@ dueAt s =
                         else
                             60000
                 in
-                s.clock + step - modBy step (s.clock + Maybe.withDefault 0 s.dayOffset)
+                Clock.after s.clock (step - modBy step (Maybe.withDefault (meant Reason.NotSet 0) (dayNow s)))
 
             else
                 -1
@@ -7572,7 +7583,7 @@ dueAt s =
     when s.numbers is
         Just n ->
             if clockDue >= 0 then
-                min n.until clockDue
+                Clock.earlier n.until clockDue
 
             else
                 n.until
@@ -7584,10 +7595,16 @@ dueAt s =
 {-| The time, from the loop: the panes' numbers closed once it is past
 their time. -}
 tick : Int -> (taken s : State) -> State
-tick ms s =
+tick ms s0 =
+    let
+        -- the time of day carried forward to now, since the loop's clock
+        -- starts over (RE11)
+        s =
+            { s0 | dayAt = Maybe.map (\d -> { clock = ms, ms = modBy 86400000 (d.ms + Clock.since d.clock ms) }) s0.dayAt }
+    in
     when s.numbers is
         Just n ->
-            if ms >= n.until then
+            if Clock.reached n.until ms then
                 { s | numbers = Nothing, clock = ms }
 
             else
@@ -12227,15 +12244,22 @@ drawInfo theme colors tmuxLook area pv =
         ++ foot
 
 
+{-| The time of day in milliseconds at the loop's last reading (`clock`),
+from the time tmux gave and the loop's clock since. -}
+dayNow : State -> Maybe Int
+dayNow s =
+    Maybe.map (\d -> modBy 86400000 (d.ms + Clock.since d.clock s.clock)) s.dayAt
+
+
 {-| The time of day for the clock, `HH:MM`, from the loop's clock and the
 offset tmux's own time gave; empty until it is known. -}
 clockText : State -> String
 clockText s =
-    when s.dayOffset is
-        Just offset ->
+    when dayNow s is
+        Just day ->
             let
                 seconds =
-                    modBy 86400 ((s.clock + offset) // 1000)
+                    day // 1000
 
                 hour =
                     seconds // 3600

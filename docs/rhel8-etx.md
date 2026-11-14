@@ -262,3 +262,49 @@ jiffies: next, as RE11.
 **Checked:** on gmktec7, up 30.3 days, three starts (two as the file manager
 starts it, `gio launch` of the desktop entry, one from a shell): the
 prompt on the screen at once each time, where before every start was blank.
+
+## RE11 · A clock that starts over, compared by differences (2026-11-14)
+
+RE10 left a window open 24.8 days at the same limit. puritty never needs to
+know how long a window has been open, only how long since a moment (a
+frame, a blink, a click, a save), and those are seconds; Gilbert chose a
+clock that starts over and is compared by differences, as the Linux kernel
+compares its jiffies, over carrying every time in `Int64`.
+
+**`Clock`** (app): milliseconds modulo 2^30, so a reading is never
+negative and -1 still means no time where a field keeps one. `since a b` is
+the difference taken modulo the period into (-2^29, 2^29], right while it
+is under 6.2 days; `after t ms` a time later, modulo the period; `reached`,
+`earlier`, `latest` and `soonest` (-1 for none) are made of them. Nothing
+compares two times by `<` or adds them as plain `Int`s any more:
+
+- `Main`: the frame and the synchronized update (`frameAt`; an urgent
+  frame is due at the last frame's time, where it was 0), the blink, the
+  timer's delay, the saves (a restored window's first save is due at its
+  start, where it was 0), the settings reload, the log's writes, the
+  closed tabs' order and expiry, the quiet start of a restored window, and
+  the terminal's and the tab bar's double clicks (a first click is not
+  half of one: `count > 0`).
+- `Diag`: each line carries the time of day forward from the last line's
+  by the difference, so a log runs past the clock's start.
+- `TmuxMode`: the panes' numbers' end, the double click, and the clock
+  mode's time of day, now a pair (a reading of the loop's clock, tmux's
+  time of day then) carried forward at each tick and dropped when no pane
+  shows a clock, so that tmux is asked again next time. `Tmux.Bindings`'
+  `repeat-time` the same, with its own copy of the difference, since the
+  tmux package does not see the app's module.
+
+`SettingsProgram`'s double click keeps `Int64` press times (RE10) and needs
+nothing. `PURITTY_CLOCK_START` sets the first reading, for a test to start
+the clock just before it starts over.
+
+**Left:** a gap is right while it is under 6.2 days. A log with no line for
+6.2 days would carry its time of day forward wrongly; a tmux clock is
+carried at least every minute while it shows.
+
+**Checked:** app tests 193 (ten for the clock: a reading from a machine up
+30 days, `after`, `since` both ways, `reached` before and after, `soonest`,
+`latest`, and a log line's time across the start); under Xvfb with the
+clock started 2 s before it starts over, a line printed before and one
+after it drawn as they came, a word typed after it echoed as it was typed,
+and Enter.

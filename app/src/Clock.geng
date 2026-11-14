@@ -1,0 +1,85 @@
+module Clock exposing (after, earlier, fromSystem, latest, period, reached, since, soonest)
+
+{-| The window's clock (`docs/rhel8-etx.md` RE11): milliseconds that start
+over every `period`, about 12.4 days, and are never negative, so that -1
+still stands for no time where a field keeps one. puritty only asks how long
+since a moment, never what the time is, so every test is made on the
+difference (`since`), as the Linux kernel compares its jiffies; a difference
+is right while it is less than half the period, 6.2 days, and puritty's are
+seconds. A time compared by `<` or `>`, or an `Int` sum of two, is wrong
+once the clock starts over.
+-}
+
+import Int64
+
+
+{-| 2^30 ms. -}
+period : Int
+period =
+    1073741824
+
+
+{-| The system's monotonic clock, in milliseconds from an arbitrary moment,
+on this clock. -}
+fromSystem : Int64 -> Int
+fromSystem ms =
+    Int64.toInt (modBy 1073741824 ms)
+
+
+{-| How long from `from` to `to`, negative when `to` comes first. -}
+since : Int -> Int -> Int
+since from to =
+    let
+        d =
+            modBy period (to - from)
+    in
+    if d > period // 2 then
+        d - period
+
+    else
+        d
+
+
+{-| `ms` milliseconds after `t`. -}
+after : Int -> Int -> Int
+after t ms =
+    modBy period (t + ms)
+
+
+{-| Whether the time `due` has come at `now`. -}
+reached : Int -> Int -> Bool
+reached due now =
+    since due now >= 0
+
+
+{-| The sooner of two times. -}
+earlier : Int -> Int -> Int
+earlier a b =
+    if since a b >= 0 then
+        a
+
+    else
+        b
+
+
+{-| The later of two times. -}
+latest : Int -> Int -> Int
+latest a b =
+    if since a b >= 0 then
+        b
+
+    else
+        a
+
+
+{-| The sooner of two times, -1 standing for none. -}
+soonest : Int -> Int -> Int
+soonest a b =
+    if a < 0 then
+        b
+
+    else if b < 0 then
+        a
+
+    else
+        earlier a b

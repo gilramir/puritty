@@ -11,11 +11,13 @@ in that build, so a test of a platform's default reads it from there.
 
 import Bytes
 import Chord
+import Clock
 import Config
 import Diag
 import Expect exposing (Expectation)
 import Hosts
 import I18Next
+import Int64
 import LastWindow
 import Platform
 import Recent
@@ -37,7 +39,44 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, tabOrder, TmuxTests.tmuxMode ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, tabOrder, clock, TmuxTests.tmuxMode ]
+
+
+{-| The window's clock, which starts over every 2^30 ms (`docs/rhel8-etx.md`
+RE11): times compared by their difference, right across the start. -}
+clock : U.Suite
+clock =
+    let
+        late =
+            Clock.period - 10
+    in
+    run "clock"
+        [ { name = "a reading from a machine up 30 days fits"
+          , test =
+                \_ ->
+                    Expect.equal True
+                        (let
+                            r =
+                                Clock.fromSystem (Int64.fromInt 2147483647 * 2)
+                         in
+                         r >= 0 && r < Clock.period
+                        )
+          }
+        , { name = "after starts over past the period", test = \_ -> Expect.equal 6 (Clock.after late 16) }
+        , { name = "since across the start", test = \_ -> Expect.equal 16 (Clock.since late 6) }
+        , { name = "since backwards across the start", test = \_ -> Expect.equal -16 (Clock.since 6 late) }
+        , { name = "a frame due past the start is not reached before it", test = \_ -> Expect.equal False (Clock.reached (Clock.after late 16) (late + 5)) }
+        , { name = "a frame due past the start is reached after it", test = \_ -> Expect.equal True (Clock.reached (Clock.after late 16) 7) }
+        , { name = "the sooner of two across the start", test = \_ -> Expect.equal late (Clock.soonest 6 late) }
+        , { name = "none is not sooner", test = \_ -> Expect.equal 6 (Clock.soonest -1 6) }
+        , { name = "the later of two across the start", test = \_ -> Expect.equal 6 (Clock.latest late 6) }
+        , { name = "a log's time of day goes on across the start"
+          , test =
+                \_ ->
+                    Expect.equal [ "000001 00:00:00.020 note   x" ]
+                        (Diag.start "log" { ms = late, dayMs = 0 } [] |> Diag.add 10 "note" "x" |> Diag.take 10 |> .bytes |> Bytes.toString |> Maybe.withDefault "" |> String.lines |> Array.keepIf (\l -> String.contains "note" l))
+          }
+        ]
 
 
 {-| The tabs' order and the shown one's place (`docs/tabs.md` TB15), three

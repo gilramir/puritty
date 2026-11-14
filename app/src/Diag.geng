@@ -37,12 +37,13 @@ them to the file (`take`), at most every quarter second.
 
 import Bitwise
 import Bytes exposing (Bytes)
+import Clock
 import Reason
 
 
 {-| Where the lines go (`Nothing` while the log is off), the next line's
-number, the local time of day in milliseconds at `t0` of the loop's
-clock, the lines not yet written, when they were last written, and the
+number, the local time of day in milliseconds at `t0`, the time of the
+last line on the loop's clock, the lines not yet written, when they were last written, and the
 marks made. -}
 type alias Log =
     { path : Maybe String
@@ -81,9 +82,17 @@ add ms tag text log =
         log
 
     else
+        let
+            -- the time of day carried forward from the last line's, since
+            -- the loop's clock starts over (`Clock`, RE11)
+            day =
+                modBy 86400000 (log.dayMs + Clock.since log.t0 ms)
+        in
         { log
             | seq = log.seq + 1
-            , lines = Array.pushLast (pad 6 log.seq ++ " " ++ clock (log.dayMs + ms - log.t0) ++ " " ++ padRight 6 tag ++ " " ++ text) log.lines
+            , t0 = ms
+            , dayMs = day
+            , lines = Array.pushLast (pad 6 log.seq ++ " " ++ clock day ++ " " ++ padRight 6 tag ++ " " ++ text) log.lines
         }
 
 
@@ -118,7 +127,7 @@ due log =
         -1
 
     else
-        log.writtenAt + 250
+        Clock.after log.writtenAt 250
 
 
 {-| The waiting lines as the file's bytes, and the log without them. -}

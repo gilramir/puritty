@@ -98,7 +98,7 @@ route : Maybe String -> Int -> String -> Follow -> { send : Bool, reset : Bool, 
 route name ms modeTable s =
     let
         repeating =
-            s.repeatUntil >= 0 && ms <= s.repeatUntil
+            s.repeatUntil >= 0 && since ms s.repeatUntil >= 0
 
         clientTable =
             if s.repeatUntil >= 0 && not repeating then
@@ -173,7 +173,7 @@ route name ms modeTable s =
                                         Nothing ->
                                             meant Reason.NotKnown
                                                 if f.binding.repeat then
-                                                    { plain | table = f.table, repeatUntil = ms + s.repeatMs, ran = f.binding.command }
+                                                    { plain | table = f.table, repeatUntil = modBy clockPeriod (ms + s.repeatMs), ran = f.binding.command }
 
                                                 else
                                                     { plain | ran = f.binding.command }
@@ -297,3 +297,25 @@ leadingDigits text =
             )
             { digits = "", done = False }
         |> .digits
+
+
+{-| The loop's clock starts over every 2^30 ms and is never negative
+(puritty's `Clock`, `docs/rhel8-etx.md` RE11), so a time is compared by its
+difference: how long from `from` to `to`, negative when `to` comes
+first. -}
+since : Int -> Int -> Int
+since from to =
+    let
+        d =
+            modBy clockPeriod (to - from)
+    in
+    if d > clockPeriod // 2 then
+        d - clockPeriod
+
+    else
+        d
+
+
+clockPeriod : Int
+clockPeriod =
+    1073741824

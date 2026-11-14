@@ -45,6 +45,7 @@ import Backend exposing (Backend, Incoming(..))
 import Bitwise
 import Bytes exposing (Bytes)
 import Chord
+import Clock
 import Config exposing (Config)
 import Console
 import Diag
@@ -338,13 +339,21 @@ type Turn
     | BehindWritable Int
 
 
-{-| The window's clock: milliseconds since it began (`clockStart`). The
-system's own counts from an arbitrary moment, since the machine started on
-Linux and Windows, and a machine up longer than 24.8 days had passed the
-largest Int, so every time read the same and no frame came due (RE10). -}
+{-| The window's clock (`Clock`, RE11): milliseconds since it began
+(`clockStart`), starting over every `Clock.period`, so that it never passes
+the largest Int however long the machine or the window has been up (RE10).
+The system's own counts from an arbitrary moment, since the machine started
+on Linux and Windows. -}
 clock : Int64 -> Task x Int
 clock began =
-    clockNow |> Task.map (\t -> Int64.toInt (t - began))
+    clockNow |> Task.map (\t -> Clock.fromSystem (t - began))
+
+
+clockFrom : Dict String String -> Int
+clockFrom vars =
+    Dict.get "PURITTY_CLOCK_START" vars
+        |> Maybe.andThen String.toInt
+        |> Maybe.withDefault (meant Reason.NotSet 0)
 
 
 clockNow : Task x Int64
@@ -964,7 +973,7 @@ begin cp vars given problems locale config cell restoring =
                                     , charset = localCharset
                                     }
                             in
-                            run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring (Platform.logDirectory vars)
+                            run (Dict.member "PURITTY_IME_LOG" vars) (Dict.get "PURITTY_SHOT" vars) (clockFrom vars) charset config cell started.remote starter { given = given, locale = locale, events = w.events, at = -1 } (problems ++ started.problems) opener restoring (Platform.logDirectory vars)
                         )
             )
 
@@ -1071,9 +1080,11 @@ spawnFirst cp commands options =
 the preedit is written to standard output, for the IME gate
 (`harness/ime.py`, V45). `shotPath`: with `PURITTY_SHOT` set, each frame
 drawn is written to its file as a picture, for the reload gate
-(`harness/reload.py`). -}
-run : Bool -> Maybe String -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
-run imeLog shotPath charset config cell remote starter settings problems opener restoring logDir =
+(`harness/reload.py`). `startAt`: the clock's first reading, 0 unless
+`PURITTY_CLOCK_START` says, so that a test can start it just before it
+starts over (RE11). -}
+run : Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
+run imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir =
     -- puritty's own text (its questions, the search bar, the tab
     -- bar) in the interface font, as the settings window's is, apart
     -- from the terminal's (docs/tabs.md TB5)
@@ -1085,7 +1096,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
             (\began ->
                 let
                     t0 =
-                        0
+                        Clock.after 0 startAt
                 in
                 restoreInto restoring
                     { config = config
@@ -1173,7 +1184,7 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                     , logDir = logDir
                     , turnMs = t0
                     , loggedTab = -1
-                    , clockStart = began
+                    , clockStart = began - Int64.fromInt startAt
                     , maximized = False
                     , normalSize = { columns = config.columns, rows = config.rows }
                     }
@@ -1296,13 +1307,13 @@ frameAt m =
         -1
 
     else if syncHeld m.term && m.syncSince >= 0 then
-        m.syncSince + m.config.syncTimeoutMs
+        Clock.after m.syncSince m.config.syncTimeoutMs
 
     else if m.urgent then
-        0
+        m.last
 
     else
-        m.last + m.config.frameMs
+        Clock.after m.last m.config.frameMs
 
 
 {-| The time the timer branch waits for: the frame's, or the blink's. -}
@@ -1319,20 +1330,7 @@ nextAt m =
             else
                 -1
     in
-    soonest (soonest (soonest (soonest (soonest (soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)
-
-
-{-| The sooner of two times, -1 standing for none. -}
-soonest : Int -> Int -> Int
-soonest a b =
-    if a < 0 then
-        b
-
-    else if b < 0 then
-        a
-
-    else
-        min a b
+    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)
 
 
 {-| What the program is sent, queued: keys, replies, focus reports, a
@@ -1455,7 +1453,7 @@ restoreInto restoring m =
                     m.tab
 
                 named =
-                    { m | tab = { info | name = first.name, color = first.color }, saving = { dir = restoring.dir, window = Just c.window, written = "", at = 0 }, quietUntil = m.last + 3000 }
+                    { m | tab = { info | name = first.name, color = first.color }, saving = { dir = restoring.dir, window = Just c.window, written = "", at = m.last }, quietUntil = Clock.after m.last 3000 }
 
                 shownId =
                     -- ids are given in order from 0, so the saved order's
@@ -1539,7 +1537,7 @@ look, and only when they changed (docs/tabs.md TB10): the shown tab's
 directory and the others' are read each time, so a `cd` is kept too. -}
 saveIfDue : Int -> (taken m : Model) -> Task Error Model
 saveIfDue ms m =
-    if m.saving.at < 0 || ms < m.saving.at then
+    if m.saving.at < 0 || not (Clock.reached m.saving.at ms) then
         Task.succeed m
 
     else
@@ -1573,7 +1571,7 @@ saveNow ms m =
                                 |> Task.onError (\_ -> Task.succeed saving.written)
                         )
                     )
-                |> Task.andThen (\written -> Task.succeed { m | saving = { saving | written = written, at = ms + 5000 } })
+                |> Task.andThen (\written -> Task.succeed { m | saving = { saving | written = written, at = Clock.after ms 5000 } })
 
         _ ->
             Task.succeed m
@@ -1821,7 +1819,7 @@ race remote m0 =
                 let
                     m =
                         if blinking m0 && m0.blinkAt < 0 then
-                            { m0 | blinkAt = ms0 + m0.config.blinkMs }
+                            { m0 | blinkAt = Clock.after ms0 m0.config.blinkMs }
 
                         else
                             m0
@@ -1834,7 +1832,7 @@ race remote m0 =
                             []
 
                         else
-                            [ Sleep.sleep (toFloat (max 0 (at - ms0))) |> Task.map (\_ -> Due) ]
+                            [ Sleep.sleep (toFloat (max 0 (Clock.since ms0 at))) |> Task.map (\_ -> Due) ]
 
                     writing =
                         if Outbox.isEmpty m.out then
@@ -1959,7 +1957,7 @@ step remote ms m0 =
             at =
                 frameAt m
         in
-        if at >= 0 && ms >= at then
+        if at >= 0 && Clock.reached at ms then
             draw ms m
                 |> Task.andThen shoot
                 |> Task.andThen
@@ -1993,7 +1991,7 @@ noticed ms change m =
                     meant Reason.NotSet False
 
         soon =
-            { s | at = ms + reloadDelayMs }
+            { s | at = Clock.after ms reloadDelayMs }
 
         none =
             { s | events = Nothing }
@@ -2039,7 +2037,7 @@ reloadIfDue ms m =
         s =
             m.settings
     in
-    if s.at < 0 || ms < s.at then
+    if s.at < 0 || not (Clock.reached s.at ms) then
         Task.succeed m
 
     else
@@ -2370,7 +2368,7 @@ writeLog force m0 =
                         dueAt =
                             Diag.due m0.diag
                     in
-                    if dueAt < 0 || (not force && ms < dueAt) then
+                    if dueAt < 0 || (not force && not (Clock.reached dueAt ms)) then
                         Task.succeed m0
 
                     else
@@ -3131,13 +3129,13 @@ tmuxTick ms m =
         due =
             TmuxMode.dueAt m.tmux
     in
-    { m | tmux = TmuxMode.tick ms m.tmux, urgent = m.urgent || (due >= 0 && ms >= due) }
+    { m | tmux = TmuxMode.tick ms m.tmux, urgent = m.urgent || (due >= 0 && Clock.reached due ms) }
 
 
 blink : Int -> (taken m : Model) -> Model
 blink ms m =
-    if blinking m && m.blinkAt >= 0 && ms >= m.blinkAt then
-        { m | focus = { focused = m.focus.focused, blinkOn = not m.focus.blinkOn }, blinkAt = ms + m.config.blinkMs, urgent = True }
+    if blinking m && m.blinkAt >= 0 && Clock.reached m.blinkAt ms then
+        { m | focus = { focused = m.focus.focused, blinkOn = not m.focus.blinkOn }, blinkAt = Clock.after ms m.config.blinkMs, urgent = True }
 
     else
         m
@@ -4678,7 +4676,7 @@ selecting ms p held m =
     else if p.button == 1 && p.action == 0 then
         let
             count =
-                if ms - m.clicks.at <= 500 && m.clicks.cell == at then
+                if m.clicks.count > 0 && Clock.since m.clicks.at ms <= 500 && m.clicks.cell == at then
                     modBy 3 m.clicks.count + 1
 
                 else
@@ -4981,7 +4979,7 @@ key remote ms rest k m =
 
         blinkAt =
             if blinking m then
-                ms + m.config.blinkMs
+                Clock.after ms m.config.blinkMs
 
             else
                 -1
@@ -6181,7 +6179,7 @@ closedSlotFor i best m =
 
             Just at ->
                 closedSlotFor (i + 1)
-                    (if best.oldestAt < 0 || at < best.oldestAt then
+                    (if best.oldestAt < 0 || Clock.since at best.oldestAt > 0 then
                         { best | oldest = i, oldestAt = at }
 
                      else
@@ -6204,7 +6202,7 @@ newestFrom i best bestAt m =
     else
         when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
             Just at ->
-                if at > bestAt then
+                if bestAt < 0 || Clock.since bestAt at > 0 then
                     newestFrom (i + 1) (Just i) at m
 
                 else
@@ -6235,7 +6233,7 @@ closedDueFrom i due m =
         closedDueFrom (i + 1)
             (when Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map .at is
                 Just at ->
-                    soonest due (at + closedKeepMs)
+                    Clock.soonest due (Clock.after at closedKeepMs)
 
                 Nothing ->
                     meant Reason.Gone due
@@ -6254,7 +6252,7 @@ expireFrom i ms m =
     if i >= Builder.length m.closedTabs then
         m
 
-    else if (Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map (\c -> ms >= c.at + closedKeepMs)) == Just True then
+    else if (Builder.get i m.closedTabs |> Maybe.andThen identity |> Maybe.map (\c -> Clock.reached (Clock.after c.at closedKeepMs) ms)) == Just True then
         expireFrom (i + 1) ms { m | closedTabs = Builder.set i Nothing m.closedTabs }
 
     else
@@ -6403,7 +6401,7 @@ marked ms m =
         info =
             m.tab
     in
-    { m | tab = { info | activity = info.activity || ms >= m.quietUntil, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
+    { m | tab = { info | activity = info.activity || m.quietUntil < 0 || Clock.reached m.quietUntil ms, bell = info.bell || m.term.bells /= info.bells, bells = m.term.bells } }
 
 
 {-| A tab not shown gone: its program killed (`kill`) or ended, and waited
@@ -6759,7 +6757,7 @@ barPress ms p m =
                 -- shown first, so that a question is asked over its screen
                 askClose (showTab hit.value.id m)
 
-            else if p.button == 1 && hit.value.id == m.barClick.id && ms - m.barClick.at <= 500 then
+            else if p.button == 1 && hit.value.id == m.barClick.id && Clock.since m.barClick.at ms <= 500 then
                 let
                     shown =
                         showTab hit.value.id m
