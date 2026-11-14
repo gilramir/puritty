@@ -83,8 +83,9 @@ SUITES = [
     # 100 since DG6: what the diagnostic log hears, six
     Suite("vt", 100, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
-    # what a tmux takes, and its 2.x keys, fourteen
-    Suite("tmux", 114, runs_of("packages/tmux/tests")),
+    # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
+    # catalog held to every dumped tmux, three
+    Suite("tmux", 117, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -246,6 +247,18 @@ def main() -> int:
     if not fmt_ok:
         for line in (formatted.stdout + formatted.stderr).strip().splitlines()[:40]:
             print("         " + line)
+    # every tmux command made from Tmux.Command's catalog, and the catalog's
+    # test reading the dumps as they are (docs/tmux-checks.md TK2)
+    commands_ok = True
+    for name, cmd in [("tmux-commands", [sys.executable, str(ROOT / "scripts" / "tmux-commands.py")]),
+                      ("tmux-versions", [sys.executable, str(ROOT / "packages" / "tmux" / "tests" / "gen-versions.py"), "--check"])]:
+        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        out = (r.stdout + r.stderr).strip().splitlines()
+        print(f"[{'  ok  ' if r.returncode == 0 else ' FAIL '}] {name:<24} {out[-1] if out else ''}")
+        if r.returncode != 0:
+            commands_ok = False
+            for line in out[:-1][:40]:
+                print("         " + line)
     checks_ok = True
     if args.no_checks:
         print(f"[ skip ] {'checks':<24} left out by --no-checks")
@@ -294,7 +307,7 @@ def main() -> int:
         print("Windows was left out (--no-windows): this is not the whole gate.")
     if args.no_checks:
         print("geng checks was left out (--no-checks): this is not the whole gate.")
-    return 1 if failed or not fmt_ok or not checks_ok else 0
+    return 1 if failed or not fmt_ok or not checks_ok or not commands_ok else 0
 
 
 if __name__ == "__main__":

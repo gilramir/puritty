@@ -22,6 +22,7 @@ import Tmux.Customize as Customize
 import Tmux.Layout as Layout
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
+import TmuxVersions
 import UInt8
 
 
@@ -29,7 +30,7 @@ import UInt8
 (`native/`'s `Native`). -}
 suites : Array U.Suite
 suites =
-    [ control, layout, command, bindings, syntax, style, borders, customize, caps ]
+    [ control, layout, command, bindings, syntax, style, borders, customize, caps, catalog ]
 
 
 run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
@@ -1309,4 +1310,41 @@ caps =
         , { name = "a binding's commands joined by ; on a line"
           , test = \_ -> Expect.equal "new-pane -E -x \"75%\" ; move-pane -P bottom-centre" (Command.bindingLine "new-pane -E -x \"75%\" \\; move-pane -P bottom-centre")
           }
+        ]
+
+
+{-| Every command shape puritty sends, held to every dumped tmux
+(`corpus/tmux`, `docs/tmux-checks.md` TK2): where a shape is allowed by
+what that tmux takes, each of its flags must be in that command's usage
+line. Finite and complete: every shape, every tmux. -}
+catalog : U.Suite
+catalog =
+    let
+        refused =
+            TmuxVersions.versions
+                |> Array.mapAndFlatten
+                    (\v ->
+                        let
+                            taken =
+                                Caps.fromUsage v.usage
+                        in
+                        Command.catalog
+                            |> Array.keepIf (\shape -> shape.allowed taken)
+                            |> Array.mapAndFlatten
+                                (\shape ->
+                                    String.toArray (Command.flagsOf shape)
+                                        |> Array.keepIf (\f -> not (Caps.has shape.name (String.fromChar f) taken))
+                                        |> Array.map (\f -> v.name ++ ": " ++ shape.name ++ " -" ++ String.fromChar f)
+                                )
+                    )
+
+        allowedSomewhere =
+            Command.catalog
+                |> Array.keepIf (\shape -> not (Array.any (\v -> shape.allowed (Caps.fromUsage v.usage)) TmuxVersions.versions))
+                |> Array.map (\shape -> shape.name ++ " -" ++ Command.flagsOf shape)
+    in
+    run "catalog"
+        [ { name = "33 tmuxes dumped", test = \_ -> Expect.equal 33 (Array.length TmuxVersions.versions) }
+        , { name = "every shape's flags are taken by every tmux that allows it", test = \_ -> Expect.equal [] refused }
+        , { name = "every shape is allowed by some tmux", test = \_ -> Expect.equal [] allowedSomewhere }
         ]

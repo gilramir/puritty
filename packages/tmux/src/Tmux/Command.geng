@@ -1,7 +1,12 @@
 module Tmux.Command exposing
-    ( bindingLine
+    ( Part(..)
+    , Shape
+    , bindingLine
+    , catalog
     , clientFlags
     , continuePane
+    , flagsOf
+    , listCommands
     , listPanes
     , pasteBytes
     , quote
@@ -20,8 +25,176 @@ an unquoted `%0:…` is a parse error in tmux 3.8 (TM3).
 -}
 
 import Bytes exposing (Bytes)
+import Tmux.Caps as Caps exposing (Caps)
 import Tmux.Reason as Reason
 import UInt8
+
+
+-- SHAPES (puritty `docs/tmux-checks.md` TK2)
+
+
+{-| A part of a command: a flag alone (`-p`), a flag and its value (`-t
+%0`), or the arguments after the flags. -}
+type Part
+    = Flag String
+    | Value String
+    | Rest
+
+
+{-| A command's shape: its name and parts, and when it may be sent (`allowed`), as a
+test on what the tmux takes (`anyTmux` for most). Every command puritty
+sends is made from a shape in `catalog`, by `render`, so that it holds
+exactly the shape's flags; the check holds every shape to every dumped
+tmux whose `list-commands` its test allows. -}
+type alias Shape =
+    { name : String
+    , parts : Array Part
+    , allowed : Caps -> Bool
+    }
+
+
+{-| A command from its shape and its values, one for each `Value` in
+order, then the rest's. Values are given as they are to be written
+(quoted where they need it). -}
+render : Shape -> Array String -> String
+render shape values =
+    let
+        step part acc =
+            when part is
+                Flag f ->
+                    { acc | words = Array.pushLast ("-" ++ f) acc.words }
+
+                Value f ->
+                    { words = acc.words ++ [ "-" ++ f, Maybe.withDefault (meant Reason.FromOutside "''") (Array.get acc.next values) ], next = acc.next + 1 }
+
+                Rest ->
+                    { words = acc.words ++ Array.dropFirst acc.next values, next = Array.length values }
+
+        made =
+            Array.foldl step { words = [ shape.name ], next = 0 } shape.parts
+    in
+    String.join " " made.words
+
+
+{-| A shape's flags, as one string of letters. -}
+flagsOf : Shape -> String
+flagsOf shape =
+    shape.parts
+        |> Array.map
+            (\part ->
+                when part is
+                    Flag f ->
+                        f
+
+                    Value f ->
+                        f
+
+                    Rest ->
+                        ""
+            )
+        |> String.join ""
+
+
+anyTmux : Caps -> Bool
+anyTmux _ =
+    True
+
+
+sendHex : Shape
+sendHex =
+    { name = "send-keys", parts = [ Value "t", Flag "H", Rest ], allowed = Caps.has "send-keys" "H" }
+
+
+sendLiteral : Shape
+sendLiteral =
+    { name = "send-keys", parts = [ Value "t", Flag "l", Rest ], allowed = anyTmux }
+
+
+sendNamed : Shape
+sendNamed =
+    { name = "send-keys", parts = [ Value "t", Rest ], allowed = anyTmux }
+
+
+sendClientKey : Shape
+sendClientKey =
+    { name = "send-keys", parts = [ Flag "K", Rest ], allowed = Caps.has "send-keys" "K" }
+
+
+sendClientHex : Shape
+sendClientHex =
+    { name = "send-keys", parts = [ Flag "K", Flag "H", Rest ], allowed = \c -> Caps.has "send-keys" "K" c && Caps.has "send-keys" "H" c }
+
+
+sizeByX : Shape
+sizeByX =
+    { name = "refresh-client", parts = [ Value "C" ], allowed = Caps.sizeByX }
+
+
+sizeByComma : Shape
+sizeByComma =
+    { name = "refresh-client", parts = [ Value "C" ], allowed = \c -> not (Caps.sizeByX c) }
+
+
+clientFlagsShape : Shape
+clientFlagsShape =
+    { name = "refresh-client", parts = [ Value "f" ], allowed = Caps.has "refresh-client" "f" }
+
+
+continueShape : Shape
+continueShape =
+    { name = "refresh-client", parts = [ Value "A" ], allowed = Caps.has "refresh-client" "A" }
+
+
+listPanesShape : Shape
+listPanesShape =
+    { name = "list-panes", parts = [ Value "F" ], allowed = anyTmux }
+
+
+listCommandsShape : Shape
+listCommandsShape =
+    { name = "list-commands", parts = [], allowed = anyTmux }
+
+
+setBufferFirst : Shape
+setBufferFirst =
+    { name = "set-buffer", parts = [ Value "b", Rest ], allowed = anyTmux }
+
+
+setBufferAppend : Shape
+setBufferAppend =
+    { name = "set-buffer", parts = [ Flag "a", Value "b", Rest ], allowed = anyTmux }
+
+
+pasteShape : Shape
+pasteShape =
+    { name = "paste-buffer", parts = [ Flag "p", Flag "r", Flag "d", Value "b", Value "t" ], allowed = anyTmux }
+
+
+{-| Every shape puritty sends. -}
+catalog : Array Shape
+catalog =
+    [ sendHex
+    , sendLiteral
+    , sendNamed
+    , sendClientKey
+    , sendClientHex
+    , sizeByX
+    , sizeByComma
+    , clientFlagsShape
+    , continueShape
+    , listPanesShape
+    , listCommandsShape
+    , setBufferFirst
+    , setBufferAppend
+    , pasteShape
+    ]
+
+
+{-| `list-commands` with no format: each command's usage line, which
+every tmux from 2.7 answers so (TM72). -}
+listCommands : String
+listCommands =
+    render listCommandsShape []
 
 
 {-| A paste given to tmux to make (puritty `docs/tmux.md` TM64): the text
@@ -45,21 +218,20 @@ pasteBytes pane piece bytes =
         sets =
             Array.indexedMap
                 (\i chunk ->
-                    "set-buffer "
-                        ++ (if piece.first && i == 0 then
-                                ""
+                    render
+                        (if piece.first && i == 0 then
+                            setBufferFirst
 
-                            else
-                                "-a "
-                           )
-                        ++ "-b puritty-paste "
-                        ++ quoteBytes chunk
+                         else
+                            setBufferAppend
+                        )
+                        [ "puritty-paste", quoteBytes chunk ]
                 )
                 chunks
 
         pasted =
             if piece.last && (not piece.first || count > 0) then
-                [ "paste-buffer -p -r -d -b puritty-paste -t " ++ quote ("%" ++ String.fromInt pane) ]
+                [ render pasteShape [ "puritty-paste", quote ("%" ++ String.fromInt pane) ] ]
 
             else
                 []
@@ -110,7 +282,7 @@ sendBytes pane bytes =
                     part =
                         String.slice (i * 512) (min (2 * count) ((i + 1) * 512)) hex
                 in
-                "send-keys -t " ++ quote ("%" ++ String.fromInt pane) ++ " -H " ++ pairs part
+                render sendHex [ quote ("%" ++ String.fromInt pane), pairs part ]
             )
 
 
@@ -121,7 +293,7 @@ nothing goes to the active pane, encoded by tmux for that pane's modes.
 Bytes given with `-t pane -H` reach the pane without any lookup (TM23). -}
 sendKey : String -> String
 sendKey name =
-    "send-keys -K " ++ quote name
+    render sendClientKey [ quote name ]
 
 
 {-| `send-keys -t %N`: a key by its tmux name straight to a pane, encoded
@@ -132,7 +304,7 @@ byte) and, when the pane has extended keys, Enter too (puritty
 `docs/tmux.md` TM50). -}
 sendKeyTo : Int -> String -> String
 sendKeyTo pane name =
-    "send-keys -t " ++ quote ("%" ++ String.fromInt pane) ++ " " ++ quote name
+    render sendNamed [ quote ("%" ++ String.fromInt pane), quote name ]
 
 
 {-| `send-keys -K -H`: typed text, its UTF-8 bytes in hex, through the
@@ -144,7 +316,7 @@ typeText bytes =
         []
 
     else
-        [ "send-keys -K -H " ++ pairs (Bytes.toHexString { padding = False } bytes) ]
+        [ render sendClientHex [ pairs (Bytes.toHexString { padding = False } bytes) ] ]
 
 
 {-| `abcd` as `ab cd`. -}
@@ -158,14 +330,14 @@ pairs hex =
 {-| The client's size, `refresh-client -C`, in cells. -}
 size : { cols : Int, rows : Int } -> String
 size s =
-    "refresh-client -C " ++ String.fromInt (max 1 s.cols) ++ "x" ++ String.fromInt (max 1 s.rows)
+    render sizeByX [ String.fromInt (max 1 s.cols) ++ "x" ++ String.fromInt (max 1 s.rows) ]
 
 
 {-| The client's size as tmux before 3.0 takes it, `-C 80,24`: it refuses
 `80x24` (`bad size argument`; TM72). -}
 sizeComma : { cols : Int, rows : Int } -> String
 sizeComma s =
-    "refresh-client -C " ++ String.fromInt (max 1 s.cols) ++ "," ++ String.fromInt (max 1 s.rows)
+    render sizeByComma [ String.fromInt (max 1 s.cols) ++ "," ++ String.fromInt (max 1 s.rows) ]
 
 
 {-| `send-keys` for a tmux before 3.0, which has no `-H` (TM72): the bytes
@@ -178,7 +350,7 @@ sendBytesPlain : Int -> Bytes -> Array String
 sendBytesPlain pane bytes =
     let
         target =
-            "send-keys -t " ++ quote ("%" ++ String.fromInt pane)
+            quote ("%" ++ String.fromInt pane)
 
         runs =
             Array.range 0 (Bytes.length bytes - 1)
@@ -208,10 +380,10 @@ sendBytesPlain pane bytes =
     Array.map
         (\r ->
             if r.control then
-                target ++ " " ++ r.name
+                render sendNamed [ target, r.name ]
 
             else
-                target ++ " -l " ++ plainWords (Bytes.toStringLossy r.bytes)
+                render sendLiteral [ target, plainWords (Bytes.toStringLossy r.bytes) ]
         )
         all
 
@@ -307,20 +479,20 @@ its backlog dropped, rather than the client being ended as "too far
 behind" after five minutes (TM5.7, TM19). -}
 clientFlags : String
 clientFlags =
-    "refresh-client -f new-layouts,pause-after=5"
+    render clientFlagsShape [ "new-layouts,pause-after=5" ]
 
 
 {-| A paused pane continued: its output again from now (TM5.7). -}
 continuePane : Int -> String
 continuePane pane =
-    "refresh-client -A " ++ quote ("%" ++ String.fromInt pane ++ ":continue")
+    render continueShape [ quote ("%" ++ String.fromInt pane ++ ":continue") ]
 
 
 {-| Each pane of the session's current window and its state, one line a
 pane, each starting with `P` so that no line can read as a guard (TM5.2). -}
 listPanes : String
 listPanes =
-    "list-panes -F " ++ quote "P #{pane_id} #{window_id} #{pane_active} #{cursor_x} #{cursor_y} #{alternate_on} #{window_layout}"
+    render listPanesShape [ quote "P #{pane_id} #{window_id} #{pane_active} #{cursor_x} #{cursor_y} #{alternate_on} #{window_layout}" ]
 
 
 {-| A word for tmux's command line, single-quoted: tmux takes nothing in
