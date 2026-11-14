@@ -19,7 +19,9 @@ each change written to the file and taken by every open window as you make
 it, Ctrl+Z to undo, with the keys or the mouse. It edits the file in place
 and keeps your comments. Its Hosts page adds, changes, copies, renames and
 removes hosts. It speaks English, or Korean when your language is Korean.
-On its Sound page, the bell plays as you move through its list, and a key
+A new window opens as the last one closed: maximized if it was, and
+otherwise at its size; `[window] columns` and `rows` are the size of the
+first. On its Sound page, the bell plays as you move through its list, and a key
 clicks as you turn key sounds on, so you hear what you are choosing.
 
 ## The file

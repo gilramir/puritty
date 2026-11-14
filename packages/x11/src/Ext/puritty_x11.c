@@ -95,6 +95,8 @@
 static xcb_connection_t *conn;
 static xcb_screen_t *screen;
 static xcb_window_t window;
+/* how the window opens, maximized or not (window-state.md WP8) */
+static int start_maximized;
 /* The pointer over the window: the theme's I-beam over text, and its arrow
  * while the program takes the mouse (docs/phase3-select.md §21). */
 static xcb_cursor_t pointer_text, pointer_arrow;
@@ -1039,6 +1041,13 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     xcb_render_create_glyph_set(conn, glyphs, a8);
     pt_resize(c, r);
     pointers_setup();
+    if (start_maximized) {
+        /* asked before the window is mapped, which window managers honor
+         * (EWMH): the last window was closed maximized (window-state.md
+         * WP8) */
+        xcb_atom_t states[2] = {atom("_NET_WM_STATE_MAXIMIZED_VERT"), atom("_NET_WM_STATE_MAXIMIZED_HORZ")};
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom("_NET_WM_STATE"), XCB_ATOM_ATOM, 32, 2, states);
+    }
     xcb_map_window(conn, window);
     xim_setup(screen_number);
     xcb_flush(conn);
@@ -1183,6 +1192,56 @@ int puritty_sound_play(int id);
 
 /* A sound (docs/sounds.md SN6): -1 the X server's own bell (`system`),
  * else one of puritty's, played by puritty_sound.c without waiting. */
+/* Maximized (docs/window-state.md WP8): `want` -1 asks, 0 or 1 sets.
+ * Before the window is open it is how the window will open; after, a
+ * _NET_WM_STATE request to the window manager, or the window's own
+ * _NET_WM_STATE read. Answers the state, 1 for maximized, 2 for maximized
+ * one way only. */
+geng_cancel puritty_x11_maximized(int32_t want, geng_wait *wait) {
+    int now = 0;
+    if (conn == NULL || window == 0 || xcb_connection_has_error(conn)) {
+        if (want >= 0) start_maximized = want;
+        now = start_maximized;
+    } else {
+        xcb_atom_t state = atom("_NET_WM_STATE");
+        xcb_atom_t vert = atom("_NET_WM_STATE_MAXIMIZED_VERT");
+        xcb_atom_t horz = atom("_NET_WM_STATE_MAXIMIZED_HORZ");
+        if (want >= 0) {
+            xcb_client_message_event_t ev = {0};
+            ev.response_type = XCB_CLIENT_MESSAGE;
+            ev.format = 32;
+            ev.window = window;
+            ev.type = state;
+            ev.data.data32[0] = want ? 1 : 0;
+            ev.data.data32[1] = vert;
+            ev.data.data32[2] = horz;
+            ev.data.data32[3] = 1;
+            xcb_send_event(conn, 0, screen->root,
+                           XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY, (const char *) &ev);
+            xcb_flush(conn);
+            now = want;
+        } else {
+            xcb_get_property_reply_t *r =
+                xcb_get_property_reply(conn, xcb_get_property(conn, 0, window, state, XCB_ATOM_ATOM, 0, 32), NULL);
+            if (r) {
+                int n = xcb_get_property_value_length(r) / 4;
+                xcb_atom_t *a = xcb_get_property_value(r);
+                int v = 0, h = 0;
+                for (int i = 0; i < n; i++) {
+                    if (a[i] == vert) v = 1;
+                    if (a[i] == horz) h = 1;
+                }
+                /* 2 for half of it: a window manager may take the two
+                 * steps apart, and the size then is no normal size */
+                now = v && h ? 1 : (v || h ? 2 : 0);
+                free(r);
+            }
+        }
+    }
+    geng_succeed(wait, geng_slot_I4(now));
+    return (geng_cancel) {0};
+}
+
 geng_cancel puritty_x11_sound(int32_t id, geng_wait *wait) {
     int taken = 0;
     if (id < 0) {

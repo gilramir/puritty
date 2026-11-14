@@ -1,0 +1,55 @@
+module LastWindow exposing (Last, fileName, fromText, toText)
+
+{-| How the last window was when it closed (`docs/window-state.md` WP8,
+Dnene61): maximized or not, and its normal size in cells, which a new
+window opens with. Kept in puritty's state folder, one line,
+`maximized COLUMNS ROWS` or `normal COLUMNS ROWS`; no position, so that the
+system places the window and none opens where no monitor is.
+-}
+
+
+type alias Last =
+    { maximized : Bool
+    , columns : Int
+    , rows : Int
+    }
+
+
+fileName : String
+fileName =
+    "window.txt"
+
+
+{-| The file's line read; `Nothing` for one that is not this shape, or a
+size no window has. -}
+fromText : String -> Maybe Last
+fromText text =
+    when String.words (String.trim text) is
+        [ state, cols, rows ] ->
+            when { c = String.toInt cols, r = String.toInt rows } is
+                { c = Just c, r = Just r } ->
+                    if (state == "maximized" || state == "normal") && c >= 10 && c <= 1000 && r >= 3 && r <= 1000 then
+                        Just { maximized = state == "maximized", columns = c, rows = r }
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+toText : Last -> String
+toText last =
+    (if last.maximized then
+        "maximized "
+
+     else
+        "normal "
+    )
+        ++ String.fromInt last.columns
+        ++ " "
+        ++ String.fromInt last.rows
+        ++ "\n"

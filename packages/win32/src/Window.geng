@@ -8,6 +8,7 @@ module Window exposing
     , draw
     , events
     , fonts
+    , isMaximized
     , menu
     , motion
     , open
@@ -17,11 +18,13 @@ module Window exposing
     , resize
     , select
     , setFont
+    , setMaximized
     , setPointer
     , setTitle
     , shot
     , sound
     , spot
+    , startMaximized
     , systemMenu
     , take
     , zoom
@@ -115,6 +118,40 @@ draw list =
 
 @extern(c, "puritty_win32_draw")
 drawExtern : Bytes -> Task x Bytes
+
+
+{-| Whether the window is maximized (`docs/window-state.md` WP8). Before
+`open`, how it will open; after, asked of the system. -}
+startMaximized : Bool -> Task x {}
+startMaximized on =
+    maximizedExtern (boolInt on) |> Task.map (\_ -> {})
+
+
+{-| The window maximized, or back to its normal size. -}
+setMaximized : Bool -> Task x {}
+setMaximized on =
+    maximizedExtern (boolInt on) |> Task.map (\_ -> {})
+
+
+{-| Whether the window is maximized, and whether it is maximized at all,
+one way only too (X11's window managers may maximize it in two steps), when
+its size is no normal size either. -}
+isMaximized : Task x { maximized : Bool, any : Bool }
+isMaximized =
+    maximizedExtern -1 |> Task.map (\now -> { maximized = now == 1, any = now /= 0 })
+
+
+boolInt : Bool -> Int
+boolInt on =
+    if on then
+        1
+
+    else
+        0
+
+
+@extern(c, "puritty_win32_maximized")
+maximizedExtern : Int -> Task x Int
 
 
 {-| Plays a sound (`docs/sounds.md` SN6), without waiting for it: -1

@@ -169,3 +169,32 @@ build: maximized on Windows (`SW_MAXIMIZE` at the first show) and on X11
 (`_NET_WM_STATE_MAXIMIZED_VERT`/`_HORZ` before mapping); the window's
 state and normal size noted when it closes, in puritty's state folder;
 each window restored with `[tabs] restore` keeps its own.
+
+## WP9 · Built (2026-11-14)
+
+- **`Window.startMaximized`, `setMaximized`, `isMaximized`** (both window
+  packages, one extern each, `puritty_*_maximized`): before `open`, how the
+  window first shows (Windows `SW_SHOWMAXIMIZED`; X11 both
+  `_NET_WM_STATE_MAXIMIZED_*` set before mapping); after, a request
+  (`ShowWindowAsync`; a `_NET_WM_STATE` message to the root window) or the
+  state asked (`IsZoomed`; the window's `_NET_WM_STATE`). On X11 it says
+  "maximized one way only" too, since a window manager may take the two
+  steps apart, and the size between them is not the normal size.
+- **Followed as the window runs**: at each resize `Main` asks, and keeps the
+  window's size as its normal size while it is not maximized at all
+  (`maximized`, `normalSize`). At its end it writes `window.txt` in the
+  state folder (`LastWindow`, `maximized 100 29` or `normal 100 29`), and a
+  restored window's file says `maximized = true` (`RestoreFile`).
+- **A new window opens** at the last normal size, maximized if the last
+  was; the host list's window, which becomes the session, the same; a
+  restored window as its own file says. The settings' `[window] columns`
+  and `rows` are the size until a window has closed once.
+
+**Checked:** app tests 182 (the line read and written, a restored window's
+flag), on node, Linux and Windows. Under Xvfb with openbox: resized to
+100×29, maximized and closed: `maximized 100 29`; the next opened
+maximized (`_NET_WM_STATE_MAXIMIZED_VERT, _HORZ`, 1280×879), restored and
+closed: `normal 100 29`; the next opened at 900×493, 100×29 cells. On
+beelink1 (Windows 11, its own `LOCALAPPDATA`): opened 708×501, maximized
+and closed: `maximized 80 24`; the next opened maximized (`IsZoomed`,
+2575×1407), restored and closed: `normal 80 24`; the next opened normal.

@@ -676,6 +676,8 @@ static int evlen;
 static geng_post *post;
 static holder *held;
 static HWND win;
+/* how the window opens, maximized or not (window-state.md WP8) */
+static volatile int start_maximized;
 static HANDLE made;
 static wchar_t *title0;
 static int open_cols, open_rows;
@@ -1561,7 +1563,7 @@ static void *window_thread(void *arg) {
         geng_post_done(post);
         return NULL;
     }
-    ShowWindow(win, SW_SHOWNORMAL);
+    ShowWindow(win, start_maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
     AddClipboardFormatListener(win);
     /* keys go through IMM32's input context, which every window has */
     HIMC c = ImmGetContext(win);
@@ -1761,6 +1763,24 @@ static int write_shot(const char *path) {
  * waiting. PlaySound plays one sound at a time: a key's replaces what
  * plays; a bell asked for while a sound plays is dropped (SND_NOSTOP),
  * since bells come in floods. */
+/* Maximized (docs/window-state.md WP8): `want` -1 asks, 0 or 1 sets;
+ * before the window is open, how it will be shown. Answers the state, 1
+ * for maximized. ShowWindowAsync, since the window's thread owns it. */
+geng_cancel puritty_win32_maximized(int32_t want, geng_wait *wait) {
+    int now;
+    if (win == NULL) {
+        if (want >= 0) start_maximized = want;
+        now = start_maximized;
+    } else if (want >= 0) {
+        ShowWindowAsync(win, want ? SW_MAXIMIZE : SW_RESTORE);
+        now = want;
+    } else {
+        now = IsZoomed(win) ? 1 : 0;
+    }
+    geng_succeed(wait, geng_slot_I4(now));
+    return (geng_cancel) {0};
+}
+
 geng_cancel puritty_win32_sound(int32_t id, geng_wait *wait) {
     int taken = 0;
     if (id < 0) {

@@ -16,6 +16,7 @@ import Diag
 import Expect exposing (Expectation)
 import Hosts
 import I18Next
+import LastWindow
 import Platform
 import Recent
 import RestoreFile exposing (TabColor(..))
@@ -1332,6 +1333,7 @@ restoring =
                             { host = Nothing
                             , columns = 120
                             , rows = 40
+                            , maximized = True
                             , shown = 1
                             , tabs =
                                 [ { name = "dm", color = Picked 0xC62828, directory = Just "/home/me/src \"a\"" }
@@ -1342,11 +1344,28 @@ restoring =
                     in
                     Expect.equal (Ok state) (RestoreFile.decode (RestoreFile.encode state))
           }
+        , { name = "the last window's line read and written, and a line that is not one refused (WP8)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just { maximized = True, columns = 120, rows = 40 }, Just { maximized = False, columns = 80, rows = 24 }, Nothing, Nothing ]
+                        [ LastWindow.fromText (LastWindow.toText { maximized = True, columns = 120, rows = 40 }), LastWindow.fromText "normal 80 24\n", LastWindow.fromText "maximized 80", LastWindow.fromText "normal 5 24" ]
+          }
+        , { name = "a restored window says it was maximized, and a file without it was not"
+          , test =
+                \_ ->
+                    let
+                        saved =
+                            RestoreFile.encode { host = Nothing, columns = 80, rows = 24, maximized = True, shown = 0, tabs = [ { name = "a", color = NoColor, directory = Nothing } ] }
+                    in
+                    Expect.equal [ Ok True, Ok False ]
+                        [ RestoreFile.decode saved |> Result.map .maximized, RestoreFile.decode (String.replace "maximized = true\n" "" saved) |> Result.map .maximized ]
+          }
         , { name = "a host's window keeps its host, and a color as #rrggbb or none"
           , test =
                 \_ ->
                     Expect.equal "host = \"prod\"\ncolumns = 80\nrows = 24\nshown = 0\n\n[[tabs]]\nname = \"a\"\ncolor = \"#2e7d32\"\n\n[[tabs]]\nname = \"b\"\ncolor = \"none\"\n"
-                        (RestoreFile.encode { host = Just "prod", columns = 80, rows = 24, shown = 0, tabs = [ { name = "a", color = Picked 0x2E7D32, directory = Nothing }, { name = "b", color = NoColor, directory = Nothing } ] })
+                        (RestoreFile.encode { host = Just "prod", columns = 80, rows = 24, maximized = False, shown = 0, tabs = [ { name = "a", color = Picked 0x2E7D32, directory = Nothing }, { name = "b", color = NoColor, directory = Nothing } ] })
           }
         , { name = "a saved window with no tabs, or not TOML, is none"
           , test =

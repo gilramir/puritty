@@ -24,6 +24,8 @@ type alias State =
     { host : Maybe String
     , columns : Int
     , rows : Int
+    -- whether the window was maximized (docs/window-state.md WP8)
+    , maximized : Bool
     , shown : Int
     , tabs : Array SavedTab
     }
@@ -74,7 +76,14 @@ encode s =
          )
             ++ [ Encode.field "columns" (Encode.int s.columns)
                , Encode.field "rows" (Encode.int s.rows)
-               , Encode.field "shown" (Encode.int s.shown)
+               ]
+            ++ (if s.maximized then
+                    [ Encode.field "maximized" (Encode.bool True) ]
+
+                else
+                    []
+               )
+            ++ [ Encode.field "shown" (Encode.int s.shown)
                , Encode.field "tabs" (Encode.tableArray (Array.map tab s.tabs))
                ]
         )
@@ -98,10 +107,11 @@ decode text =
 
 state : Decoder State
 state =
-    Decode.succeed (\host columns rows shown tabs -> { host = host, columns = columns, rows = rows, shown = shown, tabs = tabs })
+    Decode.succeed (\host columns rows maximized shown tabs -> { host = host, columns = columns, rows = rows, maximized = maximized, shown = shown, tabs = tabs })
         |> Decode.andMap (Decode.optionalField "host" Decode.string)
         |> Decode.andMap (Decode.field "columns" Decode.int)
         |> Decode.andMap (Decode.field "rows" Decode.int)
+        |> Decode.andMap (Decode.optionalField "maximized" Decode.bool |> Decode.map (Maybe.withDefault False))
         |> Decode.andMap (Decode.field "shown" Decode.int)
         |> Decode.andMap (Decode.field "tabs" (Decode.array savedTab))
 

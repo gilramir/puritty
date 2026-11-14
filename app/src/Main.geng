@@ -53,6 +53,7 @@ import Dict exposing (Dict)
 import Hosts
 import Int64
 import Keys
+import LastWindow
 import Os.Directory as Directory
 import Os.Env
 import Os.Error exposing (Error)
@@ -217,6 +218,11 @@ type alias Model =
     , logDir : Maybe String
     , turnMs : Int
     , loggedTab : Int
+    -- whether the window is maximized, asked at each resize, and its size
+    -- when it last was not, which the next window opens with
+    -- (docs/window-state.md WP8)
+    , maximized : Bool
+    , normalSize : { columns : Int, rows : Int }
     }
 
 
@@ -700,9 +706,26 @@ hostList cp fs vars given asked got =
                                                         -- the host list's window, the settings
                                                         -- window's shape, becomes a terminal's:
                                                         -- the session's size (SG11)
-                                                        Window.resize { cols = config.columns, rows = config.rows }
-                                                            |> Task.andThen (\_ -> Text.ligatures config.ligatures)
-                                                            |> Task.andThen (\_ -> begin cp vars given got.problems locale config cell { dir = Nothing, claimed = Nothing })
+                                                        -- the session's size, or the last window's,
+                                                        -- maximized as it was (WP8)
+                                                        lastWindow fs vars { dir = Nothing, claimed = Nothing }
+                                                            |> Task.andThen
+                                                                (\last ->
+                                                                    let
+                                                                        sized =
+                                                                            when last is
+                                                                                Just l ->
+                                                                                    { config | columns = l.columns, rows = l.rows }
+
+                                                                                Nothing ->
+                                                                                    -- the first window: the settings' size
+                                                                                    meant Reason.NotSet config
+                                                                    in
+                                                                    Window.resize { cols = sized.columns, rows = sized.rows }
+                                                                        |> Task.andThen (\_ -> Window.setMaximized (Maybe.map .maximized last |> Maybe.withDefault (meant Reason.NotSet False)))
+                                                                        |> Task.andThen (\_ -> Text.ligatures sized.ligatures)
+                                                                        |> Task.andThen (\_ -> begin cp vars given got.problems locale sized cell { dir = Nothing, claimed = Nothing })
+                                                                )
 
                                                     Err why ->
                                                         meant Reason.Refused Task.fail ("cannot open the host's font: " ++ why)
@@ -718,7 +741,38 @@ start cp vars given problems config restoring =
 
 
 startIn : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Restoring -> Task String {}
-startIn cp vars given problems locale config restoring =
+startIn cp vars given problems locale config0 restoring =
+    lastWindow given.fs vars restoring
+        |> Task.andThen
+            (\last ->
+                let
+                    -- the last window's normal size and state (WP8); a
+                    -- restored window's own, which restoredConfig gave
+                    config =
+                        when { last = last, claimed = restoring.claimed } is
+                            { last = Just l, claimed = Nothing } ->
+                                { config0 | columns = l.columns, rows = l.rows }
+
+                            _ ->
+                                -- the first window, or a restored one's own
+                                config0
+
+                    maximized =
+                        when restoring.claimed is
+                            Just c ->
+                                c.state.maximized
+
+                            Nothing ->
+                                -- not a restored window: the last one's state
+                                meant Reason.NotSet (Maybe.map .maximized last |> Maybe.withDefault (meant Reason.NotSet False))
+                in
+                Window.startMaximized maximized
+                    |> Task.andThen (\_ -> openWindow cp vars given problems locale config restoring)
+            )
+
+
+openWindow : Process.Permission -> Dict String String -> Given -> Array String -> Platform.Locale -> Config -> Restoring -> Task String {}
+openWindow cp vars given problems locale config restoring =
     Window.open
         { cols = config.columns
         , rows = config.rows
@@ -738,6 +792,56 @@ startIn cp vars given problems locale config restoring =
                         Text.ligatures config.ligatures
                             |> Task.andThen (\_ -> begin cp vars given problems locale config cell restoring)
             )
+
+
+{-| Where the last window's state is kept: puritty's state folder, which
+holds the logs' folder (WP8). -}
+lastWindowFile : Maybe String -> Maybe Path.Path
+lastWindowFile logDir =
+    Maybe.map (\folder -> Path.append (Path.fromString LastWindow.fileName) folder) (stateFolder logDir)
+
+
+stateFolder : Maybe String -> Maybe Path.Path
+stateFolder logDir =
+    Maybe.map (\d -> Path.fromString (String.dropLast (String.count "logs") d)) logDir
+
+
+{-| How the last window was when it closed, unless this one is restored
+with its own; none the first time. -}
+lastWindow : File.Permission -> Dict String String -> Restoring -> Task x (Maybe LastWindow.Last)
+lastWindow fs vars restoring =
+    when { file = lastWindowFile (Platform.logDirectory vars), claimed = restoring.claimed } is
+        { file = Just file, claimed = Nothing } ->
+            File.readFile fs file
+                |> Task.map (\b -> Bytes.toString b |> Maybe.andThen LastWindow.fromText)
+                |> Task.onError (\_ -> Task.succeed Nothing)
+
+        _ ->
+            Task.succeed Nothing
+
+
+{-| The window's state written for the next window: maximized or not, and
+its normal size (WP8); nothing said when it cannot be. -}
+rememberWindow : (taken m : Model) -> Task Error Model
+rememberWindow m =
+    when stateFolder m.logDir is
+        Just folder ->
+            let
+                fs =
+                    m.settings.given.fs
+
+                text =
+                    LastWindow.toText { maximized = m.maximized, columns = m.normalSize.columns, rows = m.normalSize.rows }
+            in
+            Directory.createAll fs folder
+                |> Task.andThen (\_ -> File.writeFile fs (Bytes.fromString text) (Path.append (Path.fromString LastWindow.fileName) folder))
+                |> Task.map (\_ -> {})
+                |> Task.onError (\_ -> Task.succeed {})
+                |> Task.map (\_ -> m)
+
+        Nothing ->
+            -- no state folder (no HOME or LOCALAPPDATA): nothing kept
+            meant Reason.NotSet Task.succeed m
 
 
 {-| A session in the window, open with this cell: the program started on a
@@ -1043,6 +1147,8 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
                     , logDir = logDir
                     , turnMs = t0
                     , loggedTab = -1
+                    , maximized = False
+                    , normalSize = { columns = config.columns, rows = config.rows }
                     }
                     |> Task.mapError Os.Error.toString
             )
@@ -1053,7 +1159,8 @@ run imeLog shotPath charset config cell remote starter settings problems opener 
 was closed, after asking the program to end. -}
 finish : Backend -> (taken m0 : Model) -> Task String {}
 finish remote m0 =
-    savedAtEnd m0
+    rememberWindow m0
+        |> Task.andThen savedAtEnd
         |> Task.andThen
             (\m ->
                 writeLog True
@@ -1457,7 +1564,7 @@ stateOf m =
             m.tab.hostName == Nothing
 
         header =
-            { host = m.tab.hostName, columns = m.term.cols, rows = m.windowRows, shown = shownAt m }
+            { host = m.tab.hostName, columns = m.normalSize.columns, rows = m.normalSize.rows, shown = shownAt m }
 
         directoryOf remote =
             if local then
@@ -1470,7 +1577,7 @@ stateOf m =
         (\t acc -> acc |> Task.andThen (\soFar -> directoryOf t.remote |> Task.map (\d -> Array.pushLast { name = t.name, color = t.color, directory = d } soFar)))
         (Task.succeed [])
         (savedTabsOf m)
-        |> Task.map (\tabs -> { host = header.host, columns = header.columns, rows = header.rows, shown = header.shown, tabs = tabs })
+        |> Task.map (\tabs -> { host = header.host, columns = header.columns, rows = header.rows, maximized = m.maximized, shown = header.shown, tabs = tabs })
 
 
 {-| Each tab in the bar's order: its name, its color, its backend. -}
@@ -3862,8 +3969,23 @@ handleOne remote ms rest ev m =
 
         Window.Resized size ->
             -- every tab at the window's size, less the bar's row
-            -- while it shows (docs/tabs.md TB2)
-            relayout size.cols { m | windowRows = size.rows }
+            -- while it shows (docs/tabs.md TB2); and whether it is
+            -- maximized now, its normal size kept while it is not (WP8)
+            Window.isMaximized
+                |> Task.andThen
+                    (\state ->
+                        relayout size.cols
+                            { m
+                                | windowRows = size.rows
+                                , maximized = state.maximized
+                                , normalSize =
+                                    if state.any then
+                                        m.normalSize
+
+                                    else
+                                        { columns = size.cols, rows = size.rows }
+                            }
+                    )
                 |> Task.andThen (\next -> handle next.remote ms rest next)
 
         Window.Focus on ->

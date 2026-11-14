@@ -89,8 +89,9 @@ SUITES = [
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
         # TB15: the tab order's moves and closings, eight. 173 since SN7: a
         # sound heard as it is chosen, three; 175 since DG6: a log keeping
-        # only probes, two; 180 since SG14: recent connections, five
-        180,
+        # only probes, two; 180 since SG14: recent connections, five; 182
+        # since WP8: the last window's state, two
+        182,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
