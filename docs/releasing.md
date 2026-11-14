@@ -58,3 +58,25 @@ which he will install on gmktec7 as its test. Not built.
   under their Ubuntu names, and checked by installing it into a clean
   noble container and running `smoke.sh` there. Then Gilbert's install on
   gmktec7, a desktop session, is the test that counts.
+
+**Added the same day (Gilbert):**
+
+- **RHEL 10**, RL2's shape like RHEL9 (`app/distro/rhel10/`, AlmaLinux
+  10), for the current RHEL and its rebuilds.
+- **A .deb for Debian 13** ("trixie"), built and checked as the noble one
+  in a Debian 13 container: its library packages' names and versions
+  differ from Ubuntu's, so the noble `.deb` does not cover it.
+- **The RHEL8 build becomes the plain Linux tarball**, the download for
+  any other x86-64 Linux. Its glibc (2.28) is older than every current
+  distribution's, and the X libraries it uses keep their ABI, so it should
+  run elsewhere as built; `smoke.sh` runs it in Fedora, Debian and Arch
+  containers to show it before it is offered so. Its name in the release
+  says both: RHEL8, and Linux in general.
+
+Not planned now, and why: Windows and Linux on ARM64 (wait for someone
+to ask and a machine to test on), Fedora `.rpm` and an Arch `-bin` package
+(the tarball covers them), winget (later, from the same zip), Flatpak and
+Snap (a terminal's sandbox keeps it from the system it is for), AppImage
+(little over a tarball of one binary), macOS (puritty has no macOS
+window code). Each distribution whose clang is not 21.1.8 trains its own
+profile or goes without one (RL1).
