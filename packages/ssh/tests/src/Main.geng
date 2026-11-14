@@ -7,6 +7,7 @@ module Main exposing (main)
     ssh-tests fuzz FILE [FROM] COUNT
     ssh-tests known-hosts FILE
     ssh-tests config FILE
+    ssh-tests connection
     ssh-tests login HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--passphrase P] [--password P] [--responses A,B] [--rekey]
     ssh-tests session HOST PORT --user NAME [--identity FILE]... [--agent SOCKET] [--agent-pipe PIPE] [--known-hosts FILE] [--strict ask|yes|accept-new|no]
         [--trust | --trust-once] [--passphrase P] [--password P] [--responses A,B] [--exec CMD] [--pty COLS,ROWS] [--stdin TEXT]
@@ -70,6 +71,9 @@ main =
                     Just "config" ->
                         cases configSuite r
 
+                    Just "connection" ->
+                        suites (Array.dropFirst 1 r.args) r [ connectionSuite ]
+
                     _ ->
                         when afterWord "connect" r.args is
                             [ host, port ] ->
@@ -99,20 +103,95 @@ cases suiteFor r =
             File.readFile r.fs (Path.fromString file)
                 |> Task.onError (\e -> Console.write ("failed: " ++ Os.Error.toString e ++ "\n") |> Task.andThen (\_ -> Os.Env.exitWithCode 1))
                 |> Task.andThen
-                    (\text ->
-                        Program.runWith { args = rest, argsAsBytes = Array.map Bytes.fromString rest }
-                            { name = "ssh-tests"
-                            , version = "0.1.0"
-                            , init = Task.succeed {}
-                            , fileSystem = \_ -> Just r.fs
-                            , globalSetUp = \_ -> Task.succeed {}
-                            , globalTearDown = \_ -> Task.succeed {}
-                            , suites = \_ -> [ suiteFor (Bytes.toStringLossy text) ]
-                            }
-                    )
+                    (\text -> suites rest r [ suiteFor (Bytes.toStringLossy text) ])
 
         Nothing ->
             fuzzOrUsage r
+
+
+{-| Suites run by gren-unit-node's native runner, with the runner's
+arguments. -}
+suites : Array String -> { args : Array String, fs : File.Permission, net : Net.Permission } -> Array U.Suite -> Task Never {}
+suites rest r these =
+    Program.runWith { args = rest, argsAsBytes = Array.map Bytes.fromString rest }
+        { name = "ssh-tests"
+        , version = "0.1.0"
+        , init = Task.succeed {}
+        , fileSystem = \_ -> Just r.fs
+        , globalSetUp = \_ -> Task.succeed {}
+        , globalTearDown = \_ -> Task.succeed {}
+        , suites = \_ -> these
+        }
+
+
+{-| The connection protocol fed a server's messages with no server
+(`docs/ssh-client.md` SC27): a channel opened, confirmed, then a message
+about it that does not read, which ends the session, as an unreadable
+confirmation does, rather than being dropped. -}
+connectionSuite : U.Suite
+connectionSuite =
+    let
+        -- a direct channel, confirmed by the server: its channel 7, a
+        -- window of 1 MiB and packets of 32 KiB
+        opened =
+            Connection.openDirect { host = "h", port = 22 }
+                |> .connection
+                |> Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 0, Wire.writeUint32 7, Wire.writeUint32 1048576, Wire.writeUint32 32768 ])
+
+        after payload =
+            Connection.received payload opened.connection
+
+        refused events =
+            Array.any
+                (\e ->
+                    when e is
+                        Connection.Refused _ ->
+                            True
+
+                        _ ->
+                            False
+                )
+                events
+
+        ends name payload =
+            caseTest name
+                (\_ ->
+                    let
+                        step =
+                            after payload
+                    in
+                    if refused step.events && Array.member Connection.Ended step.events then
+                        Nothing
+
+                    else
+                        Just ("the session went on: " ++ String.fromInt (Array.length step.events) ++ " events")
+                )
+
+        -- a string that says 100 bytes and has 3
+        short =
+            Bytes.flatten [ Wire.writeUint32 100, Bytes.fromString "abc" ]
+    in
+    suiteOf "Connection"
+        [ caseTest "confirmed"
+            (\_ ->
+                if Array.member Connection.Started opened.events then
+                    Nothing
+
+                else
+                    Just "the confirmation did not start the channel"
+            )
+        , caseTest "data that reads is output"
+            (\_ ->
+                if Array.member (Connection.Output (Bytes.fromString "abc")) (after (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ])).events then
+                    Nothing
+
+                else
+                    Just "no output"
+            )
+        , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
+        , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
+        , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
+        ]
 
 
 {-| A case's test: it passes, or fails saying how. -}
@@ -794,7 +873,7 @@ configSuite text =
                         Array.foldl
                             (\l acc ->
                                 if String.startsWith "case " l then
-                                    Array.pushLast { head = l, files = [], want = "" } acc
+                                    Array.pushLast { head = l, files = [], want = "", bad = "" } acc
 
                                 else
                                     let
@@ -805,6 +884,9 @@ configSuite text =
                                         Just current ->
                                             if String.startsWith "file " l then
                                                 Array.set n { current | files = Array.pushLast l current.files } acc
+
+                                            else if String.startsWith "bad " l then
+                                                Array.set n { current | bad = String.dropFirst 4 l } acc
 
                                             else if String.startsWith "want " l then
                                                 Array.set n { current | want = Bytes.toStringLossy (fromHex (String.dropFirst 5 l)) } acc
@@ -851,18 +933,42 @@ configSuite text =
                                                         )
                                                     |> Maybe.withDefault ""
                                         in
-                                        { path = path, directives = (Config.parse path body).directives }
+                                        { path = path, parsed = Config.parse path body }
                                     )
                                     c.files
 
                             source pattern =
                                 Array.keepIf (\f -> pathGlob pattern f.path) files
+                                    |> Array.map (\f -> { path = f.path, directives = f.parsed.directives })
 
                             main_ =
-                                Array.first files |> Maybe.map .directives |> Maybe.withDefault []
+                                Array.first files |> Maybe.map (\f -> f.parsed.directives) |> Maybe.withDefault []
+
+                            resolved =
+                                Config.resolve (context host) source main_ []
 
                             got =
-                                Config.toLines (Config.resolve (context host) source main_ [])
+                                Config.toLines resolved
+
+                            -- the lines the problems name: each bad line's, and no other
+                            problems =
+                                Array.mapAndFlatten (\f -> f.parsed.problems) files ++ resolved.problems
+
+                            named =
+                                Array.map
+                                    (\p ->
+                                        String.split ":" p
+                                            |> Array.get 1
+                                            |> Maybe.withDefault ""
+                                    )
+                                    problems
+
+                            wrongProblems =
+                                if (c.bad == "" && Array.isEmpty problems) || (c.bad /= "" && Array.length problems == 1 && named == [ c.bad ]) then
+                                    []
+
+                                else
+                                    [ "problems [" ++ String.join " | " problems ++ "] where line " ++ (if c.bad == "" then "none" else c.bad) ++ " was wanted" ]
 
                             grouped ls =
                                 Array.foldl
@@ -888,7 +994,7 @@ configSuite text =
                             differ =
                                 Array.keepIf (\k -> Dict.get k want /= Dict.get k mine) keys
                         in
-                        if Array.isEmpty differ then
+                        if Array.isEmpty differ && Array.isEmpty wrongProblems then
                             Nothing
 
                         else
@@ -896,7 +1002,8 @@ configSuite text =
                                 (name
                                     ++ ": "
                                     ++ String.join "; "
-                                        (Array.map
+                                        (wrongProblems
+                                            ++ Array.map
                                             (\k ->
                                                 k
                                                     ++ " wants ["

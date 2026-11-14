@@ -51,7 +51,12 @@ parse file text =
                         Ok split ->
                             when Array.popFirst split is
                                 Just w ->
-                                    { acc | directives = Array.pushLast { file = file, lineNumber = l.lineNumber, keyword = String.toLower w.first, args = w.rest } acc.directives }
+                                    when checked { file = file, lineNumber = l.lineNumber, keyword = String.toLower w.first, args = w.rest } is
+                                        Ok d ->
+                                            { acc | directives = Array.pushLast d acc.directives }
+
+                                        Err why ->
+                                            meant Reason.FromOutside { acc | problems = Array.pushLast (file ++ ":" ++ String.fromInt l.lineNumber ++ ": " ++ why ++ "; the line is left out") acc.problems }
 
                                 Nothing ->
                                     acc
@@ -60,6 +65,161 @@ parse file text =
                             meant Reason.FromOutside { acc | problems = Array.pushLast (file ++ ":" ++ String.fromInt l.lineNumber ++ ": " ++ why) acc.problems }
             )
             { directives = [], problems = [] }
+
+
+{-| A directive whose value OpenSSH reads as a number, read as it does,
+or why not (`docs/ssh-client.md` SC27): `Port` a port, 1 to 65535;
+`ServerAliveInterval` a time, kept in seconds, as `ssh -G` prints it;
+`ServerAliveCountMax` a count. OpenSSH refuses the whole file for one of
+these; here the line is left out and said. A service name as a port
+(`Port ssh`) is not looked up. -}
+checked : Directive -> Result String Directive
+checked d =
+    let
+        one read why =
+            when d.args is
+                [ value ] ->
+                    when read value is
+                        Just n ->
+                            Ok { d | args = [ String.fromInt n ] }
+
+                        Nothing ->
+                            meant Reason.FromOutside (Err (why value))
+
+                _ ->
+                    Err (d.keyword ++ " takes one value")
+    in
+    when d.keyword is
+        "port" ->
+            one (\v -> decimal 65535 v |> Maybe.andThen (\n -> if n >= 1 then Just n else Nothing))
+                (\v -> "Port '" ++ v ++ "' is not a port number (1 to 65535; a service name is not looked up)")
+
+        "serveraliveinterval" ->
+            one seconds (\v -> "ServerAliveInterval '" ++ v ++ "' is not a time (seconds, or 30s, 5m, 1h30m)")
+
+        "serveralivecountmax" ->
+            one (decimal 2147483647) (\v -> "ServerAliveCountMax '" ++ v ++ "' is not a count")
+
+        _ ->
+            Ok d
+
+
+{-| A count as OpenSSH's `strtonum` reads one: an optional `+`, then
+decimal digits, no more than `most`. -}
+decimal : Int -> String -> Maybe Int
+decimal most text =
+    let
+        digits =
+            if String.startsWith "+" text then
+                String.dropFirst 1 text
+
+            else
+                text
+    in
+    if digits == "" then
+        Nothing
+
+    else
+        String.foldl
+            (\c got ->
+                Maybe.andThen
+                    (\n ->
+                        if Char.isDigit c then
+                            grown most n (Char.toCode c - 48)
+
+                        else
+                            Nothing
+                    )
+                    got
+            )
+            (Just 0)
+            digits
+
+
+{-| `n` with one more decimal digit, or Nothing past `most`. -}
+grown : Int -> Int -> Int -> Maybe Int
+grown most n d =
+    if 0 <= n && 0 <= d && d <= 9 && d <= most && n <= (most - d) // 10 then
+        Just (n * 10 + d)
+
+    else
+        Nothing
+
+
+{-| A time as OpenSSH's `convtime` reads one: numbers, each followed by a
+unit (`s`, `m`, `h`, `d`, `w`, either case) or by nothing for seconds
+(`90`, `1m30`, `1h30m`), in seconds, no more than 2147483647. -}
+seconds : String -> Maybe Int
+seconds text =
+    let
+        unit c =
+            when c is
+                's' ->
+                    1
+
+                'S' ->
+                    1
+
+                'm' ->
+                    60
+
+                'M' ->
+                    60
+
+                'h' ->
+                    3600
+
+                'H' ->
+                    3600
+
+                'd' ->
+                    86400
+
+                'D' ->
+                    86400
+
+                'w' ->
+                    604800
+
+                'W' ->
+                    604800
+
+                _ ->
+                    0
+
+        -- the total so far, the number being read, and whether one is
+        step c got =
+            Maybe.andThen
+                (\at ->
+                    if Char.isDigit c then
+                        grown 2147483647 at.number (Char.toCode c - 48)
+                            |> Maybe.map (\n -> { at | number = n, reading = True })
+
+                    else if at.reading && unit c >= 1 then
+                        added at.total at.number (unit c)
+                            |> Maybe.map (\t -> { total = t, number = 0, reading = False })
+
+                    else
+                        Nothing
+                )
+                got
+    in
+    if text == "" then
+        Nothing
+
+    else
+        String.foldl step (Just { total = 0, number = 0, reading = False }) text
+            |> Maybe.andThen (\at -> added at.total at.number 1)
+
+
+{-| `total` and `n` of a unit `by`, or Nothing past 2147483647. -}
+added : Int -> Int -> Int -> Maybe Int
+added total n by =
+    if 0 <= total && 0 <= n && 1 <= by && n <= (2147483647 - total) // by then
+        Just (total + n * by)
+
+    else
+        Nothing
 
 
 {-| A line's words: the keyword, an optional `=` after it, then arguments
@@ -300,16 +460,24 @@ matchLine context r d =
                                     c.first
                                 )
 
-                        argument =
-                            Array.first c.rest |> Maybe.withDefault ""
+                        -- a criterion with its argument, which OpenSSH
+                        -- requires ("Missing Match criteria for host")
+                        withArgument test =
+                            when Array.first c.rest is
+                                Just argument ->
+                                    judge (Array.dropFirst 1 c.rest)
+                                        { acc | holds = acc.holds && (test argument /= negated) }
 
-                        withArgument held =
-                            judge (Array.dropFirst 1 c.rest)
-                                { acc | holds = acc.holds && (held /= negated) }
+                                Nothing ->
+                                    meant Reason.FromOutside
+                                        { acc
+                                            | holds = False
+                                            , problems = Array.pushLast (where_ d ++ "Match " ++ name ++ " has no criteria; the block is left out") acc.problems
+                                        }
 
                         -- unlike Host's, without regard to case (OpenSSH's
                         -- match_cfg_line lowers both)
-                        patternsHold value =
+                        patternsHold value argument =
                             hostMatches (String.toLower value) (String.split "," (String.toLower argument))
                     in
                     when name is

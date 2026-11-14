@@ -1080,27 +1080,35 @@ sendPacket payload st =
                 , padding.value
                 ]
 
-        wire =
+        sealed =
             when st.keysOut is
                 Nothing ->
-                    meant Reason.NotYet plain
+                    meant Reason.NotYet (Just plain)
 
                 Just k ->
                     SshCrypto.seal { cipher = k.cipher, key = k.key, iv = k.iv, sequence = st.seqOut, count = st.countOut } plain
-                        |> Maybe.withDefault Bytes.empty
     in
-    { st
-        | random = padding.random
-        , out = Array.pushLast wire st.out
-        , seqOut = wrapAdd st.seqOut
-        , countOut =
-            if st.keysOut == Nothing then
-                st.countOut
+    when sealed is
+        Just wire ->
+            { st
+                | random = padding.random
+                , out = Array.pushLast wire st.out
+                , seqOut = wrapAdd st.seqOut
+                , countOut =
+                    if st.keysOut == Nothing then
+                        st.countOut
 
-            else
-                st.countOut + 1
-        , sinceKeys = st.sinceKeys + Bytes.length plain
-    }
+                    else
+                        st.countOut + 1
+                , sinceKeys = st.sinceKeys + Bytes.length plain
+            }
+
+        -- keys of the wrong length, or a packet not whole blocks: nothing
+        -- can be sent under these keys, a disconnect included, so the
+        -- transport ends here and the sequence number stays
+        Nothing ->
+            meant Reason.Refused
+                (emit (Failed "a packet could not be sealed with the keys in use") { st | phase = Dead })
 
 
 rekeyIfDue : State -> State

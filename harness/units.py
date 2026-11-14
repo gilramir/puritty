@@ -4,7 +4,7 @@ suite puritty has, built and run where puritty runs, each held to its count.
 
 - on node: vt, tmux and the application's suites (each `run.sh`);
 - natively on Linux: the same three (`native/run.sh`), ssh-crypto's
-  vectors, and ssh-tests' known-hosts and config cases;
+  vectors, and ssh-tests' known-hosts, config and connection cases;
 - on Windows: the same, cross-compiled and run on beelink1 over ssh.
 
 A run passes when the program ends with status 0 and its runner says
@@ -117,7 +117,8 @@ SUITES = [
     ),
     Suite(
         "ssh-config",
-        30,
+        # 45 since SC27: time forms, and lines OpenSSH refuses, fifteen
+        45,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "config", "config-cases.txt"], cwd="packages/ssh/tests"),
             Run(
@@ -126,6 +127,20 @@ SUITES = [
                 ["config", "config-cases.txt"],
                 exe="packages/ssh/tests/ssh-tests.exe",
                 files=["packages/ssh/tests/config-cases.txt"],
+            ),
+        ],
+    ),
+    Suite(
+        # since SC27: a channel message that does not read ends the session
+        "ssh-connection",
+        5,
+        [
+            Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "connection"], cwd="packages/ssh/tests"),
+            Run(
+                "windows",
+                ["packages/ssh/tests/build.sh", "--windows"],
+                ["connection"],
+                exe="packages/ssh/tests/ssh-tests.exe",
             ),
         ],
     ),

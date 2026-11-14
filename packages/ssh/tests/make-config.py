@@ -74,6 +74,29 @@ CASES = [
     ("match-host-case", "build", [("config", "Host build\n  HostName Build.Example.com\nMatch host Build.Example.com\n  Port 2206\nMatch host build.example.com\n  User lower\n")]),
     ("match-originalhost-case", "BUILD", [("config", "Match originalhost build\n  Port 2207\nMatch originalhost BUILD\n  User upper\n")]),
     ("hostname-mixed-case", "m", [("config", "Host m\n  HostName MixED.Example.com\n")]),
+    ("time-forms", "t", [("config", "Host t\n  ServerAliveInterval 1m30\n  ServerAliveCountMax +4\n  Port 022\n")]),
+    ("time-units", "t", [("config", "ServerAliveInterval 1h2M3s\n")]),
+    ("time-weeks", "t", [("config", "ServerAliveInterval 2W\n")]),
+]
+
+# Lines OpenSSH refuses ("terminating, 1 bad configuration options"):
+# each case's config fails `ssh -G`, and with its bad line taken out is
+# what the case wants; Ssh.Config names the line in a problem and leaves
+# it out (docs/ssh-client.md SC27); a bad Match leaves out its block.
+# name, host, config, the bad line, and for a Match the block's lines.
+BAD = [
+    ("bad-port-word", "b", "Host b\n  Port abc\n  User u\n", 2),
+    ("bad-port-zero", "b", "Port 0\nUser u\n", 1),
+    ("bad-port-high", "b", "Port 70000\n", 1),
+    ("bad-port-hex", "b", "Port 0x16\n", 1),
+    ("bad-port-elsewhere", "b", "Host other\n  Port abc\nHost b\n  Port 2210\n", 2),
+    ("bad-interval", "b", "ServerAliveInterval 30x\nServerAliveCountMax 5\n", 1),
+    ("bad-interval-negative", "b", "ServerAliveInterval -5\n", 1),
+    ("bad-interval-large", "b", "ServerAliveInterval 2147483648\n", 1),
+    ("bad-countmax", "b", "ServerAliveCountMax 3x\n", 1),
+    ("bad-countmax-large", "b", "ServerAliveCountMax 2147483648\n", 1),
+    ("bad-match-host", "b", "Match host\n  User m\nHost b\n  Port 2211\n", 1, [1, 2]),
+    ("bad-match-user", "b", "Match user\n  User m\n", 1, [1, 2]),
 ]
 
 
@@ -101,8 +124,27 @@ def main():
         for p, text in paths:
             out.append(f"file {p} {text.encode().hex() or '-'}")
         out.append("want " + "\n".join(lines).encode().hex())
+    for name, host, text, bad, *block in BAD:
+        drop = block[0] if block else [bad]
+        case_dir = DIR / name
+        case_dir.mkdir(parents=True, exist_ok=True)
+        p = case_dir / "config"
+        p.write_text(text)
+        refused = subprocess.run(["ssh", "-F", str(p), "-G", host], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if refused.returncode == 0 or f"line {bad}:" not in refused.stderr:
+            raise SystemExit(f"{name}: ssh -G did not refuse line {bad}: {refused.stderr}")
+        kept = case_dir / "kept"
+        kept.write_text("".join(l for i, l in enumerate(text.splitlines(keepends=True), 1) if i not in drop))
+        got = subprocess.run(["ssh", "-F", str(kept), "-G", host], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if got.returncode != 0:
+            raise SystemExit(f"{name}: ssh -G failed without line {bad}: {got.stderr}")
+        lines = [k.lower() + " " + v for k, _, v in (l.partition(" ") for l in got.stdout.splitlines()) if k.lower() in KEYWORDS]
+        out.append(f"case {name} host={host}")
+        out.append(f"file {p} {text.encode().hex()}")
+        out.append(f"bad {bad}")
+        out.append("want " + "\n".join(lines).encode().hex())
     (HERE / "config-cases.txt").write_text("\n".join(out) + "\n")
-    print("wrote", len(CASES), "ssh_config cases")
+    print("wrote", len(CASES) + len(BAD), "ssh_config cases")
 
 
 if __name__ == "__main__":

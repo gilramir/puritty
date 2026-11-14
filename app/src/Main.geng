@@ -267,7 +267,7 @@ type alias TabInfo =
 of a local tab; or a session to a host, as the window's first was. -}
 type alias Starter =
     { local : { columns : Int, rows : Int, directory : Maybe Path.Path } -> Task String Backend
-    , ssh : Config.Host -> Task String Backend
+    , ssh : Config.Host -> Task String { remote : Backend, problems : Array String }
     , charset : Charset
     }
 
@@ -780,7 +780,7 @@ begin cp vars given problems locale config cell restoring =
                                                                                 Just remote ->
                                                                                     Task.succeed remote
                                                                         )
-                                                        , ssh = \host -> sshBackend vars config charset host |> Task.map .remote
+                                                        , ssh = \host -> sshBackend vars config charset host
                                                         , charset = localCharset
                                                         }
                                                 in
@@ -798,12 +798,15 @@ sshBackend vars config charset host =
         |> Task.andThen
             (\permissions ->
                 let
-                    home =
-                        Dict.get "HOME" vars |> Maybe.withDefault (meant Reason.FromOutside Dict.get "USERPROFILE" vars |> Maybe.withDefault "")
-
+                    -- an empty local user is let through: the host, the
+                    -- config or a Match may give the user, and one that
+                    -- is still empty is refused below
                     localUser =
-                        Dict.get "USER" vars |> Maybe.withDefault (meant Reason.FromOutside Dict.get "USERNAME" vars |> Maybe.withDefault "")
+                        Dict.get "USER" vars |> Maybe.withDefault (meant Reason.FromOutside Dict.get "USERNAME" vars |> Maybe.withDefault (meant Reason.FromOutside ""))
                 in
+                homeOf vars
+                    |> Task.andThen
+                        (\home ->
                 SshAgents.agents vars
                     |> Task.andThen
                         (\agents ->
@@ -821,11 +824,39 @@ sshBackend vars config charset host =
                     }
                     |> Task.andThen
                         (\resolved ->
-                            Backend.ssh permissions { options = resolved.options, jumps = resolved.jumps }
-                                |> Task.map (\remote -> { remote = remote, problems = Array.map (\p -> "~/.ssh/config: " ++ p) resolved.problems })
+                            if Array.any (\o -> o.user == "") (Array.pushFirst resolved.options resolved.jumps) then
+                                Task.fail "no user to log in as: the host gives none, nor does ~/.ssh/config, and neither USER nor USERNAME is set"
+
+                            else
+                                Backend.ssh permissions { options = resolved.options, jumps = resolved.jumps }
+                                    |> Task.map (\remote -> { remote = remote, problems = Array.map (\p -> "~/.ssh/config: " ++ p) resolved.problems })
+                        )
                         )
                         )
             )
+
+
+{-| The home the ssh client finds `~/.ssh` in: `HOME`, or Windows'
+`USERPROFILE`; with neither, the connection is refused, since `~/.ssh`
+would be read from the root. -}
+homeOf : Dict String String -> Task String String
+homeOf vars =
+    let
+        set name =
+            Dict.get name vars |> Maybe.andThen (\v -> if v == "" then Nothing else Just v)
+    in
+    when set "HOME" is
+        Just home ->
+            Task.succeed home
+
+        Nothing ->
+            meant Reason.FromOutside
+            when set "USERPROFILE" is
+                Just home ->
+                    Task.succeed home
+
+                Nothing ->
+                    meant Reason.FromOutside (Task.fail "neither HOME nor USERPROFILE is set, so ~/.ssh cannot be found")
 
 
 {-| The first of the commands that starts: one that is not found gives way
@@ -5150,7 +5181,10 @@ openTabWith with m =
                     m.starter.ssh h
 
                 Nothing ->
-                    meant Reason.NotSet here |> Task.mapError Os.Error.toString |> Task.andThen (\dir -> m.starter.local { columns = cols, rows = rows, directory = dir })
+                    meant Reason.NotSet here
+                        |> Task.mapError Os.Error.toString
+                        |> Task.andThen (\dir -> m.starter.local { columns = cols, rows = rows, directory = dir })
+                        |> Task.map (\remote -> { remote = remote, problems = [] })
     in
     starting
         |> Task.map Ok
@@ -5161,21 +5195,29 @@ openTabWith with m =
                     Err why ->
                         meant Reason.Refused Console.writeErr ("puritty: a new tab did not start: " ++ why ++ "\n") |> Task.map (\_ -> m)
 
-                    Ok remote ->
+                    Ok begun ->
                         let
+                            remote =
+                                begun.remote
+
                             id =
                                 m.nextTabId
 
                             slot =
                                 freeSlot m
 
+                            -- ~/.ssh/config's problems, as the first
+                            -- window shows them (SC27)
                             tab =
-                                when with.kept is
-                                    Just k ->
-                                        reopened k id remote host m
+                                withNotices
+                                    begun.problems
+                                    (when with.kept is
+                                        Just k ->
+                                            reopened k id remote host m
 
-                                    Nothing ->
-                                        meant Reason.NotSet freshTab id remote host with.name with.color cols rows m
+                                        Nothing ->
+                                            meant Reason.NotSet freshTab id remote host with.name with.color cols rows m
+                                    )
 
                             r =
                                 swapTab tab { m | nextTabId = id + 1, order = Array.pushLast id m.order, shown = Array.length m.order }
@@ -5256,6 +5298,16 @@ reopened k id remote host m =
         , search = Nothing
         , syncSince = -1
     }
+
+
+{-| A new tab with problems shown before its program's output. -}
+withNotices : Array String -> (taken t : Tab) -> Tab
+withNotices problems t =
+    if Array.isEmpty problems then
+        t
+
+    else
+        { t | term = Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems))) t.term }
 
 
 reopenedNote : String

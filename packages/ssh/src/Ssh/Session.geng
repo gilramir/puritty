@@ -783,8 +783,16 @@ remember name key st =
                 path =
                     Path.fromString file
             in
-            Directory.createAll st.permissions.fs (Path.parent path |> Maybe.withDefault path)
-                |> Task.onError (\_ -> Task.succeed {})
+            -- a path with no parent is a root, which the append below
+            -- fails on and says so
+            (when Path.parent path is
+                Just dir ->
+                    Directory.createAll st.permissions.fs dir
+                        |> Task.onError (\_ -> Task.succeed {})
+
+                Nothing ->
+                    meant Reason.FromOutside (Task.succeed {})
+            )
                 |> Task.andThen (\_ -> File.appendFile st.permissions.fs (Bytes.fromString (KnownHosts.line { name = name, salt = Nothing } key)) path)
                 |> Task.andThen (\_ -> tell (Status ("the host's key is written to " ++ file)) st)
                 |> Task.onError (\e -> tell (Status ("the host's key could not be written: " ++ Os.Error.toString e)) st)

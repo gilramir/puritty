@@ -1461,3 +1461,51 @@ server until its TCP connection times out, and with `window-size
 smallest` (tmux before 3.1, or set so) the window keeps that client's
 size and fills the rest with dots. `tmux list-clients` shows it, and
 `tmux attach -d` detaches it.
+
+## SC27 · What the fallbacks hid, said or refused (2026-11-13)
+
+Marking every fallback that can run (`docs/vt-core.md` §VC64) found eleven
+that hid something in the ssh client and its caller. Each is now said or
+refused:
+
+| where | was | now |
+|---|---|---|
+| `Config.checked` (`Port`) | `abc`, `0`, `70000`, `0x16` silently 22 | the line is left out and a problem names it, as `ssh -G` refuses it |
+| `Config.checked` (`ServerAliveInterval`) | `1m`, `1h30m` silently 0: only bare seconds read | OpenSSH's time forms (`convtime`: `s m h d w`, either case, `1m30`), kept in seconds as `ssh -G` prints them; anything else left out and said |
+| `Config.checked` (`ServerAliveCountMax`) | `3x` silently 3 | `+4` and `07` read, as `strtonum` does; anything else left out and said |
+| `Config.matchLine` | `Match host` with no argument judged against `""` | the block is left out and said |
+| `Connection.onChannel` | a window adjustment, data or extended data that does not read dropped, losing output or stalling | the session ends, `Refused`, as an unreadable confirmation already did |
+| `Transport.sendPacket` | a packet that could not be sealed sent as nothing, and the sequence number counted | the transport ends, `Failed`, and nothing is sent or counted |
+| `Main.sshBackend` | no `HOME` nor `USERPROFILE`: `~/.ssh` read from `/` | the connection is refused and says why; an empty `HOME` counts as unset |
+| `Main.sshBackend` | no `USER` nor `USERNAME`: `""` logged in as | refused when nothing (host, config, a `Match`) gives a user |
+| `Session.remember` | a root path's own path made as a directory | not made; the append fails and says so, as before |
+
+OpenSSH refuses the whole configuration for a bad line ("terminating, 1
+bad configuration options"); puritty leaves the line out and shows the
+problem in yellow before the session's output, as it does for a line
+that does not read. A tab opened later to a host dropped those problems
+(`Starter.ssh` kept only the backend); it shows them too now. A service name as a port (`Port ssh`, which OpenSSH
+looks up in `/etc/services`) is not looked up, and the problem says so.
+The `remember` one was not a bug in effect: a root path's `createAll`
+does nothing, and the append failed and was said; it reads as meant now.
+
+**Cases.** `make-config.py` gains three of time forms and twelve of lines
+OpenSSH refuses: for each, `ssh -G` is checked to refuse that line, and
+the case wants what `ssh -G` prints with the line (a bad `Match`'s whole
+block) taken out; the runner holds the problems to naming just that line,
+and every other case to none. `ssh-tests connection` feeds a confirmed
+channel a message that does not read, of each kind, and wants `Refused`
+and `Ended`. On the code before: 15 of the 45 config cases and 3 of the
+5 connection cases fail. `harness/units.py`: ssh-config 45 (was 30), and
+ssh-connection 5 on Linux and Windows. The sealing failure has no case:
+its keys are the transport's own, and a test cannot hand it bad ones.
+
+**Found, not fixed:** a new tab that does not start (an ssh tab refused
+for want of `HOME`, say) is said only on standard error, which a window
+started from a desktop does not show. How the window should show a tab
+that could not start is Gilbert's to decide.
+
+`geng checks`: 8 of the 11 left the baseline (125 entries); the other
+three are `Session.resolveOne`'s `String.toInt` defaults for those three
+numbers, which `Config.checked` now makes unreachable, though the checker
+cannot see it, so they join the provable ones.

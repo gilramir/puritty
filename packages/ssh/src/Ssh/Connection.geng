@@ -476,7 +476,7 @@ onChannel n body st =
                 flush { st | remoteWindow = min 2147483647 (st.remoteWindow + more.value) }
 
             Err _ ->
-                st
+                meant Reason.FromOutside ended (emit (Refused ("a window adjustment that does not read; the session ends")) st)
 
     else if n == msgData then
         when afterChannel |> Result.andThen (\c -> Wire.string c.next) is
@@ -484,7 +484,7 @@ onChannel n body st =
                 consume (Bytes.length data.value) (emit (Output data.value) st)
 
             Err _ ->
-                st
+                meant Reason.FromOutside ended (emit (Refused ("channel data that does not read; the session ends")) st)
 
     else if n == msgExtendedData then
         when afterChannel |> Result.andThen (\c -> Wire.uint32 c.next) |> Result.andThen (\code -> Wire.string code.next) is
@@ -492,7 +492,7 @@ onChannel n body st =
                 consume (Bytes.length data.value) (emit (ErrorOutput data.value) st)
 
             Err _ ->
-                st
+                meant Reason.FromOutside ended (emit (Refused ("extended channel data that does not read; the session ends")) st)
 
     else if n == msgEof then
         st

@@ -4607,8 +4607,8 @@ should not be called meant:
   pages that succeeded. By module: `Main` 27, `TmuxMode` 24, `Schema` 9,
   `Ssh.Session` 6, `Vt.Recut` 6, `Ssh.Transport` 5, `Tmux.Customize` 5,
   the rest three or fewer.
-- **11 bugs**, found by reading and checked against the code, not yet
-  fixed:
+- **11 bugs**, found by reading and checked against the code, fixed
+  since in `docs/ssh-client.md` SC27 (the baseline is 125 entries after):
   - `Main.sshBackend`: with neither `HOME` nor `USERPROFILE` set, home
     is `""` and `~/.ssh/config` is read as `/.ssh/config`; with neither
     `USER` nor `USERNAME`, `""` is the login name. Both should be said.
