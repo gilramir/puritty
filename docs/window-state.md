@@ -154,3 +154,18 @@ Questions: is maximized what you mean by full screen, or full screen
 without the title bar and taskbar? Remember by default, or only when
 asked? And should a window's position be remembered at all (C), given
 VDI?
+
+## WP8 · Dnene61, Gilbert's answers (2026-11-14)
+
+- **Maximized**, not full screen: the title bar and taskbar stay.
+- **The last state is remembered, always**: no setting for it. A window
+  closed maximized opens maximized; one closed in its normal size opens at
+  that size in cells.
+- **No position**, not now: Windows or the window manager places the
+  window, so nothing opens where no monitor is.
+
+So WP7's first leaning without its setting, and without full screen. To
+build: maximized on Windows (`SW_MAXIMIZE` at the first show) and on X11
+(`_NET_WM_STATE_MAXIMIZED_VERT`/`_HORZ` before mapping); the window's
+state and normal size noted when it closes, in puritty's state folder;
+each window restored with `[tabs] restore` keeps its own.
