@@ -365,3 +365,39 @@ closes it. In the settings gate `search-and-choice` presses Down and Enter
 in the list. The new `choice-list-open` case leaves the color scheme's
 list open for its picture: 10 of the 18 schemes at the gate's 38 rows,
 "puritty" ticked. Settings 20 of 20.
+
+## SG14 · Recent connections, and quick connect with a command (Dnene59, decided 2026-11-14; not built)
+
+Gilbert, using the host list on Windows: it should remember the last hosts
+connected to, so one is a click away; and a connection is more than a
+host, a user over the host's or a command instead of the shell. The host
+list already has the whole of a connection in a saved host (`[hosts."name"]`:
+host, user, port, identity, jump, command, charset, colors, font), but
+quick connect forgets what was typed, and "New host…" did not say that it
+makes one of those.
+
+**Dnene59, Gilbert's answers:**
+
+1. **A Recent section at the top of the list**, the last **8**
+   connections made, newest first. One is the whole connection: user,
+   host, port and command; the same connection again moves to the top.
+   Kept in a state file beside the restore directory, not in the settings
+   file; a setting for how many, 0 for none. No password or passphrase is
+   ever kept.
+2. **Quick connect takes a command after a space**, as `ssh` does:
+   `gilbert@build tmux -CC attach` connects as gilbert and runs `tmux -CC
+   attach`. **The screen says so** (Gilbert: the user has to know it is
+   possible): the empty field shows a grayed example,
+   `user@host:port command`, and the footer while typing says that what
+   follows a space is the command to run, in both languages.
+3. **A recent made from a saved host names the saved host**, so later
+   changes to it apply; a recent made by quick connect keeps what was
+   typed.
+4. **Save… on a recent** opens the saved host's form filled in from it;
+   Delete removes a recent.
+5. **A saved host's second line says what it does**, `user@host ·
+   command`, besides where it came from.
+6. **"New host…" is "New connection…"** on the screen; the file keeps
+   `[hosts."name"]`.
+
+Same window on Linux and Windows, so both get it.
