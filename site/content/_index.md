@@ -67,8 +67,10 @@ kicker = "Windows"
 title = "An ssh terminal with the client built in"
 body = """
 On Windows puritty opens a list of your hosts, from its settings and your
-`~/.ssh/config`, with a quick-connect field. Its own ssh client talks to
-the host directly: no OpenSSH and no console layer between them.
+`~/.ssh/config`, with a quick-connect field. The connections you made last
+come first, and quick connect takes a command to run, as `ssh` does. Its
+own ssh client talks to the host directly: no OpenSSH and no console layer
+between them.
 
 It checks host keys against `known_hosts`, uses your keys, the Windows ssh
 agent or Pageant, asks for a passphrase or a password in the window, and
@@ -77,6 +79,8 @@ make it, as in PuTTY.
 """
 link = "@/guide/settings.md"
 link_text = "Hosts in the settings"
+image = "host-list.png"
+alt = "puritty's host list: a quick-connect field with the example user@host:port command, New connection, two recent connections, two saved hosts (one through a jump host, one running tmux -CC attach) and two hosts from ~/.ssh/config"
 
 [[extra.features]]
 kicker = "Correct, and checked"

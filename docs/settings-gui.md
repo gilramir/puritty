@@ -424,6 +424,11 @@ Right saving, the command parsed); settings gate 20 of 20; and run:
 `puritty ssh` twice wrote `recent.txt` newest first, and `puritty hosts`
 listed both above the saved hosts, its field grayed with the example.
 
+A host's name, where it is from and where it goes are cut with "…" to
+their columns: a saved host's command ran off the window's edge.
+`docs/images/host-list.png`, the home page's picture of the built-in ssh
+client, is the host list with made-up hosts.
+
 **Found, not this work's:** `harness/hosts.py` fails three cases
 (`menu-connects`, `double-click-host`, `settings-connects`) at the commit
 before this work too: in each, one puritty starts another, which runs no
