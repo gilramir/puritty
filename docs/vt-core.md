@@ -4740,7 +4740,7 @@ functions are gone.
 - `Main`'s tab slots (`atTab`, `showTab`, `dropShownFrom`, `endTab`,
   `reopenTab`): `slotOf` found a filled slot, and the swap that takes the
   tab out does not know it. Changing how tabs leave their slots wants the
-  window to test it in, not a night alone.
+  window to test it in, not a night alone. (Done in VC69.)
 - Facts between modules or structures a rule cannot state: `Ssh.Session`'s
   identities and agent, `Ssh.Transport`'s keys, `SettingsWindow`'s
   `isFamily` and `isHostName` (a function's answer about `focused`),
@@ -4807,3 +4807,26 @@ look at it, since a helper walked with `4 * g` reads at `4 * g`):
 - `Vt.Resize.changeRows` holds `hist` to the rows in `now`'s difference.
 
 Each is the same for every value the program has; the tests say so below.
+
+## VC69 · A tab leaves its slot in one walk (2026-11-14)
+
+VC68 left four of `Main`'s tab slots on the list: `showTab`,
+`dropShownFrom`, `atTab` and `endTab` asked `slotOf` for a tab's slot, then
+swapped the slot empty, and a slot found filled could not, to the checker,
+be empty when swapped. `takeTab` does both in one walk: each slot is swapped
+out, a tab with another id put back as it was, and the one looked for
+answered with its slot and the slot left empty, so what was taken is the tab
+looked for. The four callers have one `Nothing` each, `meant Reason.Gone`
+(the tab closed while its message was on the way), where they had two.
+`sshOfTab` still uses `slotOf`, as a read that changes nothing.
+
+The list is 78 → 74, those four gone, nothing new.
+
+**Checked:** the unit gate, 17 of 17 on node, Linux and Windows, fmt and
+checks green. On beelink1 (Windows 11), with Gilbert, a build with it:
+tabs switched, closed and reopened, local and over ssh, and under
+`tmux -CC`, each as before; what a reopened tab showed and rang is
+`docs/tabs.md` TB17's, a change of its own. The one freeze in that test was not puritty's:
+an XOFF (a Ctrl+S pressed with the prefix, Ctrl+A, 4 ms apart in the log)
+stopped a pane's output under `tmux -CC`, and after a plain `tmux attach` it
+was the pane left; a Ctrl+Q sent to it on nene released it.

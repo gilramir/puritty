@@ -5596,6 +5596,39 @@ neighborId by m =
     Array.getProven (neighborAt by m) m.order
 
 
+{-| The tab not shown with this id taken out of its slot, which is left
+empty: its slot and the tab, found and taken in one walk, so that what was
+taken is the tab looked for (`docs/vt-core.md` VC69); `Nothing`, the slots
+as they were, when no slot holds it. A tab in another slot is put back as
+it was. -}
+takeTab : Int -> (taken tabs : Builder (Maybe Tab)) -> { tabs : Builder (Maybe Tab), taken : Maybe { slot : Int, tab : Tab } }
+takeTab id tabs =
+    takeFrom id 0 tabs
+
+
+takeFrom : Int -> Int -> (taken tabs : Builder (Maybe Tab)) -> { tabs : Builder (Maybe Tab), taken : Maybe { slot : Int, tab : Tab } }
+takeFrom id i tabs =
+    if i < 0 || i >= Builder.length tabs then
+        { tabs = tabs, taken = Nothing }
+
+    else
+        let
+            out =
+                Builder.swap i Nothing tabs
+        in
+        when out.old is
+            Just (Just t) ->
+                if t.info.id == id then
+                    { tabs = out.builder, taken = Just { slot = i, tab = t } }
+
+                else
+                    takeFrom id (i + 1) (Builder.set i (Just t) out.builder)
+
+            _ ->
+                -- an empty slot, a tab closed or shown
+                meant Reason.Gone takeFrom id (i + 1) out.builder
+
+
 {-| The slot a tab not shown is in. -}
 slotOf : Int -> Model -> Maybe Int
 slotOf id m =
@@ -5739,29 +5772,24 @@ showTab id m =
         m
 
     else
-        when slotOf id m is
-            Just slot ->
+        let
+            out =
+                takeTab id m.tabs
+        in
+        when out.taken is
+            Just held ->
                 let
-                    out =
-                        Builder.swap slot Nothing m.tabs
+                    -- its place, set with the tab it is the place of
+                    r =
+                        swapTab held.tab { m | tabs = out.tabs, shown = max 0 (Array.findIndex (\x -> x == id) m.order) }
+
+                    next =
+                        r.model
                 in
-                when out.old |> Maybe.andThen identity is
-                    Just t ->
-                        let
-                            -- its place, set with the tab it is the place of
-                            r =
-                                swapTab t { m | tabs = out.builder, shown = max 0 (Array.findIndex (\x -> x == id) m.order) }
-
-                            next =
-                                r.model
-                        in
-                        afterSwitch { next | tabs = Builder.set slot (Just (putAway r.old)) next.tabs }
-
-                    Nothing ->
-                        { m | tabs = out.builder }
+                afterSwitch { next | tabs = Builder.set held.slot (Just (putAway r.old)) next.tabs }
 
             Nothing ->
-                meant Reason.Gone m
+                meant Reason.Gone { m | tabs = out.tabs }
 
 
 {-| The shown tab moved `by` places along the bar, round past the ends. -}
@@ -5797,31 +5825,26 @@ dropShownFrom dir m =
         cols =
             m.term.cols
     in
-    when slotOf nextId m is
-        Just slot ->
+    let
+        out =
+            takeTab nextId m.tabs
+    in
+    when out.taken is
+        Just held ->
             let
-                out =
-                    Builder.swap slot Nothing m.tabs
+                -- the closed tab out of the order by its place, and
+                -- the next one's place as it is then, in one update
+                r =
+                    swapTab held.tab { m | tabs = out.tabs, order = closing.order, shown = closing.shown }
+
+                next =
+                    r.model
             in
-            when out.old |> Maybe.andThen identity is
-                Just t ->
-                    let
-                        -- the closed tab out of the order by its place, and
-                        -- the next one's place as it is then, in one update
-                        r =
-                            swapTab t { m | tabs = out.builder, order = closing.order, shown = closing.shown }
-
-                        next =
-                            r.model
-                    in
-                    now
-                        |> Task.andThen (\ms -> relayout cols (afterSwitch (keepClosed { tab = r.old, directory = dir, at = ms } next)))
-
-                Nothing ->
-                    Task.succeed { m | tabs = out.builder }
+            now
+                |> Task.andThen (\ms -> relayout cols (afterSwitch (keepClosed { tab = r.old, directory = dir, at = ms } next)))
 
         Nothing ->
-            meant Reason.Gone Task.succeed m
+            meant Reason.Gone Task.succeed { m | tabs = out.tabs }
 
 
 {-| Ctrl+Shift+W: the shown tab's program ended, and its tab gone; with one
@@ -6291,39 +6314,37 @@ swapped in, worked on with the code every tab's session goes through, and
 swapped out again to its slot. -}
 atTab : Int -> (Model -> Task Error Model) -> (taken m : Model) -> Task Error Model
 atTab id work m =
-    when slotOf id m is
-        Just slot ->
+    let
+        out =
+            takeTab id m.tabs
+    in
+    when out.taken is
+        Just held ->
             let
-                out =
-                    Builder.swap slot Nothing m.tabs
+                slot =
+                    held.slot
+
+                r =
+                    swapTab held.tab { m | tabs = out.tabs }
+
+                wasShown =
+                    r.old
             in
-            when out.old |> Maybe.andThen identity is
-                Just t ->
-                    let
-                        r =
-                            swapTab t { m | tabs = out.builder }
+            work r.model
+                |> Task.map
+                    (\worked ->
+                        let
+                            back =
+                                swapTab wasShown worked
 
-                        wasShown =
-                            r.old
-                    in
-                    work r.model
-                        |> Task.map
-                            (\worked ->
-                                let
-                                    back =
-                                        swapTab wasShown worked
-
-                                    restored =
-                                        back.model
-                                in
-                                { restored | tabs = Builder.set slot (Just back.old) restored.tabs }
-                            )
-
-                Nothing ->
-                    Task.succeed { m | tabs = out.builder }
+                            restored =
+                                back.model
+                        in
+                        { restored | tabs = Builder.set slot (Just back.old) restored.tabs }
+                    )
 
         Nothing ->
-            meant Reason.Gone Task.succeed m
+            meant Reason.Gone Task.succeed { m | tabs = out.tabs }
 
 
 {-| What a tab not shown read: its terminal fed, and its marks set; its
@@ -6372,41 +6393,40 @@ marked ms m =
 for. -}
 endTab : Int -> Bool -> (taken m : Model) -> Task Error Model
 endTab id kill m =
-    when slotOf id m is
-        Just slot ->
+    let
+        cols =
+            m.term.cols
+
+        left =
+            TabOrder.removed id m.order m.shown
+
+        out =
+            takeTab id m.tabs
+    in
+    when out.taken is
+        Just held ->
             let
-                out =
-                    Builder.swap slot Nothing m.tabs
-
-                cols =
-                    m.term.cols
-
-                left =
-                    TabOrder.removed id m.order m.shown
+                t =
+                    held.tab
 
                 rest =
-                    { m | tabs = out.builder, order = left.order, shown = left.shown }
+                    { m | tabs = out.tabs, order = left.order, shown = left.shown }
             in
-            when out.old |> Maybe.andThen identity is
-                Just t ->
-                    let
-                        ending =
-                            if kill then
-                                t.remote.kill
+            let
+                ending =
+                    if kill then
+                        t.remote.kill
 
-                            else
-                                t.remote.waitForExit |> Task.map (\_ -> {})
-                    in
-                    ending
-                        |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })
-                        |> Task.andThen (\_ -> now)
-                        |> Task.andThen (\ms -> relayout cols (keepClosed { tab = t, directory = Nothing, at = ms } rest))
-
-                Nothing ->
-                    Task.succeed rest
+                    else
+                        t.remote.waitForExit |> Task.map (\_ -> {})
+            in
+            ending
+                |> Task.mapError (\why -> { kind = Os.Error.Other, operation = "end", path = Nothing, detail = why })
+                |> Task.andThen (\_ -> now)
+                |> Task.andThen (\ms -> relayout cols (keepClosed { tab = t, directory = Nothing, at = ms } rest))
 
         Nothing ->
-            meant Reason.Gone Task.succeed m
+            meant Reason.Gone Task.succeed { m | tabs = out.tabs }
 
 
 -- THE BAR
