@@ -290,6 +290,26 @@ puritty runs programs with `TERM=xterm-256color`, so the `xterm*` pattern
 matches it. Check what tmux turned on with
 `tmux display -p '#{client_termfeatures}'`.
 
+### The wheel in plain tmux
+
+In plain `tmux`, the wheel scrolls nothing useful unless tmux takes the
+mouse: tmux draws on the alternate screen, so puritty has no scrollback
+to show and the wheel sends arrow keys, which step through your shell's
+command history. Add this line to `~/.tmux.conf`:
+
+```
+set -g mouse on
+```
+
+puritty then hands the wheel to tmux, which scrolls the pane under the
+pointer through its history (in tmux's copy mode). tmux takes the other
+buttons too: a click picks a pane, a drag selects in copy mode. Hold
+**Shift** while dragging to use puritty's own selection instead.
+
+Control mode (`tmux -CC`) needs none of this: the wheel already scrolls
+the pane under the pointer ([Scrollback, selection and
+paste](#scrollback-selection-and-paste)).
+
 ## Korean text in EUC-KR
 
 tmux keeps everything as UTF-8. Text a program writes in EUC-KR does not
