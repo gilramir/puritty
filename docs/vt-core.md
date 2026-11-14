@@ -4679,3 +4679,78 @@ the totals and the list's count:
 Held to fail: with one entry taken out of the list, `scripts/checks.sh`
 exits 1 and names it (`NEW 1 Main atTab the Nothing branch reachable`).
 It takes 49 s, under 16 GB of memory.
+
+## VC67. Round 10: the list's fallbacks that cannot run, worked down (2026-11-13)
+
+Gilbert: work down the 125 entries of `corpus/checks/baseline.tsv` that
+cannot run (§VC64's 121, `TmuxMode.replied`, and SC27's three), and the
+checker limits behind them. `String.split`, `Char.fromCode`, `String.toInt`
+and `Array.repeat` promising more is `core`'s, and waits for his review;
+the sites that need it are left.
+
+| | before | after |
+|---|---:|---:|
+| checks hold | 1,985 | 2,003 |
+| fallbacks never run | 47 | 58 |
+| can run, on the list | 125 | 103 |
+| meant | 991 | 990 |
+| open | 0 | 0 |
+
+**The checker** (geng-lang `m4-refine-t1.md` TO26): `x /= Nothing` and
+`x == Nothing` are tests of `x`'s tag, which a `when` after them knows. 4
+went with that alone: `Main.handleOne`'s two menu branches,
+`SettingsWindow.rowsKey`, `TmuxMode.dueAt`.
+
+**A mode's handler takes its mode's value** (`Main`): `closeKey`,
+`closeAnswer`, `closePress`, `renameKey`, `renameTyped`, `colorKey`,
+`colorPress`, `colorTab` and `searchKey` each matched `m.closing`,
+`m.renaming`, `m.coloring` or `m.search` again, with a `Nothing` branch
+for a mode that their callers had already tested open. Now the caller
+matches it right under its test, which TO26 proves, and passes the value:
+6 fallbacks gone, their callers' `Nothing` branches never run.
+
+**An index found is its terminal's** (`TmuxMode`): `State`'s rule says
+`ids` and `panes` are one length, so an id's place, found with
+`Array.findIndex` (TO22), reads its terminal with `Builder.getProven`:
+`withPane`, `feedPane` (whose two defaults were `withPane` asked again for
+the pane it had just found) and `cursorOf`, which now takes the rule in its
+signature. A pane not found is an `if`'s `else`, which is no fallback.
+`cursorOf`'s new `Nothing`, the active pane with no box before the first
+layout, is meant (`NotYet`).
+
+**No index at all:** `openMenu` and `menuRows` walk the menu's items with
+their places (`Array.indexedMap`), where they walked `range` and read each
+back; `bells` is a loop whose test bounds its index.
+
+**Rules where the values are:** `Back.head` has the rule `0 <= head` (its
+seven writes are 0 or `head + 1` under a test that it is below the pages'
+length), so `dropOver` reads the oldest page with `getProven`.
+`sgrLoop`'s stopping test is `k < 0 || k >= Array.length params`, which
+proves its two reads (`getProven`); `k` is never below 0.
+
+**A value found, used:** `Ssh.Session`'s `identityOf` and
+`fileOf` looked up an identity the caller had just found; the caller's
+identity is used, and the passphrase's wait carries its file's path. Both
+functions are gone.
+
+**Left, and why:**
+
+- `String.split`, `Char.fromCode`, `String.toInt`, `Array.repeat`: `core`
+  contracts, for review (about two dozen sites).
+- `Main`'s tab slots (`atTab`, `showTab`, `dropShownFrom`, `endTab`,
+  `reopenTab`): `slotOf` found a filled slot, and the swap that takes the
+  tab out does not know it. Changing how tabs leave their slots wants the
+  window to test it in, not a night alone.
+- Facts between modules or structures a rule cannot state: `Ssh.Session`'s
+  identities and agent, `Ssh.Transport`'s keys, `SettingsWindow`'s
+  `isFamily` and `isHostName` (a function's answer about `focused`),
+  `Tmux.Style.themed` (every theme ten long), `chooseItem` (a menu row's
+  place among the items), `Vt.Recut`'s page indexes.
+- `Vt.Modes.toMain` and `Vt.Scroll.resizeTo`: the alternate screen's main
+  is `Maybe`; a custom type for the two would prove them, a change to the
+  core's hot state.
+
+**Measured:** `perf.py --no-times` within the record everywhere;
+`vte-dense_cells` 746.8 M where it is 762.1 M, 2.0% lower, likely
+`sgrLoop`'s reads, not confirmed with `--against`, so the record is kept.
+The unit gate: 17 of 17 on node, Linux and Windows, fmt and checks green; the Windows app builds.

@@ -3623,7 +3623,12 @@ handleOne remote ms rest ev m =
             else if m.closing /= Nothing then
                 -- the question before closing takes the keys (TB4)
                 (if k.action /= 0 then
-                    closeKey k m
+                    when m.closing is
+                        Just c ->
+                            closeKey k c m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -3633,7 +3638,12 @@ handleOne remote ms rest ev m =
             else if m.renaming /= Nothing then
                 -- the rename box takes the keys while it is open (TB1)
                 (if k.action /= 0 then
-                    renameKey k m
+                    when m.renaming is
+                        Just r ->
+                            renameKey k r m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -3643,7 +3653,12 @@ handleOne remote ms rest ev m =
             else if m.coloring /= Nothing then
                 -- and the color box (TB9)
                 (if k.action /= 0 then
-                    colorKey k m
+                    when m.coloring is
+                        Just id ->
+                            colorKey k id m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -3672,7 +3687,12 @@ handleOne remote ms rest ev m =
             else if m.search /= Nothing && k.action /= 0 && not (isCopyKey m.config k) then
                 -- the search bar takes the keys while it is open (§23),
                 -- but Ctrl+Shift+C, which copies the match
-                handle remote ms rest (searchKey k m)
+                when m.search is
+                    Just s ->
+                        handle remote ms rest (searchKey k s m)
+
+                    Nothing ->
+                        handle remote ms rest m
 
             else if isSearchKey m.config k && not (TmuxMode.isOn m.tmux) then
                 handle remote ms rest { m | search = Just Search.start, urgent = True }
@@ -3811,7 +3831,12 @@ handleOne remote ms rest ev m =
 
         Window.Commit text ->
             if m.renaming /= Nothing then
-                handle remote ms rest (renameTyped (Bytes.toStringLossy text) m)
+                when m.renaming is
+                    Just r ->
+                        handle remote ms rest (renameTyped (Bytes.toStringLossy text) r m)
+
+                    Nothing ->
+                        handle remote ms rest m
 
             else if m.coloring /= Nothing then
                 -- what the IME commits is no answer to the color box
@@ -3900,7 +3925,12 @@ handleOne remote ms rest ev m =
                 -- the close question takes the pointer: its buttons
                 -- answer it, and nothing reaches the terminal (TB12)
                 (if p.action == 0 then
-                    closePress p m
+                    when m.closing is
+                        Just c ->
+                            closePress p c m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -3910,7 +3940,12 @@ handleOne remote ms rest ev m =
             else if m.coloring /= Nothing then
                 -- the color box takes the presses while it is open (TB9)
                 (if p.action == 0 then
-                    colorPress p m
+                    when m.coloring is
+                        Just id ->
+                            colorPress p id m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -4796,61 +4831,56 @@ isSearchKey config k =
 {-| A key while the search bar is open: Esc closes it; Enter finds the
 next match older, Shift+Enter newer; Backspace and typed text change the
 query, which is looked for again from the bottom of the view up. -}
-searchKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Model
-searchKey k m =
-    when m.search is
-        Nothing ->
-            m
+searchKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Search.State -> (taken m : Model) -> Model
+searchKey k s m =
+    let
+        viewBottom =
+            Vt.rowsPushed m.term - viewBack m + m.term.rows - 1
 
-        Just s ->
-            let
-                viewBottom =
-                    Vt.rowsPushed m.term - viewBack m + m.term.rows - 1
+        typed =
+            Bytes.toStringLossy k.text
 
-                typed =
-                    Bytes.toStringLossy k.text
+        ctrl =
+            Bitwise.and k.mods 2 /= 0
+    in
+    if k.sym == 0xFF1B then
+        { m | search = Nothing, urgent = True }
 
-                ctrl =
-                    Bitwise.and k.mods 2 /= 0
-            in
-            if k.sym == 0xFF1B then
-                { m | search = Nothing, urgent = True }
+    else if k.sym == 0xFF0D || k.sym == 0xFF8D then
+        let
+            older =
+                Bitwise.and k.mods 1 == 0
 
-            else if k.sym == 0xFF0D || k.sym == 0xFF8D then
-                let
-                    older =
-                        Bitwise.and k.mods 1 == 0
+            from =
+                when s.match is
+                    Just mt ->
+                        if older then
+                            mt.start.row - 1
 
-                    from =
-                        when s.match is
-                            Just mt ->
-                                if older then
-                                    mt.start.row - 1
+                        else
+                            mt.start.row + 1
 
-                                else
-                                    mt.start.row + 1
+                    Nothing ->
+                        meant Reason.NotYet viewBottom
+        in
+        found s (Search.find s.query older from m.term) m
 
-                            Nothing ->
-                                meant Reason.NotYet viewBottom
-                in
-                found s (Search.find s.query older from m.term) m
+    else if k.sym == 0xFF08 then
+        let
+            query =
+                String.dropLast 1 s.query
+        in
+        found { s | query = query } (Search.find query True viewBottom m.term) m
 
-            else if k.sym == 0xFF08 then
-                let
-                    query =
-                        String.dropLast 1 s.query
-                in
-                found { s | query = query } (Search.find query True viewBottom m.term) m
+    else if typed /= "" && not ctrl && Array.all (\c -> Char.toCode c >= 0x20) (String.toArray typed) then
+        let
+            query =
+                s.query ++ typed
+        in
+        found { s | query = query } (Search.find query True viewBottom m.term) m
 
-            else if typed /= "" && not ctrl && Array.all (\c -> Char.toCode c >= 0x20) (String.toArray typed) then
-                let
-                    query =
-                        s.query ++ typed
-                in
-                found { s | query = query } (Search.find query True viewBottom m.term) m
-
-            else
-                m
+    else
+        m
 
 
 {-| A search's match shown: the view scrolled to it, and it selected, so it
@@ -6606,8 +6636,8 @@ colorBox m =
 
 {-| A key in the color box: a swatch's key chooses it, any other closes
 the box. -}
-colorKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
-colorKey k m =
+colorKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Int -> (taken m : Model) -> Task Error Model
+colorKey k id m =
     let
         typed =
             String.toLower (Bytes.toStringLossy k.text)
@@ -6638,7 +6668,7 @@ colorKey k m =
     in
     when chosen is
         Just choice ->
-            colorTab choice m
+            colorTab choice id m
 
         Nothing ->
             -- a modifier alone, as Shift for an H, leaves the box up
@@ -6652,8 +6682,8 @@ colorKey k m =
 
 {-| A press while the color box is up: on a swatch, its color; anywhere
 else the box closes. -}
-colorPress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
-colorPress p m =
+colorPress : Window.PointerEvent -> Int -> (taken m : Model) -> Task Error Model
+colorPress p id m =
     let
         box =
             colorBox m
@@ -6667,37 +6697,32 @@ colorPress p m =
     in
     when hit is
         Just choice ->
-            colorTab choice m
+            colorTab choice id m
 
         Nothing ->
             meant Reason.OutOfRange Task.succeed { m | coloring = Nothing, urgent = True }
 
 
 {-| The tab the box is for given a color, and the box closed. -}
-colorTab : TabColor -> (taken m : Model) -> Task Error Model
-colorTab choice m =
-    when m.coloring is
-        Just id ->
-            if id == m.tab.id then
+colorTab : TabColor -> Int -> (taken m : Model) -> Task Error Model
+colorTab choice id m =
+    if id == m.tab.id then
+        let
+            info =
+                m.tab
+        in
+        Task.succeed { m | tab = { info | color = choice }, coloring = Nothing, urgent = True }
+
+    else
+        atTab id
+            (\x ->
                 let
                     info =
-                        m.tab
+                        x.tab
                 in
-                Task.succeed { m | tab = { info | color = choice }, coloring = Nothing, urgent = True }
-
-            else
-                atTab id
-                    (\x ->
-                        let
-                            info =
-                                x.tab
-                        in
-                        Task.succeed { x | tab = { info | color = choice } }
-                    )
-                    { m | coloring = Nothing, urgent = True }
-
-        Nothing ->
-            Task.succeed m
+                Task.succeed { x | tab = { info | color = choice } }
+            )
+            { m | coloring = Nothing, urgent = True }
 
 
 {-| The rename box (docs/tabs.md TB1 item 4): the name typed so far. -}
@@ -6714,43 +6739,33 @@ renameBox r =
 
 {-| A key in the rename box: Enter names the tab, Esc leaves it, Backspace
 takes a letter back, and text is typed in. -}
-renameKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
-renameKey k m =
-    when m.renaming is
-        Nothing ->
-            Task.succeed m
+renameKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> { id : Int, typed : String } -> (taken m : Model) -> Task Error Model
+renameKey k r m =
+    if k.sym == 0xFF1B then
+        Task.succeed { m | renaming = Nothing, urgent = True }
 
-        Just r ->
-            if k.sym == 0xFF1B then
-                Task.succeed { m | renaming = Nothing, urgent = True }
+    else if k.sym == 0xFF0D || k.sym == 0xFF8D then
+        nameTab r.id (String.trim r.typed) { m | renaming = Nothing, urgent = True }
 
-            else if k.sym == 0xFF0D || k.sym == 0xFF8D then
-                nameTab r.id (String.trim r.typed) { m | renaming = Nothing, urgent = True }
+    else if k.sym == 0xFF08 then
+        Task.succeed { m | renaming = Just { r | typed = String.dropLast 1 r.typed }, urgent = True }
 
-            else if k.sym == 0xFF08 then
-                Task.succeed { m | renaming = Just { r | typed = String.dropLast 1 r.typed }, urgent = True }
+    else if Bitwise.and k.mods 2 == 0 then
+        Task.succeed (renameTyped (Bytes.toStringLossy k.text) r m)
 
-            else if Bitwise.and k.mods 2 == 0 then
-                Task.succeed (renameTyped (Bytes.toStringLossy k.text) m)
-
-            else
-                Task.succeed m
+    else
+        Task.succeed m
 
 
 {-| Text typed or committed by the IME into the rename box; control
 characters dropped, and the name kept to 40 characters. -}
-renameTyped : String -> (taken m : Model) -> Model
-renameTyped text m =
-    when m.renaming is
-        Just r ->
-            let
-                clean =
-                    String.fromArray (Array.keepIf (\c -> Char.toCode c >= 32 && Char.toCode c /= 127) (String.toArray text))
-            in
-            { m | renaming = Just { r | typed = String.takeFirst 40 (r.typed ++ clean) }, urgent = True }
-
-        Nothing ->
-            m
+renameTyped : String -> { id : Int, typed : String } -> (taken m : Model) -> Model
+renameTyped text r m =
+    let
+        clean =
+            String.fromArray (Array.keepIf (\c -> Char.toCode c >= 32 && Char.toCode c /= 127) (String.toArray text))
+    in
+    { m | renaming = Just { r | typed = String.takeFirst 40 (r.typed ++ clean) }, urgent = True }
 
 
 {-| The tab `id` given the user's name; an empty one gives the program's
@@ -6951,22 +6966,22 @@ closeButtons =
 {-| A press while the close question is up: on Close, the tab or window
 closed; on Keep it, the question gone; anywhere else, nothing, so that a
 click cannot reach the terminal under the question. -}
-closePress : Window.PointerEvent -> (taken m : Model) -> Task Error Model
-closePress p m =
+closePress : Window.PointerEvent -> { id : Int, why : String, window : Bool } -> (taken m : Model) -> Task Error Model
+closePress p c m =
     let
         hit =
             if p.button == 1 then
-                Maybe.andThen (\c -> Dialog.buttonAt (overlaySize m) (closeBox c) { x = p.x, y = p.y }) m.closing
+                Dialog.buttonAt (overlaySize m) (closeBox c) { x = p.x, y = p.y }
 
             else
                 Nothing
     in
     when hit is
         Just 0 ->
-            closeAnswer True m
+            closeAnswer True c m
 
         Just _ ->
-            closeAnswer False m
+            closeAnswer False c m
 
         Nothing ->
             meant Reason.OutOfRange Task.succeed m
@@ -6974,45 +6989,35 @@ closePress p m =
 
 {-| The close question answered: yes closes the window, or the tab asked
 about if it is still the one shown; no keeps them. -}
-closeAnswer : Bool -> (taken m : Model) -> Task Error Model
-closeAnswer yes m =
-    when m.closing is
-        Nothing ->
-            Task.succeed m
+closeAnswer : Bool -> { id : Int, why : String, window : Bool } -> (taken m : Model) -> Task Error Model
+closeAnswer yes c m =
+    if yes && c.window then
+        Task.succeed { m | closing = Nothing, closed = True, byButton = True }
 
-        Just c ->
-            if yes && c.window then
-                Task.succeed { m | closing = Nothing, closed = True, byButton = True }
+    else if yes then
+        if c.id == m.tab.id then
+            closeShown { m | closing = Nothing, urgent = True }
 
-            else if yes then
-                if c.id == m.tab.id then
-                    closeShown { m | closing = Nothing, urgent = True }
+        else
+            Task.succeed { m | closing = Nothing, urgent = True }
 
-                else
-                    Task.succeed { m | closing = Nothing, urgent = True }
-
-            else
-                Task.succeed { m | closing = Nothing, urgent = True }
+    else
+        Task.succeed { m | closing = Nothing, urgent = True }
 
 
 {-| A key while the question is up: Enter or Y closes the tab asked about,
 if it is still the one shown; Esc or N keeps it; any other key is
 ignored. -}
-closeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken m : Model) -> Task Error Model
-closeKey k m =
-    when m.closing is
-        Nothing ->
-            Task.succeed m
+closeKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> { id : Int, why : String, window : Bool } -> (taken m : Model) -> Task Error Model
+closeKey k c m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+        closeAnswer True c m
 
-        Just _ ->
-            if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
-                closeAnswer True m
+    else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+        closeAnswer False c m
 
-            else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
-                closeAnswer False m
-
-            else
-                Task.succeed m
+    else
+        Task.succeed m
 
 
 {-| The window's close button, or the system closing it (docs/tabs.md

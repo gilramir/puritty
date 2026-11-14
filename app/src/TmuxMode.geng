@@ -3137,36 +3137,43 @@ notice n acc =
 has not yet said where it goes; its replies dropped. -}
 feedPane : Int -> Bytes -> (taken s : State) -> State
 feedPane id bytes s =
-    when Array.findFirst (\i -> i == id) s.ids is
-        Just found ->
+    let
+        -- the pane's place among `ids`, which is its terminal's in `panes`
+        -- (`State`'s rule)
+        at =
+            Array.findIndex (\i -> i == id) s.ids
+    in
+    if at >= 0 then
+        let
+            back =
+                backOf id s
+
+            pushedBefore =
+                if back > 0 then
+                    Vt.rowsPushed (Builder.getProven at s.panes)
+
+                else
+                    0
+
+            fed =
+                { s | panes = Builder.update at (\t -> (Vt.takeReplies (Vt.feed bytes t)).term) s.panes }
+        in
+        if back > 0 then
+            -- a view scrolled back stays on its rows as more come in
             let
-                back =
-                    backOf id s
+                t =
+                    Builder.getProven at fed.panes
 
-                pushedBefore =
-                    if back > 0 then
-                        Maybe.withDefault 0 (withPane id s Vt.rowsPushed)
-
-                    else
-                        0
-
-                fed =
-                    { s | panes = Builder.update found.index (\t -> (Vt.takeReplies (Vt.feed bytes t)).term) s.panes }
+                after =
+                    { pushed = Vt.rowsPushed t, most = Vt.scrollbackRows t }
             in
-            if back > 0 then
-                -- a view scrolled back stays on its rows as more come in
-                let
-                    after =
-                        withPane id fed (\t -> { pushed = Vt.rowsPushed t, most = Vt.scrollbackRows t })
-                            |> Maybe.withDefault { pushed = pushedBefore, most = back }
-                in
-                { fed | back = Dict.set id (min after.most (back + after.pushed - pushedBefore)) fed.back }
+            { fed | back = Dict.set id (min after.most (back + after.pushed - pushedBefore)) fed.back }
 
-            else
-                fed
+        else
+            fed
 
-        Nothing ->
-            meant Reason.NotYet { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
+    else
+        { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
 
 
 {-| A layout: its panes' terminals made or sized to their boxes. -}
@@ -3756,38 +3763,44 @@ paint s =
 
 {-| CUP to the active pane's cursor in the window, and DECTCEM as the
 pane has it. -}
-cursorOf : Int -> Int -> Array Layout.Pane -> Array Int -> Builder Vt.Term -> String
+cursorOf : Int -> Int -> Array Layout.Pane -> (ids : Array Int) -> (panes : Builder Vt.Term where Array.length ids == Builder.length panes) -> String
 cursorOf active back boxes ids panes =
-    when { place = Array.findFirst (\b -> b.id == active) boxes, index = Array.findFirst (\i -> i == active) ids } is
-        { place = Just place, index = Just index } ->
-            when Builder.get index.index panes is
-                Just t ->
-                    let
-                        at =
-                            Vt.cursorOf t
-                    in
-                    if at.y + back >= place.value.h then
-                        -- scrolled back past it
-                        "\u{001B}[?25l"
-
-                    else
-                        "\u{001B}["
-                            ++ String.fromInt (place.value.y + at.y + back + 1)
-                            ++ ";"
-                            ++ String.fromInt (place.value.x + at.x + 1)
-                            ++ "H"
-                            ++ (if at.visible then
-                                    "\u{001B}[?25h"
-
-                                else
-                                    "\u{001B}[?25l"
-                               )
-
-                Nothing ->
+    let
+        -- the pane's place among `ids` is its terminal's in `panes`
+        index =
+            Array.findIndex (\i -> i == active) ids
+    in
+    when Array.findFirst (\b -> b.id == active) boxes is
+        Just place ->
+            if index >= 0 then
+                let
+                    at =
+                        Vt.cursorOf (Builder.getProven index panes)
+                in
+                if at.y + back >= place.value.h then
+                    -- scrolled back past it
                     "\u{001B}[?25l"
 
-        _ ->
-            "\u{001B}[?25l"
+                else
+                    "\u{001B}["
+                        ++ String.fromInt (place.value.y + at.y + back + 1)
+                        ++ ";"
+                        ++ String.fromInt (place.value.x + at.x + 1)
+                        ++ "H"
+                        ++ (if at.visible then
+                                "\u{001B}[?25h"
+
+                            else
+                                "\u{001B}[?25l"
+                           )
+
+            else
+                -- no terminal for it yet
+                "\u{001B}[?25l"
+
+        Nothing ->
+            -- before the first layout names the active pane's box
+            meant Reason.NotYet "\u{001B}[?25l"
 
 
 divider : Int -> Int -> Layout.Pane -> Array { row : Int, col : Int, text : String }
@@ -5100,17 +5113,17 @@ activeMode mode s =
 {-| What a pane's terminal answers, looked at in place. -}
 withPane : Int -> State -> (Vt.Term -> a) -> Maybe a
 withPane pane s f =
-    when Array.findFirst (\i -> i == pane) s.ids is
-        Just found ->
-            when Builder.get found.index s.panes is
-                Just t ->
-                    Just (f t)
+    let
+        -- `ids` and `panes` are one length (`State`'s rule), so an id's
+        -- place is its terminal's
+        at =
+            Array.findIndex (\i -> i == pane) s.ids
+    in
+    if at >= 0 then
+        Just (f (Builder.getProven at s.panes))
 
-                Nothing ->
-                    Nothing
-
-        Nothing ->
-            meant Reason.Gone Nothing
+    else
+        Nothing
 
 
 {-| How far back a pane's view is scrolled. -}
@@ -6310,17 +6323,16 @@ themeAsked value acc =
 {-| The bells tmux's panes have rung, added up (docs/sounds.md SN6). -}
 bells : State -> Int
 bells s =
-    Array.range 0 (Builder.length s.panes - 1)
-        |> Array.foldl
-            (\i n ->
-                when Builder.get i s.panes is
-                    Just t ->
-                        n + t.bells
+    bellsFrom 0 0 s.panes
 
-                    Nothing ->
-                        n
-            )
-            0
+
+bellsFrom : (i : Int where 0 <= i) -> Int -> Builder Vt.Term -> Int
+bellsFrom i n panes =
+    if i < Builder.length panes then
+        bellsFrom (i + 1) (n + (Builder.getProven i panes).bells) panes
+
+    else
+        n
 
 
 {-| puritty's background (`0xRRGGBB`), which `theme detect` follows:
@@ -6975,16 +6987,9 @@ openMenu ctx menu after s =
 
         asks =
             expand menu.title (ForMenuTitle serial)
-                ++ (Array.range 0 (Array.length menu.items - 1)
-                        |> Array.mapAndFlatten
-                            (\i ->
-                                when Array.get i menu.items is
-                                    Just it ->
-                                        expand it.name (ForMenuName { serial = serial, item = i }) ++ expand it.command (ForMenuCommand { serial = serial, item = i })
-
-                                    Nothing ->
-                                        []
-                            )
+                ++ (menu.items
+                        |> Array.indexedMap (\i it -> expand it.name (ForMenuName { serial = serial, item = i }) ++ expand it.command (ForMenuCommand { serial = serial, item = i }))
+                        |> Array.flatten
                    )
 
         shown =
@@ -7078,35 +7083,37 @@ menuRows : Menuing -> Array MenuRow
 menuRows m =
     let
         rows =
-            Array.range 0 (Array.length m.items - 1)
+            m.items
+                |> Array.indexedMap (\i it -> { i = i, it = it })
                 |> Array.foldl
-                    (\i acc ->
-                        when Array.get i m.items is
-                            Just it ->
-                                let
-                                    name =
-                                        unstyled it.name
-                                in
-                                if String.trim name == "" then
-                                    when Array.last acc is
-                                        Just last ->
-                                            if last.line then
-                                                acc
+                    (\x acc ->
+                        let
+                            i =
+                                x.i
 
-                                            else
-                                                Array.pushLast { index = i, line = True, text = "", key = "", enabled = False } acc
+                            it =
+                                x.it
 
-                                        Nothing ->
-                                            meant Reason.OutOfRange acc
+                            name =
+                                unstyled it.name
+                        in
+                        if String.trim name == "" then
+                            when Array.last acc is
+                                Just last ->
+                                    if last.line then
+                                        acc
 
-                                else if String.startsWith "-" name then
-                                    Array.pushLast { index = i, line = False, text = String.dropFirst 1 name, key = "", enabled = False } acc
+                                    else
+                                        Array.pushLast { index = i, line = True, text = "", key = "", enabled = False } acc
 
-                                else
-                                    Array.pushLast { index = i, line = False, text = name, key = it.key, enabled = True } acc
+                                Nothing ->
+                                    meant Reason.OutOfRange acc
 
-                            Nothing ->
-                                acc
+                        else if String.startsWith "-" name then
+                            Array.pushLast { index = i, line = False, text = String.dropFirst 1 name, key = "", enabled = False } acc
+
+                        else
+                            Array.pushLast { index = i, line = False, text = name, key = it.key, enabled = True } acc
                     )
                     []
     in

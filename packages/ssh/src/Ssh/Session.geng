@@ -157,7 +157,7 @@ type Waiting
     = NotWaiting
     | ForHostKey { name : String, key : Bytes }
     | ForPassword
-    | ForPassphrase { need : { id : Int, algorithm : String, data : Bytes }, text : Bytes, tries : Int }
+    | ForPassphrase { need : { id : Int, algorithm : String, data : Bytes }, text : Bytes, path : String, tries : Int }
     | ForResponses
 
 
@@ -879,10 +879,10 @@ onRequest request st =
                 Nothing ->
                     onAuth (Auth.unsigned need.id auth) st
 
-                Just { file = Nothing } ->
+                Just { file = Nothing, identity = identity } ->
                     when st.agent is
                         Just link ->
-                            link.call (Agent.signRequest { publicKey = (identityOf need.id st).publicKey, data = need.data, algorithm = need.algorithm })
+                            link.call (Agent.signRequest { publicKey = identity.publicKey, data = need.data, algorithm = need.algorithm })
                                 |> Task.map
                                     (\message ->
                                         when Agent.signature message is
@@ -901,7 +901,7 @@ onRequest request st =
                 Just { file = Just file } ->
                     when SshCrypto.keyFileInfo file.text is
                         Just { encrypted = True } ->
-                            tell (Asking (Passphrase { file = file.path })) { st | waiting = ForPassphrase { need = need, text = file.text, tries = 0 } }
+                            tell (Asking (Passphrase { file = file.path })) { st | waiting = ForPassphrase { need = need, text = file.text, path = file.path, tries = 0 } }
 
                         _ ->
                             meant Reason.NotSet signWith need file.text Bytes.empty st
@@ -911,13 +911,6 @@ onRequest request st =
 
         { request = Auth.NeedResponses need } ->
             tell (Asking (Responses need)) { st | waiting = ForResponses }
-
-
-identityOf : Int -> State -> Auth.Identity
-identityOf id st =
-    Array.findFirst (\i -> i.identity.id == id) st.identities
-        |> Maybe.map (\found -> found.value.identity)
-        |> Maybe.withDefault { id = id, publicKey = Bytes.empty, keyType = "" }
 
 
 {-| A signature by a key file's key: loaded, used and forgotten, so the
@@ -945,7 +938,7 @@ signWith need text passphrase st =
                             { problem = Just SshCrypto.WrongPassphrase, waiting = ForPassphrase w } ->
                                 if w.tries < 2 then
                                     tell (Status "a wrong passphrase") st
-                                        |> Task.andThen (tell (Asking (Passphrase { file = (fileOf need.id st) })))
+                                        |> Task.andThen (tell (Asking (Passphrase { file = w.path })))
                                         |> Task.map (\s -> { s | waiting = ForPassphrase { w | tries = w.tries + 1 } })
 
                                 else
@@ -954,14 +947,6 @@ signWith need text passphrase st =
                             _ ->
                                 onAuth result.step { st | waiting = NotWaiting }
                     )
-
-
-fileOf : Int -> State -> String
-fileOf id st =
-    Array.findFirst (\i -> i.identity.id == id) st.identities
-        |> Maybe.andThen (\found -> found.value.file)
-        |> Maybe.map .path
-        |> Maybe.withDefault ""
 
 
 onAnswer : Answer -> State -> Task Os.Error.Error State
