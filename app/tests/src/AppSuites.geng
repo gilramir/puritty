@@ -612,6 +612,9 @@ said effects =
 
                 SettingsWindow.RenameHost r ->
                     "rename " ++ r.from ++ " to " ++ r.to
+
+                SettingsWindow.Hear w ->
+                    "hear " ++ Schema.keyName w.setting ++ " = " ++ Schema.toText w.value
         )
         effects
 
@@ -792,6 +795,31 @@ window =
                         , off = (after (open ++ [ click (SettingsWindow.OnPage 1) 1 ])).said
                         , offOpen = (after (open ++ [ click (SettingsWindow.OnPage 1) 1 ])).model.choosing
                         }
+          }
+        , { name = "the bell's list plays each bell the pick reaches, and taking it plays nothing more"
+          , test =
+                \_ ->
+                    Expect.equal [ "hear sound.bell = system", "hear sound.bell = apple2", "sound.bell = apple2" ]
+                        (after ([ ctrl 'f' ] ++ typeIn "beep" ++ [ k.down, k.enter, k.down, k.down, k.enter ])).said
+          }
+        , { name = "a click on a bell the pick is not on takes it and plays it; Esc after a move plays nothing more"
+          , test =
+                \_ ->
+                    let
+                        open =
+                            [ ctrl 'f' ] ++ typeIn "beep" ++ [ k.down, k.enter ]
+                    in
+                    Expect.equal
+                        { clicked = [ "sound.bell = ibm-pc", "hear sound.bell = ibm-pc" ], left = [ "hear sound.bell = system" ] }
+                        { clicked = (after (open ++ [ click (SettingsWindow.OnChoice 3) 1 ])).said
+                        , left = (after (open ++ [ k.down, k.escape ])).said
+                        }
+          }
+        , { name = "turning key sounds on plays a key's click; turning them off plays nothing"
+          , test =
+                \_ ->
+                    Expect.equal [ "sound.keys = true", "hear sound.keys = true", "sound.keys = false" ]
+                        (after ([ ctrl 'f' ] ++ typeIn "typewriter" ++ [ k.down, k.enter, k.enter ])).said
           }
         , { name = "Modified only, with nothing changed, lists nothing"
           , test = \_ -> Expect.equal { modifiedOnly = True, rows = 0 } ((after [ ctrl 'm' ]).model |> (\m -> { modifiedOnly = m.modifiedOnly, rows = SettingsWindow.rowCount m }))

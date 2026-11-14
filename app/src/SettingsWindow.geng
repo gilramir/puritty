@@ -146,6 +146,7 @@ type Effect
     | PutHost Config.Host
     | DeleteHost String
     | RenameHost { from : String, to : String }
+    | Hear { setting : Setting, value : Value }
 
 
 init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, launcher : Bool } -> Model
@@ -885,14 +886,36 @@ choosingKey k pick m =
                 count =
                     Array.length (choicesOf s)
 
+                -- the pick held to the list, so its moves stay inside `Int`
+                at0 =
+                    clamp 0 (max 0 (count - 1)) pick
+
+                -- a sound's list plays each choice the pick reaches
+                -- (`docs/sounds.md` SN7)
                 moved n =
-                    done { m | choosing = Just (max 0 (min (count - 1) n)) }
+                    let
+                        at =
+                            max 0 (min (count - 1) n)
+                    in
+                    { model = { m | choosing = Just at }
+                    , effects =
+                        if at == pick then
+                            []
+
+                        else
+                            when Array.get at (choicesOf s) is
+                                Just v ->
+                                    heard s v
+
+                                Nothing ->
+                                    meant Reason.OutOfRange []
+                    }
             in
             if k.sym == sym.up then
-                moved (pick - 1)
+                moved (at0 - 1)
 
             else if k.sym == sym.down then
-                moved (pick + 1)
+                moved (at0 + 1)
 
             else if k.sym == sym.home then
                 moved 0
@@ -901,10 +924,16 @@ choosingKey k pick m =
                 moved (count - 1)
 
             else if k.sym == sym.pageUp then
-                moved (pick - 10)
+                moved (at0 - 10)
 
             else if k.sym == sym.pageDown then
-                moved (pick + 10)
+                moved
+                    (if at0 >= count - 10 then
+                        count - 1
+
+                     else
+                        at0 + 10
+                    )
 
             else if k.sym == sym.enter || k.sym == sym.keypadEnter || k.sym == sym.space then
                 chosen pick m
@@ -931,7 +960,17 @@ chosen i m =
         Just s ->
             when Array.get i (choicesOf s) is
                 Just v ->
-                    set s v closed
+                    let
+                        taken =
+                            set s v closed
+                    in
+                    -- a click on a choice the pick was not on plays it; one
+                    -- the pick reached was heard as it got there
+                    if m.choosing == Just i then
+                        taken
+
+                    else
+                        { taken | effects = taken.effects ++ heard s v }
 
                 Nothing ->
                     meant Reason.OutOfRange done closed
@@ -950,7 +989,18 @@ change s m =
     in
     when s.kind is
         OnOff ->
-            set s (Flag (now /= Flag True)) m
+            let
+                on =
+                    now /= Flag True
+
+                turned =
+                    set s (Flag on) m
+            in
+            if on then
+                { turned | effects = turned.effects ++ heard s (Flag True) }
+
+            else
+                turned
 
         OneOf _ ->
             let
@@ -965,6 +1015,18 @@ change s m =
                     String.toArray (Schema.toText now)
             in
             done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing, pick = -1 }, message = Nothing }
+
+
+{-| A sound setting's value played as it is chosen (`docs/sounds.md` SN7):
+the bell a list's pick reaches, the key sound as it is turned on. Nothing
+for any other page's setting. -}
+heard : Setting -> Value -> Array Effect
+heard s v =
+    if s.page == Schema.SoundPage then
+        [ Hear { setting = s, value = v } ]
+
+    else
+        []
 
 
 {-| A setting given a value: the model's at once, the file's by the

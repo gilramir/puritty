@@ -86,8 +86,9 @@ SUITES = [
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
-        # TB15: the tab order's moves and closings, eight
-        170,
+        # TB15: the tab order's moves and closings, eight. 173 since SN7: a
+        # sound heard as it is chosen, three
+        173,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

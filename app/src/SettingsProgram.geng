@@ -475,6 +475,30 @@ effect e s =
         SettingsWindow.RenameHost r ->
             writeWith (Schema.renameHost r.from r.to) s
 
+        SettingsWindow.Hear w ->
+            hear w |> Task.map (\_ -> s)
+
+
+{-| A sound setting's value played as it is chosen (`docs/sounds.md` SN7):
+the bell named, the desktop's own for `system` and nothing for `none`; a
+key's click when key sounds are turned on. -}
+hear : { setting : Schema.Setting, value : Schema.Value } -> Task x {}
+hear w =
+    when { key = w.setting.key, value = w.value } is
+        { key = [ "sound", "bell" ], value = Schema.Text name } ->
+            when Config.bellSound name is
+                Just id ->
+                    Window.sound id |> Task.map (\_ -> {})
+
+                Nothing ->
+                    meant Reason.NotSet Task.succeed {}
+
+        { key = [ "sound", "keys" ], value = Schema.Flag True } ->
+            Window.sound 0 |> Task.map (\_ -> {})
+
+        _ ->
+            Task.succeed {}
+
 
 {-| The file changed by an edit (`SettingsFile.change`); a failure shown at
 the window's foot. -}

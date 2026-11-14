@@ -271,3 +271,30 @@ it was heard is for someone at that machine.
 
 **Not yet:** a volume setting (Gilbert, after trying it); Windows not
 heard yet (beelink1); ETX (Gilbert's test, SN4.3); SN2.2's bells.
+
+---
+
+## SN7 · A sound heard as it is chosen (2026-11-14)
+
+Gilbert, 2026-11-14: in the settings window, the bell should play as the
+choice changes, so the user hears it while choosing rather than ringing it
+from a terminal.
+
+**What plays** (`SettingsWindow.Hear`, played by `SettingsProgram.hear`
+with `Window.sound`, the bell's own call): in the bell's open list, each
+bell the pick reaches by a key or the wheel; a click on a bell the pick was
+not on, as it is taken (Enter takes the one already heard, and plays nothing
+more); and one key click as key sounds are turned on, none as they are
+turned off. `system` plays the desktop's own beep and `none` nothing. Only
+the Sound page's settings play; `bellSound` moved from `Main` to `Config`,
+which both programs read.
+
+**Checked:** three app tests (173 in all): the pick's moves play `system` then
+`apple2` and Enter only writes; a click on `ibm-pc` writes and plays it while
+Esc after a move plays nothing more; key sounds on writes and plays, off only
+writes. And heard, as SN6 was, into a null sink: `puritty settings` under
+Xvfb, xdotool pressing Ctrl+F, `beep`, Down, Enter, Down three times and
+Enter: two sounds, 942 Hz for 102 ms (Apple II) and 897 Hz for 483 ms (IBM
+PC), the first Down being `system`, which Xvfb does not sound; the file then
+says `bell = "ibm-pc"`. Key sounds on and off: one sound, 148 ms, the key
+sound.
