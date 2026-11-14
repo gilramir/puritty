@@ -40,3 +40,21 @@ xcb-util-image, -renderutil, -keysyms, -wm, libxkbcommon(-x11),
 fontconfig, libpng, zlib) and `run/Containerfile` (the run-time libraries,
 a monospace font, Xvfb). `app/distro/README.md` has the rest; RHEL8's
 folder is the model (`docs/rhel8-etx.md` RE4).
+
+## RL3 · RHEL9 and a .deb for Linux Mint 22.3: planned (2026-11-14)
+
+Gilbert, 2026-11-14: the release builds gain a RHEL9 build and a `.deb`
+for the Linux Mint in use here (22.3 "Zena", on Ubuntu 24.04 "noble"),
+which he will install on gmktec7 as its test. Not built.
+
+- **RHEL9** is RL2's shape: `app/distro/rhel9/` with its two
+  Containerfiles (AlmaLinux 9 for RHEL8's AlmaLinux 8), `rhel9-x64` in
+  `scripts/prerelease.sh`, through `smoke.sh` before it is packed. Its
+  clang's version decides whether the shared profile (RL1) is read or the
+  target trains its own.
+- **The .deb** is a new kind of output, not a tarball: built in an
+  Ubuntu 24.04 container (Mint 22.3's base), installed to `/usr` with a
+  desktop entry and icon, its `Depends` the run-time libraries RL2 lists
+  under their Ubuntu names, and checked by installing it into a clean
+  noble container and running `smoke.sh` there. Then Gilbert's install on
+  gmktec7, a desktop session, is the test that counts.
