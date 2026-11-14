@@ -121,4 +121,11 @@ Each in `app/distro/` (RL2's shape), built and run here with podman:
 - **The profile**: `prerelease.sh` reads the shared profile only where the
   build image's clang is the devbox's, compared at build time.
 
-Not run yet: `prerelease.sh` with all targets, end to end.
+**End to end** (`scripts/prerelease.sh rl4-check rhel8-x64 rhel9-x64
+rhel10-x64 noble-x64 debian13-x64`, from a clean worktree under the home
+folder, which the build images mount): every target built and passed its
+smoke runs, the RHEL8 one on four distributions; noble's and debian13's
+clang (18.1.3, 19.1.7) took no profile; both `.deb`s installed with apt and
+ran; `SHA256SUMS` and `notes.md` written. It needed `prerelease.sh` to
+compare with geng-lang's devbox clang, since puritty's has none on its
+PATH. The output is kept in `dist/rl4-check/` (not in git).
