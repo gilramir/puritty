@@ -3181,3 +3181,48 @@ system's 3.4.
 3.8 says `7,25`), and before 3.8 they give modes 25, 7 and 6. The tmux
 answers are recorded again (`record-tmux.py`, 3.8 and 3.6a), and a test
 holds the cursor shown after attaching on each.
+
+## TM72 · puritty adapts to what each tmux takes, from 2.7 (2026-11-14)
+
+Gilbert, after the version survey (`docs/tmux-versions.md`): `tmux -CC`
+is to work on tmux 2.7, and puritty is to adapt itself to each tmux's
+protocol. TV5 had measured that below 3.0 no typed key reached the shell.
+
+**What this tmux takes, asked first.** When tmux attaches, puritty's first
+question is `list-commands` with no format: every tmux from 2.7 answers it
+with each command's usage line, `send-keys (send) [-HlXRM] …`, and a flag
+in the usage is one this tmux takes, whatever its version says (RHEL10's
+`next-3.4` is a 3.3a snapshot; a build from git says `master`).
+`Tmux.Caps` reads them; the client's flags, its size and the status
+line's subscriptions are sent once the answer is in, in the forms it
+names. The command names for the prompt's Tab come from the same answer.
+What is not a flag is still decided by the version (TM61's private modes,
+3.8's JSON layouts, the menus 3.6a lacks).
+
+| what | from | before it |
+|---|---|---|
+| typed bytes, `send-keys -H` | 3.0 | text by `send-keys -l`, in single quotes, a `'` as `"'"` and each `;` as its own `\;` word; each control byte by its key's name (`C-c`, `Escape`, `'C-\'`, `BSpace`) |
+| the size, `refresh-client -C 80x24` | 3.0 | `-C 80,24` |
+| keys through tmux's tables, `send-keys -K` | 3.4 | puritty follows the tables itself (`Bindings.route`, as TM24 does for `-K`): the prefix sends nothing, a bound key sends its binding's command (`\;` made `;`), an unbound key after the prefix or in a mode is dropped, as tmux drops it, and any other goes to the pane as bytes |
+| the client's flags, `refresh-client -f` | 3.2 | none: no `pause-after` (a pane's backlog is not dropped) |
+| the status line told, `refresh-client -B` | 3.2 | asked once a second (`pollsFor`): `display-message -p`, `list-windows -F`, `list-panes -s -F` with the same formats, each answer handled as the subscription would have told it |
+| `#{T:option}` | 2.9 | the options' own text asked first and put in its place, which `display-message` expands, the time too (probed by `#{T:version}`) |
+| list filters, `-f` | 3.2 (3.4 for clients) | on every version now: the filter in the `-F` format, and the rows kept whose value is neither empty nor `0`, as tmux's `-f` decides |
+
+The 2.x way of quoting was measured through a control client on 2.7 and
+2.9a: their parser reads no octal escape (`"\003"` gives `003`), takes
+UTF-8 as it is, and drops a `;` that ends a word even in quotes.
+
+**Checked:** the tmux suite 114 (fourteen for `Tmux.Caps`, the 2.x keys,
+the sizes and a binding's line, from 2.7's, 3.0's and 3.8's usage lines);
+the app tests 195, the fake tmux answering `list-commands` from the
+recorded usage lines. Under Xvfb, on 2.7, 2.9a, 3.0, 3.1c, 3.2a, 3.3a, 3.4
+and 3.8 built from their tarballs: `echo OK` typed and run, the prefix and
+`%` splitting the window, `echo TWO;echo 'q'` typed in the new pane and run
+whole, the prefix and `c` making a window (tmux's own `list-panes` after:
+`0.0 0.1 1.0` on each); on 2.7, 2.8 and 2.9a the status line's right side
+(`"nene" 16:45 14-Nov-26`) as on 3.8.
+
+**Not yet:** menus, copy mode, customize mode and the trees on each
+version (TV5); the tests' fake tmux answering as 2.7, 3.0, 3.2a and 3.4
+(TV8's second leaning).

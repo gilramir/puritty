@@ -15,6 +15,7 @@ import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Tmux.Bindings as Bindings
 import Tmux.Borders as Borders
+import Tmux.Caps as Caps
 import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Customize as Customize
@@ -28,7 +29,7 @@ import UInt8
 (`native/`'s `Native`). -}
 suites : Array U.Suite
 suites =
-    [ control, layout, command, bindings, syntax, style, borders, customize ]
+    [ control, layout, command, bindings, syntax, style, borders, customize, caps ]
 
 
 run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
@@ -1251,5 +1252,61 @@ customize =
           }
         , { name = "the description stops at the box's foot, as tmux's does"
           , test = \_ -> Expect.equal [ "Default index of the first window", "in each session." ] (rowsOf (previewOf t38 "base-index" 34 3))
+          }
+        ]
+
+
+{-| What a tmux takes, read from its `list-commands` (TM72): usage lines as
+2.7, 3.0 and 3.8 answer them (`corpus/tmux`), and the 2.x way of sending
+keys, measured on 2.7 and 2.9a. -}
+caps : U.Suite
+caps =
+    let
+        v27 =
+            Caps.fromUsage
+                [ "list-panes (lsp) [-as] [-F format] [-t target-window]"
+                , "refresh-client (refresh) [-S] [-C size] [-t target-client]"
+                , "send-keys (send) [-lXRM] [-N repeat-count] [-t target-pane] key ..."
+                ]
+
+        v30 =
+            Caps.fromUsage
+                [ "refresh-client (refresh) [-cDlLRSU] [-C XxY] [-F flags] [-t target-client] [adjustment]"
+                , "send-keys (send) [-HlXRM] [-N repeat-count] [-t target-pane] key ..."
+                ]
+
+        v38 =
+            Caps.fromUsage
+                [ "list-panes (lsp) [-asr] [-F format] [-f filter] [-O order][-t target-window]"
+                , "refresh-client (refresh) [-cDlLRSU] [-A pane:state] [-B name:what:format] [-C XxY] [-f flags] [-r pane:report] [-t target-client] [adjustment]"
+                , "send-keys (send) [-FHKlMRX] [-c target-client] [-N repeat-count] [-t target-pane] [key ...]"
+                ]
+    in
+    run "caps"
+        [ { name = "2.7 has no send-keys -H", test = \_ -> Expect.equal False (Caps.has "send-keys" "H" v27) }
+        , { name = "2.7 has send-keys -l", test = \_ -> Expect.equal True (Caps.has "send-keys" "l" v27) }
+        , { name = "3.0 has send-keys -H, not -K", test = \_ -> Expect.equal [ True, False ] [ Caps.has "send-keys" "H" v30, Caps.has "send-keys" "K" v30 ] }
+        , { name = "3.8 has send-keys -K", test = \_ -> Expect.equal True (Caps.has "send-keys" "K" v38) }
+        , { name = "the size as 80,24 before 3.0", test = \_ -> Expect.equal [ False, True, True ] [ Caps.sizeByX v27, Caps.sizeByX v30, Caps.sizeByX v38 ] }
+        , { name = "client flags (-f) and subscriptions (-B) from 3.2", test = \_ -> Expect.equal [ False, False, True, True ] [ Caps.has "refresh-client" "f" v30, Caps.has "refresh-client" "B" v30, Caps.has "refresh-client" "f" v38, Caps.has "refresh-client" "B" v38 ] }
+        , { name = "a flag with a value, its group run on", test = \_ -> Expect.equal [ True, True, False ] [ Caps.has "list-panes" "f" v38, Caps.has "list-panes" "t" v38, Caps.has "list-panes" "f" v27 ] }
+        , { name = "a command it does not list it does not have", test = \_ -> Expect.equal [ False, True ] [ Caps.known "display-menu" v27, Caps.known "send-keys" v27 ] }
+        , { name = "before tmux answers, everything", test = \_ -> Expect.equal [ True, True ] [ Caps.has "send-keys" "K" Caps.assumed, Caps.sizeByX Caps.assumed ] }
+        , { name = "2.x keys: text by -l in single quotes, controls by name"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "send-keys -t '%3' -l 'ls -l'", "send-keys -t '%3' Enter", "send-keys -t '%3' C-c", "send-keys -t '%3' Escape", "send-keys -t '%3' -l '[A'" ]
+                        (Command.sendBytesPlain 3 (Bytes.fromString "ls -l\r\u{0003}\u{001B}[A"))
+          }
+        , { name = "2.x keys: a ; and a ' as words of their own"
+          , test = \_ -> Expect.equal [ "send-keys -t '%0' -l 'a' \\; \"'\" 'b'" ] (Command.sendBytesPlain 0 (Bytes.fromString "a;'b"))
+          }
+        , { name = "2.x keys: UTF-8 as it is, Backspace and C-\\ by name"
+          , test = \_ -> Expect.equal [ "send-keys -t '%0' -l 'é한'", "send-keys -t '%0' BSpace", "send-keys -t '%0' 'C-\\'" ] (Command.sendBytesPlain 0 (Bytes.fromString "é한\u{007F}\u{001C}"))
+          }
+        , { name = "the sizes' two forms", test = \_ -> Expect.equal [ "refresh-client -C 80,24", "refresh-client -C 80x24" ] [ Command.sizeComma { cols = 80, rows = 24 }, Command.size { cols = 80, rows = 24 } ] }
+        , { name = "a binding's commands joined by ; on a line"
+          , test = \_ -> Expect.equal "new-pane -E -x \"75%\" ; move-pane -P bottom-centre" (Command.bindingLine "new-pane -E -x \"75%\" \\; move-pane -P bottom-centre")
           }
         ]

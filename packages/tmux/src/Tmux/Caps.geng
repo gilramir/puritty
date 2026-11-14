@@ -1,0 +1,112 @@
+module Tmux.Caps exposing (Caps, assumed, fromUsage, has, known, sizeByX)
+
+{-| What a tmux can do, read from its own `list-commands` (`docs/tmux.md`
+TM72, `docs/tmux-versions.md` TV8): each command's usage line, `send-keys
+(send) [-HlXRM] [-N repeat-count] …`, its flags taken from it. Every tmux
+from 2.7 answers `list-commands` so, and a flag in the usage is one this
+tmux takes, whatever it calls its version (`next-3.4`, `master`,
+`openbsd-7.5`, a distribution's patched build). puritty asks it first
+when it attaches, and sends what follows in the forms this tmux takes.
+-}
+
+import Dict exposing (Dict)
+import Tmux.Reason as Reason
+
+
+type alias Caps =
+    { flags : Dict String String
+    , sizeByX : Bool
+    , known : Bool
+    }
+
+
+{-| Before tmux has answered: everything, as the newest tmux has it, so
+that nothing waits on the answer that need not. -}
+assumed : Caps
+assumed =
+    { flags = Dict.empty, sizeByX = True, known = False }
+
+
+{-| The usage lines of `list-commands` with no format. -}
+fromUsage : Array String -> Caps
+fromUsage lines =
+    let
+        flags =
+            Array.foldl
+                (\line d ->
+                    when String.split " " line |> Array.first is
+                        Just name ->
+                            if name == "" then
+                                d
+
+                            else
+                                Dict.set name (flagsOf line) d
+
+                        Nothing ->
+                            d
+                )
+                Dict.empty
+                lines
+
+        refresh =
+            Array.findFirst (\l -> String.startsWith "refresh-client " l) lines
+                |> Maybe.map .value
+                |> Maybe.withDefault (meant Reason.FromOutside "")
+    in
+    { flags = flags
+    -- `-C XxY` from 3.0; 2.x says `-C size` and takes `80,24`
+    , sizeByX = not (String.contains "-C size" refresh)
+    , known = not (Dict.isEmpty flags)
+    }
+
+
+{-| A usage line's flags: the letters of each `[-abc]` and the letter of
+each `[-x value]`, as one string. -}
+flagsOf : String -> String
+flagsOf line =
+    String.split "[-" line
+        |> Array.dropFirst 1
+        |> Array.map
+            (\part ->
+                let
+                    word =
+                        String.split " " part |> Array.first |> Maybe.withDefault ""
+                in
+                if String.endsWith "]" word then
+                    -- `abc]`: a group of flags with no value
+                    String.dropLast 1 word
+
+                else
+                    -- `x value]`: one flag with a value
+                    String.takeFirst 1 word
+            )
+        |> String.join ""
+
+
+{-| Whether this tmux's `command` takes `-flag` (one letter); everything
+while it is not known. -}
+has : String -> String -> Caps -> Bool
+has command flag caps =
+    if not caps.known then
+        True
+
+    else
+        when Dict.get command caps.flags is
+            Just letters ->
+                String.contains flag letters
+
+            Nothing ->
+                -- a command this tmux does not have
+                meant Reason.NotKnown False
+
+
+{-| Whether `command` is one this tmux has; every one while not known. -}
+known : String -> Caps -> Bool
+known command caps =
+    not caps.known || Dict.member command caps.flags
+
+
+{-| Whether `refresh-client -C` takes `WxH` (3.0 on) rather than `W,H`. -}
+sizeByX : Caps -> Bool
+sizeByX caps =
+    caps.sizeByX

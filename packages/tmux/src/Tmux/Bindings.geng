@@ -6,6 +6,7 @@ module Tmux.Bindings exposing
     , held
     , prefixesOf
     , route
+    , tableAt
     )
 
 {-| tmux's key tables, followed from outside (puritty `docs/tmux.md`
@@ -101,11 +102,7 @@ route name ms modeTable s =
             s.repeatUntil >= 0 && since ms s.repeatUntil >= 0
 
         clientTable =
-            if s.repeatUntil >= 0 && not repeating then
-                "root"
-
-            else
-                s.table
+            tableAt ms s
 
         current =
             if clientTable == "root" && modeTable /= "" then
@@ -180,6 +177,17 @@ route name ms modeTable s =
 
                     Nothing ->
                         meant Reason.NotKnown plain
+
+
+{-| The table the client is in at `ms`: the one it was put in, or `root`
+once a repeat's time has passed. -}
+tableAt : Int -> Follow -> String
+tableAt ms s =
+    if s.repeatUntil >= 0 && since ms s.repeatUntil < 0 then
+        "root"
+
+    else
+        s.table
 
 
 {-| Why a binding's command is held back, if it is (TM24):

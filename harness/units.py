@@ -82,8 +82,9 @@ def runs_of(folder: str, node: bool = True) -> list[Run]:
 SUITES = [
     # 100 since DG6: what the diagnostic log hears, six
     Suite("vt", 100, runs_of("vt/tests")),
-    # 100 since VC63: a choice moved on from the last
-    Suite("tmux", 100, runs_of("packages/tmux/tests")),
+    # 100 since VC63: a choice moved on from the last; 114 since TM72:
+    # what a tmux takes, and its 2.x keys, fourteen
+    Suite("tmux", 114, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since

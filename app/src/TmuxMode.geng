@@ -52,6 +52,7 @@ import Reason
 import Search
 import Tmux.Bindings as Bindings
 import Tmux.Borders as Borders
+import Tmux.Caps as Caps exposing (Caps)
 import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Customize as Customize
@@ -144,6 +145,9 @@ type alias State =
     -- last key or tick said, and `display-panes-time`
     , numbers : Maybe Numbering
     , clock : Int
+    -- when the status line is next asked, before tmux 3.2 has
+    -- subscriptions (TM72); -1 when it is told
+    , pollAt : Int
     , panesMs : Int
     -- tmux's status line as it subscribes to it (TM29), tmux 3.8's
     -- theme names in it written as the theme's colors (TM65), and as
@@ -177,6 +181,10 @@ type alias State =
     , listing : Maybe Listing
     -- tmux's commands and their aliases, for the prompt's Tab (TM57)
     , commandNames : Array String
+    -- what this tmux takes, from its `list-commands` (TM72), and whether
+    -- it expands `#{T:…}` (from 2.9)
+    , caps : Caps
+    , timeFormats : Bool
     -- customize-mode, drawn by puritty (TM62)
     , customizing : Maybe Customizing
     }
@@ -596,6 +604,10 @@ type Expect
     | ForTreeFilter
     | ForListRows
     | ForCommandNames
+    | ForCaps { cols : Int, rows : Int }
+    | ForPoll { name : String, scope : Int }
+    | ForTimeProbe
+    | ForRawOptions { name : String, target : String, format : String, options : Array String }
     | ForRunExpanded Context
     | ForListFilter
     | ForListPreview String
@@ -670,6 +682,7 @@ idle _ =
     , serial = 0
     , numbers = Nothing
     , clock = 0
+    , pollAt = -1
     , panesMs = 1000
     , status = noStatus
     , rawStatus = noStatus
@@ -685,6 +698,8 @@ idle _ =
     , tree = Nothing
     , listing = Nothing
     , commandNames = []
+    , caps = Caps.assumed
+    , timeFormats = True
     , customizing = Nothing
     }
 
@@ -1078,6 +1093,18 @@ expectName x =
 
         ForCommandNames ->
             "tmux's commands"
+
+        ForCaps _ ->
+            "what tmux takes"
+
+        ForPoll p ->
+            "the status line's " ++ p.name
+
+        ForTimeProbe ->
+            "whether #{T:} is known"
+
+        ForRawOptions r ->
+            "the options in " ++ r.name
 
         ForRunExpanded _ ->
             "a run -C's commands"
@@ -1907,9 +1934,9 @@ attachQueries size acc =
             tmuxSize (statusRows acc.state) size
     in
     ask
-        [ { command = Command.clientFlags, expect = ForNothing }
-        , { command = Command.size clientSize, expect = ForNothing }
-        , { command = "list-commands -F " ++ Command.quote "#{command_list_name} #{command_list_alias}", expect = ForCommandNames }
+        [ -- what this tmux takes first: the client's flags, its size and
+          -- the subscriptions are asked as it takes them (TM72)
+          { command = "list-commands", expect = ForCaps clientSize }
         , { command = windowQuery, expect = ForWindow }
         , { command = tabsQuery, expect = ForTabs }
         , { command = panesQuery, expect = ForPanes }
@@ -1920,7 +1947,6 @@ attachQueries size acc =
         , { command = "display-message -p " ++ Command.quote "#{client_name}", expect = ForClientName }
         ]
         acc
-        |> ask (Array.map (\sub -> { command = "refresh-client -B " ++ Command.quote sub, expect = ForNothing }) statusSubscriptions)
 
 
 {-| A reply block: one of puritty's questions answered, or a command not
@@ -2104,7 +2130,7 @@ replied expect ok lines acc =
                     st.keys
             in
             if ok then
-                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs, byTable = got.byTable }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> String.split " " |> Array.last |> Maybe.withDefault "") } }
+                { acc | state = { st | keys = { tables | prefixes = got.prefixes, repeatMs = got.repeatMs }, version = versionOf (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "") |> String.split " " |> Array.last |> Maybe.withDefault "") } }
 
             else
                 { acc | state = st }
@@ -2313,6 +2339,121 @@ replied expect ok lines acc =
             in
             { acc | state = r.state, commands = acc.commands ++ r.commands }
 
+        ForCaps clientSize ->
+            let
+                st =
+                    acc.state
+
+                caps =
+                    if ok then
+                        Caps.fromUsage (Array.map Bytes.toStringLossy lines)
+
+                    else
+                        -- an answer tmux refused: as the newest tmux
+                        Caps.assumed
+
+                tables =
+                    st.keys
+
+                known =
+                    { st
+                        | caps = caps
+                        -- the names only: tmux completes no alias
+                        -- (measured, `sel` gives `select-`)
+                        , commandNames =
+                            if ok then
+                                Array.mapAndKeepJust (\line -> String.split " " (Bytes.toStringLossy line) |> Array.first) lines
+
+                            else
+                                st.commandNames
+                        , keys = { tables | byTable = Caps.has "send-keys" "K" caps }
+                    }
+
+                flags =
+                    if Caps.has "refresh-client" "f" caps then
+                        [ { command = Command.clientFlags, expect = ForNothing } ]
+
+                    else
+                        []
+
+                subscriptions =
+                    if Caps.has "refresh-client" "B" caps then
+                        Array.map (\sub -> { command = "refresh-client -B " ++ Command.quote sub, expect = ForNothing }) statusSubscriptions
+
+                    else
+                        -- before 3.2: asked, not told (TM72), once it is
+                        -- known whether `#{T:…}` is (`ForTimeProbe`)
+                        [ { command = "display-message -p " ++ Command.quote "#{T:version}", expect = ForTimeProbe } ]
+
+                polled =
+                    if Caps.has "refresh-client" "B" caps then
+                        known
+
+                    else
+                        { known | pollAt = Clock.after known.clock pollMs }
+            in
+            ask (flags ++ [ { command = sizeCommand caps clientSize, expect = ForNothing } ] ++ subscriptions) { acc | state = polled }
+
+        ForTimeProbe ->
+            let
+                st =
+                    acc.state
+
+                known =
+                    { st | timeFormats = ok && (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "")) /= "" }
+            in
+            ask (pollsFor known) { acc | state = known }
+
+        ForRawOptions r ->
+            -- the options' own text put where `#{T:option}` was, and the
+            -- format asked so (TM72)
+            let
+                values =
+                    String.split "\t" (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside ""))
+
+                format =
+                    Array.foldl
+                        (\i f ->
+                            Maybe.map2 (\option value -> String.replace ("#{T:" ++ option ++ "}") value f) (Array.get i r.options) (Array.get i values)
+                                |> Maybe.withDefault (meant Reason.FromOutside f)
+                        )
+                        r.format
+                        (Array.range 0 (Array.length r.options - 1))
+            in
+            if ok then
+                ask [ pollOf r.name r.target format ] acc
+
+            else
+                acc
+
+        ForPoll p ->
+            -- each line as the subscription would have told it
+            Array.foldl
+                (\line a ->
+                    let
+                        text =
+                            Bytes.toStringLossy line
+
+                        parts =
+                            String.split "\t" text
+                    in
+                    if p.scope == 0 then
+                        notice (SubscriptionChanged { name = p.name, window = -1, pane = -1, value = text }) a
+
+                    else if p.scope == 1 then
+                        notice (SubscriptionChanged { name = p.name, window = idOf (Maybe.withDefault "" (Array.first parts)), pane = -1, value = String.join "\t" (Array.dropFirst 1 parts) }) a
+
+                    else
+                        notice (SubscriptionChanged { name = p.name, window = idOf (Maybe.withDefault "" (Array.get 0 parts)), pane = idOf (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)), value = String.join "\t" (Array.dropFirst 2 parts) }) a
+                )
+                acc
+                (if ok then
+                    lines
+
+                 else
+                    []
+                )
+
         ForCommandNames ->
             let
                 st =
@@ -2386,8 +2527,12 @@ replied expect ok lines acc =
                     Array.mapAndKeepJust
                         (\line ->
                             when String.split "\t" (Bytes.toStringLossy line) is
-                                [ "F", name ] ->
-                                    Just name
+                                [ "F", name, value ] ->
+                                    if filterTrue value then
+                                        Just name
+
+                                    else
+                                        Nothing
 
                                 _ ->
                                     Nothing
@@ -2487,9 +2632,18 @@ replied expect ok lines acc =
                 ids =
                     Array.mapAndKeepJust
                         (\line ->
-                            when String.split " " (Bytes.toStringLossy line) is
+                            let
+                                words =
+                                    String.split " " (Bytes.toStringLossy line)
+                            in
+                            when Array.slice 0 2 words is
                                 [ "F", id ] ->
-                                    Just (idOf id)
+                                    -- the value may hold spaces
+                                    if filterTrue (String.join " " (Array.dropFirst 2 words)) then
+                                        Just (idOf id)
+
+                                    else
+                                        Nothing
 
                                 _ ->
                                     Nothing
@@ -3027,7 +3181,7 @@ notice n acc =
                                         }
 
                                 detached =
-                                    sent (Command.sendBytes o.pane (Bytes.fromString "\n")) said
+                                    sent (bytesTo st.caps o.pane (Bytes.fromString "\n")) said
                             in
                             { acc | state = detached.state, commands = acc.commands ++ detached.commands }
 
@@ -3111,7 +3265,7 @@ notice n acc =
                     -- told the new size (TM54)
                     resize =
                         if statusRows next /= rowsWas then
-                            [ Command.size (tmuxSize (statusRows next) { cols = next.canvas.cols, rows = next.canvas.rows }) ]
+                            [ sizeCommand next.caps (tmuxSize (statusRows next) { cols = next.canvas.cols, rows = next.canvas.rows }) ]
 
                         else
                             []
@@ -3953,7 +4107,7 @@ keys bytes s =
     else
         -- a key the pane's program gets brings its view to the bottom, not
         -- one copy mode takes (TM67)
-        sent (Command.sendBytes s.active bytes)
+        sent (bytesTo s.caps s.active bytes)
             { s
                 | back =
                     if Bytes.isEmpty bytes || inCopy s.active s then
@@ -4085,45 +4239,25 @@ keyByTable k bytes ms s =
             else if s.keys.byTable then
                 byName k bytes s.active
 
+            else if way.ran /= "" then
+                -- a tmux before 3.4 has no `send-keys -K`: puritty follows
+                -- its tables, and the binding's command is sent as tmux
+                -- would have run it for the key (TM72)
+                [ Command.bindingLine way.ran ]
+
+            else if Bindings.tableAt ms s.keys /= "root" || modeTable /= "" || way.table /= "root" then
+                -- the prefix itself, or a key after it or in a mode that no
+                -- binding takes, which tmux drops
+                []
+
             else
-                -- a tmux before 3.4 has no `send-keys -K`: the bytes to
-                -- the pane, its bindings out of reach (TM24)
-                Command.sendBytes s.active bytes
+                bytesTo s.caps s.active bytes
 
         modeTable =
             Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.modes)
 
         way =
-            if s.keys.byTable then
-                Bindings.route (lookupName k) ms modeTable s.keys
-
-            else
-                -- said at the prefix, and kept through the key after it
-                let
-                    isPrefix =
-                        Maybe.map (\key -> Array.member key s.keys.prefixes) (lookupName k) == Just True
-                in
-                { send = True
-                , reset = False
-                , table =
-                    if isPrefix then
-                        "prefix"
-
-                    else
-                        "root"
-                , repeatUntil = -1
-                , said =
-                    if isPrefix then
-                        "puritty: tmux's key bindings under -CC need tmux 3.4 (send-keys -K)"
-
-                    else if s.keys.table == "prefix" then
-                        s.said
-
-                    else
-                        ""
-                , held = ""
-                , ran = ""
-                }
+            Bindings.route (lookupName k) ms modeTable s.keys
 
         tables =
             s.keys
@@ -5811,7 +5945,7 @@ selecting how p col row q s =
             Just keyed ->
                 let
                     r =
-                        sent (Command.sendBytes q.id (Bytes.fromString keyed)) s
+                        sent (bytesTo s.caps q.id (Bytes.fromString keyed)) s
                 in
                 { state = r.state, commands = r.commands, own = Nothing, paste = False }
 
@@ -6224,6 +6358,31 @@ frameOf cols rows p =
         ++ across (p.y + p.h)
 
 
+-- WHAT THIS TMUX TAKES (TM72)
+
+
+{-| The client's size as this tmux takes it: `80x24` from 3.0, `80,24`
+before. -}
+sizeCommand : Caps -> { cols : Int, rows : Int } -> String
+sizeCommand caps size =
+    if Caps.sizeByX caps then
+        Command.size size
+
+    else
+        Command.sizeComma size
+
+
+{-| Bytes to a pane as this tmux takes them: `send-keys -H` from 3.0, text
+and key names before. -}
+bytesTo : Caps -> Int -> Bytes -> Array String
+bytesTo caps pane bytes =
+    if Caps.has "send-keys" "H" caps then
+        Command.sendBytes pane bytes
+
+    else
+        Command.sendBytesPlain pane bytes
+
+
 -- THE STATUS LINE (TM29)
 
 
@@ -6252,6 +6411,68 @@ statusSubscriptions =
     , "puritty-status4::#{T:status-format[4]}"
     , "puritty-theme::" ++ String.join "\t" ([ "#{theme}" ] ++ Array.map (\n -> "#{dark-theme-" ++ n ++ "}") Style.themeNames ++ Array.map (\n -> "#{light-theme-" ++ n ++ "}") Style.themeNames)
     ]
+
+
+{-| The status line asked rather than told, before tmux 3.2 (TM72): each
+subscription's format, for the session by `display-message`, for each
+window or pane by `list-windows` or `list-panes`, its id first. Before 2.9
+tmux has no `#{T:…}`: the options it names are asked first, and their text
+put in its place (`ForRawOptions`), which `display-message` expands, the
+time too. -}
+pollsFor : State -> Array { command : String, expect : Expect }
+pollsFor s =
+    Array.map
+        (\sub ->
+            let
+                parts =
+                    String.split ":" sub
+
+                name =
+                    Maybe.withDefault "" (Array.get 0 parts)
+
+                target =
+                    Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)
+
+                format =
+                    String.join ":" (Array.dropFirst 2 parts)
+
+                options =
+                    timeOptions format
+            in
+            if s.timeFormats || Array.isEmpty options then
+                pollOf name target format
+
+            else
+                { command = "display-message -p " ++ Command.quote (String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") options))
+                , expect = ForRawOptions { name = name, target = target, format = format, options = options }
+                }
+        )
+        statusSubscriptions
+
+
+pollOf : String -> String -> String -> { command : String, expect : Expect }
+pollOf name target format =
+    if target == "@*" then
+        { command = "list-windows -F " ++ Command.quote ("#{window_id}\t" ++ format), expect = ForPoll { name = name, scope = 1 } }
+
+    else if target == "%*" then
+        { command = "list-panes -s -F " ++ Command.quote ("#{window_id}\t#{pane_id}\t" ++ format), expect = ForPoll { name = name, scope = 2 } }
+
+    else
+        { command = "display-message -p " ++ Command.quote format, expect = ForPoll { name = name, scope = 0 } }
+
+
+{-| The options a format names by `#{T:option}`, in order. -}
+timeOptions : String -> Array String
+timeOptions format =
+    String.split "#{T:" format
+        |> Array.dropFirst 1
+        |> Array.mapAndKeepJust (\rest -> String.split "}" rest |> Array.first)
+
+
+pollMs : Int
+pollMs =
+    1000
 
 
 {-| The theme colors in force (TM65): `theme`'s choice, `detect` taken
@@ -7583,38 +7804,51 @@ dueAt s =
             else
                 -1
     in
-    when s.numbers is
-        Just n ->
-            if clockDue >= 0 then
-                Clock.earlier n.until clockDue
+    Clock.soonest s.pollAt
+        (when s.numbers is
+            Just n ->
+                if clockDue >= 0 then
+                    Clock.earlier n.until clockDue
 
-            else
-                n.until
+                else
+                    n.until
 
-        Nothing ->
-            meant Reason.NotOpen clockDue
+            Nothing ->
+                meant Reason.NotOpen clockDue
+        )
 
 
 {-| The time, from the loop: the panes' numbers closed once it is past
-their time. -}
-tick : Int -> (taken s : State) -> State
+their time, and the status line asked when it is due (TM72). -}
+tick : Int -> (taken s : State) -> { state : State, commands : Array String }
 tick ms s0 =
     let
         -- the time of day carried forward to now, since the loop's clock
         -- starts over (RE11)
-        s =
+        s1 =
             { s0 | dayAt = Maybe.map (\d -> { clock = ms, ms = modBy 86400000 (d.ms + Clock.since d.clock ms) }) s0.dayAt }
+
+        s =
+            when s1.numbers is
+                Just n ->
+                    if Clock.reached n.until ms then
+                        { s1 | numbers = Nothing, clock = ms }
+
+                    else
+                        { s1 | clock = ms }
+
+                Nothing ->
+                    meant Reason.NotOpen { s1 | clock = ms }
     in
-    when s.numbers is
-        Just n ->
-            if Clock.reached n.until ms then
-                { s | numbers = Nothing, clock = ms }
+    if s.on && s.pollAt >= 0 && Clock.reached s.pollAt ms then
+        let
+            asked =
+                pollsFor s
+        in
+        { state = expected asked { s | pollAt = Clock.after ms pollMs }, commands = Array.map .command asked }
 
-            else
-                { s | clock = ms }
-
-        Nothing ->
-            meant Reason.NotOpen { s | clock = ms }
+    else
+        { state = s, commands = [] }
 
 
 {-| A pane's number as tmux draws it (`window_clock_table`'s digits, five
@@ -8006,10 +8240,10 @@ listQuery kind =
 listFilterQuery : String -> String -> { command : String, expect : Expect }
 listFilterQuery kind filter =
     if kind == "buffer" then
-        { command = "list-buffers -f " ++ Command.quote filter ++ " -F " ++ Command.quote "F\t#{buffer_name}", expect = ForListFilter }
+        { command = "list-buffers -F " ++ Command.quote ("F\t#{buffer_name}\t" ++ filter), expect = ForListFilter }
 
     else
-        { command = "list-clients -f " ++ Command.quote filter ++ " -F " ++ Command.quote "F\t#{client_name}", expect = ForListFilter }
+        { command = "list-clients -F " ++ Command.quote ("F\t#{client_name}\t" ++ filter), expect = ForListFilter }
 
 
 {-| The rows the filter keeps, in the list's order: buffers newest first,
@@ -10173,10 +10407,19 @@ treeOpened shown active t =
     { opened | selected = found |> Maybe.map .index |> Maybe.withDefault (meant Reason.NotKnown 0) }
 
 
-{-| The tree's filter asked of tmux: the panes for which it is true. -}
+{-| The tree's filter asked of tmux: each pane and the filter's value for
+it, kept where tmux's `-f` would keep it (`filterTrue`). The filter is in
+the format, not `-f`, which tmux has only from 3.2 (TM72). -}
 filterQuery : String -> { command : String, expect : Expect }
 filterQuery filter =
-    { command = "list-panes -a -f " ++ Command.quote filter ++ " -F " ++ Command.quote "F #{pane_id}", expect = ForTreeFilter }
+    { command = "list-panes -a -F " ++ Command.quote ("F #{pane_id} " ++ filter), expect = ForTreeFilter }
+
+
+{-| Whether a filter's value keeps its row, as tmux's `-f` decides:
+neither empty nor `0`. -}
+filterTrue : String -> Bool
+filterTrue value =
+    value /= "" && value /= "0"
 
 
 {-| The tree's own questions answered (TM45): a search (1) goes to the
@@ -13290,7 +13533,7 @@ report held p q s =
                 { state = { s | mouseLast = r.last }, commands = [] }
 
             else
-                sent (Command.sendBytes q.id r.bytes) { s | mouseLast = r.last }
+                sent (bytesTo s.caps q.id r.bytes) { s | mouseLast = r.last }
 
         Nothing ->
             meant Reason.NotKnown { state = s, commands = [] }
@@ -13300,7 +13543,7 @@ report held p q s =
 resized : { cols : Int, rows : Int } -> (taken s : State) -> { state : State, commands : Array String }
 resized size s =
     if s.on then
-        sent [ Command.size (tmuxSize (statusRows s) size) ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
+        sent [ sizeCommand s.caps (tmuxSize (statusRows s) size) ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
 
     else
         { state = s, commands = [] }

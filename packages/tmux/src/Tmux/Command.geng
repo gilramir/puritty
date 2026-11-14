@@ -1,13 +1,16 @@
 module Tmux.Command exposing
-    ( clientFlags
+    ( bindingLine
+    , clientFlags
     , continuePane
     , listPanes
     , pasteBytes
     , quote
     , sendBytes
+    , sendBytesPlain
     , sendKey
     , sendKeyTo
     , size
+    , sizeComma
     , typeText
     )
 
@@ -17,6 +20,7 @@ an unquoted `%0:…` is a parse error in tmux 3.8 (TM3).
 -}
 
 import Bytes exposing (Bytes)
+import Tmux.Reason as Reason
 import UInt8
 
 
@@ -155,6 +159,145 @@ pairs hex =
 size : { cols : Int, rows : Int } -> String
 size s =
     "refresh-client -C " ++ String.fromInt (max 1 s.cols) ++ "x" ++ String.fromInt (max 1 s.rows)
+
+
+{-| The client's size as tmux before 3.0 takes it, `-C 80,24`: it refuses
+`80x24` (`bad size argument`; TM72). -}
+sizeComma : { cols : Int, rows : Int } -> String
+sizeComma s =
+    "refresh-client -C " ++ String.fromInt (max 1 s.cols) ++ "," ++ String.fromInt (max 1 s.rows)
+
+
+{-| `send-keys` for a tmux before 3.0, which has no `-H` (TM72): the bytes
+as runs, text by `-l` and each control byte by its key's name, which tmux
+writes to the pane as that byte. Measured on 2.7 and 2.9a through a control
+client: its parser reads no octal escape (`"\003"` gives `003`) and drops a
+`;` that ends a word even in quotes, so text goes in single quotes, a `'` as
+`"'"` and each `;` as a word of its own, `\;`. UTF-8 goes as it is. -}
+sendBytesPlain : Int -> Bytes -> Array String
+sendBytesPlain pane bytes =
+    let
+        target =
+            "send-keys -t " ++ quote ("%" ++ String.fromInt pane)
+
+        runs =
+            Array.range 0 (Bytes.length bytes - 1)
+                |> Array.mapAndKeepJust (\i -> Bytes.get i bytes)
+                |> Array.foldl
+                    (\u acc ->
+                        when controlName (UInt8.toInt u) is
+                            Just name ->
+                                { runs = Array.pushLast { control = True, bytes = Bytes.empty, name = name } (closed acc), text = [] }
+
+                            Nothing ->
+                                -- not a control byte: text
+                                meant Reason.NotKnown { acc | text = Array.pushLast u acc.text }
+                    )
+                    { runs = [], text = [] }
+
+        closed acc =
+            if Array.isEmpty acc.text then
+                acc.runs
+
+            else
+                Array.pushLast { control = False, bytes = Bytes.fromUInt8s acc.text, name = "" } acc.runs
+
+        all =
+            closed runs
+    in
+    Array.map
+        (\r ->
+            if r.control then
+                target ++ " " ++ r.name
+
+            else
+                target ++ " -l " ++ plainWords (Bytes.toStringLossy r.bytes)
+        )
+        all
+
+
+{-| Text as the words of `send-keys -l` for tmux 2.x: single-quoted runs,
+a `'` as `"'"`, a `;` as `\;`. -}
+plainWords : String -> String
+plainWords text =
+    String.toArray text
+        |> Array.foldl
+            (\c acc ->
+                if c == ';' then
+                    { words = Array.pushLast "\\;" (flush acc), run = "" }
+
+                else if c == '\'' then
+                    { words = Array.pushLast "\"'\"" (flush acc), run = "" }
+
+                else
+                    { acc | run = acc.run ++ String.fromChar c }
+            )
+            { words = [], run = "" }
+        |> flush
+        |> String.join " "
+
+
+flush : { words : Array String, run : String } -> Array String
+flush acc =
+    if acc.run == "" then
+        acc.words
+
+    else
+        Array.pushLast ("'" ++ acc.run ++ "'") acc.words
+
+
+{-| A control byte's key name, which tmux sends as that byte. -}
+controlName : Int -> Maybe String
+controlName b =
+    if b == 0 then
+        Just "C-@"
+
+    else if b == 0x09 then
+        Just "Tab"
+
+    else if b == 0x0D then
+        Just "Enter"
+
+    else if b == 0x1B then
+        Just "Escape"
+
+    else if b < 0x1B then
+        Just ("C-" ++ String.fromChar (Char.fromCode (b + 0x60) |> Maybe.withDefault (meant Reason.OutOfRange 'a')))
+
+    else if b == 0x1C then
+        Just "'C-\\'"
+
+    else if b == 0x1D then
+        Just "'C-]'"
+
+    else if b == 0x1E then
+        Just "'C-^'"
+
+    else if b == 0x1F then
+        Just "'C-_'"
+
+    else if b == 0x7F then
+        Just "BSpace"
+
+    else
+        Nothing
+
+
+{-| A binding's command as `list-keys` prints it, made a command line to
+send: its commands joined by ` \; ` in the listing, by ` ; ` on a line
+(TM72). -}
+bindingLine : String -> String
+bindingLine command =
+    String.split " " command
+        |> Array.map
+            (\w ->
+                if w == "\\;" then
+                    ";"
+
+                else
+                    w
+            )
+        |> String.join " "
 
 
 {-| The flags puritty sets on attach: 3.8's layouts with floating panes

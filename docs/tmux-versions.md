@@ -170,3 +170,13 @@ tmux answers as its release does, and the releases stand for them.
 
 Questions: is `tmux -CC` on RHEL8's 2.7 wanted, or is plain tmux there
 enough? And which versions should the tests hold to?
+
+## TV9 · Built: puritty adapts to each tmux (2026-11-14)
+
+Gilbert: `tmux -CC` on 2.7 is wanted, puritty adapting to each tmux's
+protocol. Built as `docs/tmux.md` TM72: what a tmux takes is read from its
+`list-commands` when it attaches, and every difference in TV4 that puritty
+meets has its other form. TV5's table again, after it: on 2.7, 2.9a, 3.0,
+3.1c, 3.2a, 3.3a, 3.4 and 3.8, typing, the prefix's split and new window,
+and (2.7 to 2.9a) the status line, each working.
+

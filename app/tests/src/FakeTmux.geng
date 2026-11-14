@@ -186,7 +186,12 @@ one words w =
                 )
 
         "list-commands" ->
-            reply (Array.map (\c -> expand (commandVars c (vars w target)) format) (tableOf w.version))
+            if Dict.member "F" args.values then
+                reply (Array.map (\c -> expand (commandVars c (vars w target)) format) (tableOf w.version))
+
+            else
+                -- the usage lines, as recorded (TM72)
+                reply (Array.map .usage (tableOf w.version))
 
         "capture-pane" ->
             reply (captured args target)
@@ -572,9 +577,10 @@ captured args p =
         Array.slice from (to + 1) p.lines
 
 
-{-| `list-commands`' table: each command's name and alias, recorded from
-the version. -}
-tableOf : String -> Array { name : String, alias : String }
+{-| `list-commands`' table: each command's name, alias and usage line,
+from the usage lines recorded from the version (`send-keys (send)
+[-HlXRM] …`; a command with no alias has no parenthesis). -}
+tableOf : String -> Array { name : String, alias : String, usage : String }
 tableOf version =
     RealTmux.commands
         |> Array.findFirst (\c -> c.version == version)
@@ -582,16 +588,26 @@ tableOf version =
         |> Maybe.withDefault []
         |> Array.map
             (\l ->
-                when String.split "\t" l is
-                    [ name, alias ] ->
-                        { name = name, alias = alias }
+                let
+                    words =
+                        String.split " " l
 
-                    _ ->
-                        { name = l, alias = "" }
+                    second =
+                        Maybe.withDefault "" (Array.get 1 words)
+                in
+                { name = Maybe.withDefault "" (Array.first words)
+                , alias =
+                    if String.startsWith "(" second && String.endsWith ")" second then
+                        String.slice 1 (String.count second - 1) second
+
+                    else
+                        ""
+                , usage = l
+                }
             )
 
 
-commandVars : { name : String, alias : String } -> (String -> String) -> String -> String
+commandVars : { name : String, alias : String, usage : String } -> (String -> String) -> String -> String
 commandVars c lookup name =
     if name == "command_list_name" then
         c.name

@@ -156,7 +156,9 @@ def recorded(binary):
 
     record("attached")
     keys = control.ask("list-keys")
-    commands = control.ask("list-commands -F '#{command_list_name}\t#{command_list_alias}'")
+    # each command's usage line, as `list-commands` with no format gives it:
+    # its name, alias and flags (TM72)
+    commands = control.ask("list-commands")
     control.ask("copy-mode -t %0")
     record("copy mode")
     for _ in range(30):
@@ -215,7 +217,7 @@ def main():
         "    ]",
         "",
         "",
-        "{-| `list-commands`' table, each command's name and alias, a tab between. -}",
+        "{-| `list-commands`' usage lines: each command's name, alias and flags. -}",
         "commands : Array { version : String, lines : Array String }",
         "commands =",
         "    [ " + "\n    , ".join(command_rows),
