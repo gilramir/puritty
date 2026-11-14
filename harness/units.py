@@ -92,8 +92,9 @@ SUITES = [
         # only probes, two; 180 since SG14: recent connections, five; 182
         # since WP8: the last window's state, two; 183 since SG15: the
         # local shell's row; 193 since RE11: the clock that starts over,
-        # ten
-        193,
+        # ten; 195 since TM71: the cursor shown under tmux before 3.8, on
+        # each tmux
+        195,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

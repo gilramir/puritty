@@ -3160,3 +3160,24 @@ with puritty's eleven questions. On Xvfb, the built app running `tmux
 -CC attacth-t main` in a shell shows `unknown command: attacth-t` and the
 shell's prompt after it; `bench/tmux/show.py` attaches to a real tmux as
 before (panes, splits, typing). App tests 162.
+
+## TM71 · The cursor under `tmux -CC` before tmux 3.8 (2026-11-14)
+
+Gilbert on gmktec7 (Linux Mint, tmux 3.4-1ubuntu0.1): under plain `tmux
+attach` the cursor showed; under `tmux -CC attach` it never did, in any
+pane, whatever the shell.
+
+**Why.** A pane's terminal is made again from tmux's answer (TM5.8), its
+private modes from `#{pane_private_modes}`; before 3.8 that format is
+empty, and TM61 made the modes from tmux's older flags instead: the mouse
+modes, the cursor keys and the keypad. Cursor shown (25), wrapping (7) and
+origin mode (6) had no flag asked, so every pane on 3.4 or 3.6a was rebuilt
+with its cursor hidden (`ESC[?25l`) and wrapping off. Under Xvfb it had
+looked right only because the harness's tmux is 3.8 (devbox's), not the
+system's 3.4.
+
+**What changed:** the question asks `#{cursor_flag} #{wrap_flag}
+#{origin_flag}` too, which 3.4 answers (`1 1 0` for a shell's pane, where
+3.8 says `7,25`), and before 3.8 they give modes 25, 7 and 6. The tmux
+answers are recorded again (`record-tmux.py`, 3.8 and 3.6a), and a test
+holds the cursor shown after attaching on each.
