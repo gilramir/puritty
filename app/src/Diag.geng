@@ -6,6 +6,7 @@ module Diag exposing
     , command
     , due
     , isOn
+    , keeping
     , key
     , lines
     , nextMark
@@ -51,12 +52,13 @@ type alias Log =
     , lines : Array String
     , writtenAt : Int
     , marks : Int
+    , only : String
     }
 
 
 off : Log
 off =
-    { path = Nothing, seq = 1, t0 = 0, dayMs = 0, lines = [], writtenAt = 0, marks = 0 }
+    { path = Nothing, seq = 1, t0 = 0, dayMs = 0, lines = [], writtenAt = 0, marks = 0, only = "" }
 
 
 {-| A log begun: its file, the loop's clock and the local time of day
@@ -75,7 +77,7 @@ isOn log =
 is off. -}
 add : Int -> String -> String -> Log -> Log
 add ms tag text log =
-    if log.path == Nothing then
+    if log.path == Nothing || (log.only /= "" && not (Array.member tag kept)) then
         log
 
     else
@@ -83,6 +85,19 @@ add ms tag text log =
             | seq = log.seq + 1
             , lines = Array.pushLast (pad 6 log.seq ++ " " ++ clock (log.dayMs + ms - log.t0) ++ " " ++ padRight 6 tag ++ " " ++ text) log.lines
         }
+
+
+{-| The log keeping only what a program asked the terminal and what the
+terminal ignored, with its start, marks, errors and end (`[debug] only`,
+`docs/diagnostics.md` DG6): `"probes"` or `"app"`; `""` keeps everything. -}
+keeping : String -> Log -> Log
+keeping only log =
+    { log | only = only }
+
+
+kept : Array String
+kept =
+    [ "start", "mark", "error", "end", "probe", "ignore" ]
 
 
 addAll : Int -> String -> Array String -> Log -> Log

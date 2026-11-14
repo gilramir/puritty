@@ -53,6 +53,35 @@ Each is named by when its window began,
 `puritty-2026-11-12_140533-120.log`. The newest twenty are kept; older
 ones are removed as new ones begin.
 
+## Only what a program asks: for an application's developer
+
+When you are writing a program and want to know what it asks the terminal
+(the device attributes, the cursor position, a mode, a color) and what
+puritty answers, keep only those lines:
+
+```toml
+[debug]
+log = true
+only = "probes"     # or "app": those, and the sequences puritty ignores
+```
+
+Each question is a `probe` line with the question as written, what it
+asks for, and the answer as written, or `not answered`:
+
+```
+000016 10:03:01.129 probe  CSI c (primary device attributes, DA1) -> ESC[?62;21;22;52c
+000021 10:03:01.129 probe  DCS + q TN (capabilities, XTGETTCAP) -> not answered
+```
+
+With `only = "app"`, a sequence puritty does nothing with is an `ignore`
+line, so a feature your program turned on that puritty lacks shows:
+`ignore DEC mode 7727 set`. A question or an answer that would carry text
+from the screen, a title or the clipboard, is written by its size.
+
+Under `tmux -CC`, tmux answers its panes' questions itself, so a program
+inside tmux is not in these lines; run it outside tmux to see them. Without
+`only`, the log has these lines among the rest.
+
 ## Marking the moment
 
 When something goes wrong, press **Ctrl+Alt+Shift+M** at once, or choose
@@ -105,6 +134,8 @@ Each line is its number, the time, a tag and what happened:
 | `read` | bytes read from the program (without tmux) |
 | `tmux>` | a command puritty sent tmux |
 | `tmux<` | what tmux said: notifications, replies, output by size |
+| `probe` | a question a program asked the terminal, and the answer |
+| `ignore` | a sequence the terminal does nothing with (`only = "app"`) |
 | `mark` | a mark and the state with it |
 | `error`, `end` | the log's own troubles, and its end |
 

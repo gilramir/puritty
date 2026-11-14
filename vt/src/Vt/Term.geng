@@ -11,12 +11,14 @@ module Vt.Term exposing
     , Screen
     , Term
     , ghosttyEmbedder
+    , heardAt
     , isAlt
     , keyFlags
     , newScreen
     , noKeys
     , noOsc52
     , noSaved
+    , note
     , popKeys
     , psClip
     , psCsi
@@ -55,13 +57,18 @@ import Vt.Width as Width
 {-| What the embedder says of itself, which a program can ask
 (`docs/tmux.md` TM4): its foreground and background, which OSC 10 and 11
 answer while no program has set them and DSR 996 reports as dark or light;
-DA1's answer; and XTVERSION's name. `ghosttyEmbedder` is libghostty-vt's
-without an embedder: no colors, `?62;22c` and puritty's name, which the
-replay corpus is held to; puritty's window says more (`Vt.withEmbedder`). -}
+DA1's answer; XTVERSION's name; and what the diagnostic log wants to
+hear of the program (`listening`, `docs/diagnostics.md` DG6): 0 nothing,
+1 what it asks the terminal and the answers, 2 also the sequences the
+terminal ignores. `ghosttyEmbedder` is libghostty-vt's without an
+embedder: no colors, `?62;22c` and puritty's name, which the replay corpus
+is held to, and nothing heard; puritty's window says more
+(`Vt.withEmbedder`). -}
 type alias Embedder =
     { look : Maybe { foreground : Int, background : Int }
     , attributes : String
     , version : String
+    , listening : Int
     }
 
 
@@ -70,6 +77,7 @@ ghosttyEmbedder =
     { look = Nothing
     , attributes = "\u{001B}[?62;22c"
     , version = "puritty"
+    , listening = 0
     }
 
 
@@ -384,6 +392,8 @@ type alias Term =
     , low : Int
     , high : Int
     , replies : Array Bytes
+    -- what the diagnostic log heard, a line each (DG6), when it listens
+    , heard : Array String
     , xtChecksum : Int
     }
 
@@ -485,6 +495,18 @@ newScreen cols rows size =
 reply : String -> (taken t : Term) -> Term
 reply text t =
     { t | replies = Array.pushLast (Bytes.fromString text) t.replies }
+
+
+{-| A line for the diagnostic log (`docs/diagnostics.md` DG6), kept when
+it listens at `level` or more; the caller builds the line only then. -}
+heardAt : Int -> Term -> Bool
+heardAt level t =
+    t.embedder.listening >= level
+
+
+note : String -> (taken t : Term) -> Term
+note line t =
+    { t | heard = Array.pushLast line t.heard }
 
 
 isAlt : Term -> Bool

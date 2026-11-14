@@ -1,0 +1,287 @@
+module Vt.Probe exposing (answers, csiName, csiText, dcsText, oscText)
+
+{-| What the diagnostic log writes of what a program asks the terminal
+(`docs/diagnostics.md` DG6): a control sequence as it is written, `CSI ? 6
+n`, with the name of what it asks for, and the answers as they are written,
+their control bytes named, `ESC[?6;1R`. Nothing a program shows is written:
+an OSC's text, a title or a clipboard answered, and a DCS's body are given
+by their size.
+-}
+
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+import Vt.Reason as Reason
+
+
+{-| A CSI sequence as written: its private marker, its parameters, its
+intermediate and its final byte, and what it asks for when it is a
+question. -}
+csiText : Int -> Int -> Int -> Array Int -> String
+csiText final priv inter params =
+    "CSI"
+        ++ (if priv == 0 then
+                ""
+
+            else
+                " " ++ byteText priv
+           )
+        ++ (if Array.isEmpty params then
+                ""
+
+            else
+                " " ++ String.join " ; " (Array.map String.fromInt params)
+           )
+        ++ (if inter == 0 then
+                ""
+
+            else
+                " " ++ byteText inter
+           )
+        ++ " "
+        ++ byteText final
+        ++ (when csiName final priv inter params is
+                Just name ->
+                    " (" ++ name ++ ")"
+
+                Nothing ->
+                    meant Reason.NotKnown ""
+           )
+
+
+{-| What a CSI sequence asks the terminal for, when it is a question an
+application might wait on: the device attributes, the status and cursor
+reports, DECRQM, XTVERSION, XTWINOPS' reports, the keyboard's flags and
+the rest a terminal is asked. -}
+csiName : Int -> Int -> Int -> Array Int -> Maybe String
+csiName final priv inter params =
+    let
+        p =
+            Array.first params |> Maybe.withDefault (meant Reason.NotSet 0)
+    in
+    if final == 0x63 && inter == 0 then
+        if priv == 0 then
+            Just "primary device attributes, DA1"
+
+        else if priv == 0x3E then
+            Just "secondary device attributes, DA2"
+
+        else if priv == 0x3D then
+            Just "tertiary device attributes, DA3"
+
+        else
+            Nothing
+
+    else if final == 0x6E && inter == 0 then
+        if priv == 0 && p == 5 then
+            Just "status, DSR"
+
+        else if priv == 0 && p == 6 then
+            Just "cursor position, CPR"
+
+        else if priv == 0x3F && p == 6 then
+            Just "cursor position, DECXCPR"
+
+        else if priv == 0x3F && p == 996 then
+            Just "color scheme"
+
+        else if priv == 0x3F && p == 998 then
+            Just "visibility"
+
+        else if priv == 0x3F then
+            Just ("DEC status " ++ String.fromInt p)
+
+        else
+            Nothing
+
+    else if final == 0x70 && inter == 0x24 then
+        if priv == 0x3F then
+            Just ("DEC mode " ++ String.fromInt p ++ ", DECRQM")
+
+        else
+            Just ("ANSI mode " ++ String.fromInt p ++ ", DECRQM")
+
+    else if final == 0x71 && priv == 0x3E && inter == 0 then
+        Just "name and version, XTVERSION"
+
+    else if final == 0x74 && priv == 0 && inter == 0 && p >= 11 && p <= 21 then
+        Just ("window report " ++ String.fromInt p ++ ", XTWINOPS")
+
+    else if final == 0x75 && priv == 0x3F && inter == 0 then
+        Just "keyboard flags, kitty"
+
+    else if final == 0x78 && priv == 0 && inter == 0 then
+        Just "terminal parameters, DECREQTPARM"
+
+    else if final == 0x79 && priv == 0 && inter == 0x2A then
+        Just "rectangle checksum, DECRQCRA"
+
+    else if final == 0x6D && priv == 0x3F && inter == 0 then
+        Just "key modifier options, XTQMODKEYS"
+
+    else if final == 0x53 && priv == 0x3F && inter == 0 then
+        Just "graphics attributes, XTSMGRAPHICS"
+
+    else
+        Nothing
+
+
+{-| An OSC as the log writes it: its number, and what follows only when it
+is a question made of numbers and `?`, `OSC 4 ; 1 ; ?`; otherwise that
+text's size, since a title or a clipboard is the program's. -}
+oscText : String -> String -> String
+oscText number rest =
+    let
+        query =
+            String.contains "?" rest && String.all (\c -> Char.isDigit c || c == ';' || c == '?' || c == 'c' || c == 'p' || c == 's') rest
+
+        named =
+            when number is
+                "4" ->
+                    " (palette color)"
+
+                "10" ->
+                    " (foreground color)"
+
+                "11" ->
+                    " (background color)"
+
+                "12" ->
+                    " (cursor color)"
+
+                "52" ->
+                    " (clipboard)"
+
+                _ ->
+                    ""
+    in
+    "OSC "
+        ++ number
+        ++ (if rest == "" then
+                ""
+
+            else if query then
+                " ; " ++ String.join " ; " (String.split ";" rest)
+
+            else
+                " ; <" ++ String.fromInt (String.count rest) ++ " characters>"
+           )
+        ++ named
+
+
+{-| A DCS as the log writes it: DECRQSS with the setting asked for, XTGETTCAP
+with the capabilities' names read from their hex, any other by its
+introducer and its size. -}
+dcsText : String -> String
+dcsText text =
+    if String.startsWith "$q" text then
+        "DCS $ q " ++ String.dropFirst 2 text ++ " (setting, DECRQSS)"
+
+    else if String.startsWith "+q" text then
+        "DCS + q " ++ String.join " ; " (Array.map unhex (String.split ";" (String.dropFirst 2 text))) ++ " (capabilities, XTGETTCAP)"
+
+    else
+        "DCS " ++ String.takeFirst 2 text ++ " <" ++ String.fromInt (String.count text) ++ " characters>"
+
+
+{-| A capability's name from its hex, `544E` as `TN`; the hex itself when it
+is not printable ASCII. -}
+unhex : String -> String
+unhex h =
+    let
+        digit c =
+            if Char.isDigit c then
+                Char.toCode c - 48
+
+            else if c >= 'a' && c <= 'f' then
+                Char.toCode c - 87
+
+            else if c >= 'A' && c <= 'F' then
+                Char.toCode c - 55
+
+            else
+                -1
+
+        pairs =
+            String.toArray h
+
+        codes =
+            Array.indexedMap (\i c -> { i = i, d = digit c }) pairs
+                |> Array.foldl
+                    (\x acc ->
+                        if modBy 2 x.i == 0 then
+                            { acc | high = x.d }
+
+                        else
+                            { acc | out = Array.pushLast (acc.high * 16 + x.d) acc.out }
+                    )
+                    { high = 0, out = [] }
+                |> .out
+    in
+    if modBy 2 (Array.length pairs) == 0 && Array.all (\c -> c >= 0x20 && c < 0x7F) codes && Array.all (\c -> digit c >= 0) pairs then
+        String.fromArray (Array.mapAndKeepJust Char.fromCode codes)
+
+    else
+        h
+
+
+{-| The answers as written, `ESC[?62;22c`, each control byte named, `\x07`;
+or, for an answer that carries what a program put there (a title, a
+clipboard), only its size. -}
+answers : Bool -> Array Bytes -> String
+answers private given =
+    String.join ", "
+        (Array.map
+            (\b ->
+                if private then
+                    "<" ++ String.fromInt (Bytes.length b) ++ " bytes>"
+
+                else
+                    written b
+            )
+            given
+        )
+
+
+written : Bytes -> String
+written b =
+    writtenFrom b 0 ""
+
+
+writtenFrom : Bytes -> Int -> String -> String
+writtenFrom b i acc =
+    if i < 0 || i >= Bytes.length b then
+        acc
+
+    else
+        let
+            c =
+                UInt8.toInt (Bytes.getProven i b)
+        in
+        writtenFrom b
+            (i + 1)
+            (acc
+                ++ (if c == 0x1B then
+                        "ESC"
+
+                    else if c >= 0x20 && c < 0x7F && c /= 0x5C then
+                        byteText c
+
+                    else
+                        "\\x" ++ hex2 c
+                   )
+            )
+
+
+hex2 : Int -> String
+hex2 n =
+    let
+        d x =
+            String.slice x (x + 1) "0123456789abcdef"
+    in
+    d (Bitwise.and 15 (Bitwise.shiftRightZfBy 4 n)) ++ d (Bitwise.and 15 n)
+
+
+byteText : Int -> String
+byteText c =
+    String.fromArray (Array.mapAndKeepJust Char.fromCode [ c ])

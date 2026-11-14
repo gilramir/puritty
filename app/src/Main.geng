@@ -1222,7 +1222,23 @@ embedderOf config =
     { look = Just { foreground = config.foreground, background = config.background }
     , attributes = "\u{001B}[?62;21;22;52c"
     , version = "puritty 0.1.0"
+    , listening = listeningOf config
     }
+
+
+{-| What the terminals tell the diagnostic log of the programs
+(`docs/diagnostics.md` DG6): nothing while it is off; their questions and
+the answers while it is on; the sequences ignored too with `only = "app"`. -}
+listeningOf : Config -> Int
+listeningOf config =
+    if not config.debugLog then
+        0
+
+    else if config.debugOnly == "app" then
+        2
+
+    else
+        1
 
 
 {-| The queue written as far as the pty takes it. -}
@@ -1935,7 +1951,10 @@ applySettings new m =
         wasLogging =
             m.config.debugLog
     in
-    applyLook new m |> Task.andThen (restoreTurned was) |> Task.andThen (logTurned wasLogging)
+    applyLook new m
+        |> Task.andThen (restoreTurned was)
+        |> Task.andThen (logTurned wasLogging)
+        |> Task.map (\next -> { next | diag = Diag.keeping next.config.debugOnly next.diag })
 
 
 -- THE DIAGNOSTIC LOG (docs/diagnostics.md)
@@ -2014,13 +2033,32 @@ beginLog m =
                                                  , "file " ++ path
                                                  , "nothing typed, pasted or shown is written: keys by name, pastes and output by size"
                                                  ]
+                                                    ++ onlyLines m.config.debugOnly
                                                     ++ header
                                                 )
+                                                |> Diag.keeping m.config.debugOnly
                                         , loggedTab = m.tab.id
                                     }
                                 )
                     )
                 |> Task.andThen (writeLog True)
+
+
+{-| What a log that keeps only a program's questions says at its start
+(`[debug] only`, `docs/diagnostics.md` DG6). -}
+onlyLines : String -> Array String
+onlyLines only =
+    if only == "" then
+        []
+
+    else
+        [ if only == "app" then
+            "keeping only what programs ask the terminal, its answers, and the sequences it ignores"
+
+          else
+            "keeping only what programs ask the terminal, and its answers"
+        , "under tmux -CC, tmux answers its panes' questions itself, so they are not here"
+        ]
 
 
 monthNumber : Time.Month -> Int
@@ -2123,6 +2161,23 @@ logHeader m =
 logLine : String -> String -> (taken m : Model) -> Model
 logLine tag text m =
     { m | diag = Diag.add m.turnMs tag text m.diag }
+
+
+{-| What the terminal heard of the program for the log (DG6): `probe`
+lines, a question and its answer, and `ignore` lines, a sequence the
+terminal does nothing with. -}
+logHeard : Array String -> (taken m : Model) -> Model
+logHeard heard m =
+    Array.foldl
+        (\line acc ->
+            if String.startsWith "probe " line then
+                logLine "probe" (String.dropFirst 6 line) acc
+
+            else
+                logLine "ignore" (String.dropFirst 8 line) acc
+        )
+        m
+        heard
 
 
 {-| The waiting lines appended to the file, when they are due or `now`
@@ -2992,15 +3047,19 @@ feedTerm remote chunk0 ms m =
         pushedBefore =
             Vt.rowsPushed m.term
 
+        -- listening as the diagnostic log is set (DG6), whatever tab
         replied =
-            Vt.takeReplies (Vt.feed decoded.bytes m.term)
+            Vt.takeReplies (Vt.feed decoded.bytes (Vt.listen (listeningOf m.config) m.term))
 
         taken =
             let
                 c =
                     Vt.takeClipboard replied.term
+
+                h =
+                    Vt.takeHeard c.term
             in
-            { term = c.term, replies = replied.replies, clips = c.requests }
+            { term = h.term, replies = replied.replies, clips = c.requests, heard = h.heard }
 
         held =
             syncHeld taken.term
@@ -3049,6 +3108,7 @@ feedTerm remote chunk0 ms m =
                         m.syncSince
             }
             taken.replies
+            |> logHeard taken.heard
         )
 
 

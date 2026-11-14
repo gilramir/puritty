@@ -1,0 +1,63 @@
+module Heard exposing (suite)
+
+{-| What the diagnostic log hears of a program (`docs/diagnostics.md` DG6):
+its questions and the answers, the questions not answered, and with the
+embedder listening at 2 the sequences the terminal does nothing with.
+Nothing while it does not listen.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+listening : Int -> (taken t : Vt.Term) -> Vt.Term
+listening level t =
+    Vt.withEmbedder { look = Nothing, attributes = "\u{001B}[?62;22c", version = "puritty", listening = level } t
+
+
+heard : Int -> String -> Array String
+heard level input =
+    (Vt.takeHeard (feed input (listening level (term 10 5)))).heard
+
+
+suite : U.Suite
+suite =
+    Support.run "Heard"
+        [ { name = "nothing is heard while the log does not listen"
+          , test = \_ -> Expect.equal [] (heard 0 "\u{001B}[c\u{001B}[?2026h\u{001B}]11;?\u{0007}")
+          }
+        , { name = "a question and its answer, as written"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "probe CSI c (primary device attributes, DA1) -> ESC[?62;22c"
+                        , "probe CSI 6 n (cursor position, CPR) -> ESC[1;1R"
+                        , "probe CSI ? 2004 $ p (DEC mode 2004, DECRQM) -> ESC[?2004;2$y"
+                        ]
+                        (heard 1 "\u{001B}[c\u{001B}[6n\u{001B}[?2004$p")
+          }
+        , { name = "a question the terminal does not answer is said so"
+          , test = \_ -> Expect.equal [ "probe CSI 18 t (window report 18, XTWINOPS) -> ESC[8;5;10t", "probe DCS + q TN ; Co (capabilities, XTGETTCAP) -> not answered" ] (heard 1 "\u{001B}[18t\u{001B}P+q544e;436f\u{001B}\\")
+          }
+        , { name = "an OSC question and its answer; a title only by its size"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "probe OSC 4 ; 1 ; ? (palette color) -> ESC]4;1;rgb:cccc/6666/6666\\x07" ]
+                        (heard 2 "\u{001B}]2;secret title\u{0007}\u{001B}]4;1;?\u{0007}")
+          }
+        , { name = "the sequences ignored, only when the log listens for them"
+          , test =
+                \_ ->
+                    Expect.equal
+                        { probes = [], app = [ "ignored DEC mode 7727 set", "ignored CSI 5 }", "ignored OSC 777 ; <15 characters>" ] }
+                        { probes = heard 1 "\u{001B}[?7727h\u{001B}[5}\u{001B}]777;notify;hi;there\u{0007}"
+                        , app = heard 2 "\u{001B}[?7727h\u{001B}[5}\u{001B}]777;notify;hi;there\u{0007}"
+                        }
+          }
+        , { name = "a clipboard read is a question the window answers"
+          , test = \_ -> Expect.equal [ "probe OSC 52 ; c ; ? (clipboard) -> asked of the window" ] (heard 1 "\u{001B}]52;c;?\u{0007}")
+          }
+        ]

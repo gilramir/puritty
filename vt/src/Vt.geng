@@ -17,6 +17,7 @@ module Vt exposing
     , invert
     , keyOptions
     , lineAt
+    , listen
     , mouseModes
     , new
     , paint
@@ -31,6 +32,7 @@ module Vt exposing
     , setPalette
     , setScrollbackBytes
     , takeClipboard
+    , takeHeard
     , takeReplies
     , viewAt
     , viewPainted
@@ -1329,6 +1331,33 @@ takeClipboard t =
             t.osc52
     in
     { term = { t | osc52 = { o | requests = [] } }, requests = requests }
+
+
+{-| The terminal listening for the diagnostic log at `level`
+(`Term.Embedder`'s `listening`, `docs/diagnostics.md` DG6), its other
+embedder's sayings as they were. -}
+listen : Int -> (taken t : Term) -> Term
+listen level t =
+    let
+        e =
+            t.embedder
+    in
+    if e.listening == level then
+        t
+
+    else
+        { t | embedder = { e | listening = level } }
+
+
+{-| What the diagnostic log heard since it was last taken (`docs/diagnostics.md`
+DG6), a line each, `probe …` or `ignored …`, while the embedder listens. -}
+takeHeard : (taken t : Term) -> { term : Term, heard : Array String }
+takeHeard t =
+    let
+        heard =
+            t.heard
+    in
+    { term = { t | heard = [] }, heard = heard }
 
 
 {-| The replies the terminal has to write back to the program, oldest

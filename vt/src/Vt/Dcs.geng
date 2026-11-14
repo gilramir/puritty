@@ -30,6 +30,7 @@ import Vt.Modes exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Print exposing (..)
+import Vt.Probe as Probe
 import Vt.Prompt exposing (..)
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
@@ -93,6 +94,10 @@ stringOf text =
 dcsDispatch : (taken t0 : Term) -> Term
 dcsDispatch t0 =
     let
+        -- the diagnostic log's (DG6), read before the terminal is given on
+        listening =
+            t0.embedder.listening
+
         taken =
             takeString t0
 
@@ -116,7 +121,21 @@ dcsDispatch t0 =
     if String.startsWith "$q" text && String.count text <= 4 then
         -- Ghostty keeps two bytes of a request and drops one longer
         -- unanswered (§VC16)
-        reply ("\u{001B}P" ++ requestStatus (String.dropFirst 2 text) t ++ "\u{001B}\\") t
+        let
+            answer =
+                "\u{001B}P" ++ requestStatus (String.dropFirst 2 text) t ++ "\u{001B}\\"
+        in
+        if listening >= 1 then
+            note ("probe " ++ Probe.dcsText text ++ " -> " ++ Probe.answers False [ Bytes.fromString answer ]) (reply answer t)
+
+        else
+            reply answer t
+
+    else if listening >= 1 && (String.startsWith "$q" text || String.startsWith "+q" text) then
+        note ("probe " ++ Probe.dcsText text ++ " -> not answered") t
+
+    else if listening >= 2 then
+        note ("ignored " ++ Probe.dcsText text) t
 
     else
         t

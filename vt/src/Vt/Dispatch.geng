@@ -31,6 +31,7 @@ import Vt.Osc exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Print exposing (..)
+import Vt.Probe as Probe
 import Vt.Prompt exposing (..)
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
@@ -75,6 +76,54 @@ dispatch final priv inter colons params t =
 
 dispatchRest : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
 dispatchRest final priv inter params t =
+    if heardAt 1 t then
+        probed final priv inter params t
+
+    else
+        dispatchOther final priv inter params t
+
+
+{-| A sequence dispatched while the diagnostic log listens (DG6): what it
+asked and what was answered, or that a question went unanswered. -}
+probed : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
+probed final priv inter params t =
+    let
+        before =
+            Array.length t.replies
+
+        done =
+            dispatchOther final priv inter params t
+
+        answered =
+            Array.dropFirst before done.replies
+
+        -- a title is the program's: only its size
+        private =
+            final == 0x74 && (Array.first params == Just 20 || Array.first params == Just 21)
+    in
+    if not (Array.isEmpty answered) then
+        note ("probe " ++ Probe.csiText final priv inter params ++ " -> " ++ Probe.answers private answered) done
+
+    else if Probe.csiName final priv inter params /= Nothing then
+        note ("probe " ++ Probe.csiText final priv inter params ++ " -> not answered") done
+
+    else
+        done
+
+
+{-| A sequence the terminal does nothing with, said to the diagnostic log
+when it listens for them (DG6). -}
+ignoredCsi : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
+ignoredCsi final priv inter params t =
+    if heardAt 2 t && Probe.csiName final priv inter params == Nothing then
+        note ("ignored " ++ Probe.csiText final priv inter params) t
+
+    else
+        t
+
+
+dispatchOther : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
+dispatchOther final priv inter params t =
     if priv == 0 && inter == 0 then
         dispatchRare final params t
 
@@ -135,7 +184,7 @@ dispatchRest final priv inter params t =
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
 
         else
-            t
+            ignoredCsi final priv inter params t
 
     else if priv == 0 && inter == 0x24 && final == 0x7D && Array.length params == 1 && param 0 0 params <= 1 then
         -- DECSASD: 1 makes the status line the active display, which the
@@ -200,7 +249,7 @@ dispatchRest final priv inter params t =
         cursorStyle (param 0 0 params) t
 
     else
-        t
+        ignoredCsi final priv inter params t
 
 
 {-| The plain sequences `dispatch` does not take itself. Each takes as
@@ -452,7 +501,7 @@ dispatchRare final params t =
         restoreCursor t
 
     else
-        t
+        ignoredCsi final 0 0 params t
 
 
 {-| A count, 1 when there is no parameter, and 0 when it is 0. -}

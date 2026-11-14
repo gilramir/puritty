@@ -40,6 +40,7 @@ import Vt.Modes exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Print exposing (..)
+import Vt.Probe as Probe
 import Vt.Prompt exposing (..)
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
@@ -137,7 +138,16 @@ clipDispatch bel t =
             in
             when request is
                 Just r ->
-                    { cleared | osc52 = { noOsc52 | requests = Array.pushLast r requests } }
+                    let
+                        kept =
+                            { cleared | osc52 = { noOsc52 | requests = Array.pushLast r requests } }
+                    in
+                    -- a read is a question, which the window answers (DG6)
+                    if r.text == Nothing && heardAt 1 kept then
+                        note ("probe OSC 52 ; " ++ String.fromArray (Array.mapAndKeepJust Char.fromCode [ p.letter ]) ++ " ; ? (clipboard) -> asked of the window") kept
+
+                    else
+                        kept
 
                 Nothing ->
                     meant Reason.FromOutside cleared
@@ -166,6 +176,13 @@ keepByte b t =
 oscDispatch : String -> (taken t0 : Term) -> Term
 oscDispatch end t0 =
     let
+        -- the diagnostic log's (DG6), read before the terminal is given on
+        listening =
+            t0.embedder.listening
+
+        before =
+            Array.length t0.replies
+
         taken =
             takeString t0
 
@@ -195,7 +212,60 @@ oscDispatch end t0 =
         -- of it for each command the core takes, and drops a longer one
         long =
             Array.length taken.text - String.count (Maybe.withDefault "" (Array.first parts)) - 1 > oscMax
+
+        done =
+            oscCommand end long command parts rest t
     in
+    if listening == 0 then
+        done
+
+    else
+        let
+            numberText =
+                Maybe.withDefault "" (Array.first parts)
+
+            line =
+                Probe.oscText numberText rest
+
+            answered =
+                Array.dropFirst before done.replies
+
+            asked =
+                String.contains "?" rest
+        in
+        if not (Array.isEmpty answered) then
+            note ("probe " ++ line ++ " -> " ++ Probe.answers False answered) done
+
+        else if asked then
+            note ("probe " ++ line ++ " -> not answered") done
+
+        else if listening >= 2 && not (oscKnown long command parts) then
+            note ("ignored " ++ line) done
+
+        else
+            done
+
+
+{-| Whether the terminal does something with an OSC (DG6): a title, the
+palette and the dynamic colors, a prompt's marks. -}
+oscKnown : Bool -> Maybe Int -> Array String -> Bool
+oscKnown long command parts =
+    when (if long then
+            Nothing
+
+          else
+            command
+         ) is
+        Just c ->
+            c == 0 || c == 2 || c == 4 || c == 104 || c == 133 || c == 9 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
+
+        Nothing ->
+            -- not a command's number
+            meant Reason.FromOutside False
+
+
+oscCommand : String -> Bool -> Maybe Int -> Array String -> String -> (taken t : Term) -> Term
+oscCommand end long command parts rest t =
     when (if long then
             Nothing
 

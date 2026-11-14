@@ -125,3 +125,60 @@ typed.
 Enter, with the log on: every search command reads `'<1 chars>'` or
 `'<2 chars>'`, and no line quotes the typed `3` or `5`. App tests 141
 (four new for `Diag.command`).
+
+## DG6 · What a program asks the terminal, for its developer (2026-11-14)
+
+Gilbert, 2026-11-14: an application's developer may want only the probes
+a program sends the terminal; and, with them, the sequences puritty
+ignores. Both are options of the log.
+
+**The setting.** `[debug] only`, beside `log`: `"probes"` keeps only the
+`probe` lines; `"app"` the `probe` and `ignore` lines; unset, everything,
+`probe` lines included. Start, marks, errors and end are always kept
+(`Diag.keeping`). Its own setting rather than a value of `log`, so that the
+settings window has a switch and a choice, and the file one type a key.
+
+**`probe` lines** (`Vt.Probe`, at the terminal's three dispatchers): a
+question as written, the name of what it asks, and the answers as written,
+their control bytes named:
+
+```
+000016 10:03:01.129 probe  CSI c (primary device attributes, DA1) -> ESC[?62;21;22;52c
+000018 10:03:01.129 probe  CSI 18 t (window report 18, XTWINOPS) -> ESC[8;24;80t
+000019 10:03:01.129 probe  OSC 11 ; ? (background color) -> ESC]11;rgb:1d1d/1f1f/2121\x07
+000020 10:03:01.129 probe  CSI > q (name and version, XTVERSION) -> ESCP>|puritty 0.1.0ESC\x5c
+000021 10:03:01.129 probe  DCS + q TN (capabilities, XTGETTCAP) -> not answered
+```
+
+A CSI is caught where `dispatch` hands what is not SGR or CUP to
+`dispatchRest`, which now tests the embedder's `listening` first: the two
+sequences a program sends most go by unchanged. A question the terminal
+does not answer is said so: one `Probe.csiName` names, a DCS `$q` or `+q`,
+an OSC with `?`. An OSC 52 read is asked of the window, and said so.
+
+**`ignore` lines**: a CSI that reaches a dispatcher's last branch, a DEC or
+ANSI mode the terminal does nothing with (`ignored DEC mode 7727 set`), an
+OSC no command takes, a DCS other than `$q`. A mode the terminal only
+records, as DECRQM reports it (`knownPrivate`), is not ignored.
+
+**Nothing shown is written** (DG2): an OSC's text is written only when it
+is a question of numbers and `?` (`OSC 4 ; 1 ; ?`), otherwise by its size;
+a title asked for (`CSI 20 t`, `21 t`) is answered by its size; a DCS's
+body by its size.
+
+**How it reaches the log**: the terminal keeps its lines (`heard`) while
+`Embedder.listening` is 1 or 2, set from `[debug] log` and `only` on every
+read (`Vt.listen`), so a hidden tab listens as the shown one; the loop
+takes them with the replies (`Vt.takeHeard`) and writes them under `probe`
+and `ignore`. A tmux pane's terminal under `-CC` never listens: tmux
+answers its panes, and the log's start says so when `only` is set.
+
+**Checked:** vt tests 100 (six in `Heard`): nothing while not listening; a
+question and its answer; a question not answered; an OSC question
+answered, a title not written; ignored sequences only at 2; a clipboard
+read. App tests 175: the log keeping only probes, its start and marks; and
+keeping everything. And run: puritty with `log = true`, `only = "app"`,
+its shell printing DA1, mode 2026 and 7727 set, XTWINOPS 18, OSC 11 ?,
+XTVERSION and XTGETTCAP: the lines above and `ignore DEC mode 7727 set`
+(2026 is the terminal's, so not ignored), and no other line but the start
+and end.

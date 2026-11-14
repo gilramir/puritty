@@ -143,6 +143,7 @@ fresh config =
     , high = 0xBF
     , xtChecksum = 23
     , replies = []
+    , heard = []
     }
 
 
@@ -239,8 +240,34 @@ setPrivate p on t =
                     4
         }
 
-    else
+    else if Array.member p knownPrivate then
         { t | modes = Dict.set p on t.modes }
+
+    else
+        -- recorded, so DECRQM answers what was set, but nothing done: said
+        -- to the diagnostic log when it listens for it (DG6)
+        modeIgnored ("DEC mode " ++ String.fromInt p) on { t | modes = Dict.set p on t.modes }
+
+
+{-| A mode the terminal does nothing with, set or reset, said to the
+diagnostic log when it listens for the sequences it ignores (DG6). -}
+modeIgnored : String -> Bool -> (taken t : Term) -> Term
+modeIgnored mode on t =
+    if heardAt 2 t then
+        note
+            ("ignored "
+                ++ mode
+                ++ (if on then
+                        " set"
+
+                    else
+                        " reset"
+                   )
+            )
+            t
+
+    else
+        t
 
 
 {-| The visibility report, `CSI ? 999 ; 1 n`, "potentially visible", sent
@@ -428,7 +455,7 @@ setAnsi p on t =
         { t | modes = Dict.set (ansiKey p) on t.modes }
 
     else
-        t
+        modeIgnored ("ANSI mode " ++ String.fromInt p) on t
 
 
 {-| Where `modes` keeps an ANSI mode the core only records, apart from the

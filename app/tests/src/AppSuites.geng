@@ -1317,6 +1317,23 @@ diagnostics =
         , { name = "lines of a paste", test = \_ -> Expect.equal [ 0, 1, 2, 2 ] [ Diag.lines (Bytes.fromString ""), Diag.lines (Bytes.fromString "a"), Diag.lines (Bytes.fromString "a\nb"), Diag.lines (Bytes.fromString "a\nb\n") ] }
         , { name = "the clock", test = \_ -> Expect.equal "14:05:33.120" (Diag.clock (((14 * 60 + 5) * 60 + 33) * 1000 + 120)) }
         , { name = "a line while the log is off is dropped", test = \_ -> Expect.equal [] (Diag.add 5 "key" "Enter" Diag.off).lines }
+        , { name = "a log keeping only probes keeps them, its marks and its start, and drops the rest"
+          , test =
+                \_ ->
+                    let
+                        log =
+                            Diag.start "x.log" { ms = 0, dayMs = 0 } [ "begun" ]
+                                |> Diag.keeping "probes"
+                                |> Diag.add 0 "key" "Enter"
+                                |> Diag.add 0 "probe" "CSI c -> ESC[?62;22c"
+                                |> Diag.add 0 "tmux<" "output %1 80 bytes"
+                                |> Diag.add 0 "mark" "MARK 1"
+                    in
+                    Expect.equal [ "start  begun", "probe  CSI c -> ESC[?62;22c", "mark   MARK 1" ] (Array.map (String.dropFirst 20) log.lines)
+          }
+        , { name = "a log keeping everything keeps every line"
+          , test = \_ -> Expect.equal 3 (Array.length (Diag.start "x.log" { ms = 0, dayMs = 0 } [ "begun" ] |> Diag.add 0 "key" "Enter" |> Diag.add 0 "probe" "CSI c").lines)
+          }
         ]
 
 
