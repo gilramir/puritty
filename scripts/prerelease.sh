@@ -92,7 +92,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
         # the shared profile only where the image's clang is the devbox's
         podman image exists "puritty-build-$distro" || podman build -q -t "puritty-build-$distro" "app/distro/$distro"
         theirs=$(podman run --rm "puritty-build-$distro" clang --version | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)
-        ours=$(clang --version | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)
+        ours=$(/home/gram/prj/geng-lang/.devbox/nix/profile/default/bin/clang --version | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)
         if [ "$theirs" = "$ours" ]; then
             uses=$profile
         else
