@@ -434,3 +434,41 @@ This goes one step past C2: not only broadcast targets but every tab in a
 process of its own. It is a change to puritty's structure, so a measure
 comes before a choice: a key's round trip and a full screen's update
 across a local socket and a named pipe, against today's in-process path.
+
+## BC11 · One window after all: Gilbert's leaning, not decided (2026-11-14)
+
+*Gilbert, 2026-11-14, after asking why the tiled view (B) was proposed
+when separate windows are hard: he is leaning toward dropping BC9's
+requirement that each target be a window of its own, and tiling the
+targets in one window (BC7's B). Recorded as a leaning; **not
+finalized**, nothing built.*
+
+**Why B is not tear-out.** Both look like a tab leaving the tab bar, but
+in B the tab never leaves its window or its process: the tiled tabs are
+the window's own, hidden today and drawn in tiles then. Tear-out (C1, C3)
+is hard for what has to move, the window packages' file-level globals
+(BC9) or a live pty, ConPTY or ssh session, not for tracking window ids,
+which X11 and Win32 hand out.
+
+**What B needs:** the `Model`'s one shown tab becomes a grid of tiles,
+each with its terminal, size, selection, scroll and preedit (the biggest
+part, at the center of `Main.geng` and the ownership checker's shapes);
+`Vt.View` drawing several terminals in one frame, measured against the
+latency record; each tab resized to its tile and back (BC8.2); the
+tiles' labels, source mark and leave-out click. The window packages,
+Geng's `os` and the processes stay as they are.
+
+**Against C2:**
+
+| | B, one window | C2, a window per target |
+|---|---|---|
+| tabs already open join | yes | no: each host opened again |
+| targets over several monitors | no | yes |
+| where the work is | the `Model` and drawing | an `os` listener, a protocol, the same-user check |
+| a crash takes | every target | one window |
+| how many fit | crowded past about 8 to 12 tiles | what the monitors hold |
+
+B's grid is also what split panes outside tmux would build on; C2's
+connection is what BC10's process per session would. Neither is clearly
+less work: the choice is joining the tabs already open (B) against
+spreading the targets over monitors (C2).
