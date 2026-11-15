@@ -1,12 +1,16 @@
 module FakeTmux exposing
     ( Pane
+    , Told
     , World
+    , addWindow
     , answer
     , closePane
+    , closeWindow
     , copyState
     , enterCopy
     , known
     , startBytes
+    , switchWindow
     , world
     )
 
@@ -84,7 +88,16 @@ type alias World =
     -- panes that float (3.7), each with its box, drawn over the tiled ones
     -- in the layout (`"z"`), the first the bottom one
     , floats : Array { id : Int, x : Int, y : Int, w : Int, h : Int }
+    -- the window shown, whose panes are `panes`; and the session's others,
+    -- each with its own (TK10.6)
+    , window : { id : Int, index : Int, name : String }
+    , others : Array Other
     }
+
+
+{-| A window of the session not shown, with its panes and its active one. -}
+type alias Other =
+    { id : Int, index : Int, name : String, panes : Array Pane, active : Int }
 
 
 {-| A window of `cols` by `rows` with one pane, `%0`, showing `lines`, the
@@ -107,6 +120,8 @@ world w =
     , rules = w.version
     , files = Dict.empty
     , floats = []
+    , window = { id = 0, index = 0, name = "sh" }
+    , others = []
     }
 
 
@@ -123,10 +138,18 @@ known =
     [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option" ]
 
 
+{-| A block tmux wrote: the command it answers (its words as tmux read
+them, joined by spaces), its flags, and whether it is an `%end`. -}
+type alias Told =
+    { command : String, flags : Int, ok : Bool }
+
+
 {-| A command line answered as the world's `rules` say (TK10): its
 commands' blocks and what they made tmux tell the client
-(`%pane-mode-changed`, subscriptions). -}
-answer : String -> World -> { world : World, bytes : Bytes }
+(`%pane-mode-changed`, subscriptions), and each block's command, for a
+test to hold puritty's questions to (`told`). A line refused whole is
+told as its first command's failing. -}
+answer : String -> World -> { world : World, bytes : Bytes, told : Array Told }
 answer line w0 =
     let
         r =
@@ -151,29 +174,33 @@ answer line w0 =
     if String.trim line == "" then
         -- 2.x reads a blank line as a command and refuses it; 3.0 skips it
         if r.blankFails then
-            { world = { heard | number = heard.number + 1 }, bytes = Bytes.fromString (block heard.number 1 False [ "parse error: (null)" ]) }
+            { world = { heard | number = heard.number + 1 }, bytes = Bytes.fromString (block heard.number 1 False [ "parse error: (null)" ]), told = [ { command = "", flags = 1, ok = False } ] }
 
         else
-            { world = heard, bytes = Bytes.empty }
+            { world = heard, bytes = Bytes.empty, told = [] }
 
     else
         when refusal is
             Just why ->
                 -- refused whole, before any of it runs
-                { world = { heard | number = heard.number + 1 }, bytes = Bytes.fromString (block heard.number 1 False [ why ]) }
+                { world = { heard | number = heard.number + 1 }
+                , bytes = Bytes.fromString (block heard.number 1 False [ why ])
+                , told = [ { command = Array.first commands |> Maybe.map (String.join " ") |> Maybe.withDefault "", flags = 1, ok = False } ]
+                }
 
             Nothing ->
                 let
                     done =
-                        runAll r 1 commands { w = heard, text = "", notices = [], later = [] }
+                        runAll r 1 commands { w = heard, text = "", notices = [], later = [], told = [] }
 
                     -- `if-shell -b`'s commands, run when its shell is done,
                     -- after the line: not this client's (measured, every tmux)
                     afterwards =
-                        runAll r 0 done.later { w = done.w, text = "", notices = [], later = [] }
+                        runAll r 0 done.later { w = done.w, text = "", notices = [], later = [], told = [] }
                 in
                 { world = afterwards.w
                 , bytes = Bytes.fromString (done.text ++ noticed done.notices ++ afterwards.text ++ noticed afterwards.notices)
+                , told = done.told ++ afterwards.told
                 }
 
 
@@ -229,7 +256,7 @@ tenths version =
 
 
 type alias Answering =
-    { w : World, text : String, notices : Array String, later : Array (Array String) }
+    { w : World, text : String, notices : Array String, later : Array (Array String), told : Array Told }
 
 
 {-| Commands run in turn, a block each with `flags`, until one fails;
@@ -264,21 +291,24 @@ runAll r flags commands start =
                                         0
                                     )
                                     ran.nested
-                                    { w = numbered, text = "", notices = [], later = [] }
+                                    { w = numbered, text = "", notices = [], later = [], told = [] }
+
+                            told =
+                                acc.told ++ [ { command = String.join " " words, flags = flags, ok = ran.ok } ] ++ inner.told
 
                             notices =
                                 ran.notices ++ inner.notices
                         in
                         if r.noticesEach then
-                            { acc | w = inner.w, text = acc.text ++ own ++ inner.text ++ noticed notices, later = acc.later ++ ran.later ++ inner.later, stopped = not ran.ok }
+                            { acc | w = inner.w, text = acc.text ++ own ++ inner.text ++ noticed notices, later = acc.later ++ ran.later ++ inner.later, told = told, stopped = not ran.ok }
 
                         else
-                            { acc | w = inner.w, text = acc.text ++ own ++ inner.text, notices = acc.notices ++ notices, later = acc.later ++ ran.later ++ inner.later, stopped = not ran.ok }
+                            { acc | w = inner.w, text = acc.text ++ own ++ inner.text, notices = acc.notices ++ notices, later = acc.later ++ ran.later ++ inner.later, told = told, stopped = not ran.ok }
                 )
-                { w = start.w, text = start.text, notices = start.notices, later = start.later, stopped = False }
+                { w = start.w, text = start.text, notices = start.notices, later = start.later, told = start.told, stopped = False }
                 commands
     in
-    { w = done.w, text = done.text, notices = done.notices, later = done.later }
+    { w = done.w, text = done.text, notices = done.notices, later = done.later, told = done.told }
 
 
 {-| Why tmux refuses a command before running its line: a name it does not
@@ -360,7 +390,7 @@ runOne r words w =
                     String.startsWith "%" t
                         && (when String.toInt (String.dropFirst 1 t) is
                                 Just id ->
-                                    not (Array.any (\p -> p.id == id) w.panes)
+                                    not (Array.any (\p -> p.id == id) (allPanes w))
 
                                 Nothing ->
                                     False
@@ -551,10 +581,20 @@ one words w =
             reply (displayed w target args)
 
         "list-windows" ->
-            reply [ expand (vars w (activePane w)) format ]
+            -- the session's windows, by index
+            reply
+                (windowsOf w
+                    |> Array.sortBy .index
+                    |> Array.map (\o -> expand (vars (viewed o w) (activePane (viewed o w))) format)
+                )
 
         "list-panes" ->
-            reply (Array.map (\p -> expand (vars w p) format) w.panes)
+            if String.contains "s" args.bools then
+                -- every window's panes
+                reply (windowsOf w |> Array.mapAndFlatten (\o -> Array.map (\p -> expand (vars (viewed o w) p) format) o.panes))
+
+            else
+                reply (Array.map (\p -> expand (vars w p) format) w.panes)
 
         "list-sessions" ->
             reply [ expand (vars w (activePane w)) format ]
@@ -662,6 +702,90 @@ parsed words =
             step { at = 0, bools = "", values = Dict.empty, rest = [], restOnly = False }
     in
     { bools = done.bools, values = done.values, rest = done.rest }
+
+
+{-| The session's windows, the shown one first. -}
+windowsOf : World -> Array Other
+windowsOf w =
+    Array.pushFirst { id = w.window.id, index = w.window.index, name = w.window.name, panes = w.panes, active = w.active } w.others
+
+
+{-| The world as it would be with `o` shown, for its variables. -}
+viewed : Other -> World -> World
+viewed o w =
+    { w | window = { id = o.id, index = o.index, name = o.name }, panes = o.panes, active = o.active, others = [] }
+
+
+allPanes : World -> Array Pane
+allPanes w =
+    Array.mapAndFlatten .panes (windowsOf w)
+
+
+{-| Another client shows window `id` (`select-window`): it is the shown
+one, and tmux says so (`%session-window-changed`). Nothing for a window the
+session has not. -}
+switchWindow : Int -> World -> { world : World, notices : Array String }
+switchWindow id w =
+    when Array.findFirst (\o -> o.id == id) w.others is
+        Just found ->
+            let
+                o =
+                    found.value
+
+                was =
+                    { id = w.window.id, index = w.window.index, name = w.window.name, panes = w.panes, active = w.active }
+            in
+            { world = { w | window = { id = o.id, index = o.index, name = o.name }, panes = o.panes, active = o.active, others = Array.pushLast was (Array.keepIf (\x -> x.id /= id) w.others) }
+            , notices = [ "%session-window-changed $0 @" ++ String.fromInt id ]
+            }
+
+        Nothing ->
+            { world = w, notices = [] }
+
+
+{-| A window made by another client (`new-window -d`), with one pane. -}
+addWindow : Int -> Int -> World -> { world : World, notices : Array String }
+addWindow id pane w =
+    let
+        first =
+            activePane w
+
+        index =
+            1 + Array.foldl (\o m -> max m o.index) w.window.index w.others
+    in
+    { world = { w | others = Array.pushLast { id = id, index = index, name = "sh", panes = [ { first | id = pane, lines = [], mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 } ], active = pane } w.others }
+    , notices = [ "%window-add @" ++ String.fromInt id ]
+    }
+
+
+{-| A window closed (its last pane's program exited, or `kill-window`):
+the shown one, the next window shown in its place (`%window-close`, then
+`%session-window-changed`); another, said gone. Nothing for the last window,
+whose closing ends the session, or one the session has not. -}
+closeWindow : Int -> World -> { world : World, notices : Array String }
+closeWindow id w =
+    if id == w.window.id then
+        when Array.first w.others is
+            Just next ->
+                let
+                    switched =
+                        switchWindow next.id w
+
+                    after =
+                        switched.world
+                in
+                { world = { after | others = Array.keepIf (\o -> o.id /= id) after.others }
+                , notices = Array.pushFirst ("%window-close @" ++ String.fromInt id) switched.notices
+                }
+
+            Nothing ->
+                { world = w, notices = [] }
+
+    else if Array.any (\o -> o.id == id) w.others then
+        { world = { w | others = Array.keepIf (\o -> o.id /= id) w.others }, notices = [ "%window-close @" ++ String.fromInt id ] }
+
+    else
+        { world = w, notices = [] }
 
 
 activePane : World -> Pane
@@ -1216,7 +1340,7 @@ varsOf w p name =
                 "%" ++ n p.id
 
             "window_id" ->
-                "@0"
+                "@" ++ n w.window.id
 
             "session_id" ->
                 "$0"
@@ -1225,10 +1349,10 @@ varsOf w p name =
                 "main"
 
             "window_name" ->
-                "sh"
+                w.window.name
 
             "window_index" ->
-                "0"
+                n w.window.index
 
             "window_active" ->
                 "1"
@@ -1243,7 +1367,7 @@ varsOf w p name =
                 "1"
 
             "session_windows" ->
-                "1"
+                n (1 + Array.length w.others)
 
             "session_grouped" ->
                 "0"

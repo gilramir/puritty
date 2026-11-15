@@ -1,5 +1,6 @@
 module TmuxMode exposing
-    ( State
+    ( Asked
+    , State
     , activeMode
     , anyMotion
     , bells
@@ -86,9 +87,12 @@ type alias State =
     , modal : Bool
     -- the window's picture, made of the panes (`Vt.compose`)
     , canvas : Vt.Term
-    -- what each command sent waits for in its reply, in the order sent:
-    -- tmux answers a client's commands in turn (docs/tmux.md TM5.2)
-    , expecting : Array Expect
+    -- what each command sent waits for in its reply, in the order sent,
+    -- with the command and the number of the line it went on: tmux answers
+    -- a client's commands in turn (docs/tmux.md TM5.2), and ends a line at
+    -- its first that fails (docs/tmux-checks.md TK10); and the lines sent
+    , expecting : Array Asked
+    , linesSent : Int
     -- what tmux said of each pane on attach, for its capture
     , info : Dict Int PaneInfo
     -- a floating pane being moved or resized by its box, and the pane a
@@ -585,6 +589,12 @@ type alias Drag =
     }
 
 
+{-| A command sent: what its reply is for, the command, and the number of
+the line it went on, which the commands sent together share (TK10). -}
+type alias Asked =
+    { expect : Expect, command : String, line : Int }
+
+
 {-| What a command's reply is for. -}
 type Expect
     = ForWindow
@@ -635,9 +645,6 @@ type Expect
     -- tmux 3.2, and every block before this one's is theirs
     -- (docs/tmux-checks.md TK10)
     | ForFence
-    -- a command sent on the same line as the one before it: tmux runs none
-    -- of a line's commands after one that fails, and answers none (TK10)
-    | Then Expect
 
 
 {-| A pane as `list-panes` describes it on attach (TM5.8), and the main
@@ -670,6 +677,7 @@ idle _ =
     , modal = False
     , canvas = blank 1 1
     , expecting = []
+    , linesSent = 0
     , info = Dict.empty
     , drag = Nothing
     , grab = Nothing
@@ -787,10 +795,10 @@ traced e acc =
         _ ->
             let
                 next =
-                    Array.first acc.state.expecting
+                    Array.first acc.state.expecting |> Maybe.map .expect
 
                 line =
-                    describe (Maybe.map unwrapped next) e
+                    describe next e
             in
             { (endRun acc) | trace = acc.trace ++ line }
 
@@ -1175,9 +1183,6 @@ expectName x =
         ForFence ->
             "the end of a command's commands"
 
-        Then e ->
-            expectName e ++ " (on the line before's)"
-
 
 {-| A pane's line in a mark. -}
 paneSaid : State -> Int -> String
@@ -1364,7 +1369,7 @@ diagnose s =
                     ""
 
                 else
-                    ": " ++ String.join "; " (Array.map expectName (Array.takeFirst 6 s.expecting))
+                    ": " ++ String.join "; " (Array.map (\a -> expectName a.expect) (Array.takeFirst 6 s.expecting))
                )
         , "  open: "
             ++ (if Array.isEmpty open then
@@ -2000,8 +2005,11 @@ reply r acc =
 
     else
         let
+            head =
+                Array.first acc.state.expecting
+
             expect =
-                Maybe.withDefault (meant Reason.FromOutside ForNothing) (Array.first acc.state.expecting)
+                Maybe.map .expect head |> Maybe.withDefault (meant Reason.FromOutside ForNothing)
         in
         if expect == ForFence && Array.map Bytes.toStringLossy r.lines /= [ fenceWord ] then
             -- a block of the commands a command ran, before the fence after
@@ -2019,39 +2027,20 @@ reply r acc =
                 -- a command that failed ends its line: the commands after
                 -- it there are not run, and answered as failed with nothing
                 -- said (TK10)
+                line =
+                    Maybe.map .line head |> Maybe.withDefault (meant Reason.FromOutside -1)
+
                 dropped =
                     if r.ok then
                         []
 
                     else
-                        Array.takeFirst (Array.findFirst (\e -> not (onLine e)) rest |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore (Array.length rest))) rest
+                        Array.takeFirst (Array.findFirst (\a -> a.line /= line) rest |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore (Array.length rest))) rest
 
                 popped =
                     { acc | state = { st | expecting = Array.dropFirst (Array.length dropped) rest } }
             in
-            Array.foldl (\e a -> replied e False [] a) (replied expect r.ok r.lines popped) dropped
-
-
-{-| What a reply is for, without its `Then`. -}
-unwrapped : Expect -> Expect
-unwrapped e =
-    when e is
-        Then inner ->
-            unwrapped inner
-
-        _ ->
-            e
-
-
-{-| Whether an expectation is a command's on the line of the one before. -}
-onLine : Expect -> Bool
-onLine e =
-    when e is
-        Then _ ->
-            True
-
-        _ ->
-            False
+            Array.foldl (\a acc2 -> replied a.expect False [] acc2) (replied expect r.ok r.lines popped) dropped
 
 
 {-| What the fence after a command that runs commands prints (TK10). -}
@@ -2962,9 +2951,6 @@ replied expect ok lines acc =
 
         ForFence ->
             acc
-
-        Then e ->
-            replied e ok lines acc
 
 
 {-| A pane's state and both its captures, for one line: made again from
@@ -5112,38 +5098,33 @@ runsCommands line =
             )
 
 
-{-| Commands sent on one line, `a ; b`: each after the first marked as on
-its line, since a failing one ends it (TK10). -}
+{-| Commands sent on one line, `a ; b`: one line's number for all, since
+a failing one ends it (TK10). -}
 expectedLine : Array { command : String, expect : Expect } -> (taken s : State) -> State
 expectedLine list s =
-    expected
-        (Array.indexedMap
-            (\i c ->
-                if i == 0 then
-                    c
-
-                else
-                    { c | expect = Then c.expect }
-            )
-            list
-        )
-        s
+    awaited (Array.map (\c -> { expect = c.expect, command = c.command, line = s.linesSent }) list) 1 s
 
 
-{-| Commands' replies waited for, in order; the user's own commands
-(`ForRan`) remembered, the last 50, so that tmux's message log can show
-them and not puritty's others (TM65). -}
+{-| Commands' replies waited for, each sent on its own line, in order. -}
 expected : Array { command : String, expect : Expect } -> (taken s : State) -> State
 expected list s =
+    awaited (Array.indexedMap (\i c -> { expect = c.expect, command = c.command, line = s.linesSent + i }) list) (Array.length list) s
+
+
+{-| Commands waited for, on `lines` more lines; the user's own commands
+(`ForRan`) remembered, the last 50, so that tmux's message log can show
+them and not puritty's others (TM65). -}
+awaited : Array Asked -> Int -> (taken s : State) -> State
+awaited asked lines s =
     let
         mine =
-            Array.keepIf (\c -> c.expect == ForRan) list |> Array.map .command
+            Array.keepIf (\a -> a.expect == ForRan) asked |> Array.map .command
     in
     if Array.isEmpty mine then
-        { s | expecting = s.expecting ++ Array.map .expect list }
+        { s | expecting = s.expecting ++ asked, linesSent = s.linesSent + lines }
 
     else
-        { s | expecting = s.expecting ++ Array.map .expect list, userRan = Array.takeLast 50 (s.userRan ++ mine) }
+        { s | expecting = s.expecting ++ asked, linesSent = s.linesSent + lines, userRan = Array.takeLast 50 (s.userRan ++ mine) }
 
 
 {-| A key as `send-keys -K` takes it (TM23): by its tmux name where it has
@@ -5347,16 +5328,16 @@ namedKey sym =
                 Nothing
 
 
-{-| `n` more replies to read and drop. -}
-waitingFor : Int -> (taken s : State) -> State
-waitingFor n s =
-    { s | expecting = s.expecting ++ Array.repeat n ForNothing }
+{-| Commands sent whose replies are read and dropped. -}
+waitingFor : Array String -> (taken s : State) -> State
+waitingFor commands s =
+    expected (Array.map (\c -> { command = c, expect = ForNothing }) commands) s
 
 
 {-| Commands whose replies say nothing puritty reads, sent. -}
 sent : Array String -> (taken s : State) -> { state : State, commands : Array String }
 sent commands s =
-    { state = { s | expecting = s.expecting ++ Array.map (\_ -> ForNothing) commands }, commands = commands }
+    { state = expected (Array.map (\c -> { command = c, expect = ForNothing }) commands) s, commands = commands }
 
 
 {-| What a key sends the active pane's program, by that pane's modes
@@ -5824,7 +5805,7 @@ pointer how p s =
                                                 reported =
                                                     report how.held p q grabbed
                                             in
-                                            plain { state = waitingFor (Array.length select) reported.state, commands = select ++ reported.commands }
+                                            plain { state = waitingFor select reported.state, commands = select ++ reported.commands }
 
                                         else
                                             selecting how p col row q s

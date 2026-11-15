@@ -453,7 +453,50 @@ reply ending its line, from 2.7's, on the attach; with the drag's line
 waiting for one reply, on the drag, its action sending three commands
 (`select-pane` first) and waiting for two.
 
-**Not covered yet**: keys typed while replies are pending, the poll's
+**Not covered yet** (TK10.6 has the list now): keys typed while replies are pending, the poll's
 timer, resizes, windows and sessions changing, copy mode and the tree's
 round trips. Each is a scenario to add; the fake answers most of their
 questions already (TM68, TM69).
+
+### TK10.5 · Each answer held to its question (2026-11-15)
+
+TK10.3's invariants count: no answer without a question, nothing owed at
+the end. Two mistakes that cancel would pass them. Now each expectation in
+puritty's queue carries the command that asked it and the number of the
+line it went on (`TmuxMode.Asked`, `linesSent`); the line number replaces
+TK10.4's `Then` marker, a failing reply ending every expectation of its
+line. The fake tells, for each block it writes, the command that made it,
+its flags and whether it failed (`FakeTmux.Told`; a line refused whole is
+told as its first command's failing). For every read the explorer holds
+the blocks to the queue as it was (`heldTo`): each block of puritty's own
+answers the head's command, a failure ends its line, the blocks of what a
+command ran come before its fence; and the queue after the read must begin
+with what those blocks left. The commands are not written to the
+diagnostic log, where typed text would be.
+
+Made to fail on purpose: `askLine` sending its commands in reverse while
+its expectations stay in order, which the counts cannot see, is named at
+once: "tmux's reply to `capture-pane …` was read as the answer to
+`display-message …`".
+
+### TK10.6 · Windows, and fewer eras (2026-11-15)
+
+The fake has the session's windows (`World.window`, `others`, each with
+its panes): `list-windows` lists them all, `list-panes -s` every window's
+panes, and three events: another client opens a window (`%window-add`),
+shows one (`%session-window-changed`), or a window closes; the shown one's
+closing shows the next. Two scenarios: attaching while the shown window
+closes (562 states), and, attached, another client opening, closing and
+showing windows in any order (94). Neither found a fault; with TK10.4's
+failing-line fix taken out, the first fails on every era, the queue left
+naming the captures of the closed window's panes.
+
+The scenarios now run on the rules of 2.7, 3.2 and 3.8 only: 3.0 differs
+from 2.7, and 3.4 from 3.2, only in a blank line and a `%message` in a
+block, which no scenario sends, and the fake's rules for all five are
+still held to every dumped tmux. The explorer costs about 75 s of the
+app's tests on node.
+
+**Not covered yet**: keys typed while replies are pending, `%pause`, the
+tree's and menus' round trips with panes vanishing, resizes, the poll's
+timer, and each version's own answers (the fake answers as 3.8).
