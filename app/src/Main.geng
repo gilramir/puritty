@@ -3186,11 +3186,22 @@ feed remote chunk ms m =
 
         -- what tmux said, or else the bytes read, in the log
         traced =
-            if Array.isEmpty r.trace && not on then
+            (if Array.isEmpty r.trace && not on then
                 Diag.add ms "read" (String.fromInt (Bytes.length chunk) ++ " bytes") m.diag
 
-            else
+             else
                 Diag.addAll ms "tmux<" r.trace m.diag
+            )
+                -- what puritty shows of tmux, when it changed (docs/tmux-checks.md
+                -- TK11): what a test holds to tmux's own, and a stale tab is seen
+                |> (\d ->
+                        when r.view is
+                            Just v ->
+                                Diag.add ms "tmux=" v d
+
+                            Nothing ->
+                                meant Reason.NoMore d
+                   )
     in
     feedTerm remote
         r.outside

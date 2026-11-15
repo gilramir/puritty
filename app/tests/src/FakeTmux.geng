@@ -9,6 +9,7 @@ module FakeTmux exposing
     , copyState
     , enterCopy
     , known
+    , renameWindow
     , startBytes
     , switchWindow
     , world
@@ -216,7 +217,11 @@ client's (3.2); notifications after each command's block, not the line's
 last (3.8); `display-message -t` a pane that is not there refused (before
 3.2; from it, the current pane shown); `display-message` without `-p` a
 `%message` in its block (3.4; before, nothing); a blank line refused
-(before 3.0); a quote left open refused (before 3.2). -}
+(before 3.0); a quote left open refused (before 3.2); a window of the
+session closing said `%unlinked-window-close`, as another session's is
+(before 3.8; `%window-close` from it); a new window's pane said active
+before the window is (before 3.0). Measured, `corpus/tmux/*/notices.txt`
+(TK11). -}
 type alias Rules =
     { nestedOwn : Bool
     , noticesEach : Bool
@@ -224,6 +229,8 @@ type alias Rules =
     , messageInBlock : Bool
     , blankFails : Bool
     , quoteFails : Bool
+    , closeUnlinked : Bool
+    , newWindowPane : Bool
     }
 
 
@@ -239,6 +246,8 @@ rulesOf version =
     , messageInBlock = t >= 34
     , blankFails = t < 30
     , quoteFails = t < 32
+    , closeUnlinked = t < 38
+    , newWindowPane = t < 30
     }
 
 
@@ -754,7 +763,14 @@ addWindow id pane w =
             1 + Array.foldl (\o m -> max m o.index) w.window.index w.others
     in
     { world = { w | others = Array.pushLast { id = id, index = index, name = "sh", panes = [ { first | id = pane, lines = [], mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 } ], active = pane } w.others }
-    , notices = [ "%window-add @" ++ String.fromInt id ]
+    , notices =
+        (if (rulesOf w.rules).newWindowPane then
+            [ "%window-pane-changed @" ++ String.fromInt id ++ " %" ++ String.fromInt pane ]
+
+         else
+            []
+        )
+            ++ [ "%window-add @" ++ String.fromInt id ]
     }
 
 
@@ -775,14 +791,58 @@ closeWindow id w =
                         switched.world
                 in
                 { world = { after | others = Array.keepIf (\o -> o.id /= id) after.others }
-                , notices = Array.pushFirst ("%window-close @" ++ String.fromInt id) switched.notices
+                , notices = Array.pushLast (closed w id) switched.notices
                 }
 
             Nothing ->
                 { world = w, notices = [] }
 
     else if Array.any (\o -> o.id == id) w.others then
-        { world = { w | others = Array.keepIf (\o -> o.id /= id) w.others }, notices = [ "%window-close @" ++ String.fromInt id ] }
+        { world = { w | others = Array.keepIf (\o -> o.id /= id) w.others }, notices = [ closed w id ] }
+
+    else
+        { world = w, notices = [] }
+
+
+{-| A window of the session closing, as the world's tmux says it. -}
+closed : World -> Int -> String
+closed w id =
+    (if (rulesOf w.rules).closeUnlinked then
+        "%unlinked-window-close @"
+
+     else
+        "%window-close @"
+    )
+        ++ String.fromInt id
+
+
+{-| A window renamed (`rename-window`, or its program's name): its tab's
+name in tmux, and tmux's word of it. -}
+renameWindow : Int -> String -> World -> { world : World, notices : Array String }
+renameWindow id name w =
+    if id == w.window.id then
+        let
+            current =
+                w.window
+        in
+        { world = { w | window = { current | name = name } }, notices = [ "%window-renamed @" ++ String.fromInt id ++ " " ++ name ] }
+
+    else if Array.any (\o -> o.id == id) w.others then
+        { world =
+            { w
+                | others =
+                    Array.map
+                        (\o ->
+                            if o.id == id then
+                                { o | name = name }
+
+                            else
+                                o
+                        )
+                        w.others
+            }
+        , notices = [ "%window-renamed @" ++ String.fromInt id ++ " " ++ name ]
+        }
 
     else
         { world = w, notices = [] }

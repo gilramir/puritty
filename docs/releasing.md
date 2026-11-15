@@ -129,3 +129,41 @@ clang (18.1.3, 19.1.7) took no profile; both `.deb`s installed with apt and
 ran; `SHA256SUMS` and `notes.md` written. It needed `prerelease.sh` to
 compare with geng-lang's devbox clang, since puritty's has none on its
 PATH. The output is kept in `dist/rl4-check/` (not in git).
+
+## RL5 · Third parties' notices in every package (2026-11-15)
+
+Gilbert asked whether the repository lists every licence it should. It
+did not: the packages carried puritty's `LICENSE` alone, while the
+programs hold PuTTY's cryptography, FreeType, HarfBuzz, Boehm GC, Gren's
+and Geng's runtime and libraries, tmux's option descriptions and color
+names, tables generated from libghostty-vt and Unicode's data, xcb-imdkit
+and xcb-util-cursor (Linux), and zlib, libpng and mingw-w64's runtime
+(Windows), most of whose licences ask for their notice in every copy.
+
+- `THIRD-PARTY-NOTICES.md`: each component, what of it puritty has, its
+  licence and platforms, FreeType's credit line, and the tests' and the
+  website's own (Wycheproof's vectors, the 6502 excerpt, tmux's recorded
+  answers); `LICENSES/` holds each text as its project gives it, taken
+  from the very sources built (the pinned nixpkgs' tarballs, tmux 3.8's,
+  mingw-w64 14.0.0's, the vendored trees).
+- **xcb-imdkit**, LGPL 2.1, stays linked statically (**Gilbert,
+  2026-11-15**): its source is fcitx's at `621048b` with puritty's four
+  patches in `packages/x11/patches`, and puritty's whole source and build
+  are public, so another version is used by building again; the notices
+  say how.
+- Every archive (`scripts/prerelease.sh`) carries the notices and
+  `LICENSES/` beside `LICENSE`; the `.deb`'s copyright file is puritty's
+  licence, the notices and every text, and installs the folder too.
+- `scripts/notices.py`, in the unit gate: every vendored folder, patch,
+  library source a build fetches, and generated file must be under a
+  pattern of the notices' `paths` block (`own` for puritty's own), no
+  pattern may match nothing, and no licence file may be missing or unused.
+  Made to fail once on purpose: with `ColorNames.geng`'s line taken out, a
+  stray licence file and a `$(src bzip2)` added, it names all three.
+
+## RL6 · Before a release: puritty against every real tmux (2026-11-15)
+
+`harness/puppet.py --all` (docs/tmux-checks.md TK12) attaches the release's
+Linux build to every tmux release from 2.7 to 3.8 in turn and holds what it
+shows to what tmux has after each of a puppet's 19 steps. It takes about
+25 minutes and is run before a release, beside the unit gate.

@@ -2,7 +2,7 @@
 # tmux's releases from 2.7 (RHEL8's, the oldest a target ships) to the
 # newest, each downloaded from its GitHub release, built in the
 # puritty-tmux-versions image (Containerfile here) and dumped by
-# dump-tmux.py and dump-lines.py into corpus/tmux/VERSION
+# dump-tmux.py, dump-lines.py and dump-notices.py into corpus/tmux/VERSION
 # (docs/tmux-versions.md).
 #
 #   app/tests/tmux-versions/releases.sh [VERSION...]
@@ -47,6 +47,7 @@ for v in $versions; do
             fi
             cd /tmp && HOME=/tmp python3 /tests/dump-tmux.py /cache/build/$v/bin/tmux /out 'tmux $v, built from its release tarball on Debian 12'
             cd /tmp && HOME=/tmp LANG=C.UTF-8 python3 /tests/dump-lines.py /cache/build/$v/bin/tmux /out
+            cd /tmp && HOME=/tmp LANG=C.UTF-8 python3 /tests/dump-notices.py /cache/build/$v/bin/tmux /out
         " > "$cache/build/$v.log" 2>&1 && echo "$v dumped" || echo "$v FAILED: see $cache/build/$v.log"
     ) &
 done

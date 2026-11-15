@@ -528,6 +528,113 @@ that attaches, by TK10.5's check), copy mode's question sent without
 being waited for (the copy-mode scenario, every era), and the drag's
 line waiting for one reply.
 
-**Not covered yet**: menus and popups with a pane vanishing, resizes,
-the poll's timer on tmux before 3.2, and each version's own answers (the
-fake answers as 3.8).
+**Not covered yet**: see TK10.8.
+
+### TK10.8 · Menus and popups as their pane exits (2026-11-15)
+
+Three scenarios more, each on 2.7, 3.2 and 3.8, the pane being `%0`, the
+active one: the pane menu (`prefix >`) opened as the pane exits, its
+title, names and commands expanded at the pane by `display-message`
+(which fails at a pane gone before 3.2); the same with an item's key
+(`m`, Mark) typed, which may come before the menu is shown; and a popup
+opened at the prompt (`display-popup -E true`), five commands on one
+line on 3.8 and, before it, a message and nothing sent. None found a
+fault.
+
+**Not covered yet**: resizes, the poll's timer on tmux before 3.2, and
+each version's own answers (the fake answers as 3.8).
+
+## TK11 · What tmux tells, and what puritty shows: window 6 (2026-11-15)
+
+Gilbert, on gmktec7 with tmux 3.4 under `tmux -CC`: he ended every pane of
+window 6 with Ctrl-D, and its tab stayed; `prefix p` and `prefix n` skipped
+it. His diagnostic log had it: `%session-window-changed $0 @28`, then
+`%unlinked-window-close @25`. puritty asked the window again for the first
+and did nothing for the second: it took `%unlinked-window-close` for
+another session's window. Before 3.8, tmux says so of its own session's
+window too, when the window's last pane's program ends or the window is
+killed.
+
+**Why the checks missed it.** TK10.1's recording had it (killing a window:
+`%unlinked-window-close` on every tmux before 3.8), but nothing held
+puritty's handling of notifications to the recordings: checks 1 and 2
+cover what puritty sends, not what it hears; the fake was written to send
+3.8's `%window-close` on every version; and the explorer held only
+questions and answers in step, which a stale tab breaks none of.
+
+**Each gap closed:**
+
+- **Recorded.** `app/tests/dump-notices.py` (in `releases.sh` and
+  `distros.sh`, all 33 tmuxes, `corpus/tmux/*/notices.txt`): a control
+  client listens while a second client changes the server a step at a
+  time, 31 steps: windows made, renamed, shown, killed and ended by their
+  last pane's program, the shown window's included; panes split, killed
+  and exiting; sessions made, renamed and killed, a window made in
+  another; copy mode, a resize, buffers, a layout, `move-window`, the
+  server killed. Found, beyond window 6: 2.x tells a new window's pane
+  active before the window, and adds a window before showing it where
+  3.x shows it first; `%paste-buffer-*` are 3.4's, `%exit` at a killed
+  server 3.2's; `move-window` says `%window-add`, `%session-window-changed`
+  and `%window-close` of the same window.
+- **Every notification decided.** `corpus/checks/tmux-notices.tsv`, a row
+  each of the 19 the tmuxes sent and 6 no recording has: its constructor,
+  which releases send it (computed from the recordings: `all`, `from X`,
+  `until X`, `some`, `unrecorded`), whether puritty acts on it or ignores
+  it, and why. `scripts/tmux-notices.py`, in the unit gate, fails on a
+  notification sent with no row, a span the recordings do not bear out, a
+  name `Tmux.Control` does not read, and a handling `TmuxMode`'s `notice`
+  does not have (a constructor with a branch of its own acts). Before the
+  fix it named both: `%unlinked-window-close` and `%unlinked-window-renamed`
+  written as acted on, and ignored. It also corrected three spans of mine.
+- **The fake held to the recordings.** It says `%unlinked-window-close`
+  before 3.8 for its own windows, the shown one's closing as tmux 3.4 does
+  (the session's window changed, then the close), a new window's pane
+  first on 2.x, and renames (`FakeTmux.renameWindow`); `gen-lines.py`
+  writes each tmux's notices into `LinesRecorded`, and a test replays the
+  eight window steps the fake models on the fake following each tmux and
+  requires the same window notifications, by name and window, as that
+  tmux sent. Its first run found my order for a window made and shown
+  wrong on 2.x.
+- **What puritty shows held to what tmux has.** `TmuxMode.viewLine`: the
+  tabs by index (each window's id and name), the window shown, its panes
+  as its layout has them, the active one marked. The explorer requires it
+  to be the fake's when all is said and read; puritty also writes it to
+  the diagnostic log, `tmux= …`, whenever it changes, so that a stale tab
+  shows in the log the moment it happens.
+
+**The fix** (`TmuxMode.notice`): `%unlinked-window-close` of a window that
+is one of the tabs asks the tabs again; `%unlinked-window-renamed` of one
+renames its tab. Made to fail on purpose: with the first taken out, the
+explorer names window 6's very case on the rules of 2.7 and 3.2 and not
+3.8: "puritty shows tabs @0:sh @1:two @2:sh … where tmux has tabs @0:sh
+@2:sh".
+
+## TK12 · The puppet: puritty against each real tmux (2026-11-15)
+
+`harness/puppet.py`: each release's tmux runs in the survey's container,
+its socket in a folder shared with this machine; puritty runs here on a
+virtual display, its program that version's own client run in the
+container (`podman exec -it … tmux -S … -CC attach`), so client and server
+are the same tmux. A second `podman exec` is the puppet, 19 steps: a window
+made, renamed, shown and shown back; the shown window split, its other pane
+made active and killed; a window whose program ends; a window killed;
+window 6 (a window of two panes whose shells end with `exit`, as Ctrl-D);
+a window made and shown whose program ends; a session made beside it with
+a window, and killed; a window made and the first moved to another index;
+the shown window renamed. `automatic-rename` is off, so that names are as
+given. After each step (and after attaching) the harness waits up to 8 s
+for puritty's diagnostic log to say, in its last `tmux=` line, what tmux
+lists (`list-windows`, `display-message`, `list-panes`), and fails the step
+with both when it does not.
+
+**Every release passes all 20** (2.7 to 3.8, 24 of them; 2.9 is left out,
+as it ends the client at a split, TV6). Made to fail on purpose: built
+with TK11's fix taken out, 3.4 fails six of the 20, the first where a
+window's own program ends, and window 6 among them: "its last pane's shell
+ended: puritty shows tabs @0:sh @3:six … where tmux has tabs @0:sh".
+
+`harness/puppet.py [VERSION …]` runs 2.7, 3.0, 3.2, 3.4, 3.6a and 3.8 by
+default, `--all` every release; about a minute a version. It needs
+`app/puritty-noble` (`app/distro/build.sh noble`). It is not in the unit
+gate, which runs on Windows too; it is run before a release
+(docs/releasing.md).

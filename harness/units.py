@@ -100,8 +100,9 @@ SUITES = [
         # say, on each; 199 since TK10: the fake's lines held to every
         # dumped tmux, and the explorer (check 3); 201 since ST35: a font
         # the file names that cannot be used, said and kept in the list;
-        # 202 since ST36: the Han characters' regions named
-        202,
+        # 202 since ST36: the Han characters' regions named; 203 since TK11:
+        # the fake's windows held to every tmux's notifications
+        203,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
@@ -255,12 +256,16 @@ def main() -> int:
     # every tmux command made from Tmux.Command's catalog, and the catalog's
     # test reading the dumps as they are (docs/tmux-checks.md TK2); every
     # format variable asked, against each tmux's (TK8); the lines of
-    # several commands each tmux answered, as the explorer reads them (TK10)
+    # several commands each tmux answered, as the explorer reads them (TK10);
+    # every notification a tmux sends, with what puritty does with it (TK11);
+    # and every piece from elsewhere with its notice (THIRD-PARTY-NOTICES.md)
     commands_ok = True
     for name, cmd in [("tmux-commands", [sys.executable, str(ROOT / "scripts" / "tmux-commands.py")]),
                       ("tmux-formats", [sys.executable, str(ROOT / "scripts" / "tmux-formats.py")]),
                       ("tmux-versions", [sys.executable, str(ROOT / "packages" / "tmux" / "tests" / "gen-versions.py"), "--check"]),
-                      ("tmux-lines", [sys.executable, str(ROOT / "app" / "tests" / "gen-lines.py"), "--check"])]:
+                      ("tmux-lines", [sys.executable, str(ROOT / "app" / "tests" / "gen-lines.py"), "--check"]),
+                      ("tmux-notices", [sys.executable, str(ROOT / "scripts" / "tmux-notices.py")]),
+                      ("notices", [sys.executable, str(ROOT / "scripts" / "notices.py")])]:
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         out = (r.stdout + r.stderr).strip().splitlines()
         print(f"[{'  ok  ' if r.returncode == 0 else ' FAIL '}] {name:<24} {out[-1] if out else ''}")

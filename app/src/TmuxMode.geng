@@ -31,6 +31,7 @@ module TmuxMode exposing
     , title
     , typeInto
     , typed
+    , viewLine
     )
 
 {-| tmux control mode in puritty's window (`docs/tmux.md` TM13 step 3,
@@ -93,6 +94,8 @@ type alias State =
     -- its first that fails (docs/tmux-checks.md TK10); and the lines sent
     , expecting : Array Asked
     , linesSent : Int
+    -- what puritty showed of tmux when last read (`viewLine`)
+    , shownView : String
     -- what tmux said of each pane on attach, for its capture
     , info : Dict Int PaneInfo
     -- a floating pane being moved or resized by its box, and the pane a
@@ -678,6 +681,7 @@ idle _ =
     , canvas = blank 1 1
     , expecting = []
     , linesSent = 0
+    , shownView = ""
     , info = Dict.empty
     , drag = Nothing
     , grab = Nothing
@@ -752,7 +756,7 @@ what tmux said, done to the panes. `commands` are tmux commands to write,
 each a line; `trace` is what tmux said, for the diagnostic log
 (`docs/diagnostics.md` DG2): each notification and reply a line, a pane's
 output counted, never shown. -}
-read : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String }
+read : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
 read size bytes s =
     let
         fed =
@@ -761,8 +765,30 @@ read size bytes s =
         done =
             Array.foldl (\e a -> event size e (traced e a)) { state = { s | reader = fed.reader }, outside = [], commands = [], trace = [], run = Nothing } fed.events
                 |> endRun
+
+        view =
+            if done.state.on then
+                viewLine done.state
+
+            else
+                ""
+
+        changed =
+            if view /= done.state.shownView then
+                Just view
+
+            else
+                Nothing
+
+        st =
+            done.state
     in
-    { state = done.state, outside = Bytes.flatten done.outside, commands = done.commands, trace = done.trace }
+    { state = { st | shownView = view }
+    , outside = Bytes.flatten done.outside
+    , commands = done.commands
+    , trace = done.trace
+    , view = changed
+    }
 
 
 {-| What a read did: the state, the terminal's own bytes, the commands to
@@ -1182,6 +1208,39 @@ expectName x =
 
         ForFence ->
             "the end of a command's commands"
+
+
+{-| What puritty shows of tmux, a line for the diagnostic log when it
+changes (docs/tmux-checks.md TK11): the tabs by index, each its window's
+id and name; the window shown; its panes as its layout has them, the
+active one marked. -}
+viewLine : State -> String
+viewLine s =
+    "tabs "
+        ++ String.join " " (Array.map (\t -> "@" ++ String.fromInt t.id ++ ":" ++ t.name) (Array.sortBy .index s.tabs))
+        ++ " | window @"
+        ++ String.fromInt s.window
+        ++ " | panes "
+        ++ String.join " "
+            (Array.map
+                (\id ->
+                    "%"
+                        ++ String.fromInt id
+                        ++ (if id == s.active then
+                                "*"
+
+                            else
+                                ""
+                           )
+                )
+                (when s.layout is
+                    Just cell ->
+                        Array.map .id (Layout.tiled cell ++ Layout.floating cell) |> Array.sort
+
+                    Nothing ->
+                        meant Reason.NotYet []
+                )
+            )
 
 
 {-| A pane's line in a mark. -}
@@ -3281,6 +3340,34 @@ notice n acc =
 
         WindowClose _ ->
             ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
+
+        UnlinkedWindowClose w ->
+            -- before tmux 3.8 a window of this session closing is said so
+            -- too, its last pane's program ended or killed (measured,
+            -- docs/tmux-checks.md TK11); another session's is not a tab
+            if Array.any (\t -> t.id == w) st.tabs then
+                ask [ { command = tabsQuery, expect = ForTabs } ] { acc | state = st }
+
+            else
+                { acc | state = st }
+
+        UnlinkedWindowRenamed r ->
+            -- a window of this session is named so while it is made (TK11)
+            { acc
+                | state =
+                    { st
+                        | tabs =
+                            Array.map
+                                (\t ->
+                                    if t.id == r.window then
+                                        { t | name = r.name }
+
+                                    else
+                                        t
+                                )
+                                st.tabs
+                    }
+            }
 
         Message text ->
             { acc | state = { st | said = text } }

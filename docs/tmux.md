@@ -3253,3 +3253,14 @@ nothing said. A command run for the user that runs others (`source-file`,
 puritty-fence`, and what comes before the fence's reply is that command's
 output, shown as such. The drag's line waits for a reply per command.
 App tests 199.
+
+
+## TM74 · A window's tab goes when tmux before 3.8 says the window closed as unlinked (2026-11-15)
+
+Window 6 (docs/tmux-checks.md TK11): before 3.8 tmux tells a control client
+`%unlinked-window-close`, not `%window-close`, when a window of its own
+session closes, by its last pane's program ending or by `kill-window`.
+puritty now asks the tabs again for an `%unlinked-window-close` of a window
+that is one of its tabs, and renames a tab for `%unlinked-window-renamed`.
+Its diagnostic log has a `tmux=` line, what it shows of tmux (tabs, the
+window, its panes), each time that changes.
