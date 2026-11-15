@@ -41,7 +41,8 @@ each distribution's own package (`almalinux-8` … `fedora-43`). Each folder:
 | `keys.txt` | `list-keys` with no configuration |
 | `options-server.txt`, `-session`, `-window`, `-pane` | `show-options -s`, `-g`, `-gw`, `-gp`: the defaults |
 | `formats.txt` | each of 291 format variables (tmux 3.8's manual's, and those puritty asks) as `display-message -p` gives it in one fixed state; empty where a tmux has no such variable |
-| `formats-all.txt` | `display-message -a`, every variable a tmux knows (from 2.9) |
+| `formats-all.txt` | `display-message -a`: the variables of the context it is run in (from 2.9); a buffer's, copy mode's or a hook's are not among them |
+| `variables.txt` | every format variable the tmux knows, read from its release's source by `variables.py` (`docs/tmux-checks.md` TK8) |
 | `control.txt` | a control-mode session: 27 commands (resize, flags, a subscription, splits, a program setting modes and a title, windows, copy mode, options, buffers, sessions, detach) and every line tmux wrote after each |
 | `answers.txt` | puritty's own questions in the test states, as `app/tests/record-tmux.py` asks them |
 

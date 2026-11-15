@@ -34,3 +34,5 @@ for name in ${*:-$all}; do
     ) &
 done
 wait
+# each dump's variables, from its release's source (docs/tmux-checks.md TK8)
+python3 "$here/variables.py"

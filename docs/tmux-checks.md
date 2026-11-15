@@ -105,7 +105,7 @@ sent as they are.
 ## TK5 · Order
 
 1. Check 1 (TK2): the commands moved into `Tmux.Command`, then the catalog
-   and the check. *Building.*
+   and the check. *Built* (TK6, TK7), and its formats (TK8).
 2. Check 2, TK3.1–TK3.3, and the bytes that are not UTF-8.
 3. Check 3 (TK4).
 4. TK3.4 and TK4's symbolic form, with the refinement work.
@@ -170,3 +170,62 @@ fails on any command text outside `Tmux.Command`.
 **Next:** the format variables puritty asks, against each tmux's
 `formats.txt`; then check 2 (TK3).
 
+## TK8 · Check 1's formats: every variable asked, against every tmux (2026-11-14)
+
+A variable or option a tmux does not have expands to nothing, with no
+error, so asking one gives an empty field and no sign of why.
+
+**What each tmux knows**: `formats-all.txt` was to say, but `display-message
+-a` lists only the variables of the context it is run in (a buffer's, copy
+mode's, a hook's are missing: 29 of 2.9's), and 2.7 and 2.8 have no `-a`.
+So each dump now has `variables.txt`, read from its release's source by
+`app/tests/tmux-versions/variables.py` (`format_add(ft, "name"` to 3.1,
+format.c's table from 3.2): 119 names in 2.7, 219 in 3.4, 336 in 3.8.
+Checked against the dumps: every variable any tmux's `-a` lists is in its
+source, but for three internal `*_mode_format` from 2.9 to 3.1c. A
+distribution's package is read as its release (its patches are not);
+AlmaLinux 10's snapshot as 3.3a's source and its own `-a`. Its options are
+its `options-*.txt`. `releases.sh` and `distros.sh` write it after the
+dumps; `variables.py --check` holds it to the sources where the tarballs
+are cached.
+
+**What puritty asks**: `scripts/tmux-formats.py`, in the unit gate, reads
+every format from the source: each lowercase word that stands where a name
+does in a string with `#{`, the options sent whole (`optionNames`), and the
+helpers that put a name in (`flag "label" "name"`, `matching "name"`). 163
+names; two words in a name's place that no tmux knows are text (`never`,
+`none`). Each is a row of `corpus/checks/tmux-formats.tsv`: the first tmux
+it is asked of (`all`, or the version or capability that gates it, read
+from the code), and how an empty answer reads where a tmux from then lacks
+it. The gate fails on a name not listed, a row gone, a tmux that lacks a
+name with no reading said (LACKS), a reading no tmux needs (NEEDLESS),
+and a word no tmux knows. Made to fail on purpose: `pane_flags` said to
+be asked from 3.6 names 3.6, 3.6a and 3.6b.
+
+**What it found**, of the 56 names some tmux lacks:
+
+- **Copy mode before 3.1 drew its cursor at the corner.** 2.7 to 3.0a
+  have no `copy_cursor_x` or `selection_start_x` (their `cursor_x` is the
+  pane's own cursor), so the copy line came back with those fields empty,
+  read as 0: the cursor at the pane's top left and a selection from
+  there. Now `Copying.located` says whether tmux gave them, and where it
+  did not, neither is drawn: missing rather than wrong. A test runs the
+  fake tmux both ways (`FakeTmux.World.lacking`, the start of TK4's
+  model).
+- **Read as off or default, by design**: the options puritty draws by
+  (TM47: tmux's default when empty), the search's count and timeout (none
+  shown, as those tmuxes show none), 2.x's missing mouse and origin
+  flags, `pane_private_modes` before 3.8 (the older flags, TM61), the
+  theme before 3.8, `status-format[1]` to `[4]` on 2.7 and 2.8, which have
+  one status line.
+- **Asked only of a tmux that has it**: 3.8's (the tree's flags and info,
+  hooks' counts, popups, the preview's style), gated by version or by a
+  capability; customize-mode's key list from 3.7 (`list-keys -F`).
+- **Not asked**: `client_colours`, in tmux 3.8's theme colors, which
+  puritty fills in before asking (`local`).
+
+That a row's `since` is kept is read from the code, not proved; check 3's
+explorer (TK4) will see each format as it is sent, to each version's
+model.
+
+**Next:** check 2 (TK3).

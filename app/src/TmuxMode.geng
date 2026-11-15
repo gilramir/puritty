@@ -319,10 +319,14 @@ type alias TreeRow =
 {-| A pane in copy mode as tmux describes it (TM31): how far back it is
 (`scroll_position`), its history's lines (`history_size`), the cursor in
 the pane, and the selection's ends, in tmux's lines (0 the history's
-first), and whether it is a rectangle. -}
+first), and whether it is a rectangle. `located` is whether tmux says
+where the cursor and the selection are: before 3.1 it has no
+`copy_cursor_x` or `selection_start_x`, so neither is drawn rather than
+drawn at the corner (docs/tmux-checks.md TK8). -}
 type alias Copying =
     { scroll : Int
     , hsize : Int
+    , located : Bool
     , cx : Int
     , cy : Int
     , selection : Maybe { sx : Int, sy : Int, ex : Int, ey : Int }
@@ -3787,8 +3791,13 @@ paint s =
                 cursor =
                     when { copying = Dict.get s.active s.copy, place = Array.findFirst (\p -> p.id == s.active) (tiled ++ floating) } is
                         { copying = Just c, place = Just place } ->
-                            -- copy mode's cursor, where tmux has it (TM31)
-                            "\u{001B}[" ++ String.fromInt (place.value.y + c.cy + 1) ++ ";" ++ String.fromInt (place.value.x + c.cx + 1) ++ "H\u{001B}[?25h"
+                            -- copy mode's cursor, where tmux has it (TM31),
+                            -- or none where tmux does not say (before 3.1)
+                            if not c.located then
+                                "\u{001B}[?25l"
+
+                            else
+                                "\u{001B}[" ++ String.fromInt (place.value.y + c.cy + 1) ++ ";" ++ String.fromInt (place.value.x + c.cx + 1) ++ "H\u{001B}[?25h"
 
                         _ ->
                             if not (String.startsWith "copy-mode" (Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.paneModes)) || Maybe.withDefault (meant Reason.NotYet "") (Dict.get s.active s.paneModes) == "") then
@@ -5277,7 +5286,7 @@ spans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
 spans q s =
     when Dict.get q.id s.copy |> Maybe.andThen .selection is
         Just sel ->
-            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, search = "" } (Dict.get q.id s.copy)) sel
+            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, located = False, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, search = "" } (Dict.get q.id s.copy)) sel
 
         Nothing ->
             meant Reason.NotOpen ownSpans q s
@@ -12734,13 +12743,18 @@ copyLine bytes s =
 
             else
                 let
+                    -- empty before 3.1, which does not say (TK8)
+                    located =
+                        Maybe.andThen String.toInt (Array.get 4 words) /= Nothing
+
                     c =
                         { scroll = num 2
                         , hsize = num 3
+                        , located = located
                         , cx = num 4
                         , cy = num 5
                         , selection =
-                            if num 6 == 1 then
+                            if located && num 6 == 1 then
                                 Just { sx = num 7, sy = num 8, ex = num 9, ey = num 10 }
 
                             else

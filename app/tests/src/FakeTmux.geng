@@ -63,6 +63,9 @@ type alias World =
     , answered : Array String
     , heard : Array String
     , options : Dict String String
+    -- variables this tmux answers empty, as an older one does: one it
+    -- does not have (docs/tmux-checks.md TK8)
+    , lacking : Array String
     }
 
 
@@ -82,6 +85,7 @@ world w =
     , answered = []
     , heard = []
     , options = Dict.empty
+    , lacking = []
     }
 
 
@@ -700,9 +704,19 @@ hex4 n =
 
 
 {-| A format's variables for a pane, as tmux 3.8 expands them; one this
-model has no value for is empty, as tmux's unknown ones are. -}
+model has no value for, or one the world lacks, is empty, as tmux's
+unknown ones are. -}
 vars : World -> Pane -> String -> String
 vars w p name =
+    if Array.member name w.lacking then
+        ""
+
+    else
+        varsOf w p name
+
+
+varsOf : World -> Pane -> String -> String
+varsOf w p name =
     let
         n =
             String.fromInt
