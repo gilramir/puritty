@@ -14,9 +14,10 @@
 # the plain Linux build (docs/releasing.md RL3): it passes smoke.sh on
 # Fedora, Debian 13 and Arch too, and is named for both. Out come:
 #
-#   puritty-TAG-windows-x64.zip       puritty.exe, LICENSE, README.txt
-#   puritty-TAG-NAME-x64.tar.gz       puritty-TAG-NAME-x64/ with puritty,
-#                                     LICENSE, README.txt
+#   puritty-TAG-windows-x64.zip       puritty.exe, LICENSE, README.txt,
+#                                     THIRD-PARTY-NOTICES.md, LICENSES/
+#   puritty-TAG-NAME-x64.tar.gz       puritty-TAG-NAME-x64/ with puritty and
+#                                     the same files
 #   puritty-TAG-linux-rhel8-x64.tar.gz  the RHEL8 build, as above
 #   puritty_V_NAME_amd64.deb          for noble and debian13 (deb.sh), each
 #                                     installed with apt and run first
@@ -73,6 +74,9 @@ for t in $targets; do
     stage=$out/stage/$name
     mkdir -p "$stage"
     cp LICENSE "$stage/LICENSE"
+    # the third parties' notices and licences, which every copy carries
+    cp THIRD-PARTY-NOTICES.md "$stage/THIRD-PARTY-NOTICES.md"
+    cp -r LICENSES "$stage/LICENSES"
     case $t in
     windows-x64)
         echo "== $t"
@@ -84,7 +88,7 @@ your PC\" the first time; choose More info, then Run anyway." | sed 's/$/\r/' >"
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
     for f in sys.argv[2:]:
-        z.write(f)' "$out/$name.zip" puritty.exe LICENSE README.txt)
+        z.write(f)' "$out/$name.zip" puritty.exe LICENSE README.txt THIRD-PARTY-NOTICES.md LICENSES/*.txt)
         ;;
     *-x64)
         distro=${t%-x64}

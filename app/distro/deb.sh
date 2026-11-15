@@ -28,7 +28,19 @@ for s in 16 24 32 48 64 256; do
 done
 mkdir -p "$pkg/usr/share/icons/hicolor/scalable/apps"
 cp "$here/../icon/puritty.svg" "$pkg/usr/share/icons/hicolor/scalable/apps/puritty.svg"
-cp "$here/../../LICENSE" "$pkg/usr/share/doc/puritty/copyright"
+# puritty's licence, then the third parties' notices and each licence,
+# as Debian's copyright file holds them; and the notices' folder beside it
+{
+    cat "$here/../../LICENSE"
+    printf '\n\n'
+    cat "$here/../../THIRD-PARTY-NOTICES.md"
+    for f in "$here"/../../LICENSES/*.txt; do
+        printf '\n\n==== %s ====\n\n' "$(basename "$f")"
+        cat "$f"
+    done
+} >"$pkg/usr/share/doc/puritty/copyright"
+cp "$here/../../THIRD-PARTY-NOTICES.md" "$pkg/usr/share/doc/puritty/"
+cp -r "$here/../../LICENSES" "$pkg/usr/share/doc/puritty/LICENSES"
 
 # Depends: what the binary links, as the distribution's packages
 depends=$(podman run --rm -v "$work:$work" -w "$work" "puritty-build-$name" sh -c "
