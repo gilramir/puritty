@@ -43,8 +43,9 @@ DOWN, ENTER, BACKSPACE = "Down", "Return", "BackSpace"
 
 # from the first setting to the Hosts page's first row, past the pages
 # before it: eight since the Keys page (docs/tabs.md TB6)
-# the page list's Hosts, below the other nine (Sound since docs/sounds.md)
-TO_HOSTS = ["Tab", "Tab"] + ["Down"] * 9 + ["Right"]
+# the page list's Hosts, below the other eight (Sound since docs/sounds.md;
+# Clipboard folded into Advanced, docs/settings-gui.md SG18)
+TO_HOSTS = ["Tab", "Tab"] + ["Down"] * 8 + ["Right"]
 
 HOSTS = '# my hosts\n[hosts.box]   # the build box\nhost = "b.example.com"\nuser = "me"\n\n[hosts.box.colors]\nbackground = "#2a1010"\n'
 
@@ -83,9 +84,10 @@ CASES = [
     # "bold is bright" is 442 to 510; a value's box begins at x 469 and the
     # reset mark at 706, and the side bar's pages are 32 tall from 51.
     # Bold is bright's row, below the font's description (three lines
-    # longer since docs/user/fonts.md, 2026-11-13)
-    ("click-value", None, [("click", 489, 527, 1)]),
-    ("click-reset", "[colors]\nbold_is_bright = true\n", [("click", 716, 527, 1)]),
+    # longer since docs/user/fonts.md, 2026-11-13, and one more for the
+    # guide's address, docs/settings-gui.md SG18)
+    ("click-value", None, [("click", 489, 543, 1)]),
+    ("click-reset", "[colors]\nbold_is_bright = true\n", [("click", 716, 543, 1)]),
     ("click-page-and-value", None, [("click", 50, 99, 1), ("click", 489, 85, 1)] + [BACKSPACE] * 2 + [("type", "100"), ENTER]),
     ("terminal-follows", None, [DOWN, DOWN, DOWN, DOWN, ENTER] + [BACKSPACE] * 7 + [("type", "#203040"), ENTER]),
 ]

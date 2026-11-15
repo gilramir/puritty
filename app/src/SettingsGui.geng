@@ -444,9 +444,6 @@ pageKey page =
         Schema.MouseAndSelection ->
             "mouseAndSelection"
 
-        Schema.Clipboard ->
-            "clipboard"
-
         Schema.Program ->
             "program"
 
@@ -562,27 +559,58 @@ descriptionOf lang s =
 
 
 {-| A text in as many lines of `room` pixels as it takes, broken at spaces;
-a word too wide for a line is cut with "…". -}
+a word too wide for a line, an address, is broken after its slashes too
+(SG18), and a piece still too wide is cut with "…". -}
 wrapAll : Int -> Int -> String -> Array String
 wrapAll size room whole =
     let
-        put w acc =
+        -- each piece, and whether a space goes before it
+        pieces w =
+            if Text.width size w > room && String.contains "/" w then
+                let
+                    parts =
+                        String.split "/" w
+
+                    last =
+                        Array.length parts - 1
+                in
+                parts
+                    |> Array.indexedMap
+                        (\i part ->
+                            { text =
+                                if i < last then
+                                    part ++ "/"
+
+                                else
+                                    part
+                            , spaced = i == 0
+                            }
+                        )
+                    |> Array.keepIf (\p -> p.text /= "")
+
+            else
+                [ { text = w, spaced = True } ]
+
+        put p acc =
             let
                 tried =
                     if acc.current == "" then
-                        w
+                        p.text
+
+                    else if p.spaced then
+                        acc.current ++ " " ++ p.text
 
                     else
-                        acc.current ++ " " ++ w
+                        acc.current ++ p.text
             in
             if acc.current == "" || Text.width size tried <= room then
                 { acc | current = tried }
 
             else
-                { lines = Array.pushLast acc.current acc.lines, current = w }
+                { lines = Array.pushLast acc.current acc.lines, current = p.text }
 
         done =
-            Array.foldl put { lines = [], current = "" } (String.split " " whole)
+            Array.foldl put { lines = [], current = "" } (Array.mapAndFlatten pieces (String.split " " whole))
     in
     Array.pushLast done.current done.lines
         |> Array.map (fit size room)
@@ -832,6 +860,24 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
            )
 
 
+{-| An example of what a setting's box takes, shown grayed while it is
+empty and typed in: the forms that are not plain words. -}
+exampleOf : Setting -> String
+exampleOf s =
+    when s.kind is
+        ColorList _ ->
+            "#000000, #cd0000, #00cd00, …"
+
+        OneColor ->
+            "#1e1e1e"
+
+        KeyChord ->
+            "Ctrl+Shift+T"
+
+        _ ->
+            ""
+
+
 {-| A setting's value as its widget: a switch for on and off; a swatch and
 its hex for a color; the palette's swatches; a field with the text, a
 choice's with a chevron; while typed, the typed text and a caret. -}
@@ -869,6 +915,14 @@ valueOf lang m s b typing preedit px body d =
                 px
                 body
                 d
+                |> (\typed ->
+                        -- what the box takes, grayed, until a key is typed
+                        if Array.isEmpty t.chars && preedit == "" && exampleOf s /= "" then
+                            typed |> draw (text { x = b.x + px 14, y = baseline, size = body, color = look.dim, text = exampleOf s })
+
+                        else
+                            typed
+                   )
 
         Nothing ->
             meant Reason.NotOpen

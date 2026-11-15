@@ -100,7 +100,7 @@ of `Config.geng` all come from that table.
 │ Window           │                                                      │
 │ Text & lang.  (1)│  Font                                                │
 │ Mouse & selection│ ● Family        Noto Sans Mono         [list]    ⟲   │
-│ Clipboard        │     The font, as fontconfig names it.                │
+│ Keys             │     The font, as fontconfig names it.                │
 │ Program          │ ● Size          13                       pt      ⟲   │
 │ Sound            │     In points.                           default: 11 │
 │ Advanced     (1) │                                                      │
@@ -136,10 +136,9 @@ The pages, for today's settings:
 | Window | columns, rows, title |
 | Text & language | font language (for fallback fonts), remote charset |
 | Mouse & selection | paste button, word boundaries |
-| Clipboard | whether programs may read the clipboard (OSC 52) |
 | Program | the command to run |
 | Sound | key sounds (new, `feature-plan.md` §3) |
-| Advanced | frame interval, sync timeout, glyph cache, scrollback |
+| Advanced | frame interval, sync timeout, glyph cache, scrollback; whether programs may read the clipboard (OSC 52), its own page until `settings-gui.md` SG18 |
 
 Later: **Keyboard** (key bindings) and, with the Windows product, **Hosts**.
 

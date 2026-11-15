@@ -103,7 +103,6 @@ type Page
     | WindowPage
     | TextAndLanguage
     | MouseAndSelection
-    | Clipboard
     | Program
     | SoundPage
     | Advanced
@@ -127,7 +126,7 @@ type alias Report =
 
 pages : Array Page
 pages =
-    [ Appearance, WindowPage, TextAndLanguage, MouseAndSelection, Clipboard, KeysPage, Program, SoundPage, Advanced ]
+    [ Appearance, WindowPage, TextAndLanguage, MouseAndSelection, KeysPage, Program, SoundPage, Advanced ]
 
 
 pageName : Page -> String
@@ -144,9 +143,6 @@ pageName page =
 
         MouseAndSelection ->
             "Mouse & selection"
-
-        Clipboard ->
-            "Clipboard"
 
         Program ->
             "Program"
@@ -233,7 +229,7 @@ settings =
       , kind = FontFamily
       , optional = False
       , label = "Font"
-      , description = "The font, as the system names its family. To add your own, copy its files into ~/.local/share/fonts (on Windows, right-click them and Install). More in the Fonts guide."
+      , description = "The font, as the system names its family. To add your own, copy its files into ~/.local/share/fonts (on Windows, right-click them and Install). More in the Fonts guide: gilramir.github.io/puritty/guide/fonts"
       , words = [ "typeface", "family", "font name" ]
       , page = Appearance
       , applies = AtOnce
@@ -266,10 +262,10 @@ settings =
                         c
       }
     , { key = [ "font", "language" ]
-      , kind = AnyText
+      , kind = OneOf [ "ko", "ja", "zh-cn", "zh-tw" ]
       , optional = True
       , label = "Fallback language"
-      , description = "The language fallback fonts are chosen for, which decides the forms of Han (ja, ko, zh-cn, zh-tw); the system's when unset."
+      , description = "When the font has no glyph for a character, puritty borrows one from another font, preferring fonts made for this language. It matters most for Han characters (hanja, kanji, Chinese characters), which are drawn differently in each: ko Korean, ja Japanese, zh-cn Simplified Chinese, zh-tw Traditional Chinese. The system's language when unset."
       , words = [ "cjk", "han", "kanji", "hanja", "chinese", "japanese", "korean", "locale" ]
       , page = TextAndLanguage
       , applies = AtOnce
@@ -398,7 +394,7 @@ settings =
       , kind = ColorList { most = 16 }
       , optional = False
       , label = "Palette"
-      , description = "The 16 named colors, from 0, as many as given; the defaults for the rest."
+      , description = "The 16 basic colors programs choose by number, 0 to 15: black, red, green, yellow, blue, magenta, cyan and white, then their bright forms. Type them as hex colors separated by commas, from color 0, as #000000, #cd0000, #00cd00; the colors left off keep their defaults."
       , words = [ "ansi", "colors", "theme", "scheme" ]
       , page = Appearance
       , applies = AtOnce
@@ -416,7 +412,7 @@ settings =
       , kind = WholeIn { low = 0, high = 10000, unit = "ms" }
       , optional = False
       , label = "Cursor blink"
-      , description = "Half of a blink, when a program asks the cursor to blink; 0 does not blink."
+      , description = "How long a blinking cursor stays shown, and then hidden, when a program asks for one: 500 ms is one blink a second. 0: it never blinks."
       , words = [ "blinking", "caret" ]
       , page = Appearance
       , applies = AtOnce
@@ -828,30 +824,30 @@ settings =
                     _ ->
                         { c | debugOnly = "" }
       }
-    , chordSetting "mark_log" "Mark the diagnostic log" "While the diagnostic log is on, writes a numbered mark in it with the state of the window, to find the lines around a problem; the menu has it too. While the log is off the key goes to the program." (\c -> c.keyMarkLog) (\t c -> { c | keyMarkLog = t })
-    , chordSetting "new_tab" "New tab" "A new tab, after the last, where the shown one is; in a tab under tmux -CC, tmux's new window." (\c -> c.keyNewTab) (\t c -> { c | keyNewTab = t })
-    , chordSetting "close_tab" "Close tab" "Closes the tab shown, asking first when something runs in it; with one tab, the window." (\c -> c.keyCloseTab) (\t c -> { c | keyCloseTab = t })
-    , chordSetting "rename_tab" "Rename tab" "Asks for the shown tab's name." (\c -> c.keyRenameTab) (\t c -> { c | keyRenameTab = t })
-    , chordSetting "color_tab" "Tab color" "Asks for the shown tab's color; none by default, as the menu and a right click on the tab ask too." (\c -> c.keyColorTab) (\t c -> { c | keyColorTab = t })
+    , chordSetting "new_tab" "New tab" "Opens a new tab at the end of the tab bar, starting where the shown tab is: in its folder, or on its host. In a tab under tmux -CC, it makes a new tmux window." (\c -> c.keyNewTab) (\t c -> { c | keyNewTab = t })
+    , chordSetting "close_tab" "Close tab" "Closes the shown tab, asking first if a program is still running in it. With only one tab, it closes the window." (\c -> c.keyCloseTab) (\t c -> { c | keyCloseTab = t })
+    , chordSetting "rename_tab" "Rename tab" "Asks for a new name for the shown tab." (\c -> c.keyRenameTab) (\t c -> { c | keyRenameTab = t })
+    , chordSetting "color_tab" "Tab color" "Asks for a color for the shown tab. No key by default: a right click on the tab, or the menu, asks too." (\c -> c.keyColorTab) (\t c -> { c | keyColorTab = t })
     , chordSetting "reopen_tab" "Reopen closed tab" "Opens again the tab closed last, in the last ten minutes: its screen and scrollback, name and color, with a new shell where it was or a new session to its host." (\c -> c.keyReopenTab) (\t c -> { c | keyReopenTab = t })
-    , chordSetting "next_tab" "Next tab" "The tab after the shown one; in a tab under tmux -CC, tmux's next window. With one tab the key goes to the program." (\c -> c.keyNextTab) (\t c -> { c | keyNextTab = t })
-    , chordSetting "previous_tab" "Previous tab" "The tab before the shown one; in a tab under tmux -CC, tmux's previous window. With one tab the key goes to the program." (\c -> c.keyPreviousTab) (\t c -> { c | keyPreviousTab = t })
-    , chordSetting "next_tab_always" "Next tab, from any tab" "puritty's next tab, also from a tab under tmux -CC." (\c -> c.keyNextTabAlways) (\t c -> { c | keyNextTabAlways = t })
-    , chordSetting "previous_tab_always" "Previous tab, from any tab" "puritty's previous tab, also from a tab under tmux -CC." (\c -> c.keyPreviousTabAlways) (\t c -> { c | keyPreviousTabAlways = t })
+    , chordSetting "next_tab" "Next tab" "Shows the next tab. In a tab under tmux -CC, tmux's next window. With only one tab, the key goes to the program like any other key." (\c -> c.keyNextTab) (\t c -> { c | keyNextTab = t })
+    , chordSetting "previous_tab" "Previous tab" "Shows the tab before. In a tab under tmux -CC, tmux's previous window. With only one tab, the key goes to the program like any other key." (\c -> c.keyPreviousTab) (\t c -> { c | keyPreviousTab = t })
+    , chordSetting "next_tab_always" "Next tab, from any tab" "Shows puritty's next tab, even from a tab under tmux -CC." (\c -> c.keyNextTabAlways) (\t c -> { c | keyNextTabAlways = t })
+    , chordSetting "previous_tab_always" "Previous tab, from any tab" "Shows puritty's tab before, even from a tab under tmux -CC." (\c -> c.keyPreviousTabAlways) (\t c -> { c | keyPreviousTabAlways = t })
     , chordSetting "move_tab_right" "Move tab right" "Moves the shown tab one place right." (\c -> c.keyMoveTabRight) (\t c -> { c | keyMoveTabRight = t })
     , chordSetting "move_tab_left" "Move tab left" "Moves the shown tab one place left." (\c -> c.keyMoveTabLeft) (\t c -> { c | keyMoveTabLeft = t })
-    , chordSetting "copy" "Copy" "The selection to the clipboard." (\c -> c.keyCopy) (\t c -> { c | keyCopy = t })
-    , chordSetting "paste" "Paste" "The clipboard, pasted." (\c -> c.keyPaste) (\t c -> { c | keyPaste = t })
-    , chordSetting "paste_selection" "Paste the selection" "The selection (PRIMARY), pasted." (\c -> c.keyPasteSelection) (\t c -> { c | keyPasteSelection = t })
+    , chordSetting "copy" "Copy" "Copies the selection to the clipboard." (\c -> c.keyCopy) (\t c -> { c | keyCopy = t })
+    , chordSetting "paste" "Paste" "Pastes the clipboard." (\c -> c.keyPaste) (\t c -> { c | keyPaste = t })
+    , chordSetting "paste_selection" "Paste the selection" "Pastes the selection (X's PRIMARY)." (\c -> c.keyPasteSelection) (\t c -> { c | keyPasteSelection = t })
     , chordSetting "search" "Search" "Opens the search bar over the scrollback." (\c -> c.keySearch) (\t c -> { c | keySearch = t })
     , chordSetting "settings" "Settings" "Opens the settings window." (\c -> c.keySettings) (\t c -> { c | keySettings = t })
+    , chordSetting "mark_log" "Mark the diagnostic log" "While the diagnostic log is on, writes a numbered mark into it with the window's state, so that the lines around a problem are easy to find; the menu has it too. While the log is off, the key goes to the program like any other key." (\c -> c.keyMarkLog) (\t c -> { c | keyMarkLog = t })
     , { key = [ "clipboard", "osc52_read" ]
       , kind = OneOf [ "deny", "allow" ]
       , optional = False
       , label = "Programs may read the clipboard"
       , description = "Whether a program may read the clipboard with OSC 52."
       , words = [ "osc 52", "clipboard", "security" ]
-      , page = Clipboard
+      , page = Advanced
       , applies = AtOnce
       , get =
             \c ->
@@ -2056,7 +2052,7 @@ example =
                                   # given; libghostty-vt's for the rest
 
     [cursor]
-    blink_ms = 500                # the half of a blink; 0 does not blink
+    blink_ms = 500                # ms shown, then ms hidden; 0 never blinks
 
     [frames]
     every_ms = 16                 # output is drawn at most this often (V31)
@@ -2162,7 +2158,7 @@ chordSetting name label description get set =
     , kind = KeyChord
     , optional = False
     , label = label
-    , description = description ++ " Empty: the program gets the key."
+    , description = description ++ " Leave it empty for no key."
     , words = [ "keys", "key", "shortcut", "keyboard", "bind" ] ++ String.split "_" name
     , page = KeysPage
     , applies = AtOnce

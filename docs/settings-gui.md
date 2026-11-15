@@ -510,3 +510,36 @@ or for the local shell "Opened a local shell in a new window"
 (`message.openedLocal`), each in Korean too; a window that cannot start
 says why, as before (`message.notStarted`). The start screen, which
 becomes the session itself, is not changed.
+
+## SG18 · Plainer descriptions, examples in empty boxes (2026-11-14)
+
+Gilbert's review of the settings window's wording, page by page:
+
+- **Appearance.** The font's "More in the Fonts guide" now gives its
+  address, gilramir.github.io/puritty/guide/fonts. The palette says
+  what its 16 colors are (0 to 15, black to white, then the bright forms)
+  and how to type them: hex colors separated by commas, from color 0;
+  "as many as given" is gone. Cursor blink, in ms, says what the number
+  is: how long a blinking cursor stays shown and then hidden, so 500 is one
+  blink a second.
+- **Text & language.** Fallback language says what it does (the language
+  preferred when another font lends a glyph the font lacks) and that it
+  matters most for Han characters. It is now a list to pick from, `ko`,
+  `ja`, `zh-cn` and `zh-tw`, each named in the description, where it took
+  any text before.
+- **Keys.** Each description is a sentence of what the key does, and the
+  common ending is "Leave it empty for no key." ("Empty: the program gets
+  the key" before); the box's grayed example shows how a key is written.
+  Where a key is not taken (one tab, the log off), it "goes to the program
+  like any other key". Mark the diagnostic log is last, as the least used.
+- **Clipboard.** Its one setting, whether programs may read the clipboard
+  (OSC 52), is on the Advanced page, and the page is gone. A
+  `settings-page.txt` naming it (SG16) is a name no page has, so the
+  window opens as it does with none kept (`withPageNamed`).
+
+**Examples in empty boxes.** A box whose form is not plain words shows an
+example, grayed, from the moment it is opened until a key is typed, as
+quick connect does (SG14): `#000000, #cd0000, #00cd00, …` for a palette,
+`#1e1e1e` for a color, `Ctrl+Shift+T` for a key.
+
+Each changed text is changed in Korean too (`Words.geng`).
