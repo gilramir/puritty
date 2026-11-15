@@ -111,6 +111,15 @@ char *pt_font_file(const char *font, int variant, int *index);
  * renderer checks that it has the cluster, and asks once a code point. */
 char *pt_fallback_file(const uint32_t *cps, int n, int color, const char *lang, int *index);
 
+/* The family a font that cannot be used is shown in, as the platform
+ * names it: fontconfig's `monospace`, Windows' Consolas (docs/settings.md
+ * ST34, ST35). */
+const char *pt_fallback_family(void);
+
+/* Whether the face `index` of `file` opens with the FreeType built in
+ * (TrueType and CFF; not Type 1). */
+int pt_readable(const char *file, int index);
+
 /* Fills a rectangle of the target with a color, 0xRRGGBB. */
 void pt_fill(uint32_t rgb, int x, int y, int w, int h);
 void pt_fill_rects(uint32_t rgb, const PtRect *rects, int n);

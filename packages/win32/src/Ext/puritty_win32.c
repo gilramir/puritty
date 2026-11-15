@@ -476,6 +476,30 @@ geng_cancel puritty_win32_fonts(geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+const char *pt_fallback_family(void) {
+    return "Consolas";
+}
+
+/* The family the terminal shows for a font's name, for the settings window
+ * (docs/settings.md ST35): its own when Windows has it and FreeType reads
+ * it, else the stand-in pt_font_file takes, else none. */
+static char *string_of(void *bytes);
+geng_cancel puritty_win32_font_used(void *name_bytes, geng_wait *wait) {
+    char *name = string_of(name_bytes);
+    static const char *const stand_ins[] = {"Cascadia Mono", "Consolas", "Courier New"};
+    char **lines = malloc(sizeof *lines);
+    lines[0] = NULL;
+    for (int k = -1; k < (int) (sizeof stand_ins / sizeof *stand_ins) && lines[0] == NULL; k++) {
+        if (k >= 0 && dirs_mode) break;
+        int f = find_face(k < 0 ? name : stand_ins[k], 0);
+        if (f >= 0 && pt_readable(entries[f].file, entries[f].index)) lines[0] = copy(entries[f].family);
+    }
+    if (lines[0] == NULL) lines[0] = copy("");
+    free(name);
+    geng_succeed(wait, geng_slot_P(family_lines(lines, 1)));
+    return (geng_cancel) {0};
+}
+
 /* THE TARGET */
 
 static CRITICAL_SECTION paint;

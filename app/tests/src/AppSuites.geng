@@ -919,7 +919,7 @@ window =
                 \_ ->
                     let
                         many =
-                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) ++ [ "DejaVu Sans Mono" ] }
+                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) ++ [ Config.defaults.font ] }
 
                         r =
                             SettingsWindow.update k.enter many
@@ -931,12 +931,51 @@ window =
                         Nothing ->
                             Expect.fail "not typing"
           }
+        , { name = "a font the file names that cannot be used is said, with the font shown in its place (ST35)"
+          , test =
+                \_ ->
+                    let
+                        named font used =
+                            { opened | config = { config | font = font } }
+                                |> SettingsWindow.withFontUsed { name = "Courier 10 Pitch", used = used }
+                                |> SettingsWindow.fontNote
+                                |> Maybe.map (Words.say Words.English)
+
+                        config =
+                            opened.config
+                    in
+                    Expect.equal
+                        { unusable = Just "Can't be used here; showing DejaVu Sans Mono.", system = Nothing, typed = Just "Not among this computer's fonts.", own = Nothing }
+                        { unusable = named "Courier 10 Pitch" "DejaVu Sans Mono"
+                        , system = named "fira code" "DejaVu Sans Mono"
+                        , typed = named "Nosuch Mono" "DejaVu Sans Mono"
+                        , own = named "Courier 10 Pitch" "courier 10 pitch"
+                        }
+          }
+        , { name = "the font list opens with the file's font first when it is not the system's (ST35)"
+          , test =
+                \_ ->
+                    let
+                        config =
+                            opened.config
+
+                        r =
+                            SettingsWindow.update k.enter ({ opened | config = { config | font = "Courier 10 Pitch" } } |> SettingsWindow.withFontUsed { name = "Courier 10 Pitch", used = "DejaVu Sans Mono" })
+
+                        offered =
+                            Maybe.withDefault [] (Maybe.map (SettingsWindow.suggestions r.model) r.model.typing)
+                    in
+                    Expect.equal
+                        { offered = [ "Courier 10 Pitch", "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], system = [ False, True, True, True, True ] }
+                        { offered = offered, system = Array.map (SettingsWindow.isSystemFont r.model) offered }
+          }
         , { name = "the eleventh font is reached by Down and written"
           , test =
                 \_ ->
                     let
+                        -- the file's font among them, so that none is put first (ST35)
                         many =
-                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) }
+                            { opened | fonts = Array.map (\i -> "Font " ++ String.fromInt i) (Array.range 1 12) ++ [ Config.defaults.font ] }
 
                         r =
                             Screen.feedInputs ([ k.enter ] ++ Array.repeat 11 k.down ++ [ k.enter ]) many

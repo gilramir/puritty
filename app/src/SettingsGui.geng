@@ -525,7 +525,7 @@ measure lang m size =
             linesFor s =
                 let
                     n =
-                        Array.length (wrapAll small room (descriptionOf lang s))
+                        Array.length (wrapAll small room (descriptionOf lang s)) + Array.length (noteLines small room (noteOf lang m s))
 
                     blockH =
                         body + px 5 + n * small + (n - 1) * px 4 + px 16
@@ -797,6 +797,27 @@ rows lang m size x0 cw px body small preedit d0 =
         |> draw noClip
 
 
+{-| A note's lines: none for no note. -}
+noteLines : Int -> Int -> String -> Array String
+noteLines size room note =
+    if note == "" then
+        []
+
+    else
+        wrapAll size room note
+
+
+{-| What a row says beyond its description, in the error's color: of the
+font, that it is not used and what is shown (`docs/settings.md` ST35). -}
+noteOf : Lang -> Model -> Setting -> String
+noteOf lang m s =
+    if s.kind == FontFamily then
+        SettingsWindow.fontNote m |> Maybe.map (Words.say lang) |> Maybe.withDefault (meant Reason.NotSet "")
+
+    else
+        ""
+
+
 settingRow : Lang -> Model -> Setting -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> (Int -> Int) -> Int -> Int -> Bool -> String -> Drawn -> Drawn
 settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preedit d =
     let
@@ -823,7 +844,8 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
             { x = x0, y = y, w = vx - x0 - px 16, h = rowH }
 
         lines =
-            wrapAll small textClip.w description
+            Array.map (\l -> { text = l, color = look.dim }) (wrapAll small textClip.w description)
+                ++ Array.map (\l -> { text = l, color = look.error }) (noteLines small textClip.w (noteOf lang m s))
 
         at =
             labeled { y = y, rowH = rowH, body = body, small = small, descLines = Array.length lines, px = px }
@@ -841,7 +863,7 @@ settingRow lang m s i y rowH x0 vx valueW resetW fieldH px body small here preed
             )
         |> draw (clip textClip)
         |> draw (text { x = x0, y = at.label, size = body, color = look.strong, text = fit body textClip.w (settingLabel lang s) })
-        |> (\dd -> Array.foldl (\e acc -> draw (text { x = x0, y = at.desc + e.i * (small + px 4), size = small, color = look.dim, text = e.text }) acc) dd (Array.indexedMap (\k l -> { i = k, text = l }) lines))
+        |> (\dd -> Array.foldl (\e acc -> draw (text { x = x0, y = at.desc + e.i * (small + px 4), size = small, color = e.color, text = e.text }) acc) dd (Array.indexedMap (\k l -> { i = k, text = l.text, color = l.color }) lines))
         |> draw (clip { x = x0 - px 16, y = 3 * line, w = vx + valueW + resetW - x0 + px 16, h = (m.rows - 5) * line })
         |> valueOf lang m s valueBox typingHere preedit px body
         |> target valueBox (OnValue i)
@@ -1192,7 +1214,14 @@ suggestionsOf lang m x0 cw vx valueW fieldH rowY px body d =
                                                     Bytes.empty
                                                 )
                                             |> draw
-                                                (textIn e.f
+                                                ((if SettingsWindow.isSystemFont m e.f then
+                                                    textIn e.f
+
+                                                  else
+                                                    -- not the system's: dimmed, in the window's own font;
+                                                    -- the row's note says why (ST35)
+                                                    \r -> text { r | text = fit body (b.w - px 16) r.text, color = look.dim }
+                                                 )
                                                     { x = b.x + px 8
                                                     , y = b.y + itemH // 2 + body // 3
                                                     , size = body

@@ -1038,8 +1038,8 @@ DejaVu Sans Mono, Courier 10 Pitch, and the window was gone. A segfault
 in `hb_font_get_nominal_glyph`, from `draw_run`, reading a null font.
 
 **Why.** The FreeType built into the Linux packages has the TrueType and
-CFF drivers only (`app/distro/libs-inside.sh`), and Courier 10 Pitch, like
-Nimbus Mono PS, is a Type 1 font (`.pfb`, `.t1`). fontconfig named its
+CFF drivers only (`app/distro/libs-inside.sh`), and Courier 10 Pitch is a Type
+1 font (`.pfb`) only. fontconfig named its
 file (the system's cache, written by the system's FreeType, indexes Type 1
 files), so `pt_refont` went on: it closed every face, then could not open
 the new one, and answered "the font in use is kept" with no font left
@@ -1056,10 +1056,46 @@ config rewritten while the window ran: exit 139 at Courier 10 Pitch.
 - `pt_open`, at the start, takes the system's `monospace` font in place of
   one it cannot read, so a config naming one still opens a window;
 - the settings window's list on Linux (`puritty_x11_fonts`) offers only
-  families with a TrueType or CFF file, so Courier 10 Pitch and Nimbus Mono
-  PS (Type 1 only on gmktec7) are not offered.
+  families with a TrueType or CFF file, so Courier 10 Pitch (Type 1 only on
+  gmktec7) is not offered; Nimbus Mono PS, which has OpenType files beside
+  its Type 1 ones, is, and fontconfig gives its OpenType files.
 
 The same switches against the fixed build: every one kept the window,
 Courier 10 Pitch refused with the font in use kept, and a start with it in
 the config opened in the monospace font. Building Type 1 into FreeType
 (its `t1_driver_class`) would let such fonts be used; not done.
+
+## ST35 · The font the file names, said when it cannot be used (2026-11-15)
+
+After ST34, Gilbert opened the settings window with Courier 10 Pitch still
+in his config: the Font field said "Courier 10 Pitch", which puritty no
+longer offered and the terminal no longer showed, and opening the list
+lost it. **Decided (Gilbert, 2026-11-15): keep the name the file says, and
+say plainly that it is not used and what is shown.** The file is not
+rewritten unless a font is chosen: one `config.toml` may serve several
+computers, and a font one lacks another may have.
+
+**Now:**
+- `Window.fontUsed name` (X11 and Win32) answers the family the terminal
+  shows for a name: on Linux fontconfig's match, or `monospace`'s when
+  FreeType here cannot read that file (`family_used`); on Windows the
+  name when it has it and FreeType reads it, else the stand-in its
+  `pt_font_file` takes (Cascadia Mono, Consolas, Courier New). The
+  settings window asks it once, for the file's font, as it opens.
+- `SettingsWindow.fontNote`: for a font not among the system's, under the
+  row's description in the error color, "Can't be used here; showing
+  DejaVu Sans Mono." (the family asked), or "Not among this computer's
+  fonts." for one typed since. Nothing for a listed font, or one whose
+  answer is itself (a family the list leaves out but the terminal uses).
+- The font list opens with the file's font first when it is not the
+  system's, dimmed and in the window's own font, so that opening the
+  list does not lose it.
+- The fallback family at a start, ST34's, is the platform's
+  (`pt_fallback_family`): fontconfig's `monospace`, and on Windows
+  Consolas, where `monospace` named nothing and a font Windows lacks
+  failed the start as Courier 10 Pitch did on Linux.
+
+Seen on a virtual display with gmktec7's 37 monospace font files and
+Courier 10 Pitch in the file (two shots, the row and the open list): a
+mark with "(can't be used here)", then "(unusable)", after the name was
+cut by the list's width, so the name stands alone, dimmed. App tests 201.

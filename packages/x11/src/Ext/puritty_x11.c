@@ -173,6 +173,36 @@ char *pt_font_file(const char *font, int variant, int *index) {
     return out;
 }
 
+const char *pt_fallback_family(void) {
+    return "monospace";
+}
+
+/* The family the terminal shows for the font `name` (ST35): the one
+ * fontconfig matches, or the fallback's when FreeType here cannot read
+ * that one's file (a Type 1 font). */
+static char *family_used(const char *name) {
+    for (int pass = 0; pass < 2; pass++) {
+        FcPattern *p = FcNameParse((const FcChar8 *) (pass == 0 ? name : pt_fallback_family()));
+        if (p == NULL) continue;
+        FcConfigSubstitute(NULL, p, FcMatchPattern);
+        FcDefaultSubstitute(p);
+        FcResult r;
+        FcPattern *m = FcFontMatch(NULL, p, &r);
+        FcPatternDestroy(p);
+        FcChar8 *file, *family;
+        int index = 0;
+        char *out = NULL;
+        if (m != NULL && FcPatternGetString(m, FC_FILE, 0, &file) == FcResultMatch &&
+            FcPatternGetString(m, FC_FAMILY, 0, &family) == FcResultMatch) {
+            FcPatternGetInteger(m, FC_INDEX, 0, &index);
+            if (pass == 1 || pt_readable((const char *) file, index)) out = strdup((const char *) family);
+        }
+        if (m != NULL) FcPatternDestroy(m);
+        if (out != NULL) return out;
+    }
+    return strdup("");
+}
+
 static int font_order(const void *a, const void *b) {
     const char *x = *(char *const *) a, *y = *(char *const *) b;
     for (; *x && *y; x++, y++) {
@@ -246,6 +276,19 @@ geng_cancel puritty_x11_fonts(geng_wait *wait) {
     FcObjectSetDestroy(os);
     FcPatternDestroy(p);
     geng_succeed(wait, geng_slot_P(family_lines(names, n)));
+    return (geng_cancel) {0};
+}
+
+/* The family the terminal shows for a font's name, for the settings window
+ * (ST35): its line, or none when nothing matches. */
+static char *string_of(void *bytes);
+geng_cancel puritty_x11_font_used(void *name_bytes, geng_wait *wait) {
+    fonts_up_to_date();
+    char *name = string_of(name_bytes);
+    char **lines = malloc(sizeof *lines);
+    lines[0] = family_used(name);
+    free(name);
+    geng_succeed(wait, geng_slot_P(family_lines(lines, 1)));
     return (geng_cancel) {0};
 }
 

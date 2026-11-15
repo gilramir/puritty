@@ -1005,15 +1005,15 @@ int pt_open(const char *font, const char *lang, int points, int dpi, long cap) {
     }
     hbuf = hb_buffer_create();
     int index;
-    if (FT_Init_FreeType(&library) != 0) return -1;
+    if (library == NULL && FT_Init_FreeType(&library) != 0) return -1;
     char *file = pt_font_file(font, 0, &index);
     if (file == NULL || load_face(file, index, 1) != 0) {
         /* a font the system names that FreeType here cannot read (a Type 1
          * font: only TrueType and CFF are built in): the system's
          * monospace font, so that the window still opens */
         free(file);
-        if (pt_verbose) fprintf(stderr, "font %s cannot be read; monospace instead\n", font);
-        font = "monospace";
+        if (pt_verbose) fprintf(stderr, "font %s cannot be read; %s instead\n", font, pt_fallback_family());
+        font = pt_fallback_family();
         file = pt_font_file(font, 0, &index);
         if (file == NULL || load_face(file, index, 1) != 0) {
             free(file);
@@ -1058,6 +1058,14 @@ int pt_zoom(int points, int dpi) {
     return 1;
 }
 
+int pt_readable(const char *file, int index) {
+    if (library == NULL && FT_Init_FreeType(&library) != 0) return 0;
+    FT_Face probe;
+    if (FT_New_Face(library, file, index, &probe) != 0) return 0;
+    FT_Done_Face(probe);
+    return 1;
+}
+
 /* Another primary font, fallback language, size or glyph cache in place of
  * the open one (docs/settings.md ST4): every face closed, the fallback
  * faces found again as clusters ask for them, and the glyphs begun again.
@@ -1070,12 +1078,10 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
      * here cannot read (a Type 1 font) leaves the open font as it was,
      * where closing first left none, and the next frame drew with a face
      * that was gone */
-    FT_Face probe;
-    if (FT_New_Face(library, file, index, &probe) != 0) {
+    if (!pt_readable(file, index)) {
         free(file);
         return -1;
     }
-    FT_Done_Face(probe);
     free(file);
     reset_glyphs();
     for (int f = 0; f < nfaces; f++) {

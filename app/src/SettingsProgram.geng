@@ -179,6 +179,9 @@ openWindow r given locale =
                                         |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = recents }))
                                         -- the page it was last on while puritty runs (SG16)
                                         |> Task.andThen (\w -> lastPage r |> Task.map (\at -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = at }))
+                                        -- the family the terminal shows for the file's font,
+                                        -- when it is not the system's (ST35)
+                                        |> Task.andThen (\w -> Window.fontUsed (fontOf read) |> Task.map (\used -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = w.page, used = used }))
                                         -- an arrow over a window of choices, not the
                                         -- terminal's I-beam (Gilbert, 2026-11-10)
                                         |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
@@ -190,6 +193,17 @@ openWindow r given locale =
                                         |> Task.map .outcome
                         )
             )
+
+
+{-| The font the file names, or the default's where it was not read. -}
+fontOf : Read -> String
+fontOf read =
+    when read is
+        Gave g ->
+            g.config.font
+
+        Unread _ ->
+            Config.defaults.font
 
 
 {-| The connections made last (SG14), from the state folder; none when
@@ -241,7 +255,7 @@ sshAliases r =
             meant Reason.NotSet Task.succeed []
 
 
-first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent, page : Maybe String } -> Maybe String -> Words.Lang -> State
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent, page : Maybe String, used : String } -> Maybe String -> Words.Lang -> State
 first r given read cell w shotPath lang =
     let
         got =
@@ -267,6 +281,7 @@ first r given read cell w shotPath lang =
             , launcher = r.launcher
             }
             |> SettingsWindow.withRecents w.recents
+            |> SettingsWindow.withFontUsed { name = got.config.font, used = w.used }
             |> (\m ->
                     -- the start screen opens on the hosts, as it always has
                     when w.page is

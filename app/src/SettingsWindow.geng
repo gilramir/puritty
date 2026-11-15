@@ -9,11 +9,13 @@ module SettingsWindow exposing
     , choicesOf
     , fileRead
     , focused
+    , fontNote
     , hostRows
     , hostsPage
     , inList
     , init
     , isFamily
+    , isSystemFont
     , linesPerRow
     , listed
     , onHosts
@@ -25,6 +27,7 @@ module SettingsWindow exposing
     , suggestions
     , told
     , update
+    , withFontUsed
     , withPageNamed
     , withRecents
     , withRowLines
@@ -91,6 +94,9 @@ type alias Model =
     , undo : Array Undo
     , message : Maybe Message
     , fonts : Array String
+    -- the family the terminal shows for the font the file named when the
+    -- window opened (ST35): its own, or the one in its place
+    , fontUsed : { name : String, used : String }
     -- the hosts of ~/.ssh/config, listed with the file's (V63), and
     -- whether the window is the host list, which a session replaces (V65)
     , aliases : Array String
@@ -184,6 +190,7 @@ init r =
             Nothing
     , undo = []
     , fonts = r.fonts
+    , fontUsed = { name = "", used = "" }
     , aliases = r.aliases
     , launcher = r.launcher
     , recents = []
@@ -412,6 +419,46 @@ withPageNamed name m =
 withRecents : Array Recent -> Model -> Model
 withRecents recents m =
     { m | recents = recents }
+
+
+{-| The family the terminal shows for the font `name` names (ST35). -}
+withFontUsed : { name : String, used : String } -> Model -> Model
+withFontUsed used m =
+    { m | fontUsed = used }
+
+
+{-| What the font's row says of a font that is not this computer's or
+puritty cannot use (docs/settings.md ST35): the family shown in its place,
+when the window asked; that it is not among the fonts, when it did not
+(one typed since). Nothing for a font in the list, or the default. -}
+fontNote : Model -> Maybe Words.Message
+fontNote m =
+    let
+        name =
+            String.trim m.config.font
+
+        same a b =
+            String.toLower a == String.toLower b
+    in
+    if name == "" || Array.any (same name) m.fonts then
+        Nothing
+
+    else if same name m.fontUsed.name && m.fontUsed.used /= "" then
+        if same name m.fontUsed.used then
+            Nothing
+
+        else
+            Just (Words.message "message.fontNotUsed" |> Words.with "used" m.fontUsed.used)
+
+    else
+        Just (Words.message "message.fontNotHere")
+
+
+{-| Whether a name in the font list is one of the system's; the font the
+file names that is not, first in the list (ST35), is not. -}
+isSystemFont : Model -> String -> Bool
+isSystemFont m name =
+    Array.any (\f -> String.toLower f == String.toLower name) m.fonts
 
 
 {-| The host list: the Hosts page with no host's form open. -}
@@ -1725,8 +1772,17 @@ suggestions m t =
             else
                 String.toLower name
     in
-    m.fonts
-        |> Array.keepIf (\f -> q == "" || String.contains q (String.toLower f))
+    -- the font the file names, first, where it is not the system's, so
+    -- that opening the list does not lose it (ST35)
+    (if q == "" && fontNote m /= Nothing then
+        [ String.trim m.config.font ]
+
+     else
+        []
+    )
+        ++ (m.fonts
+                |> Array.keepIf (\f -> q == "" || String.contains q (String.toLower f))
+           )
 
 
 -- LAYOUT
