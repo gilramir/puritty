@@ -630,6 +630,14 @@ type Expect
     | ForTheme
     | ForClientName
     | ForNothing
+    -- the end of what a command that runs commands ran (`source-file`,
+    -- `if-shell`): each of them answers with a block of puritty's own from
+    -- tmux 3.2, and every block before this one's is theirs
+    -- (docs/tmux-checks.md TK10)
+    | ForFence
+    -- a command sent on the same line as the one before it: tmux runs none
+    -- of a line's commands after one that fails, and answers none (TK10)
+    | Then Expect
 
 
 {-| A pane as `list-panes` describes it on attach (TM5.8), and the main
@@ -782,7 +790,7 @@ traced e acc =
                     Array.first acc.state.expecting
 
                 line =
-                    describe next e
+                    describe (Maybe.map unwrapped next) e
             in
             { (endRun acc) | trace = acc.trace ++ line }
 
@@ -1163,6 +1171,12 @@ expectName x =
 
         ForNothing ->
             "nothing (a reply not read)"
+
+        ForFence ->
+            "the end of a command's commands"
+
+        Then e ->
+            expectName e ++ " (on the line before's)"
 
 
 {-| A pane's line in a mark. -}
@@ -1830,7 +1844,7 @@ askLine asked acc =
             acc.state
     in
     { acc
-        | state = expected asked st
+        | state = expectedLine asked st
         , commands = Array.pushLast (String.join " ; " (Array.map .command asked)) acc.commands
     }
 
@@ -1986,16 +2000,64 @@ reply r acc =
 
     else
         let
-            st =
-                acc.state
-
             expect =
-                Maybe.withDefault (meant Reason.FromOutside ForNothing) (Array.first st.expecting)
-
-            popped =
-                { acc | state = { st | expecting = Array.dropFirst 1 st.expecting } }
+                Maybe.withDefault (meant Reason.FromOutside ForNothing) (Array.first acc.state.expecting)
         in
-        replied expect r.ok r.lines popped
+        if expect == ForFence && Array.map Bytes.toStringLossy r.lines /= [ fenceWord ] then
+            -- a block of the commands a command ran, before the fence after
+            -- it (TK10): shown as the command's own
+            replied ForRan r.ok r.lines acc
+
+        else
+            let
+                st =
+                    acc.state
+
+                rest =
+                    Array.dropFirst 1 st.expecting
+
+                -- a command that failed ends its line: the commands after
+                -- it there are not run, and answered as failed with nothing
+                -- said (TK10)
+                dropped =
+                    if r.ok then
+                        []
+
+                    else
+                        Array.takeFirst (Array.findFirst (\e -> not (onLine e)) rest |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore (Array.length rest))) rest
+
+                popped =
+                    { acc | state = { st | expecting = Array.dropFirst (Array.length dropped) rest } }
+            in
+            Array.foldl (\e a -> replied e False [] a) (replied expect r.ok r.lines popped) dropped
+
+
+{-| What a reply is for, without its `Then`. -}
+unwrapped : Expect -> Expect
+unwrapped e =
+    when e is
+        Then inner ->
+            unwrapped inner
+
+        _ ->
+            e
+
+
+{-| Whether an expectation is a command's on the line of the one before. -}
+onLine : Expect -> Bool
+onLine e =
+    when e is
+        Then _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| What the fence after a command that runs commands prints (TK10). -}
+fenceWord : String
+fenceWord =
+    "puritty-fence"
 
 
 {-| The bytes of the events that are a terminal's own, outside control
@@ -2897,6 +2959,12 @@ replied expect ok lines acc =
 
         ForNothing ->
             acc
+
+        ForFence ->
+            acc
+
+        Then e ->
+            replied e ok lines acc
 
 
 {-| A pane's state and both its captures, for one line: made again from
@@ -5007,10 +5075,59 @@ asTmuxSays text =
             meant Reason.FromOutside bare
 
 
-{-| Commands sent, each with what its reply is for. -}
+{-| Commands sent, each with what its reply is for; after one the user
+runs that runs commands itself (`source-file`, `if-shell`, `run-shell -C`),
+a fence, whose reply ends theirs (TK10). -}
 sendAsking : Array { command : String, expect : Expect } -> (taken s : State) -> { state : State, commands : Array String }
 sendAsking list s =
-    { state = expected list s, commands = Array.map .command list }
+    let
+        fenced =
+            Array.mapAndFlatten
+                (\c ->
+                    if c.expect == ForRan && runsCommands c.command then
+                        [ c, { command = Command.display fenceWord, expect = ForFence } ]
+
+                    else
+                        [ c ]
+                )
+                list
+    in
+    { state = expected fenced s, commands = Array.map .command fenced }
+
+
+{-| Whether a command line runs tmux commands of its own, each answered
+with a block (from 3.2 as this client's): `source-file`, `if-shell`, and
+`run-shell -C` (TK10). -}
+runsCommands : String -> Bool
+runsCommands line =
+    Syntax.commands (Syntax.tokens line)
+        |> Array.any
+            (\words ->
+                when Array.map .value words |> Array.popFirst is
+                    Just { first, rest } ->
+                        Command.runsOthers first (Array.keepIf (\w -> String.startsWith "-" w) rest |> String.join "")
+
+                    Nothing ->
+                        meant Reason.FromOutside False
+            )
+
+
+{-| Commands sent on one line, `a ; b`: each after the first marked as on
+its line, since a failing one ends it (TK10). -}
+expectedLine : Array { command : String, expect : Expect } -> (taken s : State) -> State
+expectedLine list s =
+    expected
+        (Array.indexedMap
+            (\i c ->
+                if i == 0 then
+                    c
+
+                else
+                    { c | expect = Then c.expect }
+            )
+            list
+        )
+        s
 
 
 {-| Commands' replies waited for, in order; the user's own commands
@@ -8148,7 +8265,7 @@ openPopup ctx pop s =
             if s.version == 0 || s.version >= 38 then
                 let
                     asked =
-                        expected (Array.pushFirst { command = command, expect = ForRan } (Array.map (\c -> { command = c, expect = ForNothing }) styled)) { s | said = "" }
+                        expectedLine (Array.pushFirst { command = command, expect = ForRan } (Array.map (\c -> { command = c, expect = ForNothing }) styled)) { s | said = "" }
                 in
                 { state = asked, commands = [ String.join " ; " (Array.pushFirst command styled) ] }
 
@@ -13362,43 +13479,45 @@ dragged col row released d s =
         target =
             "%" ++ String.fromInt d.pane
 
-        command =
+        -- the commands of one line
+        line =
             if d.kind == 2 then
                 -- a tiled pane's width; tmux takes the room from its neighbor
-                Command.resizePane target (Just (max 1 (d.w + dx))) Nothing
+                [ Command.resizePane target (Just (max 1 (d.w + dx))) Nothing ]
 
             else if d.kind == 3 then
-                Command.resizePane target Nothing (Just (max 1 (d.h + dy)))
+                [ Command.resizePane target Nothing (Just (max 1 (d.h + dy))) ]
 
             else if d.kind == 0 then
                 -- `d.y` is where it is drawn, below the tab bar; tmux's rows
                 -- start under it
-                Command.movePane target (d.x - 1 + dx) (boxTop + dy)
+                [ Command.movePane target (d.x - 1 + dx) (boxTop + dy) ]
 
             else if d.kind == 4 then
                 -- a floating pane's size, as resize-pane takes it, counts its
                 -- border's lines: `new-pane -x 30 -y 6` makes a 28 by 4 pane
-                Command.resizePane target (Just (max 4 (d.w + 2 + dx))) Nothing
+                [ Command.resizePane target (Just (max 4 (d.w + 2 + dx))) Nothing ]
 
             else if d.kind == 5 then
-                Command.resizePane target Nothing (Just (max 3 (d.h + 2 + dy)))
+                [ Command.resizePane target Nothing (Just (max 3 (d.h + 2 + dy))) ]
 
             else if d.kind == 6 || d.kind == 7 then
                 -- the left edge: the box's left moves with the pointer and
-                -- its right stays, so it moves and resizes together
-                Command.movePane target (d.x - 1 + leftDx) boxTop
-                    ++ " ; "
-                    ++ Command.resizePane target
-                        (Just (d.w + 2 - leftDx))
-                        (if d.kind == 7 then
-                            Just (max 3 (d.h + 2 + dy))
+                -- its right stays, so it moves and resizes together, on one
+                -- line, a reply each (TK10)
+                [ Command.movePane target (d.x - 1 + leftDx) boxTop
+                , Command.resizePane target
+                    (Just (d.w + 2 - leftDx))
+                    (if d.kind == 7 then
+                        Just (max 3 (d.h + 2 + dy))
 
-                         else
-                            Nothing
-                        )
+                     else
+                        Nothing
+                    )
+                ]
 
             else
-                Command.resizePane target (Just (max 4 (d.w + 2 + dx))) (Just (max 3 (d.h + 2 + dy)))
+                [ Command.resizePane target (Just (max 4 (d.w + 2 + dx))) (Just (max 3 (d.h + 2 + dy))) ]
 
         boxTop =
             d.y
@@ -13421,18 +13540,11 @@ dragged col row released d s =
             else
                 Just { d | sent = { col = col, row = row } }
 
-        commands =
-            if moved then
-                [ command ]
-
-            else
-                []
-
         s2 =
             { s | drag = after }
     in
     if moved then
-        sent commands s2
+        { state = expectedLine (Array.map (\c -> { command = c, expect = ForNothing }) line) s2, commands = [ String.join " ; " line ] }
 
     else
         { state = s2, commands = [] }

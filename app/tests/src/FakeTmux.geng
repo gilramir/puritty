@@ -2,6 +2,7 @@ module FakeTmux exposing
     ( Pane
     , World
     , answer
+    , closePane
     , copyState
     , enterCopy
     , known
@@ -19,8 +20,18 @@ the commands that change it (`send-keys` in copy mode, `copy-mode`). A
 command it does not know is answered with nothing and kept in `unknown`,
 so that a test can see what it was not ready for.
 
+How a line of several commands is answered is the tmux whose rules the
+world follows (`rules`, its version), as measured on every dumped tmux
+(`corpus/tmux/*/lines.txt`, docs/tmux-checks.md TK10): a line that does
+not parse, one `%error`; otherwise a block a command, in turn, the first
+that fails ending the line; what the commands made tmux tell the client
+after the line's last block, or from 3.8 after each command's; and the
+commands `if-shell` and `source-file` run, a block each, this client's
+from 3.2 (flags 1) and not before (0).
+
 It is a model, so it can be wrong where tmux is not; `known` lists what it
-answers, and each answer is checked against a real tmux's (TM68).
+answers, and each answer is checked against a real tmux's (TM68), and its
+lines' shapes against every dumped tmux's (TK10).
 -}
 
 import Bitwise
@@ -66,6 +77,13 @@ type alias World =
     -- variables this tmux answers empty, as an older one does: one it
     -- does not have (docs/tmux-checks.md TK8)
     , lacking : Array String
+    -- the tmux whose rules a line of several commands is answered by
+    -- (TK10), and the files `source-file` reads
+    , rules : String
+    , files : Dict String String
+    -- panes that float (3.7), each with its box, drawn over the tiled ones
+    -- in the layout (`"z"`), the first the bottom one
+    , floats : Array { id : Int, x : Int, y : Int, w : Int, h : Int }
     }
 
 
@@ -86,6 +104,9 @@ world w =
     , heard = []
     , options = Dict.empty
     , lacking = []
+    , rules = w.version
+    , files = Dict.empty
+    , floats = []
     }
 
 
@@ -102,33 +123,389 @@ known =
     [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option" ]
 
 
-{-| A command line answered: each of its commands' replies, then what the
-commands made tmux tell the client (`%pane-mode-changed`, subscriptions). -}
+{-| A command line answered as the world's `rules` say (TK10): its
+commands' blocks and what they made tmux tell the client
+(`%pane-mode-changed`, subscriptions). -}
 answer : String -> World -> { world : World, bytes : Bytes }
 answer line w0 =
     let
-        done =
-            Syntax.commands (Syntax.tokens line)
-                |> Array.foldl
-                    (\tokens acc ->
-                        let
-                            r =
-                                one (Array.map .value tokens) acc.w
-                        in
-                        { w = { r.w | number = r.w.number + 1, answered = Array.pushLast (String.join " " (Array.map .value tokens)) r.w.answered }
-                        , text = acc.text ++ block acc.w.number r.ok r.lines
-                        , notices = acc.notices ++ r.notices
-                        }
-                    )
-                    { w = { w0 | heard = Array.pushLast line w0.heard }, text = "", notices = [] }
+        r =
+            rulesOf w0.rules
+
+        heard =
+            { w0 | heard = Array.pushLast line w0.heard }
+
+        commands =
+            Syntax.commands (Syntax.tokens line) |> Array.map (Array.map .value)
+
+        refusal =
+            if Array.isEmpty commands then
+                Just "parse error: syntax error"
+
+            else if r.quoteFails && unclosed line then
+                Just ("parse error: invalid or unknown command: " ++ line)
+
+            else
+                Array.mapAndKeepJust (refused heard) commands |> Array.first
     in
-    { world = done.w
-    , bytes = Bytes.fromString (done.text ++ String.join "" (Array.map (\n -> n ++ "\u{000D}\n") done.notices))
+    if String.trim line == "" then
+        -- 2.x reads a blank line as a command and refuses it; 3.0 skips it
+        if r.blankFails then
+            { world = { heard | number = heard.number + 1 }, bytes = Bytes.fromString (block heard.number 1 False [ "parse error: (null)" ]) }
+
+        else
+            { world = heard, bytes = Bytes.empty }
+
+    else
+        when refusal is
+            Just why ->
+                -- refused whole, before any of it runs
+                { world = { heard | number = heard.number + 1 }, bytes = Bytes.fromString (block heard.number 1 False [ why ]) }
+
+            Nothing ->
+                let
+                    done =
+                        runAll r 1 commands { w = heard, text = "", notices = [], later = [] }
+
+                    -- `if-shell -b`'s commands, run when its shell is done,
+                    -- after the line: not this client's (measured, every tmux)
+                    afterwards =
+                        runAll r 0 done.later { w = done.w, text = "", notices = [], later = [] }
+                in
+                { world = afterwards.w
+                , bytes = Bytes.fromString (done.text ++ noticed done.notices ++ afterwards.text ++ noticed afterwards.notices)
+                }
+
+
+{-| Notifications as tmux writes them, a line each. -}
+noticed : Array String -> String
+noticed notices =
+    String.join "" (Array.map (\n -> n ++ "\u{000D}\n") notices)
+
+
+{-| How a tmux answers a line, by its version (`corpus/tmux/*/lines.txt`,
+TK10): the commands `if-shell` and `source-file` run answered as this
+client's (3.2); notifications after each command's block, not the line's
+last (3.8); `display-message -t` a pane that is not there refused (before
+3.2; from it, the current pane shown); `display-message` without `-p` a
+`%message` in its block (3.4; before, nothing); a blank line refused
+(before 3.0); a quote left open refused (before 3.2). -}
+type alias Rules =
+    { nestedOwn : Bool
+    , noticesEach : Bool
+    , missingDisplayFails : Bool
+    , messageInBlock : Bool
+    , blankFails : Bool
+    , quoteFails : Bool
     }
 
 
-block : Int -> Bool -> Array String -> String
-block number ok lines =
+rulesOf : String -> Rules
+rulesOf version =
+    let
+        t =
+            tenths version
+    in
+    { nestedOwn = t >= 32
+    , noticesEach = t >= 38
+    , missingDisplayFails = t < 32
+    , messageInBlock = t >= 34
+    , blankFails = t < 30
+    , quoteFails = t < 32
+    }
+
+
+{-| A version in tenths: `3.6a` 36, `2.9a` 29, `next-3.4` 34. -}
+tenths : String -> Int
+tenths version =
+    let
+        digits =
+            String.replace "next-" "" version |> String.split "."
+
+        part i =
+            Array.get i digits |> Maybe.andThen (\d -> String.toInt (String.keepIf Char.isDigit d)) |> Maybe.withDefault 0
+    in
+    part 0 * 10 + part 1
+
+
+type alias Answering =
+    { w : World, text : String, notices : Array String, later : Array (Array String) }
+
+
+{-| Commands run in turn, a block each with `flags`, until one fails;
+the commands a command runs (`if-shell`, `source-file`) after its block,
+as a group of their own. -}
+runAll : Rules -> Int -> Array (Array String) -> Answering -> Answering
+runAll r flags commands start =
+    let
+        done =
+            Array.foldl
+                (\words acc ->
+                    if acc.stopped then
+                        acc
+
+                    else
+                        let
+                            ran =
+                                runOne r words acc.w
+
+                            numbered =
+                                { ran.w | number = ran.w.number + 1, answered = Array.pushLast (String.join " " words) ran.w.answered }
+
+                            own =
+                                block acc.w.number flags ran.ok ran.lines
+
+                            inner =
+                                runAll r
+                                    (if r.nestedOwn then
+                                        1
+
+                                     else
+                                        0
+                                    )
+                                    ran.nested
+                                    { w = numbered, text = "", notices = [], later = [] }
+
+                            notices =
+                                ran.notices ++ inner.notices
+                        in
+                        if r.noticesEach then
+                            { acc | w = inner.w, text = acc.text ++ own ++ inner.text ++ noticed notices, later = acc.later ++ ran.later ++ inner.later, stopped = not ran.ok }
+
+                        else
+                            { acc | w = inner.w, text = acc.text ++ own ++ inner.text, notices = acc.notices ++ notices, later = acc.later ++ ran.later ++ inner.later, stopped = not ran.ok }
+                )
+                { w = start.w, text = start.text, notices = start.notices, later = start.later, stopped = False }
+                commands
+    in
+    { w = done.w, text = done.text, notices = done.notices, later = done.later }
+
+
+{-| Why tmux refuses a command before running its line: a name it does not
+have, or a flag its usage does not list. A tmux without a recorded table
+refuses nothing. -}
+refused : World -> Array String -> Maybe String
+refused w words =
+    let
+        table =
+            tableOf w.version
+
+        name =
+            Maybe.withDefault "" (Array.first words)
+    in
+    if Array.isEmpty table then
+        Nothing
+
+    else
+        when Array.findFirst (\c -> c.name == name || c.alias == name) table is
+            Nothing ->
+                Just ("parse error: unknown command: " ++ name)
+
+            Just found ->
+                let
+                    args =
+                        parsed (Array.dropFirst 1 words)
+
+                    allowed =
+                        flagsOf found.value.usage
+
+                    used =
+                        String.toArray args.bools ++ Array.mapAndKeepJust (\k -> String.toArray k |> Array.first) (Dict.keys args.values)
+                in
+                when Array.findFirst (\c -> not (Array.member c allowed)) used is
+                    Just bad ->
+                        Just ("parse error: command " ++ found.value.name ++ ": unknown flag -" ++ String.fromChar bad.value)
+
+                    Nothing ->
+                        Nothing
+
+
+{-| The flag letters a usage line lists: `[-aCI]` and `[-t target]`. -}
+flagsOf : String -> Array Char
+flagsOf usage =
+    String.split "[-" usage
+        |> Array.dropFirst 1
+        |> Array.mapAndFlatten
+            (\piece ->
+                let
+                    head =
+                        String.split "]" piece |> Array.first |> Maybe.withDefault ""
+                in
+                if String.contains " " head then
+                    String.toArray head |> Array.takeFirst 1
+
+                else
+                    String.toArray head
+            )
+
+
+{-| One command as a line's rules run it: a target pane that is not there
+refused (but `display-message`'s from 3.2), `if-shell` and `source-file`
+handing back the commands they run, the rest by `one`. -}
+runOne : Rules -> Array String -> World -> { w : World, ok : Bool, lines : Array String, notices : Array String, nested : Array (Array String), later : Array (Array String) }
+runOne r words w =
+    let
+        name =
+            Maybe.withDefault "" (Array.first words)
+
+        args =
+            parsed (Array.dropFirst 1 words)
+
+        display =
+            name == "display-message" || name == "display"
+
+        missing =
+            when Dict.get "t" args.values is
+                Just t ->
+                    String.startsWith "%" t
+                        && (when String.toInt (String.dropFirst 1 t) is
+                                Just id ->
+                                    not (Array.any (\p -> p.id == id) w.panes)
+
+                                Nothing ->
+                                    False
+                           )
+
+                Nothing ->
+                    False
+
+        failed why =
+            { w = w, ok = False, lines = [ why ], notices = [], nested = [], later = [] }
+
+        commandsOf text =
+            Syntax.commands (Syntax.tokens text) |> Array.map (Array.map .value)
+    in
+    if missing && (r.missingDisplayFails || not display) then
+        failed ("can't find pane: " ++ Maybe.withDefault "" (Dict.get "t" args.values))
+
+    else if name == "if-shell" || name == "if" then
+        let
+            -- if-shell's own flags: `-b` and `-F` alone, `-t` a pane
+            own =
+                ifArgs (Array.dropFirst 1 words)
+
+            condition =
+                Maybe.withDefault "" (Array.get 0 own.rest)
+
+            yes =
+                if String.contains "F" own.bools then
+                    let
+                        v =
+                            expand (vars w (paneOf own.target w)) condition
+                    in
+                    v /= "" && v /= "0"
+
+                else
+                    -- the shell's command: `false` fails, anything else here
+                    -- succeeds
+                    String.trim condition /= "false"
+
+            chosen =
+                Array.get
+                    (if yes then
+                        1
+
+                     else
+                        2
+                    )
+                    own.rest
+                    |> Maybe.map commandsOf
+                    |> Maybe.withDefault []
+        in
+        if String.contains "b" own.bools then
+            { w = w, ok = True, lines = [], notices = [], nested = [], later = chosen }
+
+        else
+            { w = w, ok = True, lines = [], notices = [], nested = chosen, later = [] }
+
+    else if name == "source-file" || name == "source" then
+        let
+            path =
+                Maybe.withDefault "" (Array.first args.rest)
+        in
+        when Dict.get path w.files is
+            Just text ->
+                { w = w
+                , ok = True
+                , lines = []
+                , notices = []
+                , nested = String.split "\n" text |> Array.mapAndFlatten commandsOf
+                , later = []
+                }
+
+            Nothing ->
+                failed (path ++ ": No such file or directory")
+
+    else
+        let
+            o =
+                one words w
+        in
+        { w = o.w, ok = o.ok, lines = o.lines, notices = o.notices, nested = [], later = [] }
+
+
+{-| `if-shell`'s words: its flags (`-bF`), its pane (`-t`), and the
+condition and commands. -}
+ifArgs : Array String -> { bools : String, target : Maybe String, rest : Array String }
+ifArgs words =
+    when Array.popFirst words is
+        Just { first, rest } ->
+            if first == "-t" then
+                let
+                    after =
+                        ifArgs (Array.dropFirst 1 rest)
+                in
+                { after | target = Array.first rest }
+
+            else if String.startsWith "-" first && String.count first > 1 then
+                let
+                    after =
+                        ifArgs rest
+                in
+                { after | bools = String.dropFirst 1 first ++ after.bools }
+
+            else
+                { bools = "", target = Nothing, rest = words }
+
+        Nothing ->
+            { bools = "", target = Nothing, rest = [] }
+
+
+{-| Whether a line leaves a quote open: tmux before 3.2 refuses it, and
+from 3.2 takes the rest of the line as the quoted word (measured, TK10). -}
+unclosed : String -> Bool
+unclosed line =
+    String.foldl
+        (\c st ->
+            if st.escaped then
+                { st | escaped = False }
+
+            else if st.quote == ' ' then
+                if c == '\'' || c == '"' then
+                    { st | quote = c }
+
+                else if c == '\\' then
+                    { st | escaped = True }
+
+                else
+                    st
+
+            else if c == st.quote then
+                { st | quote = ' ' }
+
+            else if c == '\\' && st.quote == '"' then
+                { st | escaped = True }
+
+            else
+                st
+        )
+        { quote = ' ', escaped = False }
+        line
+        |> (\st -> st.quote /= ' ')
+
+
+block : Int -> Int -> Bool -> Array String -> String
+block number flags ok lines =
     let
         tail =
             (if ok then
@@ -139,9 +516,11 @@ block number ok lines =
             )
                 ++ "1700000000 "
                 ++ String.fromInt number
-                ++ " 1\u{000D}\n"
+                ++ " "
+                ++ String.fromInt flags
+                ++ "\u{000D}\n"
     in
-    "%begin 1700000000 " ++ String.fromInt number ++ " 1\u{000D}\n" ++ String.join "" (Array.map (\l -> l ++ "\u{000D}\n") lines) ++ tail
+    "%begin 1700000000 " ++ String.fromInt number ++ " " ++ String.fromInt flags ++ "\u{000D}\n" ++ String.join "" (Array.map (\l -> l ++ "\u{000D}\n") lines) ++ tail
 
 
 {-| One command: its reply's lines, whether it succeeded, the world after it
@@ -166,10 +545,10 @@ one words w =
     in
     when name is
         "display-message" ->
-            reply [ shown w target args ]
+            reply (displayed w target args)
 
         "display" ->
-            reply [ shown w target args ]
+            reply (displayed w target args)
 
         "list-windows" ->
             reply [ expand (vars w (activePane w)) format ]
@@ -353,6 +732,37 @@ copyState id w =
     { scroll = p.scroll, cx = p.cx, cy = p.cy, mode = p.mode }
 
 
+{-| A pane gone, as when its program exits: the next one active if it was,
+and tmux's word of it, the window's new layout and its active pane
+(measured, TK10). -}
+closePane : Int -> World -> { world : World, notices : Array String }
+closePane id w =
+    let
+        left =
+            Array.keepIf (\p -> p.id /= id) w.panes
+
+        active =
+            if w.active == id then
+                Array.first left |> Maybe.map .id |> Maybe.withDefault w.active
+
+            else
+                w.active
+
+        next =
+            { w | panes = left, active = active }
+    in
+    { world = next
+    , notices =
+        [ "%layout-change @0 " ++ layout next ++ " " ++ layout next ++ " *" ]
+            ++ (if active /= w.active then
+                    [ "%window-pane-changed @0 %" ++ String.fromInt active ]
+
+                else
+                    []
+               )
+    }
+
+
 {-| `send-keys`: in copy mode, a copy command (`-X cursor-up`) or a key
 through copy-mode-vi's table (`-K k`, a key name, or `-H 6b`, its bytes in
 hex, as puritty sends a letter); otherwise nothing changes here (what the
@@ -375,7 +785,12 @@ sendKeys args p w =
                 args.rest
     in
     if p.mode == "" then
-        { w = w, ok = True, lines = [], notices = [] }
+        if String.contains "X" args.bools then
+            -- a copy command for a pane not in a mode (measured, TK10)
+            { w = w, ok = False, lines = [ "not in a mode" ], notices = [] }
+
+        else
+            { w = w, ok = True, lines = [], notices = [] }
 
     else
         let
@@ -532,6 +947,20 @@ shown w target args =
         |> String.replace "%%" "%"
 
 
+{-| `display-message`'s reply: with `-p` its line; without, from 3.4 a
+`%message` in its block, and before it nothing (measured, TK10). -}
+displayed : World -> Pane -> { bools : String, values : Dict String String, rest : Array String } -> Array String
+displayed w target args =
+    if String.contains "p" args.bools then
+        [ shown w target args ]
+
+    else if (rulesOf w.rules).messageInBlock then
+        [ "%message " ++ shown w target args ]
+
+    else
+        []
+
+
 {-| `capture-pane -p`: the screen, or from `-S` to `-E` where `-` is the
 history's first line or the last; with `-a`, the alternate screen, which a
 pane without one gives as one empty line (measured). -}
@@ -653,31 +1082,77 @@ subscribe sub w =
     { w = { w | subscriptions = Array.pushLast { name = name, scope = scope, format = format } w.subscriptions }, ok = True, lines = [], notices = notices }
 
 
-{-| The layout tmux gives: one pane filling the window, in 3.8's JSON form
+{-| The layout tmux gives: the panes side by side, in 3.8's JSON form
 (`new-layouts`), or before it as `b25d,80x24,0,0,0`, the body after its
 checksum. -}
 layout : World -> String
 layout w =
     let
-        p =
-            activePane w
+        n =
+            String.fromInt
+
+        floating id =
+            Array.findFirst (\f -> f.id == id) w.floats |> Maybe.map .value
+
+        tiled =
+            Array.keepIf (\p -> floating p.id == Nothing) w.panes
+
+        tiledWorld =
+            { w | panes = tiled }
+
+        cells =
+            Array.map (\p -> { id = p.id, x = paneIndex tiledWorld p * (paneWidth tiledWorld + 1), width = widthOf tiledWorld p }) tiled
+
+        size =
+            n w.cols ++ "x" ++ n w.rows ++ ",0,0"
 
         body =
-            String.fromInt w.cols ++ "x" ++ String.fromInt w.rows ++ ",0,0," ++ String.fromInt p.id
+            when cells is
+                [ only ] ->
+                    size ++ "," ++ n only.id
+
+                _ ->
+                    size ++ "{" ++ String.join "," (Array.map (\c -> n c.width ++ "x" ++ n w.rows ++ "," ++ n c.x ++ ",0," ++ n c.id) cells) ++ "}"
+
+        json c =
+            box { id = c.id, x = c.x, y = 0, w = c.width, h = w.rows } ""
+
+        box c z =
+            "{\"t\":\"p\",\"w\":"
+                ++ n c.w
+                ++ ",\"h\":"
+                ++ n c.h
+                ++ ",\"x\":"
+                ++ n c.x
+                ++ ",\"y\":"
+                ++ n c.y
+                ++ ","
+                ++ (if c.id == w.active then
+                        "\"a\":true,"
+
+                    else
+                        ""
+                   )
+                ++ "\"i\":"
+                ++ n c.id
+                ++ z
+                ++ ",\"I\":\"%"
+                ++ n c.id
+                ++ "\"}"
+
+        floats =
+            Array.indexedMap (\i f -> box f (",\"z\":" ++ n (Array.length w.floats - 1 - i))) w.floats
     in
     if w.version == "3.6a" then
         hex4 (checksum body) ++ "," ++ body
 
     else
-        "{\"V\":2,\"L\":{\"t\":\"p\",\"w\":"
-            ++ String.fromInt w.cols
-            ++ ",\"h\":"
-            ++ String.fromInt w.rows
-            ++ ",\"x\":0,\"y\":0,\"a\":true,\"i\":"
-            ++ String.fromInt p.id
-            ++ ",\"I\":\"%"
-            ++ String.fromInt p.id
-            ++ "\"}}"
+        when { cells = cells, floats = floats } is
+            { cells = [ only ], floats = [] } ->
+                "{\"V\":2,\"L\":" ++ json { only | x = 0, width = w.cols } ++ "}"
+
+            _ ->
+                "{\"V\":2,\"L\":{\"t\":\"h\",\"w\":" ++ n w.cols ++ ",\"h\":" ++ n w.rows ++ ",\"x\":0,\"y\":0,\"c\":[" ++ String.join "," (Array.map json cells ++ floats) ++ "]}}"
 
 
 {-| tmux's layout checksum (`layout_checksum`): a 16-bit sum, rotated right
@@ -866,7 +1341,7 @@ varsOf w p name =
                 n (paneIndex w p)
 
             "pane_width" ->
-                n (paneWidth w)
+                n (widthOf w p)
 
             "pane_height" ->
                 n w.rows
@@ -963,6 +1438,16 @@ paneIndex w p =
 paneWidth : World -> Int
 paneWidth w =
     (w.cols - (Array.length w.panes - 1)) // max 1 (Array.length w.panes)
+
+
+{-| A pane's width: `paneWidth`, the last pane what is left. -}
+widthOf : World -> Pane -> Int
+widthOf w p =
+    if paneIndex w p == Array.length w.panes - 1 then
+        w.cols - paneIndex w p * (paneWidth w + 1)
+
+    else
+        paneWidth w
 
 
 {-| A format expanded as tmux expands one: `#{name}` a variable; `#{?a,b,c}`

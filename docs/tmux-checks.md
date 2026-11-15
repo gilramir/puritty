@@ -107,8 +107,10 @@ sent as they are.
 1. Check 1 (TK2): the commands moved into `Tmux.Command`, then the catalog
    and the check. *Built* (TK6, TK7), and its formats (TK8).
 2. Check 2, TK3.1–TK3.3, and the bytes that are not UTF-8. *Built* (TK9);
-   the bytes that are not UTF-8 wait on a decision (TK9.3).
-3. Check 3 (TK4).
+   the bytes that are not UTF-8 are not sent (TK9.3, Gilbert's decision).
+3. Check 3 (TK4). *Built* (TK10), with how each tmux answers a line of
+   several commands measured first; it found three ways puritty fell out
+   of step, now fixed.
 4. TK3.4 and TK4's symbolic form, with the refinement work.
 
 ## TK6 · Check 1, first step: the catalog and its check (2026-11-14)
@@ -298,8 +300,9 @@ on the command line, and puritty's commands are Geng `String`s, written as
 UTF-8 (`Main.linesOf`), which cannot hold them. So the choices are a
 command that carries bytes (a `Raw Bytes` form beside the text ones, for
 this alone), or leaving it: on tmux before 3.0, text that is not UTF-8 is
-not sent. **Gilbert's to decide**; until then the test holds today's
-U+FFFD, so a change either way shows.
+not sent. **Decided (Gilbert, 2026-11-15): leave it.** puritty sends
+UTF-8 only; no command carries raw bytes. The test holds today's U+FFFD,
+so a change shows.
 
 **Not modeled, by design:** a pane in a mode (tmux sends the keys to the
 mode's table); a server locale that is not UTF-8 (2.7 refuses to start
@@ -307,3 +310,150 @@ without one).
 
 **Next:** check 3 (TK4), the explorer; `FakeTmux.World.lacking` (TK8) is
 the start of its per-version model.
+
+## TK10 · Check 3 built: the explorer, and three ways out of step found (2026-11-15)
+
+### TK10.1 · How each tmux answers a line of several commands, measured
+
+TK4 asked for this to be measured once on the real binaries before it was
+modeled. `app/tests/dump-lines.py` sends 33 lines to a control client, as
+`dump-tmux.py` does its session, and writes every line tmux wrote after
+each to `corpus/tmux/*/lines.txt`; `releases.sh` and `distros.sh` run it
+for all 33 dumped tmuxes. The lines: two commands that work; one failing
+as it runs, first, in the middle and last (`select-pane -t %99`,
+`capture-pane -t %99`); one not a command, a flag no tmux has, a missing
+argument, a quote left open; commands whose effects tmux tells the client
+(`split-window`, `kill-pane`, `new-window`, `copy-mode`); `display-message`
+without `-p`; `if-shell` (`-F`, a shell's, `-b`), `source-file` and
+`run-shell`; a blank line, `;` alone, a line ending in `;`.
+
+**The same on every tmux:**
+- a line that does not parse (a name that is not a command, a flag the
+  command lacks, a missing argument) is one `%error`, and none of it runs;
+- otherwise each command gets a block, in turn, and **the first that fails
+  as it runs ends the line**: the commands after it are not run and get
+  no block;
+- `if-shell -b`'s commands come after the line, as not this client's
+  (flags 0).
+
+**What differs**, by the five kinds of tmux that differ (each
+distribution's package answers as its release):
+
+| | 2.7–2.9a | 3.0–3.1c | 3.2–3.3a | 3.4–3.7c | 3.8 |
+|---|---|---|---|---|---|
+| the commands `if-shell` and `source-file` run: a block each, flags | 0 | 0 | **1** | 1 | 1 |
+| notifications the line's commands cause | after the line | after the line | after the line | after the line | **after each command's block** |
+| `display-message -t` a pane not there | `%error` | `%error` | the current pane | the current pane | the current pane |
+| `display-message` without `-p` | nothing | nothing | nothing | **`%message` in its block** | the same |
+| a blank line | `%error` | nothing | nothing | nothing | nothing |
+| a quote left open | `%error` | `%error` | the rest of the line quoted | the same | the same |
+
+Before 3.0, `refresh-client -C` takes `W,H`, not `WxH` (puritty sends
+each its own form already, `Caps.sizeByX`). `run-shell`'s output is a bare
+line after its block, but on 3.3, 3.3a and 3.4 it goes to the pane's view
+mode (`%pane-mode-changed`). 3.3 and 3.3a take `kill-pane -t` with its
+argument missing as `kill-pane` and end the server (TV6); it is the last
+line sent, so their records hold the rest. 2.9's record ends at
+`select-pane` after a split, where 2.9 ends the client (TV6).
+
+### TK10.2 · The model
+
+`app/tests/src/FakeTmux.geng` answers a line as the tmux its world's
+`rules` names (`rulesOf`): refused whole when it does not parse (a name or
+flag not in the recorded `list-commands` of the version it answers as, a
+quote left open before 3.2, `;` alone; a blank line before 3.0); else a
+block a command until one fails (a `-t %N` that is not a pane, but
+`display-message`'s from 3.2; `send-keys -X` outside a mode); the commands
+of `if-shell` and `source-file` (`World.files`) a block each, flags 1 from
+3.2; notifications per command on 3.8, per line before it. It also gained
+a layout of several panes side by side, floating panes (`World.floats`,
+3.8's `"z"`), and `closePane`, a pane's program exiting.
+
+**Held to the recordings**: `app/tests/gen-lines.py` writes the 33
+records into `app/tests/src/LinesRecorded.geng` (`--check` in the unit
+gate, as `gen-versions.py`), and a test answers every line the fake
+models (all but making and killing panes and windows, `refresh-client
+-C`, `run-shell` and `display-popup`, each tmux's own form and check 1's)
+on the fake following each tmux's version, and compares the shape of
+the answer (each block ok or `%error` and its flags, a `%message` in one,
+each notification by name, bare lines) with what that tmux wrote. **It
+found the model wrong twice**, each mended from the recording
+(`if-shell`'s `-b` and `-F` read as taking a value; the open quote before
+3.2), and the test once (a line sent twice, keyed by its text). All 33
+now agree.
+
+The fake answers as 3.8 (or 3.6a), whose questions and answers are
+recorded (TM68); only the rules of a line are each era's. So puritty sees
+3.8's commands in every era: the explorer checks how puritty keeps count
+under each era's rules, not what it asks each version (check 1's).
+
+### TK10.3 · The explorer
+
+`app/tests/src/Explorer.geng` drives the real `TmuxMode` against the fake.
+At each point one of four things happens: tmux runs the next line puritty
+sent; puritty reads the next thing tmux wrote; a world event (a pane's
+program exits); or a user action (a command at the prompt, a drag). Each
+scenario is explored breadth first, on the rules of 2.7, 3.0, 3.2, 3.4 and
+3.8, and after every step:
+
+- **no answer without a question**: puritty never reads a block of its own
+  commands while it waits for nothing (its log says `for nothing waited
+  for`, docs/diagnostics.md);
+- **nothing owed when all is said**: once tmux has run every line and
+  puritty has read everything, puritty waits for nothing;
+- **a reply waited for each command**: a user action makes puritty wait for
+  as many replies as the commands in the lines it sends.
+
+puritty's state is written in place (its terminals), so it is not copied:
+each node is its choices, and it is rebuilt by replaying them from the
+start. Once no event or action is left the rest goes one way (tmux answers
+in turn), so it is run to the end in the same replay; states already seen
+(the same bytes read and actions done, the same lines and bytes pending,
+the same events and actions left) are skipped. A step that breaks an
+invariant is reported with the steps to it, the shortest such path.
+
+**Scenarios**: attaching to two panes while one's program exits (532 states
+on each era's rules); `source-file` at the prompt; `if-shell` with a shell
+condition at the prompt; and on 3.8, a floating pane dragged by its left
+edge. The explorer costs about 50 s of the app's tests on node.
+
+### TK10.4 · What it found, and the fixes
+
+All three were also predicted from TK10.1's measurements before the
+explorer ran, and it found each, and nothing else:
+
+1. **Attaching, a pane's program exits** (every era). For each pane
+   puritty asks its state and both its captures on one line (`recapture`,
+   TM15), three replies. When the pane goes after `list-panes` named it
+   and before tmux runs that line, the first command that fails ends it:
+   `display-message` before 3.2, `capture-pane` from 3.2. One or two
+   replies never came, and every reply after was taken for the question
+   before it. The same line follows a `%pause` (TM19), and a popup's line
+   (TM66) is five commands.
+2. **`source-file` or `if-shell` with a shell condition run from puritty's
+   prompt or a menu**, from 3.2. Each command they run answers as this
+   client's, so puritty read two or three replies where it waited for one;
+   before 3.2 those are flags 0 and skipped.
+3. **A floating pane dragged by its left edge** (3.8). Each step sends
+   `move-pane … ; resize-pane …` on one line and waited for one reply.
+
+**Fixed** in `TmuxMode`:
+- a line of several commands (`askLine`, the popup's, the drag's) waits
+  for a reply each, those after the first marked as on its line (`Then`);
+  a reply that is an `%error` ends its line, and the rest are answered as
+  failed with nothing said;
+- a command the user runs that runs commands (`source-file`, `if-shell`,
+  `run-shell -C`; `runsCommands`) is followed by `display-message -p
+  puritty-fence`, and every block before the fence's reply is the
+  command's, shown as its output (`ForFence`).
+
+**Made to fail on purpose**, each fix taken out in turn: without the
+fence, it fails from 3.2's rules, on the file sourced; without a failing
+reply ending its line, from 2.7's, on the attach; with the drag's line
+waiting for one reply, on the drag, its action sending three commands
+(`select-pane` first) and waiting for two.
+
+**Not covered yet**: keys typed while replies are pending, the poll's
+timer, resizes, windows and sessions changing, copy mode and the tree's
+round trips. Each is a scenario to add; the fake answers most of their
+questions already (TM68, TM69).

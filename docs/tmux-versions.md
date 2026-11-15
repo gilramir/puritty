@@ -45,8 +45,10 @@ each distribution's own package (`almalinux-8` … `fedora-43`). Each folder:
 | `variables.txt` | every format variable the tmux knows, read from its release's source by `variables.py` (`docs/tmux-checks.md` TK8) |
 | `control.txt` | a control-mode session: 27 commands (resize, flags, a subscription, splits, a program setting modes and a title, windows, copy mode, options, buffers, sessions, detach) and every line tmux wrote after each |
 | `answers.txt` | puritty's own questions in the test states, as `app/tests/record-tmux.py` asks them |
+| `lines.txt` | 33 lines of several commands (some failing, some refused, some running others) and every line tmux wrote after each, by `app/tests/dump-lines.py` (`docs/tmux-checks.md` TK10) |
 
-**Made by** `app/tests/dump-tmux.py` (one tmux), run in a container by
+**Made by** `app/tests/dump-tmux.py` (one tmux; `lines.txt` by
+`dump-lines.py`), run in a container by
 `app/tests/tmux-versions/releases.sh` (the releases, built on Debian 12;
 tarballs and builds in `~/.cache/puritty/tmux`, each tarball's sha256 in
 `sources.tsv`) and `distros.sh` (each distribution's package). What
@@ -54,7 +56,7 @@ differs from run to run is written by name: the host, times, pids, ttys,
 the socket, the user's directories, a pane's `pane_output_generation`;
 a window that would be renamed by its program is named, since when tmux
 looks differs. Two runs of one tmux give the same files; `diff -r` between
-two folders is what changed. 33 folders, 3.3 MB.
+two folders is what changed. 33 folders, 3.7 MB on disk.
 
 ## TV3 · What changes from release to release
 
@@ -133,8 +135,13 @@ measured.
   outside a buffer's context on 3.2. RHEL9 and Ubuntu 22.04 ship 3.2a.
 - **2.9** ends the control client at `select-pane -t %0` after a split
   and a resize; 2.9a does not. No target ships 2.9.
+- **3.3 and 3.3a end the server** on `kill-pane -t` with its argument
+  missing: they take it as `kill-pane`, which kills the session's only
+  pane (every other tmux refuses the line, `-t expects an argument`;
+  `docs/tmux-checks.md` TK10). puritty always gives `-t` a pane. Debian
+  12 ships 3.3a.
 
-Both are fixed in later releases; nothing to report.
+All three are fixed in later releases; nothing to report.
 
 ## TV7 · The distributions' packages against the releases
 

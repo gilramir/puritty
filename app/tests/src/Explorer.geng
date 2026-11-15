@@ -1,0 +1,759 @@
+module Explorer exposing (explorer, lineShapesDiffer, violations)
+
+{-| Check 3 (`docs/tmux-checks.md` TK4, TK10): puritty's real `TmuxMode`
+against the fake tmux, in every order the conversation can take.
+
+At each point one of these happens: tmux runs the next line puritty sent
+it; puritty reads the next thing tmux wrote; something happens in tmux's
+world (a pane's program exits); or the user acts. Each scenario is
+explored breadth first, and after every step two things must hold, for
+each tmux's rules for a line of several commands (`FakeTmux.rulesOf`, as
+measured on every dumped tmux):
+
+  - **no answer without a question**: puritty never reads a block of its
+    own commands while it waits for nothing (its log's `for nothing waited
+    for`);
+  - **nothing owed when all is said**: once tmux has run every line and
+    puritty has read every block, puritty waits for nothing;
+  - **a reply waited for each command**: what the user does makes puritty
+    wait for as many replies as the commands in the lines it sends.
+
+A step that breaks one is reported with the steps that led to it, the
+shortest such path. States already seen are skipped: two paths are the
+same state when tmux has the same lines to run and the same bytes to
+write, the same world events are left, and puritty has read the same
+bytes and done the same things between them.
+
+The fake's rules are held to what every dumped tmux wrote
+(`lineShapesDiffer`, `LinesRecorded`).
+-}
+
+import Bytes
+import Dict exposing (Dict)
+import Expect
+import FakeTmux exposing (World)
+import LinesRecorded
+import Task
+import Test.Runner.UnitNode as U
+import Tmux.Syntax as Syntax
+import TmuxMode
+
+
+-- WHAT THE REAL TMUXES WROTE, AND THE FAKE
+
+
+{-| What tmux wrote for a line, as its shape: each block `ok` or `error`
+(with `/0` when not this client's, flags 0), a `%message` inside one, each
+notification by its name, `%output` left out, and a bare line `text`. -}
+shapeOf : Array String -> String
+shapeOf wrote =
+    Array.foldl
+        (\line acc ->
+            if String.startsWith "%begin " line then
+                { acc | inside = True, own = String.endsWith " 1" line }
+
+            else if String.startsWith "%end " line || String.startsWith "%error " line then
+                { acc
+                    | inside = False
+                    , shape =
+                        Array.pushLast
+                            ((if String.startsWith "%end " line then
+                                "ok"
+
+                              else
+                                "error"
+                             )
+                                ++ (if acc.own then
+                                        ""
+
+                                    else
+                                        "/0"
+                                   )
+                            )
+                            acc.shape
+                }
+
+            else if acc.inside then
+                if String.startsWith "%message " line then
+                    { acc | shape = Array.pushLast "message" acc.shape }
+
+                else
+                    acc
+
+            else if String.startsWith "%output " line then
+                acc
+
+            else if String.startsWith "%" line then
+                { acc | shape = Array.pushLast (String.split " " line |> Array.first |> Maybe.withDefault line) acc.shape }
+
+            else
+                { acc | shape = Array.pushLast "text" acc.shape }
+        )
+        { inside = False, own = True, shape = [] }
+        wrote
+        |> .shape
+        |> String.join " "
+
+
+{-| The lines of dump-lines.py's the fake models: those whose commands it
+has, in a window it can hold. Left out: panes and windows made and killed
+(`split-window`, `new-window`), `refresh-client -C` (whose size each tmux
+takes in its own form, check 1's, TK7), `run-shell` (a shell), a command
+not every tmux has (`display-popup`, check 1's), and `kill-pane -t` with
+its argument missing (3.3 ends its server). -}
+modeled : String -> Bool
+modeled line =
+    not (Array.any (\word -> String.contains word line) [ "split-window", "select-pane -t %1", "kill-pane", "new-window", "kill-window", "refresh-client", "run-shell", "display-popup" ])
+
+
+{-| The fake, following `rules`' tmux, answering the lines it models in
+order, each answer's shape. -}
+fakeShapes : String -> Array String -> Array String
+fakeShapes rules lines =
+    let
+        made =
+            FakeTmux.world { version = "3.8", cols = 80, rows = 24, lines = [ "line 200" ] }
+
+        start =
+            { made | rules = rules, files = Dict.singleton "/tmp/puritty-lines.conf" "display-message -p S1\ndisplay-message -p S2\n" }
+    in
+    Array.foldl
+        (\line acc ->
+            let
+                answered =
+                    FakeTmux.answer line acc.w
+
+                wrote =
+                    Bytes.toStringLossy answered.bytes |> String.split "\u{000D}\n" |> Array.keepIf (\l -> l /= "")
+            in
+            { w = answered.world, shapes = Array.pushLast (shapeOf wrote) acc.shapes }
+        )
+        { w = start, shapes = [] }
+        lines
+        |> .shapes
+
+
+{-| Each line the fake models where its answer's shape is not the one the
+real tmux wrote, for every dumped tmux: `name: line: tmux …, fake …`. A
+record that ends where its tmux ended the client (2.9) is held to as far
+as it goes. -}
+lineShapesDiffer : Array String
+lineShapesDiffer =
+    LinesRecorded.recorded
+        |> Array.mapAndFlatten
+            (\tmux ->
+                let
+                    ended =
+                        Array.findFirst (\l -> Array.member "(the client ended)" l.wrote) tmux.lines
+                            |> Maybe.map .index
+                            |> Maybe.withDefault (Array.length tmux.lines)
+
+                    asked =
+                        Array.takeFirst ended tmux.lines |> Array.keepIf (\l -> modeled l.line)
+
+                    fake =
+                        fakeShapes tmux.version (Array.map .line asked)
+                in
+                Array.indexedMap (\i l -> { l = l, ours = Maybe.withDefault "?" (Array.get i fake) }) asked
+                    |> Array.mapAndKeepJust
+                        (\pair ->
+                            let
+                                l =
+                                    pair.l
+
+                                real =
+                                    shapeOf l.wrote
+
+                                ours =
+                                    pair.ours
+                            in
+                            if real == ours then
+                                Nothing
+
+                            else
+                                Just (tmux.name ++ ": " ++ l.line ++ ": tmux " ++ real ++ ", fake " ++ ours)
+                        )
+            )
+
+
+-- THE EXPLORER
+
+
+{-| A point in a conversation: puritty's state, tmux's world, the lines
+puritty has sent that tmux has not run, what tmux has written that
+puritty has not read (a string each step), the world's events and the
+user's actions not yet happened, and the steps so far. `read` is a digest
+of everything puritty has been given, for telling states apart. -}
+type alias Node =
+    { tmux : TmuxMode.State
+    , world : World
+    , inbox : Array String
+    , outbox : Array String
+    , events : Array Event
+    , actions : Array Action
+    , steps : Array String
+    , read : Int
+    }
+
+
+{-| Something in tmux's world, which tmux tells the client of. -}
+type alias Event =
+    { name : String, happen : World -> { world : World, notices : Array String } }
+
+
+{-| Something the user does: puritty's state changed and the lines it
+sends. -}
+type alias Action =
+    { name : String, act : TmuxMode.State -> { state : TmuxMode.State, commands : Array String } }
+
+
+type alias Scenario =
+    { name : String
+    , world : World
+    , events : Array Event
+    , actions : Array Action
+    -- attached and every answer read before the exploring starts
+    , settled : Bool
+    }
+
+
+{-| A step: tmux runs the next line, puritty reads the next thing tmux
+wrote, the `n`th event left happens, or the user does the `n`th action
+left. -}
+type Choice
+    = Run
+    | Read
+    | Happen Int
+    | Do Int
+
+
+size : World -> { cols : Int, rows : Int }
+size w =
+    { cols = w.cols, rows = w.rows + 1 }
+
+
+digest : Int -> String -> Int
+digest seed text =
+    String.foldl (\c h -> modBy 2147483647 (h * 131 + Char.toCode c)) seed text
+
+
+{-| puritty reads `bytes`: its state, and the lines it sends queued for
+tmux; and whether it read a reply of its own commands while waiting for
+nothing, which its log says (`for nothing waited for`, docs/diagnostics.md). -}
+readsAll : String -> (taken node : Node) -> { node : Node, unawaited : Bool }
+readsAll text node =
+    let
+        r =
+            TmuxMode.read (size node.world) (Bytes.fromString text) node.tmux
+    in
+    { node = { node | tmux = r.state, inbox = node.inbox ++ r.commands, read = digest node.read text }
+    , unawaited = Array.any (String.contains "for nothing waited for") r.trace
+    }
+
+
+reads : String -> (taken node : Node) -> Node
+reads text node =
+    (readsAll text node).node
+
+
+{-| tmux runs the next line. -}
+runs : (taken node : Node) -> Node
+runs node =
+    when Array.popFirst node.inbox is
+        Just { first, rest } ->
+            let
+                answered =
+                    FakeTmux.answer first node.world
+
+                text =
+                    Bytes.toStringLossy answered.bytes
+            in
+            { node
+                | world = answered.world
+                , inbox = rest
+                , outbox =
+                    if text == "" then
+                        node.outbox
+
+                    else
+                        Array.pushLast text node.outbox
+                , steps = Array.pushLast ("tmux runs: " ++ first) node.steps
+            }
+
+        Nothing ->
+            node
+
+
+without : Int -> Array a -> Array a
+without i array =
+    Array.takeFirst i array ++ Array.dropFirst (i + 1) array
+
+
+{-| A choice made, and what it broke, if anything: puritty read a block of
+its own commands' while it waited for nothing, or what the user did sent
+commands puritty does not wait for a reply each from. -}
+apply : Choice -> (taken node : Node) -> { node : Node, broken : Maybe String }
+apply choice node =
+    when choice is
+        Run ->
+            { node = runs node, broken = Nothing }
+
+        Read ->
+            when Array.popFirst node.outbox is
+                Just { first, rest } ->
+                    let
+                        line =
+                            "puritty reads: " ++ String.join " | " (String.split "\u{000D}\n" first |> Array.keepIf (\l -> l /= "") |> Array.takeFirst 3)
+
+                        r =
+                            readsAll first { node | outbox = rest, steps = Array.pushLast line node.steps }
+                    in
+                    { node = r.node
+                    , broken =
+                        if r.unawaited then
+                            Just "puritty read a reply to its own command while it waited for nothing"
+
+                        else
+                            Nothing
+                    }
+
+                Nothing ->
+                    { node = node, broken = Nothing }
+
+        Happen i ->
+            when Array.get i node.events is
+                Just e ->
+                    let
+                        done =
+                            e.happen node.world
+                    in
+                    { node =
+                        { node
+                            | world = done.world
+                            , outbox = Array.pushLast (String.join "" (Array.map (\n -> n ++ "\u{000D}\n") done.notices)) node.outbox
+                            , events = without i node.events
+                            , steps = Array.pushLast e.name node.steps
+                        }
+                    , broken = Nothing
+                    }
+
+                Nothing ->
+                    { node = node, broken = Nothing }
+
+        Do i ->
+            when Array.get i node.actions is
+                Just a ->
+                    let
+                        before =
+                            Array.length node.tmux.expecting
+
+                        done =
+                            a.act node.tmux
+
+                        waited =
+                            Array.length done.state.expecting - before
+
+                        commands =
+                            Array.foldl (\line n -> n + Array.length (Syntax.commands (Syntax.tokens line))) 0 done.commands
+                    in
+                    { node =
+                        { node
+                            | tmux = done.state
+                            , inbox = node.inbox ++ done.commands
+                            , actions = without i node.actions
+                            , steps = Array.pushLast a.name node.steps
+                            , read = digest node.read a.name
+                        }
+                    , broken =
+                        if waited /= commands then
+                            Just ("the user's action sent " ++ String.fromInt commands ++ " commands, and puritty waits for " ++ String.fromInt waited ++ " replies to them: " ++ String.join " / " done.commands)
+
+                        else
+                            Nothing
+                    }
+
+                Nothing ->
+                    { node = node, broken = Nothing }
+
+
+{-| Once no event or action is left, the rest is one way: tmux answers in
+turn, and puritty reads in turn. Run to the end, and at the end puritty
+must wait for nothing. -}
+finish : Int -> (taken node : Node) -> { node : Node, broken : Maybe String }
+finish budget node =
+    if budget <= 0 then
+        { node = node, broken = Nothing }
+
+    else if not (Array.isEmpty node.outbox) then
+        let
+            r =
+                apply Read node
+        in
+        when r.broken is
+            Just _ ->
+                r
+
+            Nothing ->
+                finish (budget - 1) r.node
+
+    else if not (Array.isEmpty node.inbox) then
+        finish (budget - 1) (runs node)
+
+    else if Array.isEmpty node.tmux.expecting then
+        { node = node, broken = Nothing }
+
+    else
+        { node = node, broken = Just ("tmux owes nothing, and puritty waits for " ++ String.fromInt (Array.length node.tmux.expecting)) }
+
+
+begin : Scenario -> Node
+begin s =
+    let
+        begun =
+            reads (Bytes.toStringLossy FakeTmux.startBytes)
+                { tmux = TmuxMode.idle {}
+                , world = s.world
+                , inbox = []
+                , outbox = []
+                , events = s.events
+                , actions = s.actions
+                , steps = []
+                , read = 0
+                }
+    in
+    if s.settled then
+        (finish 400 begun).node
+
+    else
+        begun
+
+
+{-| The choices made from the start: the node they lead to, or what broke
+on the way, and when none is left to choose, the rest run to the end. -}
+replay : Scenario -> Array Choice -> { node : Node, broken : Maybe String }
+replay s choices =
+    let
+        went =
+            Array.foldl
+                (\c acc ->
+                    when acc.broken is
+                        Just _ ->
+                            acc
+
+                        Nothing ->
+                            apply c acc.node
+                )
+                { node = begin s, broken = Nothing }
+                choices
+    in
+    when went.broken is
+        Just _ ->
+            went
+
+        Nothing ->
+            if Array.isEmpty went.node.events && Array.isEmpty went.node.actions then
+                finish 1000 went.node
+
+            else
+                went
+
+
+{-| The choices open at a node. -}
+open : Node -> Array Choice
+open node =
+    (if Array.isEmpty node.inbox then
+        []
+
+     else
+        [ Run ]
+    )
+        ++ (if Array.isEmpty node.outbox then
+                []
+
+            else
+                [ Read ]
+           )
+        ++ Array.indexedMap (\i _ -> Happen i) node.events
+        ++ Array.indexedMap (\i _ -> Do i) node.actions
+
+
+key : Node -> String
+key node =
+    String.fromInt node.read
+        ++ "|"
+        ++ String.join "\n" node.inbox
+        ++ "|"
+        ++ String.fromInt (digest 7 (String.join "" node.outbox))
+        ++ "|"
+        ++ String.join "," (Array.map .name node.events)
+        ++ "|"
+        ++ String.join "," (Array.map .name node.actions)
+
+
+{-| The scenario explored breadth first, each node rebuilt by replaying
+its choices (puritty's state is written in place, so it is not copied):
+the first step that broke something, with the steps to it, and how many
+states there were. -}
+explore : Int -> Scenario -> { broken : Maybe { steps : Array String, what : String }, states : Int }
+explore limit s =
+    let
+        level frontier seen count =
+            if Array.isEmpty frontier || count > limit then
+                { broken = Nothing, states = count }
+
+            else
+                let
+                    stepped =
+                        Array.foldl
+                            (\entry acc ->
+                                Array.foldl
+                                    (\c a ->
+                                        when a.broken is
+                                            Just _ ->
+                                                a
+
+                                            Nothing ->
+                                                let
+                                                    choices =
+                                                        Array.pushLast c entry.choices
+
+                                                    r =
+                                                        replay s choices
+                                                in
+                                                when r.broken is
+                                                    Just what ->
+                                                        { a | broken = Just { steps = r.node.steps, what = what } }
+
+                                                    Nothing ->
+                                                        let
+                                                            k =
+                                                                key r.node
+
+                                                            choosable =
+                                                                open r.node
+                                                        in
+                                                        if Dict.member k a.seen || Array.isEmpty r.node.events && Array.isEmpty r.node.actions then
+                                                            { a | seen = Dict.set k {} a.seen }
+
+                                                        else
+                                                            { a | seen = Dict.set k {} a.seen, frontier = Array.pushLast { choices = choices, open = choosable } a.frontier }
+                                    )
+                                    acc
+                                    entry.open
+                            )
+                            { broken = Nothing, seen = seen, frontier = [] }
+                            frontier
+                in
+                when stepped.broken is
+                    Just b ->
+                        { broken = Just b, states = count }
+
+                    Nothing ->
+                        level stepped.frontier stepped.seen (count + Array.length stepped.frontier)
+
+        first =
+            replay s []
+    in
+    when first.broken is
+        Just what ->
+            { broken = Just { steps = first.node.steps, what = what }, states = 1 }
+
+        Nothing ->
+            level [ { choices = [], open = open first.node } ] Dict.empty 1
+
+
+-- THE SCENARIOS
+
+
+{-| A tmux's rules for each kind of line that differs, as measured
+(TK10): 2.7 to 2.9a, 3.0 to 3.1c, 3.2 to 3.3a, 3.4 to 3.7c, and 3.8. -}
+eras : Array String
+eras =
+    [ "2.7", "3.0", "3.2", "3.4", "3.8" ]
+
+
+{-| A window of two panes side by side, on the fake 3.8 (whose questions
+and answers are recorded, TM68) following `rules`' lines. -}
+twoPanes : String -> World
+twoPanes rules =
+    let
+        made =
+            FakeTmux.world { version = "3.8", cols = 80, rows = 24, lines = [ "line 1", "line 2" ] }
+
+        first =
+            Array.first made.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+    in
+    { made | rules = rules, panes = [ first, { first | id = 1 } ], number = 2 }
+
+
+paneExits : Int -> Event
+paneExits id =
+    { name = "pane %" ++ String.fromInt id ++ "'s program exits", happen = FakeTmux.closePane id }
+
+
+{-| A key with a letter on it typed; Ctrl with `mods` 2. -}
+press : Int -> String -> (taken s : TmuxMode.State) -> { state : TmuxMode.State, commands : Array String }
+press mods letter s =
+    let
+        code =
+            String.toArray letter |> Array.first |> Maybe.map Char.toCode |> Maybe.withDefault 0
+
+        text =
+            if mods == 2 then
+                Char.fromCode (code - 0x60) |> Maybe.map String.fromChar |> Maybe.withDefault ""
+
+            else
+                letter
+    in
+    TmuxMode.typed { action = 1, keycode = 0, mods = mods, consumed = 0, unshifted = code, sym = code, text = Bytes.fromString text } (Bytes.fromString text) 1000 s
+
+
+{-| Keys typed one after another, what each sends gathered. -}
+pressAll : Array { mods : Int, key : String } -> (taken s : TmuxMode.State) -> { state : TmuxMode.State, commands : Array String }
+pressAll keys s =
+    Array.foldl
+        (\k acc ->
+            let
+                r =
+                    if k.key == "Enter" then
+                        TmuxMode.typed { action = 1, keycode = 0, mods = 0, consumed = 0, unshifted = 0xFF0D, sym = 0xFF0D, text = Bytes.fromString "\u{000D}" } (Bytes.fromString "\u{000D}") 1000 acc.state
+
+                    else
+                        press k.mods k.key acc.state
+            in
+            { state = r.state, commands = acc.commands ++ r.commands }
+        )
+        { state = s, commands = [] }
+        keys
+
+
+{-| A command typed at tmux's prompt, `prefix :`, and run with Enter. -}
+promptRuns : String -> Action
+promptRuns command =
+    { name = "the user runs `" ++ command ++ "` at the prompt"
+    , act =
+        pressAll
+            ([ { mods = 2, key = "b" }, { mods = 0, key = ":" } ]
+                ++ (String.toArray command |> Array.map (\c -> { mods = 0, key = String.fromChar c }))
+                ++ [ { mods = 0, key = "Enter" } ]
+            )
+    }
+
+
+{-| A pointer event at a cell of puritty's window: `action` 0 a press, 1 a
+release, 2 a move with the left button held. -}
+pointerAt : Int -> Int -> Int -> { action : Int, button : Int, mods : Int, x : Int, y : Int, width : Int, height : Int, cellWidth : Int, cellHeight : Int }
+pointerAt action col row =
+    { action = action, button = 1, mods = 0, x = col * 10 + 5, y = row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+
+
+{-| A floating pane's box dragged by its left edge, two cells left, and let
+go: a move and a resize on one line each step (TM20). -}
+dragsLeftEdge : { x : Int, y : Int } -> Action
+dragsLeftEdge box =
+    let
+        -- below the tab bar at the window's top
+        row =
+            box.y + 1 + 2
+    in
+    { name = "the user drags a floating pane's left edge"
+    , act =
+        \s ->
+            { state = s, commands = [] }
+                |> pointed 1 (pointerAt 0 (box.x - 1) row)
+                |> pointed 1 (pointerAt 2 (box.x - 3) row)
+                |> pointed 0 (pointerAt 1 (box.x - 3) row)
+    }
+
+
+{-| A pointer event given to puritty, the button `held` (1 the left), and
+what it sends gathered. -}
+pointed : Int -> { action : Int, button : Int, mods : Int, x : Int, y : Int, width : Int, height : Int, cellWidth : Int, cellHeight : Int } -> (taken acc : { state : TmuxMode.State, commands : Array String }) -> { state : TmuxMode.State, commands : Array String }
+pointed held e acc =
+    let
+        r =
+            TmuxMode.pointer { ms = 1000, held = held, select = False, boundaries = [], pasteButton = 2 } e acc.state
+    in
+    { state = r.state, commands = acc.commands ++ r.commands }
+
+
+scenarios : String -> Array Scenario
+scenarios rules =
+    [ { name = "attaching to two panes, one of whose programs exits"
+      , world = twoPanes rules
+      , events = [ paneExits 1 ]
+      , actions = []
+      , settled = False
+      }
+    , { name = "a file sourced at the prompt"
+      , world =
+            let
+                w =
+                    twoPanes rules
+            in
+            { w | files = Dict.singleton "/p.conf" "display-message -p one\ndisplay-message -p two\n" }
+      , events = []
+      , actions = [ promptRuns "source-file /p.conf" ]
+      , settled = True
+      }
+    , { name = "an if-shell run at the prompt"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ promptRuns "if-shell true 'display-message -p yes'" ]
+      , settled = True
+      }
+    ]
+        ++ (if rules == "3.8" then
+                -- floating panes are 3.7's, and puritty drags them on 3.8
+                [ { name = "a floating pane dragged by its left edge"
+                  , world =
+                        let
+                            w =
+                                twoPanes rules
+                        in
+                        { w | floats = [ { id = 1, x = 10, y = 5, w = 30, h = 8 } ] }
+                  , events = []
+                  , actions = [ dragsLeftEdge { x = 10, y = 5 } ]
+                  , settled = True
+                  }
+                ]
+
+            else
+                []
+           )
+
+
+{-| Each scenario on each era's rules that broke something: what, and the
+steps to it. -}
+violations : Array String
+violations =
+    eras
+        |> Array.mapAndFlatten
+            (\rules ->
+                scenarios rules
+                    |> Array.mapAndKeepJust
+                        (\s ->
+                            (explore 20000 s).broken
+                                |> Maybe.map (\b -> rules ++ ", " ++ s.name ++ ": " ++ b.what ++ ", after:\n    " ++ String.join "\n    " b.steps)
+                        )
+            )
+
+
+explorer : U.Suite
+explorer =
+    U.suite
+        { name = "Explorer"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            Array.map (\c -> U.test c.name (\_ -> Task.succeed (c.test {})))
+                [ { name = "the fake answers a line of several commands as every dumped tmux does (TK10)"
+                  , test = \_ -> Expect.equal [] lineShapesDiffer
+                  }
+                , { name = "puritty's questions and tmux's answers stay in step, in every order, on every tmux's rules (TK4)"
+                  , test = \_ -> Expect.equal [] violations
+                  }
+                ]
+        }

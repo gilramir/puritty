@@ -3226,3 +3226,30 @@ whole, the prefix and `c` making a window (tmux's own `list-panes` after:
 **Not yet:** menus, copy mode, customize mode and the trees on each
 version (TV5); the tests' fake tmux answering as 2.7, 3.0, 3.2a and 3.4
 (TV8's second leaning).
+
+
+## TM73 · Replies kept in step when a line's command fails or runs others (2026-11-15)
+
+puritty matches tmux's replies to its questions by counting: one per
+command, in the order sent (TM5.2). Check 3 (`docs/tmux-checks.md` TK10)
+measured how every dumped tmux answers a line of several commands, and
+its explorer found three ways the count went wrong:
+
+- a line's commands after one that fails are not run and get no reply, on
+  every tmux. A pane closing during attach (between `list-panes` and its
+  state-and-captures line), after a `%pause`, or under a popup's line left
+  puritty waiting for replies that never came, and every later reply was
+  read as the answer to the question before it;
+- from 3.2, the commands `source-file` and `if-shell` run each answer as
+  this client's, so `:source-file ~/.tmux.conf` at puritty's prompt gave
+  two more replies than puritty waited for;
+- a floating pane's left edge dragged sent two commands on one line and
+  waited for one reply.
+
+**Now** a line's commands after its first are marked as on its line; a
+failing reply ends the line, and the others are taken as failed with
+nothing said. A command run for the user that runs others (`source-file`,
+`if-shell`, `run-shell -C`) is followed by `display-message -p
+puritty-fence`, and what comes before the fence's reply is that command's
+output, shown as such. The drag's line waits for a reply per command.
+App tests 199.

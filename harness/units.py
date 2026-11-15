@@ -97,8 +97,9 @@ SUITES = [
         # local shell's row; 193 since RE11: the clock that starts over,
         # ten; 195 since TM71: the cursor shown under tmux before 3.8, on
         # each tmux; 197 since TK8: copy mode's cursor where tmux cannot
-        # say, on each
-        197,
+        # say, on each; 199 since TK10: the fake's lines held to every
+        # dumped tmux, and the explorer (check 3)
+        199,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
@@ -251,11 +252,13 @@ def main() -> int:
             print("         " + line)
     # every tmux command made from Tmux.Command's catalog, and the catalog's
     # test reading the dumps as they are (docs/tmux-checks.md TK2); every
-    # format variable asked, against each tmux's (TK8)
+    # format variable asked, against each tmux's (TK8); the lines of
+    # several commands each tmux answered, as the explorer reads them (TK10)
     commands_ok = True
     for name, cmd in [("tmux-commands", [sys.executable, str(ROOT / "scripts" / "tmux-commands.py")]),
                       ("tmux-formats", [sys.executable, str(ROOT / "scripts" / "tmux-formats.py")]),
-                      ("tmux-versions", [sys.executable, str(ROOT / "packages" / "tmux" / "tests" / "gen-versions.py"), "--check"])]:
+                      ("tmux-versions", [sys.executable, str(ROOT / "packages" / "tmux" / "tests" / "gen-versions.py"), "--check"]),
+                      ("tmux-lines", [sys.executable, str(ROOT / "app" / "tests" / "gen-lines.py"), "--check"])]:
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         out = (r.stdout + r.stderr).strip().splitlines()
         print(f"[{'  ok  ' if r.returncode == 0 else ' FAIL '}] {name:<24} {out[-1] if out else ''}")
