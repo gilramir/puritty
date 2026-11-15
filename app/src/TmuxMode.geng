@@ -1376,7 +1376,7 @@ diagnose s =
 
 windowQuery : String
 windowQuery =
-    "display-message -p " ++ Command.quote "W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}"
+    Command.display "W #{window_id} #{pane_id} #{window_visible_layout} #{window_name}"
 
 
 {-| A pane's mode and `mode-keys`, a line starting with `M`. -}
@@ -1388,7 +1388,7 @@ modeFormat =
 {-| The session's windows, each a line starting with `T`. -}
 tabsQuery : String
 tabsQuery =
-    "list-windows -F " ++ Command.quote "T #{window_id} #{window_index} #{window_name}"
+    Command.listWindows "T #{window_id} #{window_index} #{window_name}"
 
 
 {-| The tab bar at the top (`True`) or the bottom of the window. -}
@@ -1796,7 +1796,7 @@ tmuxSize statusLines size =
 can read as a guard. -}
 panesQuery : String
 panesQuery =
-    "list-panes -s -F " ++ Command.quote "P #{pane_id}"
+    Command.listPanesSession "P #{pane_id}"
 
 
 {-| A pane's state, read in the same command line as its captures, so that
@@ -1805,10 +1805,8 @@ in turn, before it reads a pane again): a capture holds the screen at one
 moment, and the cursor that goes with it is read at that moment too. -}
 infoOf : Int -> String
 infoOf pane =
-    "display-message -p -t "
-        ++ Command.quote ("%" ++ String.fromInt pane)
-        ++ " "
-        ++ Command.quote "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{keypad_cursor_flag} #{keypad_flag} #{cursor_flag} #{wrap_flag} #{origin_flag}"
+    Command.displayAt ("%" ++ String.fromInt pane)
+        "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{keypad_cursor_flag} #{keypad_flag} #{cursor_flag} #{wrap_flag} #{origin_flag}"
 
 
 {-| A pane's history and screen, with its colors and attributes, wrapped
@@ -1816,15 +1814,7 @@ lines joined; or, with `saved`, the main screen kept while the alternate
 one is up. -}
 captureOf : Bool -> Int -> String
 captureOf saved pane =
-    "capture-pane -p -e -J -S - -E -"
-        ++ (if saved then
-                " -a -q"
-
-            else
-                ""
-           )
-        ++ " -t "
-        ++ Command.quote ("%" ++ String.fromInt pane)
+    Command.capture saved ("%" ++ String.fromInt pane)
 
 
 {-| Commands sent on one line, `a ; b ; c`, each with what its reply is
@@ -1940,11 +1930,11 @@ attachQueries size acc =
         , { command = windowQuery, expect = ForWindow }
         , { command = tabsQuery, expect = ForTabs }
         , { command = panesQuery, expect = ForPanes }
-        , { command = "list-keys", expect = ForKeys }
-        , { command = "display-message -p " ++ Command.quote "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
-        , { command = "list-panes -s -F " ++ Command.quote modeFormat, expect = ForModes }
-        , { command = "display-message -p " ++ Command.quote "#{display-panes-time}", expect = ForPanesTime }
-        , { command = "display-message -p " ++ Command.quote "#{client_name}", expect = ForClientName }
+        , { command = Command.listKeys, expect = ForKeys }
+        , { command = Command.display "#{prefix} #{prefix2} #{repeat-time} #{version}", expect = ForPrefixes }
+        , { command = Command.listPanesSession modeFormat, expect = ForModes }
+        , { command = Command.display "#{display-panes-time}", expect = ForPanesTime }
+        , { command = Command.display "#{client_name}", expect = ForClientName }
         ]
         acc
 
@@ -2162,7 +2152,7 @@ replied expect ok lines acc =
             in
             if clocked && asked.state.dayAt == Nothing then
                 -- the time of day, for the clock (TM32)
-                ask [ { command = "display-message -p " ++ Command.quote "D %H %M %S", expect = ForDayTime } ] asked
+                ask [ { command = Command.display "D %H %M %S", expect = ForDayTime } ] asked
 
             else if not clocked then
                 -- asked again when a clock is shown again, since the
@@ -2378,12 +2368,12 @@ replied expect ok lines acc =
 
                 subscriptions =
                     if Caps.has "refresh-client" "B" caps then
-                        Array.map (\sub -> { command = "refresh-client -B " ++ Command.quote sub, expect = ForNothing }) statusSubscriptions
+                        Array.map (\sub -> { command = Command.subscribe sub, expect = ForNothing }) statusSubscriptions
 
                     else
                         -- before 3.2: asked, not told (TM72), once it is
                         -- known whether `#{T:…}` is (`ForTimeProbe`)
-                        [ { command = "display-message -p " ++ Command.quote "#{T:version}", expect = ForTimeProbe } ]
+                        [ { command = Command.display "#{T:version}", expect = ForTimeProbe } ]
 
                 polled =
                     if Caps.has "refresh-client" "B" caps then
@@ -2716,7 +2706,7 @@ replied expect ok lines acc =
                                 t.preview
                         in
                         ask
-                            (Array.indexedMap (\i item -> { command = "capture-pane -p -t " ++ Command.quote item.id, expect = ForPreviewCapture { serial = serial, index = i } }) items)
+                            (Array.indexedMap (\i item -> { command = Command.captureTarget item.id, expect = ForPreviewCapture { serial = serial, index = i } }) items)
                             { acc | state = { st | tree = Just { t | preview = { pv | items = items } } } }
 
                     Nothing ->
@@ -3238,7 +3228,7 @@ notice n acc =
             { acc | state = { st | said = text } }
 
         PaneModeChanged pane ->
-            ask [ { command = "display-message -p -t " ++ Command.quote ("%" ++ String.fromInt pane) ++ " " ++ Command.quote modeFormat, expect = ForModes } ] { acc | state = st }
+            ask [ { command = Command.displayAt ("%" ++ String.fromInt pane) modeFormat, expect = ForModes } ] { acc | state = st }
 
         SubscriptionChanged sub ->
             if sub.name == "puritty-theme" then
@@ -4283,7 +4273,7 @@ keyByTable k bytes ms s =
 
         reset =
             if way.reset then
-                [ "switch-client -T root" ]
+                [ Command.rootTable ]
 
             else
                 []
@@ -4357,7 +4347,7 @@ stepTo step answers a =
 
         expand text expect =
             if String.contains "#" text then
-                [ { command = "display-message -p " ++ Command.quote (noTime text), expect = expect } ]
+                [ { command = Command.display (noTime text), expect = expect } ]
 
             else
                 []
@@ -5658,10 +5648,10 @@ pointer how p s =
                     plain
                         (sent
                             [ if hit.window < 0 then
-                                "new-window"
+                                Command.newWindow
 
                               else
-                                "select-window -t " ++ Command.quote ("@" ++ String.fromInt hit.window)
+                                Command.selectWindow ("@" ++ String.fromInt hit.window)
                             ]
                             s
                         )
@@ -5898,7 +5888,7 @@ selecting how p col row q s =
                 Dict.get "root MouseDown3Pane" s.keys.bindings |> Maybe.map .command |> Maybe.withDefault ""
 
             r =
-                runHeld { pane = q.id, mouse = Just { col = col, row = row } } word line ("if-shell -F -t " ++ paneName q.id ++ " '#{mouse}' { " ++ binding ++ " }") s
+                runHeld { pane = q.id, mouse = Just { col = col, row = row } } word line (Command.ifShellMouse (paneName q.id) "#{mouse}" binding) s
         in
         { state = r.state, commands = r.commands, own = Nothing, paste = False }
 
@@ -6443,7 +6433,7 @@ pollsFor s =
                 pollOf name target format
 
             else
-                { command = "display-message -p " ++ Command.quote (String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") options))
+                { command = Command.display (String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") options))
                 , expect = ForRawOptions { name = name, target = target, format = format, options = options }
                 }
         )
@@ -6453,13 +6443,13 @@ pollsFor s =
 pollOf : String -> String -> String -> { command : String, expect : Expect }
 pollOf name target format =
     if target == "@*" then
-        { command = "list-windows -F " ++ Command.quote ("#{window_id}\t" ++ format), expect = ForPoll { name = name, scope = 1 } }
+        { command = Command.listWindows ("#{window_id}\t" ++ format), expect = ForPoll { name = name, scope = 1 } }
 
     else if target == "%*" then
-        { command = "list-panes -s -F " ++ Command.quote ("#{window_id}\t#{pane_id}\t" ++ format), expect = ForPoll { name = name, scope = 2 } }
+        { command = Command.listPanesSession ("#{window_id}\t#{pane_id}\t" ++ format), expect = ForPoll { name = name, scope = 2 } }
 
     else
-        { command = "display-message -p " ++ Command.quote format, expect = ForPoll { name = name, scope = 0 } }
+        { command = Command.display format, expect = ForPoll { name = name, scope = 0 } }
 
 
 {-| The options a format names by `#{T:option}`, in order. -}
@@ -6549,7 +6539,7 @@ themeAsked value acc =
                         Array.map (\v -> String.replace "#{client_colours}" "16777216" v |> String.replace "%" "%%") rest
                             |> String.join "\t"
                 in
-                ask [ { command = "display-message -p " ++ Command.quote format, expect = ForTheme } ] { acc | state = withStatus st.rawStatus { st | themeChoice = first } }
+                ask [ { command = Command.display format, expect = ForTheme } ] { acc | state = withStatus st.rawStatus { st | themeChoice = first } }
 
         Nothing ->
             acc
@@ -7023,8 +7013,8 @@ runHeld ctx word line command s =
     let
         options =
             if String.contains "mouse_" command then
-                [ { command = "set-option -p -t " ++ paneName ctx.pane ++ " @puritty_mouse_word " ++ Command.quote word, expect = ForNothing }
-                , { command = "set-option -p -t " ++ paneName ctx.pane ++ " @puritty_mouse_line " ++ Command.quote line, expect = ForNothing }
+                [ { command = Command.setPaneOption (paneName ctx.pane) "@puritty_mouse_word" word, expect = ForNothing }
+                , { command = Command.setPaneOption (paneName ctx.pane) "@puritty_mouse_line" line, expect = ForNothing }
                 ]
 
             else
@@ -7073,7 +7063,7 @@ runLine ctx line s =
         when Syntax.commands (Syntax.tokens fixed) |> Array.first |> Maybe.map (Array.dropFirst 2) |> Maybe.andThen Array.first is
             Just inner ->
                 if String.contains "#{" inner.value then
-                    sendAsking [ { command = "display-message -p -t " ++ Command.quote (paneName ctx.pane) ++ " " ++ Command.quote (noTime inner.value), expect = ForRunExpanded ctx } ] s
+                    sendAsking [ { command = Command.displayAt (paneName ctx.pane) (noTime inner.value), expect = ForRunExpanded ctx } ] s
 
                 else
                     runLine ctx inner.value s
@@ -7133,7 +7123,7 @@ runLine ctx line s =
                             let
                                 opened =
                                     sendAsking
-                                        [ { command = "list-panes -F " ++ Command.quote "N #{pane_id} #{pane_index}", expect = ForNumbers } ]
+                                        [ { command = Command.listPanesOf "N #{pane_id} #{pane_index}", expect = ForNumbers } ]
                                         { s | said = "", numbers = Just { indexes = [], until = Clock.after s.clock (Maybe.withDefault (meant Reason.NotSet s.panesMs) d.duration), template = d.template, keys = d.keys, pane = ctx.pane } }
 
                                 ran =
@@ -7150,13 +7140,14 @@ plainLines ctx fixed s =
         Just f ->
             sendAsking
                 [ { command =
-                        "display-message -p -t " ++ Command.quote
+                        Command.displayLiteral
                             (if f.target == "" then
                                 paneName ctx.pane
 
                              else
                                 f.target
-                            ) ++ " -- " ++ Command.quote (noTime f.condition)
+                            )
+                            (noTime f.condition)
                   , expect = ForCondition { pane = ctx.pane, mouse = ctx.mouse, yes = f.yes, no = f.no, after = f.after }
                   }
                 ]
@@ -7215,7 +7206,7 @@ openMenu ctx menu after s =
 
         expand text expect =
             if String.contains "#" text then
-                [ { command = "display-message -p -t " ++ paneName ctx.pane ++ " -- " ++ Command.quote (noTime text), expect = expect } ]
+                [ { command = Command.displayLiteral (paneName ctx.pane) (noTime text), expect = expect } ]
 
             else
                 []
@@ -8122,45 +8113,26 @@ openPopup ctx pop s =
                 String.fromInt (max 0 ((whole - cells size whole) // 2))
 
         command =
-            "new-pane -O"
-                ++ (if pop.close then
-                        ""
-
-                    else
-                        " -k"
-                   )
-                ++ " -t "
-                ++ Command.quote ("%" ++ String.fromInt ctx.pane)
-                ++ " -x "
-                ++ Command.quote pop.width
-                ++ " -y "
-                ++ Command.quote pop.height
-                ++ " -X "
-                ++ Command.quote (place pop.x pop.width winW)
-                ++ " -Y "
-                ++ Command.quote (place pop.y pop.height winH)
-                ++ (if pop.dir == "" then
-                        ""
-
-                    else
-                        " -c " ++ Command.quote pop.dir
-                   )
-                ++ (if pop.command == "" then
-                        ""
-
-                    else
-                        " " ++ Command.quote pop.command
-                   )
+            Command.popup
+                { keep = not pop.close
+                , pane = "%" ++ String.fromInt ctx.pane
+                , width = pop.width
+                , height = pop.height
+                , x = place pop.x pop.width winW
+                , y = place pop.y pop.height winH
+                , dir = pop.dir
+                , command = pop.command
+                }
 
         -- the popup's colors given to its pane as its own options, which
         -- tmux and puritty both draw it by (popup-style and
         -- popup-border-style, 3.8's defaults dark grey, TM66): the new
         -- pane is the current one for the commands after it on the line
         styled =
-            [ "set -pF window-style '#{popup-style}'"
-            , "set -pF window-active-style '#{popup-style}'"
-            , "set -pF pane-border-style '#{popup-border-style}'"
-            , "set -pF pane-active-border-style '#{popup-border-style}'"
+            [ Command.setPaneFormat "window-style" "#{popup-style}"
+            , Command.setPaneFormat "window-active-style" "#{popup-style}"
+            , Command.setPaneFormat "pane-border-style" "#{popup-border-style}"
+            , Command.setPaneFormat "pane-active-border-style" "#{popup-border-style}"
             ]
 
         opened =
@@ -8231,19 +8203,19 @@ openListing ctx l s =
 listQuery : String -> { command : String, expect : Expect }
 listQuery kind =
     if kind == "buffer" then
-        { command = "list-buffers -F " ++ Command.quote "L\t#{buffer_name}\t#{buffer_created}\t#{buffer_size}\t0\t#{t/p:buffer_created}: #{buffer_sample}\t0", expect = ForListRows }
+        { command = Command.listBuffers "L\t#{buffer_name}\t#{buffer_created}\t#{buffer_size}\t0\t#{t/p:buffer_created}: #{buffer_sample}\t0", expect = ForListRows }
 
     else
-        { command = "list-clients -F " ++ Command.quote "L\t#{client_name}\t#{client_created}\t#{client_width}\t#{client_activity}\t#{t/p:client_activity}: session #{session_name}\t#{client_control_mode}", expect = ForListRows }
+        { command = Command.listClients "L\t#{client_name}\t#{client_created}\t#{client_width}\t#{client_activity}\t#{t/p:client_activity}: session #{session_name}\t#{client_control_mode}", expect = ForListRows }
 
 
 listFilterQuery : String -> String -> { command : String, expect : Expect }
 listFilterQuery kind filter =
     if kind == "buffer" then
-        { command = "list-buffers -F " ++ Command.quote ("F\t#{buffer_name}\t" ++ filter), expect = ForListFilter }
+        { command = Command.listBuffers ("F\t#{buffer_name}\t" ++ filter), expect = ForListFilter }
 
     else
-        { command = "list-clients -F " ++ Command.quote ("F\t#{client_name}\t" ++ filter), expect = ForListFilter }
+        { command = Command.listClients ("F\t#{client_name}\t" ++ filter), expect = ForListFilter }
 
 
 {-| The rows the filter keeps, in the list's order: buffers newest first,
@@ -8334,7 +8306,7 @@ listPreviewAsk s =
             when Array.get l.selected (listRows l) is
                 Just r ->
                     if l.kind == "buffer" && r.name /= l.preview.name then
-                        sendAsking [ { command = "show-buffer -b " ++ Command.quote r.name, expect = ForListPreview r.name } ] { s | listing = Just { l | preview = { name = r.name, lines = [] } } }
+                        sendAsking [ { command = Command.showBuffer r.name, expect = ForListPreview r.name } ] { s | listing = Just { l | preview = { name = r.name, lines = [] } } }
 
                     else
                         { state = s, commands = [] }
@@ -8524,13 +8496,13 @@ listKey k l s =
     else if buffer && name == "d" then
         when at is
             Just r ->
-                listRun [ "delete-buffer -b " ++ Command.quote r.name ] l s
+                listRun [ Command.deleteBuffer r.name ] l s
 
             Nothing ->
                 meant Reason.OutOfRange { state = s, commands = [] }
 
     else if buffer && name == "D" then
-        listRun (Array.map (\t -> "delete-buffer -b " ++ Command.quote t) targets) l s
+        listRun (Array.map Command.deleteBuffer targets) l s
 
     else if not buffer && (name == "d" || name == "x" || name == "z") then
         when at is
@@ -8578,13 +8550,13 @@ detach and kill its shell (`-P`), `z` suspend. -}
 clientCommand : String -> String -> String
 clientCommand key client =
     if key == "x" then
-        "detach-client -P -t " ++ Command.quote client
+        Command.detachClient True client
 
     else if key == "z" then
-        "suspend-client -t " ++ Command.quote client
+        Command.suspendClient client
 
     else
-        "detach-client -t " ++ Command.quote client
+        Command.detachClient False client
 
 
 {-| The next row whose name or text holds the search, from the one after
@@ -8928,27 +8900,28 @@ customizeAsk commands c s =
         p =
             c.data.paneId
 
+        -- whether list-keys gives its format (3.7), from what tmux takes
         newer =
-            s.version == 0 || s.version >= 37
+            Caps.has "list-keys" "F" s.caps
 
         queries =
-            [ { command = "display-message -p -t " ++ p ++ " " ++ Command.quote "#{pane_index}\t#{window_index}\t#{session_name}", expect = ForCustomize 0 }
-            , { command = "show-options -H -s", expect = ForCustomize 1 }
-            , { command = "show-options -H -g", expect = ForCustomize 2 }
-            , { command = "show-options -H -t " ++ p, expect = ForCustomize 3 }
-            , { command = "show-options -H -gw", expect = ForCustomize 4 }
-            , { command = "show-options -H -w -t " ++ p, expect = ForCustomize 5 }
-            , { command = "show-options -H -p -t " ++ p, expect = ForCustomize 6 }
-            , { command = "show-environment -g", expect = ForCustomize 7 }
-            , { command = "show-environment -g -h", expect = ForCustomize 8 }
-            , { command = "show-environment -t " ++ p, expect = ForCustomize 9 }
-            , { command = "show-environment -t " ++ p ++ " -h", expect = ForCustomize 10 }
+            [ { command = Command.displayAt p "#{pane_index}\t#{window_index}\t#{session_name}", expect = ForCustomize 0 }
+            , { command = Command.showOptions "s" p, expect = ForCustomize 1 }
+            , { command = Command.showOptions "g" p, expect = ForCustomize 2 }
+            , { command = Command.showOptions "t" p, expect = ForCustomize 3 }
+            , { command = Command.showOptions "gw" p, expect = ForCustomize 4 }
+            , { command = Command.showOptions "wt" p, expect = ForCustomize 5 }
+            , { command = Command.showOptions "pt" p, expect = ForCustomize 6 }
+            , { command = Command.showEnvironment "g" p, expect = ForCustomize 7 }
+            , { command = Command.showEnvironment "gh" p, expect = ForCustomize 8 }
+            , { command = Command.showEnvironment "t" p, expect = ForCustomize 9 }
+            , { command = Command.showEnvironment "th" p, expect = ForCustomize 10 }
             , { command =
                     if newer then
-                        "list-keys -F " ++ Command.quote Customize.keyFormat
+                        Command.listKeysFormat Customize.keyFormat
 
                     else
-                        "list-keys"
+                        Command.listKeys
               , expect = ForCustomize 11
               }
             ]
@@ -9067,7 +9040,7 @@ customizeGot part text s =
 
                 notes =
                     sendAsking
-                        (Array.map (\t -> { command = "list-keys -N -a -P '' -T " ++ Command.quote t, expect = ForCustomizeNotes t }) tables)
+                        (Array.map (\t -> { command = Command.listKeysNotes t, expect = ForCustomizeNotes t }) tables)
                         { s | customizing = Just updated }
             in
             customizeSettled notes
@@ -9242,7 +9215,7 @@ customizeFilterAsk c s =
                     )
     in
     sendAsking
-        [ { command = "display-message -p -t " ++ c.data.paneId ++ " " ++ Command.quote (Customize.filterFormat c.table c.data c.view.filter rows)
+        [ { command = Command.displayAt c.data.paneId (Customize.filterFormat c.table c.data c.view.filter rows)
           , expect = ForCustomizeFilter { filter = c.view.filter, ids = Array.map .id rows }
           }
         ]
@@ -9344,14 +9317,14 @@ customizeDetailAsk s =
 
                                     expand =
                                         if (info == Nothing || Maybe.map .kind info == Just "string") && String.contains "#" held then
-                                            [ { command = "display-message -p -t " ++ c.data.paneId ++ " " ++ Command.quote (String.replace "%" "%%" held), expect = ForCustomizeDetail { id = e.id, part = 0 } } ]
+                                            [ { command = Command.displayAt c.data.paneId (String.replace "%" "%%" held), expect = ForCustomizeDetail { id = e.id, part = 0 } } ]
 
                                         else
                                             []
 
                                     fires =
                                         if Maybe.map .hook info == Just True && (s.version == 0 || s.version >= 38) && o.key == Nothing then
-                                            [ { command = "show-hooks " ++ Customize.levelFlags c.data.paneId o.scope ++ " -F " ++ Command.quote "#{hook_fire_count}\t#{hook_fire_time}\t#{t/p:hook_fire_time}" ++ " " ++ Command.quote o.name, expect = ForCustomizeDetail { id = e.id, part = 1 } } ]
+                                            [ { command = Command.showHooks o.scope c.data.paneId "#{hook_fire_count}\t#{hook_fire_time}\t#{t/p:hook_fire_time}" o.name, expect = ForCustomizeDetail { id = e.id, part = 1 } } ]
 
                                         else
                                             []
@@ -10412,7 +10385,7 @@ it, kept where tmux's `-f` would keep it (`filterTrue`). The filter is in
 the format, not `-f`, which tmux has only from 3.2 (TM72). -}
 filterQuery : String -> { command : String, expect : Expect }
 filterQuery filter =
-    { command = "list-panes -a -F " ++ Command.quote ("F #{pane_id} " ++ filter), expect = ForTreeFilter }
+    { command = Command.listPanesAll ("F #{pane_id} " ++ filter), expect = ForTreeFilter }
 
 
 {-| Whether a filter's value keeps its row, as tmux's `-f` decides:
@@ -10551,13 +10524,13 @@ sortNames version =
 killOf : String -> String
 killOf target =
     if String.startsWith "%" target then
-        "kill-pane -t " ++ Command.quote target
+        Command.killPane target
 
     else if String.startsWith "@" target then
-        "kill-window -t " ++ Command.quote target
+        Command.killWindow target
 
     else
-        "kill-session -t " ++ Command.quote target
+        Command.killSession target
 
 
 {-| The chosen row kept within the rows there are. -}
@@ -10798,14 +10771,16 @@ askPreview s =
 
                     command =
                         if isSession then
-                            "list-windows -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}\t#{E:tree-mode-preview-style}"
+                            Command.listWindowsTarget target "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}\t#{E:tree-mode-preview-style}"
 
                         else if String.startsWith "%" target then
-                            -- a pane's row: that pane alone, filling the area
-                            "list-panes -t " ++ Command.quote target ++ " -f " ++ Command.quote ("#{==:#{pane_id}," ++ target ++ "}") ++ " -F " ++ Command.quote "Q #{pane_id} 0 0 #{pane_width} #{pane_height} 1 #{pane_index}\t#{E:tree-mode-preview-style}"
+                            -- a pane's row: that pane alone, filling the area,
+                            -- asked of the pane itself rather than by
+                            -- `list-panes -f`, which tmux has from 3.2 (TK7)
+                            Command.displayAt target "Q #{pane_id} 0 0 #{pane_width} #{pane_height} 1 #{pane_index}\t#{E:tree-mode-preview-style}"
 
                         else
-                            "list-panes -t " ++ Command.quote target ++ " -F " ++ Command.quote "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}\t#{E:tree-mode-preview-style}"
+                            Command.listPanesTarget target "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}\t#{E:tree-mode-preview-style}"
                 in
                 if target == "" || target == t.preview.target then
                     { state = s, commands = [] }
@@ -10972,7 +10947,7 @@ infoAsked r =
                         String.join "\t\t" (Array.map (String.join "\t") groups)
 
                     asked =
-                        sendAsking [ { command = "display-message -p -t " ++ Command.quote target ++ " " ++ Command.quote format, expect = ForTreeInfo t.preview.serial } ] r.state
+                        sendAsking [ { command = Command.displayAt target format, expect = ForTreeInfo t.preview.serial } ] r.state
                 in
                 { state = asked.state, commands = r.commands ++ asked.commands }
 
@@ -11106,9 +11081,9 @@ treeQueries version =
             else
                 "#{pane_current_command}#{?pane_active,*,}#{?pane_marked,M,}" ++ paneTitle
     in
-    [ { command = "list-sessions -F " ++ Command.quote ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
-    , { command = "list-windows -a -F " ++ Command.quote ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_activity}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
-    , { command = "list-panes -a -F " ++ Command.quote ("P\t#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t" ++ paneText), expect = ForTreePanes }
+    [ { command = Command.listSessions ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
+    , { command = Command.listWindowsAll ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_activity}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
+    , { command = Command.listPanesAll ("P\t#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t" ++ paneText), expect = ForTreePanes }
     ]
 
 
@@ -11388,13 +11363,13 @@ treeKey k t s =
     else if name == "m" then
         when at is
             Just r ->
-                reloadTree [ "select-pane -m -t " ++ Command.quote (rowTarget r) ] t s
+                reloadTree [ Command.markPane (rowTarget r) ] t s
 
             Nothing ->
                 meant Reason.OutOfRange { state = s, commands = [] }
 
     else if name == "M" then
-        reloadTree [ "select-pane -M" ] t s
+        reloadTree [ Command.unmarkPanes ] t s
 
     else if name == "H" then
         -- back to the active pane's row, opened to it
@@ -11504,7 +11479,7 @@ treeKey k t s =
                 when neighbor is
                     Just o ->
                         if r.depth == 1 && o.depth == 1 && o.session == r.session && t.sort == 0 then
-                            reloadTree [ "swap-window -d -s " ++ Command.quote (rowTarget r) ++ " -t " ++ Command.quote (rowTarget o) ] t s
+                            reloadTree [ Command.swapWindow (rowTarget r) (rowTarget o) ] t s
 
                         else
                             { state = s, commands = [] }
@@ -12680,7 +12655,7 @@ askCopy pane acc =
         { acc | state = { st | copyAsked = Dict.set pane True st.copyAsked } }
 
     else
-        ask [ { command = "display-message -p -t " ++ paneName pane ++ " " ++ Command.quote copyFormat, expect = ForCopy } ] { acc | state = { st | copyAsked = Dict.set pane False st.copyAsked } }
+        ask [ { command = Command.displayAt (paneName pane) copyFormat, expect = ForCopy } ] { acc | state = { st | copyAsked = Dict.set pane False st.copyAsked } }
 
 
 {-| A search's matches in the panes in copy mode, where they show, as
@@ -13256,7 +13231,7 @@ markedColor =
 for the menu's "New tab". -}
 newWindow : (taken s : State) -> { state : State, commands : Array String }
 newWindow s =
-    sent [ "new-window" ] s
+    sent [ Command.newWindow ] s
 
 
 {-| The keys of the tabs: Ctrl+Shift+T a new window, Ctrl+PgUp and
@@ -13266,13 +13241,13 @@ tabKey k s =
     let
         command =
             if k.action == 1 && Bitwise.and k.mods 15 == 3 && (k.sym == 0x54 || k.sym == 0x74) then
-                Just "new-window"
+                Just Command.newWindow
 
             else if k.action /= 0 && Bitwise.and k.mods 15 == 2 && k.sym == 0xFF55 then
-                Just "previous-window"
+                Just Command.previousWindow
 
             else if k.action /= 0 && Bitwise.and k.mods 15 == 2 && k.sym == 0xFF56 then
-                Just "next-window"
+                Just Command.nextWindow
 
             else
                 Nothing
@@ -13349,7 +13324,7 @@ selected pane s =
         []
 
     else
-        [ "select-pane -t " ++ Command.quote ("%" ++ String.fromInt pane) ]
+        [ Command.selectPane ("%" ++ String.fromInt pane) ]
 
 
 {-| A drag of a box going on: `move-pane -X -Y`, the box's new top left (its
@@ -13371,51 +13346,45 @@ dragged col row released d s =
             col /= d.sent.col || row /= d.sent.row
 
         target =
-            Command.quote ("%" ++ String.fromInt d.pane)
+            "%" ++ String.fromInt d.pane
 
         command =
             if d.kind == 2 then
                 -- a tiled pane's width; tmux takes the room from its neighbor
-                "resize-pane -t " ++ target ++ " -x " ++ String.fromInt (max 1 (d.w + dx))
+                Command.resizePane target (Just (max 1 (d.w + dx))) Nothing
 
             else if d.kind == 3 then
-                "resize-pane -t " ++ target ++ " -y " ++ String.fromInt (max 1 (d.h + dy))
+                Command.resizePane target Nothing (Just (max 1 (d.h + dy)))
 
             else if d.kind == 0 then
                 -- `d.y` is where it is drawn, below the tab bar; tmux's rows
                 -- start under it
-                "move-pane -t " ++ target ++ " -X " ++ String.fromInt (d.x - 1 + dx) ++ " -Y " ++ String.fromInt (boxTop + dy)
+                Command.movePane target (d.x - 1 + dx) (boxTop + dy)
 
             else if d.kind == 4 then
                 -- a floating pane's size, as resize-pane takes it, counts its
                 -- border's lines: `new-pane -x 30 -y 6` makes a 28 by 4 pane
-                "resize-pane -t " ++ target ++ " -x " ++ String.fromInt (max 4 (d.w + 2 + dx))
+                Command.resizePane target (Just (max 4 (d.w + 2 + dx))) Nothing
 
             else if d.kind == 5 then
-                "resize-pane -t " ++ target ++ " -y " ++ String.fromInt (max 3 (d.h + 2 + dy))
+                Command.resizePane target Nothing (Just (max 3 (d.h + 2 + dy)))
 
             else if d.kind == 6 || d.kind == 7 then
                 -- the left edge: the box's left moves with the pointer and
                 -- its right stays, so it moves and resizes together
-                "move-pane -t "
-                    ++ target
-                    ++ " -X "
-                    ++ String.fromInt (d.x - 1 + leftDx)
-                    ++ " -Y "
-                    ++ String.fromInt boxTop
-                    ++ " ; resize-pane -t "
-                    ++ target
-                    ++ " -x "
-                    ++ String.fromInt (d.w + 2 - leftDx)
-                    ++ (if d.kind == 7 then
-                            " -y " ++ String.fromInt (max 3 (d.h + 2 + dy))
+                Command.movePane target (d.x - 1 + leftDx) boxTop
+                    ++ " ; "
+                    ++ Command.resizePane target
+                        (Just (d.w + 2 - leftDx))
+                        (if d.kind == 7 then
+                            Just (max 3 (d.h + 2 + dy))
 
-                        else
-                            ""
-                       )
+                         else
+                            Nothing
+                        )
 
             else
-                "resize-pane -t " ++ target ++ " -x " ++ String.fromInt (max 4 (d.w + 2 + dx)) ++ " -y " ++ String.fromInt (max 3 (d.h + 2 + dy))
+                Command.resizePane target (Just (max 4 (d.w + 2 + dx))) (Just (max 3 (d.h + 2 + dy)))
 
         boxTop =
             d.y

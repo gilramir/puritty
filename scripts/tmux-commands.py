@@ -27,8 +27,12 @@ for line in (ROOT / "corpus" / "tmux" / "3.8" / "commands.txt").read_text().spli
     names.add(w[0])
     if len(w) > 1 and w[1].startswith("("):
         aliases.add(w[1].strip("()"))
-# full names only: an alias in puritty's own text is rarer than the word
+# full names, and an alias only when a flag follows it (`"set -pF …"`):
+# alone an alias in puritty's own text is likelier a word (`start`, `run`)
 words = names
+# a mode's or key table's name, the same word as its command, said alone
+MODES = {"copy-mode", "copy-mode-vi", "view-mode", "clock-mode", "customize-mode", "tree-mode",
+         "buffer-mode", "client-mode"}
 literal = re.compile(r'"((?:[^"\\]|\\.)*)"')
 comparing = re.compile(r'(==|/=|== Just|startsWith|endsWith|contains|\bhas|Caps\.has|Caps\.known|Dict\.get|Dict\.member|Array\.member)\s*\(?\s*$')
 
@@ -44,8 +48,12 @@ def strays():
                 # a comment, or a pattern matched against what tmux sent
                 continue
             for m in literal.finditer(line):
-                first = m.group(1).split(" ")[0]
-                if first not in words:
+                parts = m.group(1).split(" ")
+                first = parts[0]
+                flagged = len(parts) > 1 and parts[1].startswith("-")
+                if not (first in words or (first in aliases and flagged)):
+                    continue
+                if m.group(1) in MODES:
                     continue
                 before = line[: m.start()]
                 after = line[m.end():].strip()

@@ -28,7 +28,6 @@ module Tmux.Customize exposing
     , filterFormat
     , help
     , keyFormat
-    , levelFlags
     , lines
     , optionValue
     , optionsOf
@@ -1961,29 +1960,6 @@ type Act
     | Stay
 
 
-{-| The level flags of `set-option` and `show-options` for a level, the
-pane named by id. -}
-levelFlags : String -> Int -> String
-levelFlags pane scope =
-    if scope == 1 then
-        "-s"
-
-    else if scope == 2 then
-        "-g"
-
-    else if scope == 3 then
-        "-t " ++ pane
-
-    else if scope == 4 then
-        "-gw"
-
-    else if scope == 5 then
-        "-w -t " ++ pane
-
-    else
-        "-p -t " ++ pane
-
-
 optionName : String -> Maybe String -> String
 optionName name key =
     when key is
@@ -2308,7 +2284,7 @@ setOption t d o global allowPane =
             info |> Maybe.map .kind |> Maybe.withDefault (meant Reason.NotKnown "string")
 
         set value =
-            "set-option " ++ levelFlags d.paneId scope ++ " " ++ Command.quote o.name ++ " " ++ Command.quote value
+            Command.setOption scope d.paneId o.name value
 
         where_ =
             let
@@ -2387,24 +2363,7 @@ setOption t d o global allowPane =
 kept. -}
 bindCommand : Binding -> String
 bindCommand b =
-    "bind-key -T "
-        ++ Command.quote b.table
-        ++ (if b.repeat then
-                " -r"
-
-            else
-                ""
-           )
-        ++ (if b.note == "" then
-                ""
-
-            else
-                " -N " ++ Command.quote b.note
-           )
-        ++ " "
-        ++ Command.quote b.key
-        ++ " "
-        ++ Command.quote b.command
+    Command.bindKey { table = b.table, repeat = b.repeat, note = b.note, key = b.key, command = b.command }
 
 
 {-| An answer to a question that takes text: the commands it sends, or
@@ -2416,12 +2375,8 @@ answered t d p given =
         pane =
             d.paneId
 
-        envFlags scope =
-            if scope == 7 then
-                "-g"
-
-            else
-                "-t " ++ pane
+        envChange scope hidden remove =
+            { global = scope == 7, pane = pane, hidden = hidden, remove = remove, unset = False }
 
         nextIndex name scope =
             let
@@ -2452,18 +2407,7 @@ answered t d p given =
         SetVariable v ->
             -- an empty value is a value, as tmux sets it
             Run
-                [ "set-environment "
-                    ++ envFlags v.scope
-                    ++ (if v.hidden then
-                            " -h "
-
-                        else
-                            " "
-                       )
-                    ++ Command.quote v.name
-                    ++ " "
-                    ++ Command.quote given
-                ]
+                [ Command.setEnvironment (envChange v.scope v.hidden False) [ v.name, given ] ]
 
         _ ->
             if given == "" then
@@ -2483,7 +2427,7 @@ answered t d p given =
                                 else
                                     o.key
                         in
-                        Run [ "set-option " ++ levelFlags pane o.scope ++ " " ++ Command.quote (optionName o.name key) ++ " " ++ Command.quote given ]
+                        Run [ Command.setOption o.scope pane (optionName o.name key) given ]
 
                     SetCommand b ->
                         Run [ bindCommand { b | command = given } ]
@@ -2510,17 +2454,11 @@ answered t d p given =
 
                         else
                             Run
-                                [ (if a.hook then
-                                    "set-hook "
+                                [ if a.hook then
+                                    Command.setHook a.scope pane split.word split.rest
 
-                                   else
-                                    "set-option "
-                                  )
-                                    ++ levelFlags pane a.scope
-                                    ++ " "
-                                    ++ Command.quote split.word
-                                    ++ " "
-                                    ++ Command.quote split.rest
+                                  else
+                                    Command.setOption a.scope pane split.word split.rest
                                 ]
 
                     AddVariable scope ->
@@ -2529,7 +2467,7 @@ answered t d p given =
                                 Say ("Bad environment variable: " ++ given)
 
                             else
-                                Run [ "set-environment " ++ envFlags scope ++ " -r " ++ Command.quote (String.dropFirst 1 given) ]
+                                Run [ Command.setEnvironment (envChange scope False True) [ String.dropFirst 1 given ] ]
 
                         else
                             when String.firstIndexOf "=" given is
@@ -2538,7 +2476,7 @@ answered t d p given =
                                         Say "Environment variable must be NAME=value"
 
                                     else
-                                        Run [ "set-environment " ++ envFlags scope ++ " " ++ Command.quote (String.takeFirst at given) ++ " " ++ Command.quote (String.dropFirst (at + 1) given) ]
+                                        Run [ Command.setEnvironment (envChange scope False False) [ String.takeFirst at given, String.dropFirst (at + 1) given ] ]
 
                                 Nothing ->
                                     meant Reason.FromOutside Say "Environment variable must be NAME=value"
@@ -2552,7 +2490,7 @@ answered t d p given =
                             Say "Key binding must be key command"
 
                         else
-                            Run [ "bind-key -T " ++ Command.quote tableName ++ " " ++ Command.quote split.word ++ " " ++ Command.quote split.rest ]
+                            Run [ Command.bindKey { table = tableName, repeat = False, note = "", key = split.word, command = split.rest } ]
 
                     ArrayKey a ->
                         let
@@ -2564,8 +2502,8 @@ answered t d p given =
 
                         else
                             Run
-                                [ "set-option " ++ levelFlags pane a.scope ++ " " ++ Command.quote (a.name ++ "[" ++ given ++ "]") ++ " " ++ Command.quote a.value
-                                , "set-option -u " ++ levelFlags pane a.scope ++ " " ++ Command.quote (a.name ++ "[" ++ a.key ++ "]")
+                                [ Command.setOption a.scope pane (a.name ++ "[" ++ given ++ "]") a.value
+                                , Command.unsetOption a.scope pane (a.name ++ "[" ++ a.key ++ "]")
                                 ]
 
                     _ ->
@@ -2622,7 +2560,7 @@ resetCommands t d target =
                 in
                 chain
                     |> Array.keepIf (\level -> level == 1 || level == 2 || level == 4 || Dict.member o.name (levelOf d level))
-                    |> Array.map (\level -> "set-option -u " ++ levelFlags pane level ++ " " ++ Command.quote o.name)
+                    |> Array.map (\level -> Command.unsetOption level pane o.name)
 
         Key k ->
             when Dict.get (k.table ++ "\t" ++ k.key) t.keys is
@@ -2630,7 +2568,7 @@ resetCommands t d target =
                     [ bindCommand was ]
 
                 Nothing ->
-                    meant Reason.NotKnown [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
+                    meant Reason.NotKnown [ Command.unbindKey k.table k.key ]
 
         _ ->
             []
@@ -2644,22 +2582,13 @@ unsetCommands d target =
     in
     when target is
         Option o ->
-            [ "set-option -u " ++ levelFlags pane o.scope ++ " " ++ Command.quote (optionName o.name o.key) ]
+            [ Command.unsetOption o.scope pane (optionName o.name o.key) ]
 
         Key k ->
-            [ "unbind-key -T " ++ Command.quote k.table ++ " " ++ Command.quote k.key ]
+            [ Command.unbindKey k.table k.key ]
 
         Variable v ->
-            [ "set-environment "
-                ++ (if v.scope == 7 then
-                        "-g"
-
-                    else
-                        "-t " ++ pane
-                   )
-                ++ " -u "
-                ++ Command.quote v.name
-            ]
+            [ Command.setEnvironment { global = v.scope == 7, pane = pane, hidden = False, remove = False, unset = True } [ v.name ] ]
 
         Section _ ->
             []

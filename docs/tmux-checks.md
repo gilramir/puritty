@@ -137,3 +137,36 @@ sent as they are.
 **Next:** the 111 moved, in batches; the format variables beside the
 shapes.
 
+## TK7 · Check 1 built: every command from the catalog (2026-11-14)
+
+The 111 commands made by hand are moved into `Tmux.Command`, and the list
+of those left (`corpus/checks/tmux-commands.txt`) is empty: the gate now
+fails on any command text outside `Tmux.Command`.
+
+- **The catalog** grew from 14 shapes to 74: the questions (`display`,
+  `displayAt`, `displayLiteral`, the `list-*` and `capture-pane` forms,
+  `list-keys` in three, the subscriptions, customize-mode's `show-options`
+  and `show-environment` by level), the actions (windows, panes, marks,
+  kills, clients, buffers, the key table's reset, the drag's `resize-pane`
+  and `move-pane`, a pane's option, the mouse's `if-shell`, 3.8's popup),
+  customize-mode's changes (`set-option` and `-u`, `set-hook`,
+  `show-hooks`, `set-environment`, `bind-key`, `unbind-key`, by level), and
+  tmux's choose templates. A part may now be left out (`OptFlag`,
+  `OptValue`); the check holds every flag a shape may have.
+- **The check found two things**: the tree's preview asked `list-panes
+  -f`, which tmux has from 3.2 (it now asks the pane itself, `display-message
+  -p -t`); and no tmux's `set-hook` or `show-hooks` takes `-s`, which
+  customize-mode would have sent for a hook at the server's level (now a
+  hook has no server level, and one said to be there is set globally).
+- **What was decided by the version is decided by what tmux takes**:
+  customize-mode's `list-keys -F` (3.7), and the shapes' `allowed`.
+- **The text changed** where targets were not quoted (`-t '%0'` for `-t
+  %0`) and `-gw` is written `-g -w`; tmux reads both alike. The recorded
+  questions were recorded again, and two tests' expected commands written
+  as they are now.
+- **Not covered, by design**: a binding's own command and what the user
+  types at tmux's prompt.
+
+**Next:** the format variables puritty asks, against each tmux's
+`formats.txt`; then check 2 (TK3).
+

@@ -1,22 +1,76 @@
 module Tmux.Command exposing
     ( Part(..)
     , Shape
+    , bindKey
     , bindingLine
+    , capture
+    , captureTarget
     , catalog
     , clientFlags
     , continuePane
+    , deleteBuffer
+    , detachClient
+    , detachTemplate
+    , display
+    , displayAt
+    , displayLiteral
     , flagsOf
+    , ifShellMouse
+    , killPane
+    , killSession
+    , killWindow
+    , listBuffers
+    , listClients
     , listCommands
+    , listKeys
+    , listKeysFormat
+    , listKeysNotes
     , listPanes
+    , listPanesAll
+    , listPanesOf
+    , listPanesSession
+    , listPanesTarget
+    , listSessions
+    , listWindows
+    , listWindowsAll
+    , listWindowsTarget
+    , markPane
+    , movePane
+    , newWindow
+    , nextWindow
     , pasteBytes
+    , pasteTemplate
+    , popup
+    , previousWindow
     , quote
+    , resizePane
+    , rootTable
+    , selectPane
+    , selectTemplate
+    , selectWindow
     , sendBytes
     , sendBytesPlain
     , sendKey
     , sendKeyTo
+    , setEnvironment
+    , setHook
+    , setOption
+    , setPaneFormat
+    , setPaneOption
+    , showBuffer
+    , showEnvironment
+    , showHooks
+    , showOptions
     , size
     , sizeComma
+    , subscribe
+    , suspendClient
+    , swapWindow
+    , switchTemplate
     , typeText
+    , unbindKey
+    , unmarkPanes
+    , unsetOption
     )
 
 {-| The commands puritty sends tmux in control mode (puritty
@@ -34,11 +88,16 @@ import UInt8
 
 
 {-| A part of a command: a flag alone (`-p`), a flag and its value (`-t
-%0`), or the arguments after the flags. -}
+%0`), or the arguments after the flags; and a flag, or a flag and value,
+that a command may leave out (`OptFlag`, `OptValue`), given as a value
+that is empty when it is left out. The check holds every flag a shape may
+have, so whichever it leaves out the rest are taken. -}
 type Part
     = Flag String
     | Value String
     | Rest
+    | OptFlag String
+    | OptValue String
 
 
 {-| A command's shape: its name and parts, and when it may be sent (`allowed`), as a
@@ -70,6 +129,31 @@ render shape values =
                 Rest ->
                     { words = acc.words ++ Array.dropFirst acc.next values, next = Array.length values }
 
+                OptFlag f ->
+                    { words =
+                        if Maybe.withDefault (meant Reason.NotSet "") (Array.get acc.next values) == "" then
+                            acc.words
+
+                        else
+                            Array.pushLast ("-" ++ f) acc.words
+                    , next = acc.next + 1
+                    }
+
+                OptValue f ->
+                    { words =
+                        when Array.get acc.next values is
+                            Just v ->
+                                if v == "" then
+                                    acc.words
+
+                                else
+                                    acc.words ++ [ "-" ++ f, v ]
+
+                            Nothing ->
+                                meant Reason.FromOutside acc.words
+                    , next = acc.next + 1
+                    }
+
         made =
             Array.foldl step { words = [ shape.name ], next = 0 } shape.parts
     in
@@ -91,6 +175,12 @@ flagsOf shape =
 
                     Rest ->
                         ""
+
+                    OptFlag f ->
+                        f
+
+                    OptValue f ->
+                        f
             )
         |> String.join ""
 
@@ -170,6 +260,693 @@ pasteShape =
     { name = "paste-buffer", parts = [ Flag "p", Flag "r", Flag "d", Value "b", Value "t" ], allowed = anyTmux }
 
 
+-- QUESTIONS (TK7)
+
+
+custom : Caps -> Bool
+custom =
+    -- what customize-mode asks: puritty shows it only where tmux has it
+    Caps.known "customize-mode"
+
+
+displayShape : Shape
+displayShape =
+    { name = "display-message", parts = [ Flag "p", Rest ], allowed = anyTmux }
+
+
+displayAtShape : Shape
+displayAtShape =
+    { name = "display-message", parts = [ Flag "p", Value "t", Rest ], allowed = anyTmux }
+
+
+listPanesSessionShape : Shape
+listPanesSessionShape =
+    { name = "list-panes", parts = [ Flag "s", Value "F" ], allowed = anyTmux }
+
+
+listPanesAllShape : Shape
+listPanesAllShape =
+    { name = "list-panes", parts = [ Flag "a", Value "F" ], allowed = anyTmux }
+
+
+listPanesTargetShape : Shape
+listPanesTargetShape =
+    { name = "list-panes", parts = [ Value "t", Value "F" ], allowed = anyTmux }
+
+
+listWindowsShape : Shape
+listWindowsShape =
+    { name = "list-windows", parts = [ Value "F" ], allowed = anyTmux }
+
+
+listWindowsAllShape : Shape
+listWindowsAllShape =
+    { name = "list-windows", parts = [ Flag "a", Value "F" ], allowed = anyTmux }
+
+
+listWindowsTargetShape : Shape
+listWindowsTargetShape =
+    { name = "list-windows", parts = [ Value "t", Value "F" ], allowed = anyTmux }
+
+
+listSessionsShape : Shape
+listSessionsShape =
+    { name = "list-sessions", parts = [ Value "F" ], allowed = anyTmux }
+
+
+listBuffersShape : Shape
+listBuffersShape =
+    { name = "list-buffers", parts = [ Value "F" ], allowed = anyTmux }
+
+
+listClientsShape : Shape
+listClientsShape =
+    { name = "list-clients", parts = [ Value "F" ], allowed = anyTmux }
+
+
+showBufferShape : Shape
+showBufferShape =
+    { name = "show-buffer", parts = [ Value "b" ], allowed = anyTmux }
+
+
+captureShape : Shape
+captureShape =
+    { name = "capture-pane", parts = [ Flag "p", Value "t" ], allowed = anyTmux }
+
+
+captureHistoryShape : Shape
+captureHistoryShape =
+    { name = "capture-pane", parts = [ Flag "p", Flag "e", Flag "J", Value "S", Value "E", Value "t" ], allowed = anyTmux }
+
+
+captureSavedShape : Shape
+captureSavedShape =
+    { name = "capture-pane", parts = [ Flag "p", Flag "e", Flag "J", Value "S", Value "E", Flag "a", Flag "q", Value "t" ], allowed = anyTmux }
+
+
+listKeysShape : Shape
+listKeysShape =
+    { name = "list-keys", parts = [], allowed = anyTmux }
+
+
+listKeysFormatShape : Shape
+listKeysFormatShape =
+    { name = "list-keys", parts = [ Value "F" ], allowed = Caps.has "list-keys" "F" }
+
+
+listKeysNotesShape : Shape
+listKeysNotesShape =
+    { name = "list-keys", parts = [ Flag "N", Flag "a", Value "P", Value "T" ], allowed = \c -> custom c && Caps.has "list-keys" "N" c }
+
+
+subscribeShape : Shape
+subscribeShape =
+    { name = "refresh-client", parts = [ Value "B" ], allowed = Caps.has "refresh-client" "B" }
+
+
+{-| `show-options -H` at each of customize-mode's levels, by its flags:
+`s`, `g`, `t`, `gw`, `wt`, `pt`. -}
+showOptionsShapes : Array { level : String, shape : Shape }
+showOptionsShapes =
+    [ { level = "s", shape = { name = "show-options", parts = [ Flag "H", Flag "s" ], allowed = custom } }
+    , { level = "g", shape = { name = "show-options", parts = [ Flag "H", Flag "g" ], allowed = custom } }
+    , { level = "t", shape = { name = "show-options", parts = [ Flag "H", Value "t" ], allowed = custom } }
+    , { level = "gw", shape = { name = "show-options", parts = [ Flag "H", Flag "g", Flag "w" ], allowed = custom } }
+    , { level = "wt", shape = { name = "show-options", parts = [ Flag "H", Flag "w", Value "t" ], allowed = custom } }
+    , { level = "pt", shape = { name = "show-options", parts = [ Flag "H", Flag "p", Value "t" ], allowed = custom } }
+    ]
+
+
+{-| `show-environment` at customize-mode's levels: `g`, `gh`, `t`, `th`. -}
+showEnvironmentShapes : Array { level : String, shape : Shape }
+showEnvironmentShapes =
+    [ { level = "g", shape = { name = "show-environment", parts = [ Flag "g" ], allowed = custom } }
+    , { level = "gh", shape = { name = "show-environment", parts = [ Flag "g", Flag "h" ], allowed = custom } }
+    , { level = "t", shape = { name = "show-environment", parts = [ Value "t" ], allowed = custom } }
+    , { level = "th", shape = { name = "show-environment", parts = [ Value "t", Flag "h" ], allowed = custom } }
+    ]
+
+
+leveled : Array { level : String, shape : Shape } -> String -> String -> String
+leveled shapes level target =
+    when Array.findFirst (\s -> s.level == level) shapes is
+        Just found ->
+            render found.value.shape
+                (if String.contains "t" level then
+                    [ quote target ]
+
+                 else
+                    []
+                )
+
+        Nothing ->
+            -- a level puritty does not ask: the first's
+            meant Reason.NotKnown (Maybe.withDefault (meant Reason.NotKnown "") (Maybe.map (\s -> render s.shape []) (Array.first shapes)))
+
+
+{-| `display-message -p FORMAT`: a format expanded for the session. -}
+display : String -> String
+display format =
+    render displayShape [ quote format ]
+
+
+{-| `display-message -p -t TARGET FORMAT`. -}
+displayAt : String -> String -> String
+displayAt target format =
+    render displayAtShape [ quote target, quote format ]
+
+
+{-| `display-message -p -t TARGET -- TEXT`: text that may begin with `-`. -}
+displayLiteral : String -> String -> String
+displayLiteral target text =
+    render displayAtShape [ quote target, "--", quote text ]
+
+
+listPanesOf : String -> String
+listPanesOf format =
+    render listPanesShape [ quote format ]
+
+
+listPanesSession : String -> String
+listPanesSession format =
+    render listPanesSessionShape [ quote format ]
+
+
+listPanesAll : String -> String
+listPanesAll format =
+    render listPanesAllShape [ quote format ]
+
+
+listPanesTarget : String -> String -> String
+listPanesTarget target format =
+    render listPanesTargetShape [ quote target, quote format ]
+
+
+listWindows : String -> String
+listWindows format =
+    render listWindowsShape [ quote format ]
+
+
+listWindowsAll : String -> String
+listWindowsAll format =
+    render listWindowsAllShape [ quote format ]
+
+
+listWindowsTarget : String -> String -> String
+listWindowsTarget target format =
+    render listWindowsTargetShape [ quote target, quote format ]
+
+
+listSessions : String -> String
+listSessions format =
+    render listSessionsShape [ quote format ]
+
+
+listBuffers : String -> String
+listBuffers format =
+    render listBuffersShape [ quote format ]
+
+
+listClients : String -> String
+listClients format =
+    render listClientsShape [ quote format ]
+
+
+showBuffer : String -> String
+showBuffer name =
+    render showBufferShape [ quote name ]
+
+
+{-| `capture-pane -p -t TARGET`: the pane's screen as text. -}
+captureTarget : String -> String
+captureTarget target =
+    render captureShape [ quote target ]
+
+
+{-| A pane's history and screen, colors and wrapped lines joined
+(`-e -J -S - -E -`); with `saved`, the main screen kept while the
+alternate one is up (`-a -q`). -}
+capture : Bool -> String -> String
+capture saved target =
+    render
+        (if saved then
+            captureSavedShape
+
+         else
+            captureHistoryShape
+        )
+        [ "-", "-", quote target ]
+
+
+listKeys : String
+listKeys =
+    render listKeysShape []
+
+
+listKeysFormat : String -> String
+listKeysFormat format =
+    render listKeysFormatShape [ quote format ]
+
+
+{-| `list-keys -N -a -P '' -T TABLE`: a table's notes, every key. -}
+listKeysNotes : String -> String
+listKeysNotes table =
+    render listKeysNotesShape [ "''", quote table ]
+
+
+{-| `refresh-client -B NAME:WHAT:FORMAT`: a subscription (3.2). -}
+subscribe : String -> String
+subscribe sub =
+    render subscribeShape [ quote sub ]
+
+
+{-| `show-options -H` at a level of `showOptionsShapes`. -}
+showOptions : String -> String -> String
+showOptions level target =
+    leveled showOptionsShapes level target
+
+
+{-| `show-environment` at a level of `showEnvironmentShapes`. -}
+showEnvironment : String -> String -> String
+showEnvironment level target =
+    leveled showEnvironmentShapes level target
+
+
+-- ACTIONS (TK7)
+
+
+bare : String -> Shape
+bare name =
+    { name = name, parts = [], allowed = anyTmux }
+
+
+targeted : String -> Shape
+targeted name =
+    { name = name, parts = [ Value "t" ], allowed = anyTmux }
+
+
+markShape : Shape
+markShape =
+    { name = "select-pane", parts = [ Flag "m", Value "t" ], allowed = anyTmux }
+
+
+unmarkShape : Shape
+unmarkShape =
+    { name = "select-pane", parts = [ Flag "M" ], allowed = anyTmux }
+
+
+swapWindowShape : Shape
+swapWindowShape =
+    { name = "swap-window", parts = [ Flag "d", Value "s", Value "t" ], allowed = anyTmux }
+
+
+detachKillShape : Shape
+detachKillShape =
+    { name = "detach-client", parts = [ Flag "P", Value "t" ], allowed = anyTmux }
+
+
+deleteBufferShape : Shape
+deleteBufferShape =
+    { name = "delete-buffer", parts = [ Value "b" ], allowed = anyTmux }
+
+
+rootShape : Shape
+rootShape =
+    { name = "switch-client", parts = [ Value "T" ], allowed = anyTmux }
+
+
+resizeShape : Shape
+resizeShape =
+    { name = "resize-pane", parts = [ Value "t", OptValue "x", OptValue "y" ], allowed = anyTmux }
+
+
+moveShape : Shape
+moveShape =
+    -- a floating pane moved: 3.8's panes
+    { name = "move-pane", parts = [ Value "t", Value "X", Value "Y" ], allowed = Caps.has "move-pane" "X" }
+
+
+setPaneShape : Shape
+setPaneShape =
+    -- a pane's own option (3.0): what tmux's menus are given, which 3.0 brings too
+    { name = "set-option", parts = [ Flag "p", Value "t", Rest ], allowed = Caps.has "set-option" "p" }
+
+
+setPaneFormatShape : Shape
+setPaneFormatShape =
+    -- the current pane's option, a format expanded: a popup's colors (3.8)
+    { name = "set-option", parts = [ Flag "p", Flag "F", Rest ], allowed = Caps.has "new-pane" "O" }
+
+
+ifShellShape : Shape
+ifShellShape =
+    { name = "if-shell", parts = [ Flag "F", Value "t", Rest ], allowed = anyTmux }
+
+
+popupShape : Shape
+popupShape =
+    -- tmux 3.8's popup as a floating pane
+    { name = "new-pane", parts = [ Flag "O", OptFlag "k", Value "t", Value "x", Value "y", Value "X", Value "Y", OptValue "c", Rest ], allowed = Caps.has "new-pane" "O" }
+
+
+newWindow : String
+newWindow =
+    render (bare "new-window") []
+
+
+nextWindow : String
+nextWindow =
+    render (bare "next-window") []
+
+
+previousWindow : String
+previousWindow =
+    render (bare "previous-window") []
+
+
+selectWindow : String -> String
+selectWindow target =
+    render (targeted "select-window") [ quote target ]
+
+
+selectPane : String -> String
+selectPane target =
+    render (targeted "select-pane") [ quote target ]
+
+
+{-| `select-pane -m -t`: the pane marked. -}
+markPane : String -> String
+markPane target =
+    render markShape [ quote target ]
+
+
+{-| `select-pane -M`: the marks cleared. -}
+unmarkPanes : String
+unmarkPanes =
+    render unmarkShape []
+
+
+swapWindow : String -> String -> String
+swapWindow source target =
+    render swapWindowShape [ quote source, quote target ]
+
+
+killPane : String -> String
+killPane target =
+    render (targeted "kill-pane") [ quote target ]
+
+
+killWindow : String -> String
+killWindow target =
+    render (targeted "kill-window") [ quote target ]
+
+
+killSession : String -> String
+killSession target =
+    render (targeted "kill-session") [ quote target ]
+
+
+{-| `detach-client -t CLIENT`, or with `kill` `-P`, its process sent
+SIGHUP. -}
+detachClient : Bool -> String -> String
+detachClient kill client =
+    if kill then
+        render detachKillShape [ quote client ]
+
+    else
+        render (targeted "detach-client") [ quote client ]
+
+
+suspendClient : String -> String
+suspendClient client =
+    render (targeted "suspend-client") [ quote client ]
+
+
+deleteBuffer : String -> String
+deleteBuffer name =
+    render deleteBufferShape [ quote name ]
+
+
+{-| `switch-client -T root`: the client's key table back at the root. -}
+rootTable : String
+rootTable =
+    render rootShape [ "root" ]
+
+
+{-| `resize-pane -t TARGET`, its width, its height or both. -}
+resizePane : String -> Maybe Int -> Maybe Int -> String
+resizePane target width height =
+    render resizeShape [ quote target, Maybe.withDefault (meant Reason.NotSet "") (Maybe.map String.fromInt width), Maybe.withDefault (meant Reason.NotSet "") (Maybe.map String.fromInt height) ]
+
+
+{-| `move-pane -t TARGET -X x -Y y`: a floating pane placed. -}
+movePane : String -> Int -> Int -> String
+movePane target x y =
+    render moveShape [ quote target, String.fromInt x, String.fromInt y ]
+
+
+{-| `set-option -p -t PANE NAME VALUE`: a pane's own option. -}
+setPaneOption : String -> String -> String -> String
+setPaneOption pane name value =
+    render setPaneShape [ quote pane, name, quote value ]
+
+
+{-| `set-option -p -F NAME FORMAT`: the current pane's option, the format
+expanded. -}
+setPaneFormat : String -> String -> String
+setPaneFormat name format =
+    render setPaneFormatShape [ name, quote format ]
+
+
+{-| `if-shell -F -t PANE CONDITION { COMMANDS }`, the commands given as
+they are (a binding's). -}
+ifShellMouse : String -> String -> String -> String
+ifShellMouse pane condition commands =
+    render ifShellShape [ quote pane, quote condition, "{ " ++ commands ++ " }" ]
+
+
+{-| tmux 3.8's popup as a floating pane (`new-pane -O`), kept open with
+`k`, at a size and place, in a directory, running a command; an empty
+directory or command left out. -}
+popup : { keep : Bool, pane : String, width : String, height : String, x : String, y : String, dir : String, command : String } -> String
+popup p =
+    render popupShape
+        [ if p.keep then
+            "1"
+
+          else
+            ""
+        , quote p.pane
+        , quote p.width
+        , quote p.height
+        , quote p.x
+        , quote p.y
+        , if p.dir == "" then
+            ""
+
+          else
+            quote p.dir
+        , if p.command == "" then
+            ""
+
+          else
+            quote p.command
+        ]
+
+
+-- CUSTOMIZE-MODE'S CHANGES (TK7)
+
+
+{-| The level flags customize-mode's options are set at, by its scope:
+1 the server (`-s`), 2 the session's global (`-g`), 3 the session
+(`-t`), 4 windows' global (`-gw`), 5 the window (`-w -t`), 6 the pane
+(`-p -t`). -}
+levelParts : Array Part
+levelParts =
+    [ OptFlag "s", OptFlag "g", OptFlag "w", OptFlag "p", OptValue "t" ]
+
+
+levelValues : Int -> String -> Array String
+levelValues scope pane =
+    let
+        on b =
+            if b then
+                "1"
+
+            else
+                ""
+    in
+    [ on (scope == 1)
+    , on (scope == 2 || scope == 4)
+    , on (scope == 4 || scope == 5)
+    , on (scope == 6)
+    , if scope == 3 || scope == 5 || scope == 6 then
+        quote pane
+
+      else
+        ""
+    ]
+
+
+setOptionShape : Shape
+setOptionShape =
+    { name = "set-option", parts = levelParts ++ [ Rest ], allowed = custom }
+
+
+unsetOptionShape : Shape
+unsetOptionShape =
+    { name = "set-option", parts = Array.pushFirst (Flag "u") levelParts ++ [ Rest ], allowed = custom }
+
+
+{-| Hooks have no server level: no tmux's `set-hook` or `show-hooks`
+takes `-s` (the catalog's check found it, TK7). A hook said to be at the
+server's is set globally. -}
+hookLevelParts : Array Part
+hookLevelParts =
+    [ OptFlag "g", OptFlag "w", OptFlag "p", OptValue "t" ]
+
+
+hookLevelValues : Int -> String -> Array String
+hookLevelValues scope pane =
+    levelValues
+        (if scope == 1 then
+            2
+
+         else
+            scope
+        )
+        pane
+        |> Array.dropFirst 1
+
+
+setHookShape : Shape
+setHookShape =
+    { name = "set-hook", parts = hookLevelParts ++ [ Rest ], allowed = custom }
+
+
+showHooksShape : Shape
+showHooksShape =
+    -- how often a hook has run (3.8)
+    { name = "show-hooks", parts = hookLevelParts ++ [ Value "F", Rest ], allowed = \c -> custom c && Caps.has "show-hooks" "F" c }
+
+
+setEnvironmentShape : Shape
+setEnvironmentShape =
+    { name = "set-environment", parts = [ OptFlag "g", OptValue "t", OptFlag "h", OptFlag "r", OptFlag "u", Rest ], allowed = custom }
+
+
+bindKeyShape : Shape
+bindKeyShape =
+    { name = "bind-key", parts = [ Value "T", OptFlag "r", OptValue "N", Rest ], allowed = custom }
+
+
+unbindKeyShape : Shape
+unbindKeyShape =
+    { name = "unbind-key", parts = [ Value "T", Rest ], allowed = custom }
+
+
+{-| `set-option` at a level (`levelValues`): `NAME VALUE`. -}
+setOption : Int -> String -> String -> String -> String
+setOption scope pane name value =
+    render setOptionShape (levelValues scope pane ++ [ quote name, quote value ])
+
+
+{-| `set-option -u` at a level: the option unset there. -}
+unsetOption : Int -> String -> String -> String
+unsetOption scope pane name =
+    render unsetOptionShape (levelValues scope pane ++ [ quote name ])
+
+
+setHook : Int -> String -> String -> String -> String
+setHook scope pane name command =
+    render setHookShape (hookLevelValues scope pane ++ [ quote name, quote command ])
+
+
+{-| `show-hooks -F FORMAT NAME` at a level. -}
+showHooks : Int -> String -> String -> String -> String
+showHooks scope pane format name =
+    render showHooksShape (hookLevelValues scope pane ++ [ quote format, quote name ])
+
+
+{-| `set-environment`, globally (`global`) or for the session `pane` is
+in, hidden (`-h`), removed (`-r`) or unset (`-u`), then its words. -}
+setEnvironment : { global : Bool, pane : String, hidden : Bool, remove : Bool, unset : Bool } -> Array String -> String
+setEnvironment e words =
+    let
+        on b =
+            if b then
+                "1"
+
+            else
+                ""
+    in
+    render setEnvironmentShape
+        ([ on e.global
+         , if e.global then
+            ""
+
+           else
+            quote e.pane
+         , on e.hidden
+         , on e.remove
+         , on e.unset
+         ]
+            ++ Array.map quote words
+        )
+
+
+{-| `bind-key -T TABLE [-r] [-N NOTE] KEY COMMAND`. -}
+bindKey : { table : String, repeat : Bool, note : String, key : String, command : String } -> String
+bindKey b =
+    render bindKeyShape
+        [ quote b.table
+        , if b.repeat then
+            "1"
+
+          else
+            ""
+        , if b.note == "" then
+            ""
+
+          else
+            quote b.note
+        , quote b.key
+        , quote b.command
+        ]
+
+
+unbindKey : String -> String -> String
+unbindKey table key =
+    render unbindKeyShape [ quote table, quote key ]
+
+
+{-| tmux's own templates for its choose lists, when a binding gives none,
+each on `'%%'`. -}
+detachTemplate : String
+detachTemplate =
+    render (targeted "detach-client") [ "'%%'" ]
+
+
+pasteTemplate : String
+pasteTemplate =
+    render templatePasteShape [ "'%%'" ]
+
+
+selectTemplate : String
+selectTemplate =
+    render (targeted "select-pane") [ "'%%'" ]
+
+
+switchTemplate : String
+switchTemplate =
+    render (targeted "switch-client") [ "'%%'" ]
+
+
+templatePasteShape : Shape
+templatePasteShape =
+    { name = "paste-buffer", parts = [ Flag "p", Value "b" ], allowed = anyTmux }
+
+
 {-| Every shape puritty sends. -}
 catalog : Array Shape
 catalog =
@@ -187,7 +964,32 @@ catalog =
     , setBufferFirst
     , setBufferAppend
     , pasteShape
+    , displayShape
+    , displayAtShape
+    , listPanesSessionShape
+    , listPanesAllShape
+    , listPanesTargetShape
+    , listWindowsShape
+    , listWindowsAllShape
+    , listWindowsTargetShape
+    , listSessionsShape
+    , listBuffersShape
+    , listClientsShape
+    , showBufferShape
+    , captureShape
+    , captureHistoryShape
+    , captureSavedShape
+    , listKeysShape
+    , listKeysFormatShape
+    , listKeysNotesShape
+    , subscribeShape
     ]
+        ++ Array.map .shape showOptionsShapes
+        ++ Array.map .shape showEnvironmentShapes
+        ++ Array.map bare [ "new-window", "next-window", "previous-window" ]
+        ++ Array.map targeted [ "select-window", "select-pane", "kill-pane", "kill-window", "kill-session", "detach-client", "suspend-client" ]
+        ++ [ setOptionShape, unsetOptionShape, setHookShape, showHooksShape, setEnvironmentShape, bindKeyShape, unbindKeyShape, templatePasteShape, targeted "switch-client" ]
+        ++ [ markShape, unmarkShape, swapWindowShape, detachKillShape, deleteBufferShape, rootShape, resizeShape, moveShape, setPaneShape, setPaneFormatShape, ifShellShape, popupShape ]
 
 
 {-| `list-commands` with no format: each command's usage line, which
