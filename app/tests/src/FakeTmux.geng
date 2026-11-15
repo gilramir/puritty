@@ -12,6 +12,7 @@ module FakeTmux exposing
     , renameWindow
     , startBytes
     , switchWindow
+    , tenths
     , world
     )
 
@@ -117,13 +118,24 @@ world w =
     , answered = []
     , heard = []
     , options = Dict.empty
-    , lacking = []
+    , lacking = lackingOf w.version
     , rules = w.version
     , files = Dict.empty
     , floats = []
     , window = { id = 0, index = 0, name = "sh" }
     , others = []
     }
+
+
+{-| The variables and options of the newest recorded tmux that `version`
+lacks (`RealTmux.lacking`, from the dumps, docs/tmux-checks.md TK8), which
+it answers empty. -}
+lackingOf : String -> Array String
+lackingOf version =
+    RealTmux.lacking
+        |> Array.findFirst (\l -> l.version == version)
+        |> Maybe.map (\found -> found.value.names)
+        |> Maybe.withDefault []
 
 
 {-| What `tmux -CC attach` writes first: control mode begun, and the
@@ -221,7 +233,14 @@ last (3.8); `display-message -t` a pane that is not there refused (before
 session closing said `%unlinked-window-close`, as another session's is
 (before 3.8; `%window-close` from it); a new window's pane said active
 before the window is (before 3.0). Measured, `corpus/tmux/*/notices.txt`
-(TK11). -}
+(TK11). And how it answers what a line asks, measured on each release
+(docs/tmux-versions.md TV10): a condition naming a variable or option it
+does not have taken as true (2.7; from 2.8 as empty, false);
+`capture-pane -J` writing a line's cleared cells, as many as tmux gave
+the line, a quarter, half or all of the width (before 3.3); `capture-pane
+-a` with no alternate screen nothing (before 3.2; from it one empty
+line); copy mode's cursor held to a line's last character as it moves
+(3.7); the layout as JSON (3.8; before, tmux's layout string). -}
 type alias Rules =
     { nestedOwn : Bool
     , noticesEach : Bool
@@ -231,6 +250,11 @@ type alias Rules =
     , quoteFails : Bool
     , closeUnlinked : Bool
     , newWindowPane : Bool
+    , unknownTrue : Bool
+    , padsCells : Bool
+    , emptyAlternate : Bool
+    , clamps : Bool
+    , jsonLayout : Bool
     }
 
 
@@ -248,6 +272,11 @@ rulesOf version =
     , quoteFails = t < 32
     , closeUnlinked = t < 38
     , newWindowPane = t < 30
+    , unknownTrue = t < 28
+    , padsCells = t < 33
+    , emptyAlternate = t >= 32
+    , clamps = t >= 37
+    , jsonLayout = t >= 38
     }
 
 
@@ -626,7 +655,7 @@ one words w =
                 reply (Array.map .usage (tableOf w.version))
 
         "capture-pane" ->
-            reply (captured args target)
+            reply (captured w args target)
 
         "refresh-client" ->
             when Dict.get "B" args.values is
@@ -1034,10 +1063,10 @@ copyTable =
 
 
 {-| Whether this tmux holds copy mode's cursor to a line's last character
-when it moves (3.8 does, 3.6a does not: measured, TM68). -}
+when it moves (from 3.7: measured, TM68, TV10). -}
 clamps : World -> Bool
 clamps w =
-    w.version /= "3.6a"
+    (rulesOf w.version).clamps
 
 
 {-| One copy-mode command, as tmux moves its cursor and view. -}
@@ -1124,10 +1153,12 @@ bindingsOf version =
 
 
 {-| `display-message -p`'s line: its format expanded, and `%%` written
-`%`, as tmux writes it (measured, 3.8 and 3.6a: `100%%` shows `100%`). -}
+`%`, as tmux writes it (measured, 3.8 and 3.6a: `100%%` shows `100%`), and
+strftime's fields filled in the message as written, before its variables
+are expanded, as every version fills them (TV10). -}
 shown : World -> Pane -> { bools : String, values : Dict String String, rest : Array String } -> String
 shown w target args =
-    expand (vars w target) (Maybe.withDefault "" (Array.last args.rest))
+    expand (vars w target) (strftime (Maybe.withDefault "" (Array.last args.rest)))
         |> String.replace "%%" "%"
 
 
@@ -1147,11 +1178,20 @@ displayed w target args =
 
 {-| `capture-pane -p`: the screen, or from `-S` to `-E` where `-` is the
 history's first line or the last; with `-a`, the alternate screen, which a
-pane without one gives as one empty line (measured). -}
-captured : { bools : String, values : Dict String String, rest : Array String } -> Pane -> Array String
-captured args p =
+pane without one gives as one empty line, before 3.2 as nothing; with
+`-J` before 3.3, each line with the cleared cells tmux gave it (measured,
+TV10). -}
+captured : World -> { bools : String, values : Dict String String, rest : Array String } -> Pane -> Array String
+captured w args p =
     if String.contains "a" args.bools then
-        [ "" ]
+        if (rulesOf w.version).emptyAlternate then
+            [ "" ]
+
+        else
+            []
+
+    else if String.contains "J" args.bools && (rulesOf w.version).padsCells then
+        Array.map (padded w.cols) (captured w { args | bools = String.replace "J" "" args.bools } p)
 
     else
         let
@@ -1194,6 +1234,31 @@ captured args p =
         Array.slice from (to + 1) p.lines
 
 
+{-| A line as tmux before 3.3 kept it, written whole by `capture-pane -J`:
+its cells grown to a quarter of the width, then half, then all of it, as
+`grid_expand_line` grew them; an empty line has none. -}
+padded : Int -> String -> String
+padded cols line =
+    let
+        used =
+            String.count line
+
+        cells =
+            if used == 0 then
+                0
+
+            else if used < cols // 4 then
+                cols // 4
+
+            else if used < cols // 2 then
+                cols // 2
+
+            else
+                max cols used
+    in
+    line ++ String.repeat (cells - used) " "
+
+
 {-| `list-commands`' table: each command's name, alias and usage line,
 from the usage lines recorded from the version (`send-keys (send)
 [-HlXRM] …`; a command with no alias has no parenthesis). -}
@@ -1226,7 +1291,10 @@ tableOf version =
 
 commandVars : { name : String, alias : String, usage : String } -> (String -> String) -> String -> String
 commandVars c lookup name =
-    if name == "command_list_name" then
+    if String.startsWith "?" name then
+        commandVars c lookup (String.dropFirst 1 name)
+
+    else if name == "command_list_name" then
         c.name
 
     else if name == "command_list_alias" then
@@ -1327,7 +1395,7 @@ layout w =
         floats =
             Array.indexedMap (\i f -> box f (",\"z\":" ++ n (Array.length w.floats - 1 - i))) w.floats
     in
-    if w.version == "3.6a" then
+    if not (rulesOf w.version).jsonLayout then
         hex4 (checksum body) ++ "," ++ body
 
     else
@@ -1364,10 +1432,36 @@ hex4 n =
 
 {-| A format's variables for a pane, as tmux 3.8 expands them; one this
 model has no value for, or one the world lacks, is empty, as tmux's
-unknown ones are. -}
+unknown ones are. A `?name` is one a condition names (`#{?name,a,b}`),
+which 2.7 takes as true when it does not have it. -}
 vars : World -> Pane -> String -> String
 vars w p name =
-    if Array.member name w.lacking then
+    if String.startsWith "?" name then
+        let
+            bare =
+                String.dropFirst 1 name
+
+            unknown =
+                Array.member bare w.lacking || String.startsWith "@" bare && not (Dict.member bare w.options)
+        in
+        if unknown && (rulesOf w.version).unknownTrue then
+            "1"
+
+        else
+            vars w p bare
+
+    else if String.startsWith "pane#" name then
+        -- a pane of the window's by its index, for `P:`
+        let
+            at =
+                String.split ":" (String.dropFirst 5 name)
+
+            index =
+                Array.first at |> Maybe.andThen String.toInt |> Maybe.withDefault 0
+        in
+        vars w (Array.get index w.panes |> Maybe.withDefault p) (String.join ":" (Array.dropFirst 1 at))
+
+    else if Array.member name w.lacking then
         ""
 
     else
@@ -1445,7 +1539,7 @@ varsOf w p name =
                 "1700000000"
 
             "pane_flags" ->
-                if w.version /= "3.6a" && p.id == w.active then
+                if p.id == w.active then
                     "*"
 
                 else
@@ -1464,11 +1558,7 @@ varsOf w p name =
                 "0"
 
             "pane_private_modes" ->
-                if w.version == "3.6a" then
-                    ""
-
-                else
-                    "7,25"
+                "7,25"
 
             -- a shell's pane: its cursor shown, wrapping, no origin mode
             "cursor_flag" ->
@@ -1487,11 +1577,7 @@ varsOf w p name =
                 "host"
 
             "tree-mode-preview-style" ->
-                if w.version == "3.6a" then
-                    ""
-
-                else
-                    "fg=themered"
+                "fg=themered"
 
             "pane_search_string" ->
                 ""
@@ -1594,9 +1680,6 @@ varsOf w p name =
             "client_name" ->
                 "client-0"
 
-            "status" ->
-                "on"
-
             _ ->
                 -- with nothing selected, where a selection is is empty
                 if String.startsWith "selection_" name then
@@ -1609,7 +1692,89 @@ varsOf w p name =
                     "0"
 
                 else
-                    ""
+                    optionOf w name
+
+
+{-| An option's value with no configuration, as this version's format
+gives it (`RealTmux.options`); empty for one it does not have. -}
+optionOf : World -> String -> String
+optionOf w name =
+    RealTmux.options
+        |> Array.findFirst (\o -> o.version == w.version)
+        |> Maybe.andThen (\found -> Array.findFirst (\v -> v.name == name) found.value.values)
+        |> Maybe.map (\found -> found.value.value)
+        |> Maybe.withDefault ""
+
+
+{-| The version a format's modifier came in (measured on each release,
+docs/tmux-versions.md TV10): before it, tmux expands `#{op:…}` empty. -}
+modifierSince : String -> Int
+modifierSince op =
+    when op is
+        "T" ->
+            29
+
+        "E" ->
+            29
+
+        "q" ->
+            29
+
+        "m/r" ->
+            30
+
+        "<" ->
+            30
+
+        ">" ->
+            30
+
+        "t/p" ->
+            32
+
+        "P" ->
+            30
+
+        "!" ->
+            36
+
+        _ ->
+            if String.startsWith "=/" op then
+                30
+
+            else if String.startsWith "e|" op then
+                32
+
+            else
+                0
+
+
+{-| `e|op:a,b` on integers: the sum, difference or product. -}
+arithmetic : (Int -> Int -> Int) -> String -> String -> String
+arithmetic op a b =
+    String.fromInt (op (String.toInt a |> Maybe.withDefault 0) (String.toInt b |> Maybe.withDefault 0))
+
+
+{-| `e|op:a,b` comparing integers, 1 or 0. -}
+compared : (Int -> Int -> Bool) -> String -> String -> String
+compared op a b =
+    if op (String.toInt a |> Maybe.withDefault 0) (String.toInt b |> Maybe.withDefault 0) then
+        "1"
+
+    else
+        "0"
+
+
+{-| strftime's fields in an expanded `T:`, as record-tmux.py writes the
+time a real tmux gave. -}
+strftime : String -> String
+strftime text =
+    text
+        |> String.replace "%H" "12"
+        |> String.replace "%M" "00"
+        |> String.replace "%d" "01"
+        |> String.replace "%b" "Jan"
+        |> String.replace "%y" "70"
 
 
 {-| Where a pane is among the window's, and how wide each is: the panes
@@ -1665,6 +1830,9 @@ expand lookup text =
 
                         Just '#' ->
                             go (i + 2) (acc ++ "#")
+
+                        Just ',' ->
+                            go (i + 2) (acc ++ ",")
 
                         Just c ->
                             when aliasOf c is
@@ -1736,10 +1904,14 @@ variable lookup inner =
                 Maybe.withDefault "" (Array.get 0 choices)
 
             -- a condition that is a format (`#{?#{!:x},a,b}`) is expanded;
-            -- a name (`#{?pane_marked,a,b}`) is looked up
+            -- a name (`#{?pane_marked,a,b}`) is looked up as a condition's
+            -- (`vars`), and one with a modifier as a format
             cond =
                 if String.startsWith "#" first then
                     expand lookup first
+
+                else if modifierOf first == Nothing then
+                    lookup ("?" ++ first)
 
                 else
                     expand lookup ("#{" ++ first ++ "}")
@@ -1759,62 +1931,97 @@ variable lookup inner =
                 lookup inner
 
             Just m ->
-                when m.op is
-                    "E" ->
-                        expand lookup (lookup m.rest)
+                -- the version through the lookup, which every one answers
+                if tenths (lookup "version") < modifierSince m.op then
+                    ""
 
-                    "T" ->
-                        expand lookup (lookup m.rest)
+                else
+                    when m.op is
+                        "P" ->
+                            -- each of the window's panes, by its index
+                            Array.range 0 ((String.toInt (lookup "window_panes") |> Maybe.withDefault 1) - 1)
+                                |> Array.map (\i -> expand (\name -> lookup ("pane#" ++ String.fromInt i ++ ":" ++ name)) m.rest)
+                                |> String.join ""
 
-                    "q" ->
-                        quoted (lookup m.rest)
+                        "E" ->
+                            expand lookup (lookup m.rest)
 
-                    "m/r" ->
-                        two m.rest (\pattern text -> bool (matches pattern text))
+                        "e|+" ->
+                            two m.rest (arithmetic (+))
 
-                    "==" ->
-                        two m.rest (\a b -> bool (a == b))
+                        "e|-" ->
+                            two m.rest (arithmetic (-))
 
-                    "!=" ->
-                        two m.rest (\a b -> bool (a /= b))
+                        "e|*" ->
+                            two m.rest (arithmetic (*))
 
-                    "<" ->
-                        two m.rest (\a b -> bool (a < b))
+                        "e|>=" ->
+                            two m.rest (compared (>=))
 
-                    ">" ->
-                        two m.rest (\a b -> bool (a > b))
+                        "e|<=" ->
+                            two m.rest (compared (<=))
 
-                    "&&" ->
-                        two m.rest (\a b -> bool (truthy a && truthy b))
+                        "e|>" ->
+                            two m.rest (compared (>))
 
-                    "||" ->
-                        two m.rest (\a b -> bool (truthy a || truthy b))
+                        "e|<" ->
+                            two m.rest (compared (<))
 
-                    "!" ->
-                        bool (not (truthy (expand lookup m.rest)))
+                        "e|==" ->
+                            two m.rest (compared (==))
 
-                    "t/p" ->
-                        if lookup m.rest == "" then
-                            ""
+                        "T" ->
+                            strftime (expand lookup (lookup m.rest))
 
-                        else
-                            "12:00"
+                        "q" ->
+                            quoted (lookup m.rest)
 
-                    op ->
-                        when truncation op is
-                            Just t ->
-                                let
-                                    value =
-                                        lookup m.rest
-                                in
-                                if String.count value > t.length then
-                                    String.takeFirst t.length value ++ t.end
+                        "m/r" ->
+                            two m.rest (\pattern text -> bool (matches pattern text))
 
-                                else
-                                    value
+                        "==" ->
+                            two m.rest (\a b -> bool (a == b))
 
-                            Nothing ->
-                                lookup m.rest
+                        "!=" ->
+                            two m.rest (\a b -> bool (a /= b))
+
+                        "<" ->
+                            two m.rest (\a b -> bool (a < b))
+
+                        ">" ->
+                            two m.rest (\a b -> bool (a > b))
+
+                        "&&" ->
+                            two m.rest (\a b -> bool (truthy a && truthy b))
+
+                        "||" ->
+                            two m.rest (\a b -> bool (truthy a || truthy b))
+
+                        "!" ->
+                            bool (not (truthy (expand lookup m.rest)))
+
+                        "t/p" ->
+                            if lookup m.rest == "" then
+                                ""
+
+                            else
+                                "12:00"
+
+                        op ->
+                            when truncation op is
+                                Just t ->
+                                    let
+                                        value =
+                                            lookup m.rest
+                                    in
+                                    if String.count value > t.length then
+                                        String.takeFirst t.length value ++ t.end
+
+                                    else
+                                        value
+
+                                Nothing ->
+                                    lookup m.rest
 
 
 {-| A format's modifier: the text before its first `:` outside `#{…}`,
@@ -1852,7 +2059,7 @@ modifierOf inner =
                 op =
                     String.takeFirst at inner
             in
-            if Array.member op [ "E", "T", "q", "m/r", "==", "!=", "<", ">", "&&", "||", "!", "t/p" ] || truncation op /= Nothing then
+            if Array.member op [ "E", "T", "q", "m/r", "==", "!=", "<", ">", "&&", "||", "!", "t/p", "P", "e|+", "e|-", "e|*", "e|>=", "e|<=", "e|>", "e|<", "e|==" ] || truncation op /= Nothing then
                 Just { op = op, rest = String.dropFirst (at + 1) inner }
 
             else
@@ -1963,7 +2170,7 @@ topLevel text =
             String.toArray text
                 |> Array.foldl
                     (\c acc ->
-                        if c == ',' && acc.depth == 0 then
+                        if c == ',' && acc.depth == 0 && not (String.endsWith "#" acc.current) then
                             { acc | parts = Array.pushLast acc.current acc.parts, current = "" }
 
                         else

@@ -2552,25 +2552,25 @@ replied expect ok lines acc =
 
                     else
                         -- before 3.2: asked, not told (TM72), once it is
-                        -- known whether `#{T:…}` is (`ForTimeProbe`)
+                        -- known whether `#{T:…}` is (`ForTimeProbe`), which
+                        -- starts the timer
                         [ { command = Command.display "#{T:version}", expect = ForTimeProbe } ]
-
-                polled =
-                    if Caps.has "refresh-client" "B" caps then
-                        known
-
-                    else
-                        { known | pollAt = Clock.after known.clock pollMs }
             in
-            ask (flags ++ [ { command = sizeCommand caps clientSize, expect = ForNothing } ] ++ subscriptions) { acc | state = polled }
+            ask (flags ++ [ { command = sizeCommand caps clientSize, expect = ForNothing } ] ++ subscriptions) { acc | state = known }
 
         ForTimeProbe ->
             let
                 st =
                     acc.state
 
+                -- the timer started only now: one that fired before the
+                -- answer would ask 2.7 or 2.8 for `#{T:…}`, which they
+                -- answer empty (docs/tmux-checks.md TK10.9)
                 known =
-                    { st | timeFormats = ok && (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "")) /= "" }
+                    { st
+                        | timeFormats = ok && (Array.first lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside "")) /= ""
+                        , pollAt = Clock.after st.clock pollMs
+                    }
             in
             ask (pollsFor known) { acc | state = known }
 
@@ -6673,12 +6673,12 @@ statusSubscriptions =
     , "puritty-style::#{status-style}"
     , "puritty-sep::#{window-status-separator}"
     , "puritty-lengths::#{status-left-length} #{status-right-length}"
-    , "puritty-wtext:@*:#{?window_active,#{T:window-status-current-format},#{T:window-status-format}}"
-    , "puritty-wstyle:@*:#{?window_active,#{window-status-current-style},#{window-status-style}} #{?window_bell_flag,#{window-status-bell-style},} #{?window_activity_flag,#{window-status-activity-style},}"
+    , "puritty-wtext:@*:#{?#{window_active},#{T:window-status-current-format},#{T:window-status-format}}"
+    , "puritty-wstyle:@*:#{?#{window_active},#{window-status-current-style},#{window-status-style}} #{?#{window_bell_flag},#{window-status-bell-style},} #{?#{window_activity_flag},#{window-status-activity-style},}"
     , "puritty-wflags:@*:#{window_flags}"
     , "puritty-borders::#{pane-border-status} #{pane-border-style}"
     , "puritty-ptitle:%*:#{T:pane-border-format}"
-    , "puritty-pborder:%*:#{?pane_active,#{E:pane-active-border-style},#{E:pane-border-style}}"
+    , "puritty-pborder:%*:#{?#{pane_active},#{E:pane-active-border-style},#{E:pane-border-style}}"
     , "puritty-pmarked:%*:#{pane_marked}"
     , "puritty-pwstyle:%*:#{window-style}\t#{window-active-style}"
     , "puritty-opts::" ++ String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") optionNames)
@@ -11171,7 +11171,7 @@ infoLines =
             "#[fg=themelightgrey]" ++ String.padRight 14 ' ' name ++ "#[#{E:tree-mode-border-style}]│#[default] "
 
         flag name cond =
-            "#{?" ++ cond ++ ",#[fg=themegreen],#[fg=themelightgrey]}" ++ name ++ "#[default]"
+            "#{?#{" ++ cond ++ "},#[fg=themegreen],#[fg=themelightgrey]}" ++ name ++ "#[default]"
     in
     { pane =
         [ label "Pane" ++ "#{pane_index} #[fg=themelightgrey](#{pane_id})#[default]"
@@ -11180,7 +11180,7 @@ infoLines =
         , label "Path" ++ "#{pane_current_path}"
         , label "TTY" ++ "#{pane_tty}"
         , label "Position" ++ "#{pane_x},#{pane_y} #{pane_width}x#{pane_height}"
-        , label "Mode" ++ "#{?pane_in_mode,#{pane_mode},none}"
+        , label "Mode" ++ "#{?#{pane_in_mode},#{pane_mode},none}"
         , label "Flags" ++ String.join " " [ flag "active" "pane_active", flag "zoomed" "window_zoomed_flag", flag "marked" "pane_marked", flag "sync" "pane_synchronized", flag "dead" "pane_dead", flag "piped" "pane_pipe" ]
         ]
     , window =
@@ -11199,7 +11199,7 @@ infoLines =
         , label "Clients" ++ "#{s/,/ /:session_attached_list}"
         , label "Windows" ++ "#{session_windows}"
         , label "Path" ++ "#{session_path}"
-        , label "Group" ++ "#{?session_grouped,#{session_group} (#{session_group_size}),none}"
+        , label "Group" ++ "#{?#{session_grouped},#{session_group} (#{session_group_size}),none}"
         , label "Flags" ++ String.join " " [ flag "attached" "session_attached", flag "grouped" "session_grouped", flag "marked" "session_marked", flag "bell" "session_bell_flag", flag "activity" "session_activity_flag", flag "silence" "session_silence_flag" ]
         ]
     }
@@ -11350,11 +11350,11 @@ treeQueries version =
              else
                 ""
             )
-                ++ "#{session_windows} windows#{?session_grouped, (group #{session_group}: #{session_group_list}),}#{?session_attached, (attached),}"
+                ++ "#{session_windows} windows#{?#{session_grouped}, (group #{session_group}: #{session_group_list}),}#{?#{session_attached}, (attached),}"
 
         windowText =
             (if newer then
-                "#{?window_marked_flag,#[fg=thememagenta],}#{window_name}#[fg=themelightgrey]#{window_flags}"
+                "#{?#{window_marked_flag},#[fg=thememagenta],}#{window_name}#[fg=themelightgrey]#{window_flags}"
 
              else
                 "#{window_name}#{window_flags}"
@@ -11363,10 +11363,10 @@ treeQueries version =
 
         paneText =
             if newer then
-                "#{?pane_marked,#[fg=thememagenta],}#{?pane_floating_flag,#[underscore],}#{pane_current_command}#[fg=themelightgrey]#{pane_flags}" ++ paneTitle
+                "#{?#{pane_marked},#[fg=thememagenta],}#{?#{pane_floating_flag},#[underscore],}#{pane_current_command}#[fg=themelightgrey]#{pane_flags}" ++ paneTitle
 
             else
-                "#{pane_current_command}#{?pane_active,*,}#{?pane_marked,M,}" ++ paneTitle
+                "#{pane_current_command}#{?#{pane_active},*,}#{?#{pane_marked},M,}" ++ paneTitle
     in
     [ { command = Command.listSessions ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
     , { command = Command.listWindowsAll ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_activity}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }

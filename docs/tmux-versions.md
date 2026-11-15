@@ -192,3 +192,51 @@ meets has its other form. TV5's table again, after it: on 2.7, 2.9a, 3.0,
 3.1c, 3.2a, 3.3a, 3.4 and 3.8, typing, the prefix's split and new window,
 and (2.7 to 2.9a) the status line, each working.
 
+## TV10 · What each tmux answers differently, measured (2026-11-15)
+
+TV8's second leaning: the tests' fake tmux (`app/tests/src/FakeTmux.geng`)
+answered as 3.8, and as 3.6a where those two differ. `record-tmux.py` now
+records 3.8, 3.6a, 3.4, 3.2a, 3.0 and 2.7 (the older from
+`tmux-versions/releases.sh`'s builds), one of each step that changes what
+puritty asks, and with each: what that tmux lacks of 3.8's variables and
+options (from its dump, TK8), its options' values with no configuration as a
+format gives them, and the window and pane menus it draws (`prefix <`,
+`prefix >`, captured from a client of its own inside an outer tmux). The
+fake answers as each, and every recorded answer to a question that
+version's scenarios ask is held to the fake's (TM68); the app's tests that
+drive puritty run on all six.
+
+What the recordings and probes of every release from 2.7 to 3.8 showed,
+each now in the fake (`FakeTmux.rulesOf`, `modifierSince`):
+
+| what | how |
+|---|---|
+| `#{?name,a,b}` with a name tmux does not have, or an unset `@option` | **true on 2.7**; from 2.8 empty, so false. `#{?#{name},a,b}` is false on all |
+| `capture-pane -J` | before 3.3 a line keeps the cells tmux gave it, cleared ones as spaces: a quarter of the width, then half, then all (`line 1` and 14 spaces at 80 columns) |
+| `capture-pane -a` with no alternate screen | nothing before 3.2; one empty line from it |
+| copy mode's cursor moving up | held to the line's last character from 3.7; before, it keeps its column |
+| `#{copy_cursor_x}`, `#{selection_start_x}` … | from 3.1 (TK8) |
+| the layout | JSON from 3.8; tmux's layout string before |
+| modifiers | `T:`, `E:`, `q:` from 2.9; `m/r:`, `<:`, `>:`, `=/N/end:`, `P:` from 3.0; `t/p:` and `e\|op:` from 3.2; `!:` from 3.6 (on 3.3 to 3.5 `#{!:#{x}}` gives the text `!:`); before, `#{op:…}` is empty |
+| `display-message` | fills strftime's fields in the message as written, before its variables: an option's `%H` comes through raw |
+| `#{status}` | `1` on 2.7, `on` from 2.8 |
+
+The menus each draws are puritty's on every version that has them:
+3.0's own keys (`Swap Left  (l)`, `Swap Up          (u)`, `Zoom
+(z)`); from 3.2 the swaps and Zoom without keys; 3.8's Float. 2.7 has no
+menus, and `prefix <` there types nothing. TV5's "not yet measured" is so
+answered for the menus; copy mode by version is held by the fake's
+answers above and by the puppet's copy-mode steps on every release
+(`tmux-checks.md` TK12.1); customize mode (3.2) and popups (3.2) are still
+measured on 3.6a and 3.8 only.
+
+**Found and fixed** (`docs/tmux.md` TM76): puritty's tree rows tested
+`#{?pane_marked,…}`, `#{?window_marked_flag,…}` and
+`#{?pane_floating_flag,…}`, which 2.7 has none of, so on RHEL8's tmux every
+pane would show `M`; and the status line's timer could ask 2.7 for
+`#{T:…}` before it knew 2.7 has none (`tmux-checks.md` TK10.9).
+
+**Not yet:** 2.7's own tree writes its rows with its own default format
+(`#{pane_current_command} "#{pane_title}"`; a window as `name flags (N
+panes)`), where puritty writes 3.6a's on every tmux before 3.8.
+

@@ -101,8 +101,10 @@ SUITES = [
         # dumped tmux, and the explorer (check 3); 201 since ST35: a font
         # the file names that cannot be used, said and kept in the list;
         # 202 since ST36: the Han characters' regions named; 203 since TK11:
-        # the fake's windows held to every tmux's notifications
-        203,
+        # the fake's windows held to every tmux's notifications; 244 since
+        # TV10: the per-version tests on 3.4, 3.2a, 3.0 and 2.7 too, forty,
+        # and no condition 2.7 would take as true
+        244,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

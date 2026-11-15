@@ -3276,3 +3276,26 @@ now asks the window (`windowQuery`) after each binding of tmux's runs (on
 it after the next line; before 3.4 right after it sends the binding's
 command) and after the commands the user runs at the prompt or from a
 menu; not for keys in copy mode or the tree.
+
+
+## TM76 · 2.7's conditions, and the status line's timer after its probe (2026-11-15)
+
+Two faults on tmux 2.7, RHEL8's, found by the fake answering as each
+recorded tmux (`docs/tmux-versions.md` TV10, `docs/tmux-checks.md` TK10.9):
+
+- **A condition on a name 2.7 does not have is true there.**
+  `#{?pane_marked,M,}` gives `M` on 2.7, which has no `pane_marked`; from
+  2.8 it gives nothing. puritty's tree rows, status questions and info view
+  wrote their conditions on bare names; each is now `#{?#{name},…}`,
+  which every version takes as false for a name it does not have. A test
+  holds every question puritty asks 2.7 in the scenarios to it: none tests
+  a bare name 2.7 lacks, or a user option. With the fix taken out it names
+  `#{?pane_marked`.
+- **The status line's timer started before puritty knew `#{T:…}`.** The
+  probe, `#{T:version}`, and the timer were started together; a poll
+  before the probe's answer asked 2.7 for `#{T:status-left}` and the rest,
+  which it answers empty. The timer now starts when the probe is answered.
+
+App tests 244 (forty more from the four versions added, and the 2.7
+check).
+

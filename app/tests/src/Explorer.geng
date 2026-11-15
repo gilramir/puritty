@@ -427,7 +427,8 @@ apply choice node =
                             Just "puritty read a reply to its own command while it waited for nothing"
 
                         else
-                            heldTo first.told before r.node.tmux.expecting
+                            orElse (lacked r.node.world (Array.dropFirst (Array.length node.inbox) r.node.inbox))
+                                (heldTo first.told before r.node.tmux.expecting)
                     }
 
                 Nothing ->
@@ -482,11 +483,34 @@ apply choice node =
                             Just ("the user's action sent " ++ String.fromInt commands ++ " commands, and puritty waits for " ++ String.fromInt waited ++ " replies to them: " ++ String.join " / " done.commands)
 
                         else
-                            Nothing
+                            lacked node.world done.commands
                     }
 
                 Nothing ->
                     { node = node, broken = Nothing }
+
+
+{-| A line sent that asks this tmux for what it does not have: `#{T:…}`
+before 2.9, which it expands empty (docs/tmux-versions.md TV10), but for
+the probe, `#{T:version}`, by which puritty learns it (TM72). -}
+lacked : World -> Array String -> Maybe String
+lacked w lines =
+    if FakeTmux.tenths w.version < 29 then
+        Array.findFirst (\line -> String.contains "#{T:" (String.replace "#{T:version}" "" line)) lines
+            |> Maybe.map (\found -> "puritty asked tmux " ++ w.version ++ ", which has no #{T:…}, for " ++ found.value)
+
+    else
+        Nothing
+
+
+orElse : Maybe a -> Maybe a -> Maybe a
+orElse first second =
+    when first is
+        Just _ ->
+            first
+
+        Nothing ->
+            second
 
 
 {-| A command as tmux reads it: its words, quotes taken off, joined by
@@ -826,13 +850,31 @@ eras =
     [ "2.7", "3.2", "3.8" ]
 
 
-{-| A window of two panes side by side, on the fake 3.8 (whose questions
-and answers are recorded, TM68) following `rules`' lines. -}
+{-| The recorded tmux that answers as an era's (TM68, docs/tmux-versions.md
+TV10): its own release, 3.2a for 3.2. -}
+versionOf : String -> String
+versionOf rules =
+    if rules == "3.2" then
+        "3.2a"
+
+    else
+        rules
+
+
+{-| A window of two panes side by side, on the fake answering as the
+era's own tmux (`versionOf`, whose questions and answers are recorded,
+TM68) following `rules`' lines. -}
 twoPanes : String -> World
 twoPanes rules =
+    twoPanesOn (versionOf rules) rules
+
+
+{-| `twoPanes` answering as `version`, following `rules`' lines. -}
+twoPanesOn : String -> String -> World
+twoPanesOn version rules =
     let
         made =
-            FakeTmux.world { version = "3.8", cols = 80, rows = 24, lines = [ "line 1", "line 2" ] }
+            FakeTmux.world { version = version, cols = 80, rows = 24, lines = [ "line 1", "line 2" ] }
 
         first =
             Array.first made.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
@@ -965,6 +1007,7 @@ scenarios rules =
         ++ keyScenarios rules
         ++ menuScenarios rules
         ++ pauseScenarios rules
+        ++ pollScenarios rules
         ++ [ { name = "attaching to two panes, one of whose programs exits"
              , world = twoPanes rules
              , events = [ paneExits 1 ]
@@ -1125,6 +1168,74 @@ pauseScenarios rules =
           , settled = True
           }
         ]
+
+
+{-| The status line's timer firing (TM72): before 3.2 puritty asks what
+3.2's subscriptions would tell, once a second (`TmuxMode.tick`), a
+question a subscription, those before 2.9 in two steps, each option's
+text, then the format with it in place of `#{T:…}`. -}
+timerFires : Action
+timerFires =
+    { name = "the status line's timer fires"
+    , act =
+        \s ->
+            TmuxMode.tick
+                (if s.pollAt >= 0 then
+                    s.pollAt
+
+                 else
+                    s.clock
+                )
+                s
+    }
+
+
+{-| The poll's timer among the world's changes, before 3.2 only, on 2.7
+(two steps) and 3.0 (`#{T:…}` asked at once), both on 2.7's rules for a
+line (TK10.6: 3.0's differ only where no scenario goes). -}
+pollScenarios : String -> Array Scenario
+pollScenarios rules =
+    if rules /= "2.7" then
+        []
+
+    else
+        [ "2.7", "3.0" ]
+            |> Array.mapAndFlatten
+                (\version ->
+                    [ { name = "the timer fires while attaching, on " ++ version ++ "'s answers"
+                      , world = twoPanesOn version rules
+                      , events = []
+                      , actions = [ timerFires ]
+                      , settled = False
+                      }
+                    , { name = "the timer fires as a pane exits, on " ++ version ++ "'s answers"
+                      , world = twoPanesOn version rules
+                      , events = [ paneExits 1 ]
+                      , actions = [ timerFires ]
+                      , settled = True
+                      }
+                    , { name = "the timer fires again before the first poll is answered, on " ++ version ++ "'s answers"
+                      , world = twoPanesOn version rules
+                      , events = []
+                      , actions = [ timerFires, timerFires ]
+                      , settled = True
+                      }
+                    , { name = "the timer fires as another client closes a window and opens one, on " ++ version ++ "'s answers"
+                      , world =
+                            let
+                                w =
+                                    twoPanesOn version rules
+
+                                first =
+                                    Array.first w.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+                            in
+                            { w | others = [ { id = 1, index = 1, name = "two", panes = [ { first | id = 2 } ], active = 2 } ], number = 3 }
+                      , events = [ windowCloses 1, windowAdded 2 3 ]
+                      , actions = [ timerFires ]
+                      , settled = True
+                      }
+                    ]
+                )
 
 
 {-| Each scenario on each era's rules that broke something: what, and the

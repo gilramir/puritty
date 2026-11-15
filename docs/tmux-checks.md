@@ -541,8 +541,41 @@ opened at the prompt (`display-popup -E true`), five commands on one
 line on 3.8 and, before it, a message and nothing sent. None found a
 fault.
 
-**Not covered yet**: resizes, the poll's timer on tmux before 3.2, and
-each version's own answers (the fake answers as 3.8).
+**Not covered yet**: resizes; the poll's timer before 3.2 and each
+version's own answers are TK10.9's.
+
+### TK10.9 · Each era on its own tmux's answers, and the status line's timer (2026-11-15)
+
+The scenarios ran on 2.7's, 3.2's and 3.8's rules for a line, but the fake
+answered every question as 3.8. Now each era's fake answers as its own
+release (3.2a for 3.2), as recorded (`docs/tmux-versions.md` TV10), and
+every earlier scenario passes so.
+
+**The timer.** Before 3.2 puritty has no subscriptions: once a second it
+asks what they would tell (`TmuxMode.tick`, TM72), about thirteen
+questions, those before 2.9 in two steps (each option's text, then the
+format with it in place of `#{T:…}`). Five scenarios, each on 2.7's
+answers (two steps) and on 3.0's (`#{T:…}` at once), both on 2.7's rules:
+the timer firing while attaching; as a pane exits; firing again before the
+first poll's answers are read; and as another client closes a window and
+opens one. A first try with the timer firing twice as a pane exits went
+past 5,000 states on 2.7's two steps, so it is two scenarios instead.
+
+**A check more:** puritty never asks a tmux before 2.9 for `#{T:…}`, but
+for the probe, `#{T:version}`, by which it learns whether it may
+(`Explorer.lacked`). **It found** that the timer started when the probe
+was sent, not when it was answered: a timer that fired first asked 2.7 for
+`#{T:status-left}` and the rest, which it answers empty, so over a link
+slower than a second the status line would come back blank for a second.
+Fixed (TM76): the timer starts with the probe's answer.
+
+**Made to fail on purpose:** the poll's questions sent without being
+waited for, named at once: "the timer fires while attaching, on 2.7's
+answers: the user's action sent 19 commands, and puritty waits for 0
+replies to them".
+
+The app's tests take about three minutes on node, a minute more than
+before: the four versions' tests (forty) and the five scenarios.
 
 ## TK11 · What tmux tells, and what puritty shows: window 6 (2026-11-15)
 

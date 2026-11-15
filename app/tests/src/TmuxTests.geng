@@ -238,6 +238,9 @@ tmuxMode =
                  , { name = "every question puritty asks in the scenarios is recorded from a real tmux (TM69)"
                    , test = \_ -> Expect.equal "" unrecorded
                    }
+                 , { name = "no question puritty asks tmux 2.7 tests a bare name it does not have, which 2.7 takes as true (TV10)"
+                   , test = \_ -> Expect.equal [] (bareConditions "2.7" (askedOn "2.7" |> Array.map .command))
+                   }
                  , { name = "a mistyped command ends control mode with tmux's message on the terminal, and nothing asked (TM70)"
                    , test =
                         \_ ->
@@ -355,7 +358,7 @@ onVersion version =
                         , sent = Array.member "kill-server -a" ran.world.heard
                         }
           }
-        , { name = "the window menu shows tmux's items, and Rename asks with the window's name in the prompt (TM27)"
+        , { name = "the window menu shows the items this tmux draws, and Rename asks with the window's name in the prompt (TM27)"
           , test =
                 \_ ->
                     let
@@ -369,14 +372,23 @@ onVersion version =
 
                         renaming =
                             settle (typeKey "n" opened.run)
+
+                        drawn =
+                            drawnMenu version "<"
                     in
+                    -- before 3.0 tmux has no menus, and n is typed to the pane
                     Expect.equal
-                        { items = [ "Swap Left", "Swap Right", "Swap Marked", "Kill       (X)", "Respawn    (R)", "Mark       (m)", "Rename     (n)", "New After  (w)", "New At End (W)" ]
-                        , prompt = Just "sh"
+                        { items = drawn
+                        , prompt =
+                            if Array.isEmpty drawn then
+                                Nothing
+
+                            else
+                                Just "sh"
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
-        , { name = "the pane menu shows the items this tmux's binding has (TM27)"
+        , { name = "the pane menu shows the items this tmux draws (TM27)"
           , test =
                 \_ ->
                     let
@@ -388,14 +400,7 @@ onVersion version =
                                 |> Array.keepIf (\r -> String.startsWith "│" r)
                                 |> Array.map (\r -> String.trim (String.slice 1 (String.count r - 1) r))
                     in
-                    Expect.equal
-                        (if version == "3.6a" then
-                            [ "Horizontal Split (h)", "Vertical Split   (v)", "Swap Up", "Swap Down", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
-
-                         else
-                            [ "Float            (f)", "Horizontal Split (h)", "Vertical Split   (v)", "Swap Marked", "Kill             (X)", "Respawn          (R)", "Mark             (m)", "Zoom" ]
-                        )
-                        items
+                    Expect.equal (drawnMenu version ">") items
           }
         , { name = "the pane's cursor is shown once attached, from tmux's flags before 3.8 (TM71)"
           , test = \_ -> Expect.equal True (TmuxMode.paint (attached (start version)).tmux).canvas.showCursor
@@ -408,11 +413,15 @@ onVersion version =
                             (TmuxMode.paint (inCopyMode 0 (attached w)).tmux).canvas.showCursor
 
                         -- before 3.1, tmux has no copy_cursor_x or
-                        -- selection_start_x
+                        -- selection_start_x: 3.0 and 2.7 as recorded, and
+                        -- a later one made to lack them
                         older =
                             { (start version) | lacking = [ "copy_cursor_x", "copy_cursor_y", "selection_start_x", "selection_start_y", "selection_end_x", "selection_end_y" ] }
+
+                        says =
+                            not (Array.member version [ "3.0", "2.7" ])
                     in
-                    Expect.equal { saying = True, silent = False } { saying = shown (start version), silent = shown older }
+                    Expect.equal { saying = says, silent = False } { saying = shown (start version), silent = shown older }
           }
         , { name = "a key in copy mode keeps the view until tmux answers, no live screen behind it (TM67)"
           , test =
@@ -507,11 +516,66 @@ replyLines text =
         |> .lines
 
 
+{-| The conditions of these lines that test a bare name `version` does
+not have, `#{?name,a,b}`, or a user option: 2.7 takes such a name as true
+(`#{?@unset,T,F}` and `#{?pane_marked,T,F}` give `T`), where 2.8 and later
+take it as empty; `#{?#{name},a,b}` is false on all (measured,
+docs/tmux-versions.md TV10). A name it has, as tmux's own formats test,
+is answered as tmux answers it. -}
+bareConditions : String -> Array String -> Array String
+bareConditions version lines =
+    let
+        lacks =
+            RealTmux.lacking
+                |> Array.findFirst (\l -> l.version == version)
+                |> Maybe.map (\found -> found.value.names)
+                |> Maybe.withDefault []
+    in
+    lines
+        |> Array.mapAndFlatten (\line -> String.split "#{?" line |> Array.dropFirst 1)
+        |> Array.keepIf (\after -> not (String.startsWith "#" after))
+        |> Array.map (\after -> String.split "," after |> Array.first |> Maybe.withDefault after)
+        |> Array.keepIf (\name -> String.startsWith "@" name || Array.member name lacks)
+        |> Array.map (\name -> "#{?" ++ name)
+        |> Array.foldl
+            (\c acc ->
+                if Array.member c acc then
+                    acc
+
+                else
+                    Array.pushLast c acc
+            )
+            []
+
+
+{-| The menu's items as the real tmux of this version draws them for the
+prefix and `key` (`RealTmux.menus`, record-tmux.py). -}
+drawnMenu : String -> String -> Array String
+drawnMenu version key =
+    RealTmux.menus
+        |> Array.findFirst (\m -> m.version == version && m.key == key)
+        |> Maybe.map (\found -> found.value.items)
+        |> Maybe.withDefault [ "(not recorded)" ]
+
+
 {-| Each recorded answer, and the fake's to the same question in the same
-state, where they differ: none when the fake is honest (TM68). -}
+state, where they differ: none when the fake is honest (TM68). A question
+of `tmux-questions.txt` is held only on the versions whose scenarios ask
+it: another's menus (3.8's `#{!:…}`, which 3.5 and before expand their
+own ways) are never put to an older tmux. -}
 fakeDiffers : Array { version : String, state : String, command : String, real : Array String, fake : Array String }
 fakeDiffers =
+    let
+        heard =
+            RealTmux.versions
+                |> Array.map (\version -> { version = version, asked = askedOn version })
+    in
     RealTmux.answers
+        |> Array.keepIf
+            (\a ->
+                not (Array.member a.command RealTmux.asked)
+                    || Array.any (\h -> h.version == a.version && Array.member { state = a.state, command = a.command } h.asked) heard
+            )
         |> Array.map
             (\a ->
                 { version = a.version
@@ -594,31 +658,38 @@ onlyAsks line =
         && Array.all (\n -> Array.member n [ "display-message", "display", "list-windows", "list-panes", "list-sessions", "list-commands", "capture-pane" ]) names
 
 
-{-| The questions the scenarios ask that are not recorded for their
-version, as lines for `tmux-questions.txt`: empty when every one is. A
-question asked in copy mode is recorded in "31 up"'s state; any other in
+{-| The questions the scenarios ask on one version, each with the state
+it is recorded in: one asked in copy mode in "31 up"'s; any other in
 "attached"'s. -}
+askedOn : String -> Array { state : String, command : String }
+askedOn version =
+    scenarios
+        |> Array.mapAndFlatten
+            (\name ->
+                let
+                    state =
+                        if name == "copy mode" then
+                            "31 up"
+
+                        else
+                            "attached"
+                in
+                (scenario version name).world.heard
+                    |> Array.keepIf onlyAsks
+                    |> Array.map (\line -> { state = state, command = line })
+            )
+
+
+{-| The questions the scenarios ask that are not recorded for their
+version, as lines for `tmux-questions.txt`: empty when every one is. -}
 unrecorded : String
 unrecorded =
     RealTmux.versions
         |> Array.mapAndFlatten
             (\version ->
-                scenarios
-                    |> Array.mapAndFlatten
-                        (\name ->
-                            let
-                                state =
-                                    if name == "copy mode" then
-                                        "31 up"
-
-                                    else
-                                        "attached"
-                            in
-                            (scenario version name).world.heard
-                                |> Array.keepIf onlyAsks
-                                |> Array.keepIf (\line -> not (Array.any (\a -> a.version == version && a.state == state && a.command == line) RealTmux.answers))
-                                |> Array.map (\line -> state ++ "\t" ++ line)
-                        )
+                askedOn version
+                    |> Array.keepIf (\q -> not (Array.any (\a -> a.version == version && a.state == q.state && a.command == q.command) RealTmux.answers))
+                    |> Array.map (\q -> q.state ++ "\t" ++ q.command)
             )
         |> Array.foldl
             (\l acc ->
