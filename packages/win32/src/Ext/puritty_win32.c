@@ -2170,6 +2170,109 @@ geng_cancel puritty_win32_system_menu(void *items_bytes, geng_wait *wait) {
 }
 
 
+/* THE TASKBAR'S JUMP LIST (puritty docs/settings-gui.md SG19) */
+
+#define COBJMACROS
+#include <objbase.h>
+#include <shobjidl.h>
+#include <propsys.h>
+
+/* The interfaces' and classes' ids, written here as Windows' SDK has them,
+ * so that no import library need carry them */
+static const GUID jl_CLSID_DestinationList = {0x77f10cf0, 0x3db5, 0x4966, {0xb5, 0x20, 0xb7, 0xc5, 0x4f, 0xd3, 0x5e, 0xd6}};
+static const GUID jl_IID_ICustomDestinationList = {0x6332debf, 0x87b5, 0x4670, {0x90, 0xc0, 0x5e, 0x57, 0xb4, 0x08, 0xa4, 0x9e}};
+static const GUID jl_CLSID_EnumerableObjectCollection = {0x2d3468c1, 0x36a7, 0x43b6, {0xac, 0x24, 0xd3, 0xf0, 0x2f, 0xd9, 0x60, 0x7a}};
+static const GUID jl_IID_IObjectCollection = {0x5632b1a4, 0xe38a, 0x400a, {0x92, 0x8a, 0xd4, 0xcd, 0x63, 0x23, 0x02, 0x95}};
+static const GUID jl_IID_IObjectArray = {0x92ca9dcd, 0x5622, 0x4bba, {0xa8, 0x05, 0x5e, 0x9f, 0x54, 0x1b, 0xd8, 0xc9}};
+static const GUID jl_CLSID_ShellLink = {0x00021401, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const GUID jl_IID_IShellLinkW = {0x000214f9, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const GUID jl_IID_IPropertyStore = {0x886d8eeb, 0x8cf2, 0x4446, {0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99}};
+/* PKEY_Title: the name the jump list shows for a link */
+static const PROPERTYKEY jl_title = {{0xf29f85e0, 0x4ff9, 0x1068, {0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9}}, 2};
+
+/* Whether the user took a link with these arguments off the list, which
+ * Windows will not have put back (AppendCategory refuses the whole
+ * category) */
+static int jl_removed(IObjectArray *removed, const wchar_t *args) {
+    UINT n = 0;
+    if (!removed || FAILED(IObjectArray_GetCount(removed, &n))) return 0;
+    for (UINT i = 0; i < n; i++) {
+        IShellLinkW *link = NULL;
+        if (FAILED(IObjectArray_GetAt(removed, i, &jl_IID_IShellLinkW, (void **) &link))) continue;
+        wchar_t had[1024];
+        int same = SUCCEEDED(IShellLinkW_GetArguments(link, had, 1024)) && wcscmp(had, args) == 0;
+        IShellLinkW_Release(link);
+        if (same) return 1;
+    }
+    return 0;
+}
+
+/* The jump list made anew: a category of these links, each puritty itself
+ * with its arguments. The bytes are UTF-8 lines: the category's name, then
+ * a link a line, its title, a tab, its command line. The answer is 0, or
+ * the HRESULT of the step that failed (E_ACCESSDENIED, 0x80070005, when
+ * Windows is set not to show recently opened items). */
+geng_cancel puritty_win32_jump_list(void *items_bytes, geng_wait *wait) {
+    int count;
+    wchar_t *w = menu_text(items_bytes, &count);
+    HRESULT init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    ICustomDestinationList *list = NULL;
+    IObjectCollection *links = NULL;
+    IObjectArray *removed = NULL, *array = NULL;
+    UINT slots = 0;
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    HRESULT hr = CoCreateInstance(&jl_CLSID_DestinationList, NULL, CLSCTX_INPROC_SERVER, &jl_IID_ICustomDestinationList, (void **) &list);
+    if (SUCCEEDED(hr)) hr = ICustomDestinationList_BeginList(list, &slots, &jl_IID_IObjectArray, (void **) &removed);
+    if (SUCCEEDED(hr)) hr = CoCreateInstance(&jl_CLSID_EnumerableObjectCollection, NULL, CLSCTX_INPROC_SERVER, &jl_IID_IObjectCollection, (void **) &links);
+    wchar_t *category = w;
+    wchar_t *line = wcschr(w, L'\n');
+    if (line) *line++ = 0;
+    int added = 0;
+    while (SUCCEEDED(hr) && line && *line) {
+        wchar_t *next = wcschr(line, L'\n');
+        if (next) *next++ = 0;
+        wchar_t *args = wcschr(line, L'\t');
+        if (args) {
+            *args++ = 0;
+            IShellLinkW *link = NULL;
+            if (!jl_removed(removed, args) && SUCCEEDED(CoCreateInstance(&jl_CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &jl_IID_IShellLinkW, (void **) &link))) {
+                IShellLinkW_SetPath(link, exe);
+                IShellLinkW_SetArguments(link, args);
+                IShellLinkW_SetIconLocation(link, exe, 0);
+                IShellLinkW_SetDescription(link, line);
+                IPropertyStore *store = NULL;
+                if (SUCCEEDED(IShellLinkW_QueryInterface(link, &jl_IID_IPropertyStore, (void **) &store))) {
+                    PROPVARIANT title;
+                    memset(&title, 0, sizeof title);
+                    title.vt = VT_LPWSTR;
+                    title.pwszVal = line;
+                    IPropertyStore_SetValue(store, &jl_title, &title);
+                    IPropertyStore_Commit(store);
+                    IPropertyStore_Release(store);
+                }
+                if (SUCCEEDED(IObjectCollection_AddObject(links, (IUnknown *) link))) added++;
+                IShellLinkW_Release(link);
+            }
+        }
+        line = next;
+    }
+    if (SUCCEEDED(hr) && added > 0) {
+        hr = IObjectCollection_QueryInterface(links, &jl_IID_IObjectArray, (void **) &array);
+        if (SUCCEEDED(hr)) hr = ICustomDestinationList_AppendCategory(list, category, array);
+    }
+    if (SUCCEEDED(hr)) hr = ICustomDestinationList_CommitList(list);
+    else if (list) ICustomDestinationList_AbortList(list);
+    if (array) IObjectArray_Release(array);
+    if (links) IObjectCollection_Release(links);
+    if (removed) IObjectArray_Release(removed);
+    if (list) ICustomDestinationList_Release(list);
+    if (SUCCEEDED(init)) CoUninitialize();
+    free(w);
+    geng_succeed(wait, geng_slot_I4(SUCCEEDED(hr) ? 0 : (int32_t) hr));
+    return (geng_cancel) {0};
+}
+
 /* PAGEANT'S PIPE (puritty docs/ssh-client.md SC19) */
 
 #define SECURITY_WIN32

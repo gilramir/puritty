@@ -127,7 +127,12 @@ a host (on Windows, PowerShell). It offers the connections you made last first (
 many as `[connections] recent` says; 0 for none): Enter makes one again,
 Delete forgets it, and Right saves a quick one as a host. In quick connect,
 anything after a space is a command to run there, as with `ssh`:
-`gilbert@build tmux -CC attach`. `start = "hosts"` at the top of the file makes
+`gilbert@build tmux -CC attach`. The same recent connections are in the
+menu (Ctrl and the right button, and on Windows the title bar's menu), as
+"Connect to …" before your saved hosts, and on Windows in the taskbar's
+jump list: right-click puritty's button, under **Recent connections**. If
+the jump list stays empty, Windows is set not to show recently opened
+items (Settings, Personalization, Start). `start = "hosts"` at the top of the file makes
 plain `puritty` open the host list, and `start = "host:build-box"` connect
 straight there; `puritty shell` still opens a local shell.
 

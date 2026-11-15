@@ -224,10 +224,22 @@ remembered : Recent -> State -> Task x State
 remembered recent s =
     when s.stateDir is
         Just dir ->
-            RecentFile.remember s.given.fs dir s.window.config.recentConnections recent |> Task.map (\_ -> s)
+            RecentFile.remember s.given.fs dir s.window.config.recentConnections recent
+                |> Task.andThen (\_ -> showRecents s.given.fs dir s.window.config.recentConnections)
+                |> Task.map (\_ -> s)
 
         Nothing ->
             meant Reason.NotSet Task.succeed s
+
+
+{-| The taskbar's jump list made again from the recent connections as the
+file now has them (`docs/settings-gui.md` SG19); a window started by
+another puritty makes it as it starts (`Main`). -}
+showRecents : File.Permission -> Path.Path -> Int -> Task x {}
+showRecents fs dir most =
+    RecentFile.load fs dir
+        |> Task.andThen (\recents -> RecentFile.jumpList (Array.takeFirst (max 0 most) recents))
+        |> Task.map (\_ -> {})
 
 
 {-| The page the settings window was last on while puritty runs (SG16),
@@ -577,7 +589,9 @@ effect e s =
         SettingsWindow.ForgetRecent recent ->
             when s.stateDir is
                 Just dir ->
-                    RecentFile.forget s.given.fs dir recent |> Task.map (\_ -> s)
+                    RecentFile.forget s.given.fs dir recent
+                        |> Task.andThen (\_ -> showRecents s.given.fs dir s.window.config.recentConnections)
+                        |> Task.map (\_ -> s)
 
                 Nothing ->
                     meant Reason.NotSet Task.succeed s

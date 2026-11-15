@@ -543,3 +543,44 @@ quick connect does (SG14): `#000000, #cd0000, #00cd00, …` for a palette,
 `#1e1e1e` for a color, `Ctrl+Shift+T` for a key.
 
 Each changed text is changed in Korean too (`Words.geng`).
+
+
+## SG19 · Recent connections in the menu and the jump list (2026-11-15)
+
+SG14's recent connections were offered only by the host list. Now:
+
+- **The menu** (Ctrl and the right button; on Windows also the title bar's
+  system menu) lists "Connect to …" for each recent connection, newest
+  first, then the saved hosts not among them, so a saved host is there
+  once. Chosen, one starts puritty as the host list does: `--host NAME`
+  for a saved host, `ssh TEXT` for what quick connect was given
+  (`Recent.arguments`). A window reads `recent.txt` as it starts and again
+  when it gains the focus, so that another window's connection is offered
+  too; the system menu is made again when they changed.
+- **The taskbar's jump list** on Windows: a category, "Recent
+  connections", of links to puritty itself with those arguments, each named
+  as the menu names it (`Window.jumpList`, `ICustomDestinationList`; on X11
+  it does nothing). It is made as every window starts, which is when a
+  connection is made and remembered, and again when the host list
+  remembers or forgets one. A link the user took off the list is not put
+  back (Windows refuses a category that has one). Windows takes no list
+  when it is set not to show recently opened items; the window's
+  diagnostic log then says so with Windows' reason (`HRESULT 0x80070005`).
+  A link's arguments are one command line, quoted as the C runtime splits
+  it (`Recent.commandLine`, as `Os.Process` quotes a child's).
+
+**Checked:** app tests 246 (two new: a recent's arguments and name, and
+the command line's quoting, empty arguments, quotes and trailing
+backslashes among them). On Linux under Xvfb, with `build-box` and a quick
+connection recent and `build-box` and `other` saved, Ctrl and the right
+button showed "Connect to build-box", "Connect to me@example.com tmux -CC
+attach", then "Connect to other". On beelink1, puritty run from a folder of
+its own with its state folder there too (Gilbert's own untouched), started
+as a local shell: Windows wrote the jump list's file, which holds "Recent
+connections", the titles, and the links' arguments `--host build-box` and
+`ssh "me@example.com tmux -CC attach"` to that `puritty.exe`. Opened by a
+right-click on its taskbar button, the list showed "Recent connections",
+then build-box and the quick connection (its name cut by Windows), each with
+puritty's icon, above Windows' own items. The probe, its folder and its
+jump list's file were removed after.
+

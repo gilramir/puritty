@@ -10,6 +10,7 @@ module Window exposing
     , fontUsed
     , fonts
     , isMaximized
+    , jumpList
     , menu
     , motion
     , open
@@ -47,7 +48,7 @@ the loop (WS4). Keys, the pointer and the IME's records are X11's, read as
 Linux reads them (WS5-WS7, WS19). The selections are step 5's (WS12), and
 until then [`select`](#select) and [`paste`](#paste) change nothing.
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
 
 -}
 
@@ -392,6 +393,26 @@ systemMenu items =
 
 @extern(c, "puritty_win32_system_menu")
 systemMenuExtern : Bytes -> Task x Int
+
+
+{-| The taskbar's jump list (right-click on puritty's button): a category
+named `category` of these links, each puritty itself started with
+`commandLine` (one line, quoted as the C runtime splits it), shown as
+`title` (`docs/settings-gui.md` SG19). Made anew each time; a link the user
+took off the list is not put back. Answers 0, or the HRESULT of the step
+that failed: E_ACCESSDENIED when Windows is set not to show recently
+opened items. -}
+jumpList : String -> Array { title : String, commandLine : String } -> Task x Int
+jumpList category links =
+    let
+        clean text =
+            String.replace "\n" " " (String.replace "\t" " " text)
+    in
+    jumpListExtern (Bytes.fromString (String.join "\n" (Array.pushFirst (clean category) (Array.map (\l -> clean l.title ++ "\t" ++ clean l.commandLine) links))))
+
+
+@extern(c, "puritty_win32_jump_list")
+jumpListExtern : Bytes -> Task x Int
 
 
 {-| The pointer over the window: the cursor theme's I-beam, over text, or

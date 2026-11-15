@@ -165,6 +165,9 @@ type alias Model =
     -- the items of the one the platform shows, and of its system menu
     , menu : Maybe Menu
     , shownItems : Array MenuItem
+    -- the recent connections the menus offer, read again when the window
+    -- gains the focus (docs/settings-gui.md SG19)
+    , recents : Array Recent
     -- the built-in ssh client's session (docs/ssh-client.md SC18): what
     -- puritty's own screen shows until the session runs, a question it
     -- asks, how the session ended
@@ -1086,12 +1089,64 @@ drawn is written to its file as a picture, for the reload gate
 starts over (RE11). -}
 run : Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
 run imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir =
+    -- the recent connections, for the menus and the taskbar's jump list
+    -- (docs/settings-gui.md SG19), this window's own among them
+    loadRecents settings.given.fs logDir config
+        |> Task.andThen
+            (\recents ->
+                RecentFile.jumpList recents
+                    |> Task.andThen (\jumped -> runWith { recents = recents, jumped = jumped } imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir)
+            )
+
+
+{-| The recent connections in the state folder, as many as the settings
+keep (`[connections] recent`); none without a state folder. -}
+loadRecents : File.Permission -> Maybe String -> Config -> Task x (Array Recent)
+loadRecents fs logDir config =
+    when stateFolder logDir is
+        Just dir ->
+            RecentFile.load fs dir |> Task.map (Array.takeFirst (max 0 config.recentConnections))
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed []
+
+
+{-| The jump list not taken, said in the diagnostic log with Windows'
+reason, an HRESULT (E_ACCESSDENIED, 0x80070005, when Windows is set not
+to show recently opened items). -}
+noteJumpList : Int -> (taken m : Model) -> Model
+noteJumpList code m =
+    if code == 0 then
+        m
+
+    else
+        logLine "window" ("the jump list was not taken: HRESULT 0x" ++ hex8 code) m
+
+
+{-| A 32-bit value in eight hexadecimal digits, as Windows writes an
+HRESULT. -}
+hex8 : Int -> String
+hex8 n =
+    Array.range 0 7
+        |> Array.map
+            (\i ->
+                let
+                    digit =
+                        Bitwise.and 15 (Bitwise.shiftRightZfBy (4 * (7 - i)) n)
+                in
+                String.slice digit (digit + 1) "0123456789ABCDEF"
+            )
+        |> String.join ""
+
+
+runWith : { recents : Array Recent, jumped : Int } -> Bool -> Maybe String -> Int -> Charset -> Config -> Window.Cell -> Backend -> Starter -> Settings -> Array String -> Maybe { cp : Process.Permission, program : String, args : Array String } -> Restoring -> Maybe String -> Task String {}
+runWith started imeLog shotPath startAt charset config cell remote starter settings problems opener restoring logDir =
     -- puritty's own text (its questions, the search bar, the tab
     -- bar) in the interface font, as the settings window's is, apart
     -- from the terminal's (docs/tabs.md TB5)
     Text.interfaceFont Platform.interfaceFont
         -- the system menu's items, where the platform has one (ST26)
-        |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
+        |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config started.recents)))
         -- this window counted among those open, a session begun when it is
         -- the only one (SG16)
         |> Task.andThen (\_ -> sessionMark SessionFile.begin settings.given.fs logDir)
@@ -1103,9 +1158,9 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
                         Clock.after 0 startAt
                 in
                 restoreInto restoring
-                    { config = config
-                    , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
-                    , term =
+                    ({ config = config
+                     , look = { foreground = config.foreground, background = config.background, boldIsBright = config.boldIsBright }
+                     , term =
                         Vt.new
                             { cols = config.columns
                             , rows = config.rows
@@ -1120,78 +1175,81 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
                             -- what was wrong in the settings, before the
                             -- program's first output (settings-ui.md §5)
                             |> Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems)))
-                    , shadow = View.shadow config.columns config.rows
-                    , focus = View.focused
-                    , last = t0
-                    , pending = -1
-                    , urgent = True
-                    , blinkAt = -1
-                    , syncSince = -1
-                    , title = ""
-                    , closed = False
-                    , lost = False
-                    , out = Outbox.empty
-                    , preedit = { points = [], feedback = [], caret = 0 }
-                    , imeLog = imeLog
-                    , points = config.points
-                    , charset = charset
-                    , decoder = Charset.decoder
-                    , replaced = 0
-                    , held = 0
-                    , mouseLast = Nothing
-                    , allMotion = False
-                    , bellsHeard = 0
-                    , pointerShown = Window.TextPointer
-                    , hover = Nothing
-                    , shiftHeld = False
-                    , back = 0
-                    , selection = Nothing
-                    , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
-                    , toOwn = Nothing
-                    , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
-                    , toPaste = Nothing
-                    , pasting = Nothing
-                    , clips = []
-                    , clipRead = Nothing
-                    , settings = settings
-                    , shotPath = shotPath
-                    , troubles = problems
-                    , settingsWindow = opener
-                    , menu = Nothing
-                    , shownItems = []
-                    , ssh =
+                     , shadow = View.shadow config.columns config.rows
+                     , focus = View.focused
+                     , last = t0
+                     , pending = -1
+                     , urgent = True
+                     , blinkAt = -1
+                     , syncSince = -1
+                     , title = ""
+                     , closed = False
+                     , lost = False
+                     , out = Outbox.empty
+                     , preedit = { points = [], feedback = [], caret = 0 }
+                     , imeLog = imeLog
+                     , points = config.points
+                     , charset = charset
+                     , decoder = Charset.decoder
+                     , replaced = 0
+                     , held = 0
+                     , mouseLast = Nothing
+                     , allMotion = False
+                     , bellsHeard = 0
+                     , pointerShown = Window.TextPointer
+                     , hover = Nothing
+                     , shiftHeld = False
+                     , back = 0
+                     , selection = Nothing
+                     , clicks = { at = -1000, count = 0, cell = { row = 0, col = 0 } }
+                     , toOwn = Nothing
+                     , wordBoundaries = Array.map Char.toCode (String.toArray config.wordBoundaries)
+                     , toPaste = Nothing
+                     , pasting = Nothing
+                     , clips = []
+                     , clipRead = Nothing
+                     , settings = settings
+                     , shotPath = shotPath
+                     , troubles = problems
+                     , settingsWindow = opener
+                     , menu = Nothing
+                     , shownItems = []
+                     , ssh =
                         Maybe.map
                             (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
                             config.remote
-                    , tmux = TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
-                    , overlaid = False
-                    , search = Nothing
-                    , barDrag = False
-                    , remote = remote
-                    , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
-                    , tabs = Builder.empty 4
-                    , order = [ 0 ]
-                    , shown = 0
-                    , nextTabId = 1
-                    , starter = starter
-                    , windowRows = config.rows
-                    , renaming = Nothing
-                    , coloring = Nothing
-                    , closing = Nothing
-                    , startFailed = Nothing
-                    , barClick = { at = -1000, id = -1 }
-                    , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
-                    , byButton = False
-                    , quietUntil = -1
-                    , closedTabs = Builder.empty closedSlots
-                    , diag = Diag.off
-                    , logDir = logDir
-                    , turnMs = t0
-                    , loggedTab = -1
-                    , clockStart = began - Int64.fromInt startAt
-                    , maximized = False
-                    , normalSize = { columns = config.columns, rows = config.rows }
-                    }
+                     , tmux = TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
+                     , overlaid = False
+                     , search = Nothing
+                     , barDrag = False
+                     , remote = remote
+                     , tab = { id = 0, name = "", host = config.remote, hostName = config.hostName, color = HostsColor, bells = 0, bell = False, activity = False }
+                     , tabs = Builder.empty 4
+                     , order = [ 0 ]
+                     , shown = 0
+                     , nextTabId = 1
+                     , starter = starter
+                     , windowRows = config.rows
+                     , renaming = Nothing
+                     , coloring = Nothing
+                     , closing = Nothing
+                     , startFailed = Nothing
+                     , barClick = { at = -1000, id = -1 }
+                     , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
+                     , byButton = False
+                     , quietUntil = -1
+                     , closedTabs = Builder.empty closedSlots
+                     , diag = Diag.off
+                     , logDir = logDir
+                     , turnMs = t0
+                     , loggedTab = -1
+                     , clockStart = began - Int64.fromInt startAt
+                     , maximized = False
+                     , normalSize = { columns = config.columns, rows = config.rows }
+                     , recents = started.recents
+                     }
+                        |> noteJumpList started.jumped
+                    )
                     |> Task.mapError Os.Error.toString
             )
         |> Task.andThen (\m -> finish m.remote m)
@@ -2765,7 +2823,7 @@ applyLook new m =
             new.tabsBar /= old.tabsBar
     in
     (if new.hosts /= old.hosts then
-        Window.systemMenu (Array.map .label (menuItems new))
+        Window.systemMenu (Array.map .label (menuItems new m.recents))
 
      else
         Task.succeed {}
@@ -2893,10 +2951,11 @@ type MenuDoes
 
 
 {-| The menu's items: the settings window, the host list, a new tab, a
-window of its own, the shown tab's name and color, then each host of the
-settings. -}
-menuItems : Config -> Array MenuItem
-menuItems config =
+window of its own, the shown tab's name and color, then the recent
+connections, newest first, and each host of the settings not among them
+(docs/settings-gui.md SG19). -}
+menuItems : Config -> Array Recent -> Array MenuItem
+menuItems config recents =
     [ { label = "Settings…", does = Starts [ "settings" ] }
     , { label = "Hosts…", does = Starts [ "hosts" ] }
     , { label = "New tab", does = OpensTab }
@@ -2911,7 +2970,11 @@ menuItems config =
             else
                 []
            )
-        ++ Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] }) config.hosts
+        ++ Array.map (\r -> { label = "Connect to " ++ Recent.name r, does = Starts (Recent.arguments r) }) recents
+        ++ (config.hosts
+                |> Array.keepIf (\h -> not (Array.member (Recent.Saved h.name) recents))
+                |> Array.map (\h -> { label = "Connect to " ++ h.name, does = Starts [ "--host", h.name ] })
+           )
 
 
 {-| The pop-up menu's items: the menu's, and under tmux -CC "Customize
@@ -2922,7 +2985,7 @@ popupItems : Model -> Array MenuItem
 popupItems m =
     let
         items =
-            menuItems m.config
+            menuItems m.config m.recents
     in
     if TmuxMode.isOn m.tmux then
         when Array.findFirst (\i -> i.label == "New window") items is
@@ -2934,6 +2997,22 @@ popupItems m =
 
     else
         items
+
+
+{-| The recent connections read again, as another window may have made
+one: the system menu made again when they changed. -}
+refreshRecents : (taken m : Model) -> Task x Model
+refreshRecents m =
+    loadRecents m.settings.given.fs m.logDir m.config
+        |> Task.andThen
+            (\recents ->
+                if recents == m.recents then
+                    Task.succeed m
+
+                else
+                    Window.systemMenu (Array.map .label (menuItems m.config recents))
+                        |> Task.map (\_ -> { m | recents = recents })
+            )
 
 
 {-| What a chosen item does. -}
@@ -3006,7 +3085,7 @@ menuChosen c m =
     let
         items =
             if c.menu == 1 then
-                menuItems m.config
+                menuItems m.config m.recents
 
             else
                 m.shownItems
@@ -4058,7 +4137,13 @@ handleOne remote ms rest ev m =
                     else
                         Bytes.empty
             in
-            handle remote ms rest (send report { m | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 })
+            (if on then
+                refreshRecents m
+
+             else
+                Task.succeed m
+            )
+                |> Task.andThen (\next -> handle remote ms rest (send report { next | focus = { focused = on, blinkOn = True }, urgent = True, blinkAt = -1 }))
 
         Window.Close ->
             -- asked first when a tab is busy (docs/tabs.md TB7)

@@ -1089,6 +1089,26 @@ window =
                     Expect.equal [ Just (Just "tmux -CC attach"), Just Nothing, Nothing ]
                         (Array.map (\t -> Hosts.quick t |> Maybe.map .command) [ "  me@h  tmux -CC attach ", "me@h ", "me@ ls" ])
           }
+        , { name = "a recent connection starts puritty as the host list does, its name what the menu says (SG19)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { args = [ "--host", "build-box" ], name = "build-box" }, { args = [ "ssh", "me@h tmux -CC attach" ], name = "me@h tmux -CC attach" } ]
+                        (Array.map (\r -> { args = Recent.arguments r, name = Recent.name r }) [ Recent.Saved "build-box", Recent.Quick "me@h tmux -CC attach" ])
+          }
+        , { name = "a jump list's command line is quoted as the C runtime splits it (SG19)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "--host build-box"
+                        , "ssh \"me@h tmux -CC attach\""
+                        , "a\\b \"\" \"say \\\"hi\\\"\" \"C:\\my dir\\\\\" \"x\\\\\\\"y\""
+                        ]
+                        [ Recent.commandLine [ "--host", "build-box" ]
+                        , Recent.commandLine [ "ssh", "me@h tmux -CC attach" ]
+                        , Recent.commandLine [ "a\\b", "", "say \"hi\"", "C:\\my dir\\", "x\\\"y" ]
+                        ]
+          }
         , { name = "Enter on the local shell opens it, and Right or Delete on it do nothing (SG15)"
           , test = \_ -> Expect.equal [ [ "open the local shell" ], [], [] ] [ (onHostsPage False [ k.down, k.down, k.enter ]).said, (onHostsPage False [ k.down, k.down, press 0xFF53 ]).said, (onHostsPage False [ k.down, k.down, k.delete ]).said ]
           }
