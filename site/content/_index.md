@@ -4,7 +4,7 @@ title = "puritty"
 [extra]
 headline = "A terminal that's fast, and just does things right"
 lede = "puritty runs on Linux and Windows. It draws tmux's panes as its own, carries its own ssh client, and is just as quick when it runs on another machine and draws on your desktop."
-status = "**Pre-release.** puritty is its author's daily terminal. It will be published with the first alpha of [Geng](https://geng-lang.org), the language it is written in; until then you build it from source."
+status = "**Pre-release.** puritty is its author's daily terminal. It will be published with the first alpha of [Geng](https://geng-lang.org), the language it is written in, whose toolchain is not yet public, so it cannot be built elsewhere until then."
 hero_image = "tmux-on-windows.png"
 hero_alt = "puritty on Windows 11 with three colored tabs, the first connected to Linux with puritty's own ssh client and attached to tmux 3.8 by tmux -CC: git history in the left pane, two Chinese poems and a table in the right one, and Thai in a floating pane over them"
 hero_caption = "On Windows 11, connected to Linux with puritty's own ssh client, running `tmux -CC attach`: tmux's panes and a floating pane, with Chinese and Thai, drawn by puritty, and three tabs of puritty's own."

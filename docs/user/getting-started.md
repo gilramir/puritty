@@ -6,9 +6,13 @@ first of all an ssh terminal, with the ssh client built in.
 
 > **puritty is pre-release.** It is its author's daily terminal, and it will
 > be published with the first alpha of [Geng](https://geng-lang.org), the
-> language it is written in. Until then you build it from source.
+> language it is written in.
 
 ## Building
+
+> **It cannot be built outside its author's machines yet.** The Geng
+> toolchain it needs has not been published; it will be with Geng's first
+> alpha. The steps below are how it is built then.
 
 puritty is a Geng program with a little C for X11 (or Win32), fonts and the
 input method. Until Geng's first release, a build needs a
