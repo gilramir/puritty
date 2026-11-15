@@ -106,7 +106,8 @@ sent as they are.
 
 1. Check 1 (TK2): the commands moved into `Tmux.Command`, then the catalog
    and the check. *Built* (TK6, TK7), and its formats (TK8).
-2. Check 2, TK3.1–TK3.3, and the bytes that are not UTF-8.
+2. Check 2, TK3.1–TK3.3, and the bytes that are not UTF-8. *Built* (TK9);
+   the bytes that are not UTF-8 wait on a decision (TK9.3).
 3. Check 3 (TK4).
 4. TK3.4 and TK4's symbolic form, with the refinement work.
 
@@ -229,3 +230,80 @@ explorer (TK4) will see each format as it is sent, to each version's
 model.
 
 **Next:** check 2 (TK3).
+
+## TK9 · Check 2 built: the 2.x keys through a model of tmux 2.7 (2026-11-14)
+
+**The model**, `packages/tmux/tests/src/Tmux27.geng` (test code, as TK3
+planned it): what tmux 2.7 writes to a pane for `send-keys` lines, read
+from its source. A line is split into words as `cmd_string_split` splits
+it (single quotes literal; in double quotes `\e \r \n \t` and any other
+character after `\` as itself; outside quotes `\` an ordinary character, a
+`#` anywhere the end of the line, a NUL the end), into commands at a word
+that ends in `;` as `cmd_list_parse` does (`\;` at a word's end a `;` in
+it); its flags read by tmux's own BSD getopt (`compat/getopt.c`:
+`configure.ac` refuses glibc's, which reorders); each argument looked up
+as a key's name (`key_string_lookup_string`) unless `-l`, else split into
+UTF-8 characters (`utf8_fromcstr`), one that `mbtowc` refuses dropped;
+each written by `input_key`, which writes a key above 0x7F as UTF-8. What
+puritty never sends (`$` and `~` outside quotes, other commands, `-X`,
+`-M`, `-R`, `-N`, key names past its own) the model declines to say
+rather than guess.
+
+### TK9.1 · Every sequence of up to three bytes
+
+The `keys27` suite sends every sequence of up to three bytes over 52 that
+matter (each control byte, DEL, space, `! " # $ ' - ; \ ~ {`, a letter,
+the bytes of é and 한, a lone continuation, 0xFF): 143,364 sequences, each
+through puritty's `sendBytesPlain` and the model. A sequence that is
+UTF-8 must reach the pane as typed; one that is not is held to what TK3.2
+said, each bad run made U+FFFD (TK9.3).
+
+**It found** that a text run beginning with `-` (`- x`, `-!`, `--`, `-la`
+pasted) was read by getopt as flags: `-l '-la'` is `-l -l -a`, `-a` is
+unknown, and tmux refuses the command, so the keys were lost. The text now
+follows `--` (`Command.EndOfFlags`, in `sendLiteral`'s shape): `send-keys
+-t '%0' -l -- '-la'`. Nothing else differs.
+
+### TK9.2 · The model held to the real tmux
+
+`packages/tmux/tests/record-keys27.py` sends 205 lines to each tmux built
+from 2.7 to 2.9a, in the survey's container, through a control client, to
+a pane whose program is `cat` on a raw terminal writing to a file (`stty
+raw -echo -iexten`), and records what the pane read; a `display-message`
+after each line answers only once tmux has run it. The lines are its own,
+not puritty's: the encoder's form for every byte below 0x80, text runs
+(UTF-8 of two to four bytes, U+0085, quotes, `;`, a leading `-`), and a
+line for each branch of the model (both quotes' escapes and an unclosed
+one, `''`, `;` at a word's end, `\;`, `a ; send-keys …`, `#` alone and in
+a word, getopt's `--`, `--x`, `-`, `-l-`, a missing value, an unknown
+flag, the key names and their case).
+
+**All four tmuxes wrote the same bytes for every line.** The model writes
+what 2.7 wrote for 202 of them and declines three, by name in the test
+(`C-?`, `C-Space`, `~a`). One reading was wrong and was mended from the
+recording: `C-?` is not DEL but xterm's `ESC[27;5;63~` (`?` is among
+tmux's `other` characters, whose Ctrl it keeps); puritty does not send it.
+Made to fail once on purpose: with `#` not a comment, the test names `-l a
+# b` and `-l a#b`.
+
+### TK9.3 · Bytes that are not UTF-8: no `send-keys` reaches the pane
+
+TK3.2 said such a byte (EUC-KR's 0xA4) goes as U+FFFD. Measured on 2.7, it
+cannot go by `send-keys` at all: `-l` drops a byte `mbtowc` refuses
+(`send-keys -l '\xa4'` writes nothing), and a key above 0x7F is written as
+UTF-8 (`send-keys 0xa4` writes `C2 A4`). One way does write the bytes as
+they are, measured the same day: `set-buffer -b NAME 'D\xc7\xd1E'` then
+`paste-buffer -d -b NAME -t PANE` wrote `44 C7 D1 45`. It needs the bytes
+on the command line, and puritty's commands are Geng `String`s, written as
+UTF-8 (`Main.linesOf`), which cannot hold them. So the choices are a
+command that carries bytes (a `Raw Bytes` form beside the text ones, for
+this alone), or leaving it: on tmux before 3.0, text that is not UTF-8 is
+not sent. **Gilbert's to decide**; until then the test holds today's
+U+FFFD, so a change either way shows.
+
+**Not modeled, by design:** a pane in a mode (tmux sends the keys to the
+mode's table); a server locale that is not UTF-8 (2.7 refuses to start
+without one).
+
+**Next:** check 3 (TK4), the explorer; `FakeTmux.World.lacking` (TK8) is
+the start of its per-version model.

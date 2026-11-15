@@ -98,6 +98,9 @@ type Part
     | Rest
     | OptFlag String
     | OptValue String
+    -- `--`: the flags end, so that a word after that begins with `-` is
+    -- not read as flags (2.x keys, docs/tmux-checks.md TK9)
+    | EndOfFlags
 
 
 {-| A command's shape: its name and parts, and when it may be sent (`allowed`), as a
@@ -128,6 +131,9 @@ render shape values =
 
                 Rest ->
                     { words = acc.words ++ Array.dropFirst acc.next values, next = Array.length values }
+
+                EndOfFlags ->
+                    { acc | words = Array.pushLast "--" acc.words }
 
                 OptFlag f ->
                     { words =
@@ -176,6 +182,9 @@ flagsOf shape =
                     Rest ->
                         ""
 
+                    EndOfFlags ->
+                        ""
+
                     OptFlag f ->
                         f
 
@@ -197,7 +206,7 @@ sendHex =
 
 sendLiteral : Shape
 sendLiteral =
-    { name = "send-keys", parts = [ Value "t", Flag "l", Rest ], allowed = anyTmux }
+    { name = "send-keys", parts = [ Value "t", Flag "l", EndOfFlags, Rest ], allowed = anyTmux }
 
 
 sendNamed : Shape
@@ -1147,7 +1156,9 @@ as runs, text by `-l` and each control byte by its key's name, which tmux
 writes to the pane as that byte. Measured on 2.7 and 2.9a through a control
 client: its parser reads no octal escape (`"\003"` gives `003`) and drops a
 `;` that ends a word even in quotes, so text goes in single quotes, a `'` as
-`"'"` and each `;` as a word of its own, `\;`. UTF-8 goes as it is. -}
+`"'"` and each `;` as a word of its own, `\;`. UTF-8 goes as it is. The
+text follows `--`: tmux's getopt would read a first word that begins with
+`-` as flags and refuse the command (`docs/tmux-checks.md` TK9). -}
 sendBytesPlain : Int -> Bytes -> Array String
 sendBytesPlain pane bytes =
     let

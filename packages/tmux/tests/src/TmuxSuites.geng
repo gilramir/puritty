@@ -11,6 +11,7 @@ import CustomizeRaw36
 import Dict
 import Expect exposing (Expectation)
 import Fixtures
+import Keys27Recorded
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Tmux.Bindings as Bindings
@@ -22,6 +23,7 @@ import Tmux.Customize as Customize
 import Tmux.Layout as Layout
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
+import Tmux27
 import TmuxVersions
 import UInt8
 
@@ -30,7 +32,7 @@ import UInt8
 (`native/`'s `Native`). -}
 suites : Array U.Suite
 suites =
-    [ control, layout, command, bindings, syntax, style, borders, customize, caps, catalog ]
+    [ control, layout, command, bindings, syntax, style, borders, customize, caps, catalog, keys27 ]
 
 
 run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
@@ -1297,14 +1299,14 @@ caps =
           , test =
                 \_ ->
                     Expect.equal
-                        [ "send-keys -t '%3' -l 'ls -l'", "send-keys -t '%3' Enter", "send-keys -t '%3' C-c", "send-keys -t '%3' Escape", "send-keys -t '%3' -l '[A'" ]
+                        [ "send-keys -t '%3' -l -- 'ls -l'", "send-keys -t '%3' Enter", "send-keys -t '%3' C-c", "send-keys -t '%3' Escape", "send-keys -t '%3' -l -- '[A'" ]
                         (Command.sendBytesPlain 3 (Bytes.fromString "ls -l\r\u{0003}\u{001B}[A"))
           }
         , { name = "2.x keys: a ; and a ' as words of their own"
-          , test = \_ -> Expect.equal [ "send-keys -t '%0' -l 'a' \\; \"'\" 'b'" ] (Command.sendBytesPlain 0 (Bytes.fromString "a;'b"))
+          , test = \_ -> Expect.equal [ "send-keys -t '%0' -l -- 'a' \\; \"'\" 'b'" ] (Command.sendBytesPlain 0 (Bytes.fromString "a;'b"))
           }
         , { name = "2.x keys: UTF-8 as it is, Backspace and C-\\ by name"
-          , test = \_ -> Expect.equal [ "send-keys -t '%0' -l 'é한'", "send-keys -t '%0' BSpace", "send-keys -t '%0' 'C-\\'" ] (Command.sendBytesPlain 0 (Bytes.fromString "é한\u{007F}\u{001C}"))
+          , test = \_ -> Expect.equal [ "send-keys -t '%0' -l -- 'é한'", "send-keys -t '%0' BSpace", "send-keys -t '%0' 'C-\\'" ] (Command.sendBytesPlain 0 (Bytes.fromString "é한\u{007F}\u{001C}"))
           }
         , { name = "the sizes' two forms", test = \_ -> Expect.equal [ "refresh-client -C 80,24", "refresh-client -C 80x24" ] [ Command.sizeComma { cols = 80, rows = 24 }, Command.size { cols = 80, rows = 24 } ] }
         , { name = "a binding's commands joined by ; on a line"
@@ -1347,4 +1349,91 @@ catalog =
         [ { name = "33 tmuxes dumped", test = \_ -> Expect.equal 33 (Array.length TmuxVersions.versions) }
         , { name = "every shape's flags are taken by every tmux that allows it", test = \_ -> Expect.equal [] refused }
         , { name = "every shape is allowed by some tmux", test = \_ -> Expect.equal [] allowedSomewhere }
+        ]
+
+
+{-| Check 2 (puritty `docs/tmux-checks.md` TK3): what `sendBytesPlain`
+sends a tmux before 3.0, through a model of tmux 2.7 (`Tmux27`), must
+write the pane exactly the bytes typed. -}
+keys27 : U.Suite
+keys27 =
+    let
+        sent b =
+            Tmux27.deliver (Command.sendBytesPlain 0 (bytes b))
+
+        wrote b =
+            when sent b is
+                Tmux27.Wrote w ->
+                    "wrote " ++ Bytes.toHexString { padding = False } (bytes w)
+
+                Tmux27.Unmodeled why ->
+                    "not modeled: " ++ why
+
+        one line =
+            when Tmux27.deliver [ line ] is
+                Tmux27.Wrote w ->
+                    "wrote " ++ Bytes.toHexString { padding = False } (bytes w)
+
+                Tmux27.Unmodeled why ->
+                    "not modeled: " ++ why
+
+        -- every control byte, the characters 2.7's parser and getopt treat
+        -- apart, a letter, and UTF-8's pieces: a two-byte lead and its
+        -- continuation (é), a three-byte lead and two continuations (한
+        -- is ED 95 9C), a lone continuation, a byte UTF-8 never has
+        alphabet =
+            Array.range 0 31 ++ [ 0x7F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x27, 0x2D, 0x3B, 0x5C, 0x7E, 0x61, 0x7B, 0xC3, 0xA9, 0xED, 0x95, 0x9C, 0x80, 0xFF ]
+
+        sequences =
+            Array.map (\a -> [ a ]) alphabet
+                ++ Array.mapAndFlatten (\a -> Array.map (\b -> [ a, b ]) alphabet) alphabet
+                ++ Array.mapAndFlatten (\a -> Array.mapAndFlatten (\b -> Array.map (\c -> [ a, b, c ]) alphabet) alphabet) alphabet
+
+        -- what is typed, or for bytes that are not UTF-8, what TK3.2 says
+        -- is sent today: each run of them made U+FFFD
+        expected b =
+            when Bytes.toString (bytes b) is
+                Just _ ->
+                    "wrote " ++ Bytes.toHexString { padding = False } (bytes b)
+
+                Nothing ->
+                    "wrote " ++ Bytes.toHexString { padding = False } (Bytes.fromString (Bytes.toStringLossy (bytes b)))
+
+        failures =
+            sequences
+                |> Array.keepIf (\b -> wrote b /= expected b)
+                |> Array.map (\b -> { typed = Bytes.toHexString { padding = False } (bytes b), sent = Command.sendBytesPlain 0 (bytes b), got = wrote b })
+    in
+    run "keys27"
+        [ { name = "the model as TM72 measured 2.7: no octal escape, a ; ending a word dropped, UTF-8 as it is"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "wrote 303033", "wrote 61", "wrote 61", "wrote c3a9ed959c" ]
+                        [ one "send-keys -t %0 -l \"\\003\"", one "send-keys -t %0 -l 'a;'", one "send-keys -t %0 -l \"a;\"", one "send-keys -t %0 -l '\u{00E9}\u{D55C}'" ]
+          }
+        , { name = "the model: a key by name, BSpace, C-\\, and a word that begins with - read as flags"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "wrote 03", "wrote 7f", "wrote 1c", "wrote ", "wrote 2d", "wrote 2d6c61" ]
+                        [ one "send-keys -t %0 C-c", one "send-keys -t %0 BSpace", one "send-keys -t %0 'C-\\'", one "send-keys -t %0 -l '-la'", one "send-keys -t %0 -l '-'", one "send-keys -t %0 -l -- '-la'" ]
+          }
+        , { name = "the model writes what tmux 2.7 wrote for each recorded line, or says it does not model it (TK3.3)"
+          , test =
+                \_ ->
+                    let
+                        compared =
+                            Keys27Recorded.recorded
+                                |> Array.map (\r -> { line = r.line, recorded = "wrote " ++ r.wrote, model = one r.line })
+                    in
+                    Expect.equal
+                        { differ = [], unmodeled = [ "send-keys -t '%0' C-?", "send-keys -t '%0' C-Space", "send-keys -t '%0' ~a" ] }
+                        { differ = compared |> Array.keepIf (\c -> c.model /= c.recorded && not (String.startsWith "not modeled" c.model))
+                        , unmodeled = compared |> Array.keepIf (\c -> String.startsWith "not modeled" c.model) |> Array.map .line
+                        }
+          }
+        , { name = "every sequence of up to three bytes reaches the pane as typed (TK3.1)"
+          , test = \_ -> Expect.equal [] (Array.takeFirst 8 failures)
+          }
         ]

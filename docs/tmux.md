@@ -3201,7 +3201,7 @@ What is not a flag is still decided by the version (TM61's private modes,
 
 | what | from | before it |
 |---|---|---|
-| typed bytes, `send-keys -H` | 3.0 | text by `send-keys -l`, in single quotes, a `'` as `"'"` and each `;` as its own `\;` word; each control byte by its key's name (`C-c`, `Escape`, `'C-\'`, `BSpace`) |
+| typed bytes, `send-keys -H` | 3.0 | text by `send-keys -l --` (the `--` since `tmux-checks.md` TK9), in single quotes, a `'` as `"'"` and each `;` as its own `\;` word; each control byte by its key's name (`C-c`, `Escape`, `'C-\'`, `BSpace`) |
 | the size, `refresh-client -C 80x24` | 3.0 | `-C 80,24` |
 | keys through tmux's tables, `send-keys -K` | 3.4 | puritty follows the tables itself (`Bindings.route`, as TM24 does for `-K`): the prefix sends nothing, a bound key sends its binding's command (`\;` made `;`), an unbound key after the prefix or in a mode is dropped, as tmux drops it, and any other goes to the pane as bytes |
 | the client's flags, `refresh-client -f` | 3.2 | none: no `pause-after` (a pane's backlog is not dropped) |

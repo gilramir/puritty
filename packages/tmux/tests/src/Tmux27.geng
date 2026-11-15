@@ -1,0 +1,681 @@
+module Tmux27 exposing (Delivered(..), deliver, utf8)
+
+{-| What tmux 2.7 writes to a pane for `send-keys` command lines, read from
+its source (puritty `docs/tmux-checks.md` TK3): a control client's line
+split into words as `cmd_string_split` does (cmd-string.c), into commands
+at `;` as `cmd_list_parse` does (cmd-list.c), its flags read by tmux's own
+BSD `getopt` (compat/getopt.c; configure.ac does not take glibc's), and
+each argument sent as `cmd_send_keys_exec` sends it (cmd-send-keys.c):
+looked up as a key's name (`key_string_lookup_string`, key-string.c)
+unless `-l`, else as UTF-8 characters (`utf8_fromcstr`, utf8.c), each
+written by `input_key` (input-keys.c) to a pane in no mode.
+
+What puritty never sends is not modeled, and says so (`Unmodeled`) rather
+than guessing: `$` variables and `~` outside single quotes, a command
+other than `send-keys`, its `-X`, `-M`, `-R` and `-N`, and a key past the
+ones puritty names. A line tmux refuses (a quote not closed, an unknown
+flag) writes nothing.
+
+The server's locale is UTF-8, as tmux 2.7 insists; `mbtowc` is strict
+UTF-8 (glibc's: no overlong form, no surrogate, nothing past U+10FFFF),
+and `wcwidth`'s -1 is width 1 on Linux, so no valid character is refused
+for its width.
+-}
+
+import Bytes exposing (Bytes)
+import UInt8
+
+
+{-| The bytes a pane is written, or why the model cannot say. -}
+type Delivered
+    = Wrote (Array Int)
+    | Unmodeled String
+
+
+{-| Each line in turn: the bytes they write together. -}
+deliver : Array String -> Delivered
+deliver lines =
+    Array.foldl
+        (\l acc ->
+            when acc is
+                Wrote sofar ->
+                    when line l is
+                        Wrote more ->
+                            Wrote (sofar ++ more)
+
+                        Unmodeled why ->
+                            Unmodeled why
+
+                Unmodeled why ->
+                    Unmodeled why
+        )
+        (Wrote [])
+        lines
+
+
+line : String -> Delivered
+line text =
+    when split (ints (Bytes.fromString text)) is
+        Refused ->
+            Wrote []
+
+        NotModeled why ->
+            Unmodeled why
+
+        Words words ->
+            when commands words is
+                Nothing ->
+                    -- `cmd_list_parse` refused it: nothing runs
+                    Wrote []
+
+                Just cmds ->
+                    Array.foldl
+                        (\cmd acc ->
+                            when acc is
+                                Wrote sofar ->
+                                    when sendKeys cmd is
+                                        Wrote more ->
+                                            Wrote (sofar ++ more)
+
+                                        Unmodeled why ->
+                                            Unmodeled why
+
+                                Unmodeled why ->
+                                    Unmodeled why
+                        )
+                        (Wrote [])
+                        cmds
+
+
+{-| A string's bytes as numbers. -}
+ints : Bytes -> Array Int
+ints b =
+    Array.range 0 (Bytes.length b - 1)
+        |> Array.mapAndKeepJust (\i -> Bytes.get i b)
+        |> Array.map UInt8.toInt
+
+
+-- cmd_string_split
+
+
+type Split
+    = Words (Array (Array Int))
+    | Refused
+    | NotModeled String
+
+
+type alias Word =
+    { started : Bool, bytes : Array Int }
+
+
+{-| The line's words. A NUL ends it, as the C string does. -}
+split : Array Int -> Split
+split s =
+    splitFrom s 0 { started = False, bytes = [] } []
+
+
+at : Array Int -> Int -> Int
+at s p =
+    when Array.get p s is
+        Just 0 ->
+            -1
+
+        Just c ->
+            c
+
+        Nothing ->
+            -1
+
+
+splitFrom : Array Int -> Int -> Word -> Array (Array Int) -> Split
+splitFrom s p word words =
+    let
+        ch =
+            at s p
+
+        finished =
+            if word.started then
+                Array.pushLast word.bytes words
+
+            else
+                words
+
+        appended t =
+            { started = True, bytes = word.bytes ++ t }
+    in
+    if ch == 0x27 then
+        -- '…': no escapes
+        when quoted s (p + 1) 0x27 False [] is
+            Just r ->
+                splitFrom s r.next (appended r.bytes) words
+
+            Nothing ->
+                Refused
+
+    else if ch == 0x22 then
+        when quoted s (p + 1) 0x22 True [] is
+            Just r ->
+                if r.variable then
+                    NotModeled "a $ variable in double quotes"
+
+                else
+                    splitFrom s r.next (appended r.bytes) words
+
+            Nothing ->
+                Refused
+
+    else if ch == 0x24 then
+        NotModeled "a $ variable"
+
+    else if ch == 0x23 then
+        -- `#`: the rest of the line a comment
+        Words finished
+            |> assignments
+
+    else if ch == -1 then
+        Words finished
+            |> assignments
+
+    else if ch == 0x20 || ch == 0x09 then
+        splitFrom s (p + 1) { started = False, bytes = [] } finished
+
+    else if ch == 0x7E && not word.started then
+        NotModeled "a ~ at a word's start"
+
+    else
+        splitFrom s (p + 1) (appended [ ch ]) words
+
+
+{-| Leading `NAME=value` words set the environment: not modeled. -}
+assignments : Split -> Split
+assignments r =
+    when r is
+        Words words ->
+            when Array.first words is
+                Just first ->
+                    if Array.member 0x3D first then
+                        NotModeled "an environment assignment"
+
+                    else
+                        r
+
+                Nothing ->
+                    r
+
+        _ ->
+            r
+
+
+{-| A quoted string from `p`, to its closing `endch`: its bytes, where the
+line goes on, and whether it held a `$` (which double quotes expand). -}
+quoted : Array Int -> Int -> Int -> Bool -> Array Int -> Maybe { bytes : Array Int, next : Int, variable : Bool }
+quoted s p endch esc acc =
+    let
+        ch =
+            at s p
+    in
+    if ch == endch then
+        Just { bytes = acc, next = p + 1, variable = False }
+
+    else if ch == -1 then
+        Nothing
+
+    else if ch == 0x5C && esc then
+        let
+            e =
+                at s (p + 1)
+        in
+        if e == -1 then
+            Nothing
+
+        else
+            quoted s
+                (p + 2)
+                endch
+                esc
+                (Array.pushLast
+                    (if e == 0x65 then
+                        0x1B
+
+                     else if e == 0x72 then
+                        0x0D
+
+                     else if e == 0x6E then
+                        0x0A
+
+                     else if e == 0x74 then
+                        0x09
+
+                     else
+                        e
+                    )
+                    acc
+                )
+
+    else if ch == 0x24 && esc then
+        Just { bytes = acc, next = p + 1, variable = True }
+
+    else
+        quoted s (p + 1) endch esc (Array.pushLast ch acc)
+
+
+-- cmd_list_parse
+
+
+{-| The words as commands, split at a word that ends in `;`: `\;` at a
+word's end is a `;` in it; a `;` alone or after a word ends a command, and
+an empty command is refused. -}
+commands : Array (Array Int) -> Maybe (Array (Array (Array Int)))
+commands words =
+    Array.foldl
+        (\w acc ->
+            when acc is
+                Just a ->
+                    when Array.popLast w is
+                        Just { last, initial } ->
+                            if last /= 0x3B then
+                                Just { a | current = Array.pushLast w a.current }
+
+                            else
+                                when Array.popLast initial is
+                                    Just inner ->
+                                        if inner.last == 0x5C then
+                                            Just { a | current = Array.pushLast (Array.pushLast 0x3B inner.initial) a.current }
+
+                                        else
+                                            ended (Array.pushLast initial a.current) a.done
+
+                                    Nothing ->
+                                        ended a.current a.done
+
+                        Nothing ->
+                            Just { a | current = Array.pushLast w a.current }
+
+                Nothing ->
+                    Nothing
+        )
+        (Just { current = [], done = [] })
+        words
+        |> Maybe.andThen
+            (\a ->
+                if Array.isEmpty a.current then
+                    Just a.done
+
+                else
+                    Just (Array.pushLast a.current a.done)
+            )
+
+
+ended : Array (Array Int) -> Array (Array (Array Int)) -> Maybe { current : Array (Array Int), done : Array (Array (Array Int)) }
+ended command done =
+    if Array.isEmpty command then
+        -- `cmd_parse` of no words: "no command"
+        Nothing
+
+    else
+        Just { current = [], done = Array.pushLast command done }
+
+
+-- send-keys
+
+
+{-| One command, run: `send-keys` with its flags (`lXRMN:t:`) read as
+BSD getopt does, then each argument sent. -}
+sendKeys : Array (Array Int) -> Delivered
+sendKeys cmd =
+    when Array.popFirst cmd is
+        Just { first, rest } ->
+            if first /= ints (Bytes.fromString "send-keys") then
+                Unmodeled "a command other than send-keys"
+
+            else
+                when getopt rest { literal = False, other = False } is
+                    Err _ ->
+                        -- refused when parsed, so the whole line is; puritty
+                        -- sends one command a line
+                        Wrote []
+
+                    Ok parsed ->
+                        if parsed.flags.other then
+                            Unmodeled "send-keys -X, -M, -R or -N"
+
+                        else
+                            Array.foldl
+                                (\arg acc ->
+                                    when acc is
+                                        Wrote sofar ->
+                                            when argument parsed.flags.literal arg is
+                                                Wrote more ->
+                                                    Wrote (sofar ++ more)
+
+                                                Unmodeled why ->
+                                                    Unmodeled why
+
+                                        Unmodeled why ->
+                                            Unmodeled why
+                                )
+                                (Wrote [])
+                                parsed.args
+
+        Nothing ->
+            Wrote []
+
+
+{-| tmux's BSD getopt (compat/getopt.c): options until a word that does
+not start with `-`, a lone `-`, or `--` (taken; `--` and more is refused);
+each letter a flag, `N` and `t` taking the rest of the word or the next; a
+`-` among the letters ends the options, its word the first argument. -}
+getopt : Array (Array Int) -> { literal : Bool, other : Bool } -> Result String { flags : { literal : Bool, other : Bool }, args : Array (Array Int) }
+getopt words flags =
+    when Array.popFirst words is
+        Just { first, rest } ->
+            if Array.get 0 first /= Just 0x2D || first == [ 0x2D ] then
+                Ok { flags = flags, args = words }
+
+            else if first == [ 0x2D, 0x2D ] then
+                Ok { flags = flags, args = rest }
+
+            else if Array.get 1 first == Just 0x2D then
+                Err "a word after --"
+
+            else
+                letters first (Array.dropFirst 1 first) rest flags
+
+        Nothing ->
+            Ok { flags = flags, args = [] }
+
+
+letters : Array Int -> Array Int -> Array (Array Int) -> { literal : Bool, other : Bool } -> Result String { flags : { literal : Bool, other : Bool }, args : Array (Array Int) }
+letters word ls rest flags =
+    when Array.popFirst ls is
+        Just { first, rest = more } ->
+            if first == 0x6C then
+                letters word more rest { flags | literal = True }
+
+            else if first == 0x58 || first == 0x52 || first == 0x4D then
+                letters word more rest { flags | other = True }
+
+            else if first == 0x2D then
+                Ok { flags = flags, args = Array.pushFirst word rest }
+
+            else if first == 0x74 || first == 0x4E then
+                -- takes a value: the rest of the word, or the next word
+                if Array.isEmpty more then
+                    when Array.popFirst rest is
+                        Just r ->
+                            getopt r.rest
+                                (if first == 0x4E then
+                                    { flags | other = True }
+
+                                 else
+                                    flags
+                                )
+
+                        Nothing ->
+                            Err "a flag missing its value"
+
+                else
+                    getopt rest
+                        (if first == 0x4E then
+                            { flags | other = True }
+
+                         else
+                            flags
+                        )
+
+            else
+                Err "unknown flag"
+
+        Nothing ->
+            getopt rest flags
+
+
+{-| One argument: a key by its name unless `-l` or no key has it, else its
+UTF-8 characters, each written as `input_key` writes it. -}
+argument : Bool -> Array Int -> Delivered
+argument literal arg =
+    if literal then
+        Wrote (characters arg)
+
+    else
+        when keyName arg is
+            Key bytes ->
+                Wrote bytes
+
+            NoKey ->
+                Wrote (characters arg)
+
+            NotAKey why ->
+                Unmodeled why
+
+
+type Key
+    = Key (Array Int)
+    | NoKey
+    | NotAKey String
+
+
+{-| `key_string_lookup_string` for the names puritty uses, written as
+`input_key` writes them: `C-` and a character, `Tab`, `Enter`, `Escape`,
+`BSpace`, a single printable character. -}
+keyName : Array Int -> Key
+keyName arg =
+    let
+        lower =
+            Array.map
+                (\c ->
+                    if c >= 0x41 && c <= 0x5A then
+                        c + 32
+
+                    else
+                        c
+                )
+                arg
+
+        named n =
+            lower == ints (Bytes.fromString n)
+    in
+    if named "none" then
+        NoKey
+
+    else if Array.get 0 arg == Just 0x30 && Array.get 1 arg == Just 0x78 then
+        NotAKey "a hex key"
+
+    else if (Array.get 0 arg == Just 0x43 || Array.get 0 arg == Just 0x63) && Array.get 1 arg == Just 0x2D && Array.length arg == 3 then
+        -- C- and a character
+        when Array.get 2 arg is
+            Just k ->
+                -- `other`'s characters keep Ctrl: C-? is xterm's
+                -- `ESC[27;5;63~`, not DEL
+                if Array.member k (ints (Bytes.fromString "!#()+,-.0123456789:;<=>?'")) then
+                    NotAKey "C- and one of tmux's other characters"
+
+                else if k >= 97 && k <= 122 then
+                    Key [ k - 96 ]
+
+                else if k >= 64 && k <= 95 then
+                    Key [ k - 64 ]
+
+                else if k == 32 then
+                    Key [ 0 ]
+
+                else
+                    NotAKey "C- and a character puritty does not name"
+
+            Nothing ->
+                NoKey
+
+    else if named "tab" then
+        Key [ 0x09 ]
+
+    else if named "enter" then
+        Key [ 0x0D ]
+
+    else if named "escape" then
+        Key [ 0x1B ]
+
+    else if named "bspace" then
+        Key [ 0x7F ]
+
+    else if Array.length arg == 1 then
+        when Array.get 0 arg is
+            Just c ->
+                if c < 32 || c == 127 then
+                    NoKey
+
+                else if c < 128 then
+                    Key [ c ]
+
+                else
+                    NoKey
+
+            Nothing ->
+                NoKey
+
+    else if Array.member 0x2D arg || Array.length arg > 1 then
+        -- a longer word: tmux's table has many names (F1, Up, PPage) and
+        -- modifiers; puritty sends text with -l, so a name here is not
+        -- one of its own
+        when decode arg 0 [] is
+            Just [ c ] ->
+                Key (utf8 c)
+
+            _ ->
+                NotAKey "a key name puritty does not use"
+
+    else
+        NoKey
+
+
+{-| `utf8_fromcstr`, then each character `utf8_combine` takes, written by
+`input_key`: a byte alone that is not ASCII is dropped. -}
+characters : Array Int -> Array Int
+characters arg =
+    charsFrom arg 0 []
+
+
+charsFrom : Array Int -> Int -> Array Int -> Array Int
+charsFrom s p acc =
+    when Array.get p s is
+        Nothing ->
+            acc
+
+        Just b ->
+            when sequence s p is
+                Just r ->
+                    charsFrom s (p + r.size) (acc ++ utf8 r.code)
+
+                Nothing ->
+                    if b < 0x80 then
+                        charsFrom s (p + 1) (Array.pushLast b acc)
+
+                    else
+                        -- `utf8_set` of one byte, which `mbtowc` refuses
+                        charsFrom s (p + 1) acc
+
+
+{-| A character of more than one byte at `p`, as `utf8_open` and
+`utf8_append` take it and `mbtowc` decodes it; `Nothing` for a byte to be
+taken alone. -}
+sequence : Array Int -> Int -> Maybe { code : Int, size : Int }
+sequence s p =
+    when Array.get p s is
+        Just lead ->
+            let
+                size =
+                    if lead >= 0xC2 && lead <= 0xDF then
+                        2
+
+                    else if lead >= 0xE0 && lead <= 0xEF then
+                        3
+
+                    else if lead >= 0xF0 && lead <= 0xF4 then
+                        4
+
+                    else
+                        0
+            in
+            if size == 0 then
+                Nothing
+
+            else
+                when decode (Array.slice p (p + size) s) 0 [] is
+                    Just [ c ] ->
+                        if Array.length (Array.slice p (p + size) s) == size then
+                            Just { code = c, size = size }
+
+                        else
+                            Nothing
+
+                    _ ->
+                        Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| Strict UTF-8, as glibc's `mbtowc` decodes it: the code points, or
+`Nothing` for anything else. -}
+decode : Array Int -> Int -> Array Int -> Maybe (Array Int)
+decode s p acc =
+    when Array.get p s is
+        Nothing ->
+            Just acc
+
+        Just b ->
+            if b < 0x80 then
+                decode s (p + 1) (Array.pushLast b acc)
+
+            else
+                let
+                    cont i =
+                        when Array.get (p + i) s is
+                            Just c ->
+                                if c >= 0x80 && c <= 0xBF then
+                                    Just (c - 0x80)
+
+                                else
+                                    Nothing
+
+                            Nothing ->
+                                Nothing
+
+                    take n first least =
+                        Array.range 1 (n - 1)
+                            |> Array.foldl (\i code -> Maybe.map2 (\c v -> v * 64 + c) (cont i) code) (Just first)
+                            |> Maybe.andThen
+                                (\code ->
+                                    if code < least || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) then
+                                        Nothing
+
+                                    else
+                                        decode s (p + n) (Array.pushLast code acc)
+                                )
+                in
+                if b >= 0xC0 && b <= 0xDF then
+                    take 2 (b - 0xC0) 0x80
+
+                else if b >= 0xE0 && b <= 0xEF then
+                    take 3 (b - 0xE0) 0x800
+
+                else if b >= 0xF0 && b <= 0xF7 then
+                    take 4 (b - 0xF0) 0x10000
+
+                else
+                    Nothing
+
+
+{-| A code point's UTF-8 bytes (`wctomb`, `utf8_split`). -}
+utf8 : Int -> Array Int
+utf8 c =
+    if c < 0x80 then
+        [ c ]
+
+    else if c < 0x800 then
+        [ 0xC0 + c // 64, 0x80 + modBy 64 c ]
+
+    else if c < 0x10000 then
+        [ 0xE0 + c // 4096, 0x80 + modBy 64 (c // 64), 0x80 + modBy 64 c ]
+
+    else
+        [ 0xF0 + c // 262144, 0x80 + modBy 64 (c // 4096), 0x80 + modBy 64 (c // 64), 0x80 + modBy 64 c ]

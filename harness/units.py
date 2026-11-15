@@ -84,8 +84,9 @@ SUITES = [
     Suite("vt", 100, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
-    # catalog held to every dumped tmux, three
-    Suite("tmux", 117, runs_of("packages/tmux/tests")),
+    # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
+    # through a model of tmux 2.7, four
+    Suite("tmux", 121, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
