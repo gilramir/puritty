@@ -1030,3 +1030,36 @@ key, `mark_log`, Ctrl+Alt+Shift+M by default, is a window key like the
 tab keys (`tabAction`), but only while the log is on, so that the program
 has the key otherwise; the menu's **Mark the diagnostic log** is there
 under the same condition. Korean words for both are in `Words`.
+
+## ST34 · A font FreeType here cannot read: refused, not a crash (2026-11-15)
+
+Gilbert, switching fonts on gmktec7 from the settings window: Fira Code,
+DejaVu Sans Mono, Courier 10 Pitch, and the window was gone. A segfault
+in `hb_font_get_nominal_glyph`, from `draw_run`, reading a null font.
+
+**Why.** The FreeType built into the Linux packages has the TrueType and
+CFF drivers only (`app/distro/libs-inside.sh`), and Courier 10 Pitch, like
+Nimbus Mono PS, is a Type 1 font (`.pfb`, `.t1`). fontconfig named its
+file (the system's cache, written by the system's FreeType, indexes Type 1
+files), so `pt_refont` went on: it closed every face, then could not open
+the new one, and answered "the font in use is kept" with no font left
+open; the next frame drew with a face that was gone. And with Courier 10
+Pitch saved in the config, puritty would not start at all: `cannot open
+the window: no font for Courier 10 Pitch`. Reproduced off gmktec7 with its
+33 monospace font files, a fontconfig cache written by `fc-cache`, and the
+config rewritten while the window ran: exit 139 at Courier 10 Pitch.
+
+**Now:**
+- `pt_refont` opens the new font's regular face before it closes the open
+  font; one FreeType cannot read leaves the open font as it was, as its
+  comment always said (`puritty_text.c`, shared with Windows);
+- `pt_open`, at the start, takes the system's `monospace` font in place of
+  one it cannot read, so a config naming one still opens a window;
+- the settings window's list on Linux (`puritty_x11_fonts`) offers only
+  families with a TrueType or CFF file, so Courier 10 Pitch and Nimbus Mono
+  PS (Type 1 only on gmktec7) are not offered.
+
+The same switches against the fixed build: every one kept the window,
+Courier 10 Pitch refused with the font in use kept, and a start with it in
+the config opened in the monospace font. Building Type 1 into FreeType
+(its `t1_driver_class`) would let such fonts be used; not done.

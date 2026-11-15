@@ -1005,10 +1005,20 @@ int pt_open(const char *font, const char *lang, int points, int dpi, long cap) {
     }
     hbuf = hb_buffer_create();
     int index;
+    if (FT_Init_FreeType(&library) != 0) return -1;
     char *file = pt_font_file(font, 0, &index);
-    if (file == NULL || FT_Init_FreeType(&library) != 0 || load_face(file, index, 1) != 0) {
+    if (file == NULL || load_face(file, index, 1) != 0) {
+        /* a font the system names that FreeType here cannot read (a Type 1
+         * font: only TrueType and CFF are built in): the system's
+         * monospace font, so that the window still opens */
         free(file);
-        return -1;
+        if (pt_verbose) fprintf(stderr, "font %s cannot be read; monospace instead\n", font);
+        font = "monospace";
+        file = pt_font_file(font, 0, &index);
+        if (file == NULL || load_face(file, index, 1) != 0) {
+            free(file);
+            return -1;
+        }
     }
     free(file);
     primary[0] = 0;
@@ -1056,6 +1066,16 @@ int pt_refont(const char *font, const char *lang, int points, int dpi, long cap)
     int index;
     char *file = pt_font_file(font, 0, &index);
     if (file == NULL) return -1;
+    /* its regular face opened before the open font is closed: one FreeType
+     * here cannot read (a Type 1 font) leaves the open font as it was,
+     * where closing first left none, and the next frame drew with a face
+     * that was gone */
+    FT_Face probe;
+    if (FT_New_Face(library, file, index, &probe) != 0) {
+        free(file);
+        return -1;
+    }
+    FT_Done_Face(probe);
     free(file);
     reset_glyphs();
     for (int f = 0; f < nfaces; f++) {
