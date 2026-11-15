@@ -28,6 +28,7 @@ import Reason
 import Recent exposing (Recent)
 import RecentFile
 import Schema
+import SessionFile
 import SettingsFile exposing (Store)
 import SettingsGui
 import SettingsSource exposing (Given, Read(..))
@@ -176,6 +177,8 @@ openWindow r given locale =
                                         Window.fonts
                                         (sshAliases r)
                                         |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = recents }))
+                                        -- the page it was last on while puritty runs (SG16)
+                                        |> Task.andThen (\w -> lastPage r |> Task.map (\at -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = at }))
                                         -- an arrow over a window of choices, not the
                                         -- terminal's I-beam (Gilbert, 2026-11-10)
                                         |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
@@ -213,6 +216,18 @@ remembered recent s =
             meant Reason.NotSet Task.succeed s
 
 
+{-| The page the settings window was last on while puritty runs (SG16),
+from the state folder; none when there is none. -}
+lastPage : Asked -> Task x (Maybe String)
+lastPage r =
+    when Platform.stateDirectory r.vars is
+        Just dir ->
+            SessionFile.page r.fs (RecentFile.folder dir)
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed Nothing
+
+
 {-| The hosts `~/.ssh/config` names, or none when it cannot be read. -}
 sshAliases : Asked -> Task x (Array String)
 sshAliases r =
@@ -226,7 +241,7 @@ sshAliases r =
             meant Reason.NotSet Task.succeed []
 
 
-first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent } -> Maybe String -> Words.Lang -> State
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent, page : Maybe String } -> Maybe String -> Words.Lang -> State
 first r given read cell w shotPath lang =
     let
         got =
@@ -252,6 +267,19 @@ first r given read cell w shotPath lang =
             , launcher = r.launcher
             }
             |> SettingsWindow.withRecents w.recents
+            |> (\m ->
+                    -- the start screen opens on the hosts, as it always has
+                    when w.page is
+                        Just name ->
+                            if r.launcher then
+                                m
+
+                            else
+                                SettingsWindow.withPageNamed name m
+
+                        Nothing ->
+                            meant Reason.NotSet m
+               )
     , stateDir = Maybe.map RecentFile.folder (Platform.stateDirectory r.vars)
     , cell = { width = cell.width, height = cell.height }
     , lang = lang
@@ -464,7 +492,22 @@ input i s =
         r =
             SettingsWindow.update i (measured s s.window)
     in
-    Array.foldl (\e t -> t |> Task.andThen (effect e)) (Task.succeed { s | window = measured s r.model }) r.effects
+    let
+        -- a page moved to is kept for the next settings window (SG16)
+        kept =
+            if r.model.page /= s.window.page then
+                when s.stateDir is
+                    Just dir ->
+                        SessionFile.setPage s.given.fs dir (SettingsWindow.pageNameOf r.model)
+
+                    Nothing ->
+                        meant Reason.NotSet Task.succeed {}
+
+            else
+                Task.succeed {}
+    in
+    kept
+        |> Task.andThen (\_ -> Array.foldl (\e t -> t |> Task.andThen (effect e)) (Task.succeed { s | window = measured s r.model }) r.effects)
 
 
 {-| The window with its rows measured as they will be drawn (SG12). -}
@@ -480,13 +523,13 @@ effect e s =
             Task.succeed { s | closed = True }
 
         SettingsWindow.ConnectHost name ->
-            connect (Hosts.named name s.window.config) [ "--host", name ] s
+            connect (Hosts.named name s.window.config) [ "--host", name ] (Words.message "message.opened" |> Words.with "name" name) s
                 |> Task.andThen (whenLauncher (Recent.Saved name))
 
         SettingsWindow.ConnectQuick target ->
             when Hosts.quick target is
                 Just h ->
-                    connect h [ "ssh", target ] s
+                    connect h [ "ssh", target ] (Words.message "message.opened" |> Words.with "name" (String.trim target)) s
                         |> Task.andThen (whenLauncher (Recent.Quick (String.trim target)))
 
                 Nothing ->
@@ -514,7 +557,7 @@ effect e s =
                 Task.succeed { s | outcome = LocalShell, closed = True }
 
             else
-                connect (Config.host "" "") [ "shell" ] s
+                connect (Config.host "" "") [ "shell" ] (Words.message "message.openedLocal") s
 
         SettingsWindow.ForgetRecent recent ->
             when s.stateDir is
@@ -581,9 +624,11 @@ writeWith edit s =
 
 
 {-| A session: the host list becomes it (V65); the settings window starts
-it in a window of its own, this program again with `args`. -}
-connect : Config.Host -> Array String -> State -> Task String State
-connect h args s =
+it in a window of its own, this program again with `args`, and then says
+`opened`: that window is all it knows of, since the session is that
+window's (SG17); "Connecting to" stayed there for good. -}
+connect : Config.Host -> Array String -> Words.Message -> State -> Task String State
+connect h args opened s =
     if s.launcher then
         Task.succeed { s | outcome = Session h, closed = True }
 
@@ -600,7 +645,7 @@ connect h args s =
                                     { s | window = SettingsWindow.told (Words.message "message.notStarted" |> Words.with "why" why) s.window }
 
                                 Nothing ->
-                                    meant Reason.NotKnown s
+                                    meant Reason.NotKnown { s | window = SettingsWindow.told opened s.window }
                         )
 
             Nothing ->

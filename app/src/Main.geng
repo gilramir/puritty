@@ -72,6 +72,7 @@ import Restore
 import RestoreFile exposing (TabColor(..))
 import Schema
 import Search
+import SessionFile
 import SettingsGui
 import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, overridden, readSettings, reloadDelayMs, settingsFile, watchSettings)
@@ -1091,6 +1092,9 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
     Text.interfaceFont Platform.interfaceFont
         -- the system menu's items, where the platform has one (ST26)
         |> Task.andThen (\_ -> Window.systemMenu (Array.map .label (menuItems config)))
+        -- this window counted among those open, a session begun when it is
+        -- the only one (SG16)
+        |> Task.andThen (\_ -> sessionMark SessionFile.begin settings.given.fs logDir)
         |> Task.andThen (\_ -> clockNow)
         |> Task.andThen
             (\began ->
@@ -1193,12 +1197,25 @@ run imeLog shotPath startAt charset config cell remote starter settings problems
         |> Task.andThen (\m -> finish m.remote m)
 
 
+{-| `SessionFile.begin` or `end` in the state folder, when there is one. -}
+sessionMark : (File.Permission -> Path.Path -> Task Never {}) -> File.Permission -> Maybe String -> Task x {}
+sessionMark mark fs logDir =
+    when stateFolder logDir is
+        Just dir ->
+            mark fs dir |> Task.mapError never
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed {}
+
+
 {-| The end: the program's exit status when it ended, 0 when the window
 was closed, after asking the program to end. -}
 finish : Backend -> (taken m0 : Model) -> Task String {}
 finish remote m0 =
     rememberWindow m0
         |> Task.andThen savedAtEnd
+        -- this window no longer counted among those open (SG16)
+        |> Task.andThen (\m -> sessionMark SessionFile.end m.settings.given.fs m.logDir |> Task.map (\_ -> m))
         |> Task.andThen
             (\m ->
                 writeLog True

@@ -454,3 +454,59 @@ which they had not (Gilbert).
 doing nothing on it; the host tests a row lower); the settings gate 20 of
 20 and the hosts gate's `host-list`, a row lower; and run: `puritty hosts`,
 Down, Down, Enter became a shell, which ran what was typed.
+
+## SG16 · The settings window's page, kept while puritty runs (2026-11-14)
+
+Gilbert: having set the bell on the Sound page and closed the settings
+window, Ctrl+, opened it again on the first page; it should open where it
+was, during the same session, not at a new start. Asked whether "the
+session" is one puritty window's or all of them, he chose all of them: the
+page is kept until the last puritty window closes.
+
+**Why it needs a file.** The settings window is a process of its own each
+time it opens (`puritty settings`), so nothing of it outlives its close,
+and puritty's windows are separate processes too.
+
+**What is built:**
+
+- **`SessionFile`**, in puritty's state folder: `open/ID`, an empty file
+  for each puritty window running, named by its process's id, and
+  `settings-page.txt`, the page's name (`Sound`, `Hosts`).
+- **A window starting** (`Main.run`) lists `open/`, takes away the marks
+  whose processes no longer run (a window that crashed), and, when no
+  other window runs, forgets the page: a new session. Then it marks
+  itself. **A window ending** (`Main.finish`) takes its mark away.
+- **The settings window** opens on the kept page (`withPageNamed`), unless
+  it is the start screen, which opens on the hosts as before, and keeps
+  the page each time it moves to another (`SettingsProgram.input`).
+- **Geng's `os` gains** `Process.currentId` and `Process.isRunning`
+  (Linux: `getpid`, `kill(id, 0)` with EPERM counting as running;
+  Windows: `GetCurrentProcessId`, `OpenProcess` and no exit code yet).
+
+**Left:** an id is reused once its process has ended, so a mark left by a
+crashed window whose id another program now has keeps the session: the
+page is remembered one start too long. Nothing worse follows.
+
+**Checked** under Xvfb with a state folder of its own: a window's mark
+made (`open/4078341`); the settings window moved to Sound kept `Sound`;
+another opened on the Sound page; a window killed by a signal (no
+`finish`) left its mark, and the next window, finding no process with that
+id, took it away and forgot the page.
+
+## SG17 · "Connecting to" said once the window is opened (2026-11-14)
+
+Gilbert, on Linux: a host connected from the settings window's Hosts page
+worked, but the bottom of the settings window kept saying "Connecting to
+nene" in blue, even after the session's window was closed.
+
+**Why.** From the settings window a session runs in a puritty window of its
+own, another process (`connect`), so the settings window never hears how
+the connection goes: it said "Connecting to" before starting that window,
+and nothing replaced it.
+
+**What changed.** Once the window's process has started, the settings
+window says what it knows: "Opened nene in a new window" (`message.opened`),
+or for the local shell "Opened a local shell in a new window"
+(`message.openedLocal`), each in Korean too; a window that cannot start
+says why, as before (`message.notStarted`). The start screen, which
+becomes the session itself, is not changed.

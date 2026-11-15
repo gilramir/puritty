@@ -1,0 +1,124 @@
+module SessionFile exposing (begin, end, page, setPage)
+
+{-| What puritty keeps while any of its windows is open, and forgets when
+the last has closed (`docs/settings-gui.md` SG16): the page the settings
+window was last on. In puritty's state folder: `open/ID`, an empty file for
+each window running, named by its process's id, and `settings-page.txt`,
+the page's name.
+
+A window that starts with no other running (`begin`) begins a new session:
+the page is forgotten, as are the marks of windows that ended without
+taking theirs away (a crash). An id is reused once its process has ended,
+so a mark whose id another program now has keeps the session; the page is
+then remembered one start too long, which is the whole of the cost.
+Everything here is a convenience: what cannot be read is none, and what
+cannot be written is left.
+-}
+
+import Bytes
+import Os.Directory as Directory
+import Os.File as File
+import Os.Path as Path exposing (Path)
+import Os.Process as Process
+import Reason
+import Task exposing (Task)
+
+
+pageFile : String
+pageFile =
+    "settings-page.txt"
+
+
+openFolder : Path -> Path
+openFolder dir =
+    Path.append (Path.fromString "open") dir
+
+
+{-| A window started: the session begun again if no other window runs, and
+this window's mark made. -}
+begin : File.Permission -> Path -> Task x {}
+begin fs dir =
+    Process.currentId
+        |> Task.andThen
+            (\me ->
+                Directory.list fs (openFolder dir)
+                    |> Task.onError (\_ -> Task.succeed [])
+                    |> Task.andThen (\entries -> sweep fs me entries [])
+                    |> Task.andThen
+                        (\running ->
+                            (if Array.isEmpty running then
+                                File.remove fs (Path.append (Path.fromString pageFile) dir)
+                                    |> Task.map (\_ -> {})
+                                    |> Task.onError (\_ -> Task.succeed {})
+
+                             else
+                                Task.succeed {}
+                            )
+                                |> Task.andThen (\_ -> Directory.createAll fs (openFolder dir))
+                                |> Task.andThen (\_ -> File.writeFile fs Bytes.empty (Path.append (Path.fromString (String.fromInt me)) (openFolder dir)))
+                                |> Task.map (\_ -> {})
+                                |> Task.onError (\_ -> Task.succeed {})
+                        )
+            )
+
+
+{-| The other windows' marks whose processes run; the rest taken away. -}
+sweep : File.Permission -> Int -> Array { path : Path, kind : File.Kind } -> Array Int -> Task x (Array Int)
+sweep fs me entries running =
+    when Array.popFirst entries is
+        Nothing ->
+            meant Reason.NoMore Task.succeed running
+
+        Just { first, rest } ->
+            when String.toInt (Path.filename first.path) is
+                Just id ->
+                    if id == me then
+                        sweep fs me rest running
+
+                    else
+                        Process.isRunning id
+                            |> Task.andThen
+                                (\alive ->
+                                    if alive then
+                                        sweep fs me rest (Array.pushLast id running)
+
+                                    else
+                                        File.remove fs first.path
+                                            |> Task.onError (\_ -> Task.succeed {})
+                                            |> Task.andThen (\_ -> sweep fs me rest running)
+                                )
+
+                Nothing ->
+                    -- not a mark of puritty's
+                    meant Reason.FromOutside sweep fs me rest running
+
+
+{-| A window ended: its mark taken away. -}
+end : File.Permission -> Path -> Task x {}
+end fs dir =
+    Process.currentId
+        |> Task.andThen (\me -> File.remove fs (Path.append (Path.fromString (String.fromInt me)) (openFolder dir)))
+        |> Task.map (\_ -> {})
+        |> Task.onError (\_ -> Task.succeed {})
+
+
+{-| The page the settings window was last on in this session, by name. -}
+page : File.Permission -> Path -> Task x (Maybe String)
+page fs dir =
+    File.readFile fs (Path.append (Path.fromString pageFile) dir)
+        |> Task.map (\b -> Bytes.toString b |> Maybe.map String.trim)
+        |> Task.onError (\_ -> Task.succeed Nothing)
+
+
+{-| The settings window's page kept, written whole and moved into place. -}
+setPage : File.Permission -> Path -> String -> Task x {}
+setPage fs dir name =
+    let
+        next =
+            Path.append (Path.fromString (pageFile ++ ".new")) dir
+    in
+    Directory.createAll fs dir
+        |> Task.andThen (\_ -> File.writeFile fs (Bytes.fromString (name ++ "\n")) next)
+        |> Task.andThen (\_ -> File.move fs { from = next, to = Path.append (Path.fromString pageFile) dir })
+        |> Task.map (\_ -> {})
+        |> Task.onError (\_ -> Task.succeed {})

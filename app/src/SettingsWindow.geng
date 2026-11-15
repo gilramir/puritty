@@ -18,12 +18,14 @@ module SettingsWindow exposing
     , listed
     , onHosts
     , pageCount
+    , pageNameOf
     , rowCount
     , rowLines
     , rowTop
     , suggestions
     , told
     , update
+    , withPageNamed
     , withRecents
     , withRowLines
     )
@@ -377,6 +379,33 @@ hostRows m =
                     )
     in
     recent ++ own ++ theirs
+
+
+{-| The page's name, as `settings-page.txt` keeps it (SG16): a page of
+the settings by its title, or `Hosts`. -}
+pageNameOf : Model -> String
+pageNameOf m =
+    if m.page >= hostsPage then
+        "Hosts"
+
+    else
+        Array.get m.page Schema.pages |> Maybe.map Schema.pageName |> Maybe.withDefault (meant Reason.OutOfRange "")
+
+
+{-| The window on the page of this name, the first row of it; as it was
+when no page has the name (a page renamed since). -}
+withPageNamed : String -> Model -> Model
+withPageNamed name m =
+    if name == "Hosts" then
+        { m | page = hostsPage, row = 0, scroll = 0 }
+
+    else
+        when Array.findFirst (\p -> Schema.pageName p == name) Schema.pages is
+            Just found ->
+                { m | page = found.index, row = 0, scroll = 0 }
+
+            Nothing ->
+                meant Reason.NotKnown m
 
 
 {-| The connections made last, read from their file (SG14). -}
