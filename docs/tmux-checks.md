@@ -497,6 +497,37 @@ block, which no scenario sends, and the fake's rules for all five are
 still held to every dumped tmux. The explorer costs about 75 s of the
 app's tests on node.
 
-**Not covered yet**: keys typed while replies are pending, `%pause`, the
-tree's and menus' round trips with panes vanishing, resizes, the poll's
-timer, and each version's own answers (the fake answers as 3.8).
+**Not covered yet**: see TK10.7.
+
+### TK10.7 · Keys while replies are pending, `%pause`, and orders that cannot differ (2026-11-15)
+
+Four scenarios more, each on 2.7, 3.2 and 3.8: the tree (`prefix w`)
+opened while attaching, and the window menu (`prefix <`); attached, the
+tree opened as a pane exits, its previews' captures among the questions;
+copy mode's keys (`k`, twice) while tmux puts `%0` in copy mode and its
+program exits, in any order; and, on 3.2 and 3.8 (`%pause` is 3.2's), a
+pane paused as it exits, which sends `continue` and the pane's three
+questions on one line. None found a fault.
+
+A first try put two keys and a pane's exit into one attach: more than
+20,000 states, reported as not explored to the end (TK10.6's limit), and
+1,075 s on node. Split, and with orders that cannot differ left out, the
+whole explorer takes about 40 s on node, where TK10.6's two scenarios
+alone took 75 s: with no world event left, tmux's running its next line
+commutes with puritty's reading and the user's acting (it takes the head
+of the lines sent, which they only add to), so it is taken at once; with
+no user action left, puritty's reading the next block commutes with
+tmux's running and the world's events, so it is taken at once (`open`).
+Every order left out reaches a state one taken reaches.
+
+**Made to fail on purpose, after the reduction**, every fault so far,
+each caught where it was before: the failing-line fix taken out (the
+attaches, a window closing, the pause), the fence (the file sourced and
+`if-shell`, from 3.2), `askLine`'s commands reversed (every scenario
+that attaches, by TK10.5's check), copy mode's question sent without
+being waited for (the copy-mode scenario, every era), and the drag's
+line waiting for one reply.
+
+**Not covered yet**: menus and popups with a pane vanishing, resizes,
+the poll's timer on tmux before 3.2, and each version's own answers (the
+fake answers as 3.8).

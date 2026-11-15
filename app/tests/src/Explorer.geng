@@ -531,9 +531,28 @@ replay s choices =
                 went
 
 
-{-| The choices open at a node. -}
+{-| The choices open at a node, but for orders that cannot differ: with
+no world event left, tmux running its next line commutes with puritty's
+reading and the user's acting (it takes the head of the lines, which they
+only add to), so it is taken at once; with no user action left, puritty's
+reading the next thing tmux wrote commutes with tmux's running and the
+world's events (it takes the head of what was written, which they only
+add to), so it is taken at once (TK10.7). Every order left out reaches a
+state one taken reaches. -}
 open : Node -> Array Choice
 open node =
+    if Array.isEmpty node.events && not (Array.isEmpty node.inbox) then
+        [ Run ]
+
+    else if Array.isEmpty node.actions && not (Array.isEmpty node.outbox) then
+        [ Read ]
+
+    else
+        every node
+
+
+every : Node -> Array Choice
+every node =
     (if Array.isEmpty node.inbox then
         []
 
@@ -790,6 +809,8 @@ pointed held e acc =
 scenarios : String -> Array Scenario
 scenarios rules =
     windowScenarios rules
+        ++ keyScenarios rules
+        ++ pauseScenarios rules
         ++ [ { name = "attaching to two panes, one of whose programs exits"
              , world = twoPanes rules
              , events = [ paneExits 1 ]
@@ -850,6 +871,74 @@ windowScenarios rules =
       , settled = True
       }
     ]
+
+
+{-| `prefix` then a key, as the user types them. -}
+prefixThen : String -> Action
+prefixThen letter =
+    { name = "the user types the prefix, then " ++ letter
+    , act = pressAll [ { mods = 2, key = "b" }, { mods = 0, key = letter } ]
+    }
+
+
+{-| A key with a letter on it typed. -}
+typesKey : String -> Action
+typesKey letter =
+    { name = "the user types " ++ letter, act = pressAll [ { mods = 0, key = letter } ] }
+
+
+{-| A pane put in copy mode by tmux (`prefix [`, or another client). -}
+copyEntered : Int -> Event
+copyEntered id =
+    { name = "pane %" ++ String.fromInt id ++ " goes into copy mode", happen = FakeTmux.enterCopy id }
+
+
+{-| Keys typed while replies are pending (TK10.7). -}
+keyScenarios : String -> Array Scenario
+keyScenarios rules =
+    [ { name = "the tree opened while attaching"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ prefixThen "w" ]
+      , settled = False
+      }
+    , { name = "the window menu opened while attaching"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ prefixThen "<" ]
+      , settled = False
+      }
+    , { name = "the tree opened as a pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 1 ]
+      , actions = [ prefixThen "w" ]
+      , settled = True
+      }
+    , { name = "copy mode's keys while its pane exits"
+      , world = twoPanes rules
+      , events = [ copyEntered 0, paneExits 0 ]
+      , actions = [ typesKey "k", typesKey "k" ]
+      , settled = True
+      }
+    ]
+
+
+{-| A pane paused (`%pause`, from 3.2: puritty asks `pause-after`) and
+continued on one line with its state and captures, while it exits
+(TK10.7). -}
+pauseScenarios : String -> Array Scenario
+pauseScenarios rules =
+    if rules == "2.7" then
+        []
+
+    else
+        [ { name = "a pane paused as it exits"
+          , world = twoPanes rules
+          , events = [ { name = "tmux pauses pane %1", happen = \w -> { world = w, notices = [ "%pause %1" ] } }, paneExits 1 ]
+          , actions = []
+          , settled = True
+          }
+        ]
 
 
 {-| Each scenario on each era's rules that broke something: what, and the
