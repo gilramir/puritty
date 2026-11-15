@@ -29,10 +29,12 @@ tone() {
 # runs at 1.020484 MHz on average: 934.5 Hz for 0.1027 s after 10.9 ms.
 tone apple2 0.1136 "if(lt(t,0.010894),0,0.3*$(square "(t-0.010894)*934.5"))"
 
-# IBM PC (BIOS BEEP, the 1985 AT's WRITE_TTY): timer 2, divisor 1331 of
-# 1,193,182 Hz, square: 896.5 Hz, for 31/64 s. The XT's, a CPU loop, is
-# about as long (0.47 s at 4.77 MHz).
-tone ibm-pc 0.484375 "0.3*$(square "t*896.46")"
+# IBM PC (BIOS BEEP from WRITE_TTY, the PC AT's first BIOS, 1984-01-10):
+# timer 2, divisor 1331 of 1,193,182 Hz, square: 896.5 Hz, for BL=2 counts
+# of 65,536 turns of LOOP, 10 clocks each on the 6 MHz 286 (8+m, m=2):
+# 0.218 s. The PC's and XT's, the same loop at 4.77 MHz, and the later
+# BIOSes' 31/64 s ring for about half a second (docs/sounds.md SN8).
+tone ibm-pc 0.218453 "0.3*$(square "t*896.46")"
 
 # Atari ST (TOS's bell table, as EmuTOS has it): the YM2149's channel A at
 # period 52 of its 2 MHz (2,404 Hz), its volume the envelope, shape 9 (one

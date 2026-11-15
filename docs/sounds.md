@@ -34,7 +34,7 @@ numbers are SN*n*.
 | name | machine | the sound | from |
 |---|---|---|---|
 | `apple2` | Apple II | square wave, **934.5 Hz for 0.103 s**, after 10.9 ms of silence | the Monitor ROM's `BELL1` ($FBDD) |
-| `ibm-pc` | IBM PC XT, AT | square wave, **896 Hz for 0.48 s** | the BIOS's `BEEP` and `WRITE_TTY` |
+| `ibm-pc` | IBM PC AT (1984 BIOS) | square wave, **896 Hz for 0.218 s** (0.48 s until SN8) | the BIOS's `BEEP` and `WRITE_TTY` |
 | `atari-st` | Atari ST | square wave, **2,404 Hz**, falling to silence over **0.52 s** (the "ping") | TOS's bell table, as EmuTOS has it |
 | `bbc-micro` | BBC Micro | square wave, **516 Hz for 0.3 s** | the MOS's bell settings, OSBYTE &D3–&D6 |
 | `x11` | an X server | square wave, **400 Hz for 0.1 s** | X's default bell (`xset q`: pitch 400, duration 100) |
@@ -55,7 +55,8 @@ How each was worked out:
   count: the XT (1982-11-08) `BL=2`, each 65,536 turns of `LOOP`, about
   0.23 s at 4.77 MHz, so about 0.47 s; the AT of 1985-11-15 "31/64
   SECOND", 0.484 s, timed rather than counted (its 1984 BIOS, the XT's
-  loop on a 6 MHz 286, gave about 0.17 s). Made at 0.484 s. Source: IBM's
+  loop on a 6 MHz 286, gave about 0.17 s). Made at 0.484 s; since SN8,
+  the 1984 AT's, 0.218 s. Source: IBM's
   BIOS listings, as PCjs keeps them.
 - **Atari ST.** The bell is a `Dosound` table: channel A's period 0x034
   (52) of the YM2149's 2 MHz clock is 2,403.8 Hz; its volume is the
@@ -95,7 +96,7 @@ script's expressions are known to say what SN2.1 says:
 | file | length | sound | frequency | peak by quarter |
 |---|---|---|---|---|
 | `apple2.wav` | 0.1136 s | 10.9 ms to 113.6 ms | 934.5 Hz | 9830, 9830, 9830, 9830 |
-| `ibm-pc.wav` | 0.4844 s | 0 to 484.4 ms | 896.5 Hz | 9830 ×4 |
+| `ibm-pc.wav` | 0.2185 s | 0 to 218.5 ms | 896.5 Hz | 9830 ×4 |
 | `atari-st.wav` | 0.5243 s | 0 to 524.3 ms | 2403.9 Hz | 9830, 2935, 737, 185 |
 | `bbc-micro.wav` | 0.3000 s | 0 to 300.0 ms | 515.7 Hz | 9830 ×4 |
 | `x11.wav` | 0.1000 s | 0 to 100.0 ms | 400.0 Hz | 9830 ×4 |
@@ -298,3 +299,36 @@ Enter: two sounds, 942 Hz for 102 ms (Apple II) and 897 Hz for 483 ms (IBM
 PC), the first Down being `system`, which Xvfb does not sound; the file then
 says `bell = "ibm-pc"`. Key sounds on and off: one sound, 148 ms, the key
 sound.
+
+## SN8 · The IBM PC bell, shortened (2026-11-14)
+
+Gilbert, 2026-11-14: the IBM PC beep is too long; it may be the power-on
+test's beep rather than Ctrl-G's.
+
+**It was Ctrl-G's.** Read again in IBM's BIOS listings (the reconstructed
+sources at github.com/Gawlas/IBM-PC-BIOS, from the Technical References),
+every `WRITE_TTY` rings BEL through `BEEP` at divisor 1,331 (896.5 Hz):
+
+| BIOS | Ctrl-G's count | how long |
+|---|---|---|
+| PC, 1981-04-24 to 1982-10-27 | `BL=2`, each 65,536 turns of `LOOP` | about 0.47 s at 4.77 MHz (17 clocks a turn) |
+| XT, 1982-11-08 | the same | the same |
+| **AT, 1984-01-10** | **the same loop, on a 6 MHz 286** | **0.218 s** (8+m clocks a turn, m=2) |
+| AT 1985-06-10 and later, XT 1986, XT 286 | `BL=31`, timed by the clock | 31/64 s, 0.484 s |
+
+The power-on test's beeps are separate calls: on the first PC and AT a
+short beep is `BL=1` (half of Ctrl-G's) and a long one `BL=6`; on the later
+AT a short beep is 9/32 s at 987 Hz and a long one 1¾ s at 932 Hz. So IBM
+meant about half a second, and later BIOSes timed the counted loop so it
+stayed that long on faster processors. Only the first AT BIOS rang it
+short, because the 286 ran the loop faster.
+
+**Made:** `ibm-pc` is now that AT's: 896.5 Hz for 0.218 s, computed from the
+286's documented clocks, which do not count the AT's one memory wait state,
+so the AT itself may have rung a little longer. Measured back as SN2.3:
+0.2185 s, 896.5 Hz, peak 9830. The other four files came out the same
+byte for byte. SN2.1's note on the 1984 BIOS (about 0.17 s) took
+`LOOP` as 8 clocks; the table above uses 8+m.
+
+**Kept (Gilbert, 2026-11-14):** the 0.218 s bell stays; 0.484 s was too
+long to hear as a terminal's bell, whatever IBM meant.
