@@ -758,3 +758,22 @@ lines and a BEL, closed with Ctrl+Shift+W and reopened with
 Ctrl+Alt+Shift+T: one bell in the log, the screen empty with a prompt, and
 Shift+PgUp showing the command, both lines, the old prompt and the dim
 line under them.
+
+## TB18 · The window's close question: in the log, and a second click closes (2026-11-15)
+
+Gilbert closed a window attached to tmux by its close button and saw it
+go on showing tmux's panes, as if the click were lost; his log had all five
+clicks (`window close asked`) and the window ending a minute and a half
+later, when he answered the question, but not when the question showed,
+since puritty does not log what it draws. Now:
+
+- the log says `close  question shown: …` (the busy tabs, as the box
+  names them) when the question goes up, and `close  question answered:
+  close` or `stay` when it goes;
+- the close button again while the window's question is up is a yes
+  (`close  asked again while the question was up: closed`), as a window
+  manager's second request to close usually means; the hint says so
+  ("Enter, or close it again: close it").
+
+Not done: dimming the window behind the question, which would draw every
+cell again while it is up, a burst of traffic over remote X (Gilbert).

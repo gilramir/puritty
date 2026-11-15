@@ -7237,7 +7237,7 @@ closeBox c =
         , field = Nothing
         , swatches = []
         , buttons = closeButtons
-        , hint = "Enter: close it    Esc: keep it"
+        , hint = "Enter, or close it again: close it    Esc: keep it"
         }
 
     else
@@ -7284,7 +7284,22 @@ closePress p c m =
 {-| The close question answered: yes closes the window, or the tab asked
 about if it is still the one shown; no keeps them. -}
 closeAnswer : Bool -> { id : Int, why : String, window : Bool } -> (taken m : Model) -> Task Error Model
-closeAnswer yes c m =
+closeAnswer yes c m0 =
+    let
+        -- the answer in the log, which says when the question went
+        -- (docs/tabs.md TB18)
+        m =
+            logLine "close"
+                ("question answered: "
+                    ++ (if yes then
+                            "close"
+
+                        else
+                            "stay"
+                       )
+                )
+                m0
+    in
     if yes && c.window then
         Task.succeed { m | closing = Nothing, closed = True, byButton = True }
 
@@ -7323,6 +7338,11 @@ askCloseWindow m =
     if not m.config.tabsAskBeforeClosing then
         Task.succeed { m | closed = True, byButton = True }
 
+    else if Maybe.map .window m.closing == Just True then
+        -- the close button again while its question is up: the answer is
+        -- yes (TB18)
+        Task.succeed (logLine "close" "asked again while the question was up: closed" { m | closing = Nothing, closed = True, byButton = True })
+
     else
         let
             shown =
@@ -7351,7 +7371,9 @@ askCloseWindow m =
                                             []
                                        )
                         in
-                        { m | closing = Just { id = -1, why = String.join "\n" shownLines, window = True }, urgent = True }
+                        logLine "close"
+                            ("question shown: " ++ String.join "; " shownLines)
+                            { m | closing = Just { id = -1, why = String.join "\n" shownLines, window = True }, urgent = True }
                 )
 
 
