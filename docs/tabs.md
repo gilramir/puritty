@@ -734,3 +734,27 @@ fix, Ctrl+Shift+T in a removed directory put up the box with the spawn's
 reason, letters typed then did not reach the shell, and Enter took the
 box away; after it, the same keys open a second tab. `geng checks`: 0 new.
 Not yet a harness case.
+
+## TB17 · A reopened tab: no old bell, and its screen kept above (2026-11-14)
+
+Gilbert, testing on Windows: a reopened tab showed its old content, rang
+the bell its old program had rung, and then the screen was cleared.
+
+- **The bell.** The window rings when every terminal's bells add up to
+  more than it has heard; a closed tab's leave the total, which is taken as
+  it is, and a reopened tab brought them back, so the total rose. Its bells
+  are now counted as heard when it reopens (`reopenTab`).
+- **The cleared screen.** A new PowerShell under ConPTY clears the screen
+  it starts on, which took the old screen with it; bash leaves it. Now the
+  old screen scrolls wholly into the scrollback after the "(closed, and
+  opened again)" line, so the new program starts on an empty screen and
+  the old one is a Shift+PgUp away, on Windows as on Linux.
+- **The line itself** overwrote the old program's second row: the soft
+  reset before it left the cursor at the top. It is now written after the
+  row the cursor was on.
+
+**Checked** (Xvfb, `bell = "apple2"`, the log on): a tab printing two
+lines and a BEL, closed with Ctrl+Shift+W and reopened with
+Ctrl+Alt+Shift+T: one bell in the log, the screen empty with a prompt, and
+Shift+PgUp showing the command, both lines, the old prompt and the dim
+line under them.

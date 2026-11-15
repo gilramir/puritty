@@ -6117,7 +6117,7 @@ reopened k id remote host m =
     { k
         | info = { info | id = id, bell = False, activity = False, bells = bells }
         , remote = remote
-        , term = Vt.feed (Bytes.fromString reopenedNote) k.term
+        , term = Vt.feed (Bytes.fromString (reopenedNote (Vt.cursorOf k.term).y k.term.rows)) k.term
         , charset =
             if host == Nothing then
                 m.starter.charset
@@ -6149,10 +6149,25 @@ withNotices problems t =
         { t | term = Vt.feed (Bytes.fromString (String.join "" (Array.map notice problems))) t.term }
 
 
-reopenedNote : String
-reopenedNote =
+{-| What a reopened tab's terminal is told: its old program's modes off,
+the dim line, and then the whole screen scrolled up into the scrollback, so
+that the new program starts on an empty screen and what was there is kept
+above it (TB17): a new PowerShell under ConPTY clears the screen it starts
+on, which took the old screen with it. -}
+reopenedNote : Int -> Int -> String
+reopenedNote cursorRow rows =
     "\u{001B}[?1049l\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l\u{001B}[?1015l\u{001B}[?1004l\u{001B}[?2004l\u{001B}[!p\u{001B}[0m"
+        -- back to the row the cursor was on, which the soft reset left,
+        -- so that the line comes after what the old program wrote
+        ++ "\u{001B}["
+        ++ String.fromInt (cursorRow + 1)
+        ++ ";1H"
         ++ "\r\n\u{001B}[2m(closed, and opened again)\u{001B}[0m\r\n"
+        ++ "\u{001B}["
+        ++ String.fromInt rows
+        ++ ";1H"
+        ++ String.repeat rows "\n"
+        ++ "\u{001B}[H"
 
 
 -- CLOSED TABS (docs/tabs.md TB11)
@@ -6304,7 +6319,9 @@ reopenTab m =
                         directory =
                             Maybe.map Just c.directory
                     in
-                    openTabWith { directory = directory, name = name, color = color, kept = Just c.tab } { m | closedTabs = out.builder }
+                    -- its bells were rung when it was open: counted as heard,
+                    -- so that it does not ring them again (TB17)
+                    openTabWith { directory = directory, name = name, color = color, kept = Just c.tab } { m | closedTabs = out.builder, bellsHeard = m.bellsHeard + c.tab.term.bells }
 
                 Nothing ->
                     Task.succeed { m | closedTabs = out.builder }
