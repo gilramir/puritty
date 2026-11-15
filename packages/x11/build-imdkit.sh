@@ -3,8 +3,8 @@
 # vendor/xcb-imdkit/puritty: a shared library with an rpath, its headers,
 # and puritty-xcb-imdkit.pc, which packages/x11 links by. The checkout, made
 # here when it is not there, is upstream's 621048bd50e8f3cbf52335f824f7b4d708a21b14.
-# Each patch in patches/xcb-imdkit-*.patch is applied once; the library is
-# built again when the set changes. Run from puritty's devbox (libxcb,
+# Each patch in patches/xcb-imdkit-*.patch is applied, in order, to the pinned
+# checkout; the library is built again when the set changes. Run from puritty's devbox (libxcb,
 # xcb-util).
 set -e
 cd "$(dirname "$0")"
@@ -21,8 +21,12 @@ if [ ! -d "$X/.git" ]; then
   git -C "$X" fetch -q https://github.com/fcitx/xcb-imdkit 621048bd50e8f3cbf52335f824f7b4d708a21b14
   git -C "$X" checkout -q -f FETCH_HEAD
 fi
+# The checkout back at the pinned commit, then every patch in order: a
+# patch that changes lines another touches cannot be told applied or not by
+# itself, so none is asked
+git -C "$X" checkout -q -f -- .
 for p in patches/xcb-imdkit-*.patch; do
-  git -C "$X" apply --reverse --check "$(realpath "$p")" 2>/dev/null || git -C "$X" apply "$(realpath "$p")"
+  git -C "$X" apply "$(realpath "$p")"
 done
 want=$(cat patches/xcb-imdkit-*.patch | sha256sum | cut -d' ' -f1)
 [ -f "$O/lib/libpuritty-xcb-imdkit.so" ] && [ "$(cat "$O/.patches" 2>/dev/null)" = "$want" ] && exit 0

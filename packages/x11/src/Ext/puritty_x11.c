@@ -73,6 +73,7 @@
 #include <hb-ft.h>
 #include <hb.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -529,7 +530,13 @@ static int right_bit(xkb_keysym_t sym) {
 
 /* A key press or release, read with the modifiers and group of its own
  * event: the core state field, its group in bits 13 and 14. */
-static void key_event(int press, uint8_t keycode, uint16_t state) {
+static void record_text(uint8_t kind, const char *s, size_t n);
+
+/* A key: its record, and for the diagnostic log a line saying when X
+ * stamped it (`time`, ms), how it came (`via`: 0 from X, 1 handed back by
+ * the input method) and whether it was a press, a repeat or a release; not
+ * which key, so that a log holds no typing (DG7). */
+static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time, int via) {
     if (!keymap) return;
     struct xkb_state *st = xkb_state_new(keymap);
     if (!st) return;
@@ -537,6 +544,13 @@ static void key_event(int press, uint8_t keycode, uint16_t state) {
     xkb_keysym_t sym = xkb_state_key_get_one_sym(st, keycode);
     int bit = 1 << (keycode & 7), down = held[keycode >> 3] & bit;
     int action = press ? (down ? 2 : 1) : 0;
+    {
+        char line[96];
+        int k = snprintf(line, sizeof line, "%s, X time %u, %s",
+                         action == 1 ? "key press" : action == 2 ? "key press while held (a repeat)" : "key release",
+                         (unsigned) time, via ? "from the input method" : "from X");
+        if (k > 0) record_text(13, line, (size_t) (k < (int) sizeof line ? k : (int) sizeof line - 1));
+    }
     if (press) held[keycode >> 3] |= (uint8_t) bit;
     else held[keycode >> 3] &= (uint8_t) ~bit;
     int mods = ghostty_mods(st, 0);
@@ -633,7 +647,7 @@ static xcb_xic_t xic;
 static int have_xic;
 static int spot_x = -1, spot_y = -1;
 
-static void key_event(int press, uint8_t keycode, uint16_t state);
+static void key_event(int press, uint8_t keycode, uint16_t state, uint32_t time, int via);
 static void pointer_event(int action, int xbutton, int x, int y, uint16_t state);
 static void selection_atoms(void);
 static void selection_request(xcb_selection_request_event_t *q);
@@ -686,7 +700,7 @@ static char *xim_utf8(const char *s, size_t n, size_t *out) {
 
 static void xim_forward(xcb_xim_t *m, xcb_xic_t c, xcb_key_press_event_t *e, void *u) {
     (void) m; (void) c; (void) u;
-    key_event((e->response_type & 0x7f) == XCB_KEY_PRESS, e->detail, e->state);
+    key_event((e->response_type & 0x7f) == XCB_KEY_PRESS, e->detail, e->state, e->time, 1);
 }
 
 static void xim_commit(xcb_xim_t *m, xcb_xic_t c, uint32_t flag, char *str, uint32_t len, uint32_t *syms, size_t nsyms,
@@ -748,14 +762,28 @@ static void xim_opened(xcb_xim_t *m, void *u) {
     free(pre.data);
 }
 
-static void xim_quiet(const char *fmt, ...) { (void) fmt; }
+static void record_text(uint8_t kind, const char *s, size_t n);
+
+/* xcb-imdkit's own log, every XIM message in and out (DG8), as the
+ * diagnostic log's lines */
+static void xim_log(const char *fmt, ...) {
+    char line[160];
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(line, sizeof line, fmt, args);
+    va_end(args);
+    if (n <= 0) return;
+    if (n >= (int) sizeof line) n = (int) sizeof line - 1;
+    while (n > 0 && line[n - 1] == '\n') n--;
+    record_text(13, line, (size_t) n);
+}
 
 static void xim_setup(int screen_number) {
     if (getenv("PURITTY_NO_XIM")) return;
     xcb_compound_text_init();
     xim = xcb_xim_create(conn, screen_number, NULL);
     if (!xim) return;
-    xcb_xim_set_log_handler(xim, xim_quiet);
+    xcb_xim_set_log_handler(xim, xim_log);
     xcb_xim_set_use_utf8_string(xim, true);
     static const xcb_xim_im_callback cb = {
         .forward_event = xim_forward, .commit_string = xim_commit, .preedit_draw = xim_draw,
@@ -781,8 +809,16 @@ static void drain(void) {
         else if (type == XCB_KEY_PRESS || type == XCB_KEY_RELEASE) {
             xcb_key_press_event_t *k = (xcb_key_press_event_t *) e;
             last_time = k->time;
-            if (have_xic) xcb_xim_forward_event(xim, xic, k);
-            else key_event(type == XCB_KEY_PRESS, k->detail, k->state);
+            if (have_xic) {
+                /* the other half of DG7's key lines: when a key went to
+                 * the input method, to set against when it came back */
+                char line[80];
+                int n = snprintf(line, sizeof line, "key %s handed to the input method, X time %u",
+                                 type == XCB_KEY_PRESS ? "press" : "release", (unsigned) k->time);
+                if (n > 0) record_text(13, line, (size_t) (n < (int) sizeof line ? n : (int) sizeof line - 1));
+                xcb_xim_forward_event(xim, xic, k);
+            }
+            else key_event(type == XCB_KEY_PRESS, k->detail, k->state, k->time, 0);
         }
         else if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
             xcb_button_press_event_t *b = (xcb_button_press_event_t *) e;

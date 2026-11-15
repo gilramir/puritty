@@ -182,3 +182,71 @@ its shell printing DA1, mode 2026 and 7727 set, XTWINOPS 18, OSC 11 ?,
 XTVERSION and XTGETTCAP: the lines above and `ignore DEC mode 7727 set`
 (2026 is the terminal's, so not ignored), and no other line but the start
 and end.
+
+## DG7 · Each key's X time and route; the pointer logged once (2026-11-14)
+
+Gilbert on gmktec7, under `tmux -CC` with key sounds on: a `q` to `more`
+seemed to do nothing the first time. The log showed two `key text` lines
+2 to 6 ms apart for each press, the first `q` quitting `more` and the
+second reaching the shell; with key sounds off, one. A `q` sent by
+`xdotool` on the same machine, with key sounds on, maximized or not, was
+one event every time, so the log needed to say where a key came from.
+
+- **Each key** now has a `window` line before its `key` line: a press, a
+  press while it was held (which puritty takes as a repeat), or a release;
+  the time X stamped it with; and whether it came from X or was handed
+  back by the input method (ibus). Not which key: the log still holds no
+  typing. One press delivered twice has two lines with one X time; two
+  presses have two times.
+- **The pointer** was logged twice for each press and release: a pointer
+  that moved is noted for its shape and its event put back to be taken
+  again, which `handle` logged a second time. It is taken by `handleOne`
+  directly now, once.
+
+Checked under Xvfb: a key's press and release lines (X time 0 there, as
+`xdotool --window` sends synthetic events), and one line for each mouse
+press and release.
+
+## DG8 · The XIM trace, and keys held in xcb-imdkit's queue (2026-11-14)
+
+With DG7's lines the doubled `q` turned out to be two presses: under `tmux
+-CC`, a `q` typed just after `more` drew a page reached puritty late, once
+by 1.5 s and once by 70 s, and the second `q` Gilbert pressed came with
+it. Both went to ibus and did not come back. While a key was held,
+puritty, ibus-daemon and ibus-x11 were all idle and no socket had anything
+queued, so a further trace was added.
+
+**The trace.** puritty's xcb-imdkit logs every XIM message it sends and
+receives, with its major code, its length, a forward's synchronous flag,
+the length of its request queue and the request it is waiting for
+(`packages/x11/patches/xcb-imdkit-0003-trace.patch`), and puritty passes
+that log to the diagnostic log (`xim_log`, where it had been dropped), next
+to a line for each key handed to the input method.
+
+**What it showed.** After the Enter that started `more`, puritty sent a
+spot update (`XIM_SET_IC_VALUES`, 54) after each frame of the page; ibus
+answered each within a millisecond (55). But xcb-imdkit waits for one
+reply at a time, queues the rest, keys included, and sends what is queued
+only when a new request is added, never when a reply arrives. The queue
+reached four; the Enter's release and the `q` were handed over and queued,
+and each later request sent one stale spot update instead. A key went out
+only when enough later requests had pushed it to the front.
+
+**Proved apart from puritty** by `harness/xim-probe` (`build.sh`): a small
+client that forwards a key, then sends two spot updates and a key, against
+the running input method. Against ibus on gmktec7, the key never came back
+with Ubuntu's `libxcb-imdkit1` 1.0.6, with upstream's `621048bd`, and with
+puritty's copy; with the fix, every key came back, three runs of three.
+Reported upstream as `fcitx/xcb-imdkit#21`
+(`docs/upstream/xcb-imdkit-queue-stalls-after-reply.md`).
+
+**The fix** (`xcb-imdkit-0004-send-queue-after-reply.patch`):
+`xcb_xim_filter_event` sends what is queued once it has handled a message,
+as adding a request does. `packages/x11/build-imdkit.sh` now applies every
+patch in order to the pinned checkout, since the trace and the fix touch
+lines that patch 0001 also touches. Gilbert, on gmktec7 with key sounds on:
+the hang does not happen with it.
+
+**Why key sounds seemed to matter:** they did not cause it. Most likely
+they changed when frames were drawn, and so how many spot updates were
+queued at once.

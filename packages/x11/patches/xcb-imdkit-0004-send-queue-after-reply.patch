@@ -1,0 +1,24 @@
+--- a/src/imclient.c
++++ b/src/imclient.c
+@@ -841,6 +841,8 @@
+     return false;
+ }
+ 
++void _xcb_xim_process_queue(xcb_xim_t *im);
++
+ bool xcb_xim_filter_event(xcb_xim_t *im, xcb_generic_event_t *event) {
+     im->yield_recheck = false;
+     im->event_sequence = event->full_sequence;
+@@ -850,6 +852,12 @@
+                   _xcb_xim_filter_property_changed(im, event);
+     if (im->yield_recheck) {
+         _xcb_xim_clean_up(im);
++    } else if (result) {
++        /* puritty: a reply may have ended the request that was waiting:
++         * what was queued behind it is sent now, as adding a request sends
++         * it, or a key queued behind an answered request waits until some
++         * later request comes (puritty docs/diagnostics.md DG8) */
++        _xcb_xim_process_queue(im);
+     }
+     return result;
+ }

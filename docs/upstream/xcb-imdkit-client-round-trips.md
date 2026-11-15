@@ -1,58 +1,63 @@
-# An XIM client makes four blocking round trips for each message it sends
+# Each key forwarded by the XIM client waits for several X round trips
 
-**Repository:** `fcitx/xcb-imdkit`
+- **Repository:** `fcitx/xcb-imdkit`
+- **Version:** the latest commit, `621048bd` (2026-10-09)
+- **Input method used:** ibus 1.5.29, through XIM
+- **Attached:** `xim_roundtrips.c`, a program that measures it
 
-**Found against:** 1.0.9 and `main` at `621048bd` (2026-10-09). Found by
-puritty's phase 3 survey (`docs/phase3-input.md` §3.3). Kept for Gilbert
-to decide on; not filed.
+This is about speed, not a bug: everything works, but slowly over a
+remote display.
 
-## Summary
+## What happens
 
-Every message the client side sends that is longer than 20 bytes, which
-includes every `XIM_FORWARD_EVENT` (a key event is 44 bytes), costs four
-round trips to the X server before it is sent, each waited for inside the
-call:
+Each message the client sends that is longer than 20 bytes goes through a
+window property. Every forwarded key is one of those, since a key event is
+44 bytes. To send such a message, `_xcb_send_xim_message` in
+`src/message.c` makes four requests, and waits for an answer to each one:
 
-| request | why it waits | needed? |
+1. `InternAtom` for a new `_clientN` name, waiting for its reply;
+2. `GetProperty` on that name, waiting for its reply, which is then freed
+   without being used;
+3. `ChangeProperty`, checked with `xcb_request_check`;
+4. `SendEvent`, checked with `xcb_request_check`.
+
+On the same machine these waits are too short to notice. Over a remote
+display, such as `ssh -X`, each one costs a network round trip. Most
+terminals have a single thread, so they can't draw while they wait.
+
+## Measurements
+
+The attached program forwards 20 keys to the running input method, and
+counts the X requests and the time spent for each. It also times one plain
+round trip on the same connection, so the time can be read as a number of
+round trips. Run over `ssh -X` to a desktop with ibus, about 3 ms away:
+
+| | upstream `621048bd` | with the change below |
 |---|---|---|
-| `InternAtom` of `_clientN` | the reply's atom | no: the names rotate through a fixed set and can be interned once |
-| `GetProperty` of that atom | its reply, which is freed unread | no |
-| `ChangeProperty`, checked | `xcb_request_check` | no: the server processes a client's requests in order |
-| `SendEvent`, checked | `xcb_request_check` | no |
+| X requests to send one key | 6 | 2 |
+| time sending one key | 10.4 to 12.6 ms (3 to 3.5 round trips) | 0.005 ms (none) |
+| time receiving it back | 5.3 to 6.3 ms (1.6 to 1.8 round trips) | 3.0 ms (about 1) |
 
-A short message pays the last one. Over `ssh -X` to a display 3.3–6 ms
-away, a key event took 15.6–24.3 ms to reach the IME and come back
-(fcitx5-hangul, 20 key events); with the four removed, 3.4–14.5 ms. xtrace
-of one keystroke locally: 11 replies waited for (5 on the press, 6 on the
-release) before, 2 after.
-
-The waits are inside `xcb_xim_forward_event` and `xcb_xim_filter_event`, so
-a client with one thread, as most terminals are, stops drawing for them.
-
-## Reproduction
-
-An XIM client on a remote display, typing through fcitx5 or ibus with
-xtrace between the client and the server:
+To run it:
 
 ```
-xtrace -n -D :80 -d :79 -o trace.log -k &
-DISPLAY=:80 ./client          # any xcb-imdkit client, e.g. test/client_demo
-xdotool type gks              # on :79
-grep -c 'Reply to' trace.log
+cc -o xim-roundtrips xim_roundtrips.c $(pkg-config --cflags --libs xcb-imdkit xcb)
+XMODIFIERS=@im=ibus ./xim-roundtrips
 ```
 
-## Where
+## A possible change
 
-`src/message.c`, `_xcb_send_xim_message`: `xcb_intern_atom_reply`,
-`xcb_get_property_reply` (its result freed unread),
-`xcb_change_property_checked` + `xcb_request_check`,
-`xcb_send_event_checked` + `xcb_request_check`. `src/imclient.c`,
-`_xcb_xim_send_message`, builds a new `_client%u` name for each message.
+We changed our copy of xcb-imdkit like this, and it has worked well:
 
-## Fix
+- The `_clientN` names are interned once, all at once, at the first
+  message: one round trip in total instead of one per message.
+- The `GetProperty` is dropped, since its result is not used.
+- The property and the event are sent unchecked. The X server handles one
+  client's requests in order, so the event still arrives after the
+  property has been written.
 
-puritty carries it as `packages/x11/patches/xcb-imdkit-0001-no-round-trips.patch`:
-the client interns the whole rotation once, pipelined (one round trip at
-its first message), and sends through a variant of `_xcb_send_xim_message`
-that takes the atom and sends both requests unchecked. The server side is
-left as it is.
+One question for you: the two checks may be there on purpose, so that the
+client notices when the input method's window has gone away, for example
+after the input method restarts. If so, could they be kept for that case
+only, or done without waiting, so that a working connection doesn't pay
+for them on every key?

@@ -1,0 +1,37 @@
+--- a/src/imclient.c
++++ b/src/imclient.c
+@@ -62,6 +62,18 @@
+ }
+ 
+ bool _xcb_xim_send_message(xcb_xim_t *im, uint8_t *data, size_t length) {
++    /* puritty: every message sent, for the diagnostic log's trace (DG8):
++     * its major code, its length, and what waits in the queue */
++    {
++        size_t queued = 0;
++        list_foreach(it, &im->queue) {
++            (void)it;
++            queued++;
++        }
++        DebugLog("xim out: major %u minor %u, %zu bytes; queue %zu, waiting for %d\n",
++                 (unsigned)data[0], (unsigned)data[1], length, queued,
++                 im->current ? (int)im->current->major_code : -1);
++    }
+     uint32_t seq = im->sequence++;
+     im->sequence = (im->sequence + 1) % XCB_XIM_ATOM_ROTATION_SIZE;
+     if (!im->client_atoms_ready && !_xcb_xim_intern_client_atoms(im)) {
+@@ -598,6 +610,15 @@
+ void _xcb_xim_handle_message(xcb_xim_t *im,
+                              const xcb_im_packet_header_fr_t *hdr,
+                              uint8_t *data) {
++    /* puritty: every message received (DG8), a forward's and a sync's
++     * flag too, and what the client was waiting for */
++    DebugLog("xim in: major %u minor %u, %u bytes%s; waiting for %d\n",
++             (unsigned)hdr->major_opcode, (unsigned)hdr->minor_opcode,
++             (unsigned)XIM_MESSAGE_BYTES(hdr),
++             hdr->major_opcode == XCB_XIM_FORWARD_EVENT && XIM_MESSAGE_BYTES(hdr) >= 6
++                 ? ((data[4] | (data[5] << 8)) & XCB_XIM_SYNCHRONOUS ? ", synchronous" : ", asynchronous")
++                 : "",
++             im->current ? (int)im->current->major_code : -1);
+     switch (hdr->major_opcode) {
+     case XCB_XIM_OPEN_REPLY:
+         DebugLog("-- XIM_OPEN_REPLY\n");
