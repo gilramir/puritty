@@ -36,7 +36,8 @@ family = "Fira Code"        # DejaVu Sans Mono when left out,
                             # Cascadia Mono on Windows; a font of your
                             # own: see fonts.md
 size = 11                   # points
-language = "ko"             # which regional forms fallback fonts use
+language = "ko"             # the forms Han characters are drawn in:
+                            # "ko", "ja", "zh-cn", "zh-tw" or "zh-hk"
 ligatures = true            # the font's, as Fira Code's != and ->; the
                             # cell under the cursor is always drawn alone
 

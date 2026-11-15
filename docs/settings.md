@@ -1099,3 +1099,31 @@ Seen on a virtual display with gmktec7's 37 monospace font files and
 Courier 10 Pitch in the file (two shots, the row and the open list): a
 mark with "(can't be used here)", then "(unusable)", after the name was
 cut by the list's width, so the name stands alone, dimmed. App tests 201.
+
+## ST36 · "Fallback language" is "Han characters", with Hong Kong (2026-11-15)
+
+Gilbert found "Fallback language" confusing: it read as two things, a
+general fallback and which Han forms to use. It is one. `font.language`
+picks the fonts a missing character is borrowed from (fontconfig's
+`FC_LANG`), and is the language HarfBuzz shapes all text in, so a font
+holding several regions' Han forms (Noto Sans CJK, Sarasa) draws the
+region's in the primary font too. Its choices are the CJK languages
+alone, which differ in Han characters and the CJK punctuation around
+them (「」, ・) and little else, so both serve one question. **Decided
+(Gilbert, 2026-11-15): one setting, named for what it chooses, with Hong
+Kong added.**
+
+- Label "Han characters" (한자); the description says Han characters are
+  written differently in Korea, Japan, mainland China, Taiwan and Hong
+  Kong, and are drawn, with the punctuation around them, in the chosen
+  region's forms whichever font they come from.
+- `zh-hk` is a choice; both platforms' locales already gave it
+  (`zh_HK`, `zh-Hant-HK`), and Windows' fallback list knows it.
+- The choices are shown by name (`Schema.choiceLabel`, Korean in Words as
+  `choice.font.language.*`): Korean, Japanese, Chinese (mainland),
+  Chinese (Taiwan), Chinese (Hong Kong). "Traditional Chinese (Hong
+  Kong)" ran past the field and the list, seen on a virtual display, so
+  they are named by region, as the description is. The file keeps the
+  codes; the key is still `font.language`.
+
+App tests 202.

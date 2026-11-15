@@ -148,7 +148,30 @@ decoded text =
 schema : U.Suite
 schema =
     run "Schema"
-        [ { name = "a color scheme sets the foreground, the background and the 16 (ST29)"
+        [ { name = "the Han characters' regions are shown by name, Hong Kong among them, and the file keeps the code (ST36)"
+          , test =
+                \_ ->
+                    let
+                        codes =
+                            [ "ko", "ja", "zh-cn", "zh-tw", "zh-hk" ]
+                    in
+                    Expect.equal
+                        { english = [ "Korean", "Japanese", "Chinese (mainland)", "Chinese (Taiwan)", "Chinese (Hong Kong)" ]
+                        , korean = [ "한국어", "일본어", "중국어 (본토)", "중국어 (대만)", "중국어 (홍콩)" ]
+                        , kept = Just "zh-hk"
+                        }
+                        { english =
+                            when Schema.find [ "font", "language" ] is
+                                Just s ->
+                                    Array.map (Schema.choiceLabel s) codes
+
+                                Nothing ->
+                                    []
+                        , korean = Array.map (\c -> Words.lookup Words.Korean ("choice.font.language." ++ c) c) codes
+                        , kept = (decoded "[font]\nlanguage = \"zh-hk\"\n").language
+                        }
+          }
+        , { name = "a color scheme sets the foreground, the background and the 16 (ST29)"
           , test =
                 \_ ->
                     Expect.equal { fg = 0xBBBBBB, bg = 0, red = Just 0xBB0000, n = 16 }

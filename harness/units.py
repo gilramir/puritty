@@ -99,8 +99,9 @@ SUITES = [
         # each tmux; 197 since TK8: copy mode's cursor where tmux cannot
         # say, on each; 199 since TK10: the fake's lines held to every
         # dumped tmux, and the explorer (check 3); 201 since ST35: a font
-        # the file names that cannot be used, said and kept in the list
-        201,
+        # the file names that cannot be used, said and kept in the list;
+        # 202 since ST36: the Han characters' regions named
+        202,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
