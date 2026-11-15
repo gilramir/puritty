@@ -63,6 +63,21 @@ STEPS = [
     ("the buffer deleted", ["delete-buffer", "-b", "one"]),
     ("the window's layout changed", ["select-layout", "-t", ":0", "even-horizontal"]),
     ("a window swapped to another index", ["move-window", "-s", ":0", "-t", ":5"]),
+    # what changes the shown window's panes or layout, each told or not
+    ("the shown window split twice more", ["split-window", "-d", "-t", ":5"]),
+    ("and again", ["split-window", "-d", "-h", "-t", ":5"]),
+    ("its panes rotated", ["rotate-window", "-t", ":5"]),
+    ("its panes rotated back", ["rotate-window", "-D", "-t", ":5"]),
+    ("two panes swapped", ["swap-pane", "-D", "-t", ":5"]),
+    ("a pane zoomed", ["resize-pane", "-Z", "-t", ":5"]),
+    ("unzoomed", ["resize-pane", "-Z", "-t", ":5"]),
+    ("a pane resized", ["resize-pane", "-t", ":5", "-R", "3"]),
+    ("the panes laid out tiled", ["select-layout", "-t", ":5", "tiled"]),
+    ("a pane respawned", ["respawn-pane", "-k", "-t", ":5.1"]),
+    ("a pane broken out to a window", ["break-pane", "-d", "-n", "broke", "-s", ":5.1"]),
+    ("a pane joined back", ["join-pane", "-d", "-s", ":broke", "-t", ":5"]),
+    ("a window made, then two windows swapped", ["new-window", "-d", "-n", "swap"]),
+    ("swapped", ["swap-window", "-s", ":5", "-t", ":swap"]),
     ("the server killed", ["kill-server"]),
 ]
 

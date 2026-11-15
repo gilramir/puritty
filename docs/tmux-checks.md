@@ -638,3 +638,43 @@ default, `--all` every release; about a minute a version. It needs
 `app/puritty-noble` (`app/distro/build.sh noble`). It is not in the unit
 gate, which runs on Windows too; it is run before a release
 (docs/releasing.md).
+
+### TK12.1 · puritty's own side, and two of tmux's silences (2026-11-15)
+
+The puppet grew a second half, puritty's own side, 29 steps more:
+puritty's window resized smaller and larger; copy mode entered by the
+puppet, moved and left by keys typed into puritty (`xdotool`), and by
+`prefix [`; a window made (`prefix c`), split (`prefix "`, `%`), the other
+pane made active (`prefix o`), the window renamed at puritty's prompt
+(`prefix ,`), a pane killed by `prefix x` confirmed with `y` and from the
+pane menu (`prefix >`, `X`), the window killed by `prefix &`; the next and
+previous window; zoom and back (`prefix z`); panes swapped (`prefix {`),
+rotated (`prefix C-o`), laid out anew (`prefix Space`), one resized
+(`prefix C-Right`) and one broken out to a window (`prefix !`); another
+window chosen in the tree (`prefix w`, Down, Enter); a window made and the
+shown one killed by commands typed at puritty's prompt (`prefix :`). The
+`tmux=` line gained the window's size, each pane's size and the panes in a
+mode, held to `window_width`/`height`, `pane_width`/`height` and
+`pane_mode` (a zoomed window as its active pane alone, as it shows).
+
+**Found**, on every tmux: `rotate-window` moves the panes and tells a
+control client only `%window-pane-changed`, so puritty kept their old
+places. Recorded (`dump-notices.py` gained the steps that move panes: two
+more splits, rotate both ways, swap, zoom and back, a resize, tiled,
+respawn, break, join, swap-window): `rotate-window` tells no layout on
+any tmux, and `swap-pane` tells nothing at all before 3.0. A report is
+written, not filed (`docs/upstream/tmux-rotate-window-tells-no-layout.md`).
+
+**Fixed** (TM75): puritty asks the window again after each of tmux's
+bindings runs and after the user's own commands. Asked right after the key
+it failed on 3.4: with `send-keys -K` tmux runs the binding's command after
+puritty's next line, so the window was told before it changed; it is now
+asked when the binding's block comes (flags 0), and right after the key
+only before 3.4, where puritty sends the binding's command itself. Not in
+copy mode or the tree, whose every key is a binding.
+
+The 48 checks pass on every release from 2.7 to 3.8; with the fix taken
+out the rotate step fails on 2.7, 3.4 and 3.8. On 3.7 `prefix !` ended
+tmux's server: 3.7's own bug, `break-pane` with no name, fixed in 3.7a
+(TV6); the harness leaves that step out on 3.7 (`SKIP`), saying so, and 3.7
+passes the other 47.

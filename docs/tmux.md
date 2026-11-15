@@ -3264,3 +3264,15 @@ puritty now asks the tabs again for an `%unlinked-window-close` of a window
 that is one of its tabs, and renames a tab for `%unlinked-window-renamed`.
 Its diagnostic log has a `tmux=` line, what it shows of tmux (tabs, the
 window, its panes), each time that changes.
+
+
+## TM75 · The window asked again after tmux's bindings and the user's commands (2026-11-15)
+
+tmux does not tell a control client every change to a window's panes:
+`rotate-window` says only which pane is active, on every tmux, and
+`swap-pane` says nothing before 3.0 (docs/tmux-checks.md TK12.1). puritty
+now asks the window (`windowQuery`) after each binding of tmux's runs (on
+3.4 and later when the binding's block arrives, since `send-keys -K` runs
+it after the next line; before 3.4 right after it sends the binding's
+command) and after the commands the user runs at the prompt or from a
+menu; not for keys in copy mode or the tree.

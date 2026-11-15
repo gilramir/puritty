@@ -135,13 +135,17 @@ measured.
   outside a buffer's context on 3.2. RHEL9 and Ubuntu 22.04 ship 3.2a.
 - **2.9** ends the control client at `select-pane -t %0` after a split
   and a resize; 2.9a does not. No target ships 2.9.
+- **3.7 ends the server** on `break-pane` with no name, as `prefix !`
+  gives it (3.7a's CHANGES: "Fix crash in break-pane when no name is
+  provided"); found by the puppet (`docs/tmux-checks.md` TK12.1), which
+  leaves that step out on 3.7. No target ships 3.7.
 - **3.3 and 3.3a end the server** on `kill-pane -t` with its argument
   missing: they take it as `kill-pane`, which kills the session's only
   pane (every other tmux refuses the line, `-t expects an argument`;
   `docs/tmux-checks.md` TK10). puritty always gives `-t` a pane. Debian
   12 ships 3.3a.
 
-All three are fixed in later releases; nothing to report.
+All four are fixed in later releases; nothing to report.
 
 ## TV7 · The distributions' packages against the releases
 

@@ -1213,33 +1213,72 @@ expectName x =
 {-| What puritty shows of tmux, a line for the diagnostic log when it
 changes (docs/tmux-checks.md TK11): the tabs by index, each its window's
 id and name; the window shown; its panes as its layout has them, the
-active one marked. -}
+active one marked; the window's size, each pane's, and the panes in a
+mode (copy mode and the others). -}
 viewLine : State -> String
 viewLine s =
+    let
+        n =
+            String.fromInt
+
+        panes =
+            when s.layout is
+                Just cell ->
+                    (Layout.tiled cell ++ Layout.floating cell) |> Array.sortBy .id
+
+                Nothing ->
+                    meant Reason.NotYet []
+
+        size =
+            when s.layout is
+                Just (Layout.Split c) ->
+                    n c.w ++ "x" ++ n c.h
+
+                Just (Layout.Leaf p) ->
+                    n p.w ++ "x" ++ n p.h
+
+                Nothing ->
+                    meant Reason.NotYet ""
+    in
     "tabs "
-        ++ String.join " " (Array.map (\t -> "@" ++ String.fromInt t.id ++ ":" ++ t.name) (Array.sortBy .index s.tabs))
+        ++ String.join " " (Array.map (\t -> "@" ++ n t.id ++ ":" ++ t.name) (Array.sortBy .index s.tabs))
         ++ " | window @"
-        ++ String.fromInt s.window
+        ++ n s.window
         ++ " | panes "
         ++ String.join " "
             (Array.map
-                (\id ->
+                (\p ->
                     "%"
-                        ++ String.fromInt id
-                        ++ (if id == s.active then
+                        ++ n p.id
+                        ++ (if p.id == s.active then
                                 "*"
 
                             else
                                 ""
                            )
                 )
-                (when s.layout is
-                    Just cell ->
-                        Array.map .id (Layout.tiled cell ++ Layout.floating cell) |> Array.sort
+                panes
+            )
+        ++ " | size "
+        ++ size
+        ++ " | boxes "
+        ++ String.join " " (Array.map (\p -> "%" ++ n p.id ++ ":" ++ n p.w ++ "x" ++ n p.h) panes)
+        ++ " | modes "
+        ++ String.join " "
+            (Array.mapAndKeepJust
+                (\p ->
+                    when Dict.get p.id s.paneModes is
+                        Just mode ->
+                            if mode == "" then
+                                Nothing
 
-                    Nothing ->
-                        meant Reason.NotYet []
+                            else
+                                Just ("%" ++ n p.id ++ ":" ++ mode)
+
+                        Nothing ->
+                            meant Reason.NotYet Nothing
                 )
+                panes
             )
 
 
@@ -2026,80 +2065,107 @@ this client's. -}
 reply : { number : Int, flags : Int, ok : Bool, lines : Array Bytes } -> (taken acc : Acc) -> Acc
 reply r acc =
     if r.flags == 0 then
-        -- a command not this client's: the one it was started
-        -- with, a hook's, or a key binding's, in whose block tmux
-        -- writes what `display-message` says to this client (TM24)
-        when Array.findLast (\line -> String.startsWith "%message " (Bytes.toStringLossy line)) r.lines is
-            Nothing ->
-                meant Reason.NoMore
-                    if r.ok then
-                        -- what a binding printed (`list-keys -N`,
-                        -- `list-buffers`, `show-messages`), which a
-                        -- terminal client shows in view mode (TM26)
-                        if Array.isEmpty r.lines then
-                            acc
-
-                        else
-                            let
-                                st =
-                                    acc.state
-                            in
-                            { acc | state = { st | view = Just (viewOf (ownCommandsOut st r.lines)) } }
+        -- a binding's command, run by `send-keys -K` (or a hook): the
+        -- window asked again after it, outside a mode, whose every key is
+        -- a binding (TK12)
+        let
+            asks =
+                acc.state.on && acc.state.starting == Nothing && not (inCopy acc.state.active acc.state) && Dict.get acc.state.active acc.state.paneModes /= Just "tree-mode"
+        in
+        notOurs r acc
+            |> (\done ->
+                    if asks then
+                        ask [ { command = windowQuery, expect = ForWindow } ] done
 
                     else
-                        -- a binding's error, as tmux's status line would
-                        -- show it (TM24)
+                        done
+               )
+
+    else
+        ours r acc
+
+
+{-| A block not this client's: the one it was started with, a hook's, or
+a key binding's (TM24). -}
+notOurs : { number : Int, flags : Int, ok : Bool, lines : Array Bytes } -> (taken acc : Acc) -> Acc
+notOurs r acc =
+    -- a command not this client's: the one it was started
+    -- with, a hook's, or a key binding's, in whose block tmux
+    -- writes what `display-message` says to this client (TM24)
+    when Array.findLast (\line -> String.startsWith "%message " (Bytes.toStringLossy line)) r.lines is
+        Nothing ->
+            meant Reason.NoMore
+                if r.ok then
+                    -- what a binding printed (`list-keys -N`,
+                    -- `list-buffers`, `show-messages`), which a
+                    -- terminal client shows in view mode (TM26)
+                    if Array.isEmpty r.lines then
+                        acc
+
+                    else
                         let
                             st =
                                 acc.state
                         in
-                        { acc | state = { st | said = Array.first r.lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside st.said) } }
+                        { acc | state = { st | view = Just (viewOf (ownCommandsOut st r.lines)) } }
 
-            Just m ->
-                let
-                    st =
-                        acc.state
-                in
-                { acc | state = { st | said = String.dropFirst 9 (Bytes.toStringLossy m.value) } }
+                else
+                    -- a binding's error, as tmux's status line would
+                    -- show it (TM24)
+                    let
+                        st =
+                            acc.state
+                    in
+                    { acc | state = { st | said = Array.first r.lines |> Maybe.map Bytes.toStringLossy |> Maybe.withDefault (meant Reason.FromOutside st.said) } }
 
-    else
-        let
-            head =
-                Array.first acc.state.expecting
-
-            expect =
-                Maybe.map .expect head |> Maybe.withDefault (meant Reason.FromOutside ForNothing)
-        in
-        if expect == ForFence && Array.map Bytes.toStringLossy r.lines /= [ fenceWord ] then
-            -- a block of the commands a command ran, before the fence after
-            -- it (TK10): shown as the command's own
-            replied ForRan r.ok r.lines acc
-
-        else
+        Just m ->
             let
                 st =
                     acc.state
-
-                rest =
-                    Array.dropFirst 1 st.expecting
-
-                -- a command that failed ends its line: the commands after
-                -- it there are not run, and answered as failed with nothing
-                -- said (TK10)
-                line =
-                    Maybe.map .line head |> Maybe.withDefault (meant Reason.FromOutside -1)
-
-                dropped =
-                    if r.ok then
-                        []
-
-                    else
-                        Array.takeFirst (Array.findFirst (\a -> a.line /= line) rest |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore (Array.length rest))) rest
-
-                popped =
-                    { acc | state = { st | expecting = Array.dropFirst (Array.length dropped) rest } }
             in
-            Array.foldl (\a acc2 -> replied a.expect False [] acc2) (replied expect r.ok r.lines popped) dropped
+            { acc | state = { st | said = String.dropFirst 9 (Bytes.toStringLossy m.value) } }
+
+
+{-| A block of this client's: the question that asked it answered. -}
+ours : { number : Int, flags : Int, ok : Bool, lines : Array Bytes } -> (taken acc : Acc) -> Acc
+ours r acc =
+    let
+        head =
+            Array.first acc.state.expecting
+
+        expect =
+            Maybe.map .expect head |> Maybe.withDefault (meant Reason.FromOutside ForNothing)
+    in
+    if expect == ForFence && Array.map Bytes.toStringLossy r.lines /= [ fenceWord ] then
+        -- a block of the commands a command ran, before the fence after
+        -- it (TK10): shown as the command's own
+        replied ForRan r.ok r.lines acc
+
+    else
+        let
+            st =
+                acc.state
+
+            rest =
+                Array.dropFirst 1 st.expecting
+
+            -- a command that failed ends its line: the commands after
+            -- it there are not run, and answered as failed with nothing
+            -- said (TK10)
+            line =
+                Maybe.map .line head |> Maybe.withDefault (meant Reason.FromOutside -1)
+
+            dropped =
+                if r.ok then
+                    []
+
+                else
+                    Array.takeFirst (Array.findFirst (\a -> a.line /= line) rest |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore (Array.length rest))) rest
+
+            popped =
+                { acc | state = { st | expecting = Array.dropFirst (Array.length dropped) rest } }
+        in
+        Array.foldl (\a acc2 -> replied a.expect False [] acc2) (replied expect r.ok r.lines popped) dropped
 
 
 {-| What the fence after a command that runs commands prints (TK10). -}
@@ -4434,18 +4500,36 @@ keyByTable k bytes ms s =
         -- view (TM31), so it stays: brought down here, each key showed
         -- the live screen until that answer came, a ghost behind a held
         -- `k` (TM67)
-        sent commands
-            { s
-                | back =
-                    if inCopy s.active s then
-                        s.back
+        let
+            keyed =
+                sent commands
+                    { s
+                        | back =
+                            if inCopy s.active s then
+                                s.back
 
-                    else
-                        Dict.remove s.active s.back
-                , keys = followed
-                , said = way.said
-                , modes = modes
-            }
+                            else
+                                Dict.remove s.active s.back
+                        , keys = followed
+                        , said = way.said
+                        , modes = modes
+                    }
+        in
+        if way.ran /= "" && modeTable == "" && not s.keys.byTable then
+            -- a binding of tmux's, sent as its command (before 3.4): the
+            -- window asked again after it, since tmux does not tell every
+            -- change to its panes' places (`rotate-window` none on any
+            -- tmux, `swap-pane` none before 3.0; docs/tmux-checks.md TK12).
+            -- With `send-keys -K` tmux may run the binding after the next
+            -- line, so the window is asked when its block comes (`reply`)
+            let
+                asked =
+                    sendAsking [ { command = windowQuery, expect = ForWindow } ] keyed.state
+            in
+            { state = asked.state, commands = keyed.commands ++ asked.commands }
+
+        else
+            keyed
 
     else if runsHere way.held then
         -- a prompt, a menu, or an `if-shell -F` around one: puritty runs
@@ -5164,6 +5248,15 @@ sendAsking list s =
                         [ c ]
                 )
                 list
+                -- after the user's commands, the window asked again: tmux
+                -- does not tell every change to its panes' places (TK12)
+                |> (\l ->
+                        if Array.any (\c -> c.expect == ForRan) l then
+                            Array.pushLast { command = windowQuery, expect = ForWindow } l
+
+                        else
+                            l
+                   )
     in
     { state = expected fenced s, commands = Array.map .command fenced }
 
