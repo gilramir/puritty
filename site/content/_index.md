@@ -97,6 +97,49 @@ array and byte reads in range before it builds the program.
 image = "geng-code.png"
 alt = "puritty's EUC-KR decoder, written in Geng, shown in an editor"
 
+[extra.nostalgia]
+title = "A nod to nostalgia"
+body = """
+The phosphor screens of early terminals are two color schemes away:
+`green-screen` and `amber-screen`. And the bell can sound like the
+computers many of us learned on, each worked out from its ROM:
+"""
+caption = "`CHRGET`, the routine that hands Microsoft BASIC for the 6502 each character of your program, from version 1.1 (1978). © Microsoft Corporation, [MIT License](https://github.com/microsoft/BASIC-M6502)."
+after = "Pick one in Settings → Sound, or use a WAV file of your own."
+
+[[extra.nostalgia.shots]]
+image = "green-screen.png"
+alt = "puritty in the green-screen color scheme, bright green text on black: cat chrget.asm, a 6502 assembly routine from Microsoft BASIC with its comments"
+
+[[extra.nostalgia.shots]]
+image = "amber-screen.png"
+alt = "The same listing in the amber-screen color scheme, amber text on black"
+
+[[extra.nostalgia.bells]]
+name = "Apple II"
+detail = "934.5 Hz for 0.103 s, from the Monitor ROM's `BELL1`"
+file = "apple2.wav"
+
+[[extra.nostalgia.bells]]
+name = "IBM PC AT"
+detail = "896 Hz for 0.218 s, from the 1984 BIOS"
+file = "ibm-pc.wav"
+
+[[extra.nostalgia.bells]]
+name = "Atari ST"
+detail = "the \"ping\", 2,404 Hz fading over 0.52 s, from TOS"
+file = "atari-st.wav"
+
+[[extra.nostalgia.bells]]
+name = "BBC Micro"
+detail = "516 Hz for 0.3 s, from the MOS's bell settings"
+file = "bbc-micro.wav"
+
+[[extra.nostalgia.bells]]
+name = "X11"
+detail = "400 Hz for 0.1 s, X's default bell"
+file = "x11.wav"
+
 [[extra.small]]
 title = "Copy and paste that make sense"
 body = "Double-click a word, triple-click a line. A wrapped line copies back as one. Hold Shift to select in programs that take the mouse."

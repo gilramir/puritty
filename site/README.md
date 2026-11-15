@@ -11,9 +11,10 @@ The site at https://gilramir.github.io/puritty/, built with
   and the pictures in `docs/images/` and the icon into `static/`; nothing
   it writes is kept in git. The guide's order is `ORDER` in `sync.py`.
 
-To look at it locally:
+To look at it locally, from the repository's top (each runs `sync.py`
+first, then zola from devbox):
 
 ```sh
-python3 site/sync.py
-cd site && zola serve       # http://127.0.0.1:1111
+devbox run serve            # http://127.0.0.1:1111
+devbox run serve-lan        # on this machine's address, for another one to see
 ```

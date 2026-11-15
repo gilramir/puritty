@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Bring what the site shows from the repository into site/: the user
 guides (docs/user/*.md) as pages of content/guide/, the pictures
-(docs/images/*.png) under static/images/, and the icon. The guides are
+(docs/images/*.png) under static/images/, the bells (assets/sounds/bells)
+under static/sounds/, and the icon. The guides are
 written to read on GitHub; here each gets front matter, its title taken
 from its first heading, and its links made the site's: another guide by
 Zola's @/ path, a picture relative to the page, any other document of the
@@ -58,6 +59,11 @@ def main():
     images.mkdir(parents=True, exist_ok=True)
     for png in IMAGES.glob("*.png"):
         shutil.copy2(png, images / png.name)
+    # the bells puritty plays, for the home page to play (A nod to nostalgia)
+    sounds = SITE / "static" / "sounds"
+    sounds.mkdir(parents=True, exist_ok=True)
+    for wav in (ROOT / "assets" / "sounds" / "bells").glob("*.wav"):
+        shutil.copy2(wav, sounds / wav.name)
     for size in (32, 64, 256):
         shutil.copy2(ROOT / "app" / "icon" / "png" / f"{size}.png", SITE / "static" / f"icon-{size}.png")
     shutil.copy2(ROOT / "app" / "icon" / "puritty.ico", SITE / "static" / "favicon.ico")

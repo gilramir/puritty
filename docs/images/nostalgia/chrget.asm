@@ -1,0 +1,29 @@
+; "CHRGET" USING [TXTPTR] AS THE CURRENT TEXT PNTR
+; FETCHES A NEW CHARACTER INTO ACCA AFTER INCREMENTING [TXTPTR]
+; AND SETS CONDITION CODES ACCORDING TO WHAT'S IN ACCA.
+;       NOT C=  NUMERIC   ("0" THRU "9")
+;       Z=      ":" OR END-OF-LINE (A NULL)
+;
+; [ACCA] = NEW CHAR.
+; [TXTPTR]=[TXTPTR]+1
+;
+; THE FOLLOWING EXISTS IN ROM IF ROM EXISTS AND IS LOADED
+; DOWN HERE BY INIT. OTHERWISE IT IS JUST LOADED INTO THIS
+; RAM LIKE ALL THE REST OF RAM IS LOADED.
+;
+CHRGET: INC     CHRGET+7        ;INCREMENT THE WHOLE TXTPTR.
+        BNE     CHRGOT
+        INC     CHRGET+8
+CHRGOT: LDA     60000           ;A LOAD WITH AN EXT ADDR.
+TXTPTR= CHRGOT+1
+        CMPI    " "             ;SKIP SPACES.
+        BEQ     CHRGET
+QNUM:   CMPI    ":"             ;IS IT A ":"?
+        BCS     CHRRTS          ;IT IS .GE. ":"
+        SEC
+        SBCI    "0"             ;ALL CHARS .GT. "9" HAVE RET'D SO
+        SEC
+        SBCI    256-"0"         ;SEE IF NUMERIC.
+                                ;TURN CARRY ON IF NUMERIC.
+                                ;ALSO, SETZ IF NULL.
+CHRRTS: RTS                     ;RETURN TO CALLER.
