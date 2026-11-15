@@ -54,8 +54,13 @@ body = """
   six IME setups: fcitx5-hangul, ibus-hangul, Mozc and pinyin among them.
 - **Wide characters and grapheme clusters** take the cells they should,
   and copy back out as the characters you see.
-- **Thai is shaped**, and **Han characters** take your language's
-  regional forms.
+- **Thai's vowel and tone marks stay with their letters.** What a Thai
+  reader sees as one character is often several pieces stacked together:
+  a consonant, a vowel mark above or below it, and a tone mark on top.
+  puritty keeps each stack in one cell and draws it as the font means it
+  to look; a terminal that gives every piece a cell of its own pushes the
+  marks off to the side.
+- **Han characters** take your language's regional forms.
 - **EUC-KR and CP949 are built in**, both ways, for the hosts that still
   run `ko_KR.euckr`. No `luit`, no wrapper.
 """
@@ -92,7 +97,9 @@ fuzzed, and run against the `esctest2` conformance suite, where it passes
 fill has a limit.
 
 puritty is written in [Geng](https://geng-lang.org), whose compiler proves
-array and byte reads in range before it builds the program.
+array and byte reads in range before it builds the program. 88% of
+puritty's own code is Geng; the C is a thin layer (6,400 lines) for the
+window, text drawing and ssh crypto.
 """
 image = "geng-code.png"
 alt = "puritty's EUC-KR decoder, written in Geng, shown in an editor"
