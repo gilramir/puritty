@@ -519,6 +519,9 @@ type alias Menuing =
     , x : String
     , y : String
     , armed : Bool
+    -- `-O` and `-C` (TM84)
+    , stayOpen : Bool
+    , start : Maybe String
     }
 
 
@@ -7804,6 +7807,8 @@ openMenu ctx menu after s =
                 , x = menu.x
                 , y = menu.y
                 , armed = False
+                , stayOpen = menu.stayOpen
+                , start = menu.start
                 }
 
         opened =
@@ -7815,16 +7820,57 @@ openMenu ctx menu after s =
     { state = ran.state, commands = opened.commands ++ ran.commands }
 
 
-{-| A menu whose formats have all been answered: from the keyboard, its
-first item that can be chosen is chosen, as tmux does; from a click,
-none. -}
+{-| A menu whose formats have all been answered: from the keyboard, the
+item `-C` names is chosen, or the next that can be, going round; past the
+last, the last that can be; `-` none; without `-C` the first that can be,
+as tmux's `menu_display` (TM84). From a click, none. -}
 readied : Menuing -> Menuing
 readied m =
     if m.pending > 0 || m.mouse /= Nothing then
         m
 
     else
-        { m | selected = Array.findFirst .enabled (menuRows m) |> Maybe.map (\r -> r.value.index) |> Maybe.withDefault (meant Reason.NoMore -1) }
+        let
+            rows =
+                menuRows m
+
+            count =
+                Array.length rows
+
+            enabledAt i =
+                Array.get i rows |> Maybe.map .enabled |> Maybe.withDefault (meant Reason.OutOfRange False)
+
+            -- from `from`, one way round, the first that can be chosen
+            around from step =
+                Array.range 0 (count - 1)
+                    |> Array.map (\k -> modBy (max 1 count) (from + step * k + count * count))
+                    |> Array.findFirst enabledAt
+                    |> Maybe.map (\found -> found.value)
+                    |> Maybe.withDefault (meant Reason.NoMore -1)
+
+            chosen =
+                when m.start is
+                    Just "-" ->
+                        -1
+
+                    Just given ->
+                        when String.toInt given is
+                            Just n ->
+                                if n >= count then
+                                    around (count - 1) -1
+
+                                else
+                                    around (max 0 n) 1
+
+                            Nothing ->
+                                meant Reason.FromOutside (around 0 1)
+
+                    Nothing ->
+                        -- no -C: the first that can be chosen
+                        meant Reason.NotSet (around 0 1)
+        in
+        -- none when no item can be chosen, or -C -
+        { m | selected = Array.get chosen rows |> Maybe.map .index |> Maybe.withDefault (meant Reason.NoMore -1) }
 
 
 {-| One of a menu's formats answered: its first line, or what was written
@@ -8298,11 +8344,25 @@ menuPointer p col row m s =
         { state = s, commands = [] }
 
     else if p.action == 0 then
-        if inside then
+        if inside && m.stayOpen then
+            -- `-O`: a press chooses; on a line or a name that cannot be
+            -- chosen, the menu stays (TM84)
+            when under is
+                Just i ->
+                    chooseItem i m s
+
+                Nothing ->
+                    meant Reason.OutOfRange { state = s, commands = [] }
+
+        else if inside then
             { state = { s | menu = Just { m | armed = True, selected = Maybe.withDefault (meant Reason.OutOfRange m.selected) under } }, commands = [] }
 
         else
             { state = { s | menu = Nothing }, commands = [] }
+
+    else if p.action == 1 && m.stayOpen then
+        -- `-O`: letting go chooses nothing and closes nothing
+        { state = { s | menu = Just { m | selected = Maybe.withDefault (meant Reason.OutOfRange m.selected) under } }, commands = [] }
 
     else if p.action == 1 then
         when under is

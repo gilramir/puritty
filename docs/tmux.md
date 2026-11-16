@@ -3489,8 +3489,33 @@ drag. Other ranges a title may have (a user's own) are left alone.
 sends `resize-pane -Z` on 3.8; before 3.8 the default format has no
 buttons.
 
-**Not yet:** `display-menu -O` (the kill menu's: open after the button is
-let go) is not read, so the menu behaves as any other.
+`display-menu -O`, the kill menu's, is read since TM84.
 
 App tests 294.
+
+
+## TM84 · A menu's `-O` and `-C` (2026-11-15)
+
+From `menu.c` and `cmd-display-menu.c` (3.8), and the usage lines of each
+dumped tmux:
+
+- **`-O`** (from 3.2): the menu stays open when the button that opened it is
+  let go; a press on an item chooses it, a press outside closes it, and a
+  release does neither; a line or a name that cannot be chosen keeps it
+  open. 3.8's kill menu (`MouseDown1Control9`, TM83) has it.
+- **`-C N`** (from 3.4): opened from the keyboard, item N is chosen, or the
+  next that can be, going round; past the last, the last that can be; `-`
+  none. Without it the first that can be, which puritty did already
+  (measured: 3.4, 3.6a and 3.8 each highlight the window menu's first item
+  that can be chosen).
+
+`Syntax.menuOf` reads both (`stayOpen`, `start`), and the menu puritty
+draws follows them (`readied`, `menuPointer`).
+
+**Checked:** the tmux suite reads `-O -C 2`, `-C -` and neither (124); a
+test on each version from 3.4: `-C 1` and Enter run the second item; with
+`-O` a press on an item runs it, and without it a press runs nothing. With
+the change taken out, Enter runs the first item and the press nothing.
+
+App tests 300.
 

@@ -408,6 +408,57 @@ onVersion version =
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
+        , { name = "a menu's -C chooses where the keyboard starts, and -O chooses on a press (TM84)"
+          , test =
+                \_ ->
+                    let
+                        opened line =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText line
+                                |> named enterKey
+                                |> settle
+
+                        heardOf run =
+                            run.world.heard |> Array.map (String.replace "'" "") |> Array.keepIf (\l -> l == "display-message -p A" || l == "display-message -p B")
+
+                        -- Enter on the item -C starts at
+                        started =
+                            heardOf (settle (named enterKey (opened "display-menu -C 1 -T t a a { display-message -p A } b b { display-message -p B }")))
+
+                        -- a press on the row of item b, with and without -O
+                        pressed flag =
+                            let
+                                seen =
+                                    look (opened ("display-menu " ++ flag ++ " -T t a a { display-message -p A } b b { display-message -p B }"))
+
+                                at =
+                                    seen.rows
+                                        |> Array.indexedMap (\i r -> { row = i, parts = String.split " b " r })
+                                        |> Array.findFirst (\r -> Array.length r.parts > 1)
+                                        |> Maybe.map (\found -> { row = found.value.row, col = String.count (Maybe.withDefault "" (Array.first found.value.parts)) + 1 })
+                            in
+                            when at is
+                                Just c ->
+                                    (TmuxMode.pointer { ms = 1000, held = 1, select = False, boundaries = [], pasteButton = 2 }
+                                        { action = 0, button = 1, mods = 0, x = c.col * 10 + 5, y = c.row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+                                        seen.run.tmux
+                                    ).commands
+                                        |> Array.map (String.replace "'" "")
+                                        |> Array.keepIf (\l -> l == "display-message -p A" || l == "display-message -p B")
+
+                                Nothing ->
+                                    [ "no row b" ]
+                    in
+                    if Array.member version [ "2.7", "3.0", "3.2a" ] then
+                        -- -C is 3.4's, and these tmuxes refuse it
+                        Expect.pass
+
+                    else
+                        Expect.equal
+                            { started = [ "display-message -p B" ], stayOpen = [ "display-message -p B" ], plain = [] }
+                            { started = started, stayOpen = pressed "-O", plain = pressed "" }
+          }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
                 \_ ->

@@ -87,7 +87,8 @@ SUITES = [
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
     # through a model of tmux 2.7, four; 123 since TM79: an answer with
     # % and a digit filled whole, and each %% the next answer
-    Suite("tmux", 123, runs_of("packages/tmux/tests")),
+    # 124 since TM84: a menu's -O and -C read
+    Suite("tmux", 124, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -110,8 +111,9 @@ SUITES = [
         # status off and the panes' letters, on each; 276 since TM80: C-y
         # at the prompt, on each; 282 since TM81: a buffer's whole text
         # searched, case by version; 288 since TM82: a popup's title, on
-        # each; 294 since TM83: a title's [z] clicked, on each
-        294,
+        # each; 294 since TM83: a title's [z] clicked, on each; 300 since
+        # TM84: a menu's -C and -O, on each
+        300,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
