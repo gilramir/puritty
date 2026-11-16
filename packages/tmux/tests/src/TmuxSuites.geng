@@ -348,10 +348,19 @@ command =
           , test =
                 \_ ->
                     Expect.equal
-                        [ "set-buffer -b puritty-paste \"a\\\"b\\$\\\\\\012\\355\\225\\234\""
+                        [ "set-buffer -b puritty-paste \"a\\\"b\\$\\\\\\n한\""
                         , "paste-buffer -p -r -d -b puritty-paste -t '%3'"
                         ]
                         (Command.pasteBytes 3 { first = True, last = True } (Bytes.fromString "a\"b$\\\n한"))
+          }
+        , { name = "a paste's CR, LF, Tab and Escape as every tmux's parser takes them, a byte not UTF-8 in octal (TM94)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "set-buffer -b puritty-paste \"x\\r\\ny\\t\\e\\200z\""
+                        , "paste-buffer -p -r -d -b puritty-paste -t '%1'"
+                        ]
+                        (Command.pasteBytes 1 { first = True, last = True } (Bytes.flatten [ Bytes.fromString "x\r\ny\t\u{001B}", Bytes.fromUInt8s [ UInt8.fromInt 0x80 ], Bytes.fromString "z" ]))
           }
         , { name = "a paste in pieces: the first starts the buffer, the rest add, the last pastes"
           , test =

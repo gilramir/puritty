@@ -3802,3 +3802,30 @@ client against a local sshd): the first connection attaches `tmux -CC`
 and kills its sshd two seconds later; after R the second reads a line.
 Before the change the line it read was `send-keys -K -H 68` (the `h` of
 `hello`, sent to tmux); now `hello`. All 14 cases pass.
+
+## TM94 · A paste reaches tmux 2.x as it was copied (2026-11-16)
+
+Found chasing a paste Gilbert saw jumbled (below). Under `-CC` a paste is
+given to tmux as a buffer (`set-buffer` with the text in one
+double-quoted word, then `paste-buffer -p`, TM64), every byte that is not
+printable ASCII written as an octal escape (`\012`). tmux 3.0's parser
+(`cmd-parse.y`) reads those; 2.x's (`cmd-string.c`, 2.7 to 2.9a) knows only
+`\e`, `\r`, `\n` and `\t` and drops the backslash from any other, so on
+2.7 a paste's line ends arrived as the text `015012`, and UTF-8 (Korean)
+as digits too. Measured with puritty in Xvfb, CRLF text on the clipboard
+and Ctrl+Shift+V into a program that records what it reads.
+
+`Command.quoteBytes` now writes Escape, CR, LF and Tab as those four
+escapes, which every tmux reads, and valid UTF-8 as its characters, which
+both parsers take as they are; only another byte (one not UTF-8, as an
+EUC-KR pane's) is still octal, which 2.x cannot be given at all. Checked:
+the tmux suite (125, a case for the four escapes and a byte in octal; the
+UTF-8 case now as characters); measured again, 2.7 `-CC` gives the
+recorder the clipboard's bytes exactly, line ends, a tab and Korean,
+bracketed, as 3.8 `-CC` and plain tmux do.
+
+**Not found:** what Gilbert saw. On Linux, a 15 KB paste of indented code
+with tabs and CRLF line ends reaches the program exactly, as one bracketed
+paste, without tmux, through tmux and through `-CC`, on 3.8, 3.2a and 2.7.
+His was on Windows, through puritty's ssh client; asked for the tmux
+version and what "jumbled" looks like.

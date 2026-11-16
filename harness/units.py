@@ -87,8 +87,9 @@ SUITES = [
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
     # through a model of tmux 2.7, four; 123 since TM79: an answer with
     # % and a digit filled whole, and each %% the next answer
-    # 124 since TM84: a menu's -O and -C read
-    Suite("tmux", 124, runs_of("packages/tmux/tests")),
+    # 124 since TM84: a menu's -O and -C read; 125 since TM94: a paste's
+    # line ends and UTF-8 written for every tmux's parser
+    Suite("tmux", 125, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
