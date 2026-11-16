@@ -84,6 +84,7 @@ import Task exposing (Task)
 import Text
 import Time
 import TmuxMode
+import UInt8
 import Vt
 import Vt.Base64 as Base64
 import Vt.Charset as Charset exposing (Charset)
@@ -4606,6 +4607,43 @@ pasteIn more text m =
         pasteInto more text m
 
 
+{-| A paste's line ends as Enter sends them, CR, bracketed or not, as
+xterm, VTE, PuTTY and Windows Terminal paste them; CRLF one CR (docs/tmux.md
+TM95). Ghostty's encoder (`Vt.Paste`, held to it by the paste gate) keeps LF
+in a bracketed paste, and a program that never asked for brackets gets it
+through tmux, which brackets a paste only for the programs that asked: LF is
+Ctrl-J to it, Justify to an older nano, which joined the pasted lines. -}
+lineEnds : Bytes -> Bytes
+lineEnds bytes =
+    Bytes.fromUInt8s (lineEndsFrom bytes 0 (Bytes.length bytes) -1 [])
+
+
+lineEndsFrom : Bytes -> Int -> Int -> Int -> Array UInt8 -> Array UInt8
+lineEndsFrom bytes i n last out =
+    if i >= n then
+        out
+
+    else
+        when Bytes.get i bytes is
+            Just u ->
+                let
+                    b =
+                        UInt8.toInt u
+                in
+                if b == 0x0A then
+                    if last == 0x0D then
+                        lineEndsFrom bytes (i + 1) n b out
+
+                    else
+                        lineEndsFrom bytes (i + 1) n b (Array.pushLast (UInt8.fromInt 0x0D) out)
+
+                else
+                    lineEndsFrom bytes (i + 1) n b (Array.pushLast u out)
+
+            Nothing ->
+                out
+
+
 pasteInto : Bool -> Bytes -> (taken m : Model) -> Model
 pasteInto more text m =
     let
@@ -4629,7 +4667,7 @@ pasteInto more text m =
 
                       else
                         Bytes.empty
-                    , Paste.piece bracketed text
+                    , lineEnds (Paste.piece bracketed text)
                     , if not more && bracketed then
                         Paste.bracketEnd
 
@@ -4649,7 +4687,7 @@ pasteInto more text m =
                 Bytes.empty
 
             else
-                Paste.piece True text
+                lineEnds (Paste.piece True text)
 
         updated =
             { m

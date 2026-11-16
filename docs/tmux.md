@@ -3824,8 +3824,37 @@ UTF-8 case now as characters); measured again, 2.7 `-CC` gives the
 recorder the clipboard's bytes exactly, line ends, a tab and Korean,
 bracketed, as 3.8 `-CC` and plain tmux do.
 
-**Not found:** what Gilbert saw. On Linux, a 15 KB paste of indented code
-with tabs and CRLF line ends reaches the program exactly, as one bracketed
-paste, without tmux, through tmux and through `-CC`, on 3.8, 3.2a and 2.7.
-His was on Windows, through puritty's ssh client; asked for the tmux
-version and what "jumbled" looks like.
+What Gilbert saw was another thing (TM95).
+
+## TM95 · A paste's line ends are CR, bracketed or not (2026-11-16)
+
+Gilbert, 2026-11-16, on Windows with tmux 3.8 on the host: four lines
+copied from Notepad and pasted into nano came out as one line of the first
+three and one of the fourth, through tmux and through `-CC`; into nano
+without tmux, and in xfce4-terminal and PuTTY with or without tmux, they
+came out as copied. His nano does not turn on auto-indent.
+
+**Why.** puritty encodes a paste as Ghostty does (`Vt.Paste`, held to
+libghostty-vt by the paste gate): a line end goes as CR when the program
+has not asked for bracketed paste, and as LF inside the brackets when it
+has. Through tmux the program asking is tmux's client (every tmux turns
+bracketed paste on in its terminal) or, under `-CC`, tmux is given the
+paste as a buffer; tmux then brackets it only for a pane whose program
+asked, and passes the LFs on as they are to one that did not. An LF is
+Ctrl-J to that program, and to an older nano Ctrl-J is Justify, which
+joined the pasted lines into one paragraph. Without tmux puritty saw that
+nano had not asked and sent CR. Windows' clipboard reading makes CRLF LF
+(`read_clipboard`), so the Windows build always pasted LFs.
+
+Measured with `bench/tmux/paste/run.sh` (a recorder for the program,
+turning bracketed paste on or not): with it off, the program got CR
+without tmux and LF through tmux and through `-CC` (3.8).
+
+**Changed.** `Main.lineEnds`, after `Vt.Paste`'s encoding: every LF goes as
+CR, bracketed or not, as xterm, VTE (xfce4-terminal), PuTTY and Windows
+Terminal paste, and CRLF as one CR. `Vt.Paste` stays Ghostty's, and its
+gate with it; this is puritty's difference from Ghostty. **Checked:** the
+recorder without brackets gets CR in all three ways; with brackets (a
+newer nano) CR inside them, and a CRLF clipboard one CR a line; a real
+nano, which asks for brackets, saves the four lines as copied in all three
+ways and through puritty's own ssh client to tmux 3.8, plain and `-CC`.
