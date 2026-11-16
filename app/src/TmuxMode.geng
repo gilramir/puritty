@@ -204,6 +204,8 @@ type alias State =
     -- `command-alias` gives (`split-pane`)
     , shortNames : Array String
     , aliasNames : Array String
+    -- the client's session when Tab last asked for -t's targets (TM97)
+    , targetSession : String
     -- what this tmux takes, from its `list-commands` (TM72), and whether
     -- it expands `#{T:…}` (from 2.9)
     , caps : Caps
@@ -671,6 +673,8 @@ type Expect
     | ForListContent String
     | ForPromptHistory String
     | ForAliases
+    | ForTargets { line : String, caret : Int }
+    | ForTargetSession
     | ForCustomize Int
     | ForCustomizeNotes String
     | ForCustomizeFilter { filter : String, ids : Array String }
@@ -769,6 +773,7 @@ idle _ =
     , commandNames = []
     , shortNames = []
     , aliasNames = []
+    , targetSession = ""
     , caps = Caps.assumed
     , capsKnown = False
     , timeFormats = True
@@ -1275,6 +1280,12 @@ expectName x =
 
         ForAliases ->
             "the command aliases"
+
+        ForTargets _ ->
+            "the sessions and windows, for -t"
+
+        ForTargetSession ->
+            "the client's session, for -t"
 
         ForListPreview _ ->
             "the list's preview"
@@ -3085,6 +3096,47 @@ replied expect ok lines acc =
                                 st.listing
                     }
             }
+
+        ForTargetSession ->
+            -- the client's session, which `:…` completes a window of (TM97)
+            let
+                st =
+                    acc.state
+            in
+            { acc | state = { st | targetSession = Maybe.withDefault (meant Reason.FromOutside "") (Array.first lines |> Maybe.map Bytes.toStringLossy) } }
+
+        ForTargets at ->
+            -- every session's windows, `session<TAB>index<TAB>name`: a -t
+            -- or -s word completed with them, if the line is as it was
+            -- when Tab asked (TM97)
+            let
+                rows =
+                    lines
+                        |> Array.mapAndKeepJust
+                            (\line ->
+                                when String.split "\t" (Bytes.toStringLossy line) is
+                                    [ session, index, name ] ->
+                                        Just { session = session, index = index, name = name }
+
+                                    _ ->
+                                        Nothing
+                            )
+            in
+            when acc.state.asking is
+                Just a ->
+                    if ok && String.fromArray a.chars == at.line && a.caret == at.caret then
+                        let
+                            st =
+                                acc.state
+                        in
+                        -- the client's own session, asked just before
+                        { acc | state = { st | asking = Just (targetCompleted rows st.targetSession a) } }
+
+                    else
+                        acc
+
+                Nothing ->
+                    meant Reason.NotOpen acc
 
         ForAliases ->
             -- `command-alias`'s items, `name=command` a line (an array, 3.0
@@ -5342,6 +5394,11 @@ promptKey k bytes ms a0 s =
                     if p.incremental then
                         incrementalKey name text plainText enter cancel a s
 
+                    else if name == "Tab" && p.template == Nothing && s.version > 0 && s.version < 32 && targetWord a then
+                        -- before 3.2 a -t or -s word is a session or a
+                        -- window, which tmux is asked for (TM97)
+                        sendAsking [ { command = Command.display "#{session_name}", expect = ForTargetSession }, { command = Command.listWindowsAll "#{session_name}\t#{window_index}\t#{window_name}", expect = ForTargets { line = String.fromArray a.chars, caret = a.caret } } ] s
+
                     else if name == "Tab" && p.template == Nothing then
                         -- the colon prompt: a word completed as this tmux
                         -- completes it (TM57, TM96)
@@ -5569,6 +5626,156 @@ completed lists version a =
 
                 else
                     a
+
+
+{-| The word at the caret: from the last space before it to it. -}
+caretWord : Asking -> { start : Int, word : String }
+caretWord a =
+    let
+        soFar =
+            Array.takeFirst a.caret a.chars
+
+        start =
+            Array.findLast (\c -> c == ' ') soFar
+                |> Maybe.map (\found -> found.index + 1)
+                -- no space before it: the first word
+                |> Maybe.withDefault (meant Reason.NoMore 0)
+    in
+    { start = start, word = String.fromArray (Array.dropFirst start soFar) }
+
+
+{-| Whether the word at the caret is a target, `-t…` or `-s…` (TM97). -}
+targetWord : Asking -> Bool
+targetWord a =
+    let
+        w =
+            (caretWord a).word
+    in
+    String.startsWith "-t" w || String.startsWith "-s" w
+
+
+{-| A `-t` or `-s` word completed as tmux before 3.2 completes one
+(`status_prompt_complete`, 2.7 to 3.1, TM97): a session's name, with `:`
+after one alone (a word ending `:` matched without it); failing that a
+window, of the current session for `:…` and of any for `session:…`, by
+name or else by index, with a space after one alone; more matches as far
+as they agree. -}
+targetCompleted : Array { session : String, index : String, name : String } -> String -> Asking -> Asking
+targetCompleted rows current a =
+    let
+        at =
+            caretWord a
+
+        flag =
+            String.slice 1 2 at.word
+
+        endsColon =
+            String.endsWith ":" at.word
+
+        wanted =
+            if endsColon then
+                String.dropLast 1 (String.dropFirst 2 at.word)
+
+            else
+                String.dropFirst 2 at.word
+
+        unique items =
+            Array.foldl
+                (\m acc ->
+                    if Array.member m acc then
+                        acc
+
+                    else
+                        Array.pushLast m acc
+                )
+                []
+                items
+
+        prefixOf items =
+            when Array.first items is
+                Just first ->
+                    Array.foldl
+                        (\m acc ->
+                            let
+                                shared =
+                                    Array.range 0 (min (String.count m) (String.count acc))
+                                        |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
+                                        |> Maybe.map .value
+                                        -- nothing in common
+                                        |> Maybe.withDefault (meant Reason.NoMore 0)
+                            in
+                            String.takeFirst shared acc
+                        )
+                        first
+                        items
+
+                Nothing ->
+                    ""
+
+        sessions =
+            rows |> Array.map .session |> unique |> Array.sort |> Array.keepIf (\name -> String.startsWith wanted name)
+
+        -- a window by its name, or else by its index
+        windowsOf candidates =
+            candidates
+                |> Array.mapAndKeepJust
+                    (\c ->
+                        if String.startsWith wanted c.byName then
+                            Just c.byName
+
+                        else if String.startsWith wanted c.byIndex then
+                            Just c.byIndex
+
+                        else
+                            Nothing
+                    )
+
+        windows =
+            if String.startsWith ":" wanted then
+                rows
+                    |> Array.keepIf (\r -> r.session == current)
+                    |> Array.map (\r -> { byName = ":" ++ r.name, byIndex = ":" ++ r.index })
+                    |> windowsOf
+
+            else
+                rows
+                    |> Array.map (\r -> { byName = r.session ++ ":" ++ r.name, byIndex = r.session ++ ":" ++ r.index })
+                    |> windowsOf
+
+        replaced text =
+            let
+                added =
+                    String.toArray text
+            in
+            { a | chars = Array.takeFirst at.start a.chars ++ added ++ Array.dropFirst a.caret a.chars, caret = at.start + Array.length added, edited = True }
+    in
+    when sessions is
+        [ only ] ->
+            replaced ("-" ++ flag ++ only ++ ":")
+
+        [] ->
+            when windows is
+                [ only ] ->
+                    replaced ("-" ++ flag ++ only ++ " ")
+
+                [] ->
+                    a
+
+                more ->
+                    replaced ("-" ++ flag ++ prefixOf more)
+
+        more ->
+            replaced
+                ("-"
+                    ++ flag
+                    ++ prefixOf more
+                    ++ (if endsColon then
+                            ":"
+
+                        else
+                            ""
+                       )
+                )
 
 
 {-| Text typed at the caret. -}

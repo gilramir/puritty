@@ -120,8 +120,9 @@ SUITES = [
         # 336 since TM89: tmux's prompt history at the prompt, on each;
         # 342 since TM91: a selection dropped as its pane changes, on each;
         # 348 since TM92: nothing sent after what detaches, on each; 354
-        # since TM96: Tab at the prompt as each tmux completes, on each
-        354,
+        # since TM96: Tab at the prompt as each tmux completes, on each;
+        # 360 since TM97: a -t word's session and window before 3.2
+        360,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

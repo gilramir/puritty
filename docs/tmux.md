@@ -3536,7 +3536,7 @@ sections since:
   done (TM89).
 - **Completing options and targets** at the prompt, and the matches' menu:
   commands, options and layouts as each tmux, and 3.8's list, done
-  (TM96); targets (`-t`, `-s`, before 3.8) and 3.2–3.7's menu not yet.
+  (TM96); targets before 3.2 done (TM97); 3.2–3.7's menus not yet.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
   in customize mode: done (TM86, TM87).
 - **`bell-action`** (any, none, current, other: which windows' bells are
@@ -3903,3 +3903,25 @@ same line and, on 3.8, the same underlined list. The fake answers
 `show-options` from the recordings.
 
 **Not yet:** targets after `-t` and `-s`, and 3.2–3.7's menu of matches.
+
+## TM97 · A `-t` word completed before 3.2 (2026-11-16)
+
+Before 3.2 Tab on a word beginning `-t` or `-s` completes a target
+(`status_prompt_complete`, the same from 2.7 to 3.1): a session's name,
+`:` after one alone (a word ending `:` is matched without it); if no
+session matches, a window, of the client's session for `:…` and of any
+for `session:…`, by its name or else its index, a space after one alone;
+more matches as far as they agree. 3.2 to 3.7 complete a session the same
+way but give a window's in a menu; 3.8 completes no target.
+
+puritty keeps neither every session nor their windows, so Tab on such a
+word asks tmux (`display -p '#{session_name}'`, the client's session, and
+`list-windows -a`; `client_session` in `list-windows -a` is empty on 3.4
+and 3.6a, measured) and completes when the answer comes, if the line is
+as it was (`ForTargets`, `targetCompleted`).
+
+**Checked:** an app test on each tmux (360): `select-window -tma` gives
+`-tmain:` and `select-window -t:s` gives `-t:sh ` on 2.7 and 3.0, and from
+3.2 neither changes. Side by side on real 2.7
+(`scenes_complete.py`'s `complete-target-*`, and its earlier scenes): the
+same `-tmain:`, `-t:second `, `split-window ` and `status-keys `.

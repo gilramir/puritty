@@ -880,6 +880,33 @@ onVersion version =
                         , layout = (tabbed "select-layout even-h").typed
                         }
           }
+        , { name = "before 3.2 Tab completes a -t word to a session, then a window (TM97)"
+          , test =
+                \_ ->
+                    let
+                        tabbed text =
+                            let
+                                run =
+                                    attached (start version)
+                                        |> prefixThen ":"
+                                        |> typeText text
+                                        |> named tabKey
+                                        |> settle
+                            in
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(none)"
+
+                        older =
+                            Array.member version [ "2.7", "3.0" ]
+                    in
+                    Expect.equal
+                        (if older then
+                            { session = "select-window -tmain:", window = "select-window -t:sh " }
+
+                         else
+                            { session = "select-window -tma", window = "select-window -t:s" }
+                        )
+                        { session = tabbed "select-window -tma", window = tabbed "select-window -t:s" }
+          }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
                 \_ ->

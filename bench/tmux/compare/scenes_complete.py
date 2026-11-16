@@ -8,4 +8,9 @@ SCENES = [
     dict(name="complete-spl", steps=[("keys", P, ":"), ("type", "spl"), ("keys", "Tab"), ("shot", "spl"), ("keys", "C-c")]),
     dict(name="complete-select", steps=[("keys", P, ":"), ("type", "select-"), ("keys", "Tab"), ("shot", "select"), ("keys", "C-c")]),
     dict(name="complete-option", steps=[("keys", P, ":"), ("type", "set -g status-k"), ("keys", "Tab"), ("shot", "option"), ("keys", "C-c")]),
+    # before 3.2 a -t word: a session, then a window (TM97)
+    dict(name="complete-target-session", setup=[("new-window", "-t", "main", "-n", "second")],
+         steps=[("keys", P, ":"), ("type", "select-window -tma"), ("keys", "Tab"), ("shot", "session"), ("keys", "C-c")]),
+    dict(name="complete-target-window", setup=[("new-window", "-t", "main", "-n", "second")],
+         steps=[("keys", P, ":"), ("type", "select-window -t:se"), ("keys", "Tab"), ("shot", "window"), ("keys", "C-c")]),
 ]
