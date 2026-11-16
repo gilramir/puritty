@@ -3466,3 +3466,31 @@ popup's (TM56).
 
 App tests 288.
 
+
+## TM83 · The buttons in a pane's title (2026-11-15)
+
+tmux 3.8's default `pane-border-format` ends, with `mouse` on, in three
+buttons, `#[range=control|7][f]`, `[z]` and `[x]`, and a click on one is
+the key `MouseDown1Control7` to `9` (`server-client.c`), bound in the root
+table to floating or joining the pane, zooming it, and a menu to kill it
+(`key-bindings.c`; the corpus's dumps write the root table as `USER`, the
+dump's own user name having been `root`). TM59 drew them; a click did
+nothing.
+
+puritty now finds where a pane's title puts each `control|N` range
+(`titleControls`: the title laid out as it is drawn, its part after
+`#[align=right]` against the pane's right edge, shown when it fits), and a
+left press on one runs the root table's `MouseDown1ControlN` with that pane
+as the mouse's (`-t =`), before a press on a floating pane's box starts a
+drag. Other ranges a title may have (a user's own) are left alone.
+
+**Checked:** a test on each version: with `mouse on` and
+`pane-border-status top`, the `z` of `[z]` on puritty's screen, clicked,
+sends `resize-pane -Z` on 3.8; before 3.8 the default format has no
+buttons.
+
+**Not yet:** `display-menu -O` (the kill menu's: open after the button is
+let go) is not read, so the menu behaves as any other.
+
+App tests 294.
+

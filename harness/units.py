@@ -110,8 +110,8 @@ SUITES = [
         # status off and the panes' letters, on each; 276 since TM80: C-y
         # at the prompt, on each; 282 since TM81: a buffer's whole text
         # searched, case by version; 288 since TM82: a popup's title, on
-        # each
-        288,
+        # each; 294 since TM83: a title's [z] clicked, on each
+        294,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

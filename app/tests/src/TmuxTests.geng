@@ -408,6 +408,43 @@ onVersion version =
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
+        , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        seen =
+                            look (attached { made | options = made.options |> Dict.set "mouse" "on" |> Dict.set "pane-border-status" "top" })
+
+                        -- the [z] on the screen, by its row and the z's column
+                        at =
+                            seen.rows
+                                |> Array.indexedMap (\i r -> { row = i, parts = String.split "[z]" r })
+                                |> Array.findFirst (\r -> Array.length r.parts > 1)
+                                |> Maybe.map (\found -> { row = found.value.row, col = String.count (Maybe.withDefault "" (Array.first found.value.parts)) + 1 })
+
+                        clicked =
+                            Maybe.map
+                                (\c ->
+                                    (TmuxMode.pointer { ms = 1000, held = 1, select = False, boundaries = [], pasteButton = 2 }
+                                        { action = 0, button = 1, mods = 0, x = c.col * 10 + 5, y = c.row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+                                        seen.run.tmux
+                                    ).commands
+                                        |> Array.any (String.contains "resize-pane -Z")
+                                )
+                                at
+                    in
+                    Expect.equal
+                        (if version == "3.8" then
+                            Just True
+
+                         else
+                            Nothing
+                        )
+                        clicked
+          }
         , { name = "a popup's -T title is given to its floating pane's box on 3.8 (TM82)"
           , test =
                 \_ ->

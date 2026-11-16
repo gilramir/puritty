@@ -1695,6 +1695,100 @@ fitted borderStatus height p =
     fittedTitles borderStatus height p
 
 
+{-| Where a pane's title has its `#[range=control|N]` parts, as
+`paneBorders` lays the title out (after `#[align=right]`, against the
+pane's right edge, shown when it fits): each one's N, row and columns
+(TM83). -}
+titleControls : State -> Layout.Pane -> Array { n : Int, row : Int, from : Int, to : Int }
+titleControls s p =
+    let
+        tcOwn =
+            Dict.get p.id s.status.panes
+
+        tcTitle =
+            Maybe.map .title tcOwn |> Maybe.withDefault (meant Reason.NotYet "")
+
+        tcStatus =
+            when Maybe.map .paneStatus tcOwn is
+                Just v ->
+                    if v == "" then
+                        windowBorderStatus s
+
+                    else
+                        v
+
+                Nothing ->
+                    meant Reason.NotYet (windowBorderStatus s)
+
+        tcRow =
+            if tcStatus == "top" then
+                p.y - 1
+
+            else
+                p.y + p.h
+
+        tcParts =
+            String.split "#[align=right]" tcTitle
+
+        tcWidth text =
+            Array.foldl (\r n -> n + String.count r.text) 0 (Style.runs Style.plain text)
+
+        tcRoom =
+            max 0 (p.w - 2)
+
+        tcUsed =
+            min tcRoom (tcWidth (Maybe.withDefault "" (Array.first tcParts)))
+
+        tcRight =
+            String.join "" (Array.dropFirst 1 tcParts)
+
+        tcStart =
+            p.x + 2 + tcRoom - tcWidth tcRight
+
+        controls =
+            String.split "#[range=" tcRight
+                |> Array.dropFirst 1
+                |> Array.foldl
+                    (\tcSeg acc ->
+                        let
+                            tcSpec =
+                                String.split "]" tcSeg |> Array.first |> Maybe.withDefault ""
+
+                            tcBody =
+                                String.dropFirst (String.count tcSpec + 1) tcSeg
+
+                            tcIn =
+                                String.split "#[norange]" tcBody |> Array.first |> Maybe.withDefault tcBody
+
+                            n =
+                                if String.startsWith "control|" tcSpec then
+                                    String.toInt (String.dropFirst 8 tcSpec)
+
+                                else
+                                    Nothing
+                        in
+                        { at = acc.at + tcWidth tcBody
+                        , spans =
+                            when n is
+                                Just k ->
+                                    Array.pushLast { n = k, row = tcRow, from = tcStart + acc.at, to = tcStart + acc.at + tcWidth tcIn - 1 } acc.spans
+
+                                Nothing ->
+                                    -- a range of another kind, the user's
+                                    -- own: not a button of tmux's
+                                    meant Reason.FromOutside acc.spans
+                        }
+                    )
+                    { at = tcWidth (Maybe.withDefault "" (Array.first (String.split "#[range=" tcRight))), spans = [] }
+                |> .spans
+    in
+    if (tcStatus /= "top" && tcStatus /= "bottom") || tcUsed + 1 + tcWidth tcRight > tcRoom then
+        []
+
+    else
+        controls
+
+
 {-| The tiled panes' `pane-border-status`, as tmux draws them, each by its
 own option (inherited from the window's): the first tiled pane's, where
 tmux has told it, else the one asked without a pane (`puritty-borders`),
@@ -6045,6 +6139,24 @@ pointer how p s =
                 takesMouse =
                     not how.select && paneTakesMouse target s
 
+                -- a press on a `#[range=control|N]` part of a pane's title,
+                -- 3.8's `[f]`, `[z]` and `[x]`: its binding, and the pane
+                -- (TM83)
+                controlClick =
+                    if p.action == 0 && p.button == 1 && s.drag == Nothing then
+                        order
+                            |> Array.mapAndKeepJust
+                                (\q ->
+                                    titleControls s q
+                                        |> Array.findFirst (\c -> c.row == row && col >= c.from && col <= c.to)
+                                        |> Maybe.andThen (\found -> Dict.get ("root MouseDown1Control" ++ String.fromInt found.value.n) s.keys.bindings)
+                                        |> Maybe.map (\b -> { pane = q.id, binding = b.command })
+                                )
+                            |> Array.first
+
+                    else
+                        Nothing
+
                 -- the right button on tmux's status line: its window menu over
                 -- a window, its session menu over status-left, as tmux's
                 -- MouseDown3Status and MouseDown3StatusLeft (TM58)
@@ -6096,51 +6208,60 @@ pointer how p s =
                         )
 
                 _ ->
-                    when lineHit is
-                        Just d ->
-                            plain { state = { s | drag = Just d }, commands = [] }
+                    when controlClick is
+                        Just c ->
+                            -- a button in a pane's title, tmux's
+                            -- MouseDown1ControlN with the pane under the
+                            -- mouse (TM83)
+                            plain (runLine { pane = c.pane, mouse = Just { col = col, row = row } } c.binding s)
 
                         Nothing ->
                             meant Reason.OutOfRange
-                                when target is
+                                when lineHit is
+                                    Just d ->
+                                        plain { state = { s | drag = Just d }, commands = [] }
+
                                     Nothing ->
-                                        meant Reason.OutOfRange { state = s, commands = [], own = Nothing, paste = False }
+                                        meant Reason.OutOfRange
+                                            when target is
+                                                Nothing ->
+                                                    meant Reason.OutOfRange { state = s, commands = [], own = Nothing, paste = False }
 
-                                    Just q ->
-                                        if p.action == 0 && p.button == 1 && onBox q then
-                                            -- the top edge moves the box; the others resize it
-                                            let
-                                                select =
-                                                    selected q.id s
-                                            in
-                                            plain (sent select { s | drag = Just { pane = q.id, kind = boxEdge q col row, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } })
+                                                Just q ->
+                                                    if p.action == 0 && p.button == 1 && onBox q then
+                                                        -- the top edge moves the box; the others resize it
+                                                        let
+                                                            select =
+                                                                selected q.id s
+                                                        in
+                                                        plain (sent select { s | drag = Just { pane = q.id, kind = boxEdge q col row, col = col, row = row, x = q.x, y = q.y, w = q.w, h = q.h, sent = { col = col, row = row } } })
 
-                                        else if takesMouse then
-                                            let
-                                                select =
-                                                    if p.action == 0 then
-                                                        selected q.id s
+                                                    else if takesMouse then
+                                                        let
+                                                            select =
+                                                                if p.action == 0 then
+                                                                    selected q.id s
+
+                                                                else
+                                                                    []
+
+                                                            grabbed =
+                                                                if p.action == 0 then
+                                                                    { s | grab = Just q.id }
+
+                                                                else if how.held == 0 then
+                                                                    { s | grab = Nothing }
+
+                                                                else
+                                                                    s
+
+                                                            reported =
+                                                                report how.held p q grabbed
+                                                        in
+                                                        plain { state = waitingFor select reported.state, commands = select ++ reported.commands }
 
                                                     else
-                                                        []
-
-                                                grabbed =
-                                                    if p.action == 0 then
-                                                        { s | grab = Just q.id }
-
-                                                    else if how.held == 0 then
-                                                        { s | grab = Nothing }
-
-                                                    else
-                                                        s
-
-                                                reported =
-                                                    report how.held p q grabbed
-                                            in
-                                            plain { state = waitingFor select reported.state, commands = select ++ reported.commands }
-
-                                        else
-                                            selecting how p col row q s
+                                                        selecting how p col row q s
 
 
 {-| Which edge of a floating pane's box a cell on it is, as a drag's
