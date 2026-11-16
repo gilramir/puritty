@@ -541,8 +541,8 @@ opened at the prompt (`display-popup -E true`), five commands on one
 line on 3.8 and, before it, a message and nothing sent. None found a
 fault.
 
-**Not covered yet**: resizes; the poll's timer before 3.2 and each
-version's own answers are TK10.9's.
+The poll's timer before 3.2 and each version's own answers are TK10.9's;
+resizes TK10.10's.
 
 ### TK10.9 · Each era on its own tmux's answers, and the status line's timer (2026-11-15)
 
@@ -576,6 +576,41 @@ replies to them".
 
 The app's tests take about three minutes on node, a minute more than
 before: the four versions' tests (forty) and the five scenarios.
+
+### TK10.10 · Resizes (2026-11-15)
+
+**Measured** (a control client setting its own size, `refresh-client -C`,
+on 2.7, 3.0, 3.2a, 3.4, 3.7c and 3.8, a session of two windows): an empty
+block, then a `%layout-change` for every window of the session in the
+order of their indexes, each in the new size, the shown one's flags `*`
+and the others' none; in tmux's layout string, and on 3.8 in JSON when the
+client asked for `new-layouts`. The fake does so (`FakeTmux.resizedTo`),
+and keeps whether `new-layouts` was asked.
+
+**Five scenarios**, each on 2.7, 3.2 and 3.8: puritty's window resized
+while attaching, to the session's first window and to its second (whose
+`%layout-change` comes after the first's, while puritty may not yet know
+its window); as a pane exits; twice before tmux answers; and as another
+client shows another window. **A check more** when all is said and read:
+tmux's window is the size puritty's window asks for (`TmuxMode.wantedSize`),
+and puritty's layout is that size.
+
+**It found** (all three eras, both attaching scenarios): a resize while
+attaching was lost. puritty sends its size once it knows the form this tmux
+takes (`ForCaps`, TM72), and sent the size the window had when attaching
+began; a resize before that sent one at once, in 3.x's form, which 2.x
+refuses. tmux's window stayed 80x24 where puritty's was 90x20, until the
+next resize. Fixed (`docs/tmux.md` TM78). The adoption the second window's
+scenario was written for (puritty takes a `%layout-change`'s window as its
+own while it knows none) did not go wrong in any order: puritty asks its
+window before it sends a size, so tmux answers that first.
+
+**Made to fail on purpose:** with the fix taken out, both attaching
+scenarios fail on every era, "puritty's window asks for 90x20, where
+tmux's window is 80x24". The first try of the fake wrote 3.8's
+`%layout-change` in tmux's layout string, which carries no floating pane,
+and the floating pane's drag failed for it: the fake's mistake, fixed by
+the measurement with `new-layouts`.
 
 ## TK11 · What tmux tells, and what puritty shows: window 6 (2026-11-15)
 

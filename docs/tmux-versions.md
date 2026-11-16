@@ -156,7 +156,20 @@ measured.
   stayed idle while the plain one spun. RHEL9 and Ubuntu 22.04 ship 3.2a,
   where anyone using tmux's own customize filter meets it.
 
-All five are fixed in later releases; nothing to report.
+- **3.2a sizes a detached session by the client that made it**:
+  `new-session -d -x 100 -y 30` gives an 80x23 window (the command
+  client's 80x24 less the status line), though `default-size` says
+  100x30; 3.2 and 3.3 give 100x30. 3.2a passes the command's client to the
+  first window's spawn (`cmd-new-session.c`, `sc.tc = c`), and
+  `default_window_size` takes that client's size before `-x`/`-y`. Ubuntu
+  22.04 patches it (`lp1976110-respect-sizing.diff`, "only use client for
+  sizing when not detached", Launchpad 1976110), which is TV7's 80x24
+  where the release makes 80x23; RHEL9's 3.2a does not. puritty starts
+  `tmux -CC new` attached, so is not touched; the comparison harness's
+  outer tmux, a detached session, is now resized to its size after it is
+  made.
+
+All six are fixed in later releases; nothing to report.
 
 ## TV7 · The distributions' packages against the releases
 
@@ -164,7 +177,7 @@ All five are fixed in later releases; nothing to report.
 |---|---|---|---|
 | almalinux-8 | 2.7 | 5 | the distribution's `sh` (bash) redrawing |
 | almalinux-9 | 3.2a | 17 | bash's bracketed paste; `pane_current_command` `coreutils` |
-| ubuntu-22.04 | 3.2a | 32 | **the window 80×24 where the release makes 80×23**: not yet explained |
+| ubuntu-22.04 | 3.2a | 32 | the window 80×24 where the release makes 80×23: Ubuntu's patch for 3.2a's detached sizing (TV6) |
 | debian-12 | 3.3a | 0 | |
 | almalinux-10 | 3.3a | 577 | a git snapshot past 3.3a: commands, keys, options |
 | ubuntu-24.04 | 3.4 | 0 | |
@@ -243,11 +256,14 @@ answers above and by the puppet's copy-mode steps on every release
 a session's and an option's rows, a value cycled and reset, an array item
 added, the key tables, each row for row as tmux 3.4 draws them, the only
 differences the harness's (its palette, and `capture-pane` leaving out a
-row's cleared end). On 3.2a the plain client came up 80×24 where the scene
-asks 100×30 (TV7's unexplained size), so its pictures were not compared.
+row's cleared end); on 3.2a too, once the harness's outer tmux was sized
+(TV6), with 3.2a's own option list (`status-justify` its `(M-y)` where 3.4
+has `(M-z)`).
 Popups before 3.8 are not shown under `-CC`, by design: puritty shows a
 popup as a 3.8 floating pane, and says so on the status line ("display-popup
-under tmux -CC needs tmux 3.8's floating panes").
+under tmux -CC needs tmux 3.8's floating panes"). *Gilbert, 2026-11-15:*
+no popup of puritty's own (a hidden window drawn as a box) for tmux before
+3.8; the message stays.
 
 **Found and fixed** (`docs/tmux.md` TM76): puritty's tree rows tested
 `#{?pane_marked,…}`, `#{?window_marked_flag,…}` and

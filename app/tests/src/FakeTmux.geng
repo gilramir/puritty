@@ -94,6 +94,9 @@ type alias World =
     -- each with its own (TK10.6)
     , window : { id : Int, index : Int, name : String }
     , others : Array Other
+    -- whether the client asked for 3.8's layouts (`refresh-client -f
+    -- new-layouts`), which `%layout-change` then carries too
+    , newLayouts : Bool
     }
 
 
@@ -124,6 +127,7 @@ world w =
     , floats = []
     , window = { id = 0, index = 0, name = "sh" }
     , others = []
+    , newLayouts = False
     }
 
 
@@ -663,7 +667,16 @@ one words w =
                     subscribe sub w
 
                 Nothing ->
-                    reply []
+                    when Dict.get "C" args.values |> Maybe.andThen sizeOf is
+                        Just size ->
+                            resizedTo size w
+
+                        Nothing ->
+                            if Maybe.withDefault "" (Dict.get "f" args.values) |> String.contains "new-layouts" then
+                                { w = { w | newLayouts = True }, ok = True, lines = [], notices = [] }
+
+                            else
+                                reply []
 
         "send-keys" ->
             sendKeys args target w
@@ -1334,11 +1347,61 @@ subscribe sub w =
     { w = { w | subscriptions = Array.pushLast { name = name, scope = scope, format = format } w.subscriptions }, ok = True, lines = [], notices = notices }
 
 
+{-| `refresh-client -C`'s size, `100x30` (3.0 and later) or `100,30` (2.x). -}
+sizeOf : String -> Maybe { cols : Int, rows : Int }
+sizeOf text =
+    when String.split "x" (String.replace "," "x" text) |> Array.map String.toInt is
+        [ Just cols, Just rows ] ->
+            Just { cols = cols, rows = rows }
+
+        _ ->
+            Nothing
+
+
+{-| The control client's size set (`refresh-client -C`): the session's
+windows made that size, an empty block, and a `%layout-change` for each
+window in the order of their indexes, in tmux's layout string, or in
+JSON on 3.8 when the client asked for `new-layouts`, the shown one's flags
+`*` and the others' none (measured on 2.7, 3.0, 3.2a, 3.4, 3.7c and 3.8,
+docs/tmux-checks.md TK10.10). -}
+resizedTo : { cols : Int, rows : Int } -> World -> { w : World, ok : Bool, lines : Array String, notices : Array String }
+resizedTo size w0 =
+    let
+        w =
+            { w0 | cols = size.cols, rows = size.rows, panes = Array.map (\p -> { p | rows = size.rows }) w0.panes, others = Array.map (\o -> { o | panes = Array.map (\p -> { p | rows = size.rows }) o.panes }) w0.others }
+
+        notice o =
+            let
+                l =
+                    layoutWith ((rulesOf w.version).jsonLayout && w.newLayouts) (viewed o w)
+            in
+            "%layout-change @"
+                ++ String.fromInt o.id
+                ++ " "
+                ++ l
+                ++ " "
+                ++ l
+                ++ " "
+                ++ (if o.id == w.window.id then
+                        "*"
+
+                    else
+                        ""
+                   )
+    in
+    { w = w, ok = True, lines = [], notices = windowsOf w |> Array.sortBy .index |> Array.map notice }
+
+
 {-| The layout tmux gives: the panes side by side, in 3.8's JSON form
 (`new-layouts`), or before it as `b25d,80x24,0,0,0`, the body after its
-checksum. -}
+checksum, as this version writes `window_layout`. -}
 layout : World -> String
 layout w =
+    layoutWith (rulesOf w.version).jsonLayout w
+
+
+layoutWith : Bool -> World -> String
+layoutWith asJson w =
     let
         n =
             String.fromInt
@@ -1395,7 +1458,7 @@ layout w =
         floats =
             Array.indexedMap (\i f -> box f (",\"z\":" ++ n (Array.length w.floats - 1 - i))) w.floats
     in
-    if not (rulesOf w.version).jsonLayout then
+    if not asJson then
         hex4 (checksum body) ++ "," ++ body
 
     else

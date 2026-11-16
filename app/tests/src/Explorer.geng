@@ -653,7 +653,26 @@ finish budget node =
             { node = node, broken = Just ("puritty shows " ++ shows ++ ", where tmux has " ++ has) }
 
         else
-            { node = node, broken = Nothing }
+            -- and tmux's window the size puritty's window asks for, and
+            -- the size puritty's layout says (TK10.10)
+            let
+                wanted =
+                    TmuxMode.wantedSize node.tmux
+
+                layoutSize =
+                    TmuxMode.viewLine node.tmux |> String.split " | " |> Array.get 3 |> Maybe.withDefault ""
+
+                tmuxSize =
+                    String.fromInt node.world.cols ++ "x" ++ String.fromInt node.world.rows
+            in
+            if wanted.cols /= node.world.cols || wanted.rows /= node.world.rows then
+                { node = node, broken = Just ("puritty's window asks for " ++ String.fromInt wanted.cols ++ "x" ++ String.fromInt wanted.rows ++ ", where tmux's window is " ++ tmuxSize) }
+
+            else if not (String.contains tmuxSize layoutSize) then
+                { node = node, broken = Just ("puritty's layout says " ++ layoutSize ++ ", where tmux's window is " ++ tmuxSize) }
+
+            else
+                { node = node, broken = Nothing }
 
 
 begin : Scenario -> Node
@@ -1008,6 +1027,7 @@ scenarios rules =
         ++ menuScenarios rules
         ++ pauseScenarios rules
         ++ pollScenarios rules
+        ++ resizeScenarios rules
         ++ [ { name = "attaching to two panes, one of whose programs exits"
              , world = twoPanes rules
              , events = [ paneExits 1 ]
@@ -1236,6 +1256,54 @@ pollScenarios rules =
                       }
                     ]
                 )
+
+
+{-| The user makes puritty's window `cols` by `rows` cells of tmux's (one
+row more for puritty's own, as `size` gives it): puritty tells tmux
+(`refresh-client -C`), and tmux tells a new layout for every window. -}
+resizes : Int -> Int -> Action
+resizes cols rows =
+    { name = "the user makes puritty's window " ++ String.fromInt cols ++ "x" ++ String.fromInt rows
+    , act = TmuxMode.resized { cols = cols, rows = rows + 1 }
+    }
+
+
+{-| Resizes (TK10.10): while attaching, to the session's first window and
+to its second (whose layout comes after the first's); as a pane exits;
+twice before tmux answers; and as another client shows another window. -}
+resizeScenarios : String -> Array Scenario
+resizeScenarios rules =
+    [ { name = "puritty's window resized while attaching"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ resizes 90 20 ]
+      , settled = False
+      }
+    , { name = "puritty's window resized while attaching to the session's second window"
+      , world = (FakeTmux.switchWindow 1 (twoWindows rules)).world
+      , events = []
+      , actions = [ resizes 90 20 ]
+      , settled = False
+      }
+    , { name = "puritty's window resized as a pane exits"
+      , world = twoPanes rules
+      , events = [ paneExits 1 ]
+      , actions = [ resizes 90 20 ]
+      , settled = True
+      }
+    , { name = "puritty's window resized twice before tmux answers"
+      , world = twoPanes rules
+      , events = []
+      , actions = [ resizes 90 20, resizes 100 30 ]
+      , settled = True
+      }
+    , { name = "puritty's window resized as another client shows another window"
+      , world = twoWindows rules
+      , events = [ windowShown 1 ]
+      , actions = [ resizes 90 20 ]
+      , settled = True
+      }
+    ]
 
 
 {-| Each scenario on each era's rules that broke something: what, and the

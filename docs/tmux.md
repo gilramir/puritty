@@ -3327,3 +3327,16 @@ versions: before the change 2.7, 3.0, 3.2a and 3.4 failed it ("(1) └─> +
 0: sh*" where 3.4 draws "(1) └─> 0: sh*"); after, all pass. App tests
 252.
 
+
+## TM78 · A resize while attaching is kept (2026-11-15)
+
+Found by the explorer (`docs/tmux-checks.md` TK10.10): puritty tells tmux
+its size once it knows the form this tmux takes (`refresh-client -C 80x24`
+from 3.0, `80,24` before, TM72), from the answer to `list-commands`. It
+sent the size the window had when attaching began, so a window resized
+before that answer (a window manager maximizing it as it opens) left tmux
+at the old size until the next resize; and the resize itself was sent at
+once, in 3.x's form, which 2.x refuses. Now a resize before the answer
+resizes puritty's canvas and sends nothing (`capsKnown`), and the answer
+sends the size the window has then (`wantedSize`).
+

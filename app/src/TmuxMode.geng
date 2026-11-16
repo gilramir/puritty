@@ -32,6 +32,7 @@ module TmuxMode exposing
     , typeInto
     , typed
     , viewLine
+    , wantedSize
     )
 
 {-| tmux control mode in puritty's window (`docs/tmux.md` TM13 step 3,
@@ -191,6 +192,10 @@ type alias State =
     -- what this tmux takes, from its `list-commands` (TM72), and whether
     -- it expands `#{T:…}` (from 2.9)
     , caps : Caps
+    -- whether `caps` is this tmux's, read from its answer to
+    -- `list-commands`; until then puritty sends no size, since it does not
+    -- know which form this tmux takes (docs/tmux-checks.md TK10.10)
+    , capsKnown : Bool
     , timeFormats : Bool
     -- customize-mode, drawn by puritty (TM62)
     , customizing : Maybe Customizing
@@ -621,7 +626,7 @@ type Expect
     | ForTreeFilter
     | ForListRows
     | ForCommandNames
-    | ForCaps { cols : Int, rows : Int }
+    | ForCaps
     | ForPoll { name : String, scope : Int }
     | ForTimeProbe
     | ForRawOptions { name : String, target : String, format : String, options : Array String }
@@ -723,6 +728,7 @@ idle _ =
     , listing = Nothing
     , commandNames = []
     , caps = Caps.assumed
+    , capsKnown = False
     , timeFormats = True
     , customizing = Nothing
     }
@@ -1140,7 +1146,7 @@ expectName x =
         ForCommandNames ->
             "tmux's commands"
 
-        ForCaps _ ->
+        ForCaps ->
             "what tmux takes"
 
         ForPoll p ->
@@ -1907,6 +1913,13 @@ down rows p =
     { p | y = min 16384 (p.y + clamp 0 16 rows) }
 
 
+{-| The size puritty's window asks tmux for its panes: the canvas, less
+the status line's rows (docs/tmux-checks.md TK10.10). -}
+wantedSize : State -> { cols : Int, rows : Int }
+wantedSize s =
+    tmuxSize (statusRows s) { cols = s.canvas.cols, rows = s.canvas.rows }
+
+
 {-| The size tmux is told: puritty's window less the tab bar. -}
 tmuxSize : Int -> { cols : Int, rows : Int } -> { cols : Int, rows : Int }
 tmuxSize statusLines size =
@@ -1984,7 +1997,7 @@ event size e acc =
                 st =
                     acc.state
             in
-            { acc | state = { st | on = True, starting = Just [], window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus } }
+            { acc | state = { st | on = True, starting = Just [], window = -1, ids = [], panes = Builder.empty 0, layout = Nothing, active = -1, canvas = blank size.cols size.rows, expecting = [], info = Dict.empty, status = noStatus, rawStatus = noStatus, capsKnown = False } }
 
         Exited ->
             let
@@ -2015,7 +2028,7 @@ event size e acc =
                                 acc.state
                         in
                         if r.ok then
-                            attachQueries size { acc | state = { st | starting = Nothing } }
+                            attachQueries { acc | state = { st | starting = Nothing } }
 
                         else
                             { acc | state = { st | starting = Just (lines ++ Array.map Bytes.toStringLossy r.lines) } }
@@ -2038,16 +2051,12 @@ event size e acc =
 
 {-| What puritty asks when tmux has attached: the client's flags and size,
 the commands, the window, its panes, the keys and the rest. -}
-attachQueries : { cols : Int, rows : Int } -> (taken acc : Acc) -> Acc
-attachQueries size acc =
-    let
-        clientSize =
-            tmuxSize (statusRows acc.state) size
-    in
+attachQueries : (taken acc : Acc) -> Acc
+attachQueries acc =
     ask
         [ -- what this tmux takes first: the client's flags, its size and
           -- the subscriptions are asked as it takes them (TM72)
-          { command = Command.listCommands, expect = ForCaps clientSize }
+          { command = Command.listCommands, expect = ForCaps }
         , { command = windowQuery, expect = ForWindow }
         , { command = tabsQuery, expect = ForTabs }
         , { command = panesQuery, expect = ForPanes }
@@ -2509,7 +2518,7 @@ replied expect ok lines acc =
             in
             { acc | state = r.state, commands = acc.commands ++ r.commands }
 
-        ForCaps clientSize ->
+        ForCaps ->
             let
                 st =
                     acc.state
@@ -2528,6 +2537,7 @@ replied expect ok lines acc =
                 known =
                     { st
                         | caps = caps
+                        , capsKnown = True
                         -- the names only: tmux completes no alias
                         -- (measured, `sel` gives `select-`)
                         , commandNames =
@@ -2556,7 +2566,9 @@ replied expect ok lines acc =
                         -- starts the timer
                         [ { command = Command.display "#{T:version}", expect = ForTimeProbe } ]
             in
-            ask (flags ++ [ { command = sizeCommand caps clientSize, expect = ForNothing } ] ++ subscriptions) { acc | state = known }
+            -- the size the window has now, which a resize while this was
+            -- asked has changed (TK10.10)
+            ask (flags ++ [ { command = sizeCommand caps (wantedSize known), expect = ForNothing } ] ++ subscriptions) { acc | state = known }
 
         ForTimeProbe ->
             let
@@ -13844,7 +13856,11 @@ report held p q s =
 {-| The window at a new size: the canvas, and tmux told. -}
 resized : { cols : Int, rows : Int } -> (taken s : State) -> { state : State, commands : Array String }
 resized size s =
-    if s.on then
+    if s.on && not s.capsKnown then
+        -- the size is sent once this tmux's form is known (`ForCaps`)
+        { state = { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }, commands = [] }
+
+    else if s.on then
         sent [ sizeCommand s.caps (tmuxSize (statusRows s) size) ] { s | canvas = Vt.resize (max 1 size.cols) (max 1 size.rows) s.canvas }
 
     else
