@@ -11,6 +11,7 @@ module Ssh.KnownHosts exposing
     , matching
     , orderHostKeys
     , parse
+    , replaced
     )
 
 {-| OpenSSH's `known_hosts` (sshd(8), "SSH_KNOWN_HOSTS FILE FORMAT";
@@ -305,3 +306,48 @@ line target key =
                     meant Reason.NotSet target.name
     in
     names ++ " " ++ keyTypeOf key ++ " " ++ Base64.encode key ++ "\n"
+
+
+{-| A changed key accepted (`docs/ssh-client.md` SC28): one file's text
+without the lines that name only this host and hold another key of the
+new key's type (`removed`, their numbers), the rest as it was, line ends
+and all. A line of that type for the host that names other hosts too, or
+by a pattern, is left as it is (`kept`): taking it out would change what
+those hosts are trusted by. The new key's own line is written after, as a
+new one is (`line`). -}
+replaced : String -> Bytes -> String -> { text : String, removed : Array Int, kept : Array Int }
+replaced name key text =
+    let
+        keyType =
+            keyTypeOf key
+
+        stale =
+            (parse text).entries
+                |> Array.keepIf (\e -> e.marker == Plain && e.keyType == keyType && matches name e && not (SshCrypto.equal e.key key))
+
+        onlyThis e =
+            when e.names is
+                Hashed _ ->
+                    True
+
+                Patterns [ only ] ->
+                    String.toLower only == name
+
+                Patterns _ ->
+                    False
+
+        removed =
+            stale |> Array.keepIf onlyThis |> Array.map .lineNumber
+
+        lines =
+            String.split "\n" text
+    in
+    { text =
+        lines
+            |> Array.indexedMap (\i l -> { number = i + 1, text = l })
+            |> Array.keepIf (\l -> not (Array.member l.number removed))
+            |> Array.map .text
+            |> String.join "\n"
+    , removed = removed
+    , kept = stale |> Array.keepIf (\e -> not (onlyThis e)) |> Array.map .lineNumber
+    }

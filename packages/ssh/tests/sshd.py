@@ -103,7 +103,8 @@ SESSION_CASES = [
 
 
 # Ssh.Session (step 8): name, how known_hosts starts (empty, holding the
-# server's key, or holding another key for it), client options. The
+# server's key, holding another key for it, or another key on a line that
+# names another host too), client options. The
 # port and the file's path are written as PORT and KNOWN_HOSTS in the pins.
 SESSION_DRIVER_CASES = [
     ("driver-trust-remember", "empty", ["--identity", "{ed}", "--trust"]),
@@ -111,6 +112,14 @@ SESSION_DRIVER_CASES = [
     ("driver-decline", "empty", ["--identity", "{ed}"]),
     ("driver-known", "known", ["--identity", "{ed}"]),
     ("driver-changed", "other", ["--identity", "{ed}", "--trust"]),
+    # a changed key asked about (SC28): trusted once, put in place of the
+    # old, refused with no question under StrictHostKeyChecking yes, and
+    # put in place where the old line names another host too ("shared"),
+    # which keeps that line
+    ("driver-changed-once", "other", ["--identity", "{ed}", "--trust-changed-once"]),
+    ("driver-changed-replace", "other", ["--identity", "{ed}", "--replace-changed"]),
+    ("driver-changed-strict", "other", ["--identity", "{ed}", "--replace-changed", "--strict", "yes"]),
+    ("driver-changed-shared", "shared", ["--identity", "{ed}", "--replace-changed"]),
     ("driver-strict-yes", "empty", ["--identity", "{ed}", "--strict", "yes"]),
     ("driver-accept-new", "empty", ["--identity", "{ed}", "--strict", "accept-new"]),
     ("driver-passphrase", "known", ["--identity", "{ecdsa521}", "--passphrase", "hunter2"]),
@@ -284,11 +293,15 @@ def main():
         kh = WORK / f"known_hosts.{name}"
         server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
         lookup = f"[127.0.0.1]:{server.port}"
-        kh.write_text("" if start == "empty" else f"{lookup} {' '.join(server_pub if start == 'known' else other_key.read_text().split()[:2])}\n")
+        other_pub = " ".join(other_key.read_text().split()[:2])
+        names = f"{lookup},elsewhere" if start == "shared" else lookup
+        kh.write_text("" if start == "empty" else f"{names} {' '.join(server_pub) if start == 'known' else other_pub}\n")
         try:
             got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
                               "--exec", "echo hi; exit 4", *(o.format(**keys) for o in options)])
             got += "known_hosts holds the key: " + ("yes" if " ".join(server_pub) in kh.read_text() else "no") + "\n"
+            if start in ("other", "shared"):
+                got += "known_hosts holds the old key: " + ("yes" if other_pub in kh.read_text() else "no") + "\n"
         finally:
             server.stop()
         got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))

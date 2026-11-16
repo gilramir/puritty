@@ -129,7 +129,8 @@ SUITES = [
     ),
     Suite(
         "ssh-known-hosts",
-        34,
+        # 40 since SC28: a changed key put in place of the old, six
+        40,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "known-hosts", "known-hosts.txt"], cwd="packages/ssh/tests"),
             Run(

@@ -3482,8 +3482,45 @@ sshTold told m =
             m.remote.resize { columns = m.term.cols, rows = m.term.rows }
                 |> Task.map (\_ -> sshNoticed told m)
 
+        Session.Asking (Session.HostKeyChanged k) ->
+            -- asked by the platform's own dialog where there is one, which
+            -- nothing the server prints can pass for (docs/ssh-client.md
+            -- SC28); else in puritty's box, by its keys
+            Window.warning { title = "puritty: " ++ cleanText k.host ++ "'s key has changed", text = String.join "\n" (changedLines k) ++ "\n\nYes: trust the new key, and put it in place of the old one.\nNo: trust it for this connection only.\nCancel: do not connect. If you did not expect the change, this is the safe choice." }
+                |> Task.andThen
+                    (\got ->
+                        let
+                            asked =
+                                sshNoticed told m
+                        in
+                        when { got = got, ssh = asked.ssh } is
+                            { got = 1, ssh = Just screen } ->
+                                sshAnswered asked.remote (Session.Trust { remember = True }) "the changed key is trusted, in place of the old one" screen asked
+
+                            { got = 2, ssh = Just screen } ->
+                                sshAnswered asked.remote (Session.Trust { remember = False }) "the changed key is trusted this once" screen asked
+
+                            { got = 3, ssh = Just screen } ->
+                                sshAnswered asked.remote Session.Decline "the changed key is not trusted" screen asked
+
+                            _ ->
+                                Task.succeed asked
+                    )
+
         _ ->
             Task.succeed (sshNoticed told m)
+
+
+{-| What a changed host key is said with, in the platform's dialog, the box
+and the screen alike (SC28). -}
+changedLines : { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int } -> Array String
+changedLines k =
+    [ "Its " ++ k.algorithm ++ " key is not the one known for it,"
+    , "which is on line " ++ String.join ", " (Array.map String.fromInt k.lineNumbers) ++ " of known_hosts."
+    , "Someone may be pretending to be the host, or the host was rebuilt."
+    , "The new key's fingerprint:"
+    , "    " ++ k.fingerprint
+    ]
 
 
 {-| A notice from the session, taken into the screen's state. A session
@@ -3602,6 +3639,20 @@ sshKey remote k m =
                             sshAnswered remote answer line screen model
                     in
                     when asking.ask is
+                        Session.HostKeyChanged _ ->
+                            -- Enter does nothing: only a letter trusts it
+                            if letter == "a" then
+                                answered (Session.Trust { remember = True }) "the changed key is trusted, in place of the old one" m
+
+                            else if letter == "o" then
+                                answered (Session.Trust { remember = False }) "the changed key is trusted this once" m
+
+                            else if escape || letter == "n" then
+                                answered Session.Decline "the changed key is not trusted" m
+
+                            else
+                                Task.succeed m
+
                         Session.TrustHostKey _ ->
                             if letter == "a" then
                                 answered (Session.Trust { remember = True }) "the key is trusted and remembered" m
@@ -3703,6 +3754,16 @@ dialogOf screen =
     when screen.asking is
         Just asking ->
             when asking.ask is
+                Session.HostKeyChanged k ->
+                    Just
+                        { title = "THE KEY OF " ++ cleanText k.host ++ " HAS CHANGED"
+                        , lines = changedLines k
+                        , field = Nothing
+                        , swatches = []
+                        , buttons = []
+                        , hint = "Esc: don't connect (safe)    O: trust once    A: trust, in place of the old key"
+                        }
+
                 Session.TrustHostKey k ->
                     Just
                         { title = "The host " ++ cleanText k.host ++ " is not known"
@@ -3800,6 +3861,11 @@ ownTerm m boxed screen =
             when screen.asking is
                 Just asking ->
                     when asking.ask is
+                        Session.HostKeyChanged k ->
+                            [ line "", line (bold ("THE KEY OF " ++ cleanText k.host ++ " HAS CHANGED.")) ]
+                                ++ Array.map (\l -> line ("  " ++ l)) (changedLines k)
+                                ++ [ line "", line "  Esc: do not connect (the safe choice)    O: trust it this once    A: trust it, in place of the old key" ]
+
                         Session.TrustHostKey k ->
                             [ line ""
                             , line (bold ("The host " ++ cleanText k.host ++ " is not known."))
@@ -3873,6 +3939,9 @@ ownTerm m boxed screen =
                 Just asking ->
                     when asking.ask is
                         Session.TrustHostKey _ ->
+                            False
+
+                        Session.HostKeyChanged _ ->
                             False
 
                         _ ->

@@ -86,6 +86,19 @@ for name, order in [("host1", "ssh-ed25519,rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-
                     ("unknown", "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256")]:
     out.append(f"order name={name} algorithms={order}")
 
+# a changed key put in place of the old (docs/ssh-client.md SC28): the
+# lines that name only this host with another key of its type are taken
+# out, a hashed one too; a line that names other hosts too, or by a
+# pattern, is kept; the text otherwise as it was
+for name, key, removed, kept in [
+    ("host1", "e2", [2], []), ("host6", "e1", [8], []), ("host2", "p2", [], [3]),
+    ("a.example.com", "e7", [], [6]), ("host1", "e1", [], []), ("[host4]:2222", "e1", [4], []),
+]:
+    lines = text.split("\n")
+    expect = "\n".join(l for i, l in enumerate(lines) if i + 1 not in removed)
+    out.append(f"replace name={name} key={blob(key)} removed={','.join(map(str, removed)) or '-'} "
+               f"kept={','.join(map(str, kept)) or '-'} text={expect.encode().hex()}")
+
 (HERE / "known-hosts.txt").write_text("\n".join(out) + "\n")
 subprocess.run(["rm", "-rf", str(work)], check=True)
 print("wrote", len(out) - 2, "known_hosts cases")

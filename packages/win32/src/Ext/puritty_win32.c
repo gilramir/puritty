@@ -2170,6 +2170,26 @@ geng_cancel puritty_win32_system_menu(void *items_bytes, geng_wait *wait) {
 }
 
 
+/* A WARNING ONLY THE PLATFORM DRAWS (puritty docs/ssh-client.md SC28) */
+
+/* Windows' own message box over the window, so that nothing a server
+ * prints can pass for it: Yes, No and Cancel, Cancel the default. Answers
+ * 1 for Yes, 2 for No, 3 for Cancel or the box closed. It is modal, and
+ * waits on this thread for the answer. */
+geng_cancel puritty_win32_warning(void *title_bytes, void *text_bytes, geng_wait *wait) {
+    char *title = string_of(title_bytes);
+    char *text = string_of(text_bytes);
+    wchar_t *wtitle = wide(title);
+    wchar_t *wtext = wide(text);
+    free(title);
+    free(text);
+    int got = MessageBoxW(win, wtext, wtitle, MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON3 | MB_SETFOREGROUND);
+    free(wtitle);
+    free(wtext);
+    geng_succeed(wait, geng_slot_I4(got == IDYES ? 1 : got == IDNO ? 2 : 3));
+    return (geng_cancel) {0};
+}
+
 /* THE TASKBAR'S JUMP LIST (puritty docs/settings-gui.md SG19) */
 
 #define COBJMACROS

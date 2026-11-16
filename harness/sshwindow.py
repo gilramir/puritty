@@ -48,7 +48,11 @@ CASES = [
     ("passphrase", "ecdsa521", "hunter2", "known", ["type:hunter2", "Return"], "exit 7"),
     ("wrong-passphrase-then-right", "ecdsa521", "hunter2", "known", ["type:nope", "Return", "type:hunter2", "Return"], "exit 7"),
     ("decline", "ed", "", "empty", ["Escape", "Return"], "exit 7"),
-    ("changed", "ed", "", "other", ["Return"], "exit 7"),
+    # a changed key (docs/ssh-client.md SC28): Enter does nothing, Esc
+    # refuses and Enter closes; O trusts it once; A puts it in place
+    ("changed", "ed", "", "other", ["Return", "Escape", "Return"], "exit 7"),
+    ("changed-once", "ed", "", "other", ["o"], "exit 7"),
+    ("changed-replace", "ed", "", "other", ["a"], "exit 7"),
     ("no-key-then-reconnect", "other", "", "known", ["r", "Return"], "exit 7"),
     # through a jump host (docs/ssh-client.md SC21): the host's `jump` is a
     # second sshd, its key from ~/.ssh/config's IdentityFile for it

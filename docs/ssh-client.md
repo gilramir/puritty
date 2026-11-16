@@ -1193,8 +1193,8 @@ with no `client` line logged in through Pageant, which `ssh.exe` does not
 use, and exited with the command's status.
 
 **Not yet, of step 9:** Gilbert's own session to an EUC-KR host;
-passwords kept in Windows' Credential Manager; the jump host, the strip
-and the changed-key dialog of SC18.
+passwords kept in Windows' Credential Manager; the strip of SC18. (The
+jump host was built the same day, SC21; the changed-key dialog in SC28.)
 
 ## SC20 · A typed secret shown as bullets (2026-11-10)
 
@@ -1510,3 +1510,50 @@ that could not start is Gilbert's to decide. (Decided and done in
 three are `Session.resolveOne`'s `String.toInt` defaults for those three
 numbers, which `Config.checked` now makes unreachable, though the checker
 cannot see it, so they join the provable ones.
+
+
+## SC28 · A changed host key asked about (2026-11-15)
+
+Gilbert asked for the changed-key dialog of SC10 and SC18, which had been
+left as a refusal. A key that is not the one `known_hosts` holds for the
+host, of the same type, is now a question, `Ask.HostKeyChanged`, with
+three answers:
+
+- **Cancel**, the default and the one called safe: refused, as before.
+- **Trust once** (`Trust { remember = False }`): the connection goes on,
+  `known_hosts` as it was.
+- **Trust, in place of the old key** (`Trust { remember = True }`): in each
+  `known_hosts` file the host's own lines with another key of that type are
+  taken out (`KnownHosts.replaced`; the file written whole and moved into
+  place), and the new key written as a first contact's is. A line that
+  names other hosts too, or the host by a pattern, is left, and said:
+  taking it out would change what those hosts are trusted by.
+
+Under `StrictHostKeyChecking yes` it is refused with no question, as
+OpenSSH refuses it. A revoked key is still refused outright.
+
+**Where it is asked.** On Windows by the platform's own message box over
+the window (`Window.warning`: Yes, No, Cancel, Cancel the default,
+`MB_ICONWARNING`), which nothing a server prints can pass for, as SC10
+asks; the same words are in puritty's box behind it. On Linux, where X11
+has no such dialog, in puritty's box over the screen (SC23): "THE KEY OF
+host HAS CHANGED", the line of `known_hosts`, the new key's fingerprint,
+and Esc (don't connect, safe), O (trust once) and A (trust, in place of
+the old key); Enter does nothing, so that no habit trusts it.
+
+**Checked:** `ssh-tests known-hosts` 40 (six new `replace` cases: the
+host's own line and a hashed one taken out, a shared and a pattern line
+kept, the known key changing nothing, a `[host]:port` line), each with the
+whole text after; the ssh gate's sshd cases (`driver-changed`, refused
+with no answer; `-once`, `-replace`, `-strict`, `-shared`), the file's old
+and new keys checked after each; `harness/sshwindow.py` 13 of 13
+(`changed`: Enter does nothing, Esc refuses; `changed-once`;
+`changed-replace`), and the box seen in its picture.
+
+**Seen on Windows** (beelink1, a probe with its own home and state folders
+and a made-up key for `localhost`, `puritty ssh yosup@localhost`): Windows'
+warning box over puritty's window, titled "puritty: localhost's key has
+changed", the warning icon, the key's type, the line of `known_hosts`, the
+new key's fingerprint and what Yes, No and Cancel do, Cancel focused. Esc
+answered Cancel, and the probe's `known_hosts` was as it was. The probe and
+its files were removed after; Gilbert's own `~/.ssh` was not touched.

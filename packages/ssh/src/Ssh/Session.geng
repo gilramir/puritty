@@ -94,13 +94,15 @@ type AgentPath
 {-| What the user is asked. -}
 type Ask
     = TrustHostKey { host : String, algorithm : String, fingerprint : String, knownTypes : Array String }
+    | HostKeyChanged { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int }
     | Password { prompt : String }
     | Passphrase { file : String }
     | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool } }
 
 
 {-| The user's answer to the last [`Ask`](#Ask). `Trust`: connect, and
-remember the key if `remember`. `Give` and `GiveAll`: what was typed.
+remember the key if `remember` (for a changed key, in place of the old
+one, SC28). `Give` and `GiveAll`: what was typed.
 `Decline`: no, and the method or the connection is given up. -}
 type Answer
     = Trust { remember : Bool }
@@ -156,6 +158,7 @@ type alias Identity =
 type Waiting
     = NotWaiting
     | ForHostKey { name : String, key : Bytes }
+    | ForChangedKey { name : String, key : Bytes }
     | ForPassword
     | ForPassphrase { need : { id : Int, algorithm : String, data : Bytes }, text : Bytes, path : String, tries : Int }
     | ForResponses
@@ -744,17 +747,25 @@ hostKey shown st =
                     |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "a revoked key" s.transport) s)
 
             KnownHosts.Changed changed ->
-                ending
-                    ("THE HOST'S KEY HAS CHANGED: its "
-                        ++ shown.algorithm
-                        ++ " key is now "
-                        ++ printed
-                        ++ ", but the known hosts hold another for it (line "
-                        ++ String.join ", " (Array.map String.fromInt changed.lineNumbers)
-                        ++ "). Someone may be listening in, or the host was rebuilt. The connection is refused; if the host was rebuilt, take its old key out of the known hosts."
-                    )
-                    st
-                    |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key changed" s.transport) s)
+                if st.options.strictHostKeyChecking == "yes" then
+                    -- refused, as OpenSSH refuses it, with no question
+                    ending
+                        ("THE HOST'S KEY HAS CHANGED: its "
+                            ++ shown.algorithm
+                            ++ " key is now "
+                            ++ printed
+                            ++ ", but the known hosts hold another for it (line "
+                            ++ String.join ", " (Array.map String.fromInt changed.lineNumbers)
+                            ++ "). Someone may be listening in, or the host was rebuilt. The connection is refused, as StrictHostKeyChecking is yes; if the host was rebuilt, take its old key out of the known hosts."
+                        )
+                        st
+                        |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key changed" s.transport) s)
+
+                else
+                    -- asked, Cancel the safe answer (SC10, SC28)
+                    tell
+                        (Asking (HostKeyChanged { host = name, algorithm = shown.algorithm, fingerprint = printed, lineNumbers = changed.lineNumbers }))
+                        { st | waiting = ForChangedKey { name = name, key = shown.key } }
 
             KnownHosts.Unknown unknown ->
                 when st.options.strictHostKeyChecking is
@@ -801,6 +812,66 @@ remember name key st =
                 |> Task.andThen (\_ -> File.appendFile st.permissions.fs (Bytes.fromString (KnownHosts.line { name = name, salt = Nothing } key)) path)
                 |> Task.andThen (\_ -> tell (Status ("the host's key is written to " ++ file)) st)
                 |> Task.onError (\e -> tell (Status ("the host's key could not be written: " ++ Os.Error.toString e)) st)
+
+
+{-| A changed key accepted (SC28): in each `known_hosts` file, the host's
+own lines with another key of its type taken out (the file written whole
+and moved into place), then the key written as a new one is. A line that
+names other hosts too is left, and said. -}
+replaceKey : String -> Bytes -> State -> Task Os.Error.Error State
+replaceKey name key st =
+    st.options.knownHostsFiles
+        |> Array.foldl
+            (\file task ->
+                task
+                    |> Task.andThen
+                        (\s ->
+                            let
+                                path =
+                                    Path.fromString file
+                            in
+                            File.readFile s.permissions.fs path
+                                |> Task.map (\b -> Just (Bytes.toStringLossy b))
+                                |> Task.onError (\_ -> Task.succeed Nothing)
+                                |> Task.andThen
+                                    (\read ->
+                                        when read is
+                                            Nothing ->
+                                                -- a file not there, or not
+                                                -- readable: nothing of it
+                                                -- to take out
+                                                meant Reason.FromOutside (Task.succeed s)
+
+                                            Just text ->
+                                                let
+                                                    r =
+                                                        KnownHosts.replaced name key text
+
+                                                    next =
+                                                        Path.fromString (file ++ ".puritty-new")
+
+                                                    keptSaid =
+                                                        if Array.isEmpty r.kept then
+                                                            Task.succeed
+
+                                                        else
+                                                            tell (Status (file ++ ": line " ++ String.join ", " (Array.map String.fromInt r.kept) ++ " names other hosts too, and keeps the old key for them"))
+                                                in
+                                                (if Array.isEmpty r.removed then
+                                                    Task.succeed s
+
+                                                 else
+                                                    File.writeFile s.permissions.fs (Bytes.fromString r.text) next
+                                                        |> Task.andThen (\_ -> File.move s.permissions.fs { from = next, to = path })
+                                                        |> Task.andThen (\_ -> tell (Status (file ++ ": the old key taken out (line " ++ String.join ", " (Array.map String.fromInt r.removed) ++ ")")) s)
+                                                        |> Task.onError (\e -> tell (Status (file ++ ": the old key could not be taken out: " ++ Os.Error.toString e)) s)
+                                                )
+                                                    |> Task.andThen keptSaid
+                                    )
+                        )
+            )
+            (Task.succeed st)
+        |> Task.andThen (remember name key)
 
 
 -- AUTHENTICATION
@@ -964,6 +1035,19 @@ onAnswer answer st =
                 Task.succeed { cleared | hostKeyTrusted = True }
             )
                 |> Task.andThen beginAuth
+
+        { waiting = ForChangedKey shown, answer = Trust trust } ->
+            (if trust.remember then
+                replaceKey shown.name shown.key { cleared | hostKeyTrusted = True }
+
+             else
+                tell (Status "the host's changed key is trusted for this connection only") { cleared | hostKeyTrusted = True }
+            )
+                |> Task.andThen beginAuth
+
+        { waiting = ForChangedKey _ } ->
+            ending "the host's key has changed, and the connection is refused" cleared
+                |> Task.andThen (\s -> onTransport (Transport.disconnect 11 "the host key changed" s.transport) s)
 
         { waiting = ForHostKey _ } ->
             ending "the host's key was not trusted" cleared

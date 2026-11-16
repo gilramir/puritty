@@ -826,6 +826,44 @@ knownHostsSuite text =
                 else
                     Just (String.takeFirst 60 l ++ "... " ++ get f "verdict" ++ " -> " ++ got)
 
+            else if String.startsWith "replace " l then
+                let
+                    file =
+                        Array.findFirst (\c -> String.startsWith "file " c) caseLines
+                            |> Maybe.map (\found -> Bytes.toStringLossy (fromHex (String.dropFirst 5 found.value)))
+                            |> Maybe.withDefault ""
+
+                    r =
+                        KnownHosts.replaced name (fromHex (get f "key")) file
+
+                    numbers ns =
+                        if Array.isEmpty ns then
+                            "-"
+
+                        else
+                            String.join "," (Array.map String.fromInt ns)
+
+                    textRight =
+                        r.text == Bytes.toStringLossy (fromHex (get f "text"))
+                in
+                if numbers r.removed == get f "removed" && numbers r.kept == get f "kept" && textRight then
+                    Nothing
+
+                else
+                    Just
+                        (String.takeFirst 40 l
+                            ++ "... removed "
+                            ++ numbers r.removed
+                            ++ " kept "
+                            ++ numbers r.kept
+                            ++ (if textRight then
+                                    ""
+
+                                else
+                                    ", the text differs"
+                               )
+                        )
+
             else if String.startsWith "order " l then
                 let
                     got =
@@ -841,7 +879,7 @@ knownHostsSuite text =
                 Nothing
 
         ran =
-            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l) caseLines
+            Array.keepIf (\l -> String.startsWith "query " l || String.startsWith "check " l || String.startsWith "order " l || String.startsWith "replace " l) caseLines
     in
     suiteOf "KnownHosts"
         (Array.indexedMap (\n l -> caseTest (String.fromInt (n + 1) ++ " " ++ String.takeFirst 48 l) (\_ -> run l)) ran)
@@ -1658,6 +1696,20 @@ watch args sources output =
                                                 answer (Session.Trust { remember = True })
 
                                             else if Array.member "--trust-once" args then
+                                                answer (Session.Trust { remember = False })
+
+                                            else
+                                                answer Session.Decline
+                                        )
+
+                            Session.HostKeyChanged k ->
+                                say ("asked whether to trust " ++ k.host ++ "'s changed " ++ k.algorithm ++ " key, known at line " ++ String.join "," (Array.map String.fromInt k.lineNumbers))
+                                    |> Task.andThen
+                                        (\_ ->
+                                            if Array.member "--replace-changed" args then
+                                                answer (Session.Trust { remember = True })
+
+                                            else if Array.member "--trust-changed-once" args then
                                                 answer (Session.Trust { remember = False })
 
                                             else
