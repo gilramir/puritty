@@ -109,8 +109,9 @@ SUITES = [
         # the tree's rows as each tmux draws them, on each; 264 since TM79:
         # status off and the panes' letters, on each; 276 since TM80: C-y
         # at the prompt, on each; 282 since TM81: a buffer's whole text
-        # searched, case by version
-        282,
+        # searched, case by version; 288 since TM82: a popup's title, on
+        # each
+        288,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

@@ -375,7 +375,7 @@ type alias StatusLine =
     -- each pane's title, border style and mark, and its own
     -- window-style and window-active-style, a tab between (TM66: a
     -- popup's pane is given popup-style)
-    , panes : Dict Int { title : String, border : String, marked : Bool, style : String }
+    , panes : Dict Int { title : String, border : String, marked : Bool, style : String, paneStatus : String }
     -- tmux's drawing options by name, as `optionNames` lists them (TM47)
     , options : Dict String String
     -- `status-format[1]` to `[4]` expanded, for `status 2` to `5` (TM54)
@@ -1695,6 +1695,33 @@ fitted borderStatus height p =
     fittedTitles borderStatus height p
 
 
+{-| The tiled panes' `pane-border-status`, as tmux draws them, each by its
+own option (inherited from the window's): the first tiled pane's, where
+tmux has told it, else the one asked without a pane (`puritty-borders`),
+which tmux answers for the current pane: a modal popup's own `top`
+would make every pane's (TM82). -}
+tiledBorderStatus : StatusLine -> Array Int -> String
+tiledBorderStatus status ids =
+    ids
+        |> Array.mapAndKeepJust (\id -> Dict.get id status.panes |> Maybe.map .paneStatus)
+        |> Array.keepIf (\v -> v /= "")
+        |> Array.first
+        |> Maybe.withDefault (meant Reason.NotYet status.borderStatus)
+
+
+{-| `tiledBorderStatus` of the window puritty has. -}
+windowBorderStatus : State -> String
+windowBorderStatus s =
+    tiledBorderStatus s.status
+        (when s.layout is
+            Just cell ->
+                Layout.tiled cell |> Array.map .id
+
+            Nothing ->
+                meant Reason.NotYet []
+        )
+
+
 {-| A pane of the layout as tmux sizes it: its title's row (`fittedTitles`)
 and, with `pane-scrollbars on`, its scrollbar's columns taken out of the
 cell, on its right or, with `pane-scrollbars-position left`, its left
@@ -1703,7 +1730,7 @@ fittedIn : State -> Int -> Layout.Pane -> Layout.Pane
 fittedIn s height p0 =
     let
         p =
-            fittedTitles s.status.borderStatus height p0
+            fittedTitles (windowBorderStatus s) height p0
 
         sb =
             scrollbarOf s
@@ -3531,7 +3558,7 @@ notice n acc =
             else
                 let
                     was =
-                        st.status.borderStatus
+                        windowBorderStatus st
 
                     barWas =
                         scrollbarOf st
@@ -3554,7 +3581,7 @@ notice n acc =
                         else
                             []
                 in
-                if next.status.borderStatus /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
+                if windowBorderStatus next /= was || barNow.on /= barWas.on || barNow.width /= barWas.width || barNow.left /= barWas.left then
                     -- the panes' sizes change with their titles' rows, and
                     -- tmux sends no layout for it
                     { acc | state = refit next, commands = acc.commands ++ resize }
@@ -3635,7 +3662,7 @@ applyLayout text s =
         Ok cell ->
             let
                 boxes =
-                    Array.map (fitted s.status.borderStatus (heightOf cell)) (Layout.panes cell)
+                    Array.map (fitted (tiledBorderStatus s.status (Layout.tiled cell |> Array.map .id)) (heightOf cell)) (Layout.panes cell)
 
                 sized =
                     sizeAll { ids = s.ids, panes = s.panes } boxes
@@ -6577,7 +6604,7 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
             Style.apply status.borderStyle Style.plain
 
         own p =
-            Maybe.withDefault (meant Reason.NotYet { title = "", border = "", marked = False, style = "" }) (Dict.get p.id status.panes)
+            Maybe.withDefault (meant Reason.NotYet { title = "", border = "", marked = False, style = "", paneStatus = "" }) (Dict.get p.id status.panes)
 
         frameColor p =
             if (own p).marked then
@@ -6608,14 +6635,23 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
                 )
                 tiled
 
+        -- a pane's own pane-border-status where it has one, as tmux
+        -- takes the pane's option over the window's (TM82)
+        statusOf p =
+            if (own p).paneStatus == "" then
+                tiledBorderStatus status (Array.map .id tiled)
+
+            else
+                (own p).paneStatus
+
         titleOf p =
-            if status.borderStatus /= "top" && status.borderStatus /= "bottom" then
+            if statusOf p /= "top" && statusOf p /= "bottom" then
                 []
 
             else
                 let
                     row =
-                        if status.borderStatus == "top" then
+                        if statusOf p == "top" then
                             p.y - 1
 
                         else
@@ -6701,11 +6737,11 @@ paneBorders tmuxLook cols rows active cells tiled floating status =
                 , active = active
                 , marked = Array.findFirst (\p -> (own p).marked) tiled |> Maybe.map (\f -> f.value.id) |> Maybe.withDefault (meant Reason.NotSet -1)
                 , paneStatus =
-                    if status.borderStatus == "" then
+                    if tiledBorderStatus status (Array.map .id tiled) == "" then
                         "off"
 
                     else
-                        status.borderStatus
+                        tiledBorderStatus status (Array.map .id tiled)
                 , lines = Maybe.withDefault (meant Reason.NotSet "single") (Dict.get "pane-border-lines" status.options)
                 , indicators = Maybe.withDefault (meant Reason.NotSet "colour") (Dict.get "pane-border-indicators" status.options)
                 , borderStyle = status.borderStyle
@@ -6805,6 +6841,8 @@ statusSubscriptions =
     , "puritty-ptitle:%*:#{T:pane-border-format}"
     , "puritty-pborder:%*:#{?#{pane_active},#{E:pane-active-border-style},#{E:pane-border-style}}"
     , "puritty-pmarked:%*:#{pane_marked}"
+    -- a pane's own pane-border-status, which a popup's title sets (TM82)
+    , "puritty-pstatus:%*:#{pane-border-status}"
     , "puritty-pwstyle:%*:#{window-style}\t#{window-active-style}"
     , "puritty-opts::" ++ String.join "\t" (Array.map (\o -> "#{" ++ o ++ "}") optionNames)
     , "puritty-status1::#{T:status-format[1]}"
@@ -6999,7 +7037,7 @@ subscribed name window pane value status =
             { status
                 | panes =
                     Dict.set pane
-                        (change (Maybe.withDefault (meant Reason.NotYet { title = "", border = "", marked = False, style = "" }) (Dict.get pane status.panes)))
+                        (change (Maybe.withDefault (meant Reason.NotYet { title = "", border = "", marked = False, style = "", paneStatus = "" }) (Dict.get pane status.panes)))
                         status.panes
             }
 
@@ -7057,6 +7095,9 @@ subscribed name window pane value status =
 
         "puritty-pmarked" ->
             perPane (\q -> { q | marked = value == "1" })
+
+        "puritty-pstatus" ->
+            perPane (\q -> { q | paneStatus = value })
 
         "puritty-pwstyle" ->
             perPane (\q -> { q | style = value })
@@ -8514,9 +8555,10 @@ bigDigit c =
 
 {-| A `display-popup` binding, which a control client is not shown: on
 tmux 3.8, a modal floating pane in its place (`new-pane -O`), its size,
-place, directory and command (not its title: `-T` would be the pane's
-title, which the status line shows); kept after its command ends, until a
-key, unless `-E` says to close (`-k`). Before 3.8 there are no floating
+place, directory and command, and its title (`-T`) as the pane's own
+border format, drawn on its box (TM82; not its pane title, which the
+status line shows); kept after its command ends, until a key, unless `-E`
+says to close (`-k`). Before 3.8 there are no floating
 panes, and puritty says so. -}
 openPopup : Context -> { width : String, height : String, x : String, y : String, title : String, dir : String, close : Bool, command : String, after : String } -> (taken s : State) -> { state : State, commands : Array String }
 openPopup ctx pop s =
@@ -8568,6 +8610,17 @@ openPopup ctx pop s =
             , Command.setPaneFormat "pane-border-style" "#{popup-border-style}"
             , Command.setPaneFormat "pane-active-border-style" "#{popup-border-style}"
             ]
+                ++ (if pop.title == "" then
+                        []
+
+                    else
+                        -- `-T`: the title on the box's top line, as tmux 3.8
+                        -- draws a floating pane's with these set on it, a
+                        -- cell further in than a popup's (TM82)
+                        [ Command.setPaneFormat "pane-border-format" pop.title
+                        , Command.setPaneFormat "pane-border-status" "top"
+                        ]
+                   )
 
         opened =
             if s.version == 0 || s.version >= 38 then

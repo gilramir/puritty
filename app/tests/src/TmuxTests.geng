@@ -408,6 +408,33 @@ onVersion version =
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
+        , { name = "a popup's -T title is given to its floating pane's box on 3.8 (TM82)"
+          , test =
+                \_ ->
+                    let
+                        heard =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText "display-popup -T hello -E true"
+                                |> named enterKey
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "new-pane")
+                                |> Array.map (String.replace "'" "")
+                    in
+                    Expect.equal
+                        (if version == "3.8" then
+                            { panes = 1, title = True, status = True }
+
+                         else
+                            { panes = 0, title = False, status = False }
+                        )
+                        { panes = Array.length heard
+                        , title = Array.any (String.contains "pane-border-format hello") heard
+                        , status = Array.any (String.contains "pane-border-status top") heard
+                        }
+          }
         , { name = "choose-buffer's search finds a buffer's whole text, and ignores case from 3.6 only (TM81)"
           , test =
                 \_ ->

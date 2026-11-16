@@ -3432,3 +3432,37 @@ the first fails on every version and the second before 3.6.
 
 App tests 282.
 
+
+## TM82 · A popup's title, and each pane's own border status (2026-11-15)
+
+**`-T`.** TM56 left a popup's title out, since the pane's title is what the
+default status line shows. Measured on 3.8: a floating pane whose own
+options are `pane-border-format TITLE` and `pane-border-status top` has the
+title on its box's top line, `┌──title──`, one cell further in than a
+popup's `┌─title─`, and the pane's title and the window's other panes
+untouched. puritty now sets those two on the popup's pane, on the line
+that makes it.
+
+**Each pane's own `pane-border-status`.** puritty drew a title on a
+floating pane's box only when the window's border status was top or
+bottom, and read that status without a pane (`puritty-borders`), which
+tmux answers for the current pane: once the modal popup was current, its
+own `top` was taken for every pane's, and the tiled pane got a title row
+over its first line (seen side by side). tmux draws each pane by its own
+option, inherited from the window's. puritty now subscribes to each pane's
+(`puritty-pstatus`), draws a pane's title by it, and lays out and draws the
+tiled panes by theirs (`tiledBorderStatus`), the value without a pane only
+until a pane's is told.
+
+**Checked:** a test on each version: `display-popup -T hello -E true` at
+the prompt gives, on 3.8, one `new-pane` line with the title and `top`,
+and before 3.8 none. Side by side on 3.8 (`popup`, `-T title`): the title
+on the box, and the tiled pane whole, where without the second fix its
+first line was covered.
+
+**Not yet:** `-B` (a floating pane has its box), `-x`/`-y` as `P`, `M`,
+`W`, `S` or `R`, `-e`, `-EE`; the box a row down and a column right of a
+popup's (TM56).
+
+App tests 288.
+
