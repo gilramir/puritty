@@ -16,10 +16,10 @@
 #
 #   puritty-TAG-windows-x64.zip       puritty.exe, LICENSE, README.txt,
 #                                     THIRD-PARTY-NOTICES.md, LICENSES/
-#   puritty-TAG-NAME-x64.tar.gz       puritty-TAG-NAME-x64/ with puritty and
+#   puritty-TAG-SHIP-x64.tar.gz       puritty-TAG-SHIP-x64/ with puritty and
 #                                     the same files
 #   puritty-TAG-linux-rhel8-x64.tar.gz  the RHEL8 build, as above
-#   puritty_V_NAME_amd64.deb          for noble and debian13 (deb.sh), each
+#   puritty_V_SHIP_amd64.deb          for noble and debian13 (deb.sh), each
 #                                     installed with apt and run first
 #   SHA256SUMS, notes.md              the checksums, and the release's text
 #                                     to finish by hand
@@ -57,6 +57,14 @@ echo "== $tag from $commit: $targets"
 harness/bench/pgo.sh
 profile=--profile-use=$root/harness/bench/core-bench.profile
 
+# the name a target ships by (RL8): the distribution's version, not its codename
+shipped() {
+    case $1 in
+    noble-x64) echo ubuntu24.04-x64 ;;
+    *) echo "$1" ;;
+    esac
+}
+
 readme() {
     # $1: the target, $2: how to run it
     cat <<EOF
@@ -70,7 +78,7 @@ EOF
 }
 
 for t in $targets; do
-    name=puritty-$tag-$t
+    name=puritty-$tag-$(shipped "$t")
     stage=$out/stage/$name
     mkdir -p "$stage"
     cp LICENSE "$stage/LICENSE"
@@ -120,15 +128,15 @@ and Arch. It needs the X libraries of a desktop install (xcb, xcb-util,
 xcb-util-image, xcb-util-renderutil, libxkbcommon-x11 and fontconfig);
 \`ldd puritty | grep \"not found\"\` lists any that are missing." >"$stage/README.txt"
         else
-            readme "$t" "Unpack it anywhere and run ./puritty. It needs the X libraries of a
-desktop install ($distro's xcb, xcb-util, xcb-util-image, xcb-util-renderutil,
+            readme "$(shipped "$t")" "Unpack it anywhere and run ./puritty. It needs the X libraries of a
+desktop install (the distribution's xcb, xcb-util, xcb-util-image, xcb-util-renderutil,
 libxkbcommon-x11 and fontconfig); \`ldd puritty | grep \"not found\"\` lists
 any that are missing." >"$stage/README.txt"
         fi
         tar -C "$out/stage" -czf "$out/$name.tar.gz" "$name"
         if grep -q '^FROM docker.io/library/\(ubuntu\|debian\):' "app/distro/$distro/Containerfile"; then
             # a version dpkg takes: digits first, the tag's letters and digits after
-            PURITTY_BIN=$stage/puritty app/distro/deb.sh "$distro" "0.1.0~$(echo "$tag" | tr -cd 'A-Za-z0-9.')" "$out"
+            PURITTY_BIN=$stage/puritty PURITTY_DEB_LABEL=$(shipped "$t" | sed 's/-x64$//') app/distro/deb.sh "$distro" "0.1.0~$(echo "$tag" | tr -cd 'A-Za-z0-9.')" "$out"
         fi
         ;;
     esac
@@ -143,7 +151,10 @@ rm -rf "$out/stage"
         case $t in
         windows-x64) echo "- **Windows**: \`puritty-$tag-$t.zip\`. Unzip it and run \`puritty.exe\`. Not signed yet: if Windows says \"Windows protected your PC\", choose *More info*, then *Run anyway*." ;;
         rhel8-x64) echo "- **Linux, any x86-64** (built on RHEL 8): \`puritty-$tag-linux-rhel8-x64.tar.gz\`. Unpack it and run \`./puritty\`." ;;
-        noble-x64|debian13-x64) echo "- **${t%-x64}**: \`puritty-$tag-$t.tar.gz\`, or the \`.deb\`: \`sudo apt install ./puritty_*_${t%-x64}_amd64.deb\`." ;;
+        noble-x64) echo "- **Ubuntu 24.04 and Linux Mint 22**: \`puritty-$tag-ubuntu24.04-x64.tar.gz\`, or the \`.deb\`: \`sudo apt install ./puritty_*_ubuntu24.04_amd64.deb\`." ;;
+        debian13-x64) echo "- **Debian 13**: \`puritty-$tag-$t.tar.gz\`, or the \`.deb\`: \`sudo apt install ./puritty_*_debian13_amd64.deb\`." ;;
+        rhel9-x64) echo "- **RHEL 9**: \`puritty-$tag-$t.tar.gz\`. Unpack it and run \`./puritty\`." ;;
+        rhel10-x64) echo "- **RHEL 10**: \`puritty-$tag-$t.tar.gz\`. Unpack it and run \`./puritty\`." ;;
         *) echo "- **${t%-x64}**: \`puritty-$tag-$t.tar.gz\`. Unpack it and run \`./puritty\`." ;;
         esac
     done

@@ -180,3 +180,21 @@ the RHEL8 build from the same commit, and `smoke.sh noble` draws and ends by
 itself. glibc and the X libraries are still noble's, so the `.deb`'s
 `Depends` are unchanged. Debian 13 still builds with its own clang 19,
 without a profile.
+
+## RL8 · Files named by version, not codename (2026-11-16)
+
+The Ubuntu build's files said `noble`, Ubuntu's codename. Gilbert asked
+whether `ubuntu24` would be better; it ships now as `ubuntu24.04`
+(`puritty-TAG-ubuntu24.04-x64.tar.gz`, `puritty_V_ubuntu24.04_amd64.deb`),
+the full version, since Ubuntu had a 24.10 as well. The codename is how
+Ubuntu's own archive names a release, for people adding an apt source;
+people choosing a download know their version, and Mint 22's users know
+"Ubuntu 24.04" sooner than "noble". WezTerm's files name the version the
+same way (`….Ubuntu22.04.deb`).
+
+Only the shipped names changed: the build folder, its images, the puppet's
+`app/puritty-noble` and `vendor/distro/noble` keep the codename, and
+`prerelease.sh` still takes the target `noble-x64`, mapping it in
+`shipped()`; `deb.sh` takes the file's label from `PURITTY_DEB_LABEL`. The
+release notes name each distribution in words (RHEL 9, Ubuntu 24.04 and
+Linux Mint 22, Debian 13).
