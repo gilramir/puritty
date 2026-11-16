@@ -119,6 +119,9 @@ named sym run =
                  else if sym == escapeKey then
                     "\u{001B}"
 
+                 else if sym == tabKey then
+                    "\t"
+
                  else if sym == upKey then
                     -- an arrow's bytes, as the window gives them
                     "\u{001B}[A"
@@ -148,6 +151,11 @@ downKey =
 upKey : Int
 upKey =
     0xFF52
+
+
+tabKey : Int
+tabKey =
+    0xFF09
 
 
 {-| A button pressed on a cell, at a time, and what it makes puritty send
@@ -818,6 +826,58 @@ onVersion version =
                         , prefixC = endedBy (\r -> r |> ctrl "b" |> settle |> typeKey "c")
                         , typed = endedBy (line "detach")
                         , others = endedBy (line "detach-client -a")
+                        }
+          }
+        , { name = "Tab at the prompt completes what each tmux completes, 3.8 listing what it cannot choose between (TM96)"
+          , test =
+                \_ ->
+                    let
+                        -- typed at `:`, then Tab: the line and the hint
+                        tabbed text =
+                            let
+                                run =
+                                    attached (start version)
+                                        |> prefixThen ":"
+                                        |> typeText text
+                                        |> named tabKey
+                            in
+                            TmuxMode.promptBox run.tmux
+                                |> Maybe.map (\b -> { typed = b.typed, hint = b.hint })
+                                |> Maybe.withDefault { typed = "(none)", hint = "" }
+
+                        newest =
+                            version == "3.8"
+                    in
+                    Expect.equal
+                        { spl =
+                            if version == "2.7" then
+                                "split-window "
+
+                            else
+                                "split"
+                        , select =
+                            if newest then
+                                "select-layout  select-pane  select-window"
+
+                            else
+                                "Enter: run    Esc: cancel    Up, Down: earlier answers"
+                        , option =
+                            if newest then
+                                "set -g status-k"
+
+                            else
+                                "set -g status-keys "
+                        , layout =
+                            if newest then
+                                "select-layout even-h"
+
+                            else
+                                "select-layout even-horizontal "
+                        }
+                        { spl = (tabbed "spl").typed
+                        , select = (tabbed "select-").hint
+                        , option = (tabbed "set -g status-k").typed
+                        , layout = (tabbed "select-layout even-h").typed
                         }
           }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"

@@ -3534,7 +3534,9 @@ sections since:
   `status_prompt_translate_key`, and the older `status.c` tables).
 - **tmux's own prompt history** (3.3 on), shared with other clients:
   done (TM89).
-- **Completing options and targets** at the prompt, and the matches' menu.
+- **Completing options and targets** at the prompt, and the matches' menu:
+  commands, options and layouts as each tmux, and 3.8's list, done
+  (TM96); targets (`-t`, `-s`, before 3.8) and 3.2–3.7's menu not yet.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
   in customize mode: done (TM86, TM87).
 - **`bell-action`** (any, none, current, other: which windows' bells are
@@ -3858,3 +3860,46 @@ recorder without brackets gets CR in all three ways; with brackets (a
 newer nano) CR inside them, and a CRLF clipboard one CR a line; a real
 nano, which asks for brackets, saves the four lines as copied in all three
 ways and through puritty's own ssh client to tmux 3.8, plain and `-CC`.
+
+## TM96 · Tab at the prompt as each tmux completes (2026-11-16)
+
+The third of TM85's items. TM57 completed a first word from the
+commands' names and nothing else. What tmux's prompt completes, read in
+every release (`status_prompt_complete`, `_list`; 3.8's
+`prompt_complete`):
+
+| tmux | a first word | another word | several matches, no further to go |
+|---|---|---|---|
+| 2.7, 2.8 | commands, options, layouts | the same | nothing |
+| 2.9–3.1 | and `command-alias`'s names | the same | nothing |
+| 3.2–3.4 | commands, their short aliases (`splitw`), `command-alias`'s | those, options, layouts | a menu |
+| 3.5–3.7 | the same | the same, and the two `-mirrored` layouts | a menu |
+| 3.8 | commands, `command-alias`'s | nothing | listed after the line, underlined |
+
+Before 3.8 a word after `-t` or `-s` completes a session, then a window
+(`session:name`, `session:index`; 3.2–3.7 in a window menu). TM57's
+measurement that "tmux completes no alias" held for a first word with no
+`command-alias` entry under it; 3.8 does complete `command-alias`'s names
+(`spl` gives `split`, as `splitp` and `split-pane` match).
+
+**Built.** `completions` gives the lists by version: the commands' names
+and short aliases from `list-commands`' usage lines (TM72), the options
+from customize-mode's tables for the version (`Customize.table`), the
+layouts, and `command-alias`'s names, asked once at attach
+(`show-options -g -v command-alias`; 2.7, which has no such option,
+refuses it). `completed` completes the word at the caret (from the last
+space), one match whole with a space after it, more as far as they agree;
+on 3.8, when they agree no further, it keeps them (`Asking.matches`),
+drawn after the line underlined while the caret is at its end, in
+puritty's look in the box's hint line, and gone with the next key
+(`prompt_clear_complete`).
+
+**Checked:** an app test on each tmux (354): `spl` (`split-window ` on
+2.7, `split` from 3.0), `select-` (3.8 lists `select-layout select-pane
+select-window`), `set -g status-k` (`status-keys ` before 3.8, nothing on
+3.8), `select-layout even-h` (`even-horizontal ` before 3.8). Side by
+side on real 3.8 and 3.6a (`bench/tmux/compare/scenes_complete.py`): the
+same line and, on 3.8, the same underlined list. The fake answers
+`show-options` from the recordings.
+
+**Not yet:** targets after `-t` and `-s`, and 3.2–3.7's menu of matches.

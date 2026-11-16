@@ -119,8 +119,9 @@ SUITES = [
         # since TM88: the tree's preview labels in tmux's look, on each;
         # 336 since TM89: tmux's prompt history at the prompt, on each;
         # 342 since TM91: a selection dropped as its pane changes, on each;
-        # 348 since TM92: nothing sent after what detaches, on each
-        348,
+        # 348 since TM92: nothing sent after what detaches, on each; 354
+        # since TM96: Tab at the prompt as each tmux completes, on each
+        354,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

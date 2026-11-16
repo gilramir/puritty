@@ -199,6 +199,11 @@ type alias State =
     , listing : Maybe Listing
     -- tmux's commands and their aliases, for the prompt's Tab (TM57)
     , commandNames : Array String
+    -- what else the prompt completes a first word to (TM96): each
+    -- command's short alias (`splitw`, from its usage line) and the names
+    -- `command-alias` gives (`split-pane`)
+    , shortNames : Array String
+    , aliasNames : Array String
     -- what this tmux takes, from its `list-commands` (TM72), and whether
     -- it expands `#{T:…}` (from 2.9)
     , caps : Caps
@@ -580,6 +585,9 @@ type alias Asking =
     , purpose : Int
     -- what C-w last cut, which C-y puts back from 3.0 (TM80)
     , cut : String
+    -- the names Tab matched and could not choose between, shown after
+    -- the line until the next key (3.8's `prompt_store_complete`, TM96)
+    , matches : Array String
     }
 
 
@@ -662,6 +670,7 @@ type Expect
     | ForListPreview String
     | ForListContent String
     | ForPromptHistory String
+    | ForAliases
     | ForCustomize Int
     | ForCustomizeNotes String
     | ForCustomizeFilter { filter : String, ids : Array String }
@@ -758,6 +767,8 @@ idle _ =
     , tree = Nothing
     , listing = Nothing
     , commandNames = []
+    , shortNames = []
+    , aliasNames = []
     , caps = Caps.assumed
     , capsKnown = False
     , timeFormats = True
@@ -1262,6 +1273,9 @@ expectName x =
         ForPromptHistory kind ->
             "tmux's " ++ kind ++ " prompt history"
 
+        ForAliases ->
+            "the command aliases"
+
         ForListPreview _ ->
             "the list's preview"
 
@@ -1669,7 +1683,12 @@ promptBox s =
                                     "a key answers"
 
                                 _ ->
-                                    "Enter: run    Esc: cancel    Up, Down: earlier answers"
+                                    if Array.isEmpty a.matches then
+                                        "Enter: run    Esc: cancel    Up, Down: earlier answers"
+
+                                    else
+                                        -- what Tab matched (TM96)
+                                        String.join "  " a.matches
                         }
             )
             s.asking
@@ -2288,6 +2307,7 @@ attachQueries acc =
         , { command = Command.listPanesSession modeFormat, expect = ForModes }
         , { command = Command.display "#{display-panes-time}", expect = ForPanesTime }
         , { command = Command.display "#{client_name}", expect = ForClientName }
+        , { command = Command.globalValue "command-alias", expect = ForAliases }
         ]
         acc
 
@@ -2769,6 +2789,27 @@ replied expect ok lines acc =
 
                             else
                                 st.commandNames
+                        -- a usage line's `(alias)` after its name (TM96)
+                        , shortNames =
+                            if ok then
+                                Array.mapAndKeepJust
+                                    (\line ->
+                                        when String.split " " (Bytes.toStringLossy line) |> Array.get 1 is
+                                            Just w ->
+                                                if String.startsWith "(" w && String.endsWith ")" w then
+                                                    Just (String.dropFirst 1 (String.dropLast 1 w))
+
+                                                else
+                                                    Nothing
+
+                                            Nothing ->
+                                                -- a usage line with only its name
+                                                meant Reason.NoMore Nothing
+                                    )
+                                    lines
+
+                            else
+                                st.shortNames
                         , keys = { tables | byTable = Caps.has "send-keys" "K" caps }
                     }
 
@@ -3044,6 +3085,33 @@ replied expect ok lines acc =
                                 st.listing
                     }
             }
+
+        ForAliases ->
+            -- `command-alias`'s items, `name=command` a line (an array, 3.0
+            -- on) or with commas between (2.x's string): the names (TM96)
+            let
+                names =
+                    lines
+                        |> Array.mapAndFlatten (\line -> String.split "," (Bytes.toStringLossy line))
+                        |> Array.mapAndKeepJust
+                            (\item ->
+                                when String.split "=" (String.trim item) is
+                                    [ name, _ ] ->
+                                        Just name
+
+                                    _ ->
+                                        Nothing
+                            )
+            in
+            if ok then
+                let
+                    st =
+                        acc.state
+                in
+                { acc | state = { st | aliasNames = names } }
+
+            else
+                acc
 
         ForPromptHistory kind ->
             -- `History for TYPE:`, then `N: line` oldest first (TM89); an
@@ -4110,6 +4178,32 @@ paint s =
                                     else
                                         [ { row = barRow, col = 0, text = String.padRight cols ' ' (String.takeFirst cols s.said) } ]
 
+                -- the matches Tab could not choose between, after the line,
+                -- underlined, while the caret is at its end, as far as the
+                -- row goes (3.8's `prompt_draw_complete`, TM96)
+                matchesPiece =
+                    when s.asking is
+                        Just a ->
+                            if s.lookTmux && not (Array.isEmpty a.matches) && a.caret == Array.length a.chars then
+                                let
+                                    used =
+                                        textCells (a.label ++ String.fromArray a.chars)
+
+                                    room =
+                                        promptAt.width - used
+                                in
+                                if room > 0 then
+                                    [ { row = promptAt.row, col = promptAt.col + used, text = takeCells room (String.join "" (Array.map (\m -> " " ++ m) a.matches)) } ]
+
+                                else
+                                    []
+
+                            else
+                                []
+
+                        Nothing ->
+                            meant Reason.NotOpen []
+
                 -- the caret of a prompt in tmux's look: the text before it
                 -- written again leaves the cursor after it, wide characters
                 -- counted by the core; none while puritty's box asks, which
@@ -4495,6 +4589,7 @@ paint s =
                            )
                         |> drawText "\u{001B}[0m" promptClear
                         |> drawText messageInk tmuxLine
+                        |> drawText (messageInk ++ "\u{001B}[4m") matchesPiece
                         |> drawText messageInk caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c numbersDrawn)
@@ -5004,7 +5099,7 @@ opening : Syntax.Ask -> String -> { asking : Asking, expand : Array { command : 
 opening question after =
     let
         start =
-            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0, cut = "" }
+            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0, cut = "", matches = [] }
 
         opened =
             stepTo 0 [] start
@@ -5165,8 +5260,13 @@ takes one key's text, `-k` a key's name, `-N` digits, any other key
 answering and then going on as typed. The commands after the prompt run
 when it closes, answered or not, as tmux runs them. -}
 promptKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> Asking -> (taken s : State) -> { state : State, commands : Array String }
-promptKey k bytes ms a s =
+promptKey k bytes ms a0 s =
     let
+        -- the matches Tab listed go with the next key, as 3.8's
+        -- `prompt_clear_complete` (TM96); Tab lists them again
+        a =
+            { a0 | matches = [] }
+
         name =
             Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
 
@@ -5243,8 +5343,9 @@ promptKey k bytes ms a s =
                         incrementalKey name text plainText enter cancel a s
 
                     else if name == "Tab" && p.template == Nothing then
-                        -- the colon prompt: a command's name completed (TM57)
-                        { state = { s | asking = Just (completed s.commandNames a) }, commands = [] }
+                        -- the colon prompt: a word completed as this tmux
+                        -- completes it (TM57, TM96)
+                        { state = { s | asking = Just (completed (completions s) s.version a) }, commands = [] }
 
                     else if enter then
                         answer (String.fromArray a.chars) a s
@@ -5329,62 +5430,145 @@ runIncremental prefix a s =
     sendAsking (incrementally prefix a) { s | asking = Just a }
 
 
-{-| The colon prompt's first word completed from tmux's commands' names,
-as `prompt_replace_complete`: one match is written whole with a
-space after it, more as far as they agree (TM57). -}
-completed : Array String -> Asking -> Asking
-completed names a =
+{-| The names Tab completes a word to, as this tmux's prompt has them
+(`status_prompt_complete_list`; 3.8's `prompt_complete_commands`; TM96):
+a first word and any other. 3.8: a first word only, the commands and the
+`command-alias` names. 3.2 to 3.7: a first word the commands, their short
+aliases and the `command-alias` names; another, those and the options and
+the layouts (`-mirrored` from 3.5). Before 3.2 every word the commands,
+the options and the layouts, the `command-alias` names from 2.9. -}
+completions : State -> { first : Array String, other : Array String }
+completions s =
     let
-        line =
-            String.fromArray a.chars
+        v =
+            s.version
 
-        soFar =
-            String.fromArray (Array.takeFirst a.caret a.chars)
+        mirrored =
+            v == 0 || v >= 35
+
+        layouts =
+            [ "even-horizontal", "even-vertical", "main-horizontal" ]
+                ++ (if mirrored then
+                        [ "main-horizontal-mirrored" ]
+
+                    else
+                        []
+                   )
+                ++ [ "main-vertical" ]
+                ++ (if mirrored then
+                        [ "main-vertical-mirrored" ]
+
+                    else
+                        []
+                   )
+                ++ [ "tiled" ]
+
+        options =
+            Dict.keys (Customize.table v).infos
+
+        aliases =
+            if v == 0 || v >= 29 then
+                s.aliasNames
+
+            else
+                []
     in
-    if String.contains " " soFar then
+    if v == 0 || v >= 38 then
+        { first = s.commandNames ++ aliases, other = [] }
+
+    else if v >= 32 then
+        { first = s.commandNames ++ s.shortNames ++ aliases, other = s.commandNames ++ s.shortNames ++ aliases ++ options ++ layouts }
+
+    else
+        { first = s.commandNames ++ aliases ++ options ++ layouts, other = s.commandNames ++ aliases ++ options ++ layouts }
+
+
+{-| The word before the caret completed from `lists`, as tmux's prompt
+does (`prompt_replace_complete`, TM57, TM96): one match written whole with
+a space after it, more as far as they agree; when they agree no further
+than what is typed, 3.8 lists them after the line (`matches`). An empty
+word completes to nothing. -}
+completed : { first : Array String, other : Array String } -> Int -> Asking -> Asking
+completed lists version a =
+    let
+        soFar =
+            Array.takeFirst a.caret a.chars
+
+        -- where the word at the caret begins: after the last space
+        start =
+            Array.findLast (\c -> c == ' ') soFar
+                |> Maybe.map (\found -> found.index + 1)
+                -- no space before it: the first word
+                |> Maybe.withDefault (meant Reason.NoMore 0)
+
+        word =
+            String.fromArray (Array.dropFirst start soFar)
+
+        pool =
+            if start == 0 then
+                lists.first
+
+            else
+                lists.other
+
+        matches =
+            pool
+                |> Array.keepIf (\c -> String.startsWith word c)
+                |> Array.foldl
+                    (\m acc ->
+                        if Array.member m acc then
+                            acc
+
+                        else
+                            Array.pushLast m acc
+                    )
+                    []
+                |> Array.sort
+
+        common =
+            when Array.first matches is
+                Just first ->
+                    Array.foldl
+                        (\m acc ->
+                            let
+                                shared =
+                                    Array.range 0 (min (String.count m) (String.count acc))
+                                        |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
+                                        |> Maybe.map .value
+                                        |> Maybe.withDefault 0
+                            in
+                            String.takeFirst shared acc
+                        )
+                        first
+                        matches
+
+                Nothing ->
+                    meant Reason.NoMore word
+
+        replaced text =
+            let
+                added =
+                    String.toArray text
+            in
+            { a | chars = Array.takeFirst start a.chars ++ added ++ Array.dropFirst a.caret a.chars, caret = start + Array.length added, edited = True }
+    in
+    if word == "" || Array.isEmpty matches then
         a
 
     else
-        let
-            matches =
-                Array.keepIf (\c -> String.startsWith soFar c) names
+        when matches is
+            [ only ] ->
+                replaced (only ++ " ")
 
-            common =
-                when Array.first matches is
-                    Just first ->
-                        Array.foldl
-                            (\m acc ->
-                                let
-                                    shared =
-                                        Array.range 0 (min (String.count m) (String.count acc))
-                                            |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
-                                            |> Maybe.map .value
-                                            |> Maybe.withDefault 0
-                                in
-                                String.takeFirst shared acc
-                            )
-                            first
-                            matches
+            _ ->
+                if common /= word then
+                    replaced common
 
-                    Nothing ->
-                        meant Reason.NoMore soFar
+                else if version == 0 || version >= 38 then
+                    { a | matches = matches }
 
-            word =
-                when matches is
-                    [ only ] ->
-                        only ++ " "
-
-                    _ ->
-                        common
-
-            rest =
-                String.dropFirst (String.count soFar) line
-        in
-        if Array.isEmpty matches then
-            a
-
-        else
-            { a | chars = String.toArray (word ++ rest), caret = String.count word, edited = True }
+                else
+                    a
 
 
 {-| Text typed at the caret. -}
@@ -13102,6 +13286,7 @@ treePrompt version purpose label first =
     , edited = False
     , recall = ""
     , cut = ""
+    , matches = []
     , purpose = purpose
     }
 
