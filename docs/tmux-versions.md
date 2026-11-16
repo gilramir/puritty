@@ -145,7 +145,18 @@ measured.
   `docs/tmux-checks.md` TK10). puritty always gives `-t` a pane. Debian
   12 ships 3.3a.
 
-All four are fixed in later releases; nothing to report.
+- **3.2 to 3.7c hang in customize mode** at a filter that leaves out any
+  row (`f`, then `0`, `#{m:*-time*,#{option_name}}` or
+  `#{==:#{option_name},history-limit}`): the server spins at 100% CPU and
+  answers no client; 3.8 does not. Found by the survey's customize-filter
+  scene on 3.2a and 3.4; measured on 3.2, 3.2a, 3.3, 3.3a, 3.4, 3.5a,
+  3.6a and 3.7c. No issue on tmux's tracker names it, and 3.8's CHANGES
+  does not either. puritty under `-CC` is not touched: it draws customize
+  mode itself and filters by asking formats (TM62), and the `-CC` server
+  stayed idle while the plain one spun. RHEL9 and Ubuntu 22.04 ship 3.2a,
+  where anyone using tmux's own customize filter meets it.
+
+All five are fixed in later releases; nothing to report.
 
 ## TV7 · The distributions' packages against the releases
 
@@ -227,8 +238,16 @@ The menus each draws are puritty's on every version that has them:
 menus, and `prefix <` there types nothing. TV5's "not yet measured" is so
 answered for the menus; copy mode by version is held by the fake's
 answers above and by the puppet's copy-mode steps on every release
-(`tmux-checks.md` TK12.1); customize mode (3.2) and popups (3.2) are still
-measured on 3.6a and 3.8 only.
+(`tmux-checks.md` TK12.1). Customize mode on 3.4, side by side
+(`bench/tmux/compare/survey.py --scenes scenes2`, 2026-11-15): opening it,
+a session's and an option's rows, a value cycled and reset, an array item
+added, the key tables, each row for row as tmux 3.4 draws them, the only
+differences the harness's (its palette, and `capture-pane` leaving out a
+row's cleared end). On 3.2a the plain client came up 80×24 where the scene
+asks 100×30 (TV7's unexplained size), so its pictures were not compared.
+Popups before 3.8 are not shown under `-CC`, by design: puritty shows a
+popup as a 3.8 floating pane, and says so on the status line ("display-popup
+under tmux -CC needs tmux 3.8's floating panes").
 
 **Found and fixed** (`docs/tmux.md` TM76): puritty's tree rows tested
 `#{?pane_marked,…}`, `#{?window_marked_flag,…}` and
