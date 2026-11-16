@@ -408,6 +408,67 @@ onVersion version =
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
+        , { name = "C-y at the prompt puts back what C-w cut from 3.0, else the newest buffer up to a control character (TM80)"
+          , test =
+                \_ ->
+                    let
+                        typedThen buffers =
+                            let
+                                made =
+                                    start version
+
+                                run =
+                                    attached { made | buffers = buffers }
+                                        |> prefixThen ":"
+                                        |> typeText "abc def"
+                                        |> ctrl "w"
+                                        |> ctrl "y"
+                                        |> settle
+                            in
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed
+
+                        older =
+                            Array.member version [ "2.7" ]
+                    in
+                    Expect.equal
+                        { noBuffer =
+                            if older then
+                                Just "abc "
+
+                            else
+                                Just "abc def"
+                        , buffer =
+                            if older then
+                                Just "abc hello w"
+
+                            else
+                                Just "abc def"
+                        }
+                        { noBuffer = typedThen [], buffer = typedThen [ "hello w\u{00F6}rld\nsecond" ] }
+          }
+        , { name = "C-y with nothing cut puts in the newest buffer, as this tmux reads it (TM80)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        run =
+                            attached { made | buffers = [ "hello w\u{00F6}rld\nsecond", "older" ] }
+                                |> prefixThen ":"
+                                |> typeText "x "
+                                |> ctrl "y"
+                                |> settle
+                    in
+                    Expect.equal
+                        (if Array.member version [ "2.7" ] then
+                            Just "x hello w"
+
+                         else
+                            Just "x hello w\u{00F6}rld"
+                        )
+                        (TmuxMode.promptBox run.tmux |> Maybe.map .typed)
+          }
         , { name = "the panes' numbers take a digit, and from 3.2 a letter for panes 10 to 35, each run with the pane's id (TM79)"
           , test =
                 \_ ->

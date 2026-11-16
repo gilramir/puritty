@@ -97,6 +97,8 @@ type alias World =
     -- whether the client asked for 3.8's layouts (`refresh-client -f
     -- new-layouts`), which `%layout-change` then carries too
     , newLayouts : Bool
+    -- the paste buffers, newest first (`show-buffer`, TM80)
+    , buffers : Array String
     }
 
 
@@ -128,6 +130,7 @@ world w =
     , window = { id = 0, index = 0, name = "sh" }
     , others = []
     , newLayouts = False
+    , buffers = []
     }
 
 
@@ -152,7 +155,7 @@ startBytes =
 {-| The commands tmux answers here, by name. -}
 known : Array String
 known =
-    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option" ]
+    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option", "show-buffer" ]
 
 
 {-| A block tmux wrote: the command it answers (its words as tmux read
@@ -680,6 +683,16 @@ one words w =
 
         "send-keys" ->
             sendKeys args target w
+
+        "show-buffer" ->
+            -- the newest buffer's text, a line each; refused when there is
+            -- none ("no buffers")
+            when Array.first w.buffers is
+                Just text ->
+                    reply (String.split "\n" text)
+
+                Nothing ->
+                    { w = w, ok = False, lines = [ "no buffers" ], notices = [] }
 
         "copy-mode" ->
             let

@@ -3378,3 +3378,31 @@ TM54); three were not as written, and three faults came up:
 
 App tests 264.
 
+
+## TM80 · C-y at the prompt, and choose-buffer's `e` (2026-11-15)
+
+**C-y**, as each tmux's (`status.c`'s `status_prompt_paste`; 3.8's
+`prompt.c`), measured against the source of 2.7, 3.0 to 3.7c and 3.8:
+
+- before 3.0, the newest buffer, read a byte at a time up to the first
+  that is not printable ASCII;
+- from 3.0, what C-w last cut (C-k saves nothing on any version, where
+  TM39's list said 3.8 does), else the newest buffer up to its first
+  control character, UTF-8 kept.
+
+puritty keeps what C-w cut in the prompt (`Asking.cut`), and when C-y has
+nothing of it to put in, asks tmux for the newest buffer (`show-buffer`,
+`Command.showTopBuffer`) and puts its first line in at the caret when the
+answer comes, if the prompt is still up; with no buffer tmux refuses it,
+and nothing changes. Tests on each version: `abc def`, C-w, C-y gives
+`abc def` from 3.0 and, on 2.7, `abc ` or with a buffer `abc hello w`;
+with nothing cut, a buffer `hello wörld` and a second line gives `hello
+wörld` from 3.0 and `hello w` on 2.7. With C-y taken out, all twelve fail.
+
+**`e` in choose-buffer** says that editing is not done under `tmux -CC`,
+as customize mode's `e` does: tmux edits a buffer in an editor popup on its
+client's terminal, which a control client has not. *Gilbert, 2026-11-15:*
+no editor of puritty's own for now; it may come later.
+
+App tests 276.
+

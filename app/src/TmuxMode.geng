@@ -559,6 +559,8 @@ type alias Asking =
     , edited : Bool
     , recall : String
     , purpose : Int
+    -- what C-w last cut, which C-y puts back from 3.0 (TM80)
+    , cut : String
     }
 
 
@@ -627,6 +629,7 @@ type Expect
     | ForListRows
     | ForCommandNames
     | ForCaps
+    | ForPromptPaste
     | ForPoll { name : String, scope : Int }
     | ForTimeProbe
     | ForRawOptions { name : String, target : String, format : String, options : Array String }
@@ -1148,6 +1151,9 @@ expectName x =
 
         ForCaps ->
             "what tmux takes"
+
+        ForPromptPaste ->
+            "the newest buffer, for the prompt"
 
         ForPoll p ->
             "the status line's " ++ p.name
@@ -2652,6 +2658,24 @@ replied expect ok lines acc =
 
             else
                 { acc | state = st }
+
+        ForPromptPaste ->
+            -- the newest buffer's first line put in at the prompt's caret,
+            -- if the prompt is still up; no buffer, nothing (TM80)
+            let
+                st =
+                    acc.state
+            in
+            when { asking = st.asking, line = Array.first lines } is
+                { asking = Just a, line = Just line } ->
+                    if ok then
+                        { acc | state = { st | asking = Just (insert (promptPasted st.version (Bytes.toStringLossy line)) a) } }
+
+                    else
+                        { acc | state = st }
+
+                _ ->
+                    { acc | state = st }
 
         ForListRows ->
             let
@@ -4583,7 +4607,7 @@ opening : Syntax.Ask -> String -> { asking : Asking, expand : Array { command : 
 opening question after =
     let
         start =
-            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0 }
+            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0, cut = "" }
 
         opened =
             stepTo 0 [] start
@@ -4834,6 +4858,9 @@ promptKey k bytes ms a s =
                     else if plainText then
                         { state = { s | asking = Just (insert text a) }, commands = [] }
 
+                    else if name == "C-y" then
+                        pasteInPrompt a s
+
                     else
                         { state = { s | asking = Just (editLine name a s.history) }, commands = [] }
 
@@ -4963,6 +4990,45 @@ insert text a =
             String.toArray text
     in
     { a | chars = Array.slice 0 a.caret a.chars ++ added ++ Array.dropFirst a.caret a.chars, caret = a.caret + Array.length added, edited = True }
+
+
+{-| C-y at tmux's prompt, as tmux's (`status_prompt_paste`, TM80): from
+3.0 what C-w last cut, if anything; else the newest buffer, asked of tmux,
+put in when it answers (`ForPromptPaste`). -}
+pasteInPrompt : Asking -> (taken s : State) -> { state : State, commands : Array String }
+pasteInPrompt a s =
+    if a.cut /= "" && (s.version == 0 || s.version >= 30) then
+        { state = { s | asking = Just (insert a.cut a) }, commands = [] }
+
+    else
+        sendAsking [ { command = Command.showTopBuffer, expect = ForPromptPaste } ] s
+
+
+{-| A buffer's text as the prompt's C-y takes it: up to its first control
+character; before 3.0 only up to its first byte that is not printable
+ASCII, as 2.x reads it a byte at a time (TM80). -}
+promptPasted : Int -> String -> String
+promptPasted version text =
+    String.toArray text
+        |> Array.foldl
+            (\c acc ->
+                if acc.stopped then
+                    acc
+
+                else
+                    let
+                        code =
+                            Char.toCode c
+                    in
+                    if code < 32 || code == 127 || (version > 0 && version < 30 && code > 127) then
+                        { acc | stopped = True }
+
+                    else
+                        { acc | chars = Array.pushLast c acc.chars }
+            )
+            { chars = [], stopped = False }
+        |> .chars
+        |> String.fromArray
 
 
 {-| An editing key, by its tmux name, on the line. -}
@@ -5110,7 +5176,7 @@ editLine name a history =
         { a | chars = Array.slice 0 a.caret a.chars, edited = True }
 
     else if name == "C-w" then
-        { a | chars = Array.slice 0 wordStart a.chars ++ Array.dropFirst a.caret a.chars, caret = wordStart, edited = True }
+        { a | chars = Array.slice 0 wordStart a.chars ++ Array.dropFirst a.caret a.chars, caret = wordStart, edited = True, cut = String.fromArray (Array.slice wordStart a.caret a.chars) }
 
     else if name == "Up" || name == "C-p" then
         recalled -1
@@ -8828,6 +8894,12 @@ listKey k l s =
     else if buffer && name == "P" then
         listRun (Array.map (\t -> Syntax.fill (Syntax.tokens l.template) [ t ]) targets) l s
 
+    else if buffer && name == "e" then
+        -- tmux edits a buffer in an editor popup on its client's terminal,
+        -- which a control client has not (Gilbert, 2026-11-15: no editor
+        -- of puritty's own for now, TM80)
+        { state = { s | said = "puritty: e (edit in an editor) is not done under tmux -CC" }, commands = [] }
+
     else if buffer && name == "d" then
         when at is
             Just r ->
@@ -11932,6 +12004,7 @@ treePrompt version purpose label first =
     , caret = String.count first
     , edited = False
     , recall = ""
+    , cut = ""
     , purpose = purpose
     }
 
