@@ -432,7 +432,13 @@ client, is the host list with made-up hosts.
 **Found, not this work's:** `harness/hosts.py` fails three cases
 (`menu-connects`, `double-click-host`, `settings-connects`) at the commit
 before this work too: in each, one puritty starts another, which runs no
-ssh. The gate is not in the unit gate; left to look into.
+ssh. The gate is not in the unit gate; left to look into. *Fixed
+2026-11-15:* the cases' positions were stale, not puritty: the menu had
+gained New tab, Rename tab…, Tab color… and Reopen closed tab, so six Downs
+chose "Reopen closed tab" where "Connect to bastion" is now the eighth
+item; and the host list's local shell (SG15) is its third row, so the two
+settings cases opened a shell where they meant the first host. With the
+cases moved, 13 of 13 pass.
 
 
 ## SG15 · The local shell in the host list (2026-11-14)
