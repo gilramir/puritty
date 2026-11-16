@@ -59,6 +59,8 @@ if [ -n "$(git status --porcelain -- . ':!site')" ]; then
     exit 1
 fi
 commit=$(git rev-parse --short HEAD)
+# the commit built, kept: HEAD may move while the build runs
+full=$(git rev-parse HEAD)
 out=$root/dist/$tag
 mkdir -p "$out"
 [ -z "$(ls -A "$out")" ] || { echo "$out is not empty" >&2; exit 1; }
@@ -187,5 +189,5 @@ echo "== built in $out:"
 ls -l "$out"
 echo
 echo "Write what is new into $out/notes.md, then, when the upload is wanted:"
-echo "  gh release create $tag --draft $(if [ -z "$release" ]; then echo "--prerelease "; fi)--target $(git rev-parse HEAD) \\"
+echo "  gh release create $tag --draft $(if [ -z "$release" ]; then echo "--prerelease "; fi)--target $full \\"
 echo "    --title \"puritty $tag\" --notes-file $out/notes.md $out/*.zip $out/*.tar.gz $out/*.deb $out/SHA256SUMS"
