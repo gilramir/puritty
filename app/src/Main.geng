@@ -3525,6 +3525,13 @@ sshTold told m =
             Task.succeed (sshNoticed told m)
 
 
+{-| tmux control mode not running, with the settings' look, bar and
+background. -}
+freshTmux : Config -> TmuxMode.State
+freshTmux config =
+    TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
+
+
 {-| What a changed host key is said with, in the platform's dialog, the box
 and the screen alike (SC28). -}
 changedLines : { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int } -> Array String
@@ -3711,8 +3718,13 @@ sshKey remote k m =
                 Nothing ->
                     meant Reason.NotOpen
                         if screen.failed /= Nothing && letter == "r" then
+                            -- the new connection starts outside tmux: one
+                            -- attached with -CC when the old dropped never said
+                            -- %exit, and its state would take the new shell's
+                            -- output and send it the keys as tmux's commands
+                            -- (docs/tmux.md TM93)
                             remote.reconnect { columns = m.term.cols, rows = m.term.rows }
-                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, urgent = True })
+                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, tmux = freshTmux m.config, selection = Nothing, urgent = True })
 
                         else if (screen.failed /= Nothing && enter) || escape then
                             -- this tab's session given up: the tab closed, and
@@ -6272,7 +6284,7 @@ freshTab id remote host name color cols rows m =
     , clips = []
     , clipRead = Nothing
     , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-    , tmux = TmuxMode.setBackground m.config.background (TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {})))
+    , tmux = freshTmux m.config
     , search = Nothing
     , syncSince = -1
     }
@@ -6312,7 +6324,7 @@ reopened k id remote host m =
         , clips = []
         , clipRead = Nothing
         , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-        , tmux = TmuxMode.setBackground m.config.background (TmuxMode.setLook (m.config.tmuxLook == "tmux") (TmuxMode.setBar (m.config.tmuxTabs == "top") (TmuxMode.idle {})))
+        , tmux = freshTmux m.config
         , search = Nothing
         , syncSince = -1
     }

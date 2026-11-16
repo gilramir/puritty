@@ -64,6 +64,11 @@ CASES = [
     ("resize-while-asking", "ecdsa521", "hunter2", "known", ["resize:900:500", "type:hunter2", "Return"], "stty size > {size}; exit 7"),
     ("resize-then-reconnect", "ed", "", "known", ["resize:900:500", "r"],
      "if [ -e {size} ]; then stty size >> {size}; exit 7; else stty size > {size}; kill -9 $PPID; fi"),
+    # tmux -CC attached when the connection drops (no %exit), then a
+    # reconnect: what is typed reaches the new shell, not tmux (TM93); the
+    # first press only waits for the drop
+    ("tmux-then-reconnect", "ed", "", "known", ["shift", "r", "type:hello", "Return"],
+     "if [ -e {size} ]; then read l; echo $l >> {size}; exit 7; else echo first > {size}; (sleep 2; kill -9 $PPID) & tmux -L sshwindow -f /dev/null -CC new-session; fi"),
 ]
 
 
@@ -103,7 +108,7 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
         titles = []
         if presses:
             titles.append(reload.title_of(env))
-            win = subprocess.run([hosts.XDO, "search", "--sync", "--name", "^puritty: ssh to"], env=env, capture_output=True,
+            win = subprocess.run([hosts.XDO, "search", "--sync", "--name", "^(puritty: ssh to|tmux: )"], env=env, capture_output=True,
                                  text=True, timeout=10).stdout.split()
             for n, k in enumerate(presses):
                 if SHOTS:

@@ -3778,3 +3778,27 @@ after `detach` typed at the prompt, not after `prefix c` or
 `tmux -CC attach; cat > FILE`, `prefix d` pressed by xdotool): the build
 before wrote that line into the file on three runs of three, this one
 nothing.
+
+## TM93 · A reconnect starts outside tmux (2026-11-16)
+
+Gilbert, 2026-11-16, on his Windows laptop with puritty's own ssh client:
+moved off the docking station's ethernet to wifi and back, after half an
+hour the tab said it was disconnected; R reconnected, and then the window
+showed the old session, its text selectable, and nothing happened.
+
+The connection dropped while `tmux -CC` was attached, so tmux never said
+`%exit`, and nothing reset puritty's tmux state: not the session's
+failure, nor R (`Main`, the lost screen's `r`). After the reconnect the new
+shell's output went to `TmuxMode.read`, which takes only control-mode
+lines, and every key went out as a tmux command (`send-keys -K -H …`):
+the old panes stayed on the screen, and the shell read the commands.
+
+**Changed.** R starts the new connection outside tmux (`freshTmux`, the
+settings' look, bar and background, as a new tab starts), its selection
+gone. While the session is down the old panes stay to be read.
+
+**Checked:** `harness/sshwindow.py`'s `tmux-then-reconnect` (the built-in
+client against a local sshd): the first connection attaches `tmux -CC`
+and kills its sshd two seconds later; after R the second reads a line.
+Before the change the line it read was `send-keys -K -H 68` (the `h` of
+`hello`, sent to tmux); now `hello`. All 14 cases pass.
