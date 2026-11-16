@@ -176,6 +176,11 @@ body = "Remote programs can copy to it with OSC 52. Reading it is denied unless 
 
 ## Try it
 
-puritty is pre-release and built from source for now.
-[Getting started](@/guide/getting-started.md) says how, and the
-[roadmap](@/roadmap.md) what comes next.
+puritty 0.1.0 is out for Windows and Linux:
+[download it](https://github.com/gilramir/puritty/releases/latest) from
+GitHub. [Getting started](@/guide/getting-started.md) says which file to
+take, and the [roadmap](@/roadmap.md) what comes next.
+
+Why is it called puritty? Because it's written in
+[Geng](https://geng-lang.org), which is a pure functional programming
+language.
