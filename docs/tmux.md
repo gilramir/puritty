@@ -3532,7 +3532,8 @@ sections since:
 
 - **`status-keys vi`** at the prompt: tmux's vi keys (3.8's
   `status_prompt_translate_key`, and the older `status.c` tables).
-- **tmux's own prompt history** (3.3 on), shared with other clients.
+- **tmux's own prompt history** (3.3 on), shared with other clients:
+  done (TM89).
 - **Completing options and targets** at the prompt, and the matches' menu.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
   in customize mode: done (TM86, TM87).
@@ -3657,3 +3658,44 @@ a window's three panes (3.8: `0:nene`, `1:nene`, `2:nene` in their
 colors, the lines between) and a pane's row, each as tmux draws it. What
 each item's lines show still differs a little: tmux shows the rows around
 the cursor (`screen_write_preview`), puritty the last rows with text.
+
+## TM89 · tmux's own prompt history (2026-11-16)
+
+The second of TM85's items. tmux keeps what its prompts have had typed in
+the server (`prompt-history.c`, before 3.8 `status.c`): every non-empty
+answer on Enter, kept to `prompt-history-limit`, loaded from and saved to
+`history-file`. Before 3.3 one list for every prompt, which no command
+reads; from 3.3 a list per prompt type, which `show-prompt-history -T TYPE`
+prints (`History for TYPE:`, a blank line, `N: line` oldest first, a
+blank line; measured on 3.4, 3.6a and 3.8) and `clear-prompt-history`
+clears. The types: `command`, `search`, `target` and `window-target` from
+3.3, `command` and `search` in 3.8. `command-prompt -T` picks one
+(`command` without it); confirm-before is `command`; the modes' searches
+and filters are `search`, their value prompts `command`.
+
+**No command adds to it.** Only tmux's own prompt does, and under `-CC`
+puritty draws the prompt and runs what is typed itself. So what is typed
+in puritty stays puritty's, for the connection, and reaches neither tmux's
+other clients nor its `history-file`.
+
+**Built.** A prompt that opens (one that was not open, or another than
+the one open: one prompt's answer can open the next) asks
+`show-prompt-history -T TYPE` when the server has the command
+(`Command.promptHistoryKept`, from the commands it lists at attach, not
+its version), from wherever it opened: a key (`typed`), a click (a menu's
+item, `pointer`) or a reply (`read`). Up and Down go through tmux's list
+and then what was typed here of that type (`historyFor`); what is typed is
+kept by type (`promptKind`). Before 3.3 one list, `all`, as tmux's.
+`Syntax.Prompt` keeps `-T` (`kind`).
+
+**The fake** answers `show-prompt-history` as each tmux does, refusing it
+before 3.3 (`parse error: unknown command`), from a history a test sets
+(`promptHistory`), held to recordings of all six.
+
+**Checked:** an app test on each tmux (336): a command typed here then
+Up, Up: it, then tmux's; a `-T search` prompt's Up gives tmux's search,
+not a command; before 3.3, puritty's own only. Without the question, it
+fails on the three from 3.3. Side by side on real 3.8
+(`bench/tmux/compare/scenes_history.py`, a server given a history file):
+Up at `:` shows `set -g @seeded 1` and at the search prompt `needle` in
+both.

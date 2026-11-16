@@ -99,6 +99,9 @@ type alias World =
     , newLayouts : Bool
     -- the paste buffers, newest first (`show-buffer`, TM80)
     , buffers : Array String
+    -- each prompt type's history, oldest first (`show-prompt-history`,
+    -- 3.3, TM89)
+    , promptHistory : Dict String (Array String)
     }
 
 
@@ -131,6 +134,7 @@ world w =
     , others = []
     , newLayouts = False
     , buffers = []
+    , promptHistory = Dict.empty
     }
 
 
@@ -155,7 +159,7 @@ startBytes =
 {-| The commands tmux answers here, by name. -}
 known : Array String
 known =
-    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option", "show-buffer", "list-buffers" ]
+    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option", "show-buffer", "list-buffers", "show-prompt-history" ]
 
 
 {-| A block tmux wrote: the command it answers (its words as tmux read
@@ -713,6 +717,23 @@ one words w =
 
                 Nothing ->
                     { w = w, ok = False, lines = [ "no buffers" ], notices = [] }
+
+        "show-prompt-history" ->
+            -- as `cmd_show_prompt_history_exec` prints one type's (TM89)
+            let
+                kind =
+                    Maybe.withDefault "command" (Dict.get "T" args.values)
+            in
+            if not (Array.any (\c -> c.name == "show-prompt-history") (tableOf w.version)) then
+                -- before 3.3, as tmux refuses a command it has not
+                { w = w, ok = False, lines = [ "parse error: unknown command: show-prompt-history" ], notices = [] }
+
+            else
+                reply
+                    ([ "History for " ++ kind ++ ":", "" ]
+                        ++ Array.indexedMap (\i line -> String.fromInt (i + 1) ++ ": " ++ line) (Maybe.withDefault [] (Dict.get kind w.promptHistory))
+                        ++ [ "" ]
+                    )
 
         "list-buffers" ->
             -- newest first, each expanded with its own variables

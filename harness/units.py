@@ -115,8 +115,9 @@ SUITES = [
         # TM84: a menu's -C and -O, on each; 318 since TM86: the mouse in
         # choose-buffer, a tree row's double click and its preview, on each;
         # 324 since TM87: a mode's menu by the right button, on each; 330
-        # since TM88: the tree's preview labels in tmux's look, on each
-        330,
+        # since TM88: the tree's preview labels in tmux's look, on each;
+        # 336 since TM89: tmux's prompt history at the prompt, on each
+        336,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

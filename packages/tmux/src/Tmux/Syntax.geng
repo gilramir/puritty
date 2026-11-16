@@ -228,10 +228,11 @@ Enter does; or a command prompt, with a question and a first text for
 each answer, how an answer is typed, its template (`Nothing`: what is
 typed is the command), whether it is incremental (`-i`: the template
 runs on every change to the line, with `=`, `-` or `+` before it), and
-whether it is asked in the pane (`-P`, 3.8) rather than the status line. -}
+whether it is asked in the pane (`-P`, 3.8) rather than the status line,
+and the history it keeps (`-T`, 3.3; `command` without it). -}
 type Ask
     = Confirm { prompt : String, run : String, key : String, enterYes : Bool }
-    | Prompt { prompts : Array String, inputs : Array String, entry : Entry, template : Maybe (Array Token), incremental : Bool, inPane : Bool }
+    | Prompt { prompts : Array String, inputs : Array String, entry : Entry, template : Maybe (Array Token), incremental : Bool, inPane : Bool, kind : String }
 
 
 {-| The prompt a binding's command opens when it begins with
@@ -341,7 +342,18 @@ askOf command =
                                     Text
                         in
                         Just
-                            { ask = Prompt { prompts = prompts, inputs = inputs, entry = entry, template = template, incremental = String.contains "i" args.bools, inPane = String.contains "P" args.bools }
+                            { ask =
+                                Prompt
+                                    { prompts = prompts
+                                    , inputs = inputs
+                                    , entry = entry
+                                    , template = template
+                                    , incremental = String.contains "i" args.bools
+                                    , inPane = String.contains "P" args.bools
+                                    -- `-T`, its history's type (3.3): command,
+                                    -- search, target or window-target
+                                    , kind = Maybe.withDefault (meant Reason.NotSet "command") (getFlag 'T' args.values)
+                                    }
                             , after = after
                             }
 

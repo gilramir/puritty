@@ -140,7 +140,10 @@ type alias State =
     , modes : Dict Int String
     , modeKeys : String
     , asking : Maybe Asking
-    , history : Array String
+    -- each prompt type's answers typed here, and what tmux has of each
+    -- from 3.3, read as a prompt opens (TM89); before 3.3 one list, `all`
+    , history : Dict String (Array String)
+    , tmuxHistory : Dict String (Array String)
     , lookTmux : Bool
     -- what a binding or a command printed, shown in a view that takes
     -- the keys until it is closed (TM26)
@@ -646,6 +649,7 @@ type Expect
     | ForListFilter
     | ForListPreview String
     | ForListContent String
+    | ForPromptHistory String
     | ForCustomize Int
     | ForCustomizeNotes String
     | ForCustomizeFilter { filter : String, ids : Array String }
@@ -717,7 +721,8 @@ idle _ =
     , modes = Dict.empty
     , modeKeys = "emacs"
     , asking = Nothing
-    , history = []
+    , history = Dict.empty
+    , tmuxHistory = Dict.empty
     , lookTmux = False
     , view = Nothing
     , menu = Nothing
@@ -777,6 +782,24 @@ each a line; `trace` is what tmux said, for the diagnostic log
 output counted, never shown. -}
 read : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
 read size bytes s =
+    let
+        wasAsking =
+            Maybe.map .ask s.asking
+
+        r =
+            readHere size bytes s
+
+        -- a prompt a reply opened (an if-shell's, a run -C's) asks its
+        -- history (TM89)
+        asked =
+            historyAsked wasAsking { state = r.state, commands = r.commands }
+    in
+    { state = asked.state, outside = r.outside, commands = asked.commands, trace = r.trace, view = r.view }
+
+
+{-| `read`'s bytes, before a prompt they opened asks its history. -}
+readHere : { cols : Int, rows : Int } -> Bytes -> (taken s : State) -> { state : State, outside : Bytes, commands : Array String, trace : Array String, view : Maybe String }
+readHere size bytes s =
     let
         fed =
             Control.feed bytes s.reader
@@ -1182,6 +1205,9 @@ expectName x =
 
         ForListContent _ ->
             "a buffer's text, for the search"
+
+        ForPromptHistory kind ->
+            "tmux's " ++ kind ++ " prompt history"
 
         ForListPreview _ ->
             "the list's preview"
@@ -2966,6 +2992,36 @@ replied expect ok lines acc =
                     }
             }
 
+        ForPromptHistory kind ->
+            -- `History for TYPE:`, then `N: line` oldest first (TM89); an
+            -- error leaves what was had
+            if ok then
+                let
+                    st =
+                        acc.state
+
+                    entries =
+                        lines
+                            |> Array.map Bytes.toStringLossy
+                            |> Array.mapAndKeepJust
+                                (\line ->
+                                    when String.split ": " line |> Array.popFirst is
+                                        Just { first = n, rest = rest } ->
+                                            if rest /= [] && String.toInt n /= Nothing then
+                                                Just (String.join ": " rest)
+
+                                            else
+                                                Nothing
+
+                                        Nothing ->
+                                            Nothing
+                                )
+                in
+                { acc | state = { st | tmuxHistory = Dict.set kind entries st.tmuxHistory } }
+
+            else
+                acc
+
         ForListContent name ->
             -- a buffer's text kept; once every buffer's is in, the search
             -- that asked for them is made (TM81)
@@ -4561,6 +4617,16 @@ Super chord) still sends them to the pane. -}
 typed : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
 typed k bytes ms s =
     let
+        wasAsking =
+            Maybe.map .ask s.asking
+    in
+    historyAsked wasAsking (typedCopy k bytes ms s)
+
+
+{-| `typed`'s key, then copy mode asked where it is. -}
+typedCopy : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
+typedCopy k bytes ms s =
+    let
         r =
             typedHere k bytes ms s
 
@@ -4577,6 +4643,65 @@ typed k bytes ms s =
 
     else
         r
+
+
+{-| A prompt that has just opened asks tmux its type's history, from 3.3
+(`show-prompt-history -T`, TM89), so that Up and Down go through what
+tmux's own prompts have had typed, by any client and from its
+`history-file`, then what was typed here. -}
+historyAsked : Maybe Syntax.Ask -> (taken r : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+historyAsked wasAsking r =
+    when r.state.asking is
+        Just a ->
+            -- a new prompt, not the one open before (its next step
+            -- keeps the history it had); one opened from another's
+            -- answer is new
+            if wasAsking /= Just a.ask && Command.promptHistoryKept r.state.caps then
+                let
+                    kind =
+                        promptKind r.state a
+
+                    asked =
+                        sendAsking [ { command = Command.promptHistory kind, expect = ForPromptHistory kind } ] r.state
+                in
+                { state = asked.state, commands = r.commands ++ asked.commands }
+
+            else
+                r
+
+        Nothing ->
+            meant Reason.NotOpen r
+
+
+{-| The history a prompt keeps, as tmux types them (TM89): `-T`'s for
+command-prompt, `command` for confirm-before and the modes' own value
+prompts, `search` for their searches and filters (`mode_tree_set_prompt`);
+before 3.3, which keeps one list for them all, `all`. -}
+promptKind : State -> Asking -> String
+promptKind s a =
+    if not (Command.promptHistoryKept s.caps) then
+        "all"
+
+    else if Array.member a.purpose [ 1, 2, 11, 12, 23, 24 ] then
+        "search"
+
+    else if a.purpose /= 0 then
+        "command"
+
+    else
+        when a.ask is
+            Syntax.Prompt p ->
+                p.kind
+
+            Syntax.Confirm _ ->
+                "command"
+
+
+{-| A prompt type's history, oldest first: tmux's, then what was typed
+here, which tmux has no command to be given. -}
+historyFor : String -> State -> Array String
+historyFor kind s =
+    Maybe.withDefault (meant Reason.NotSet []) (Dict.get kind s.tmuxHistory) ++ Maybe.withDefault (meant Reason.NotSet []) (Dict.get kind s.history)
 
 
 typedHere : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> (taken s : State) -> { state : State, commands : Array String }
@@ -4988,7 +5113,7 @@ promptKey k bytes ms a s =
                         closePrompt [] a s
 
                     else if name == "BSpace" || name == "C-h" then
-                        { state = { s | asking = Just (editLine name a s.history) }, commands = [] }
+                        { state = { s | asking = Just (editLine name a (historyFor (promptKind s a) s)) }, commands = [] }
 
                     else
                         -- the count answered, and the key goes on as typed
@@ -5022,7 +5147,7 @@ promptKey k bytes ms a s =
                         pasteInPrompt a s
 
                     else
-                        { state = { s | asking = Just (editLine name a s.history) }, commands = [] }
+                        { state = { s | asking = Just (editLine name a (historyFor (promptKind s a) s)) }, commands = [] }
 
 
 {-| A key in an incremental prompt (`-i`), as tmux's: each change to the
@@ -5045,19 +5170,27 @@ incrementalKey name text plainText enter cancel a s =
                 insert text a
 
             else
-                editLine name a s.history
+                editLine name a (historyFor (promptKind s a) s)
     in
     if enter then
         closePrompt []
             a
-            { s
+            (let
+                kind =
+                    promptKind s a
+
+                own =
+                    Maybe.withDefault (meant Reason.NotSet []) (Dict.get kind s.history)
+             in
+             { s
                 | history =
-                    if line == "" || Array.last s.history == Just line then
+                    if line == "" || Array.last own == Just line then
                         s.history
 
                     else
-                        Array.pushLast line s.history
-            }
+                        Dict.set kind (Array.pushLast line own) s.history
+             }
+            )
 
     else if cancel then
         closePrompt [] a s
@@ -5357,12 +5490,19 @@ answer given a s =
         answers =
             Array.pushLast given a.answers
 
+        -- kept in its type's list (TM89)
+        kind =
+            promptKind s a
+
+        own =
+            Maybe.withDefault (meant Reason.NotSet []) (Dict.get kind s.history)
+
         history =
-            if given == "" || Array.last s.history == Just given then
+            if given == "" || Array.last own == Just given then
                 s.history
 
             else
-                Array.pushLast given s.history
+                Dict.set kind (Array.pushLast given own) s.history
     in
     if a.purpose >= 21 then
         -- customize-mode's own question (TM62); a yes or no is not kept
@@ -6053,6 +6193,23 @@ keys. `held` is the buttons held after the event; `own` is a selection's
 text when it is made, for PRIMARY. -}
 pointer : { ms : Int, held : Int, select : Bool, boundaries : Array Int, pasteButton : Int } -> Window.PointerEvent -> (taken s : State) -> { state : State, commands : Array String, own : Maybe String, paste : Bool }
 pointer how p s =
+    let
+        wasAsking =
+            Maybe.map .ask s.asking
+
+        r =
+            pointerHere how p s
+
+        -- a prompt the press opened (a menu's item) asks its history (TM89)
+        asked =
+            historyAsked wasAsking { state = r.state, commands = r.commands }
+    in
+    { state = asked.state, commands = asked.commands, own = r.own, paste = r.paste }
+
+
+{-| `pointer`'s press, release or motion. -}
+pointerHere : { ms : Int, held : Int, select : Bool, boundaries : Array Int, pasteButton : Int } -> Window.PointerEvent -> (taken s : State) -> { state : State, commands : Array String, own : Maybe String, paste : Bool }
+pointerHere how p s =
     when s.layout is
         Nothing ->
             meant Reason.NotYet { state = s, commands = [], own = Nothing, paste = False }
@@ -10969,6 +11126,7 @@ customizePrompt inPane purpose label first single =
                 , template = Nothing
                 , incremental = False
                 , inPane = inPane
+                , kind = ""
                 }
     }
 
@@ -12804,7 +12962,7 @@ treeHelp version =
 it (TM45): a search (1) or a filter (2), with its first text. -}
 treePrompt : Int -> Int -> String -> String -> Asking
 treePrompt version purpose label first =
-    { ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = Syntax.Text, template = Nothing, incremental = False, inPane = modeAsksInPane version }
+    { ask = Syntax.Prompt { prompts = [ label ], inputs = [ first ], entry = Syntax.Text, template = Nothing, incremental = False, inPane = modeAsksInPane version, kind = "" }
     , after = ""
     , step = 0
     , answers = []
@@ -12827,7 +12985,7 @@ treeQuestion version purpose label entry =
         q =
             treePrompt version purpose label ""
     in
-    { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ "" ], entry = entry, template = Nothing, incremental = False, inPane = modeAsksInPane version } }
+    { q | ask = Syntax.Prompt { prompts = [ label ], inputs = [ "" ], entry = entry, template = Nothing, incremental = False, inPane = modeAsksInPane version, kind = "" } }
 
 
 {-| Whether a mode tree's questions are asked in the mode (3.8's

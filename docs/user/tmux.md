@@ -153,7 +153,11 @@ runs what tmux would run when you answer.
   and copy mode's search and counts (`/`, `?`, `3k`). Typing works as on
   tmux's prompt line: Left, Right, Home, End, Ctrl+A, Ctrl+E, Ctrl+U,
   Ctrl+K, Ctrl+W, Alt+B and Alt+F by word, Ctrl+T, and Up and Down (or
-  Ctrl+P and Ctrl+N) for earlier answers; at the command prompt **Tab**
+  Ctrl+P and Ctrl+N) for earlier answers. From tmux 3.3 those include
+  tmux's own history (what its prompts have had typed, by any client, and
+  its `history-file`), each kind of prompt its own: commands, searches.
+  What you type in puritty is kept for this connection only, since tmux
+  has no command to be given it. At the command prompt **Tab**
   completes a command's name. Escape cancels. Korean typed with an input
   method, or pasted, goes in.
 - **What a command prints**: `prefix ?` (the key bindings), `prefix #`

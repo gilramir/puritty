@@ -119,6 +119,10 @@ named sym run =
                  else if sym == escapeKey then
                     "\u{001B}"
 
+                 else if sym == upKey then
+                    -- an arrow's bytes, as the window gives them
+                    "\u{001B}[A"
+
                  else
                     ""
                 )
@@ -139,6 +143,11 @@ escapeKey =
 downKey : Int
 downKey =
     0xFF54
+
+
+upKey : Int
+upKey =
+    0xFF52
 
 
 {-| A button pressed on a cell, at a time, and what it makes puritty send
@@ -694,6 +703,61 @@ onVersion version =
                                 window.rows
                         , lineLabel = has "─ 0:sh ─" sessionRows
                         }
+          }
+        , { name = "Up at the prompt goes back through tmux's own history from 3.3, after what was typed here, each type its own (TM89)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- tmux's history: one command and one search
+                        held =
+                            { made | promptHistory = Dict.empty |> Dict.set "command" [ "set-option -g @older 1" ] |> Dict.set "search" [ "needle" ] }
+
+                        -- a command typed here, then the prompt opened again
+                        reopened =
+                            attached held
+                                |> prefixThen ":"
+                                |> typeText "set-option -g @mine 1"
+                                |> named enterKey
+                                |> settle
+                                |> prefixThen ":"
+                                |> settle
+
+                        typedOf run =
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(none)"
+
+                        once =
+                            named upKey reopened
+
+                        first =
+                            typedOf once
+
+                        second =
+                            typedOf (named upKey once)
+
+                        -- a search prompt (-T search) goes back through
+                        -- tmux's searches, not its commands
+                        searching =
+                            attached held
+                                |> prefixThen ":"
+                                |> typeText "command-prompt -T search -p find 'display-message %%'"
+                                |> named enterKey
+                                |> settle
+                                |> named upKey
+                                |> typedOf
+                    in
+                    Expect.equal
+                        (if Array.member version [ "2.7", "3.0", "3.2a" ] then
+                            -- one list of puritty's own: nothing of tmux's
+                            -- can be read; the command typed is in it
+                            { first = "set-option -g @mine 1", second = "set-option -g @mine 1", search = "command-prompt -T search -p find 'display-message %%'" }
+
+                         else
+                            { first = "set-option -g @mine 1", second = "set-option -g @older 1", search = "needle" }
+                        )
+                        { first = first, second = second, search = searching }
           }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
