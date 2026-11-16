@@ -522,6 +522,9 @@ type alias Menuing =
     -- `-O` and `-C` (TM84)
     , stayOpen : Bool
     , start : Maybe String
+    -- a mode's own menu (TM87): each item's command is a key given to the
+    -- mode, as `mode_tree_menu_callback` gives it
+    , forMode : Bool
     }
 
 
@@ -6200,7 +6203,7 @@ pointer how p s =
                     plain (menuPointer p col row m s)
 
                 { drag = Nothing, tab = _, menu = Nothing, status = _, mode = Just click } ->
-                    plain (modeClicked click how.ms s)
+                    plain (modeClicked click how.ms col row s)
 
                 { drag = Just d, tab = _, menu = Nothing, status = _, mode = _ } ->
                     plain (dragged col row (p.action == 1) d s)
@@ -6284,10 +6287,11 @@ mouse (TM86): a row pressed, and whether it is the second press of a
 double click; the wheel, up or down; in the tree's preview, a window or a
 pane pressed, or its `<` or `>`; or nothing, a press the mode keeps. -}
 type ModeClick
-    = OnRow { row : Int, double : Bool }
+    = OnRow { row : Int, double : Bool, right : Bool }
     | OnWheel Bool
     | OnPreview String
     | OnPreviewMark String
+    | OnMenu { outside : Bool }
     | ClickKept
 
 
@@ -6338,6 +6342,13 @@ modeClick p ms col row cols rows places s =
         double i =
             p.button == 1 && s.clicks.count > 0 && s.clicks.pane == -2 && Clock.since s.clicks.at ms <= 500 && s.clicks.point.row == i
 
+        offList button =
+            if button == 2 then
+                OnMenu { outside = True }
+
+            else
+                ClickKept
+
         onList a0 top0 shown0 count =
             let
                 a =
@@ -6355,7 +6366,11 @@ modeClick p ms col row cols rows places s =
                         top + (cell row - a.y)
                 in
                 if i < count then
-                    Just (OnRow { row = i, double = double i })
+                    Just (OnRow { row = i, double = double i, right = p.button == 2 })
+
+                else if p.button == 2 then
+                    -- below the last row: the menu of the row chosen
+                    Just (OnMenu { outside = False })
 
                 else
                     Just ClickKept
@@ -6411,6 +6426,9 @@ modeClick p ms col row cols rows places s =
                                                 Nothing ->
                                                     meant Reason.OutOfRange ClickKept
 
+                                    else if p.button == 2 then
+                                        OnMenu { outside = True }
+
                                     else
                                         ClickKept
                             in
@@ -6432,8 +6450,9 @@ modeClick p ms col row cols rows places s =
                                     else
                                         l.selected - height + 1
                             in
-                            -- off the list: the preview, which keeps the press
-                            Just (Maybe.withDefault (meant Reason.OutOfRange ClickKept) (onList place top height count))
+                            -- off the list: the preview, which keeps a press and
+                            -- opens the outside menu for the right button
+                            Just (Maybe.withDefault (meant Reason.OutOfRange (offList p.button)) (onList place top height count))
 
                         { tree = Nothing, listing = Nothing, customizing = Just c } ->
                             let
@@ -6453,8 +6472,8 @@ modeClick p ms col row cols rows places s =
                                 top =
                                     clamp 0 (max 0 (count - height)) c.view.offset
                             in
-                            -- off the list: the detail below it, which keeps the press
-                            Just (Maybe.withDefault (meant Reason.OutOfRange ClickKept) (onList a top height count))
+                            -- off the list: the detail below it, as the preview
+                            Just (Maybe.withDefault (meant Reason.OutOfRange (offList p.button)) (onList a top height count))
 
                         _ ->
                             Nothing
@@ -6464,9 +6483,12 @@ modeClick p ms col row cols rows places s =
 Enter as well, as `mode_tree_key` makes `KEYC_DOUBLECLICK1_PANE` `\r`; the
 wheel a row up or down; a window or a pane in the tree's preview made the
 row and chosen, as `window_tree_mouse` does; `<` and `>` as their keys. -}
-modeClicked : ModeClick -> Int -> (taken s : State) -> { state : State, commands : Array String }
-modeClicked click ms s =
+modeClicked : ModeClick -> Int -> Int -> Int -> (taken s : State) -> { state : State, commands : Array String }
+modeClicked click ms col row s =
     when click is
+        OnMenu on ->
+            modeMenuOpen on.outside col row { state = s, commands = [] }
+
         ClickKept ->
             { state = s, commands = [] }
 
@@ -6503,7 +6525,10 @@ modeClicked click ms s =
                 chosen =
                     modeRowChosen i { s | clicks = clicks }
             in
-            if double then
+            if on.right then
+                modeMenuOpen False col row chosen
+
+            else if double then
                 modeKeyedAfter (symKey 0xFF0D) chosen
 
             else
@@ -6553,6 +6578,141 @@ modeClicked click ms s =
 
                 Nothing ->
                     meant Reason.NotOpen { state = s, commands = [] }
+
+
+{-| The mode's menu opened at the pointer after what `r` did (TM87), as
+`mode_tree_display_menu`: on a row, the mode's own items under the row's
+name; outside the list, Scroll Left, Scroll Right and Cancel; centred on
+the pointer's column, its top on the pointer's row. -}
+modeMenuOpen : Bool -> Int -> Int -> (taken r : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+modeMenuOpen outside col row r =
+    let
+        s =
+            r.state
+
+        found =
+            when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+                { tree = Just t, listing = _, customizing = _ } ->
+                    Just { kind = "tree", pane = t.pane, name = Array.get t.selected (treeRows t) |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "") }
+
+                { tree = Nothing, listing = Just l, customizing = _ } ->
+                    Just { kind = l.kind, pane = l.pane, name = Array.get l.selected (listRows l) |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "") }
+
+                { tree = Nothing, listing = Nothing, customizing = Just c } ->
+                    Just { kind = "customize", pane = c.pane, name = Array.get c.at (customizeShown c).shown |> Maybe.map (\l -> l.entry.name) |> Maybe.withDefault (meant Reason.OutOfRange "") }
+
+                _ ->
+                    Nothing
+    in
+    when found is
+        Just f ->
+            let
+                menu0 =
+                    { serial = s.serial + 1
+                    , title =
+                        if outside then
+                            ""
+
+                        else
+                            f.name
+                    , items = modeMenuItems outside f.kind s.version
+                    , pending = 0
+                    , selected = -1
+                    , pane = f.pane
+                    , mouse = Just { col = col, row = row }
+                    , x = "M"
+                    , y = String.fromInt row
+                    , armed = False
+                    , stayOpen = False
+                    , start = Nothing
+                    , forMode = True
+                    }
+
+                -- centred on the pointer: half its width to the left
+                width =
+                    (menuPlace s.canvas.cols s.canvas.rows s menu0).w
+            in
+            { state = { s | serial = s.serial + 1, menu = Just { menu0 | x = String.fromInt (max 0 (col - width // 2)) } }, commands = r.commands }
+
+        Nothing ->
+            meant Reason.NotOpen { state = s, commands = r.commands }
+
+
+{-| A mode's menu items as each tmux has them (`mode_tree_menu_items`,
+`window_tree_menu_items` and the others): the command is the key the mode
+is given, and the key shown. 3.0 and 3.1's tree sends `E` and `R` for Select and Expand,
+which its mode takes for nothing; 3.2 Enter and Right, and adds Mark;
+3.8's customize-mode adds Edit and Changed Only. -}
+modeMenuItems : Bool -> String -> Int -> Array Syntax.MenuItem
+modeMenuItems outside kind version =
+    let
+        item name key =
+            { name = name, key = key, command = key }
+
+        line =
+            { name = "", key = "", command = "" }
+
+        -- Ctrl-T, which tmux shows as `C-t` before 3.5 and by its C0
+        -- name, `[DC4]`, from 3.5 (`key_string_lookup_key`)
+        tagAll =
+            { name = "Tag All"
+            , key =
+                if version == 0 || version >= 35 then
+                    "[DC4]"
+
+                else
+                    "C-t"
+            , command = "C-t"
+            }
+
+        tags =
+            [ item "Tag" "t", tagAll, item "Tag None" "T" ]
+
+        newer =
+            version == 0 || version >= 32
+    in
+    if outside then
+        [ item "Scroll Left" "<", item "Scroll Right" ">", line, item "Cancel" "q" ]
+
+    else if kind == "tree" then
+        (if newer then
+            [ item "Select" "Enter", item "Expand" "Right", item "Mark" "m" ]
+
+         else
+            [ item "Select" "E", item "Expand" "R" ]
+        )
+            ++ [ line ]
+            ++ tags
+            ++ [ line, item "Kill" "x", item "Kill Tagged" "X", line, item "Cancel" "q" ]
+
+    else if kind == "buffer" then
+        [ item "Paste" "p", item "Paste Tagged" "P", line ] ++ tags ++ [ line, item "Delete" "d", item "Delete Tagged" "D", line, item "Cancel" "q" ]
+
+    else if kind == "client" then
+        [ item "Detach" "d", item "Detach Tagged" "D", line ] ++ tags ++ [ line, item "Cancel" "q" ]
+
+    else if version == 0 || version >= 38 then
+        [ item "Select" "Enter", item "Edit" "e", item "Expand" "Right", line ] ++ tags ++ [ line, item "Changed Only" "C", line, item "Cancel" "q" ]
+
+    else
+        [ item "Select" "Enter", item "Expand" "Right", line ] ++ tags ++ [ line, item "Cancel" "q" ]
+
+
+{-| The key a mode's menu item names, as the window would give it. -}
+keyNamed : String -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }
+keyNamed name =
+    when name is
+        "Enter" ->
+            symKey 0xFF0D
+
+        "Right" ->
+            symKey 0xFF53
+
+        "C-t" ->
+            { action = 0, keycode = 0, mods = 2, consumed = 0, unshifted = 0x74, sym = 0x74, text = Bytes.fromString "\u{0014}" }
+
+        _ ->
+            textKey name
 
 
 {-| The mode's row `i` made the chosen one, its preview or detail asked
@@ -8156,6 +8316,7 @@ openMenu ctx menu after s =
                 , armed = False
                 , stayOpen = menu.stayOpen
                 , start = menu.start
+                , forMode = False
                 }
 
         opened =
@@ -8614,7 +8775,9 @@ menuKey k m s =
             { state = s, commands = [] }
 
     else
-        when Array.findFirst (\r -> r.key == name && name /= "") choosable is
+        -- a mode's menu also by its item's key as the mode takes it, where
+        -- tmux 3.5 on shows a control key by its C0 name (TM87)
+        when Array.findFirst (\r -> name /= "" && (r.key == name || (m.forMode && Maybe.map .command (Array.get r.index m.items) == Just name))) choosable is
             Just r ->
                 chooseItem r.value.index m s
 
@@ -8653,7 +8816,12 @@ chooseItem index m s =
         command =
             Array.get index m.items |> Maybe.map .command |> Maybe.withDefault ""
     in
-    runLine { pane = m.pane, mouse = m.mouse } command { s | menu = Nothing }
+    if m.forMode then
+        -- a mode's menu: its key given to the mode (TM87)
+        modeKeyed (keyNamed command) { s | menu = Nothing }
+
+    else
+        runLine { pane = m.pane, mouse = m.mouse } command { s | menu = Nothing }
 
 
 {-| The pointer while a menu is open (TM27): over an item it is chosen;

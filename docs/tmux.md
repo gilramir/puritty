@@ -2668,7 +2668,7 @@ rebinding, all `same`. Tests: tmux package 93 (22 for customize), app
   the editor in a popup on the client, which a control client has not;
   puritty says so. On 3.8 a floating pane could host it.
 - The mouse in the mode (a click chooses a row, a double click sets it,
-  the right button its menu): the left button done (TM86), the menu not.
+  the right button its menu): done (TM86, TM87).
 - 3.8's monitor hooks and user hooks (`@name` hooks): no command says
   which options they are; they show as options.
 - A filter's variables only where it names them as `#{name}`
@@ -3530,8 +3530,7 @@ sections since:
 - **tmux's own prompt history** (3.3 on), shared with other clients.
 - **Completing options and targets** at the prompt, and the matches' menu.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
-  in customize mode: the left button and the wheel done (TM86); the right
-  button's menu not yet.
+  in customize mode: done (TM86, TM87).
 - **`bell-action`** (any, none, current, other: which windows' bells are
   shown) and **`visual-bell`** (on, off, both: a message in place of the
   sound, or beside it). puritty shows every window's bell (TM30) and sounds
@@ -3564,8 +3563,7 @@ nothing, as tmux's.
 **Not tied to tmux's `mouse` option.** tmux's client sends the mode the
 mouse only with `mouse on`; puritty takes a click in a mode it draws
 either way, since a click that does nothing in a window is only worse.
-The right button's selection waits for 3.0, as tmux's; its menu is not
-built yet.
+The right button's selection waits for 3.0, as tmux's; its menu is TM87.
 
 **Checked:** three app tests on each of the six tmuxes (318): in
 choose-buffer a press then Enter pastes the row pressed, a double click
@@ -3577,3 +3575,39 @@ press on a window in the session tree's preview chooses `@0`. With
 choose-buffer and customize-mode, and the same window (2) chosen from the
 preview. The checker holds the new arithmetic, the cells held to 16384 as
 `modePlace` holds them.
+
+## TM87 · A mode's menu on the right button (2026-11-16)
+
+From 3.0 a right press in a mode opens `mode_tree_display_menu`'s menu:
+on a row, that row chosen and the mode's own items under its name; below
+the last row, the chosen row's; off the list (the preview, customize
+mode's detail), `mode_tree_menu_items`, Scroll Left, Scroll Right and
+Cancel, with no title. Its left edge is half its width left of the
+pointer, its top on the pointer's row. An item gives the mode its key
+(`mode_tree_menu_callback`), so Cancel is `q` and closes the mode.
+
+The items, read from every release from 3.0 to 3.8 (three sets):
+
+| mode | 3.0–3.1 | 3.2–3.7 | 3.8 |
+|---|---|---|---|
+| tree | Select `E`, Expand `R`, Tag, Tag All, Tag None, Kill, Kill Tagged, Cancel | Select Enter, Expand Right, Mark `m`, the rest as before | as 3.2 |
+| buffer | Paste, Paste Tagged, Tag, Tag All, Tag None, Delete, Delete Tagged, Cancel | the same | the same |
+| client | Detach, Detach Tagged, Tag, Tag All, Tag None, Cancel | the same | the same |
+| customize | (none: from 3.2) | Select, Expand, Tag, Tag All, Tag None, Cancel | adds Edit `e` and Changed Only `C` |
+
+3.0 and 3.1's Select and Expand send `E` and `R`, which no mode key takes:
+they do nothing there, and do nothing in puritty either. Tag All is
+Ctrl-T, shown `C-t` before 3.5 and `[DC4]` from 3.5, when
+`key_string_lookup_key` began naming C0 controls; its shortcut is C-t
+either way. A menu (`Menuing.forMode`) whose items are keys: choosing one
+gives `keyNamed` of it to `modeKeyed`, and the menu's keyboard takes an
+item by the key it shows or the key it gives.
+
+**Checked:** an app test on each tmux (324): the right button on buffer0
+then `p` pastes buffer0 through the menu, and before 3.0 reaches the list
+(buffer2); the menu shows Delete Tagged; a right press under the list
+opens Scroll Right. With the menu not opened, it fails on the five from
+3.0. Side by side on real 3.8 (`scenes_mouse.py`'s `mouse-menu-*`): the
+buffer, tree, customize and outside menus each in tmux's place, with its
+title, items, lines and keys (`[DC4]`). The harness's right press holds
+the button, so each menu is its own scene.

@@ -523,8 +523,10 @@ onVersion version =
                         wheeled =
                             pasted ((opening {}).run |> clickAt 5 (rowOf "buffer0") 2000 |> named enterKey |> settle)
 
+                        -- the right button chooses the row and, from 3.0,
+                        -- opens its menu (TM87), closed here before Enter
                         righted =
-                            pasted ((opening {}).run |> clickAt 2 (rowOf "buffer0") 2000 |> named enterKey |> settle)
+                            pasted ((opening {}).run |> clickAt 2 (rowOf "buffer0") 2000 |> ctrl "c" |> named enterKey |> settle)
                     in
                     Expect.equal
                         { clicked = [ "buffer0" ]
@@ -538,6 +540,68 @@ onVersion version =
                                 [ "buffer0" ]
                         }
                         { clicked = clicked, doubled = doubled, wheeled = wheeled, righted = righted }
+          }
+        , { name = "the right button opens a mode's menu from 3.0; its item gives the mode its key (TM87)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        opening _ =
+                            look (attached { made | buffers = [ "zero", "one", "two" ] } |> prefixThen "=" |> settle)
+
+                        seen =
+                            (opening {}).rows
+
+                        rowOf name =
+                            seen
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains (name ++ ":") r.text)
+                                |> Maybe.map (\found -> { col = 10, row = found.value.row })
+                                |> Maybe.withDefault { col = 0, row = 0 }
+
+                        -- the right button on buffer0, then p: Paste, from the
+                        -- menu; before 3.0 p reaches the list, buffer2 chosen
+                        pasted =
+                            (opening {}).run
+                                |> clickAt 2 (rowOf "buffer0") 2000
+                                |> typeKey "p"
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "paste-buffer")
+                                |> Array.map
+                                    (\l ->
+                                        if String.contains "buffer0" l then
+                                            "buffer0"
+
+                                        else if String.contains "buffer2" l then
+                                            "buffer2"
+
+                                        else
+                                            l
+                                    )
+
+                        menuShown =
+                            look ((opening {}).run |> clickAt 2 (rowOf "buffer0") 2000)
+                                |> .rows
+                                |> Array.any (String.contains "Delete Tagged")
+
+                        -- the right button under the list, in the preview
+                        outside =
+                            look ((opening {}).run |> clickAt 2 { col = 30, row = 20 } 2000)
+                                |> .rows
+                                |> Array.any (String.contains "Scroll Right")
+                    in
+                    Expect.equal
+                        (if version == "2.7" then
+                            { pasted = [ "buffer2" ], menuShown = False, outside = False }
+
+                         else
+                            { pasted = [ "buffer0" ], menuShown = True, outside = True }
+                        )
+                        { pasted = pasted, menuShown = menuShown, outside = outside }
           }
         , { name = "a double click on the tree's row does what its keys do (TM86)"
           , test =

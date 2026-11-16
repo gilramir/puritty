@@ -113,8 +113,9 @@ SUITES = [
         # searched, case by version; 288 since TM82: a popup's title, on
         # each; 294 since TM83: a title's [z] clicked, on each; 300 since
         # TM84: a menu's -C and -O, on each; 318 since TM86: the mouse in
-        # choose-buffer, a tree row's double click and its preview, on each
-        318,
+        # choose-buffer, a tree row's double click and its preview, on each;
+        # 324 since TM87: a mode's menu by the right button, on each
+        324,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
