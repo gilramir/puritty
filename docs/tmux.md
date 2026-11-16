@@ -3519,3 +3519,20 @@ the change taken out, Enter runs the first item and the press nothing.
 
 App tests 300.
 
+
+## TM85 · What is left (2026-11-16)
+
+The -CC items not yet done, gathered from TM57's "not yet" and the
+sections since:
+
+- **`status-keys vi`** at the prompt: tmux's vi keys (3.8's
+  `status_prompt_translate_key`, and the older `status.c` tables).
+- **tmux's own prompt history** (3.3 on), shared with other clients.
+- **Completing options and targets** at the prompt, and the matches' menu.
+- **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
+  in customize mode.
+- **`bell-action`** (any, none, current, other: which windows' bells are
+  shown) and **`visual-bell`** (on, off, both: a message in place of the
+  sound, or beside it). puritty shows every window's bell (TM30) and sounds
+  as its own bell setting says, whatever these are.
+- **Editing a buffer** (choose-buffer's `e`): not under -CC for now (TM80).
