@@ -3735,3 +3735,46 @@ echo is not delayed: a frame is due at once when the last was more than
 tmux, puritty holds frames while a program has it set (`syncHeld`); under
 `-CC` the panes' own modes are not looked at. Claude Code asks whether the
 terminal has it and, under tmux, waits for the answer before using it.
+
+## TM91 · A selection goes when its pane changes under it (2026-11-16)
+
+Gilbert, 2026-11-16: under `-CC`, rows selected with the mouse at zsh's
+prompt stayed highlighted after `nano` started over them; attached
+without `-CC` they went. Without tmux puritty drops a selection after
+output when the screen is no longer the one it was made on (a program
+entering or leaving the alternate screen), or when one of its rows still
+on the screen has changed: each of its rows' hashes is kept when it is
+made (`Main.kept`, `rowHashes`). Under `-CC` a pane's selection (`Sel`)
+kept neither.
+
+Now it keeps both (`alt`, `hashes`), and after each output of its pane
+(`feedPane`) `selKept` drops it as `Main.kept` does. **Checked:** an app
+test on each tmux (342): rows 2 to 4 of `%0` dragged over; the pane's
+`ESC[?1049h` drops it, a character on another row keeps it, text written
+on row 4 drops it. With the check taken out, the alternate screen and the
+overwrite keep it.
+
+## TM92 · Nothing is sent after what detaches this client (2026-11-16)
+
+Gilbert, 2026-11-16: after `prefix d` under `-CC`,
+`display-message -p 'W #{window_id} #{pane_id} #{window_visible_layout}
+#{window_name}'` was found typed into his shell. That is `windowQuery`:
+after a binding's command runs (a reply block not puritty's, `reply`) the
+window is asked again, since tmux does not tell every change its bindings
+make to the panes (TK12). For `detach-client` the reply comes as tmux
+detaches; the question is written after the control client has stopped
+reading, and the shell it leaves reads it.
+
+**Changed.** A key whose binding, or a typed line, ends this client
+(`endsClient`: `detach-client` or `detach` without `-a`, `kill-server`)
+marks the state `ending`; the batch that carries it goes, and after it
+`Main.sendCommands` sends nothing (logging it as `tmux-`) until `%exit`
+resets the state. Any question in flight at that moment is covered, not
+only this one.
+
+**Checked:** an app test on each tmux (348): ending after `prefix d` and
+after `detach` typed at the prompt, not after `prefix c` or
+`detach-client -a`. Against real tmux 3.8 (puritty in Xvfb running
+`tmux -CC attach; cat > FILE`, `prefix d` pressed by xdotool): the build
+before wrote that line into the file on three runs of three, this one
+nothing.

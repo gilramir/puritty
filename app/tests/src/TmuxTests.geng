@@ -759,6 +759,67 @@ onVersion version =
                         )
                         { first = first, second = second, search = searching }
           }
+        , { name = "a selection goes when its pane leaves its screen or writes over its rows, as without tmux (TM91)"
+          , test =
+                \_ ->
+                    let
+                        -- rows 2 to 4 dragged over in pane %0, and let go
+                        dragged _ =
+                            let
+                                begun =
+                                    attached (start version)
+
+                                at action buttons c r =
+                                    TmuxMode.pointer { ms = 2000, held = buttons, select = False, boundaries = [], pasteButton = 3 }
+                                        { action = action, button = 1, mods = 0, x = c * 10 + 5, y = r * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+
+                                pressed =
+                                    at 0 1 0 2 begun.tmux
+
+                                moved =
+                                    at 2 2 10 4 pressed.state
+
+                                let_go =
+                                    at 1 0 10 4 moved.state
+                            in
+                            { begun | tmux = let_go.state }
+
+                        -- the pane's output, as tmux sends it (`%output`, its
+                        -- control characters in octal)
+                        output text run =
+                            deliver (Bytes.fromString ("%output %0 " ++ text ++ "\u{000D}\n")) run
+
+                        selecting run =
+                            TmuxMode.selectedText run.tmux /= Nothing
+                    in
+                    Expect.equal
+                        { made = True, alternate = False, elsewhere = True, overwritten = False }
+                        { made = selecting (dragged {})
+                        , alternate = selecting (output "\\033[?1049h" (dragged {}))
+                        , elsewhere = selecting (output "x" (dragged {}))
+                        , overwritten = selecting (output "\\033[4;1Hchanged" (dragged {}))
+                        }
+          }
+        , { name = "once what detaches this client has gone, nothing more is sent, which tmux would no longer read (TM92)"
+          , test =
+                \_ ->
+                    let
+                        -- whether nothing more may go, after the batch the
+                        -- key or line made went
+                        endedBy steps =
+                            TmuxMode.isEnding (TmuxMode.afterSent (steps (attached (start version))).tmux)
+
+                        line text run =
+                            run |> prefixThen ":" |> typeText text |> named enterKey
+                    in
+                    Expect.equal
+                        { prefixD = True, prefixC = False, typed = True, others = False }
+                        { prefixD = endedBy (\r -> r |> ctrl "b" |> settle |> typeKey "d")
+                        , prefixC = endedBy (\r -> r |> ctrl "b" |> settle |> typeKey "c")
+                        , typed = endedBy (line "detach")
+                        , others = endedBy (line "detach-client -a")
+                        }
+          }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
                 \_ ->

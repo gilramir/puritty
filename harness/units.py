@@ -116,8 +116,10 @@ SUITES = [
         # choose-buffer, a tree row's double click and its preview, on each;
         # 324 since TM87: a mode's menu by the right button, on each; 330
         # since TM88: the tree's preview labels in tmux's look, on each;
-        # 336 since TM89: tmux's prompt history at the prompt, on each
-        336,
+        # 336 since TM89: tmux's prompt history at the prompt, on each;
+        # 342 since TM91: a selection dropped as its pane changes, on each;
+        # 348 since TM92: nothing sent after what detaches, on each
+        348,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

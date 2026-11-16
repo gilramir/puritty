@@ -2715,16 +2715,27 @@ sshLine n =
 
 {-| tmux commands written, each a line in the log (redacted, `Diag.command`). -}
 sendCommands : Array String -> (taken m : Model) -> Model
-sendCommands commands m =
-    if Array.isEmpty commands then
-        m
+sendCommands commands m0 =
+    if TmuxMode.isEnding m0.tmux then
+        -- the client is detaching: tmux reads nothing more, and what was
+        -- written would be typed into the shell it leaves (docs/tmux.md TM92)
+        { m0 | diag = Diag.addAll m0.turnMs "tmux-" (Array.map Diag.command commands) m0.diag }
 
     else
         let
-            logged =
-                { m | diag = Diag.addAll m.turnMs "tmux>" (Array.map Diag.command commands) m.diag }
+            -- the batch that detaches the client is the last to go
+            m =
+                { m0 | tmux = TmuxMode.afterSent m0.tmux }
         in
-        sendRaw (commandLines commands) logged
+        if Array.isEmpty commands then
+            m
+
+        else
+            let
+                logged =
+                    { m | diag = Diag.addAll m.turnMs "tmux>" (Array.map Diag.command commands) m.diag }
+            in
+            sendRaw (commandLines commands) logged
 
 
 {-| `[tabs] restore` turned on while the window runs: its tabs are saved

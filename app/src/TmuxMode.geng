@@ -2,6 +2,7 @@ module TmuxMode exposing
     ( Asked
     , State
     , activeMode
+    , afterSent
     , anyMotion
     , bells
     , customize
@@ -10,6 +11,7 @@ module TmuxMode exposing
     , encodeKey
     , idle
     , isAsking
+    , isEnding
     , isOn
     , keyName
     , keys
@@ -140,6 +142,11 @@ type alias State =
     , modes : Dict Int String
     , modeKeys : String
     , asking : Maybe Asking
+    -- this client ending: 1 once a key or a typed line that detaches it
+    -- (or ends the server) is on its way, 2 once that went, after which
+    -- nothing more is sent until `%exit`: tmux no longer reads, and what
+    -- was written would be typed into the shell it leaves (TM92)
+    , ending : Int
     -- each prompt type's answers typed here, and what tmux has of each
     -- from 3.3, read as a prompt opens (TM89); before 3.3 one list, `all`
     , history : Dict String (Array String)
@@ -589,6 +596,11 @@ type alias Sel =
     , moved : Bool
     , made : Bool
     , text : String
+    -- the screen it was made on, and a hash of each of its rows once made,
+    -- so that it goes when the pane leaves that screen or writes over
+    -- them, as without tmux (`Main.kept`, TM91)
+    , alt : Bool
+    , hashes : Dict Int Int
     }
 
 
@@ -721,6 +733,7 @@ idle _ =
     , modes = Dict.empty
     , modeKeys = "emacs"
     , asking = Nothing
+    , ending = 0
     , history = Dict.empty
     , tmuxHistory = Dict.empty
     , lookTmux = False
@@ -768,6 +781,46 @@ blank cols rows =
 isOn : State -> Bool
 isOn s =
     s.on
+
+
+{-| Whether nothing more may be sent: this client is ending, and what
+detaches it has gone (TM92). -}
+isEnding : State -> Bool
+isEnding s =
+    s.ending >= 2
+
+
+{-| After a batch of commands went: the one that ends this client was
+the last to go (TM92). -}
+afterSent : (taken s : State) -> State
+afterSent s =
+    if s.ending == 1 then
+        { s | ending = 2 }
+
+    else
+        s
+
+
+{-| Whether a command line ends this client: `detach-client` (`detach`)
+without `-a`, which detaches the others, or `kill-server`, whose `%exit`
+follows (TM92). -}
+endsClient : String -> Bool
+endsClient line =
+    Syntax.commands (Syntax.tokens line)
+        |> Array.any
+            (\words ->
+                let
+                    values =
+                        Array.map .value words
+                in
+                when Array.first values is
+                    Just name ->
+                        ((name == "detach-client" || name == "detach") && not (Array.any (\w -> String.startsWith "-" w && String.contains "a" w) (Array.dropFirst 1 values)))
+                            || name == "kill-server"
+
+                    Nothing ->
+                        meant Reason.NoMore False
+            )
 
 
 title : State -> String
@@ -2184,7 +2237,7 @@ event size e acc =
                         Nothing ->
                             meant Reason.NotOpen []
             in
-            { acc | state = { st | on = False, starting = Nothing, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing }, outside = acc.outside ++ said }
+            { acc | state = { st | on = False, ending = 0, starting = Nothing, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing }, outside = acc.outside ++ said }
 
         Reply r ->
             when starting is
@@ -3768,6 +3821,42 @@ notice n acc =
             { acc | state = st }
 
 
+{-| A hash of each of a selection's rows on the pane's screen, by row,
+as `Main.rowHashes` (TM91). -}
+selRowHashes : Sel -> Vt.Term -> Dict Int Int
+selRowHashes sel t =
+    let
+        pushed =
+            Vt.rowsPushed t
+
+        lo =
+            max pushed (min sel.anchor.row sel.head.row)
+
+        hi =
+            min (pushed + t.rows - 1) (max sel.anchor.row sel.head.row)
+    in
+    Array.foldl (\r d -> Dict.set r (Vt.rowsHash r r t) d) Dict.empty (Array.range lo hi)
+
+
+{-| Whether a selection stays after its pane's output, as `Main.kept`: while
+the pane shows the screen it was made on and none of its rows still on the
+screen changed (TM91). -}
+selKept : Sel -> Vt.Term -> Bool
+selKept sel t =
+    if sel.alt /= t.alt then
+        False
+
+    else if not sel.made then
+        True
+
+    else
+        let
+            pushed =
+                Vt.rowsPushed t
+        in
+        Dict.foldl (\r h ok -> ok && (r < pushed || Vt.rowsHash r r t == h)) True sel.hashes
+
+
 {-| A pane's output fed to its terminal, made at a guessed size if tmux
 has not yet said where it goes; its replies dropped. -}
 feedPane : Int -> Bytes -> (taken s : State) -> State
@@ -3790,8 +3879,22 @@ feedPane id bytes s =
                 else
                     0
 
-            fed =
+            fed0 =
                 { s | panes = Builder.update at (\t -> (Vt.takeReplies (Vt.feed bytes t)).term) s.panes }
+
+            -- a selection in the pane goes when its screen or rows change
+            -- (TM91)
+            fed =
+                when fed0.selection is
+                    Just sel ->
+                        if sel.pane == id && not (selKept sel (Builder.getProven at fed0.panes)) then
+                            { fed0 | selection = Nothing }
+
+                        else
+                            fed0
+
+                    Nothing ->
+                        meant Reason.NotOpen fed0
         in
         if back > 0 then
             -- a view scrolled back stays on its rows as more come in
@@ -4850,7 +4953,16 @@ keyByTable k bytes ms s =
                         , modes = modes
                     }
         in
-        if way.ran /= "" && modeTable == "" && not s.keys.byTable then
+        if endsClient way.ran then
+            -- the key detaches this client: its own commands go, nothing
+            -- after them (TM92)
+            let
+                st =
+                    keyed.state
+            in
+            { state = { st | ending = 1 }, commands = keyed.commands }
+
+        else if way.ran /= "" && modeTable == "" && not s.keys.byTable then
             -- a binding of tmux's, sent as its command (before 3.4): the
             -- window asked again after it, since tmux does not tell every
             -- change to its panes' places (`rotate-window` none on any
@@ -5592,6 +5704,15 @@ closePrompt run a s =
                 r =
                     if runsHere line then
                         runLine { pane = acc.state.active, mouse = Nothing } line acc.state
+
+                    else if endsClient line then
+                        -- a typed line that detaches this client: nothing
+                        -- after it goes (TM92)
+                        let
+                            st =
+                                acc.state
+                        in
+                        sendAsking [ { command = line, expect = ForRan } ] { st | ending = 1 }
 
                     else
                         sendAsking [ { command = line, expect = ForRan } ] acc.state
@@ -7206,7 +7327,7 @@ selecting how p col row q s =
                     |> Maybe.andThen identity
 
             sel =
-                Maybe.map (\w -> { pane = q.id, anchor = w.start, head = w.end, first = w.start, last = w.end, mode = count - 1, moved = count > 1, made = False, text = "" }) span
+                Maybe.map (\w -> { pane = q.id, anchor = w.start, head = w.end, first = w.start, last = w.end, mode = count - 1, moved = count > 1, made = False, text = "", alt = Maybe.withDefault (meant Reason.Gone False) (withPane q.id s .alt), hashes = Dict.empty }) span
 
             select =
                 selected q.id s
@@ -7243,7 +7364,7 @@ selecting how p col row q s =
                         text =
                             Maybe.withDefault (meant Reason.Gone "") (withPane sel.pane s (Vt.selectionText sel.anchor sel.head))
                     in
-                    { state = { s | grab = Nothing, selection = Just { sel | made = True, text = text } }, commands = [], own = Just text, paste = False }
+                    { state = { s | grab = Nothing, selection = Just { sel | made = True, text = text, hashes = Maybe.withDefault (meant Reason.Gone Dict.empty) (withPane sel.pane s (selRowHashes sel)) } }, commands = [], own = Just text, paste = False }
 
             Nothing ->
                 meant Reason.NotOpen none { s | grab = Nothing }
@@ -8376,7 +8497,16 @@ runLine ctx line s =
 {-| `runLine`'s commands that are not a prompt, a menu, the panes' numbers
 or a tree. -}
 plainLines : Context -> String -> (taken s : State) -> { state : State, commands : Array String }
-plainLines ctx fixed s =
+plainLines ctx fixed s0 =
+    let
+        -- a line that detaches this client sends nothing after it (TM92)
+        s =
+            if endsClient fixed then
+                { s0 | ending = 1 }
+
+            else
+                s0
+    in
     when Syntax.ifFormatOf fixed is
         Just f ->
             sendAsking
