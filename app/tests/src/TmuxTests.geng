@@ -647,6 +647,54 @@ onVersion version =
                     in
                     Expect.equal (Just [ "switch-client -t '@0'" ]) chose
           }
+        , { name = "in tmux's look the tree's preview boxes each label in the middle, as each tmux words it (TM88)"
+          , test =
+                \_ ->
+                    let
+                        begun =
+                            attached (start version)
+
+                        tmuxLooking =
+                            { begun | tmux = TmuxMode.setLook True begun.tmux }
+
+                        session =
+                            look (settle (prefixThen "s" tmuxLooking))
+
+                        sessionRows =
+                            session.rows
+
+                        -- the w tree, its window's row: a window's panes
+                        windowRun =
+                            let
+                                again =
+                                    attached (start version)
+                            in
+                            { again | tmux = TmuxMode.setLook True again.tmux }
+
+                        window =
+                            look (settle (named downKey (settle (prefixThen "w" windowRun))))
+
+                        has text rows =
+                            Array.any (String.contains text) rows
+                    in
+                    Expect.equal
+                        { session = True
+                        , window = True
+                        , lineLabel = False
+                        }
+                        { session = has "│ 0:sh │" sessionRows
+                        , window =
+                            has
+                                (if version == "3.8" then
+                                    "│ 0:host │"
+
+                                 else
+                                    "│ 0 │"
+                                )
+                                window.rows
+                        , lineLabel = has "─ 0:sh ─" sessionRows
+                        }
+          }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
                 \_ ->

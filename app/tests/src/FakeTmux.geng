@@ -630,7 +630,19 @@ one words w =
             reply
                 (windowsOf w
                     |> Array.sortBy .index
-                    |> Array.map (\o -> expand (vars (viewed o w) (activePane (viewed o w))) format)
+                    |> Array.map
+                        (\o ->
+                            expand
+                                (\v ->
+                                    -- `?pane_format` too: a condition's name
+                                    if v == "pane_format" || v == "?pane_format" then
+                                        "0"
+
+                                    else
+                                        vars (viewed o w) (activePane (viewed o w)) v
+                                )
+                                format
+                        )
                 )
 
         "list-panes" ->
@@ -1699,6 +1711,16 @@ varsOf w p name =
 
             "tree-mode-preview-style" ->
                 "fg=themered"
+
+            -- 3.7's preview label, the window's or the pane's by where it
+            -- is expanded (TM88)
+            "tree-mode-preview-format" ->
+                "#{?pane_format,#{pane_index}:#{pane_title},#{window_index}:#{window_name}}"
+
+            -- a format expanded for a pane, as display-message and
+            -- list-panes do; list-windows says 0
+            "pane_format" ->
+                "1"
 
             "pane_search_string" ->
                 ""

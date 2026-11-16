@@ -1530,6 +1530,10 @@ they are, each showing the part of its screen around the cursor; for a
 session, its windows side by side, each its active pane, the current one
 marked. puritty does the same with what it asks tmux.
 
+*Corrected by TM88:* tmux draws a window's panes side by side, as a
+session's windows, not where they are in the window; puritty's look keeps
+them where they are, and tmux's look now draws them as tmux does.
+
 **Asked.** When the tree has loaded, and after every key in it, puritty
 looks at the chosen row; if it is not the row already previewed, it asks
 `list-panes -t @W` (each pane's id, place, size, whether active, index)
@@ -2866,7 +2870,8 @@ have, the current window among them, moved by the offset no further than
 the first and last window; `<` and `>` drawn at the sides with a line
 inside them. The offset goes back to 0 on another row, as tmux's. A
 window's preview stays puritty's (its panes where they are, TM35), so
-there they do nothing. `i` (3.8) shows the row's information in the
+there they do nothing; in tmux's look they move a window's panes too
+(TM88). `i` (3.8) shows the row's information in the
 preview's place, `window_tree_draw_info`'s lines (a pane's, its window's,
 its session's, as many as the row has), asked of tmux in one
 `display-message -t ROW` and drawn with their styles, a line across
@@ -3611,3 +3616,44 @@ opens Scroll Right. With the menu not opened, it fails on the five from
 buffer, tree, customize and outside menus each in tmux's place, with its
 title, items, lines and keys (`[DC4]`). The harness's right press holds
 the button, so each menu is its own scene.
+
+## TM88 · The tree's preview in tmux's look, as tmux draws it (2026-11-16)
+
+Gilbert, after TM86's side-by-side shots: fix the tmux look. What tmux
+draws below the tree (`window_tree_draw_session`, `_window`, `_label`,
+read in every release from 2.7 to 3.8):
+
+- **A session's windows and a window's panes alike**: side by side, each
+  its full height, a line between them, as many as fit at 24 cells each
+  with `<` and `>` past them (the same span, `sessionSpan`, now a window's
+  too in tmux's look, `previewSideBySide`; `<` and `>` move it).
+- **A pane's row**: that pane's screen over the whole area, no label.
+- **The label**, boxed in the middle of each item:
+
+| | text | box |
+|---|---|---|
+| before 3.7 | ` index:name ` for a window (` index ` when wider than it), ` index ` for a pane, in display-panes' colors | its own width plus two, only with room on both sides; a pane's centred in the width each is given, a window's in its own |
+| 3.7 on | `tree-mode-preview-format` as tmux expands it for the window or pane (default `#{?pane_format,#{pane_index}:#{pane_title},#{window_index}:#{window_name}}`), cut to the width less four, in `tree-mode-preview-style` | two cells wider each side, its inside cleared; 3.8's in `tree-mode-border-style` |
+
+puritty draws each item's lines over its whole height in tmux's look
+(`drawPreview`), the lines between, and `previewLabel`; from 3.7 it asks
+the label as `#{E:tree-mode-preview-format}` in the preview's
+`list-windows` and `list-panes`. puritty's look is unchanged: the label on
+a line at the top, a window's panes where they are. The press on a pane
+in the preview (TM86) reads the same layout (`previewRects` takes the
+look).
+
+**The fake** answers `tree-mode-preview-format` and `pane_format` (0 in
+`list-windows`, 1 elsewhere), held to real answers recorded again
+(`record-tmux.py`, whose pane now ends `sleep 600; exit 0`: this
+machine's `sh` replaced itself with its last command, which made the
+pane's command `sleep` in a fresh recording).
+
+**Checked:** an app test on each tmux (330): in tmux's look the session
+tree's window is labelled `│ 0:sh │`, a window's pane `│ 0:host │` on 3.8
+and `│ 0 │` before 3.7, and no label on a line. Side by side on real 3.8
+and 3.6a (`scenes_mouse.py`'s `tree-preview-labels`): a session's windows,
+a window's three panes (3.8: `0:nene`, `1:nene`, `2:nene` in their
+colors, the lines between) and a pane's row, each as tmux draws it. What
+each item's lines show still differs a little: tmux shows the rows around
+the cursor (`screen_write_preview`), puritty the last rows with text.

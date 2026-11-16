@@ -134,7 +134,7 @@ def recorded(binary):
 
     subprocess.run([binary, "-L", SOCKET, "kill-server"], capture_output=True)
     tmux("-f", "/dev/null", "new-session", "-d", "-s", "main", "-n", "sh", "-x", "80", "-y", "24",
-         "sh -c \"seq -f 'line %g' 200 | head -c -1; sleep 600\"")
+         "sh -c \"seq -f 'line %g' 200 | head -c -1; sleep 600; exit 0\"")
     time.sleep(1)
     control = Control(binary)
     version = control.ask("display-message -p '#{version}'")[0]

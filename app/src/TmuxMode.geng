@@ -6410,7 +6410,7 @@ modeClick p ms col row cols rows places s =
                                     if p.button == 1 && f.withPreview && a.h > 0 && not t.info && within a then
                                         let
                                             placed =
-                                                previewRects a t.preview
+                                                previewRects s.lookTmux a t.preview
                                         in
                                         if placed.left && col < a.x + 3 then
                                             OnPreviewMark "<"
@@ -11962,9 +11962,23 @@ askPreview s =
                     serial =
                         t.preview.serial + 1
 
+                    formatted =
+                        s.version == 0 || s.version >= 37
+
                     command =
+                        -- the label: from 3.7 tree-mode-preview-format as tmux
+                        -- expands it for the window or pane (TM88)
                         if isSession then
-                            Command.listWindowsTarget target "Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} #{window_index}:#{window_name}\t#{E:tree-mode-preview-style}"
+                            Command.listWindowsTarget target
+                                ("Q #{window_id} 0 0 #{window_width} #{window_height} #{window_active} "
+                                    ++ (if formatted then
+                                            "#{E:tree-mode-preview-format}"
+
+                                        else
+                                            "#{window_index}:#{window_name}"
+                                       )
+                                    ++ "\t#{E:tree-mode-preview-style}"
+                                )
 
                         else if String.startsWith "%" target then
                             -- a pane's row: that pane alone, filling the area,
@@ -11973,7 +11987,16 @@ askPreview s =
                             Command.displayAt target "Q #{pane_id} 0 0 #{pane_width} #{pane_height} 1 #{pane_index}\t#{E:tree-mode-preview-style}"
 
                         else
-                            Command.listPanesTarget target "Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} #{pane_index}\t#{E:tree-mode-preview-style}"
+                            Command.listPanesTarget target
+                                ("Q #{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active} "
+                                    ++ (if formatted then
+                                            "#{E:tree-mode-preview-format}"
+
+                                        else
+                                            "#{pane_index}"
+                                       )
+                                    ++ "\t#{E:tree-mode-preview-style}"
+                                )
                 in
                 if target == "" || target == t.preview.target then
                     { state = s, commands = [] }
@@ -12641,7 +12664,7 @@ treeKey k t s =
             offset =
                 when treePreviewWidth s t is
                     Just w ->
-                        if pv.session then
+                        if previewSideBySide s.lookTmux pv then
                             (sessionSpan w (Array.length pv.items) (activeIndex pv.items) stepped).offset
 
                         else
@@ -13154,7 +13177,7 @@ drawTree theme colors tmuxLook version place t =
                     box ++ drawInfo theme colors tmuxLook area t.preview
 
                 else
-                    box ++ drawPreview theme colors tmuxLook area t.preview
+                    box ++ drawPreview theme colors tmuxLook version area t.preview
 
             else
                 []
@@ -13477,25 +13500,54 @@ drawTree theme colors tmuxLook version place t =
 
 
 {-| Where the tree's preview puts each item in its area (TM86): a
-session's windows side by side, `<` and `>` marks where there are more, or
-a window's panes where they are in it, as `drawPreview` draws them and a
-press on them is read. -}
-previewRects : { x : Int, y : Int, w : Int, h : Int } -> Preview -> { left : Bool, right : Bool, rects : Array { item : PreviewItem, x : Int, y : Int, w : Int, h : Int } }
-previewRects area pv =
+session's windows side by side, `<` and `>` marks where there are more; a
+window's panes side by side too in tmux's look, as tmux draws them, and
+where they are in the window in puritty's; a pane's row its pane alone,
+filling the area, in tmux's look (TM88). `each` is the width each item is
+given, which tmux before 3.7 centres a pane's label in. As `drawPreview`
+draws them and a press on them is read. -}
+previewRects : Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> { left : Bool, right : Bool, each : Int, rects : Array { item : PreviewItem, x : Int, y : Int, w : Int, h : Int } }
+previewRects tmuxLook area pv =
     let
+        paneRow =
+            tmuxLook && String.startsWith "%" pv.target
+
+        side =
+            previewSideBySide tmuxLook pv
+
         -- a session's windows as tmux picks them, `<` and `>` where there
         -- are more (TM65)
         span =
             sessionSpan area.w (Array.length pv.items) (activeIndex pv.items) pv.offset
 
         leftMark =
-            pv.session && span.start /= 0 && area.w > 6
+            side && span.start /= 0 && area.w > 6
 
         rightMark =
-            pv.session && span.end /= Array.length pv.items && area.w > 6
+            side && span.end /= Array.length pv.items && area.w > 6
+
+        eachOf =
+            (area.w
+                - (if leftMark then
+                    3
+
+                   else
+                    0
+                  )
+                - (if rightMark then
+                    3
+
+                   else
+                    0
+                  )
+            )
+                // max 1 (span.end - span.start)
 
         rects =
-            if pv.session then
+            if paneRow then
+                Array.takeFirst 1 pv.items |> Array.map (\item -> { item = item, x = area.x, y = area.y, w = area.w, h = area.h })
+
+            else if side then
                 let
                     room =
                         area.w
@@ -13579,7 +13631,14 @@ previewRects area pv =
                     )
                     pv.items
     in
-    { left = leftMark, right = rightMark, rects = rects }
+    { left = leftMark, right = rightMark, each = eachOf, rects = rects }
+
+
+{-| Whether the preview's items are side by side: a session's windows
+always; a window's panes in tmux's look, as tmux draws them (TM88). -}
+previewSideBySide : Bool -> Preview -> Bool
+previewSideBySide tmuxLook pv =
+    pv.session || (tmuxLook && not (String.startsWith "%" pv.target))
 
 
 {-| The preview in its area (TM35): a session's windows side by side, as
@@ -13587,8 +13646,8 @@ many as fit at ten cells or more; a window's panes where they are in it,
 scaled to the area. Each has a top line with its label, the active one's
 in the active color, and below it the last lines it shows, cut to its
 width by cells. -}
-drawPreview : Array String -> Colors -> Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
-drawPreview theme colors tmuxLook area pv =
+drawPreview : Array String -> Colors -> Bool -> Int -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
+drawPreview theme colors tmuxLook version area pv =
     let
         text =
             if tmuxLook then
@@ -13633,7 +13692,7 @@ drawPreview theme colors tmuxLook area pv =
                 "\u{001B}[0;38;5;240;48;5;236m"
 
         placed =
-            previewRects area pv
+            previewRects tmuxLook area pv
 
         leftMark =
             placed.left
@@ -13660,29 +13719,236 @@ drawPreview theme colors tmuxLook area pv =
         rects =
             placed.rects
 
+        -- tmux's look: each item's screen over its whole height, a line
+        -- between side-by-side items, and its label boxed in its middle
+        -- (`window_tree_draw_session`, `_window`, `_label`, TM88); a
+        -- pane's row has no label
+        paneRow =
+            String.startsWith "%" pv.target
+
         drawn r =
-            let
-                label =
-                    " " ++ r.item.label ++ " "
+            if tmuxLook then
+                let
+                    shown =
+                        Array.takeLast r.h r.item.lines
 
-                top =
-                    clipCells r.w (String.repeat (max 0 ((r.w - String.count label) // 2)) "─" ++ label ++ String.repeat r.w "─")
+                    padded =
+                        shown ++ Array.repeat (max 0 (r.h - Array.length shown)) ""
+                in
+                Array.indexedMap (\j line -> { row = r.y + j, col = r.x, color = text, text = clipCells r.w line }) padded
 
-                body =
-                    r.h - 1
+            else
+                let
+                    label =
+                        " " ++ r.item.label ++ " "
 
-                shown =
-                    Array.takeLast body r.item.lines
+                    top =
+                        clipCells r.w (String.repeat (max 0 ((r.w - String.count label) // 2)) "─" ++ label ++ String.repeat r.w "─")
 
-                padded =
-                    shown ++ Array.repeat (max 0 (body - Array.length shown)) ""
-            in
-            Array.pushFirst { row = r.y, col = r.x, color = edge r.item, text = top }
-                (Array.indexedMap (\j line -> { row = r.y + 1 + j, col = r.x, color = text, text = clipCells r.w line }) padded)
+                    body =
+                        r.h - 1
+
+                    shown =
+                        Array.takeLast body r.item.lines
+
+                    padded =
+                        shown ++ Array.repeat (max 0 (body - Array.length shown)) ""
+                in
+                Array.pushFirst { row = r.y, col = r.x, color = edge r.item, text = top }
+                    (Array.indexedMap (\j line -> { row = r.y + 1 + j, col = r.x, color = text, text = clipCells r.w line }) padded)
+
+        count =
+            Array.length rects
+
+        -- the line right of each side-by-side item but the last
+        between =
+            if tmuxLook && previewSideBySide tmuxLook pv then
+                rects
+                    |> Array.indexedMap
+                        (\i r ->
+                            if i < count - 1 then
+                                Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = r.x + r.w, color = border, text = "│" })
+
+                            else
+                                []
+                        )
+                    |> Array.flatten
+
+            else
+                []
+
+        labels =
+            if tmuxLook && not paneRow then
+                Array.mapAndFlatten
+                    (\r ->
+                        previewLabel version
+                            { x = r.x
+                            , y = r.y
+                            , sx =
+                                -- before 3.7 a pane's label is centred in the
+                                -- width each pane is given, a window's in its own
+                                if version > 0 && version < 37 && not pv.session then
+                                    placed.each
+
+                                else
+                                    r.w
+                            , sy = r.h
+                            }
+                            pv.session
+                            border
+                            (edge r.item)
+                            r.item.label
+                    )
+                    rects
+
+            else
+                []
     in
     Array.range 0 (area.h - 1)
         |> Array.map (\j -> { row = area.y + j, col = area.x, color = text, text = String.repeat area.w " " })
-        |> (\cleared -> cleared ++ Array.mapAndFlatten drawn rects ++ marks)
+        |> (\cleared -> cleared ++ Array.mapAndFlatten drawn rects ++ between ++ marks ++ labels)
+
+
+{-| An item's label in the tree's preview, boxed in its middle as tmux's
+`window_tree_draw_label` (TM88). Before 3.7: ` text ` (a window's
+` index ` when ` index:name ` is wider than it), the box drawn only with
+room on both sides, the label in display-panes' colors. From 3.7: the
+label as `tree-mode-preview-format` made it, cut to the width less four,
+in a box two cells wider each side, its inside cleared. -}
+previewLabel : Int -> { x : Int, y : Int, sx : Int, sy : Int } -> Bool -> String -> String -> String -> Array { row : Int, col : Int, color : String, text : String }
+previewLabel version at session borderColor labelColor label =
+    let
+        sx =
+            clamp 0 16384 at.sx
+
+        sy =
+            clamp 0 16384 at.sy
+
+        x =
+            clamp 0 16384 at.x
+
+        y =
+            clamp 0 16384 at.y
+
+        plain =
+            "\u{001B}[0m"
+    in
+    if version > 0 && version < 37 then
+        let
+            whole =
+                " " ++ label ++ " "
+
+            shown =
+                if session && textCells whole > sx then
+                    " " ++ Maybe.withDefault label (Array.first (String.split ":" label)) ++ " "
+
+                else
+                    whole
+
+            len =
+                clamp 0 16384 (textCells shown)
+
+            ox =
+                (sx - len + 1) // 2
+
+            oy =
+                (sy + 1) // 2
+
+            box =
+                if ox > 1 && ox + len < sx - 1 && sy >= 3 then
+                    [ { row = y + oy - 1, col = x + ox - 1, color = plain, text = "┌" ++ String.repeat len "─" ++ "┐" }
+                    , { row = y + oy, col = x + ox - 1, color = plain, text = "│" }
+                    , { row = y + oy, col = x + ox + len, color = plain, text = "│" }
+                    , { row = y + oy + 1, col = x + ox - 1, color = plain, text = "└" ++ String.repeat len "─" ++ "┘" }
+                    ]
+
+                else
+                    []
+        in
+        if sx == 0 || sy == 1 || len > sx then
+            []
+
+        else
+            box ++ [ { row = y + oy, col = x + ox, color = labelColor, text = shown } ]
+
+    else if sx < 5 || sy < 3 then
+        []
+
+    else
+        let
+            cut =
+                takeCells (sx - 4) label
+
+            width =
+                clamp 0 16384 (textCells cut)
+
+            ox =
+                (sx - width + 1) // 2
+
+            oy =
+                (sy + 1) // 2
+
+            -- 3.8's box takes tree-mode-border-style; 3.7's the default
+            edgeColor =
+                if version == 0 || version >= 38 then
+                    borderColor
+
+                else
+                    plain
+        in
+        if width == 0 then
+            []
+
+        else
+            [ { row = y + oy - 1, col = x + ox - 2, color = edgeColor, text = "┌" ++ String.repeat (width + 2) "─" ++ "┐" }
+            , { row = y + oy, col = x + ox - 2, color = edgeColor, text = "│" ++ String.repeat (width + 2) " " ++ "│" }
+            , { row = y + oy + 1, col = x + ox - 2, color = edgeColor, text = "└" ++ String.repeat (width + 2) "─" ++ "┘" }
+            , { row = y + oy, col = x + ox, color = labelColor, text = cut }
+            ]
+
+
+{-| The characters of `text` that fit in `n` cells, unpadded. -}
+takeCells : Int -> String -> String
+takeCells n text =
+    String.foldl
+        (\c acc ->
+            let
+                w =
+                    textCells (String.fromChar c)
+            in
+            if acc.full || acc.used + w > n then
+                { acc | full = True }
+
+            else
+                { acc | used = acc.used + w, text = acc.text ++ String.fromChar c }
+        )
+        { used = 0, full = False, text = "" }
+        text
+        |> .text
+
+
+{-| The cells a string takes: wide characters two, controls none. -}
+textCells : String -> Int
+textCells text =
+    String.foldl
+        (\c n ->
+            let
+                cp =
+                    Char.toCode c
+            in
+            n
+                + (if cp < 0x20 || cp == 0x7F then
+                    0
+
+                   else if cp < 0x80 then
+                    1
+
+                   else
+                    Width.width cp
+                  )
+        )
+        0
+        text
 
 
 {-| tmux 3.8's information on the row (`i`, TM65), in the preview's

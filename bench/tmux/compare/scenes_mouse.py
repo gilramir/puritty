@@ -2,7 +2,7 @@
 tree, choose-buffer's list and customize-mode, and on a window in the
 tree's preview, each shot beside a plain client given the same press."""
 
-from scenes import P
+from scenes import P, THREE
 
 WINDOWS = [("new-window", "-t", "main", "-n", "two"), ("new-window", "-t", "main", "-n", "three"),
            ("select-window", "-t", "main:0")]
@@ -24,6 +24,9 @@ SCENES = [
          steps=[("keys", P, "w"), ("rpress", 40, 20), ("shot", "menu")]),
     dict(name="mouse-menu-customize", conf="set -g mouse on\n",
          steps=[("keys", P, ":"), ("type", "customize-mode"), ("keys", "Enter"), ("rpress", 12, 3), ("shot", "menu")]),
+    dict(name="tree-preview-labels", setup=THREE + [("new-window", "-t", "main", "-n", "second"), ("select-window", "-t", "main:0")],
+         steps=[("keys", P, "w"), ("shot", "session"), ("keys", "Down"), ("shot", "window"),
+                ("keys", "Right"), ("keys", "Down"), ("shot", "pane"), ("keys", "q")]),
     dict(name="mouse-customize", conf="set -g mouse on\n",
          steps=[("keys", P, ":"), ("type", "customize-mode"), ("keys", "Enter"), ("shot", "open"),
                 ("click", 12, 3), ("shot", "row-3"), ("click", 12, 6), ("shot", "row-6")]),
