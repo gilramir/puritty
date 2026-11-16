@@ -3299,3 +3299,31 @@ recorded tmux (`docs/tmux-versions.md` TV10, `docs/tmux-checks.md` TK10.9):
 App tests 244 (forty more from the four versions added, and the 2.7
 check).
 
+
+## TM77 · The tree as each tmux writes it (2026-11-15)
+
+puritty asks tmux to write the tree's rows with the tree's own default
+format (TM44), and used 3.6a's on every tmux before 3.8. tmux's source
+(`window-tree.c`, `mode-tree.c`, every release from 2.7) has four:
+
+| tmux | a window's row | a pane's row | a marked row |
+|---|---|---|---|
+| 2.7 to 3.1 | `name flags (N panes)`, and its pane's `"title"` when it has one pane | `command "title"` | as any other |
+| 3.2 to 3.6 | `name flags`, and `: "title"` when it is not the host's | `command*M: "title"` | reversed |
+| 3.7 | the same | `command` and `pane_flags`, a floating pane in italics | reversed |
+| 3.8 | the same, in its theme's colors | the same, a floating pane underlined | magenta |
+
+And two of the list's own: before 3.2 a row's key is `(0)  `, padded to
+four, or six when there are more than ten rows (`(M-a) `), where from 3.2
+the keys are padded to the longest and one space; and before 3.6 a window
+with one pane has no row for it, so nothing to open (`+`).
+
+puritty now asks for each version's format (`treeQueries`), drops a
+window's only pane before 3.6, and writes the old keys in tmux's look.
+**Checked:** `record-tmux.py` records each tmux's tree as it draws it
+(`prefix w`, a client of its own in an outer tmux) with the menus, and a
+test holds puritty's rows in tmux's look to them on all six recorded
+versions: before the change 2.7, 3.0, 3.2a and 3.4 failed it ("(1) └─> +
+0: sh*" where 3.4 draws "(1) └─> 0: sh*"); after, all pass. App tests
+252.
+

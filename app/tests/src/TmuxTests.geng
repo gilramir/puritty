@@ -327,8 +327,27 @@ onVersion version =
                         inner r =
                             String.trim (String.slice 1 (String.count r - 1) r)
                     in
+                    -- each tmux's own row (TM77): before 3.6 a window's
+                    -- only pane is no row, so there is nothing to open;
+                    -- before 3.2 its panes and title are written out
                     Expect.equal
-                        [ "0  ▾ main: 1 windows (attached)", "1    ▸ 0: sh*" ]
+                        [ "0  ▾ main: 1 windows (attached)"
+                        , when version is
+                            "2.7" ->
+                                "1      0: sh* (1 panes) \"host\""
+
+                            "3.0" ->
+                                "1      0: sh* (1 panes) \"host\""
+
+                            "3.2a" ->
+                                "1      0: sh*"
+
+                            "3.4" ->
+                                "1      0: sh*"
+
+                            _ ->
+                                "1    ▸ 0: sh*"
+                        ]
                         [ inner (row 1 opened), inner (row 2 opened) ]
           }
         , { name = "the command prompt runs what is typed as a tmux command (TM25)"
@@ -387,6 +406,24 @@ onVersion version =
                                 Just "sh"
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
+          }
+        , { name = "the tree of windows shows the rows this tmux draws (TM77)"
+          , test =
+                \_ ->
+                    let
+                        drawn =
+                            drawnMenu version "w"
+
+                        begun =
+                            attached (start version)
+
+                        -- in tmux's own look (TM32), whose rows are tmux's
+                        rows =
+                            (look (prefixThen "w" { begun | tmux = TmuxMode.setLook True begun.tmux })).rows
+                                |> Array.takeFirst (Array.length drawn)
+                                |> Array.map String.trimRight
+                    in
+                    Expect.equal drawn rows
           }
         , { name = "the pane menu shows the items this tmux draws (TM27)"
           , test =

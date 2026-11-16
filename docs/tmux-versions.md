@@ -236,7 +236,10 @@ measured on 3.6a and 3.8 only.
 pane would show `M`; and the status line's timer could ask 2.7 for
 `#{T:…}` before it knew 2.7 has none (`tmux-checks.md` TK10.9).
 
-**Not yet:** 2.7's own tree writes its rows with its own default format
-(`#{pane_current_command} "#{pane_title}"`; a window as `name flags (N
-panes)`), where puritty writes 3.6a's on every tmux before 3.8.
+**The tree by version** (`docs/tmux.md` TM77): before 3.2 its rows are
+written `name flags (N panes)` and `command "title"`, keys `(0)  `; from
+3.2 a marked row is reversed; a window's only pane is a row of its own
+from 3.6; 3.7 writes a pane's flags as `pane_flags` and a floating pane in
+italics. puritty asks each tmux for its own, and in tmux's look draws the
+rows each real tmux draws (recorded with the menus).
 

@@ -205,16 +205,16 @@ def names(version):
     return out
 
 
-# the menus recorded, by the key after the prefix: the window's and the
-# pane's (TM27)
-MENU_KEYS = ["<", ">"]
+# what is recorded drawn, by the key after the prefix: the window's and
+# the pane's menus (TM27), and the tree of windows (TM77)
+MENU_KEYS = ["<", ">", "w"]
 
 
 def menus(binary, outer):
-    """The items of the menu each of MENU_KEYS opens, as this tmux draws
-    them to a client of its own run in a pane of `outer` (the newest
-    tmux), with no configuration: each row inside the box, trimmed; none
-    where the key opens no menu (before 3.0)."""
+    """What each of MENU_KEYS opens, as this tmux draws it to a client of
+    its own run in a pane of `outer` (the newest tmux), with no
+    configuration: a menu's rows inside its box, trimmed, none where the
+    key opens no menu (before 3.0); the tree's rows as they are."""
     out = {}
     for key in MENU_KEYS:
         inner, host = "puritty-record-menu", "puritty-record-outer"
@@ -228,7 +228,17 @@ def menus(binary, outer):
         subprocess.run([outer, "-L", host, "send-keys", "C-b", key], check=True)
         time.sleep(1)
         screen = subprocess.run([outer, "-L", host, "capture-pane", "-p"], capture_output=True, text=True, check=True).stdout
-        out[key] = [row.split("│")[1].strip() for row in screen.splitlines() if row.count("│") >= 2]
+        if key == "w":
+            # the tree's rows, down to the first empty one, the host's name
+            # as the fake gives it
+            rows = []
+            for row in screen.splitlines():
+                if not row.strip():
+                    break
+                rows.append(row.rstrip().replace(socket.gethostname().split(".")[0], "host"))
+            out[key] = rows
+        else:
+            out[key] = [row.split("│")[1].strip() for row in screen.splitlines() if row.count("│") >= 2]
         subprocess.run([outer, "-L", host, "kill-server"], capture_output=True)
         subprocess.run([binary, "-L", inner, "kill-server"], capture_output=True)
     return out

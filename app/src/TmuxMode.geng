@@ -2859,8 +2859,18 @@ replied expect ok lines acc =
                                     Nothing
                         )
                         lines
+
+                -- before 3.6 a window's only pane is no row of its own, and
+                -- the window has nothing to open (`window_tree_build_window`,
+                -- TM77)
+                shown =
+                    if st.version > 0 && st.version < 36 then
+                        Array.keepIf (\p -> Array.length (Array.keepIf (\q -> q.window == p.window) panes) > 1) panes
+
+                    else
+                        panes
             in
-            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | panes = panes, loaded = t.loaded + 1 }) st.tree } }
+            previewAcc { acc | state = { st | tree = Maybe.map (\t -> treeLoaded st.window st.active { t | panes = shown, loaded = t.loaded + 1 }) st.tree } }
 
         ForPreviewList serial ->
             -- the panes or windows of the row previewed, each then captured
@@ -11329,9 +11339,12 @@ clipCells n text =
 
 {-| tmux's questions for the tree's three lists (TM44): each row's text
 expanded by tmux with its tree's own default format (`window-tree.c`,
-`WINDOW_TREE_DEFAULT_FORMAT`), the same in 3.6a and 3.8 but for a pane's
-flags, which 3.8 writes as `pane_flags`. Fields are split at tabs, so a
-name with spaces stays whole. -}
+`WINDOW_TREE_DEFAULT_FORMAT`), which has four forms (TM77): before 3.2 a
+window `name flags (N panes)` and a pane `command "title"`; from 3.2 the
+flags and a title other than the host's, a marked row reversed; 3.7 a
+pane's flags as `pane_flags` and a floating pane in italics; 3.8 its
+theme's colors. Its conditions are written `#{?#{name},…}` (TM76). Fields
+are split at tabs, so a name with spaces stays whole. -}
 treeQueries : Int -> Array { command : String, expect : Expect }
 treeQueries version =
     let
@@ -11343,6 +11356,13 @@ treeQueries version =
         newer =
             version == 0 || version >= 38
 
+        -- before 3.2: no flags after a pane's command, every pane's title
+        oldest =
+            version > 0 && version < 32
+
+        windowTitle =
+            "#{?#{&&:#{==:#{window_panes},1},#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}}},: \"#{pane_title}\",}"
+
         sessionText =
             (if newer then
                 "#[fg=themelightgrey]"
@@ -11353,20 +11373,27 @@ treeQueries version =
                 ++ "#{session_windows} windows#{?#{session_grouped}, (group #{session_group}: #{session_group_list}),}#{?#{session_attached}, (attached),}"
 
         windowText =
-            (if newer then
-                "#{?#{window_marked_flag},#[fg=thememagenta],}#{window_name}#[fg=themelightgrey]#{window_flags}"
+            if newer then
+                "#{?#{window_marked_flag},#[fg=thememagenta],}#{window_name}#[fg=themelightgrey]#{window_flags}" ++ windowTitle
 
-             else
-                "#{window_name}#{window_flags}"
-            )
-                ++ "#{?#{&&:#{==:#{window_panes},1},#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}}},: \"#{pane_title}\",}"
+            else if oldest then
+                "#{window_name}#{window_flags} (#{window_panes} panes)#{?#{==:#{window_panes},1}, \"#{pane_title}\",}"
+
+            else
+                "#{?#{window_marked_flag},#[reverse],}#{window_name}#{window_flags}" ++ windowTitle
 
         paneText =
             if newer then
                 "#{?#{pane_marked},#[fg=thememagenta],}#{?#{pane_floating_flag},#[underscore],}#{pane_current_command}#[fg=themelightgrey]#{pane_flags}" ++ paneTitle
 
+            else if oldest then
+                "#{pane_current_command} \"#{pane_title}\""
+
+            else if version >= 37 then
+                "#{?#{pane_marked},#[reverse],}#{?#{pane_floating_flag},#[italics],}#{pane_current_command}#{pane_flags}" ++ paneTitle
+
             else
-                "#{pane_current_command}#{?#{pane_active},*,}#{?#{pane_marked},M,}" ++ paneTitle
+                "#{?#{pane_marked},#[reverse],}#{pane_current_command}#{?#{pane_active},*,}#{?#{pane_marked},M,}" ++ paneTitle
     in
     [ { command = Command.listSessions ("S\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{session_name}\t" ++ sessionText), expect = ForTreeSessions }
     , { command = Command.listWindowsAll ("W\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_activity}\t#{window_name}\t" ++ windowText), expect = ForTreeWindows }
@@ -12244,7 +12271,26 @@ drawTree theme colors tmuxLook version place t =
                 key =
                     when treeRowKey i is
                         Just k ->
-                            if tmuxLook then
+                            if tmuxLook && version > 0 && version < 32 then
+                                -- before 3.2: `(0)  ` or `(M-a)`, padded to
+                                -- four, or six with more than ten rows
+                                -- (`mode_tree_draw`, TM77)
+                                String.padRight
+                                    (if Array.length rows > 10 then
+                                        6
+
+                                     else
+                                        4
+                                    )
+                                    ' '
+                                    (if String.count k == 1 then
+                                        "(" ++ k ++ ")  "
+
+                                     else
+                                        "(" ++ k ++ ")"
+                                    )
+
+                            else if tmuxLook then
                                 String.padRight (keyWidth + 2) ' ' ("(" ++ k ++ ")") ++ " "
 
                             else

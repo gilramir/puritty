@@ -104,8 +104,9 @@ SUITES = [
         # the fake's windows held to every tmux's notifications; 244 since
         # TV10: the per-version tests on 3.4, 3.2a, 3.0 and 2.7 too, forty,
         # and no condition 2.7 would take as true; 246 since SG19: a
-        # recent's arguments, and the jump list's quoting
-        246,
+        # recent's arguments, and the jump list's quoting; 252 since TM77:
+        # the tree's rows as each tmux draws them, on each
+        252,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
