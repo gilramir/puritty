@@ -3699,3 +3699,39 @@ fails on the three from 3.3. Side by side on real 3.8
 (`bench/tmux/compare/scenes_history.py`, a server given a history file):
 Up at `:` shows `set -g @seeded 1` and at the search prompt `needle` in
 both.
+
+## TM90 · A burst of a pane's output is drawn as it ends (2026-11-16)
+
+Gilbert, 2026-11-16: in a pane running Claude Code in its scrolling (not
+full-screen) mode with a long transcript, Ctrl-Z then `fg` scrolled the
+pane's whole history past before it showed the end; puritty attached to
+tmux without `-CC` did not. Coming back, such an app clears the screen and
+its scrollback and prints its whole transcript again. A plain tmux client
+sees only tmux's redraw of the screen as it ends; under `-CC` tmux hands
+every byte to puritty as `%output`.
+
+**Why it showed.** Each read of tmux's output made the frame urgent
+(`Main.feed`, since TM14's first commit), so puritty drew a frame for every
+chunk it read: the reprint drawn a few kilobytes at a time. Without tmux,
+a read only marks a frame pending, drawn at most every `frameMs` (16 ms).
+
+**Measured** (`bench/tmux/burst/run.sh`: puritty in Xvfb attached to tmux
+3.8 by `-CC`, a stand-in printing 5000 colored lines, about 500 KB, then on
+a key clearing and printing them all again): tmux handed the reprint over
+in 131 reads within 40 ms; puritty drew about 176 frames more than without
+the reprint (218 against 42 over the same 11 s). Xvfb draws fast, so here
+it went by in a blink; on a real display, and over remote X, each frame
+costs milliseconds and the reprint is seen scrolling for as long.
+
+**Changed.** tmux's output now marks the frame pending, as a program's
+own output does: the reprint costs 3 frames (9 against 6), and an idle
+`-CC` window draws fewer frames too (6 against 42), since tmux's own
+reads (subscriptions, the status line) no longer each force one. A key's
+echo is not delayed: a frame is due at once when the last was more than
+`frameMs` ago. `harness/puppet.py --all` holds puritty to every tmux from
+2.7 to 3.8 after each step as before: 24 of 24.
+
+**Not done:** synchronized output (mode 2026) per pane under `-CC`. Without
+tmux, puritty holds frames while a program has it set (`syncHeld`); under
+`-CC` the panes' own modes are not looked at. Claude Code asks whether the
+terminal has it and, under tmux, waits for the answer before using it.
