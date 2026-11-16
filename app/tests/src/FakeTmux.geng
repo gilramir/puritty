@@ -155,7 +155,7 @@ startBytes =
 {-| The commands tmux answers here, by name. -}
 known : Array String
 known =
-    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option", "show-buffer" ]
+    [ "display-message", "list-windows", "list-panes", "list-sessions", "list-keys", "list-commands", "capture-pane", "refresh-client", "send-keys", "copy-mode", "switch-client", "select-pane", "set-option", "show-buffer", "list-buffers" ]
 
 
 {-| A block tmux wrote: the command it answers (its words as tmux read
@@ -685,14 +685,26 @@ one words w =
             sendKeys args target w
 
         "show-buffer" ->
-            -- the newest buffer's text, a line each; refused when there is
-            -- none ("no buffers")
-            when Array.first w.buffers is
+            -- the buffer `-b` names, or the newest, its text a line each;
+            -- refused when there is none ("no buffers", "no buffer NAME")
+            when
+                (when Dict.get "b" args.values is
+                    Just wanted ->
+                        Array.findFirst (\b -> b.name == wanted) (buffersOf w) |> Maybe.map (\found -> found.value.text)
+
+                    Nothing ->
+                        Array.first w.buffers
+                )
+            is
                 Just text ->
                     reply (String.split "\n" text)
 
                 Nothing ->
                     { w = w, ok = False, lines = [ "no buffers" ], notices = [] }
+
+        "list-buffers" ->
+            -- newest first, each expanded with its own variables
+            reply (Array.map (\b -> expand (bufferVars b (vars w (activePane w))) format) (buffersOf w))
 
         "copy-mode" ->
             let
@@ -1258,6 +1270,35 @@ captured w args p =
                 line "E" (total - 1)
         in
         Array.slice from (to + 1) p.lines
+
+
+{-| The buffers as tmux names them, newest first: `bufferN`, the newest
+the highest N. -}
+buffersOf : World -> Array { name : String, text : String }
+buffersOf w =
+    Array.indexedMap (\i text -> { name = "buffer" ++ String.fromInt (Array.length w.buffers - 1 - i), text = text }) w.buffers
+
+
+{-| A buffer's variables: its name, size in bytes and creation time, and as
+its sample (`buffer_sample`) its first line, which is all this fake keeps
+of tmux's sample (TM81). -}
+bufferVars : { name : String, text : String } -> (String -> String) -> String -> String
+bufferVars b lookup name =
+    when name is
+        "buffer_name" ->
+            b.name
+
+        "buffer_size" ->
+            String.fromInt (Bytes.length (Bytes.fromString b.text))
+
+        "buffer_created" ->
+            "1700000000"
+
+        "buffer_sample" ->
+            String.split "\n" b.text |> Array.first |> Maybe.withDefault ""
+
+        _ ->
+            lookup name
 
 
 {-| A line as tmux before 3.3 kept it, written whole by `capture-pane -J`:

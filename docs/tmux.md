@@ -3406,3 +3406,29 @@ no editor of puritty's own for now; it may come later.
 
 App tests 276.
 
+
+## TM81 · choose-buffer searches a buffer's whole text; case by version (2026-11-15)
+
+tmux's `window_buffer_search` (2.7 to 3.8) takes a buffer whose name holds
+the search, or whose whole text does (`memmem` over the buffer's data);
+puritty searched the sample in the row, so a match past the first line, or
+past the sample's length, was not found. Now a search in choose-buffer
+first asks tmux for the text of each buffer not yet in (`show-buffer -b
+NAME`, one a buffer), keeps them in the list (`Listing.contents`, dropped
+when the buffers are listed again), and searches name, then text, once the
+last is in; `n` and `N` search the kept texts.
+
+**Case**, from `mode-tree.c`: from 3.6 a search with no capitals ignores
+case (`search_icase`); before 3.6 every search minds case. puritty ignored
+case on every version, in the tree, in choose-buffer and choose-client,
+and in customize mode; each now follows its tmux.
+
+The fake answers `list-buffers` and `show-buffer -b`, its buffers named
+as tmux names them (`buffer2` the newest). A test on each version:
+`zebra`, on the second line of the middle buffer, chooses it; `two`
+chooses `Two Bananas` from 3.6, and before it no row, the first staying
+chosen. With the old search (the sample, case ignored on every version)
+the first fails on every version and the second before 3.6.
+
+App tests 282.
+

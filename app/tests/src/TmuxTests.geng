@@ -408,6 +408,52 @@ onVersion version =
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
           }
+        , { name = "choose-buffer's search finds a buffer's whole text, and ignores case from 3.6 only (TM81)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- buffer2 newest, the one chosen first
+                        chose search =
+                            attached { made | buffers = [ "plain text", "one apple\nzebra here", "Two Bananas" ] }
+                                |> prefixThen "="
+                                |> typeKey "/"
+                                |> typeText search
+                                |> named enterKey
+                                |> settle
+                                |> named enterKey
+                                |> settle
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.contains "paste-buffer")
+                                |> Array.map
+                                    (\l ->
+                                        if String.contains "buffer2" l then
+                                            "buffer2"
+
+                                        else if String.contains "buffer1" l then
+                                            "buffer1"
+
+                                        else if String.contains "buffer0" l then
+                                            "buffer0"
+
+                                        else
+                                            l
+                                    )
+                    in
+                    Expect.equal
+                        { zebra = [ "buffer1" ]
+                        , two =
+                            if Array.member version [ "3.6a", "3.8" ] then
+                                [ "buffer0" ]
+
+                            else
+                                [ "buffer2" ]
+                        }
+                        { zebra = chose "zebra", two = chose "two" }
+          }
         , { name = "C-y at the prompt puts back what C-w cut from 3.0, else the newest buffer up to a control character (TM80)"
           , test =
                 \_ ->

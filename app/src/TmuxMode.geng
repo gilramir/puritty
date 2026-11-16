@@ -302,6 +302,9 @@ type alias Listing =
     , template : String
     , zoom : Bool
     , pane : Int
+    -- each buffer's whole text, asked when a search needs it, as tmux
+    -- searches it (TM81); dropped when the buffers are listed again
+    , contents : Dict String String
     }
 
 
@@ -636,6 +639,7 @@ type Expect
     | ForRunExpanded Context
     | ForListFilter
     | ForListPreview String
+    | ForListContent String
     | ForCustomize Int
     | ForCustomizeNotes String
     | ForCustomizeFilter { filter : String, ids : Array String }
@@ -1169,6 +1173,9 @@ expectName x =
 
         ForListFilter ->
             "the list's filter"
+
+        ForListContent _ ->
+            "a buffer's text, for the search"
 
         ForListPreview _ ->
             "the list's preview"
@@ -2711,7 +2718,7 @@ replied expect ok lines acc =
                             (\l ->
                                 let
                                     next =
-                                        { l | rows = rows, loaded = True, selected = 0 }
+                                        { l | rows = rows, loaded = True, selected = 0, contents = Dict.empty }
 
                                     -- the row chosen before, where it is now, or the
                                     -- same place; inside the rows, or 0 when there
@@ -2831,6 +2838,32 @@ replied expect ok lines acc =
                                 st.listing
                     }
             }
+
+        ForListContent name ->
+            -- a buffer's text kept; once every buffer's is in, the search
+            -- that asked for them is made (TM81)
+            let
+                st =
+                    acc.state
+            in
+            when st.listing is
+                Just l ->
+                    let
+                        withText =
+                            { l | contents = Dict.set name (String.join "\n" (Array.map Bytes.toStringLossy lines)) l.contents }
+                    in
+                    if l.search /= "" && missingContents withText == [] then
+                        let
+                            searched =
+                                listPreviewAsk { st | listing = Just (searchListing st.version True withText) }
+                        in
+                        { acc | state = searched.state, commands = acc.commands ++ searched.commands }
+
+                    else
+                        { acc | state = { st | listing = Just withText } }
+
+                Nothing ->
+                    meant Reason.NotOpen { acc | state = st }
 
         ForTreeFilter ->
             -- the panes the filter keeps; with none, or a filter tmux could
@@ -8590,6 +8623,7 @@ openListing ctx l s =
                             , template = l.template
                             , zoom = l.zoom
                             , pane = ctx.pane
+                            , contents = Dict.empty
                             }
                 }
 
@@ -8875,10 +8909,10 @@ listKey k l s =
         { state = { s | asking = Just (treePrompt s.version 11 "(search) " "") }, commands = [] }
 
     else if name == "n" then
-        { state = { s | listing = Just (searchListing True l) }, commands = [] }
+        searchOrAsk True l s
 
     else if name == "N" then
-        { state = { s | listing = Just (searchListing False l) }, commands = [] }
+        searchOrAsk False l s
 
     else if name == "f" then
         { state = { s | asking = Just (treePrompt s.version 12 "(filter) " l.filter) }, commands = [] }
@@ -8967,10 +9001,12 @@ clientCommand key client =
 
 
 {-| The next row whose name or text holds the search, from the one after
-the chosen round, case ignored when it has no capitals. tmux searches a
-buffer's contents; puritty its sample. -}
-searchListing : Bool -> Listing -> Listing
-searchListing forward l =
+the chosen round: a buffer's name or its whole text, as tmux's
+`window_buffer_search` (TM81), a client's name or text; from 3.6 case
+ignored when the search has no capitals, before it never (`mode-tree.c`'s
+`search_icase`). -}
+searchListing : Int -> Bool -> Listing -> Listing
+searchListing version forward l =
     let
         rows =
             listRows l
@@ -8979,18 +9015,23 @@ searchListing forward l =
             Array.length rows
 
         caseless =
-            String.toLower l.search == l.search
+            (version == 0 || version >= 36) && String.toLower l.search == l.search
 
-        matches r =
-            let
-                hay =
-                    r.name ++ " " ++ r.text
-            in
+        holds hay =
             if caseless then
                 String.contains l.search (String.toLower hay)
 
             else
                 String.contains l.search hay
+
+        matches r =
+            holds r.name
+                || (if l.kind == "buffer" then
+                        holds (Maybe.withDefault (meant Reason.NotYet r.text) (Dict.get r.name l.contents))
+
+                    else
+                        holds r.text
+                   )
 
         order =
             Array.range 1 n
@@ -9016,13 +9057,35 @@ searchListing forward l =
                 meant Reason.NoMore l
 
 
+{-| The buffers whose whole text is not yet in (TM81). -}
+missingContents : Listing -> Array String
+missingContents l =
+    if l.kind == "buffer" then
+        l.rows |> Array.map .name |> Array.keepIf (\name -> not (Dict.member name l.contents))
+
+    else
+        []
+
+
+{-| A search made, a buffer list's after asking tmux for the text of each
+buffer not yet in, as tmux searches it (TM81). -}
+searchOrAsk : Bool -> Listing -> (taken s : State) -> { state : State, commands : Array String }
+searchOrAsk forward l s =
+    when missingContents l is
+        [] ->
+            listPreviewAsk { s | listing = Just (searchListing s.version forward l) }
+
+        missing ->
+            sendAsking (Array.map (\name -> { command = Command.showBuffer name, expect = ForListContent name }) missing) { s | listing = Just l }
+
+
 {-| The list's own questions answered: a search (11) or a filter (12). -}
 listAnswered : Int -> String -> (taken s : State) -> { state : State, commands : Array String }
 listAnswered purpose given s =
     when s.listing is
         Just l ->
             if purpose == 11 then
-                listPreviewAsk { s | listing = Just (searchListing True { l | search = given }) }
+                searchOrAsk True { l | search = given } s
 
             else if given == "" then
                 { state = { s | listing = Just { l | filter = "", passing = Nothing, noMatches = False } }, commands = [] }
@@ -10251,8 +10314,9 @@ customizeSearch forward c s =
         v =
             c.view
 
+        -- from 3.6 case ignored when the search has no capitals (TM81)
         caseless =
-            String.toLower v.search == v.search
+            (s.version == 0 || s.version >= 36) && String.toLower v.search == v.search
 
         matches e =
             if caseless then
@@ -10846,7 +10910,7 @@ treeAnswered purpose given s =
                     reloadTree (Array.map (\target -> Syntax.fill (Syntax.tokens given) [ target ]) targets) t s
 
             else if purpose == 1 then
-                { state = { s | tree = Just (searchTree True { t | search = given }) }, commands = [] }
+                { state = { s | tree = Just (searchTree s.version True { t | search = given }) }, commands = [] }
 
             else if given == "" then
                 { state = { s | tree = Just (refiltered Nothing { t | filter = "", noMatches = False }) }, commands = [] }
@@ -10949,16 +11013,18 @@ keepSelected t =
 {-| The next row whose name holds the search, after the chosen one or
 before it (`forward`), going round, as `mode_tree_search_forward`: every
 session, window and pane, folded or not, a pane by its command; case
-ignored when the search has no capitals. The rows above it are opened. -}
-searchTree : Bool -> Tree -> Tree
-searchTree forward t =
+ignored, from 3.6, when the search has no capitals. The rows above it are
+opened. -}
+searchTree : Int -> Bool -> Tree -> Tree
+searchTree version forward t =
     if t.search == "" then
         t
 
     else
         let
+            -- from 3.6 only: before it tmux's search minds case (TM81)
             caseless =
-                String.toLower t.search == t.search
+                (version == 0 || version >= 36) && String.toLower t.search == t.search
 
             matches name =
                 if caseless then
@@ -11922,10 +11988,10 @@ treeKey k t s =
         { state = { s | asking = Just (treePrompt s.version 1 "(search) " "") }, commands = [] }
 
     else if name == "n" then
-        { state = { s | tree = Just (searchTree True t) }, commands = [] }
+        { state = { s | tree = Just (searchTree s.version True t) }, commands = [] }
 
     else if name == "N" then
-        { state = { s | tree = Just (searchTree False t) }, commands = [] }
+        { state = { s | tree = Just (searchTree s.version False t) }, commands = [] }
 
     else if name == "f" then
         { state = { s | asking = Just (treePrompt s.version 2 "(filter) " t.filter) }, commands = [] }
