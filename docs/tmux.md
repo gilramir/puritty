@@ -2668,7 +2668,7 @@ rebinding, all `same`. Tests: tmux package 93 (22 for customize), app
   the editor in a popup on the client, which a control client has not;
   puritty says so. On 3.8 a floating pane could host it.
 - The mouse in the mode (a click chooses a row, a double click sets it,
-  the right button its menu).
+  the right button its menu): the left button done (TM86), the menu not.
 - 3.8's monitor hooks and user hooks (`@name` hooks): no command says
   which options they are; they show as options.
 - A filter's variables only where it names them as `#{name}`
@@ -3530,9 +3530,50 @@ sections since:
 - **tmux's own prompt history** (3.3 on), shared with other clients.
 - **Completing options and targets** at the prompt, and the matches' menu.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
-  in customize mode.
+  in customize mode: the left button and the wheel done (TM86); the right
+  button's menu not yet.
 - **`bell-action`** (any, none, current, other: which windows' bells are
   shown) and **`visual-bell`** (on, off, both: a message in place of the
   sound, or beside it). puritty shows every window's bell (TM30) and sounds
   as its own bell setting says, whatever these are.
 - **Editing a buffer** (choose-buffer's `e`): not under -CC for now (TM80).
+
+## TM86 · The mouse in tmux's modes (2026-11-16)
+
+The first of TM85's items. tmux's modes take the mouse in `mode_tree_key`
+(`mode-tree.c`), the tree's preview in `window_tree_mouse`
+(`window-tree.c`), read in every release from 2.7 to 3.8:
+
+| from | what |
+|---|---|
+| 2.7 | a press (`MouseDown1Pane`) chooses the row under it; a double click (`DoubleClick1Pane`) chooses it and is Enter; the wheel is Up and Down, a row each; a press in the tree's preview chooses the window (a session's) or the pane (a window's) under it and is Enter, and on `<` or `>` is that key |
+| 3.0 | the right button (`MouseDown3Pane`) chooses the row too and opens the mode's menu (`mode_tree_display_menu`): the mode's items on a row, Scroll Left, Scroll Right and Cancel outside the list |
+
+puritty draws these modes, so it reads the press itself: `modeClick` finds
+what is under it from the same frame the drawing uses (`treeFrame` and
+`previewRects`, taken out of `drawTree` and `drawPreview`;
+`modeListHeight`, the height rule `drawTree` and `drawListing` both had;
+`customizeListHeight` and the customize mode's offset), and `modeClicked`
+does it with the mode's own keys: the row made the chosen one as the keys
+that move do, then Enter, Up, Down, `<` or `>` given to `treeKey`,
+`listKey` or `customizeKey`. A press is the mode's when no prompt, menu,
+printed lines or panes' numbers are over it; one off the list (the
+preview of a list, the detail of customize mode) is kept and does
+nothing, as tmux's.
+
+**Not tied to tmux's `mouse` option.** tmux's client sends the mode the
+mouse only with `mouse on`; puritty takes a click in a mode it draws
+either way, since a click that does nothing in a window is only worse.
+The right button's selection waits for 3.0, as tmux's; its menu is not
+built yet.
+
+**Checked:** three app tests on each of the six tmuxes (318): in
+choose-buffer a press then Enter pastes the row pressed, a double click
+pastes it, the wheel moves a row, the right button chooses only from 3.0;
+a double click on the tree's session row sends what `g` and Enter send; a
+press on a window in the session tree's preview chooses `@0`. With
+`modeClick` switched off, all 18 fail. Side by side on real 3.8
+(`bench/tmux/compare/scenes_mouse.py`): the same row chosen in the tree,
+choose-buffer and customize-mode, and the same window (2) chosen from the
+preview. The checker holds the new arithmetic, the cells held to 16384 as
+`modePlace` holds them.

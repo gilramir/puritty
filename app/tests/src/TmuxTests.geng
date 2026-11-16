@@ -141,6 +141,22 @@ downKey =
     0xFF54
 
 
+{-| A button pressed on a cell, at a time, and what it makes puritty send
+held: 1 the left, 2 the right, 4 and 5 the wheel. -}
+clickAt : Int -> { col : Int, row : Int } -> Int -> (taken run : Run) -> Run
+clickAt button c ms run =
+    let
+        held =
+            run.held
+
+        r =
+            TmuxMode.pointer { ms = ms, held = 1, select = False, boundaries = [], pasteButton = 3 }
+                { action = 0, button = button, mods = 0, x = c.col * 10 + 5, y = c.row * 20 + 5, width = 800, height = 500, cellWidth = 10, cellHeight = 20 }
+                run.tmux
+    in
+    { run | tmux = r.state, held = held ++ r.commands }
+
+
 {-| Text typed a character at a time. -}
 typeText : String -> Run -> Run
 typeText text run =
@@ -458,6 +474,114 @@ onVersion version =
                         Expect.equal
                             { started = [ "display-message -p B" ], stayOpen = [ "display-message -p B" ], plain = [] }
                             { started = started, stayOpen = pressed "-O", plain = pressed "" }
+          }
+        , { name = "the mouse in choose-buffer: a press chooses a row, a double click pastes it, the wheel moves; the right button from 3.0 (TM86)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        -- buffer2 the newest, chosen first; each case opens its own
+                        opening _ =
+                            look (attached { made | buffers = [ "zero", "one", "two" ] } |> prefixThen "=" |> settle)
+
+                        seen =
+                            (opening {}).rows
+
+                        rowOf name =
+                            seen
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains (name ++ ":") r.text)
+                                |> Maybe.map (\found -> { col = 10, row = found.value.row })
+                                |> Maybe.withDefault { col = 0, row = 0 }
+
+                        pasted run =
+                            run.world.heard
+                                |> Array.keepIf (String.contains "paste-buffer")
+                                |> Array.map
+                                    (\l ->
+                                        if String.contains "buffer0" l then
+                                            "buffer0"
+
+                                        else if String.contains "buffer1" l then
+                                            "buffer1"
+
+                                        else if String.contains "buffer2" l then
+                                            "buffer2"
+
+                                        else
+                                            l
+                                    )
+
+                        clicked =
+                            pasted ((opening {}).run |> clickAt 1 (rowOf "buffer0") 2000 |> named enterKey |> settle)
+
+                        doubled =
+                            pasted ((opening {}).run |> clickAt 1 (rowOf "buffer1") 2000 |> clickAt 1 (rowOf "buffer1") 2200 |> settle)
+
+                        wheeled =
+                            pasted ((opening {}).run |> clickAt 5 (rowOf "buffer0") 2000 |> named enterKey |> settle)
+
+                        righted =
+                            pasted ((opening {}).run |> clickAt 2 (rowOf "buffer0") 2000 |> named enterKey |> settle)
+                    in
+                    Expect.equal
+                        { clicked = [ "buffer0" ]
+                        , doubled = [ "buffer1" ]
+                        , wheeled = [ "buffer1" ]
+                        , righted =
+                            if version == "2.7" then
+                                [ "buffer2" ]
+
+                            else
+                                [ "buffer0" ]
+                        }
+                        { clicked = clicked, doubled = doubled, wheeled = wheeled, righted = righted }
+          }
+        , { name = "a double click on the tree's row does what its keys do (TM86)"
+          , test =
+                \_ ->
+                    let
+                        opening _ =
+                            look (settle (prefixThen "w" (attached (start version))))
+
+                        sessionRow =
+                            (opening {}).rows
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains "main:" r.text)
+                                |> Maybe.map (\found -> { col = 12, row = found.value.row })
+                                |> Maybe.withDefault { col = 0, row = 0 }
+
+                        chose run =
+                            run.world.heard |> Array.keepIf (String.contains "switch-client")
+
+                        byMouse =
+                            chose ((opening {}).run |> clickAt 1 sessionRow 2000 |> clickAt 1 sessionRow 2300 |> settle)
+
+                        byKeys =
+                            chose ((opening {}).run |> typeKey "g" |> named enterKey |> settle)
+                    in
+                    Expect.equal { same = True, session = True } { same = byMouse == byKeys, session = Array.any (String.contains "'$0'") byMouse }
+          }
+        , { name = "a press on a window in the tree's preview chooses it, as window_tree_mouse (TM86)"
+          , test =
+                \_ ->
+                    let
+                        opening _ =
+                            look (settle (prefixThen "s" (attached (start version))))
+
+                        -- inside the preview's box, two rows under its top
+                        inPreview =
+                            (opening {}).rows
+                                |> Array.indexedMap (\i r -> { row = i, text = r })
+                                |> Array.findFirst (\r -> String.contains "┌" r.text)
+                                |> Maybe.map (\found -> { col = 20, row = found.value.row + 2 })
+
+                        chose =
+                            Maybe.map (\c -> (opening {}).run |> clickAt 1 c 2000 |> settle |> .world |> .heard |> Array.keepIf (String.contains "switch-client -t")) inPreview
+                    in
+                    Expect.equal (Just [ "switch-client -t '@0'" ]) chose
           }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =

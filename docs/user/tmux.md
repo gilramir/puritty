@@ -110,6 +110,12 @@ would take no more keys from puritty afterwards.
   give one more room. The pointer shows what a press would do: a
   two-headed arrow over a line or an edge that resizes, a four-headed one
   over a box's top edge, the plain arrow over the tab bar.
+- **In tmux's screens** (the session tree, the buffer and client lists,
+  customize mode), a click chooses a row and a double click picks it, as
+  Enter does; the wheel moves up and down the rows; and in the session
+  tree's preview, a click on a window or a pane picks it. From tmux 3.0
+  the right button chooses a row too. These work whether tmux's `mouse`
+  option is on or not.
 - **Programs that use the mouse**, such as vim or htop, get it in their
   own pane, at their own cell; hold **Shift** to select over them
   instead.
@@ -248,8 +254,9 @@ These are on purpose:
 
 Not yet:
 
-- `e` (edit in your editor) in customize mode and the buffer list, and the
-  mouse in customize mode.
+- `e` (edit in your editor) in customize mode and the buffer list.
+- The right button's menu in tmux's screens (Select, Tag, Kill and the
+  rest).
 - With tmux 3.6, focus events for a program that asked for them before
   puritty attached; it gets them once it asks again.
 

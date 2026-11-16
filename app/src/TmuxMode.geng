@@ -6186,18 +6186,29 @@ pointer how p s =
 
                     else
                         Nothing
+
+                -- a press in a mode puritty draws (TM86)
+                inMode =
+                    if s.drag == Nothing then
+                        modeClick p how.ms col row (p.width // max 1 p.cellWidth) (p.height // max 1 p.cellHeight) order s
+
+                    else
+                        Nothing
             in
-            when { drag = s.drag, tab = tabHit, menu = s.menu, status = statusMenu } is
-                { drag = _, tab = _, menu = Just m, status = _ } ->
+            when { drag = s.drag, tab = tabHit, menu = s.menu, status = statusMenu, mode = inMode } is
+                { drag = _, tab = _, menu = Just m, status = _, mode = _ } ->
                     plain (menuPointer p col row m s)
 
-                { drag = Just d, tab = _, menu = Nothing, status = _ } ->
+                { drag = Nothing, tab = _, menu = Nothing, status = _, mode = Just click } ->
+                    plain (modeClicked click how.ms s)
+
+                { drag = Just d, tab = _, menu = Nothing, status = _, mode = _ } ->
                     plain (dragged col row (p.action == 1) d s)
 
-                { drag = Nothing, tab = Nothing, menu = Nothing, status = Just binding } ->
+                { drag = Nothing, tab = Nothing, menu = Nothing, status = Just binding, mode = Nothing } ->
                     plain (runHeld { pane = s.active, mouse = Just { col = col, row = row } } "" "" binding s)
 
-                { drag = Nothing, tab = Just hit, menu = Nothing, status = _ } ->
+                { drag = Nothing, tab = Just hit, menu = Nothing, status = _, mode = Nothing } ->
                     -- a tab selects its window; `+` makes one
                     plain
                         (sent
@@ -6265,6 +6276,342 @@ pointer how p s =
 
                                                     else
                                                         selecting how p col row q s
+
+
+{-| What a press in a mode puritty draws (the tree, choose-buffer's and
+choose-client's lists, customize-mode) does, as `mode_tree_key` takes the
+mouse (TM86): a row pressed, and whether it is the second press of a
+double click; the wheel, up or down; in the tree's preview, a window or a
+pane pressed, or its `<` or `>`; or nothing, a press the mode keeps. -}
+type ModeClick
+    = OnRow { row : Int, double : Bool }
+    | OnWheel Bool
+    | OnPreview String
+    | OnPreviewMark String
+    | ClickKept
+
+
+{-| A press in the mode open, `Nothing` when none is open, the press is
+outside it, or something over it (a prompt, a menu, printed lines, the
+panes' numbers) has the mouse. The left button and the wheel from 2.7;
+the right button selects a row from 3.0, which opens the mode's menu
+there (`mode_tree_display_menu`). -}
+modeClick : Window.PointerEvent -> Int -> Int -> Int -> Int -> Int -> Array Layout.Pane -> State -> Maybe ModeClick
+modeClick p ms col row cols rows places s =
+    let
+        open =
+            when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+                { tree = Just t, listing = _, customizing = _ } ->
+                    Just { zoom = t.zoom, pane = t.pane }
+
+                { tree = Nothing, listing = Just l, customizing = _ } ->
+                    Just { zoom = l.zoom, pane = l.pane }
+
+                { tree = Nothing, listing = Nothing, customizing = Just c } ->
+                    Just { zoom = c.zoom, pane = c.pane }
+
+                _ ->
+                    Nothing
+
+        rightTaken =
+            s.version == 0 || s.version >= 30
+
+        press =
+            p.action == 0 && (p.button == 1 || p.button == 4 || p.button == 5 || (p.button == 2 && rightTaken))
+
+        -- cells and areas held to a window's (16384, as `modePlace`), so
+        -- that the sums below stay inside `Int`
+        cell n =
+            clamp 0 16384 n
+
+        bounded a =
+            { x = cell a.x, y = cell a.y, w = clamp 0 16384 a.w, h = clamp 0 16384 a.h }
+
+        within a0 =
+            let
+                a =
+                    bounded a0
+            in
+            cell col >= a.x && cell col < a.x + a.w && cell row >= a.y && cell row < a.y + a.h
+
+        -- the second press on the same row within half a second
+        double i =
+            p.button == 1 && s.clicks.count > 0 && s.clicks.pane == -2 && Clock.since s.clicks.at ms <= 500 && s.clicks.point.row == i
+
+        onList a0 top0 shown0 count =
+            let
+                a =
+                    bounded a0
+
+                shown =
+                    clamp 0 16384 shown0
+
+                top =
+                    clamp 0 (max 0 count) top0
+            in
+            if cell col >= a.x && cell col < a.x + a.w && cell row >= a.y && cell row < a.y + shown then
+                let
+                    i =
+                        top + (cell row - a.y)
+                in
+                if i < count then
+                    Just (OnRow { row = i, double = double i })
+
+                else
+                    Just ClickKept
+
+            else
+                Nothing
+    in
+    if not press || s.asking /= Nothing || s.view /= Nothing || s.numbers /= Nothing || s.menu /= Nothing then
+        Nothing
+
+    else
+        when Maybe.andThen (modePlace s cols rows places) open is
+            Nothing ->
+                meant Reason.NotOpen Nothing
+
+            Just place ->
+                if not (within place) then
+                    Nothing
+
+                else if p.button == 4 || p.button == 5 then
+                    Just (OnWheel (p.button == 4))
+
+                else
+                    when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+                        { tree = Just t, listing = _, customizing = _ } ->
+                            let
+                                f =
+                                    treeFrame s.lookTmux place t
+
+                                a =
+                                    f.previewArea
+
+                                -- a press in the preview, the left button only
+                                -- (`window_tree_mouse`); not over 3.8's
+                                -- information
+                                inPreview =
+                                    if p.button == 1 && f.withPreview && a.h > 0 && not t.info && within a then
+                                        let
+                                            placed =
+                                                previewRects a t.preview
+                                        in
+                                        if placed.left && col < a.x + 3 then
+                                            OnPreviewMark "<"
+
+                                        else if placed.right && col >= a.x + a.w - 3 then
+                                            OnPreviewMark ">"
+
+                                        else
+                                            when Array.findFirst (\r -> col >= r.x && col < r.x + r.w && row >= r.y && row < r.y + r.h) placed.rects is
+                                                Just found ->
+                                                    OnPreview found.value.item.id
+
+                                                Nothing ->
+                                                    meant Reason.OutOfRange ClickKept
+
+                                    else
+                                        ClickKept
+                            in
+                            -- off the list: the preview, or nothing
+                            Just (Maybe.withDefault (meant Reason.OutOfRange inPreview) (onList f.list f.top f.shown (Array.length (treeRows t))))
+
+                        { tree = Nothing, listing = Just l, customizing = _ } ->
+                            let
+                                count =
+                                    Array.length (listRows l)
+
+                                height =
+                                    clamp 0 16384 (modeListHeight l.previewMode place.h count)
+
+                                top =
+                                    if l.selected < height then
+                                        0
+
+                                    else
+                                        l.selected - height + 1
+                            in
+                            -- off the list: the preview, which keeps the press
+                            Just (Maybe.withDefault (meant Reason.OutOfRange ClickKept) (onList place top height count))
+
+                        { tree = Nothing, listing = Nothing, customizing = Just c } ->
+                            let
+                                a =
+                                    if s.lookTmux then
+                                        { x = place.x, y = place.y, w = place.w, h = place.h }
+
+                                    else
+                                        { x = place.x + 2, y = place.y + 1, w = max 0 (place.w - 4), h = max 0 (place.h - 2) }
+
+                                count =
+                                    Array.length (customizeShown c).shown
+
+                                height =
+                                    customizeListHeight c.view.preview a.h
+
+                                top =
+                                    clamp 0 (max 0 (count - height)) c.view.offset
+                            in
+                            -- off the list: the detail below it, which keeps the press
+                            Just (Maybe.withDefault (meant Reason.OutOfRange ClickKept) (onList a top height count))
+
+                        _ ->
+                            Nothing
+
+
+{-| A press in a mode done (TM86): a row chosen, and on a double click
+Enter as well, as `mode_tree_key` makes `KEYC_DOUBLECLICK1_PANE` `\r`; the
+wheel a row up or down; a window or a pane in the tree's preview made the
+row and chosen, as `window_tree_mouse` does; `<` and `>` as their keys. -}
+modeClicked : ModeClick -> Int -> (taken s : State) -> { state : State, commands : Array String }
+modeClicked click ms s =
+    when click is
+        ClickKept ->
+            { state = s, commands = [] }
+
+        OnWheel up ->
+            modeKeyed
+                (symKey
+                    (if up then
+                        0xFF52
+
+                     else
+                        0xFF54
+                    )
+                )
+                s
+
+        OnPreviewMark mark ->
+            modeKeyed (textKey mark) s
+
+        OnRow on ->
+            let
+                i =
+                    on.row
+
+                double =
+                    on.double
+
+                clicks =
+                    if double then
+                        { at = -1000, count = 0, pane = -1, point = { row = 0, col = 0 } }
+
+                    else
+                        { at = ms, count = 1, pane = -2, point = { row = i, col = 0 } }
+
+                chosen =
+                    modeRowChosen i { s | clicks = clicks }
+            in
+            if double then
+                modeKeyedAfter (symKey 0xFF0D) chosen
+
+            else
+                chosen
+
+        OnPreview id ->
+            when s.tree is
+                Just t ->
+                    let
+                        windowOf =
+                            Array.findFirst (\w -> "@" ++ String.fromInt w.id == id) t.windows |> Maybe.map .value
+
+                        paneOf =
+                            Array.findFirst (\q -> "%" ++ String.fromInt q.id == id) t.panes |> Maybe.map .value
+
+                        -- the window the item is or is in, and its session
+                        window =
+                            when paneOf is
+                                Just q ->
+                                    Array.findFirst (\w -> w.id == q.window) t.windows |> Maybe.map .value
+
+                                Nothing ->
+                                    meant Reason.NotKnown windowOf
+
+                        opened =
+                            when window is
+                                Just w ->
+                                    { t
+                                        | open = Dict.set w.session True t.open
+                                        , openWindows =
+                                            if paneOf /= Nothing then
+                                                Dict.set w.id True t.openWindows
+
+                                            else
+                                                t.openWindows
+                                    }
+
+                                Nothing ->
+                                    meant Reason.Gone t
+                    in
+                    when Array.findFirst (\r -> rowTarget r == id) (treeRows opened) is
+                        Just found ->
+                            modeKeyed (symKey 0xFF0D) { s | tree = Just { opened | selected = found.index } }
+
+                        Nothing ->
+                            meant Reason.Gone { state = s, commands = [] }
+
+                Nothing ->
+                    meant Reason.NotOpen { state = s, commands = [] }
+
+
+{-| The mode's row `i` made the chosen one, its preview or detail asked
+again, as the keys that move it do. -}
+modeRowChosen : Int -> (taken s : State) -> { state : State, commands : Array String }
+modeRowChosen i s =
+    when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+        { tree = Just t, listing = _, customizing = _ } ->
+            previewAfter { state = { s | tree = Just { t | selected = clamp 0 (max 0 (Array.length (treeRows t) - 1)) i } }, commands = [] }
+
+        { tree = Nothing, listing = Just l, customizing = _ } ->
+            listPreviewAfter { state = { s | listing = Just { l | selected = clamp 0 (max 0 (Array.length (listRows l) - 1)) i } }, commands = [] }
+
+        { tree = Nothing, listing = Nothing, customizing = Just c } ->
+            customizeDetailAsk { s | customizing = Just (customizeAt (customizeHeight s c) i c.view.offset c) }
+
+        _ ->
+            { state = s, commands = [] }
+
+
+{-| A key given to the mode open, as typed (`keyed`'s modes). -}
+modeKeyed : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken s : State) -> { state : State, commands : Array String }
+modeKeyed k s =
+    when { tree = s.tree, listing = s.listing, customizing = s.customizing } is
+        { tree = Just t, listing = _, customizing = _ } ->
+            previewAfter (treeKey k t s)
+
+        { tree = Nothing, listing = Just l, customizing = _ } ->
+            listPreviewAfter (listKey k l s)
+
+        { tree = Nothing, listing = Nothing, customizing = Just c } ->
+            customizeKey k c s
+
+        _ ->
+            { state = s, commands = [] }
+
+
+{-| A key given to the mode after what `r` did, its commands first. -}
+modeKeyedAfter : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> (taken r : { state : State, commands : Array String }) -> { state : State, commands : Array String }
+modeKeyedAfter k r =
+    let
+        next =
+            modeKeyed k r.state
+    in
+    { state = next.state, commands = r.commands ++ next.commands }
+
+
+{-| A named key as the window gives it, by its X keysym, made for a mode
+from the mouse. -}
+symKey : Int -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }
+symKey sym =
+    { action = 0, keycode = 0, mods = 0, consumed = 0, unshifted = 0, sym = sym, text = Bytes.empty }
+
+
+{-| A typed character as the window gives it, made for a mode from the
+mouse. -}
+textKey : String -> { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes }
+textKey text =
+    { action = 0, keycode = 0, mods = 0, consumed = 0, unshifted = 0, sym = 0, text = Bytes.fromString text }
 
 
 {-| Which edge of a floating pane's box a cell on it is, as a drag's
@@ -9347,37 +9694,8 @@ drawListing colors tmuxLook version place l =
         lineCount =
             Array.length rows
 
-        listHeight0 =
-            if l.previewMode == 1 then
-                let
-                    twoThirds =
-                        (sy // 3) * 2
-
-                    h =
-                        if twoThirds > lineCount then
-                            sy // 2
-
-                        else
-                            twoThirds
-                in
-                if h < 10 then
-                    sy
-
-                else
-                    h
-
-            else if l.previewMode == 2 then
-                max 2 (min lineCount (sy // 4))
-
-            else
-                sy
-
         listHeight =
-            if sy - listHeight0 < 2 then
-                sy
-
-            else
-                listHeight0
+            modeListHeight l.previewMode sy lineCount
 
         keyWidth =
             if lineCount > 10 then
@@ -12448,18 +12766,13 @@ chooseRow row t s =
             meant Reason.OutOfRange { state = { s | tree = Nothing }, commands = [] }
 
 
-{-| The tree's cells (TM32): in tmux's look as tmux's tree mode lists it,
-each row's key in brackets, `+` or `-` for a session folded or open, the
-windows under it joined by `├─>` and `└─>`, the chosen row in
-`mode-style`; in puritty's, the view's box. Below the list, when there is
-room, the chosen row's preview, as tmux draws it (TM35): the list takes a
-third of the height, or less with fewer rows. -}
-drawTree : Array String -> Colors -> Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
-drawTree theme colors tmuxLook version place t =
+{-| Where the tree is drawn in its place (TM86): the list's area (the
+place in tmux's look, inset in puritty's), its rows shown and the first
+of them, and the preview's area below it when there is one, as
+`drawTree` draws them and a press on them is read. -}
+treeFrame : Bool -> Layout.Pane -> Tree -> { list : { x : Int, y : Int, w : Int, h : Int }, shown : Int, top : Int, withPreview : Bool, previewArea : { x : Int, y : Int, w : Int, h : Int } }
+treeFrame tmuxLook place t =
     let
-        rows =
-            treeRows t
-
         listArea =
             if tmuxLook then
                 { x = place.x, y = place.y, w = place.w, h = place.h }
@@ -12467,18 +12780,47 @@ drawTree theme colors tmuxLook version place t =
             else
                 { x = place.x + 2, y = place.y + 1, w = place.w - 4, h = place.h - 2 }
 
-        -- the list's height as `mode_tree_set_height` (TM46): two thirds
-        -- with the preview, half when the rows are fewer, all when that
-        -- leaves less than ten; a quarter with the big preview; all
-        -- without
-        sy =
-            listArea.h
+        count =
+            Array.length (treeRows t)
 
-        lineCount =
-            Array.length rows
+        listHeight =
+            modeListHeight t.previewMode listArea.h count
 
-        listHeight0 =
-            if t.previewMode == 1 then
+        -- at most a window's rows (`Vt.Term`'s 1000), so the rows read
+        -- from `top` on stay inside `Int`
+        shownRows =
+            clamp 1 1000 listHeight
+
+        -- the first row shown, from the selection held to the rows, so
+        -- that `top + shownRows` is at most the rows' count or 1000
+        held =
+            clamp 0 (max 0 (count - 1)) t.selected
+
+        boxRow =
+            listArea.y + shownRows
+    in
+    { list = listArea
+    , shown = shownRows
+    , top =
+        if held < shownRows then
+            0
+
+        else
+            held - shownRows + 1
+    , withPreview = t.preview.target /= "" && listHeight < listArea.h && listArea.w > 4
+    , previewArea = { x = listArea.x + 2, y = boxRow + 1, w = listArea.w - 4, h = listArea.h - shownRows - 2 }
+    }
+
+
+{-| A mode's list's height as `mode_tree_set_height` (TM46): two thirds
+with the preview, half when the rows are fewer, all when that leaves less
+than ten; a quarter with the big preview; all without; and all when the
+preview would have less than two rows. -}
+modeListHeight : Int -> Int -> Int -> Int
+modeListHeight previewMode sy lineCount =
+    let
+        h0 =
+            if previewMode == 1 then
                 let
                     twoThirds =
                         (sy // 3) * 2
@@ -12496,26 +12838,47 @@ drawTree theme colors tmuxLook version place t =
                 else
                     h
 
-            else if t.previewMode == 2 then
+            else if previewMode == 2 then
                 max 2 (min lineCount (sy // 4))
 
             else
                 sy
+    in
+    if sy - h0 < 2 then
+        sy
 
-        listHeight =
-            if sy - listHeight0 < 2 then
-                sy
+    else
+        h0
 
-            else
-                listHeight0
+
+{-| The tree's cells (TM32): in tmux's look as tmux's tree mode lists it,
+each row's key in brackets, `+` or `-` for a session folded or open, the
+windows under it joined by `├─>` and `└─>`, the chosen row in
+`mode-style`; in puritty's, the view's box. Below the list, when there is
+room, the chosen row's preview, as tmux draws it (TM35): the list takes a
+third of the height, or less with fewer rows. -}
+drawTree : Array String -> Colors -> Bool -> Int -> Layout.Pane -> Tree -> Array { row : Int, col : Int, color : String, text : String }
+drawTree theme colors tmuxLook version place t =
+    let
+        rows =
+            treeRows t
+
+        frame =
+            treeFrame tmuxLook place t
+
+        listArea =
+            frame.list
+
+        sy =
+            clamp 0 16384 listArea.h
 
         withPreview =
-            t.preview.target /= "" && listHeight < sy && listArea.w > 4
+            frame.withPreview
 
         -- at most a window's rows (`Vt.Term`'s 1000), so the rows read
         -- from `top` on stay inside `Int`
         shownRows =
-            clamp 1 1000 listHeight
+            clamp 1 1000 frame.shown
 
         chosenName =
             Array.get t.selected rows |> Maybe.map .name |> Maybe.withDefault (meant Reason.OutOfRange "")
@@ -12614,7 +12977,7 @@ drawTree theme colors tmuxLook version place t =
                             ++ [ { row = boxRow + boxH - 1, col = listArea.x, color = edge, text = "└" ++ String.repeat inner "─" ++ "┘" } ]
 
                     area =
-                        { x = listArea.x + 2, y = boxRow + 1, w = listArea.w - 4, h = boxH - 2 }
+                        frame.previewArea
                 in
                 if boxH < 3 then
                     []
@@ -12629,7 +12992,8 @@ drawTree theme colors tmuxLook version place t =
                 []
 
         -- the first row shown, from the selection held to the rows, so
-        -- that `top + shownRows` is at most the rows' count or 1000
+        -- that `top + shownRows` is at most the rows' count or 1000 (the
+        -- frame's `top`, worked out where the checker sees its bounds)
         top =
             let
                 held =
@@ -12944,56 +13308,13 @@ drawTree theme colors tmuxLook version place t =
             ++ [ { row = place.y + place.h - 1, col = place.x, color = viewEdgeColor, text = "╰" ++ String.takeFirst inner (foot ++ String.repeat inner "─") ++ "╯" } ]
 
 
-{-| The preview in its area (TM35): a session's windows side by side, as
-many as fit at ten cells or more; a window's panes where they are in it,
-scaled to the area. Each has a top line with its label, the active one's
-in the active color, and below it the last lines it shows, cut to its
-width by cells. -}
-drawPreview : Array String -> Colors -> Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
-drawPreview theme colors tmuxLook area pv =
+{-| Where the tree's preview puts each item in its area (TM86): a
+session's windows side by side, `<` and `>` marks where there are more, or
+a window's panes where they are in it, as `drawPreview` draws them and a
+press on them is read. -}
+previewRects : { x : Int, y : Int, w : Int, h : Int } -> Preview -> { left : Bool, right : Bool, rects : Array { item : PreviewItem, x : Int, y : Int, w : Int, h : Int } }
+previewRects area pv =
     let
-        text =
-            if tmuxLook then
-                "\u{001B}[0m"
-
-            else
-                viewTextColor
-
-        -- an item's label: tree-mode-preview-style on 3.8 (the active one
-        -- red, the others blue), display-panes' colors before it, as
-        -- tmux 3.6 draws them (TM65)
-        edge item =
-            if tmuxLook then
-                if item.style /= "" then
-                    Style.sgr (Style.apply (Style.themed theme item.style) Style.plain)
-
-                else
-                    Style.sgr
-                        (Style.apply
-                            ("fg="
-                                ++ (if item.active then
-                                        colors.panesActive
-
-                                    else
-                                        colors.panes
-                                   )
-                            )
-                            Style.plain
-                        )
-
-            else if item.active then
-                viewEdgeColor
-
-            else
-                "\u{001B}[0;38;5;240;48;5;236m"
-
-        border =
-            if tmuxLook then
-                colors.treeBorder
-
-            else
-                "\u{001B}[0;38;5;240;48;5;236m"
-
         -- a session's windows as tmux picks them, `<` and `>` where there
         -- are more (TM65)
         span =
@@ -13004,22 +13325,6 @@ drawPreview theme colors tmuxLook area pv =
 
         rightMark =
             pv.session && span.end /= Array.length pv.items && area.w > 6
-
-        marks =
-            (if leftMark then
-                [ { row = area.y + area.h // 2, col = area.x, color = border, text = "<" } ]
-                    ++ (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + 2, color = border, text = "│" }))
-
-             else
-                []
-            )
-                ++ (if rightMark then
-                        [ { row = area.y + area.h // 2, col = area.x + area.w - 1, color = border, text = ">" } ]
-                            ++ (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + area.w - 3, color = border, text = "│" }))
-
-                    else
-                        []
-                   )
 
         rects =
             if pv.session then
@@ -13105,6 +13410,87 @@ drawPreview theme colors tmuxLook area pv =
                         { item = item, x = area.x + x0, y = area.y + y0, w = max 1 (x1 - x0), h = max 2 (y1 - y0) }
                     )
                     pv.items
+    in
+    { left = leftMark, right = rightMark, rects = rects }
+
+
+{-| The preview in its area (TM35): a session's windows side by side, as
+many as fit at ten cells or more; a window's panes where they are in it,
+scaled to the area. Each has a top line with its label, the active one's
+in the active color, and below it the last lines it shows, cut to its
+width by cells. -}
+drawPreview : Array String -> Colors -> Bool -> { x : Int, y : Int, w : Int, h : Int } -> Preview -> Array { row : Int, col : Int, color : String, text : String }
+drawPreview theme colors tmuxLook area pv =
+    let
+        text =
+            if tmuxLook then
+                "\u{001B}[0m"
+
+            else
+                viewTextColor
+
+        -- an item's label: tree-mode-preview-style on 3.8 (the active one
+        -- red, the others blue), display-panes' colors before it, as
+        -- tmux 3.6 draws them (TM65)
+        edge item =
+            if tmuxLook then
+                if item.style /= "" then
+                    Style.sgr (Style.apply (Style.themed theme item.style) Style.plain)
+
+                else
+                    Style.sgr
+                        (Style.apply
+                            ("fg="
+                                ++ (if item.active then
+                                        colors.panesActive
+
+                                    else
+                                        colors.panes
+                                   )
+                            )
+                            Style.plain
+                        )
+
+            else if item.active then
+                viewEdgeColor
+
+            else
+                "\u{001B}[0;38;5;240;48;5;236m"
+
+        border =
+            if tmuxLook then
+                colors.treeBorder
+
+            else
+                "\u{001B}[0;38;5;240;48;5;236m"
+
+        placed =
+            previewRects area pv
+
+        leftMark =
+            placed.left
+
+        rightMark =
+            placed.right
+
+        marks =
+            (if leftMark then
+                [ { row = area.y + area.h // 2, col = area.x, color = border, text = "<" } ]
+                    ++ (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + 2, color = border, text = "│" }))
+
+             else
+                []
+            )
+                ++ (if rightMark then
+                        [ { row = area.y + area.h // 2, col = area.x + area.w - 1, color = border, text = ">" } ]
+                            ++ (Array.range 0 (area.h - 1) |> Array.map (\j -> { row = area.y + j, col = area.x + area.w - 3, color = border, text = "│" }))
+
+                    else
+                        []
+                   )
+
+        rects =
+            placed.rects
 
         drawn r =
             let
