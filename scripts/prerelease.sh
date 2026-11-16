@@ -9,7 +9,7 @@
 # folder of app/distro with a Containerfile (rhel8, rhel9, rhel10, noble,
 # debian13); with none named, all of them. Each is profile-guided from one
 # training run (harness/bench/pgo.sh) where its clang is the devbox's, and
-# built without one where it is not (noble's, debian13's); each Linux one
+# built without one where it is not (debian13's); each Linux one
 # passes app/distro/smoke.sh before it is packed. The RHEL8 build is also
 # the plain Linux build (docs/releasing.md RL3): it passes smoke.sh on
 # Fedora, Debian 13 and Arch too, and is named for both. Out come:

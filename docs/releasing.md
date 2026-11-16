@@ -89,7 +89,7 @@ Each in `app/distro/` (RL2's shape), built and run here with podman:
 |---|---|---|---|---|
 | `rhel9-x64` | AlmaLinux 9.8 | 21.1.8 | the shared one | `smoke.sh`: drawn, ended by itself |
 | `rhel10-x64` | AlmaLinux 10.2 | 21.1.8 | the shared one | `smoke.sh` under Xwayland (below) |
-| `noble-x64` | Ubuntu 24.04 | 18 | none | `smoke.sh`; the `.deb` installed with apt |
+| `noble-x64` | Ubuntu 24.04 | 21.1.8 (apt.llvm.org, RL7) | the shared one | `smoke.sh`; the `.deb` installed with apt |
 | `debian13-x64` | Debian 13 | 19 | none | `smoke.sh`; the `.deb` installed with apt |
 | `rhel8-x64` | AlmaLinux 8 | 21.1.8 | the shared one | `smoke.sh` on RHEL 8, Fedora 43, Debian 13, Arch |
 
@@ -167,3 +167,16 @@ and xcb-util-cursor (Linux), and zlib, libpng and mingw-w64's runtime
 Linux build to every tmux release from 2.7 to 3.8 in turn and holds what it
 shows to what tmux has after each of a puppet's 19 steps. It takes about
 25 minutes and is run before a release, beside the unit gate.
+
+## RL7 · The noble build is profile-guided (2026-11-16)
+
+Gilbert wants the Ubuntu (and Linux Mint) build profile-guided too. Noble's
+own clang is 18 and cannot read the shared profile (RL1), so the noble image
+now takes clang 21 from apt.llvm.org (`llvm-toolchain-noble-21`), linked as
+`clang`, `clang++` and `ld.lld`; it is 21.1.8, the devbox's, so
+`prerelease.sh` reads the profile there. Measured here: the noble build
+ignores 41 of 8575 functions' profile data as out of date, the same count as
+the RHEL8 build from the same commit, and `smoke.sh noble` draws and ends by
+itself. glibc and the X libraries are still noble's, so the `.deb`'s
+`Depends` are unchanged. Debian 13 still builds with its own clang 19,
+without a profile.
