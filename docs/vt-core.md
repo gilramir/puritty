@@ -4830,3 +4830,33 @@ tabs switched, closed and reopened, local and over ssh, and under
 an XOFF (a Ctrl+S pressed with the prefix, Ctrl+A, 4 ms apart in the log)
 stopped a pane's output under `tmux -CC`, and after a plain `tmux attach` it
 was the pane left; a Ctrl+Q sent to it on nene released it.
+
+## VC70 · esctest2 again, and a task to raise the count (2026-11-16)
+
+Run again from main (`9c9b027`), both sides rebuilt, as §VC10 runs it:
+
+| | passed | failed | esctest's known bugs |
+|---|---:|---:|---:|
+| the core | 392 | 133 | 42 |
+| Ghostty (libghostty-vt, the oracle) | 388 | 137 | 42 |
+
+of 567. The core passed 386 at phase 1's exit (§VC10's record of
+2026-10-30); `core.txt` already held the six since. Ghostty passes no test
+the core fails; the core passes four Ghostty does not (three of OSC 10–19's
+special colors, and DECSET's Allow80To132).
+
+**Task, for later: raise the count.** Where the core's 133 failures are:
+
+| tests | failed | what they need |
+|---|---:|---|
+| `XtermWinopsTests` | 19 | XTWINOPS: resize, maximize, iconify, report the window's size and place; much of it the window's, not the core's |
+| `ChangeColorTests`, `ChangeDynamicColorTests`, `ChangeSpecialColorTests`, `ResetSpecialColorTests` | 36 | OSC 4, 10–19, 5 and 104–119: X11's color names (§VC9's list), the special colors, resets |
+| `DECCRATests`, `DECFRATests`, `DECERATests`, `DECSERATests` | 24 | VT400's rectangle copy, fill and erase |
+| `DECDSRTests`, `DECRQSSTests`, `DECRQMTests`, `DATests`, `DA2Tests` | 27 | the reports: device status, settings, modes (and DECRQM's over-claims, §VC9), attributes |
+| `DECICTests`, `DECDCTests` | 12 | insert and delete column |
+| `DECFITests`, `DECBITests` | 8 | forward and back index |
+| `DECSCLTests`, `RISTests`, `DECSETTests` | 7 | conformance levels, reset, 132 columns |
+
+Each is to be weighed for what programs use before it is built: the
+rectangle operations and columns are VT400's and rarely sent, the color
+names and reports are asked by programs every day. Not started.
