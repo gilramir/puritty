@@ -85,8 +85,9 @@ SUITES = [
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
-    # through a model of tmux 2.7, four
-    Suite("tmux", 121, runs_of("packages/tmux/tests")),
+    # through a model of tmux 2.7, four; 123 since TM79: an answer with
+    # % and a digit filled whole, and each %% the next answer
+    Suite("tmux", 123, runs_of("packages/tmux/tests")),
     Suite(
         "app",
         # 162 since TM70: a tmux -CC that never attaches, two. 170 since
@@ -105,8 +106,9 @@ SUITES = [
         # TV10: the per-version tests on 3.4, 3.2a, 3.0 and 2.7 too, forty,
         # and no condition 2.7 would take as true; 246 since SG19: a
         # recent's arguments, and the jump list's quoting; 252 since TM77:
-        # the tree's rows as each tmux draws them, on each
-        252,
+        # the tree's rows as each tmux draws them, on each; 264 since TM79:
+        # status off and the panes' letters, on each
+        264,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

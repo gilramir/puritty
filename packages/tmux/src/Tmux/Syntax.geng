@@ -598,72 +598,105 @@ again in single quotes, so that what was typed is one word of text and
 never tmux syntax. -}
 fill : Array Token -> Array String -> String
 fill template answers =
-    template
-        |> Array.map
-            (\t ->
-                if t.sep then
-                    ";"
+    (fillFrom 0 template answers).text
 
-                else if t.block then
-                    "{ " ++ fill (tokens t.value) answers ++ " }"
 
-                else
-                    let
-                        filled =
-                            substitute t.value answers
-                    in
-                    if filled == t.value then
-                        t.raw
+{-| `fill`, the `%%` before this point having taken `used` answers. -}
+fillFrom : Int -> Array Token -> Array String -> { text : String, used : Int }
+fillFrom used0 template answers =
+    let
+        done =
+            Array.foldl
+                (\t acc ->
+                    if t.sep then
+                        { acc | words = Array.pushLast ";" acc.words }
+
+                    else if t.block then
+                        let
+                            inner =
+                                fillFrom acc.used (tokens t.value) answers
+                        in
+                        { words = Array.pushLast ("{ " ++ inner.text ++ " }") acc.words, used = inner.used }
 
                     else
-                        Command.quote filled
-            )
-        |> String.join " "
+                        let
+                            r =
+                                substitute acc.used t.value answers
+                        in
+                        { words =
+                            Array.pushLast
+                                (if r.text == t.value then
+                                    t.raw
 
-
-substitute : String -> Array String -> String
-substitute value answers =
-    let
-        first =
-            Maybe.withDefault (meant Reason.FromOutside "") (Array.get 0 answers)
-
-        once =
-            if String.contains "%%%" value then
-                replaceFirst "%%%" first value
-
-            else if String.contains "%%" value then
-                replaceFirst "%%" first value
-
-            else
-                value
+                                 else
+                                    Command.quote r.text
+                                )
+                                acc.words
+                        , used = r.used
+                        }
+                )
+                { words = [], used = used0 }
+                template
     in
-    Array.foldl
-        (\pair v ->
-            let
-                answer =
-                    Maybe.withDefault (meant Reason.FromOutside "") (Array.get pair.index answers)
-
-                mark =
-                    "%" ++ pair.digit
-            in
-            v |> String.replace (mark ++ "%") answer |> String.replace mark answer
-        )
-        once
-        ([ "1", "2", "3", "4", "5", "6", "7", "8", "9" ] |> Array.indexedMap (\i digit -> { index = i, digit = digit }))
+    { text = String.join " " done.words, used = done.used }
 
 
-replaceFirst : String -> String -> String -> String
-replaceFirst pattern with text =
-    when String.split pattern text |> Array.popFirst is
-        Just { first, rest } ->
-            if Array.isEmpty rest then
-                text
+{-| The answers put in, as tmux's `cmd_template_replace` (`cmd.c`) puts
+them, one pass for each: `%N` (and `%N%`) is answer N everywhere, and each
+`%%` (or `%%%`) the next answer in turn, the first the first; what is put
+in is not read again, so an answer that holds `%3` stays as it is (TM79).
+`used`: how many `%%` came before this word, and after it. -}
+substitute : Int -> String -> Array String -> { text : String, used : Int }
+substitute used0 value answers =
+    let
+        answer i =
+            Maybe.withDefault (meant Reason.FromOutside "") (Array.get i answers)
+
+        -- `%%%` and `%N%`: the answer quoted, here as it is, since a
+        -- changed word is quoted whole
+        quoteMark rest =
+            if Array.first rest == Just '%' then
+                Array.dropFirst 1 rest
 
             else
-                first ++ with ++ String.join pattern rest
+                rest
 
-        Nothing ->
-            text
+        go chars acc =
+            when Array.popFirst chars is
+                Nothing ->
+                    meant Reason.NoMore acc
+
+                Just { first, rest } ->
+                    if first /= '%' then
+                        go rest { acc | out = acc.out ++ String.fromChar first }
+
+                    else
+                        when Array.first rest is
+                            Just '%' ->
+                                if acc.used < Array.length answers then
+                                    go (quoteMark (Array.dropFirst 1 rest)) { out = acc.out ++ answer acc.used, used = acc.used + 1 }
+
+                                else
+                                    go rest { acc | out = acc.out ++ "%" }
+
+                            Just d ->
+                                -- `%1` to `%9`: the answer by its place
+                                when Array.findFirst (\c -> c == d) [ '1', '2', '3', '4', '5', '6', '7', '8', '9' ] is
+                                    Just found ->
+                                        go (quoteMark (Array.dropFirst 1 rest)) { acc | out = acc.out ++ answer found.index }
+
+                                    Nothing ->
+                                        -- `%` before anything else, as it is
+                                        meant Reason.FromOutside (go rest { acc | out = acc.out ++ "%" })
+
+                            Nothing ->
+                                -- a `%` that ends the template, as it is
+                                meant Reason.FromOutside (go rest { acc | out = acc.out ++ "%" })
+
+        done =
+            go (String.toArray value) { out = "", used = used0 }
+    in
+    { text = done.out, used = done.used }
 
 
 {-| A command line with the mouse's pane (`-t =`, `-t=`, `-t {mouse}`,

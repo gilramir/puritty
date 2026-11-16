@@ -747,6 +747,19 @@ syntax =
         , { name = "a string template is a command line too"
           , test = \_ -> Expect.equal "new-window -n 'logs'" (filled "command-prompt -p name \"new-window -n '%%'\"" [ "logs" ])
           }
+        , { name = "an answer that holds % and a digit is put in as it is, as tmux's one pass does (TM79)"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ "select-pane -t '%3'", "select-pane -t '%11'", "rename-window '50%1 done'" ]
+                        [ filled "command-prompt -p pane { select-pane -t '%%' }" [ "%3" ]
+                        , filled "command-prompt -p pane { select-pane -t '%%' }" [ "%11" ]
+                        , filled "command-prompt -p name { rename-window '%%' }" [ "50%1 done" ]
+                        ]
+          }
+        , { name = "a second %% takes the second answer, as tmux's pass for it does (TM79)"
+          , test = \_ -> Expect.equal "swap-window -s '3' -t '5'" (filled "command-prompt -p a,b { swap-window -s %% -t %% }" [ "3", "5" ])
+          }
         , { name = "display-menu: title, place, items, a line, a disabled name kept as written"
           , test =
                 \_ ->

@@ -1643,12 +1643,16 @@ setLook tmuxLook s =
 
 {-| The rows of puritty's window that are not tmux's panes: tmux's status
 lines in tmux's look, as `status` says (`off` none, `2` to `5` that many,
-TM54), else the tab bar's one. -}
+TM54; 2.7 and 2.8 write a flag, `0` off and `1` on, TM79), else the tab
+bar's one. -}
 statusRows : State -> (r : Int where 0 <= r && r <= 5)
 statusRows s =
     if s.lookTmux then
         when Dict.get "status" s.status.options is
             Just "off" ->
+                0
+
+            Just "0" ->
                 0
 
             Just v ->
@@ -8060,23 +8064,45 @@ menuPointer p col row m s =
 
 {-| A key while the panes' numbers are shown, as tmux's `display-panes`
 takes it: a digit that is a pane's index runs the command with it and
-closes them; any other key closes them and goes no further. -}
+closes them, and from 3.2 a letter `a` to `z` for panes 10 to 35
+(`cmd-display-panes.c`, TM79; before 3.2 they cannot be chosen); any other
+key closes them and goes no further. -}
 numberKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Numbering -> (taken s : State) -> { state : State, commands : Array String }
 numberKey k n s =
     let
         text =
             Bytes.toStringLossy k.text
 
+        letters =
+            s.version == 0 || s.version >= 32
+
+        keyIndex =
+            when String.toArray text is
+                [ c ] ->
+                    if Char.isDigit c then
+                        String.toInt text
+
+                    else if letters && c >= 'a' && c <= 'z' then
+                        Just (10 + Char.toCode c - 0x61)
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
         chosen =
             if n.keys && Bitwise.and k.mods 6 == 0 then
-                String.toInt text |> Maybe.andThen (\d -> Array.findFirst (\e -> e.index == d) n.indexes)
+                keyIndex |> Maybe.andThen (\d -> Array.findFirst (\e -> e.index == d) n.indexes)
 
             else
                 Nothing
     in
     when chosen is
-        Just _ ->
-            runLine { pane = n.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens n.template) [ text ]) { s | numbers = Nothing }
+        Just found ->
+            -- `%%` is the pane's id, `%5`, as every tmux fills it
+            -- (`cmd-display-panes.c`, TM79)
+            runLine { pane = n.pane, mouse = Nothing } (Syntax.fill (Syntax.tokens n.template) [ "%" ++ String.fromInt found.value.id ]) { s | numbers = Nothing }
 
         Nothing ->
             meant Reason.NotKnown { state = { s | numbers = Nothing }, commands = [] }
@@ -8175,9 +8201,9 @@ paneNumber version colors tmuxLook isActive n p =
                     String.count digits
 
                 -- panes 10 to 34 are also chosen by a letter, shown by
-                -- the number
+                -- the number, from 3.2 (TM79)
                 letter =
-                    if index > 9 && index < 35 then
+                    if index > 9 && index < 35 && (version == 0 || version >= 32) then
                         Maybe.withDefault "" (Maybe.map String.fromChar (Char.fromCode (0x61 + index - 10)))
 
                     else

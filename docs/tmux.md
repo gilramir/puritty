@@ -3340,3 +3340,41 @@ once, in 3.x's form, which 2.x refuses. Now a resize before the answer
 resizes puritty's canvas and sends nothing (`capsKnown`), and the answer
 sends the size the window has then (`wantedSize`).
 
+
+## TM79 · `status off` on 2.7, the panes' letters, and a pane's `%N` filled whole (2026-11-15)
+
+From going through the "Not yet" lists of this document against today's
+code and each tmux's source. Several were done since they were written
+(S-Up/S-Down and C-h in the tree, TM65; `status off` and `status 2` to `5`,
+TM54); three were not as written, and three faults came up:
+
+- **`status off` on 2.7 and 2.8** is the flag `0` (`1` on), where 2.9 and
+  later write `off`. puritty took `0` as one status line, so under tmux's
+  look on RHEL8's tmux a row was kept from the panes. `0` is now none. A
+  test on each version, the fake answering `status` as that version writes
+  it, requires tmux's window to be the whole of puritty's; with the fix
+  taken out it fails on 2.7 alone.
+- **The panes' numbers** (`prefix q`): TM28's "an index of two digits
+  cannot be chosen, tmux waits for the second" was not so. No tmux waits:
+  from 3.2 panes 10 to 35 are drawn and chosen as `a` to `z`
+  (`cmd-display-panes.c`; 3.8's `window-panes.c`), and before 3.2 a pane
+  from 10 up cannot be chosen at all. puritty drew the letter but took only
+  digits; it now takes the letter from 3.2, and draws it only from 3.2.
+  And the command is filled with the pane's id, `%5`, as every tmux fills
+  it, where puritty put the key typed, which `select-pane -t` happened to
+  take as an index. A test on each version: `3` chooses `%3`, and `b`
+  `%11` from 3.2 and nothing before.
+- **A template filled with an answer that holds `%` and a digit**
+  (`Syntax.fill`): the first answer was put in for `%%`, then the whole
+  result read again for `%1` to `%9`, so `%3` came out empty and `%11` as
+  `%111`. The tree's choose command is filled with a pane row's target, so
+  choosing a pane in the tree ran `switch-client -t ''` for `%2` to `%9`
+  (only `%1` worked, by chance), and a window renamed `50%1 done` at the
+  prompt lost its `%1`. tmux's `cmd_template_replace` reads the template
+  once for each answer and never what it put in, each `%%` the next answer
+  in turn. `fill` now does so across the template's words and blocks; the
+  tmux suite holds `%3`, `%11`, `50%1 done` and two `%%` taking two
+  answers (123).
+
+App tests 264.
+

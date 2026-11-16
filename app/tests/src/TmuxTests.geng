@@ -5,6 +5,7 @@ delivered, keys typed, replies held back or let through, and the screen
 puritty draws read as rows of text. -}
 
 import Bytes exposing (Bytes)
+import Dict
 import Expect exposing (Expectation)
 import FakeTmux exposing (World)
 import RealTmux
@@ -406,6 +407,70 @@ onVersion version =
                                 Just "sh"
                         }
                         { items = items, prompt = TmuxMode.promptBox renaming.tmux |> Maybe.map .typed }
+          }
+        , { name = "the panes' numbers take a digit, and from 3.2 a letter for panes 10 to 35, each run with the pane's id (TM79)"
+          , test =
+                \_ ->
+                    let
+                        made =
+                            start version
+
+                        first =
+                            Array.first made.panes |> Maybe.withDefault { id = 0, lines = [], rows = 24, mode = "", scroll = 0, cx = 0, cy = 0, wanted = 0 }
+
+                        twelve =
+                            { made | panes = Array.map (\i -> { first | id = i }) (Array.range 0 11), number = 12 }
+
+                        chose letter =
+                            settle (typeKey letter (prefixThen "q" (attached twelve)))
+                                |> .world
+                                |> .heard
+                                |> Array.keepIf (String.startsWith "select-pane")
+
+                        letters =
+                            not (Array.member version [ "2.7", "3.0" ])
+                    in
+                    Expect.equal
+                        { digit = [ "select-pane -t '%3'" ]
+                        , letter =
+                            if letters then
+                                [ "select-pane -t '%11'" ]
+
+                            else
+                                []
+                        }
+                        { digit = chose "3", letter = chose "b" }
+          }
+        , { name = "status off leaves tmux's panes the whole window, as this tmux writes off (TM79)"
+          , test =
+                \_ ->
+                    let
+                        -- 2.7 and 2.8 write the flag as 0 (measured)
+                        made =
+                            start version
+
+                        off =
+                            { made
+                                | options =
+                                    Dict.set "status"
+                                        (if version == "2.7" then
+                                            "0"
+
+                                         else
+                                            "off"
+                                        )
+                                        made.options
+                            }
+
+                        -- in tmux's look, which draws tmux's status lines
+                        run =
+                            settle (deliver FakeTmux.startBytes { tmux = TmuxMode.setLook True (TmuxMode.idle {}), world = off, held = [], ms = 1000 })
+
+                        wanted =
+                            TmuxMode.wantedSize run.tmux
+                    in
+                    -- tmux's window the whole of puritty's, no row kept back
+                    Expect.equal { tmux = run.world.rows, canvas = run.tmux.canvas.rows } { tmux = wanted.rows, canvas = wanted.rows }
           }
         , { name = "the tree of windows shows the rows this tmux draws (TM77)"
           , test =
