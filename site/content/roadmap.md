@@ -2,9 +2,9 @@
 title = "Roadmap"
 +++
 
-puritty is pre-release: its author's daily terminal, with preview builds
-for Windows, RHEL 8 and 9, and Ubuntu 24.04 (and Linux Mint). This is
-where it stands, and what comes next.
+puritty is at 0.1.0: its author's daily terminal, with builds for
+Windows, RHEL 8 and 9, and Ubuntu 24.04 (and Linux Mint). This is where it
+stands, and what comes next.
 
 ## Done
 
@@ -50,5 +50,5 @@ Not in a fixed order:
 - **Tabs**: dragging to reorder them, and typing into several at once.
 - **A signed Windows release**, and passwords kept in the Windows
   credential store.
-- **The first public release**, with the first alpha of
-  [Geng](https://geng-lang.org), the language puritty is written in.
+- **1.0.0**, with the first alpha of [Geng](https://geng-lang.org), the
+  language puritty is written in.

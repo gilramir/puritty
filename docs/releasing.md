@@ -198,3 +198,17 @@ Only the shipped names changed: the build folder, its images, the puppet's
 `shipped()`; `deb.sh` takes the file's label from `PURITTY_DEB_LABEL`. The
 release notes name each distribution in words (RHEL 9, Ubuntu 24.04 and
 Linux Mint 22, Debian 13).
+
+## RL9 · 0.1.0, the first release (2026-11-16)
+
+Gilbert, 2026-11-16: today's build is published as it stands, tagged
+**0.1.0**; 1.0.0 comes with Geng's first alpha (the roadmap says so).
+`prerelease.sh` takes a tag that is a version as a release: the `.deb`'s
+version is the tag itself (`0.1.0`, where a preview's is
+`0.1.0~preview20261116`), the notes say "puritty 0.1.0" and "What's in it",
+and the `gh` command it prints leaves out `--prerelease`. puritty already
+names itself 0.1.0 (`Main.geng`'s version strings), so the binary needs no
+change.
+
+The script also builds while `site/` has changes: the website is in no
+package, and Gilbert edits it while a release is built.

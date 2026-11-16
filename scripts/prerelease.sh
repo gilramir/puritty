@@ -4,6 +4,11 @@
 #
 #   scripts/prerelease.sh TAG [TARGET...]
 #   scripts/prerelease.sh preview-2026-11-13 windows-x64 rhel8-x64
+#   scripts/prerelease.sh 0.1.0
+#
+# A tag that is a version (0.1.0) makes a release: the .deb's version is the
+# tag, and the notes and the gh command say release, not preview (RL9). Any
+# other tag makes a preview.
 #
 # The targets are windows-x64 and NAME-x64 for each Linux distribution
 # folder of app/distro with a Containerfile (rhel8, rhel9, rhel10, noble,
@@ -24,8 +29,8 @@
 #   SHA256SUMS, notes.md              the checksums, and the release's text
 #                                     to finish by hand
 #
-# It refuses a working tree with changes, so that a build is always a
-# commit's. Nothing is uploaded: the gh command that would make the draft is
+# It refuses a working tree with changes outside site/ (the website, which
+# no package holds), so that a build is always a commit's. Nothing is uploaded: the gh command that would make the draft is
 # printed at the end, for whoever decides to run it. Run from puritty's
 # devbox (node, nix, the Windows toolchain); podman for the Linux targets.
 set -e
@@ -43,9 +48,14 @@ for t in $targets; do
     case " $all " in *" $t "*) ;; *) echo "unknown target $t (known: $all)" >&2; exit 1 ;; esac
 done
 
-if [ -n "$(git status --porcelain)" ]; then
+case $tag in
+[0-9]*.[0-9]*.[0-9]*) release=yes ;;
+*) release= ;;
+esac
+
+if [ -n "$(git status --porcelain -- . ':!site')" ]; then
     echo "the working tree has changes: commit them first, so that the build is a commit's" >&2
-    git status --short >&2
+    git status --short -- . ':!site' >&2
     exit 1
 fi
 commit=$(git rev-parse --short HEAD)
@@ -136,7 +146,7 @@ any that are missing." >"$stage/README.txt"
         tar -C "$out/stage" -czf "$out/$name.tar.gz" "$name"
         if grep -q '^FROM docker.io/library/\(ubuntu\|debian\):' "app/distro/$distro/Containerfile"; then
             # a version dpkg takes: digits first, the tag's letters and digits after
-            PURITTY_BIN=$stage/puritty PURITTY_DEB_LABEL=$(shipped "$t" | sed 's/-x64$//') app/distro/deb.sh "$distro" "0.1.0~$(echo "$tag" | tr -cd 'A-Za-z0-9.')" "$out"
+            PURITTY_BIN=$stage/puritty PURITTY_DEB_LABEL=$(shipped "$t" | sed 's/-x64$//') app/distro/deb.sh "$distro" "$(if [ -n "$release" ]; then echo "$tag"; else echo "0.1.0~$(echo "$tag" | tr -cd 'A-Za-z0-9.')"; fi)" "$out"
         fi
         ;;
     esac
@@ -145,7 +155,11 @@ rm -rf "$out/stage"
 
 (cd "$out" && sha256sum ./*.zip ./*.tar.gz ./*.deb 2>/dev/null | sed 's| \./| |' >SHA256SUMS)
 {
-    echo "A preview of puritty, built from commit \`$commit\`."
+    if [ -n "$release" ]; then
+        echo "puritty $tag, built from commit \`$commit\`."
+    else
+        echo "A preview of puritty, built from commit \`$commit\`."
+    fi
     echo
     for t in $targets; do
         case $t in
@@ -159,7 +173,7 @@ rm -rf "$out/stage"
         esac
     done
     echo
-    echo "### New in this preview"
+    if [ -n "$release" ]; then echo "### What's in it"; else echo "### New in this preview"; fi
     echo
     echo "### SHA-256"
     echo
@@ -173,5 +187,5 @@ echo "== built in $out:"
 ls -l "$out"
 echo
 echo "Write what is new into $out/notes.md, then, when the upload is wanted:"
-echo "  gh release create $tag --draft --prerelease --target $(git rev-parse HEAD) \\"
+echo "  gh release create $tag --draft $(if [ -z "$release" ]; then echo "--prerelease "; fi)--target $(git rev-parse HEAD) \\"
 echo "    --title \"puritty $tag\" --notes-file $out/notes.md $out/*.zip $out/*.tar.gz $out/*.deb $out/SHA256SUMS"
