@@ -83,3 +83,12 @@ puritty sees the new font the next time the settings window opens.
 - **The name differs.** Use the family as `fc-list` prints it: "Fira Code",
   not "FiraCode-Regular".
 - **Only bold or italic was copied.** Copy the regular file too.
+
+---
+
+## Symbols drawn as boxes
+
+If a program's symbols show as empty boxes (Claude Code's `⏵⏵` before "auto
+mode on", on RHEL), your font lacks them and no other installed font has
+them. [Fonts for symbols](symbol-fonts.md) compares the fonts that fill
+them in, with pictures.
