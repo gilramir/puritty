@@ -416,6 +416,33 @@ two placements draws none and is answered nothing.
 
 **Back on (2026-11-17)**, 0.1.1 published: `imageLimit` is 320 MB again.
 
+## IM17 · Real programs: chafa and timg (2026-11-17)
+
+chafa 1.18.2 and timg 1.6.3 (both in the devbox now, from the nixpkgs
+commit the X libraries come from), run in puritty under Xvfb on a
+200 by 120 test picture:
+
+- **Told to use Kitty's protocol** (`chafa -f kitty`, `timg -pk`), each
+  draws the picture in puritty as it should. chafa sends exactly what the
+  core does: `a=T,f=32,s=270,v=160,c=27,r=8,m=1,q=2` with no payload, then
+  `m=1` chunks of base64 RGBA, then an empty `m=0`; no id, so no reply.
+- **Left to choose, neither picks it**; each draws with text symbols
+  (chafa) or half blocks (timg). Neither asks the terminal about Kitty's
+  protocol: chafa knows terminals by their environment (`TERM=xterm-kitty`,
+  `KITTY_PID`, `TERM_PROGRAM=ghostty`, …; `chafa/chafa-term-db.c`) and its
+  probe asks DA1 only, for Sixel; timg matches the name XTVERSION answers
+  (kitty, ghostty, WezTerm, foot, …; `src/term-query.cc`) and says it
+  sends no Kitty query on purpose, as the query confuses some terminals,
+  then asks DA1 for Sixel. puritty is in neither list.
+
+**What it means.** For a terminal neither knows, what both find by
+themselves is Sixel, through DA1's attribute 4. So Sixel (IM8, after
+Kitty) is what makes images appear unasked in these two, and comes next
+after tmux's panes. Until then a user tells them (`chafa -f kitty`, or
+`format kitty` in chafa's config; `timg -pk`), which the guide (IM10)
+will say. Asking chafa and timg to know puritty by name is a later
+question, Gilbert's, once puritty's XTVERSION name is settled for good.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
