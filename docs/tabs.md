@@ -777,3 +777,35 @@ since puritty does not log what it draws. Now:
 
 Not done: dimming the window behind the question, which would draw every
 cell again while it is up, a burst of traffic over remote X (Gilbert).
+
+## TB19 · A reconnected session: the old modes reset, its screen kept (2026-11-17)
+
+Gilbert, on 0.1.1 on Windows, the built-in ssh client: the dock's
+cable came loose, the connection dropped, and after R (TB8) the old
+session's last command was still on the screen with the new zsh prompt
+under it; he asked whether the screen should have been cleared.
+
+**What the references do.** PuTTY's Restart Session calls
+`term_pwron(term, false)` (`windows/window.c`): every mode back to power
+on, the screen not cleared. Windows Terminal's Restart connection calls
+`HardResetWithoutErase`, `HardReset(false)` (`adaptDispatch.cpp`): the
+same, and "the cursor should stay where the previous shell left it". So
+the screen Gilbert saw is what both do; Gilbert, 2026-11-17: "keep the
+mode reset and leave the old screen in place". (A first version pushed
+the screen into the scrollback as TB17's reopened tab does; that was
+undone.)
+
+**What was wrong.** R kept every mode the old session had set, where both
+reset them: had the drop come inside vim or less, the new shell would
+have started with the cursor hidden, the mouse reporting, bracketed
+paste, scroll margins or the alternate screen. Now R makes the terminal
+as RIS would (`Vt.restarted`, in `Vt.Modes`), keeping the screen, the
+scrollback (with the styles their rows name) and the cursor; on the
+alternate screen, the main screen comes back first as 1049 brings it,
+with its cursor, as PuTTY swaps back. The view goes to the bottom.
+
+**Checked:** three unit tests (the screen, scrollback and cursor kept;
+the mouse, keys, cursor's visibility, pen and margins as new; from the
+alternate screen); and `bench/tabs/ssh.py`, whose dropped tab now echoes
+a line and hides the cursor before `kill -9 $PPID`: after R, the old
+lines stay, the new prompt is under them, and the cursor shows.

@@ -12,6 +12,7 @@ module Vt.Modes exposing
     , protect
     , reset
     , resetSaved
+    , restarted
     , restoreCursor
     , restoreMode
     , saveCursor
@@ -687,6 +688,47 @@ reset t =
             blank.back
     in
     withScroll { blank | replies = replies, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped }, images = { noImages | limit = t.images.limit } }
+
+
+{-| The terminal for a new session in the same tab (puritty `docs/tabs.md`
+TB19), as PuTTY's Restart Session (`term_pwron` without clearing) and
+Windows Terminal's Restart connection (`HardReset(false)`) make it: every
+mode, the colors, the title and the images as RIS leaves them, but the
+screen, the scrollback (with the styles and clusters their rows name) and
+the cursor kept, so the new session's output comes after the old. On the
+alternate screen, the main screen comes back first as 1049 brings it
+back, its cursor with it. The bells counted stay, as the tab's mark
+counts them. -}
+restarted : (taken t : Term) -> Term
+restarted t =
+    let
+        main =
+            if t.alt then
+                screenMode 1049 False t
+
+            else
+                t
+
+        blank =
+            reset main
+    in
+    if blank.cols == main.screen.cols && blank.rows == main.screen.rows && main.x < blank.cols && main.y < blank.rows then
+        withScroll
+            { blank
+                | screen = main.screen
+                , back = main.back
+                , styles = main.styles
+                , styleCache = main.styleCache
+                , clusters = main.clusters
+                , bells = main.bells
+                , x = main.x
+                , y = main.y
+            }
+
+    else
+        -- a resize keeps the config the size, so this is not met: RIS's
+        -- terminal, the scrollback with it
+        blank
 
 
 {-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14)

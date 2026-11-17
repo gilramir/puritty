@@ -179,4 +179,38 @@ suite =
                         , wide = lines (Vt.resize 10 2 narrow)
                         }
           }
+        , { name = "a restarted terminal keeps its screen, its scrollback and its cursor (puritty TB19)"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            Vt.restarted (feed "a\r\nb\r\nold\r\nprompt $ " (term 10 3))
+                    in
+                    Expect.equal
+                        { lines = lines (feed "a\r\nb\r\nold\r\nprompt $ " (term 10 3)), back = 1 }
+                        { lines = lines t, back = Vt.scrollbackRows t }
+          }
+        , { name = "a restarted terminal has every mode and the pen as new"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            Vt.restarted (feed "\u{001B}[?1000h\u{001B}[?1006h\u{001B}[?1h\u{001B}[?25l\u{001B}[?2004h\u{001B}[2;4r\u{001B}[1;31mred" (term 10 5))
+
+                        new =
+                            term 10 5
+                    in
+                    Expect.equal
+                        { mouse = Vt.mouseModes new, keys = Vt.keyOptions new, visible = True, red = lines (feed "\u{001B}[1;31mred\u{001B}[0mx" (term 10 5)) }
+                        { mouse = Vt.mouseModes t, keys = Vt.keyOptions t, visible = (Vt.cursorOf t).visible, red = lines (feed "x" t) }
+          }
+        , { name = "a terminal restarted on the alternate screen is back on the main screen, at its cursor"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            Vt.restarted (feed "old\r\n\u{001B}[?1049hvim" (term 10 3))
+                    in
+                    Expect.equal (lines (feed "old\r\n" (term 10 3))) (lines t)
+          }
         ]

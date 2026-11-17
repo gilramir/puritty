@@ -98,12 +98,17 @@ def main():
         # and reconnects with r
         xd("key", "ctrl+shift+t")
         time.sleep(3.0)
-        typed("kill -9 $PPID")
+        # what the old session left: its text, which stays on the screen as
+        # PuTTY and Windows Terminal leave it, and the cursor hidden, which
+        # the new session must not inherit (TB19)
+        typed("echo the old session")
+        typed("printf '\\033[?25l'; kill -9 $PPID")
         time.sleep(1.5)
         print("after its connection dropped, puritty is", alive())
         snap("dropped")
         xd("key", "r")
         time.sleep(3.0)
+        snap("restarted")
         typed(f"echo again > {WORK}/e.txt")
         print("after r, the reconnected tab's shell wrote:", said("e.txt"))
         snap("reconnected")
