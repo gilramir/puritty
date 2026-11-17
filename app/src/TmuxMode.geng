@@ -2296,7 +2296,31 @@ event size e acc =
                         Nothing ->
                             meant Reason.NotOpen []
             in
-            { acc | state = { st | on = False, ending = 0, starting = Nothing, ids = [], panes = Builder.empty 0, layout = Nothing, canvas = blank 1 1, expecting = [], info = Dict.empty, view = Nothing, asking = Nothing, menu = Nothing, numbers = Nothing }, outside = acc.outside ++ said }
+            -- everything of the session that ended goes: puritty's own
+            -- views (the tree, a list, customize), copy mode's view, the
+            -- panes' modes, a selection; the next `tmux -CC` in this shell
+            -- starts as the first did (TM102). Kept: the settings, the
+            -- prompts' history, the clock, and the bells already rung,
+            -- which the window counts on
+            { acc
+                | state =
+                    let
+                        fresh =
+                            idle {}
+                    in
+                    barPlaced
+                        { fresh
+                            | reader = st.reader
+                            , lookTmux = st.lookTmux
+                            , barTopConfig = st.barTopConfig
+                            , lightBackground = st.lightBackground
+                            , history = st.history
+                            , clock = st.clock
+                            , serial = st.serial
+                            , audible = st.audible
+                        }
+                , outside = acc.outside ++ said
+            }
 
         Reply r ->
             when starting is
@@ -3875,7 +3899,16 @@ notice n acc =
             ask [ { command = windowQuery, expect = ForWindow } ] { acc | state = st }
 
         SessionChanged _ ->
-            ask [ { command = windowQuery, expect = ForWindow }, { command = tabsQuery, expect = ForTabs }, { command = panesQuery, expect = ForPanes } ] { acc | state = st }
+            -- another session's panes, and their modes, which are asked
+            -- when tmux attaches for that session's only: one already in
+            -- copy mode is shown so (TM102)
+            ask
+                [ { command = windowQuery, expect = ForWindow }
+                , { command = tabsQuery, expect = ForTabs }
+                , { command = panesQuery, expect = ForPanes }
+                , { command = Command.listPanesSession modeFormat, expect = ForModes }
+                ]
+                { acc | state = st }
 
         Pause pane ->
             -- puritty fell behind on the pane and tmux dropped what was

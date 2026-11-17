@@ -4046,3 +4046,50 @@ Enter straight away did not, since nothing was scrolled.
 it failed before on each. Side by side on real 3.8
 (`bench/tmux/compare/scenes_copyenter.py`, with prefix C-b and C-a, vi
 and emacs keys): puritty's picture is tmux's after the Enter.
+
+## TM102 · State left behind: a review after TM101 (2026-11-16)
+
+TM101 was per-pane state that one path cleared and another did not. The
+tmux code was read again for the same mistake: each piece of state kept
+per pane or per session, where it is cleared, and whether an answer can
+come in an order that leaves some of it behind, or reopen something
+closed.
+
+**Found and fixed:**
+
+- **Control mode ending kept the session's state.** `Exited` cleared the
+  panes, the prompt, a menu and the numbers, but not puritty's own views
+  (the tree, a list, customize), copy mode's view and scroll, the panes'
+  modes or a selection; and the window keeps the same state for the
+  next `tmux -CC` in that shell (only a reconnect, TM93, made it anew).
+  So a tree open when the session was killed or the client detached from
+  elsewhere was drawn over the panes of the next attach, and took its
+  keys. `Exited` now starts from `idle`, keeping only the settings (look,
+  bar, background), the prompts' history, the clock, the serial and the
+  bells already rung (the window rings on a rise in their count). An app
+  test on each tmux (390): the tree open, `%exit`, attached again, and the
+  top row is the live screen's; it failed before on each.
+- **Another session's copy mode was not shown.** The panes' modes are
+  asked on attach for the attached session only (`list-panes -s`); a
+  `switch-client` to a session whose pane was already in copy mode drew
+  it live, and keys went to copy mode unseen. `%session-changed` now asks
+  them too. Side by side on real 3.8
+  (`bench/tmux/compare/scenes_session.py`): the other session's pane in
+  copy mode at `[27/34]` in both, and `q` leaves it in both.
+
+**Read and found sound:** the answers for puritty's tree, lists and
+customize update a view only while it is open (`Maybe.map` over it), so
+one that comes after it closed does not reopen it; their previews carry a
+serial. The prompt's answers check that a prompt is open. The window's
+own scroll, search and selection belong to the terminal under tmux,
+which control mode does not change.
+
+**Left:**
+
+- The per-pane maps (`modes`, `paneModes`, `copy`, `back`, `info`) keep a
+  pane that closed; tmux never gives its id again, so it is a small leak,
+  and a pane killed in copy mode may be asked about again with each
+  modes answer. Not measured.
+- Since 3.6 tmux's copy mode position shows the top line's time
+  (`copy-mode-position-format`, `#{t/p:top_line_time}`), `21:03 [27/34]`;
+  puritty shows `[27/34]` only. Older than TM101, seen in the scene above.
