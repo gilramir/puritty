@@ -4022,3 +4022,27 @@ the next key as one Meta key.
 
 Left as it is (`docs/review.md` RV2): the emacs word keys stop at spaces,
 not at `word-separators`.
+
+## TM101 · Leaving copy mode left the view scrolled (2026-11-16)
+
+Reported on 0.1.0 (Windows, ssh, tmux 3.8, prefix C-a): `prefix [`, C-b
+(a page up in vi's copy mode), Enter; the pane stayed on the page it was
+scrolled to, and only a key typed after it (or output) brought the
+prompt back. tmux had left copy mode at the first Enter: the diagnostic
+log shows `pane-mode-changed` and copy mode's state with no scroll
+position.
+
+**Why.** puritty asks copy mode's state after each key it sends in copy
+mode, so a key that leaves it is answered with an empty state, and that
+answer comes before the one to `pane-mode-changed`'s question. `copyLine`
+took the empty state as the end of copy mode and dropped the pane's
+`copy`, but kept `back`, how far the view is scrolled; the modes' answer
+clears `back` only for the panes still in `copy`, so nothing did. Any key
+that leaves copy mode did it (q, Enter after a motion); `prefix [` and
+Enter straight away did not, since nothing was scrolled.
+
+**Fixed:** the empty state clears `back` too. An app test on each tmux
+(384): copy mode scrolled up, `q`, and the top row is the live screen's;
+it failed before on each. Side by side on real 3.8
+(`bench/tmux/compare/scenes_copyenter.py`, with prefix C-b and C-a, vi
+and emacs keys): puritty's picture is tmux's after the Enter.
