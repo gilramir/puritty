@@ -1565,14 +1565,286 @@ reported, as Ghostty reports it even when the size is the same (V15). -}
 resize : Int -> Int -> (taken t : Term) -> Term
 resize cols rows t =
     let
+        -- the Kitty graphics placements' anchors as numbers, before a
+        -- width change reflows the main screen's lines (`docs/images.md`
+        -- IM25): numbers alone, so the resize takes the term unshared
+        anchors =
+            if clamp 1 1000 cols /= t.cols && not t.alt && t.autowrap && not (Array.isEmpty t.images.shown.placements) then
+                pinsBefore (clamp 1 1000 cols) t
+
+            else
+                []
+
         r =
-            resizeQuiet cols rows t
+            pinsAfter anchors (resizeQuiet cols rows t)
     in
     if Dict.get 2048 r.modes == Just True then
         sizeReport r
 
     else
         r
+
+
+-- PLACEMENTS THROUGH A REFLOW (docs/images.md IM25)
+
+
+{-| Each placement's anchor before a reflow to `cols` columns: its index,
+how many lines its line is above the cursor's (below, negative), and its
+offset in its line. The offset is as Ghostty moves a tracked pin
+(`PageList.reflowRow`): on a cell, with the cell; in the blanks past a
+line's last text, held to a row of the new width from where the row
+begins in it, which is the saved cursor's rule (`Vt.Resize.joinLines`). -}
+pinsBefore : (cols : Int where 1 <= cols && cols <= 1000) -> Term -> Array { index : Int, dist : Int, offset : Int }
+pinsBefore cols t =
+    let
+        pushed =
+            rowsPushed t
+
+        back =
+            scrollbackRows t
+
+        ys =
+            Array.map (\pl -> pl.row - pushed) t.images.shown.placements
+
+        lowest =
+            Array.foldl min t.y ys
+
+        -- the rows from a few hundred above the highest anchor, for its
+        -- line's start, down to the screen's end
+        first =
+            clamp (0 - back) t.rows (clamp (0 - back) t.rows lowest - 256)
+
+        read =
+            (rowsBetween first (clamp 0 (t.rows - first) (t.rows - first)) t).rows
+
+        starts =
+            lineStarts read
+
+        lineOf y =
+            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (y - first)) starts)
+
+        cursorLine =
+            lineOf t.y
+    in
+    t.images.shown.placements
+        |> Array.indexedMap
+            (\i pl ->
+                let
+                    y =
+                        pl.row - pushed
+                in
+                if pl.virtual || y < first || y >= t.rows then
+                    Nothing
+
+                else
+                    let
+                        k =
+                            y - first
+
+                        start =
+                            lineStart read k
+
+                        base =
+                            Array.foldl (\r acc -> acc + rowLength t.cols r) 0 (Array.slice start k read)
+
+                        row =
+                            Maybe.withDefault (meant Reason.OutOfRange { cells = [], wrapped = False, prompt = 0 }) (Array.get k read)
+
+                        text =
+                            textLength row.cells
+
+                        x =
+                            if not row.wrapped && pl.col >= text then
+                                min pl.col (cols - 1 - modBy cols base)
+
+                            else
+                                pl.col
+                    in
+                    Just { index = i, dist = cursorLine - lineOf y, offset = base + x }
+            )
+        |> Array.keepIf (\a -> a /= Nothing)
+        |> Array.mapAndKeepJust identity
+
+
+{-| Each anchor found again after the reflow: its line, so many lines above
+the cursor's, and its offset walked through the line's new rows. -}
+pinsAfter : Array { index : Int, dist : Int, offset : Int } -> (taken t : Term) -> Term
+pinsAfter anchors t =
+    if Array.isEmpty anchors then
+        t
+
+    else
+        let
+            pushed =
+                rowsPushed t
+
+            back =
+                scrollbackRows t
+
+            far =
+                Array.foldl (\a m -> max m a.dist) 0 anchors
+
+            -- as many rows above the cursor as the lines asked for can
+            -- take, at the most a few hundred rows each
+            first =
+                clamp (0 - back) t.rows (clamp 0 t.rows t.y - 256 * (clamp 0 1000 far + 1))
+
+            read =
+                (rowsBetween first (clamp 0 (t.rows - first) (t.rows - first)) t).rows
+
+            starts =
+                lineStarts read
+
+            cursorLine =
+                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (t.y - first)) starts)
+
+            -- the row a line begins on, by its number
+            startOf line =
+                Maybe.withDefault (meant Reason.OutOfRange -1) (Maybe.map .index (Array.findFirst (\n -> n == line) starts))
+
+            placeOf a =
+                let
+                    s0 =
+                        startOf (cursorLine - a.dist)
+                in
+                if s0 < 0 then
+                    Nothing
+
+                else
+                    Just (walk t.cols read s0 a.offset)
+
+            im =
+                t.images
+
+            store =
+                im.shown
+
+            moved =
+                Array.foldl
+                    (\a pls ->
+                        when placeOf a is
+                            Just at ->
+                                when Array.get a.index pls is
+                                    Just pl ->
+                                        Array.set a.index { pl | row = clamp 0 1073752017 (pushed + first + clamp 0 1000000 at.row), col = clamp 0 999 at.col } pls
+
+                                    Nothing ->
+                                        meant Reason.OutOfRange pls
+
+                            Nothing ->
+                                meant Reason.NoMore pls
+                    )
+                    store.placements
+                    anchors
+        in
+        { t | images = { im | shown = { store | placements = moved } } }
+
+
+{-| Each row's line, counted from the first row's: a row begins a line
+unless the row before it wrapped. -}
+lineStarts : Array Row -> Array Int
+lineStarts rows =
+    Array.foldl
+        (\r acc ->
+            { line =
+                if acc.wrapped then
+                    acc.line
+
+                else
+                    acc.line + 1
+            , wrapped = r.wrapped
+            , out =
+                Array.pushLast
+                    (if acc.wrapped then
+                        acc.line
+
+                     else
+                        acc.line + 1
+                    )
+                    acc.out
+            }
+        )
+        { line = -1, wrapped = False, out = [] }
+        rows
+        |> .out
+
+
+{-| The first row of the line row `k` is in. -}
+lineStart : Array Row -> Int -> Int
+lineStart rows k =
+    if k <= 0 then
+        0
+
+    else
+        when Array.get (k - 1) rows is
+            Just r ->
+                if r.wrapped then
+                    lineStart rows (k - 1)
+
+                else
+                    k
+
+            Nothing ->
+                meant Reason.OutOfRange k
+
+
+{-| The cells a row gives its line: a wrapped row all of them less a spacer
+head at its end, which is not written again; any other its text. -}
+rowLength : Int -> Row -> Int
+rowLength cols r =
+    if r.wrapped then
+        when Array.last r.cells is
+            Just c ->
+                if Array.length r.cells >= cols && cellWide c == spacerHead then
+                    cols - 1
+
+                else
+                    cols
+
+            Nothing ->
+                meant Reason.OutOfRange cols
+
+    else
+        textLength r.cells
+
+
+{-| Up to the last cell that is not empty, as Ghostty trims a row. -}
+textLength : Array Int64 -> Int
+textLength cells =
+    Array.foldl
+        (\c acc ->
+            { i = acc.i + 1
+            , last =
+                if Bitwise.and (Bitwise.or bgBit 0xFFFFFF) c == 0 then
+                    acc.last
+
+                else
+                    acc.i + 1
+            }
+        )
+        { i = 0, last = 0 }
+        cells
+        |> .last
+
+
+{-| Offset `offset` in the line that begins on row `s`: through its wrapped
+rows to the one that holds it. -}
+walk : Int -> Array Row -> Int -> Int -> { row : Int, col : Int }
+walk cols rows s offset =
+    when Array.get s rows is
+        Just r ->
+            let
+                len =
+                    rowLength cols r
+            in
+            if r.wrapped && offset >= len && s + 1 < Array.length rows then
+                walk cols rows (s + 1) (offset - len)
+
+            else
+                { row = s, col = clamp 0 (cols - 1) offset }
+
+        Nothing ->
+            meant Reason.OutOfRange { row = s, col = clamp 0 (cols - 1) offset }
 
 
 -- THE DUMP

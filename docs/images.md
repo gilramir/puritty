@@ -359,10 +359,10 @@ written first (`kitty-region-*`, `kitty-alt-scroll`, `kitty-resize-rows`).
   placement goes up with its row, and one whose row leaves stays on the top
   row at the first column, as Ghostty's pins do (`altScrolled`).
 - **A resize that changes the rows only** agrees already.
-- **A resize that rewraps lines does not** (`kitty-resize-reflow`, with
+- **A resize that rewraps lines did not** (`kitty-resize-reflow`, with
   its divergence): Ghostty's pins reflow with their rows and by rules of
-  their own; the core keeps absolute rows. Held for the reflow to carry
-  the placements as it carries the cursor.
+  their own; the core kept absolute rows. Done in IM25, and the
+  divergence gone.
 
 The 24 Kitty replay cases agree with Ghostty but that one.
 
@@ -693,6 +693,61 @@ states, the tests for placements, the larger store. The record is not
 moved: what is left is to be found as this was, one decision at a time,
 or the record moved with the reason written here. Until then `perf.py`
 says so.
+
+## IM25 · Placements through a resize that rewraps lines (2026-11-17)
+
+IM14 left one difference from Ghostty: a resize that changes the width
+reflows the main screen's lines, and Ghostty's placements, pinned to cells,
+move with them, where the core kept each placement's absolute row and
+column. An image drawn in the cells (Sixel's, iTerm2's) is a placement too,
+so after a narrower or wider window it was off its text.
+
+**Ghostty's rule** (`PageList.reflowRow`): a tracked pin, which a
+placement's anchor is, moves with the cell it is on; one in the blanks past
+a row's last text first has its column held to `new width - 1 - the column
+the row begins writing at`, and the row is walked as far as it, the blanks
+advancing without being written. The cursor is not such a pin: its blanks
+are kept as cells. The test of it: a cursor after `0123456789abcdef` at 10
+columns, through 6 and then 20, ends at column 16; a placement there at
+column 11 (`0123456789` and `abcdef`'s row begins at column 4 of a 6
+column row, so the pin is held to column 1, offset 11). The core's saved
+cursor already had that rule (`Vt.Resize.joinLines`), Ghostty's saved
+cursor being such a pin.
+
+**How the core does it**, around the resize in `Vt.resize` rather than in
+`Vt.Resize`'s reflow, which carries two points through sixteen places and
+the scrollback's pages through their own recut:
+
+- `pinsBefore`, for a change of width on the main screen with autowrap on
+  and placements present: the rows from a few hundred above the highest
+  placement to the screen's end (`rowsBetween`), each row's line by the
+  wrap flags, and for each placement its line's distance in lines from the
+  cursor's and its offset in its line, the blanks rule applied at the new
+  width. Numbers alone, so that the resize takes the term unshared (IM24).
+- `pinsAfter`, on the resized term: the rows read again from the cursor's
+  line up, each line found that many lines above the cursor's, and the
+  offset walked through its new rows (a wrapped row gives its width, less
+  a spacer head it ends with). Read and updated in one function.
+
+Lines keep their count through a reflow, which is why a line counted from
+the cursor's is found again. A placement whose line has left the scrollback
+or the rows read keeps its anchor.
+
+**Checked**: `kitty-resize-reflow` now gives Ghostty's dump, its
+divergence and `ghostty.txt` removed; two new cases agree with Ghostty:
+`kitty-reflow-on-text` (placements on cells of a 26-character line through
+8, 13 and 30 columns) and `kitty-reflow-scrollback` (a placement that the
+narrowing pushes into the scrollback, then a widening). The replay binary
+(`harness/dump/core-dump`) had not been built again since the morning, so
+the replay runs of IM22 to IT4 tested the morning's core; built again, all
+353 cases passed but this one, which then passed as above. The diff
+fuzzer's (`harness/fuzz/vt-diff`) was older still, built at 06:22, so the
+day's fuzz runs before this one tested the core from before IM19; built
+again, 8 minutes, 142 inputs, 0 findings. The resize inputs of
+`perf.py` are within their record.
+
+**Not done**: the alternate screen shown during the resize, whose main
+screen's placements, in the store's other slot, keep their anchors.
 
 ## IM10 · The user guide, drafted
 
