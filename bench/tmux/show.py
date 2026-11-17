@@ -70,7 +70,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puritty", default=str(ROOT / "app" / "puritty"))
     ap.add_argument("--tmux", default="tmux")
-    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy", "modes", "pointers"],
+    ap.add_argument("--scenario", default="build", choices=["build", "attach", "mouse", "select", "tabs", "safety", "lines", "prefix", "prompts", "views", "menus", "panes", "status", "marks", "copy", "modes", "pointers", "images"],
                     help="build: panes made while puritty watches; attach: panes made and filled first, then attached")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -125,6 +125,9 @@ def main():
             return
         if a.scenario == "pointers":
             pointers(a, env, tmux, xdo, snap, cli)
+            return
+        if a.scenario == "images":
+            images(a, env, tmux, xdo, snap, cli)
             return
         if a.scenario == "prefix":
             prefix(a, env, tmux, xdo, snap, cli)
@@ -235,6 +238,100 @@ def attach(a, env, tmux, xdo, snap, cli):
         snap("less-scrolled")
         top = subprocess.run([*tmux, "capture-pane", "-p", "-t", "%1"], env=env, capture_output=True, text=True).stdout.splitlines()[:1]
         check("jjjj in less, attached to: its first line", top, ["5"])
+        cli("kill-server")
+        time.sleep(1)
+    finally:
+        app.terminate()
+        app.wait()
+
+
+def images(a, env, tmux, xdo, snap, cli):
+    """Images in a `-CC` pane (docs/images.md IM22): chafa and timg left to
+    choose and told each protocol, and a Kitty image in tmux's passthrough
+    envelope. Each program's own output is kept by `pipe-pane` to say which
+    protocol it sent; each picture is counted for the test image's red and
+    green, which no prompt or text has. Then a detach and attach."""
+    import base64, struct, zlib
+
+    w, h = 64, 32
+    raw = b"".join(b"\0" + b"".join(bytes((255, 0, 0) if x < w // 2 else (0, 255, 0)) for x in range(w)) for _ in range(h))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    png = WORK / "test.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    b64 = base64.b64encode(png.read_bytes()).decode()
+    # a Kitty image wrapped as tmux's passthrough wants it: ESC P tmux; with
+    # every ESC inside doubled, then ESC \
+    kitty = f"\033_Ga=T,f=100,q=2;{b64}\033\\"
+    (WORK / "wrapped.bin").write_text("\033Ptmux;" + kitty.replace("\033", "\033\033") + "\033\\")
+    out = WORK / "pane-output.bin"
+
+    def pure(rows):
+        """Pixels of the test image's red and of its green, in the picture,
+        near enough: Sixel's colors are percentages."""
+        red = green = 0
+        for r in rows:
+            for i in range(0, len(r) - 2, 3):
+                p0, p1, p2 = r[i], r[i + 1], r[i + 2]
+                if p0 > 200 and p1 < 60 and p2 < 60:
+                    red += 1
+                elif p1 > 200 and p0 < 60 and p2 < 60:
+                    green += 1
+        return red, green
+
+    def protocols(data):
+        marks = (("passthrough", b"\033Ptmux;"), ("sixel", b"q\"1;1"), ("kitty", b"_G"), ("iterm", b"1337;File"))
+        return [name for name, mark in marks if mark in data] or ["text"]
+
+    cli("new-session", "-d", "-s", "img", "-x", "100", "-y", "29")
+    time.sleep(0.5)
+    start = lambda: subprocess.Popen([a.puritty, "--config", str(WORK / "config.toml"), "--title", "tmux-show", "--",
+                                      *tmux, "-CC", "attach", "-t", "img"], env=env, stdout=subprocess.DEVNULL,
+                                     stderr=open(WORK / "stderr.txt", "a"))
+    app = start()
+    try:
+        win = subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, text=True,
+                             timeout=20).stdout.split()[0]
+        subprocess.run([xdo, "windowfocus", "--sync", win], env=env, check=True)
+        time.sleep(2)
+        steps = [
+            ("chafa", f"chafa --size 20x8 {png}"),
+            ("chafa-sixel", f"chafa -f sixel --size 20x8 {png}"),
+            ("chafa-kitty", f"chafa -f kitty --size 20x8 {png}"),
+            ("chafa-iterm", f"chafa -f iterm --size 20x8 {png}"),
+            ("timg", f"timg -g 20x8 {png}"),
+            ("timg-sixel", f"timg -ps -g 20x8 {png}"),
+            ("timg-kitty", f"timg -pk -g 20x8 {png}"),
+            ("passthrough", f"cat {WORK / 'wrapped.bin'}; echo"),
+        ]
+        only = os.environ.get("IMAGES_STEPS", "")
+        for name, command in [st for st in steps if not only or st[0] in only.split(",")]:
+            cli("send-keys", "-t", "%0", "clear", "Enter")
+            time.sleep(0.5)
+            out.write_bytes(b"")
+            cli("pipe-pane", "-O", "-t", "%0", f"cat >> {out}")
+            cli("send-keys", "-t", "%0", command, "Enter")
+            time.sleep(2.5)
+            cli("pipe-pane", "-t", "%0")
+            (WORK / f"pane-output-{name}.bin").write_bytes(out.read_bytes())
+            snap(f"image-{name}")
+            red, green = pure(read_ppm(WORK / "shot.ppm") or [])
+            note(f"{name}: sent {', '.join(protocols(out.read_bytes()))}; {red} red and {green} green pixels")
+        # detach and attach: what tmux sends a new client is the panes' text
+        cli("send-keys", "-t", "%0", "clear", "Enter")
+        time.sleep(0.5)
+        cli("send-keys", "-t", "%0", f"chafa -f sixel --size 20x8 {png}", "Enter")
+        time.sleep(2.5)
+        snap("image-before-detach")
+        before = pure(read_ppm(WORK / "shot.ppm") or [])
+        cli("detach-client", "-s", "img")
+        app.wait(timeout=10)
+        app = start()
+        subprocess.run([xdo, "search", "--sync", "--name", "tmux"], env=env, capture_output=True, timeout=20)
+        time.sleep(2.5)
+        snap("image-reattached")
+        after = pure(read_ppm(WORK / "shot.ppm") or [])
+        note(f"before detach {before[0]} red, {before[1]} green; attached again {after[0]} red, {after[1]} green")
         cli("kill-server")
         time.sleep(1)
     finally:

@@ -54,3 +54,25 @@ The vi keys (TM100) follow tmux.
 
 **To match it**, the three keys would take the separators puritty asks
 (`word-separators`, TM100) and each version's rule, as the vi keys do.
+
+## RV3 · Kitty images in a `tmux -CC` pane, and `clear` (2026-11-17)
+
+Found with `docs/images.md` IM22. In a `-CC` pane a program writes to
+tmux, and tmux's `clear` is ED 0 from the top left (`CSI H CSI J CSI 3J`),
+not ED 2. puritty keeps Ghostty's rule for Kitty images, where only ED 2
+takes the placements, so a Kitty image stays under the prompt after
+`clear`, and later images draw over it.
+
+| in a `-CC` pane | tmux would show (3.8 for Sixel; master for Kitty) | puritty |
+|---|---|---|
+| `clear` after a Kitty image | the image gone | the image stays |
+| text written over a Kitty image | the image gone | text over the image |
+| Sixel or iTerm2's image, then `clear` | gone | gone (IM23) |
+
+**To match it**, a pane's terminal would take Kitty placements as tmux
+does, by an embedder setting the panes have and the window's terminal
+not (which Ghostty's oracle holds): any cell an image covers written or
+erased, a line inserted or deleted through it, frees the image, and RI, a
+scroll down and a clear free them all. Or Kitty images in a pane could
+take IM23's per-cell holes, as Sixel's do. Either is a day's work; left
+until there is a call.

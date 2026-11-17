@@ -133,4 +133,76 @@ suite =
                     Expect.equal [ "\u{001B}[?1;0;1024S", "\u{001B}[?2;0;100;100S", "\u{001B}[?2;0;10000;10000S", "\u{001B}[?1;3;0S", "\u{001B}[?3;1;0S" ]
                         (replies (feed "\u{001B}[?1;1S\u{001B}[?2;1S\u{001B}[?2;4S\u{001B}[?1;3;64S\u{001B}[?3;1S" (sixel {})))
           }
+        , { name = "text written over an image takes the cells it is in (IM23)"
+          , test =
+                \_ ->
+                    Expect.equal [ "erased 1,0,2,1" ] (erased (feed "\u{001B}[1;2Hab" (block {})))
+          }
+        , { name = "a character at a time over an image makes one hole"
+          , test =
+                \_ ->
+                    Expect.equal [ "erased 0,1,3,1" ] (erased (feed "c" (feed "b" (feed "\u{001B}[2;1Ha" (block {})))))
+          }
+        , { name = "EL and ECH take the cells they erase, past the row's text too"
+          , test =
+                \_ ->
+                    Expect.equal [ "erased 1,1,2,1;0,0,2,1" ] (erased (feed "\u{001B}[1;1H\u{001B}[2X" (feed "\u{001B}[2;2H\u{001B}[K" (block {}))))
+          }
+        , { name = "ED 0 from the top left, tmux's clear, takes the whole image"
+          , test =
+                \_ ->
+                    Expect.equal [] (images (feed "\u{001B}[H\u{001B}[J" (block {})))
+          }
+        , { name = "ED 1 takes the rows above the cursor and its row up to it"
+          , test =
+                \_ ->
+                    Expect.equal [ "erased 0,1,2,1;0,0,3,1" ] (erased (feed "\u{001B}[2;2H\u{001B}[1J" (block {})))
+          }
+        , { name = "every row lost one at a time, the image is gone"
+          , test =
+                \_ ->
+                    Expect.equal [] (images (feed "\u{001B}[2;1H\u{001B}[2K" (feed "\u{001B}[1;1H\u{001B}[2K" (block {}))))
+          }
+        , { name = "ICH, DCH, IL and DL take the cells they move"
+          , test =
+                \_ ->
+                    Expect.equal [ [ "erased 1,0,2,1" ], [ "erased 2,1,1,1" ], [], [ "erased 0,1,3,1" ] ]
+                        [ erased (feed "\u{001B}[1;2H\u{001B}[@" (block {}))
+                        , erased (feed "\u{001B}[2;3H\u{001B}[P" (block {}))
+                        , images (feed "\u{001B}[1;1H\u{001B}[L" (block {}))
+                        , erased (feed "\u{001B}[2;1H\u{001B}[M" (block {}))
+                        ]
+          }
+        , { name = "text beside an image leaves it whole"
+          , test =
+                \_ ->
+                    Expect.equal [ "" ] (erased (feed "\u{001B}[1;5Hab\u{001B}[3;1H\u{001B}[K" (block {})))
+          }
+        , { name = "a Kitty image is left as Ghostty leaves it"
+          , test =
+                \_ ->
+                    Expect.equal [ "" ] (erased (feed "\u{001B}[1;1Hab" (feed ("\u{001B}_Ga=T,f=24,s=30,v=40,q=2;" ++ String.repeat 1200 "AAAA" ++ "\u{001B}\\") (sixel {}))))
+          }
         ]
+
+
+{-| An image of 3 by 2 cells (30 by 36 pixels) at the top left, the cursor
+left on its bottom row. -}
+block : {} -> Vt.Term
+block {} =
+    feed ("\u{001B}Pq\"1;1;30;36#1;2;100;0;0" ++ String.repeat 6 "!30~-" ++ "\u{001B}\\") (sixel {})
+
+
+{-| Each image's lost cells, as the dump prints them, or "" for none. -}
+erased : Vt.Term -> Array String
+erased t =
+    images t
+        |> Array.map
+            (\l ->
+                when String.firstIndexOf " erased " l is
+                    Just at ->
+                        String.dropFirst (at + 1) l
+
+                    Nothing ->
+                        ""
+            )

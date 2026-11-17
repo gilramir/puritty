@@ -551,6 +551,141 @@ not send the new pixels: the resize is sent when the cells change.
 the remote pty says 800 by 480, then 960 by 640 after a resize (68 of 68
 cases pass).
 
+## IM22 · Images in tmux `-CC` panes, measured (2026-11-17)
+
+`bench/tmux/show.py --scenario images`: puritty attached to tmux 3.8 with
+`-CC`, a 64 by 32 PNG (red left, green right) shown in a pane by chafa
+1.18.2 and timg 1.6.3, each left to choose and told each protocol; each
+program's output kept by `pipe-pane` to say what it sent.
+
+- **What they choose.** Left to choose, both send Sixel in the pane (tmux
+  answers their queries, puritty does not). Told Kitty, chafa sends plain
+  Kitty and timg wraps it in tmux's passthrough (`ESC P tmux;` with each
+  ESC inside doubled). Every one drew.
+- **Passthrough needs nothing.** The doubled ESC ends the envelope's DCS,
+  as a terminal's parser ends any string at ESC, and the sequence after it
+  is read as it would be bare; the envelope's last `ESC \` is a stray ST.
+  A Kitty image wrapped by hand drew the same, whatever tmux's
+  `allow-passthrough` says, since a control client gets the pane's bytes
+  before tmux reads them.
+- **Detach and attach: the images are gone.** tmux sends a new client the
+  panes' text, never their output again, so only images drawn after the
+  attach are there. The guide says so.
+- **`clear` in a pane is `CSI H CSI J CSI 3J`** (tmux-256color's), ED 0
+  from the top left, not ED 2: Ghostty's rule takes no Kitty placement
+  for it, so every image stayed under the new prompt. tmux's own rule
+  (3.8's `image_check_line` and `image_check_area`) frees an image when
+  any cell it covers is written or erased, a line inserted or deleted
+  through it, and all of them on RI, a scroll down or a clear. For Sixel
+  and iTerm2's images IM23 answers it; Kitty's in a `-CC` pane are
+  `review.md` RV3.
+- **iTerm2's image alone in a pane** drew in the 20 by 5 cells chafa asked
+  for. chafa sized its TIFF by tmux's cell (16 by 32 pixels: 320 by 160),
+  which puritty scales into the cells.
+
+## IM23 · Text over an image drawn into the cells (2026-11-17)
+
+A Sixel or iTerm2 image is drawn into the cells, as xterm and Windows
+Terminal have it: a cell written or erased loses the image's pixels in
+it. Windows Terminal erases them on a write (`TextBuffer::Replace`), on
+ECH, EL, ED and DECERA (`ImageSlice::EraseCells`), and moves them with
+the cells on ICH, DCH, IL, DL and scrolls (`CopyCells`, `CopyBlock`).
+puritty, since IM19, kept them whole under the text, so a `clear` left
+them on the screen (IM22).
+
+**What it does now.** `Vt.Kitty.overwritten` takes a rectangle of the
+screen's cells, and every image marked `textErases` (Sixel's and
+iTerm2's; never Kitty's, which keep Ghostty's rule) under it records the
+cells as a hole, in its placement's cells from the top left. Called by
+the two fast print paths and `printPoint` (the cells just written), by
+`eraseSpan` (EL, ECH, and the cursor's row of ED), by ED 0 and 1 for the
+other rows, by ICH and DCH (the row from the cursor to the right margin)
+and IL and DL (from the cursor's row to the bottom margin, between the
+margins), and by DECALN. ICH, DCH, IL and DL take the cells they move
+where Windows Terminal moves the pixels with them: a difference left. An
+image whose every row is erased, or with more than 1024 holes, is gone.
+
+The holes stay with the image; it is masked where its pixels leave the
+core (`imageByKey`), each cell's pixels found as its placement draws it,
+at its own size or scaled to its cells, with alpha 0. The image's key
+carries a count of its erasures, so the window receives the new picture
+once a frame while text changes it.
+
+**Cost.** The call sites test `Array.isEmpty` of the placements before
+calling, so a screen with none pays a few loads a run of text: 0.0% to
+0.7% more instructions on twelve of the thirteen throughput inputs at
+first, 1.4% on vte-unicode. Four of its first shapes made the terminal
+copy, which IM24 found and changed; its numbers there are the whole
+day's.
+
+**Checked.** Nine tests in `vt/tests/src/Sixel.geng` (a write, a
+character at a time making one hole, EL and ECH past the row's text, ED
+0 from the top left taking the image, ED 1, rows lost one at a time,
+ICH, DCH, IL and DL, text beside the image, a Kitty image left whole),
+the pixel case `image-sixel-erase` (XY over two cells, EL across the
+second row), and IM22's scenario, where `clear` now leaves no Sixel
+image behind. `image-sixel-basic` was pinned again: its `cd`, written on
+the image's last row of cells, now clears the one row of the image's
+pixels under those two cells.
+
+## IM24 · Scrolling 3.6 times slower since IM14, and what fixed it (2026-11-17)
+
+`harness/perf.py` had not been run since 11-14, and on 11-17 every
+throughput input was over its record: vte-scrolling at 2,611 M
+instructions against 1,417 M, the region inputs at 2.3 times theirs, and
+in cycles scrolling took 3.6 times as long. The 11-14 core (`839d92f`),
+built with today's compiler, gave the record's counts exactly, so the
+cause was puritty's. Building each core commit since: 2bc73b0 (IM12, the
+Kitty store) 1,035.8 M on top_region, as recorded; e30e689 (IM14,
+placements moving with scroll regions) 2,351.9 M.
+
+**What it was.** `perf record` on e30e689's build: 62% of instructions in
+`memmove` and 18% in the collector's `minor_scan`, where 2bc73b0's had
+none. geng-lang's `GENG_INPLACE_REPORT` (`m4-investigate.md`) gave 398
+updates in place before and 66 after. IM14 planned the placements' move
+from the terminal before the scroll (`imagesPlan`) and handed the same
+terminal to `feedRegion`, `regionDown` and `scrollUpRegion`; a function's
+parameter is its own only when every caller hands it over unshared, so
+those took the terminal shared for every caller, and every scroll copied
+the screen's cells, images or none. The same rule found four more today,
+each a result not shown fresh, which spreads to every caller:
+
+| where | what made it copy | now |
+|---|---|---|
+| `Scroll.lineFeed`, `reverseIndex`, `Dispatch` SU and SD (IM14) | the plan read the terminal before the scroll took it | numbers read before (`pushedRows`, the margins), and the placements moved after, from the scrolled terminal (`imagesMoved`, `Placed.scrollMoved`, which plans from the store and the margins and updates the terminal it read) |
+| `Dispatch.xtsmgraphics` (IM19) | a local `answer` closing over the terminal | the text worked out, then one `reply` |
+| `Kitty.overwritten` (IM23) | the fold's step closing over the store, and the terminal returned beside what was read of it | a top-level step (`holedIf`), and one update of the terminal |
+| `Print.printPoint` (IM23) | the test after it, inside the recursion `printPoint`, `edgeWide` | the test in its callers, `printGraphic` and `printDecoded` |
+| `Parse`'s two print paths (IM23) | the cursor read after the update it was passed beside | read into a `let` before |
+
+With those, the report has 434 updates in place, and `memmove` is gone
+from the profile. `feedRegion`, given a second caller for the images'
+path, was no longer inlined into `lineFeed`, which cost the region inputs
+9%; `feedImaged` has its own copy of it (`feedRegionImaged`).
+
+**Where it stands**, against 2bc73b0's build (`--against`, instructions
+and cycles):
+
+| input | instructions | cycles |
+|---|---|---|
+| cup | +1.6% | +0.4% |
+| gitlog | +2.2% | −0.6% |
+| ls | +3.6% | +3.7% |
+| vte-cursor_motion | +1.6% | +0.8% |
+| vte-dense_cells | +0.7% | 0.0% |
+| vte-light_cells | +6.4% | +1.5% |
+| vte-scrolling | +2.3% | −0.2% |
+| the four region inputs | +5.2% | +2.8% to +3.5% |
+| vte-scrolling_fullscreen | +4.7% | +1.7% |
+| vte-unicode | −0.1% | +1.7% |
+
+So the gate still fails at its 1%, by what all of today's image work adds
+to a screen with no image (IM12 to IM23): the parser's Sixel and iTerm2
+states, the tests for placements, the larger store. The record is not
+moved: what is left is to be found as this was, one decision at a time,
+or the record moved with the reason written here. Until then `perf.py`
+says so.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
@@ -573,8 +708,15 @@ until the first protocol works; then it moves to `docs/user/images.md`.
 > not puritty's: a picture shown before you attached, or before you
 > reconnected, does not come back (tmux keeps only the text), and a
 > program asks *tmux* which way to send pictures, so under an older tmux
-> it may send none unless told (`chafa -f sixel`). In plain tmux
-> (without `-CC`), pictures need tmux 3.4 or later built with Sixel.
+> it may send none unless told (`chafa -f sixel`). A program that wraps
+> its picture for tmux (`timg` does) works too, whatever tmux's
+> `allow-passthrough` says. In plain tmux (without `-CC`), pictures need
+> tmux 3.4 or later built with Sixel.
+>
+> **Text over a picture.** Text written over a Sixel or iTerm2 picture
+> takes the picture's place in those cells, and erasing cells (`clear`,
+> deleting a line) erases the picture there too, as in xterm. A Kitty
+> picture stays until the program removes it or the screen is cleared.
 >
 > **Limits.** A remote program can't make puritty open your files: it
 > must send the picture itself. Very large pictures are refused, and

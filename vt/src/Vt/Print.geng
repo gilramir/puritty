@@ -38,6 +38,7 @@ import Vt.Cursor exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Edit exposing (..)
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Modes exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
@@ -94,8 +95,15 @@ printGraphic b t =
             cp =
                 graphic t b
 
+            w =
+                printedWidth cp
+
+            -- the cells written lost by an image drawn into them, tested
+            -- here and not in `printPoint`, whose recursion through
+            -- `edgeWide` a result not shown fresh would spread through
+            -- (`docs/images.md` IM23, IM24)
             r =
-                printPoint cp (printedWidth cp) (unshift t)
+                imagedAfter w (printPoint cp w (unshift t))
         in
         { r | lastPoint = b }
 
@@ -588,7 +596,47 @@ printDecoded cp t =
         t
 
     else
-        printPoint cp (Width.width cp) (unshift t)
+        let
+            w =
+                Width.width cp
+        in
+        imagedAfter w (printPoint cp w (unshift t))
+
+
+{-| The test for placements, so that a character printed with none on the
+screen costs no call (`docs/images.md` IM23). -}
+imagedAfter : Int -> (taken t : Term) -> Term
+imagedAfter w t =
+    -- a mark joins the cell before, and writes none
+    if w == 0 || Array.isEmpty t.images.shown.placements then
+        t
+
+    else
+        imagedCell w t
+
+
+{-| The cell a character of width `w` was just written in, lost by an
+image drawn into the cells (`docs/images.md` IM23). -}
+imagedCell : Int -> (taken t : Term) -> Term
+imagedCell w t =
+    let
+        -- the cells written: left of the cursor, or at the row's end
+        -- when a wrap is pending (`docs/images.md` IM23)
+        wc =
+            if w == 2 then
+                2
+
+            else
+                1
+
+        x1 =
+            if t.wrapNext then
+                t.cols - 1
+
+            else
+                t.x - 1
+    in
+    Kitty.overwritten t.y t.y (x1 - wc + 1) x1 t
 
 
 repeatLast : Int -> (taken t : Term) -> Term
@@ -627,7 +675,9 @@ alignment t0 =
         filled =
             fillRows 0 t.rows (Bitwise.or (Bitwise.and highMask t.pen) 0x45) s
     in
-    withPlain (withScroll { t | screen = filled, top = 0, bottom = t.rows - 1, left = 0, right = t.cols - 1, origin = False, x = 0, y = 0, wrapNext = False })
+    -- every cell written: an image drawn into them is gone (IM23)
+    Kitty.overwritten 0 (t.rows - 1) 0 (t.cols - 1) <|
+        withPlain (withScroll { t | screen = filled, top = 0, bottom = t.rows - 1, left = 0, right = t.cols - 1, origin = False, x = 0, y = 0, wrapNext = False })
 
 
 fillRows : (y : Int where 0 - s.hist <= y) -> (stop : Int where stop <= s.rows) -> Int64 -> (taken s : Screen) -> (r : Screen where r.rows == s.rows && r.cols == s.cols && r.hist == s.hist && r.size == s.size)

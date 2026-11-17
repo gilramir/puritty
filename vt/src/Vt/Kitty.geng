@@ -9,6 +9,7 @@ module Vt.Kitty exposing
     , imageOf
     , itermDispatch
     , itermOsc
+    , overwritten
     , screensSwapped
     , shownPlacements
     , sixelDispatch
@@ -27,6 +28,7 @@ import Bitwise
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Int64
+import UInt8
 import Vt.Base64 as Base64
 import Vt.Cell exposing (byteAt)
 import Vt.Inflate as Inflate
@@ -691,6 +693,9 @@ finishLoad kv data quiet t =
                     , generation = store.generation
                     , transient = Bitwise.and 1 (key 0x4E cmd) /= 0
                     , implicit = implicit
+                    , textErases = False
+                    , erased = []
+                    , erasures = 0
                     }
 
                 counted =
@@ -1097,6 +1102,9 @@ placeShown d how t =
             , generation = store.generation
             , transient = True
             , implicit = True
+            , textErases = True
+            , erased = []
+            , erasures = 0
             }
 
         counted =
@@ -1519,6 +1527,224 @@ deleteById upper id p store =
             kept
 
 
+-- WHAT TEXT DOES TO AN IMAGE DRAWN INTO THE CELLS (IM23)
+
+
+{-| The screen's rows `top` to `bottom` and columns `left` to `right`
+(inclusive) written or erased: an image drawn into the cells (Sixel's,
+iTerm2's) under them loses those cells, as Windows Terminal's and xterm's
+do; one that has lost every row is gone. Kitty's are left as Ghostty
+leaves them. Nothing to do, and nothing read but the placements' count,
+where there are no placements. -}
+overwritten : Int -> Int -> Int -> Int -> (taken t : Term) -> Term
+overwritten top bottom left right t =
+    if Array.isEmpty t.images.shown.placements || bottom < top || right < left then
+        t
+
+    else
+        let
+            im =
+                t.images
+
+            store =
+                im.shown
+
+            geo =
+                geoOf t
+
+            area =
+                { top = geo.top + top, bottom = geo.top + bottom, left = left, right = right }
+        in
+        -- one update of the terminal that was read, and no closure over
+        -- any part of it: either made the result not fresh, and every
+        -- caller copy the screen (IM24)
+        { t | images = { im | shown = Array.foldl (holedIf geo area) store store.placements } }
+
+
+{-| `holed`, for a placement whose image is drawn into the cells. -}
+holedIf : Placed.Geo -> { top : Int, bottom : Int, left : Int, right : Int } -> Placement -> Store -> Store
+holedIf geo area pl store =
+    when Dict.get pl.image store.images is
+        Just image ->
+            if image.textErases then
+                holed geo area pl store
+
+            else
+                store
+
+        Nothing ->
+            meant Reason.NotKnown store
+
+
+{-| `area` (absolute rows) taken from placement `pl`'s image. -}
+holed : Placed.Geo -> { top : Int, bottom : Int, left : Int, right : Int } -> Placement -> Store -> Store
+holed geo area pl store =
+    when { image = Dict.get pl.image store.images, r = rect store pl geo } is
+        { image = Just image, r = Just r } ->
+            let
+                y0 =
+                    max area.top r.top
+
+                y1 =
+                    min area.bottom r.bottom
+
+                x0 =
+                    max area.left r.left
+
+                x1 =
+                    min area.right r.right
+            in
+            if y1 < y0 || x1 < x0 then
+                store
+
+            else
+                let
+                    hole =
+                        { x = x0 - r.left, y = y0 - r.top, w = x1 - x0 + 1, h = y1 - y0 + 1 }
+
+                    erased =
+                        withHole hole image.erased
+
+                    rows =
+                        r.bottom - r.top + 1
+
+                    cols =
+                        r.right - r.left + 1
+
+                    -- a row is gone when a hole spans every column of it
+                    rowGone y =
+                        Array.any (\e -> e.x == 0 && e.w >= cols && e.y <= y && y < e.y + e.h) erased
+                in
+                if Array.length erased > 1024 || Array.all rowGone (Array.range 0 (rows - 1)) then
+                    deleteImage image.id store
+
+                else
+                    { store | images = Dict.set image.id { image | erased = erased, erasures = image.erasures + 1 } store.images }
+
+        _ ->
+            store
+
+
+{-| A hole added to those before: none when one before holds it, the last
+one widened when it continues it along the same rows (text typed over an
+image, a character at a time). -}
+withHole : { x : Int, y : Int, w : Int, h : Int } -> Array { x : Int, y : Int, w : Int, h : Int } -> Array { x : Int, y : Int, w : Int, h : Int }
+withHole hole erased =
+    if Array.any (\e -> e.x <= hole.x && e.y <= hole.y && hole.x + hole.w <= e.x + e.w && hole.y + hole.h <= e.y + e.h) erased then
+        erased
+
+    else
+        when Array.last erased is
+            Just last ->
+                if last.y == hole.y && last.h == hole.h && last.x + last.w == hole.x then
+                    Array.set (Array.length erased - 1) { last | w = last.w + hole.w } erased
+
+                else
+                    Array.pushLast hole erased
+
+            Nothing ->
+                -- the image's first hole
+                meant Reason.NotSet [ hole ]
+
+
+{-| The image as drawn: an image drawn into the cells with its lost cells
+clear (alpha 0), each cell's pixels found as its placement draws it, at
+its own size or scaled to its cells. Any other image as it is. -}
+masked : Placed.Geo -> Store -> Image -> Image
+masked geo store image =
+    if Array.isEmpty image.erased || not image.rgba then
+        image
+
+    else
+        when Array.findFirst (\pl -> pl.image == image.id) store.placements is
+            Nothing ->
+                meant Reason.NotKnown image
+
+            Just found ->
+                let
+                    pl =
+                        found.value
+
+                    grid =
+                        gridSize image pl geo
+
+                    w =
+                        image.width
+
+                    h =
+                        image.height
+
+                    scaled =
+                        pl.cols > 0 && pl.rows > 0
+
+                    -- a cell's first pixel, across and down
+                    edgeX c =
+                        if scaled then
+                            clamp 0 w (c * w // max 1 grid.cols)
+
+                        else
+                            clamp 0 w (c * geo.cw)
+
+                    edgeY c =
+                        if scaled then
+                            clamp 0 h (c * h // max 1 grid.rows)
+
+                        else
+                            clamp 0 h (c * geo.ch)
+
+                    stride =
+                        w * 4
+
+                    zeros =
+                        Bytes.fromUInt8s (Array.repeat stride (UInt8.fromInt 0))
+
+                    -- the pixel spans a row of cells loses, left to right
+                    spans row =
+                        image.erased
+                            |> Array.keepIf (\e -> e.y <= row && row < e.y + e.h)
+                            |> Array.map (\e -> { from = edgeX e.x, to = edgeX (e.x + e.w) })
+                            |> Array.sortBy .from
+
+                    -- one row of pixels: what it keeps, and zeros for the rest
+                    line cut y =
+                        let
+                            start =
+                                y * stride
+
+                            step span acc =
+                                if span.from < acc.at then
+                                    { at = max acc.at span.to, parts = Array.pushLast (Bytes.slice 0 ((max acc.at span.to - acc.at) * 4) zeros) acc.parts }
+
+                                else
+                                    { at = span.to, parts = Array.pushLast (Bytes.slice 0 ((span.to - span.from) * 4) zeros) (Array.pushLast (Bytes.slice (start + acc.at * 4) (start + span.from * 4) image.pixels) acc.parts) }
+
+                            done =
+                                Array.foldl step { at = 0, parts = [] } cut
+                        in
+                        Array.pushLast (Bytes.slice (start + done.at * 4) (start + stride) image.pixels) done.parts
+
+                    -- each row of cells' spans, found once
+                    cuts =
+                        Array.map spans (Array.range 0 (max 0 (grid.rows - 1)))
+
+                    rowOf y =
+                        if scaled then
+                            y * max 1 grid.rows // max 1 h
+
+                        else if geo.ch > 0 then
+                            y // geo.ch
+
+                        else
+                            0
+
+                    pieces =
+                        Array.range 0 (h - 1)
+                            |> Array.map (\y -> line (Maybe.withDefault (meant Reason.OutOfRange []) (Array.get (rowOf y) cuts)) y)
+                            |> Array.flatten
+                in
+                { image | pixels = Bytes.flatten pieces }
+
+
 -- WHAT THE REST OF THE TERMINAL DOES TO THEM (KG7)
 
 
@@ -1605,7 +1831,18 @@ type alias Shown =
 
 keyOf : Int -> Image -> String
 keyOf origin image =
-    String.fromInt origin ++ ":" ++ u32String image.id ++ ":" ++ String.fromInt image.generation
+    String.fromInt origin
+        ++ ":"
+        ++ u32String image.id
+        ++ ":"
+        ++ String.fromInt image.generation
+        -- an image drawn into the cells, each time it loses some (IM23)
+        ++ (if image.erasures > 0 then
+                "." ++ String.fromInt image.erasures
+
+            else
+                ""
+           )
 
 
 {-| The image a shown placement's key names: the terminal's own (origin
@@ -1613,7 +1850,9 @@ keyOf origin image =
 imageByKey : String -> Term -> Maybe Image
 imageByKey wanted t =
     if String.startsWith "0:" wanted then
-        Dict.values t.images.shown.images |> Array.findFirst (\im -> keyOf 0 im == wanted) |> Maybe.map .value
+        Dict.values t.images.shown.images
+            |> Array.findFirst (\im -> keyOf 0 im == wanted)
+            |> Maybe.map (\found -> masked (geoOf t) t.images.shown found.value)
 
     else
         t.images.composed |> Array.findFirst (\c -> c.key == wanted) |> Maybe.map (\c -> c.value.image)
@@ -1770,6 +2009,13 @@ dumpLines t =
                             ++ n pl.offY
                             ++ " z "
                             ++ n pl.z
+                            -- the cells an image drawn into them has lost (IM23)
+                            ++ (if Array.isEmpty image.erased then
+                                    ""
+
+                                else
+                                    " erased " ++ String.join ";" (Array.map (\e -> n e.x ++ "," ++ n e.y ++ "," ++ n e.w ++ "," ++ n e.h) image.erased)
+                               )
                     )
                     (Dict.get pl.image store.images)
             )

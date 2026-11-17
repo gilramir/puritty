@@ -85,8 +85,9 @@ SUITES = [
     # after a zoom; 104 since IM16: the Kitty protocol off at a limit of 0;
     # 118 since SX2: Sixel's decoding, placing, cursor and reports, fourteen;
     # 121 since TB19: a reconnect resets the modes, keeps the screen;
-    # 132 since IT2: iTerm2's images, eleven
-    Suite("vt", 132, runs_of("vt/tests")),
+    # 132 since IT2: iTerm2's images, eleven; 141 since IM23: text and
+    # erases over an image drawn into the cells, nine
+    Suite("vt", 141, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

@@ -6,7 +6,7 @@ module Vt.Placed exposing
     , gridSize
     , pixelSize
     , rect
-    , scrollApply
+    , scrollMoved
     , scrollPlan
     , source
     )
@@ -180,14 +180,11 @@ to the scrollback, so it is anchored again); one in the scrollback is not
 touched, nor, in place, one outside the region's rows. `geo.top` is the
 rows pushed before the scroll. None when the region is the whole screen
 or there are no placements. -}
-scrollPlan : Int -> Bool -> Geo -> Term -> Plan
-scrollPlan delta0 inPlace geo t =
+scrollPlan : Int -> Bool -> Geo -> { top : Int, bottom : Int, left : Int, right : Int, cols : Int, rows : Int } -> Store -> Plan
+scrollPlan delta0 inPlace geo t store =
     let
         delta =
             clamp -1000 1000 delta0
-
-        store =
-            t.images.shown
 
         top =
             t.top
@@ -386,22 +383,29 @@ clipBottom image geo count0 span0 pl =
             Just { pl | x = nx, y = ny, w = nw, h = nh }
 
 
-{-| The plan applied after the scroll, `pushed` the rows pushed then. -}
-scrollApply : Plan -> Int -> (taken t : Term) -> (r : Term where r.rows == t.rows && r.cols == t.cols)
-scrollApply plan pushed0 t =
+{-| A scroll of `delta` rows within the margins done, and the placements
+moved as `scrollPlan` says: `pushed0` the rows pushed into the scrollback
+before it, `now0` after. -}
+scrollMoved : Int -> Bool -> Int -> Int -> (taken t : Term) -> Term
+scrollMoved delta inPlace pushed0 now0 t =
     let
-        pushed =
-            clamp 0 1073751017 pushed0
+        now =
+            clamp 0 1073751017 now0
+
+        im =
+            t.images
+
+        store =
+            im.shown
+
+        -- planned from the store and the margins, read here, so that the
+        -- terminal is updated by the function that read it (IM24)
+        plan =
+            scrollPlan delta inPlace (geoAt pushed0 t) { top = t.top, bottom = t.bottom, left = t.left, right = t.right, cols = t.cols, rows = t.rows } store
     in
     when plan is
         Just placed ->
             let
-                im =
-                    t.images
-
-                store =
-                    im.shown
-
                 moved =
                     Array.map
                         (\p ->
@@ -411,7 +415,7 @@ scrollApply plan pushed0 t =
                                         pl =
                                             p.placement
                                     in
-                                    { pl | row = clamp 0 1073752017 (pushed + clamp -1000 1000 y) }
+                                    { pl | row = clamp 0 1073752017 (now + clamp -1000 1000 y) }
 
                                 Nothing ->
                                     meant Reason.NotSet p.placement

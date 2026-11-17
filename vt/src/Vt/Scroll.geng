@@ -4,8 +4,7 @@ module Vt.Scroll exposing
     , feedRegion
     , freshLine
     , historyBound
-    , imagesApplied
-    , imagesPlan
+    , imagesMoved
     , keepsScrollback
     , lineFeed
     , noteReach
@@ -157,33 +156,45 @@ lineFeed t =
                 feedOther t
 
         else
-            -- the Kitty graphics placements in the region move with it
-            -- (`docs/images.md` IM14)
-            let
-                plan =
-                    imagesPlan -1 (not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == 0))) t
-
-                whole =
-                    isAlt t && wholeRegion t
-
-                fed =
-                    if t.scroll == scrollRegion then
-                        feedRegion t
-
-                    else
-                        feedOther t
-            in
-            if whole then
-                Placed.altScrolled 1 (pushedRows fed) fed
-
-            else
-                imagesApplied plan fed
+            feedImaged t
 
     else if t.y < t.rows - 1 then
         { t | y = t.y + 1 }
 
     else
         t
+
+
+{-| A line feed at the region's bottom with Kitty graphics placements,
+which move with the region (`docs/images.md` IM14). The terminal reaches
+the feed with nothing read of it but numbers, and the placements are moved
+after (`imagesMoved`): a plan made of it first made `feedRegion`'s
+parameter shared for every caller, so every line feed copied the screen,
+images or none (IM24). -}
+feedImaged : (taken t : Term) -> Term
+feedImaged t =
+    let
+        pushed =
+            pushedRows t
+
+        inPlace =
+            not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == 0))
+
+        whole =
+            isAlt t && wholeRegion t
+
+        fed =
+            if t.scroll == scrollRegion then
+                feedRegionImaged t
+
+            else
+                feedOther t
+    in
+    if whole then
+        Placed.altScrolled 1 (pushedRows fed) fed
+
+    else
+        imagesMoved -1 inPlace pushed fed
 
 
 {-| The rows pushed into the scrollback before the screen's top, as
@@ -198,18 +209,34 @@ wholeRegion t =
     t.top == 0 && t.bottom == t.rows - 1 && t.left == 0 && t.right == t.cols - 1
 
 
-{-| What a scroll of `delta` rows within the margins will do to the Kitty
-graphics placements, planned before it (`Vt.Placed.scrollPlan`): `inPlace`
-when the rows that leave do not go to the scrollback. -}
-imagesPlan : Int -> Bool -> Term -> Placed.Plan
-imagesPlan delta inPlace t =
-    Placed.scrollPlan delta inPlace (Placed.geoAt (pushedRows t) t) t
+{-| What a scroll of `delta` rows within the margins did to the Kitty
+graphics placements (`Vt.Placed.scrollPlan`), applied to the scrolled
+terminal: `pushed` the rows pushed into the scrollback before it, and
+`inPlace` when the rows that left did not go there. A scroll changes
+nothing the plan reads but the rows pushed: not the placements, the
+margins, the size or the cell. -}
+imagesMoved : Int -> Bool -> Int -> (taken t : Term) -> Term
+imagesMoved delta inPlace pushed t =
+    if Array.isEmpty t.images.shown.placements then
+        t
+
+    else
+        let
+            now =
+                pushedRows t
+        in
+        Placed.scrollMoved delta inPlace pushed now t
 
 
-{-| The plan applied after the scroll. -}
-imagesApplied : Placed.Plan -> (taken t : Term) -> Term
-imagesApplied plan t =
-    Placed.scrollApply plan (pushedRows t) t
+{-| RI at the region's top with Kitty graphics placements (IM14; a
+function of its own, as `feedImaged` is). -}
+downImaged : (taken t : Term) -> Term
+downImaged t =
+    let
+        pushed =
+            pushedRows t
+    in
+    imagesMoved 1 True pushed (unwrapRegion t.top t.bottom (regionDown 1 t.top t.bottom t))
 
 
 {-| A line feed at the region's bottom that is neither `feedFull`'s nor
@@ -326,6 +353,33 @@ feedRegion t =
         regionUp 1 t.top t.bottom t
 
 
+{-| `feedRegion` again, for `feedImaged`: with a second caller the
+compiler no longer inlined it into `lineFeed`, and a region's line feed
+cost 9% more instructions with no image on the screen (IM24). -}
+feedRegionImaged : (taken t : Term) -> Term
+feedRegionImaged t =
+    if slot t.screen t.top <= slot t.screen t.bottom then
+        let
+            s =
+                t.screen
+        in
+        { t
+            | screen =
+                { s
+                    | turn =
+                        if s.turn + 1 >= s.height then
+                            0
+
+                        else
+                            s.turn + 1
+                }
+                    |> clearRow t.bottom t.erase
+        }
+
+    else
+        regionUp 1 t.top t.bottom t
+
+
 reverseIndex : (taken t : Term) -> Term
 reverseIndex t =
     -- a scroll keeps a pending wrap and a move up clears it, as in
@@ -339,11 +393,11 @@ reverseIndex t =
 
     else if t.y == t.top then
         -- Ghostty's scrollDown, as SD: no row of the region wraps (§VC17)
-        let
-            plan =
-                imagesPlan 1 True t
-        in
-        imagesApplied plan (unwrapRegion t.top t.bottom (regionDown 1 t.top t.bottom t))
+        if Array.isEmpty t.images.shown.placements then
+            unwrapRegion t.top t.bottom (regionDown 1 t.top t.bottom t)
+
+        else
+            downImaged t
 
     else if t.y > 0 then
         { t | y = t.y - 1, wrapNext = False }
