@@ -505,6 +505,19 @@ tmux's text would land under the image. Left as it is: what puritty
 shows is the program's intent, and following tmux's cursor would draw
 text over the image. Gone with tmux master's Kitty parsing (IM1).
 
+## IM19 · Sixel (2026-11-17)
+
+Built as `docs/images-sixel.md` says (SX1 the references, SX2 the
+choices, SX3 what was measured): `Vt.Sixel` decodes in Geng to RGBA, and
+the image goes into the Kitty store as an implicit image with a
+placement under the text, so scrolling, erasing, the alternate screen,
+the limit (0 turns Sixel off too) and the panes of `tmux -CC` take it as
+they take Kitty's. DA1 now says `4`, and chafa and timg choose Sixel in
+puritty with no flag (IM17 needed `-f kitty`). Sixel is the embedder's
+(`sixel` in `Vt.Embedder`, on in the app and its tmux panes), off in
+the oracle's terminal, so the differential fuzzer and the replay corpus
+see the core ignore a Sixel DCS as Ghostty does.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),

@@ -1,0 +1,136 @@
+module Sixel exposing (suite)
+
+{-| Sixel (`docs/images-sixel.md` SX2): the image decoded, where it is
+placed and where the cursor is left, and the reports. No oracle has
+Sixel, so these and the pixel cases hold it; the pixels are checked as
+their Adler-32, as the dump prints it, worked out by hand.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+{-| A terminal of 10 by 5 cells of 10 by 20 pixels, Sixel on. -}
+sixel : {} -> Vt.Term
+sixel {} =
+    Vt.withSixel True (Vt.withCellSize { width = 10, height = 20 } (term 10 5))
+
+
+{-| The dump's image lines, the image's id (an implicit one) left out. -}
+images : Vt.Term -> Array String
+images t =
+    String.split "\n" (Vt.dump t)
+        |> Array.keepIf (\l -> String.startsWith "image " l)
+        |> Array.map (\l -> String.split " " l |> Array.dropFirst 2 |> String.join " ")
+
+
+cursor : Vt.Term -> { x : Int, y : Int }
+cursor t =
+    let
+        c =
+            Vt.cursorOf t
+    in
+    { x = c.x, y = c.y }
+
+
+replies : (taken t : Vt.Term) -> Array String
+replies t =
+    Array.map Support.text (Vt.takeReplies t).replies
+
+
+suite : U.Suite
+suite =
+    Support.run "Sixel"
+        [ { name = "raster attributes set the size, #Pc;2 defines an RGB colour and selects it"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x6 rgba 1241651177 at 0,0 cells 1x1 src 0,0,2,6 off 0,0 z -1" ]
+                        (images (feed "\u{001B}Pq\"1;1;2;6#1;2;100;0;0~~\u{001B}\\" (sixel {})))
+          }
+        , { name = "with no raster, P1 0 makes a bit two pixels tall, in colour 15 before any #"
+          , test =
+                \_ ->
+                    Expect.equal [ "1x12 rgba 3766036645 at 0,0 cells 1x1 src 0,0,1,12 off 0,0 z -1" ]
+                        (images (feed "\u{001B}Pq~\u{001B}\\" (sixel {})))
+          }
+        , { name = "P2 1 leaves the pixels not drawn transparent"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x6 rgba 1404505383 at 0,0 cells 1x1 src 0,0,2,6 off 0,0 z -1" ]
+                        (images (feed "\u{001B}P0;1q\"1;1;2;6#1~\u{001B}\\" (sixel {})))
+          }
+        , { name = "HLS has DEC's hue: 120 red, 240 green, 0 blue"
+          , test =
+                \_ ->
+                    Expect.equal [ "3x6 rgba 193143773 at 0,0 cells 1x1 src 0,0,3,6 off 0,0 z -1" ]
+                        (images (feed "\u{001B}Pq\"1;1#1;1;120;50;100~#2;1;240;50;100~#3;1;0;50;100~\u{001B}\\" (sixel {})))
+          }
+        , { name = "! repeats a sixel"
+          , test =
+                \_ ->
+                    Expect.equal [ "3x6 rgba 493954013 at 0,0 cells 1x1 src 0,0,3,6 off 0,0 z -1" ]
+                        (images (feed "\u{001B}Pq\"1;1#1;2;100;0;0!3~\u{001B}\\" (sixel {})))
+          }
+        , { name = "CAN cuts the string short and what it drew is shown"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x6 rgba 1241651177 at 0,0 cells 1x1 src 0,0,2,6 off 0,0 z -1" ]
+                        (images (feed "\u{001B}Pq\"1;1#1;2;100;0;0~~\u{0018}" (sixel {})))
+          }
+        , { name = "the cursor is left in the start column of the image's bottom row (SX2 9)"
+          , test =
+                \_ ->
+                    Expect.equal { x = 2, y = 3 }
+                        (cursor (feed "\u{001B}[2;3H\u{001B}Pq\"1;1;10;50\u{001B}\\" (sixel {})))
+          }
+        , { name = "with mode 8452 the cursor is left right of the image on its bottom row"
+          , test =
+                \_ ->
+                    Expect.equal { x = 5, y = 3 }
+                        (cursor (feed "\u{001B}[?8452h\u{001B}[2;3H\u{001B}Pq\"1;1;21;50\u{001B}\\" (sixel {})))
+          }
+        , { name = "an image past the bottom scrolls the screen, its top going up with it"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}[5;1H\u{001B}Pq\"1;1;10;30\u{001B}\\" (sixel {})
+                    in
+                    Expect.equal { at = [ "10x30 rgba 0 at 0,3 cells 1x2 src 0,0,10,30 off 0,0 z -1" ], cursor = { x = 0, y = 4 } }
+                        { at = images t |> Array.map (\l -> String.split " " l |> Array.set 2 "0" |> String.join " "), cursor = cursor t }
+          }
+        , { name = "with DECSDM set the image is drawn at the top left and the cursor kept"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}[?80h\u{001B}[3;4H\u{001B}Pq\"1;1;10;30\u{001B}\\" (sixel {})
+                    in
+                    Expect.equal { at = [ "10x30 rgba 0 at 0,0 cells 1x2 src 0,0,10,30 off 0,0 z -1" ], cursor = { x = 3, y = 2 } }
+                        { at = images t |> Array.map (\l -> String.split " " l |> Array.set 2 "0" |> String.join " "), cursor = cursor t }
+          }
+        , { name = "split across reads, a Sixel string gives the image one read gives"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x6 rgba 1241651177 at 0,0 cells 1x1 src 0,0,2,6 off 0,0 z -1" ]
+                        (images (feed "~\u{001B}\\" (feed "\u{001B}Pq\"1;1;2;6#1;2;100;0;0~" (sixel {}))))
+          }
+        , { name = "with Sixel off (the oracle's terminal) a Sixel string draws nothing"
+          , test =
+                \_ ->
+                    Expect.equal [] (images (feed "\u{001B}Pq\"1;1;2;6~~\u{001B}\\" (Vt.withCellSize { width = 10, height = 20 } (term 10 5))))
+          }
+        , { name = "with an image limit of 0 a Sixel string draws nothing (IM16)"
+          , test =
+                \_ ->
+                    Expect.equal [] (images (feed "\u{001B}Pq\"1;1;2;6~~\u{001B}\\" (Vt.withImageLimit 0 (sixel {}))))
+          }
+        , { name = "XTSMGRAPHICS answers the colour registers and the geometry"
+          , test =
+                \_ ->
+                    Expect.equal [ "\u{001B}[?1;0;1024S", "\u{001B}[?2;0;100;100S", "\u{001B}[?2;0;10000;10000S", "\u{001B}[?1;3;0S", "\u{001B}[?3;1;0S" ]
+                        (replies (feed "\u{001B}[?1;1S\u{001B}[?2;1S\u{001B}[?2;4S\u{001B}[?1;3;64S\u{001B}[?3;1S" (sixel {})))
+          }
+        ]

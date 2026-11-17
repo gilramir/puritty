@@ -9,6 +9,7 @@ module Vt.Kitty exposing
     , imageOf
     , screensSwapped
     , shownPlacements
+    , sixelDispatch
     )
 
 {-| The Kitty graphics protocol (`docs/images.md`), as libghostty-vt has it
@@ -31,6 +32,7 @@ import Vt.Placed as Placed exposing (gridSize, pixelSize, rect, source)
 import Vt.Png as Png
 import Vt.Reason as Reason
 import Vt.Scroll exposing (historyBound, lineFeed)
+import Vt.Sixel as Sixel
 import Vt.Term exposing (..)
 
 
@@ -1007,6 +1009,178 @@ indexTimes n t =
 
     else
         indexTimes (n - 1) (lineFeed t)
+
+
+-- SIXEL (`docs/images-sixel.md`)
+
+
+{-| A Sixel string ended (or cut short): its image decoded and placed,
+when images are on (a limit of 0 turns Sixel off too, IM16). -}
+sixelDispatch : (taken t : Term) -> Term
+sixelDispatch t =
+    let
+        im =
+            t.images
+
+        data =
+            Bytes.flatten im.apc
+
+        params =
+            Maybe.withDefault (meant Reason.NotSet [ 0 ]) im.sixel
+
+        off =
+            im.apcOver || im.limit == 0
+
+        reset =
+            { t | images = { im | apc = [], apcLen = 0, apcOver = False, sixel = Nothing } }
+    in
+    if off then
+        reset
+
+    else
+        when Sixel.decode params data is
+            Just d ->
+                placeSixel d reset
+
+            Nothing ->
+                meant Reason.FromOutside reset
+
+
+{-| A decoded Sixel image kept and placed (SX2 8, 9): in the store as an
+implicit, transient image, its placement under the text at the cursor, or
+at the top left with DECSDM (mode 80) set; then, without DECSDM, the
+cursor taken down through the rows the image covers by IND (which
+scrolls), to the start column of its bottom row, or right of the image
+there with mode 8452 set. -}
+placeSixel : Sixel.Decoded -> (taken t : Term) -> Term
+placeSixel d t =
+    let
+        store =
+            t.images.shown
+
+        image =
+            { id = store.implicit
+            , number = 0
+            , width = d.width
+            , height = d.height
+            , rgba = True
+            , pixels = d.pixels
+            , generation = store.generation
+            , transient = True
+            , implicit = True
+            }
+
+        counted =
+            { store | implicit = store.implicit + 1 }
+
+        decsdm =
+            Dict.get 80 t.modes == Just True
+
+        right =
+            Dict.get 8452 t.modes == Just True
+
+        geo =
+            geoOf t
+
+        top =
+            geo.top
+
+        row =
+            if decsdm then
+                top
+
+            else
+                clamp 0 1073752017 (top + clamp 0 999 t.y)
+
+        col =
+            if decsdm then
+                0
+
+            else
+                clamp 0 999 t.x
+    in
+    when addImage t.images.limit image counted is
+        Err _ ->
+            meant Reason.FromOutside withStore counted t
+
+        Ok added ->
+            let
+                placement =
+                    { image = image.id
+                    , id = added.internal
+                    , external = False
+                    , virtual = False
+                    , row = row
+                    , col = col
+                    , x = 0
+                    , y = 0
+                    , w = 0
+                    , h = 0
+                    , offX = 0
+                    , offY = 0
+                    , cols = 0
+                    , rows = 0
+                    , z = -1
+                    }
+
+                placed =
+                    withStore { added | placements = Array.pushLast placement added.placements, internal = added.internal + 1 } t
+            in
+            if decsdm then
+                placed
+
+            else
+                let
+                    ch =
+                        geo.ch
+
+                    cw =
+                        geo.cw
+
+                    rowsCovered =
+                        clamp 1
+                            10000
+                            (if ch > 0 then
+                                (clamp 0 10000 d.height + ch - 1) // ch
+
+                             else
+                                1
+                            )
+
+                    colsCovered =
+                        if cw > 0 then
+                            (clamp 0 10000 d.width + cw - 1) // cw
+
+                        else
+                            1
+
+                    lastTop =
+                        clamp 0 10000 ((d.bands - 1) * 6 * d.aspect)
+
+                    lastRow =
+                        if ch > 0 then
+                            lastTop // ch
+
+                        else
+                            0
+
+                    -- on the image's bottom row, as xterm and foot leave it
+                    -- and chafa and timg expect (they print the newline
+                    -- after it); with 8452, right of the image there (SX2 9)
+                    moved =
+                        indexTimes (rowsCovered - 1) placed
+
+                    y =
+                        row + (rowsCovered - 1) - pushed moved
+
+                    x =
+                        if right then
+                            col + clamp 0 10000 colsCovered
+
+                        else
+                            col
+                in
+                { moved | wrapNext = False, y = clamp 0 (moved.rows - 1) y, x = clamp 0 (moved.cols - 1) x }
 
 
 -- DELETING (KG3)

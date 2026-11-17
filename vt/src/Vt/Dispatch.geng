@@ -149,6 +149,59 @@ decStatus p =
             Nothing
 
 
+{-| XTSMGRAPHICS, `CSI ? Pi ; Pa ; Pv S`, while Sixel is on
+(`docs/images-sixel.md` SX2 10): item 1 the colour registers, 1024 to
+read, reset or read the most, set refused; item 2 the Sixel geometry,
+the window in pixels clamped to 10,000 to read, 10,000 by 10,000 the
+most, reset answered, set refused; any other item a bad item. -}
+xtsmgraphics : Array Int -> (taken t : Term) -> Term
+xtsmgraphics params t =
+    let
+        item =
+            param 0 0 params
+
+        action =
+            param 1 0 params
+
+        answer rest =
+            reply ("\u{001B}[?" ++ String.fromInt item ++ ";" ++ rest ++ "S") t
+
+        width =
+            min 10000 (t.cols * clamp 0 4096 t.config.cellWidth)
+
+        height =
+            min 10000 (t.rows * clamp 0 4096 t.config.cellHeight)
+    in
+    if item == 1 then
+        if action == 1 || action == 2 || action == 4 then
+            answer "0;1024"
+
+        else if action == 3 then
+            answer "3;0"
+
+        else
+            answer "2;0"
+
+    else if item == 2 then
+        if action == 1 then
+            answer ("0;" ++ String.fromInt width ++ ";" ++ String.fromInt height)
+
+        else if action == 4 then
+            answer "0;10000;10000"
+
+        else if action == 2 then
+            answer ("0;" ++ String.fromInt width ++ ";" ++ String.fromInt height)
+
+        else if action == 3 then
+            answer "3;0"
+
+        else
+            answer "2;0"
+
+    else
+        answer "1;0"
+
+
 {-| A sequence the terminal does nothing with, said to the diagnostic log
 when it listens for them (DG6). -}
 ignoredCsi : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
@@ -188,6 +241,9 @@ dispatchOther final priv inter params t =
                             )
                         )
             }
+
+        else if final == 0x53 && t.embedder.sixel then
+            xtsmgraphics params t
 
         else if final == 0x6C then
             Array.foldl (\p acc -> setPrivate p False acc) t params

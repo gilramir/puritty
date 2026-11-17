@@ -100,6 +100,9 @@ feed bytes t =
     else if t.ps == psApc then
         apcString bytes n 0 { t | ps = psGround }
 
+    else if t.ps == psSixel then
+        sixelString bytes n 0 { t | ps = psGround }
+
     else
         ignoreString bytes n 0 { t | ps = psGround }
 
@@ -701,8 +704,101 @@ dcsString bytes n i t =
         else if b >= 0x80 && b < 0xA0 && dcsHeader t.str 0 0 then
             c1 bytes n (i + 1) b { t | str = Builder.empty 0 }
 
+        else if b == 0x71 && t.embedder.sixel && sixelHeader t.str 0 then
+            -- `q` after parameters alone: Sixel (`docs/images-sixel.md`)
+            let
+                im =
+                    t.images
+
+                params =
+                    sixelParams (Builder.toArray t.str)
+            in
+            sixelString bytes n (i + 1) { t | str = Builder.empty 0, images = { im | sixel = Just params, apc = [], apcLen = 0, apcOver = False } }
+
         else
             dcsString bytes n (i + 1) (keepByte b t)
+
+
+{-| Whether a DCS kept so far is digits and semicolons alone, controls
+skipped: the header of a Sixel string before its `q`. -}
+sixelHeader : Builder UInt8 -> (i : Int where 0 <= i) -> Bool
+sixelHeader str i =
+    if i >= Builder.length str then
+        True
+
+    else
+        let
+            b =
+                UInt8.toInt (Builder.getProven i str)
+        in
+        if b < 0x20 || (b >= 0x30 && b <= 0x39) || b == 0x3B then
+            sixelHeader str (i + 1)
+
+        else
+            False
+
+
+{-| A Sixel string's parameters, each clamped to 65535, an empty one 0. -}
+sixelParams : Array UInt8 -> Array Int
+sixelParams text =
+    Array.foldl
+        (\u acc ->
+            let
+                b =
+                    UInt8.toInt u
+            in
+            if b == 0x3B then
+                Array.pushLast 0 acc
+
+            else if b >= 0x30 && b <= 0x39 then
+                Array.update (Array.length acc - 1) (\v -> min 65535 (v * 10 + (b - 0x30))) acc
+
+            else
+                acc
+        )
+        [ 0 ]
+        text
+
+
+{-| A Sixel string's data after its `q`: each read's run up to ESC, CAN,
+SUB or a C1 kept as a slice, as `apcString` keeps an APC's, at most
+`Kitty.apcMax` bytes; ESC or ST ends it, CAN, SUB or a C1 cut it short,
+and either way what it drew is shown (`docs/images-sixel.md` SX2). -}
+sixelString : Bytes -> Int -> (i : Int where 0 <= i) -> (taken t : Term) -> Term
+sixelString bytes n i t =
+    let
+        j =
+            apcEnd bytes i n
+
+        im =
+            t.images
+
+        kept =
+            if im.apcOver || j <= i then
+                t
+
+            else if im.apcLen > Kitty.apcMax - (j - i) then
+                { t | images = { im | apcOver = True, apc = [], apcLen = 0 } }
+
+            else
+                { t | images = { im | apc = Array.pushLast (Bytes.slice i j bytes) im.apc, apcLen = im.apcLen + (j - i) } }
+    in
+    if j >= n then
+        { kept | ps = psSixel }
+
+    else
+        let
+            b =
+                byteAt bytes j
+        in
+        if b == 0x1B then
+            escape bytes n (j + 1) (Kitty.sixelDispatch kept)
+
+        else if b == 0x9C || b == 0x18 || b == 0x1A then
+            resume bytes n (j + 1) (Kitty.sixelDispatch kept)
+
+        else
+            c1 bytes n (j + 1) b (Kitty.sixelDispatch kept)
 
 
 {-| A C1 control as an 8-bit byte, outside the ground state and the

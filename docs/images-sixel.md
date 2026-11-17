@@ -76,10 +76,14 @@ Where the references differ, xterm's semantics as WT emulates them:
    take it as they take Kitty's. Under the text (z −1), so text later
    printed over it is seen: WT's rule of erasing the overwritten cells'
    pixels is not followed in this step.
-9. The cursor as VT340 and WT: DECSDM reset scrolls as bands need room
-   and ends in the start column on the row of the last band's top; with
-   `?8452h` right of the image on that row; DECSDM set draws at the top
-   left, clipped, the cursor kept.
+9. The cursor as xterm and foot leave it: DECSDM reset scrolls as the
+   image needs room and ends in the start column of the image's bottom
+   row; with `?8452h` right of the image there; DECSDM set draws at the
+   top left, clipped, the cursor kept. Measured with chafa and timg,
+   which print a newline after the image (SX3): VT340's row of the last
+   band's top put their next line over the image's bottom row when the
+   last band ends inside a cell, and the row after the image left a blank
+   line.
 10. DA1 says `4`; XTSMGRAPHICS answers colours `?1;0;1024S` (read, reset
     and read the most; set as failed) and geometry `?2;0;W;HS` (the
     window clamped to 10000, and 10000 by 10000 for the most).
@@ -89,3 +93,24 @@ Follow-ups noted: `pty-req` and `window-change` send 0 pixels, and the
 local pty's pixel size is not set; chafa and timg ask `CSI 16 t`, which
 the core answers, but a program that reads only `TIOCGWINSZ` would not
 know the cell's pixels.
+
+## SX3 · What was measured (2026-11-17)
+
+- **chafa 1.18.2 and timg 1.6.3, no flags, in puritty:** both chose Sixel
+  (by DA1's `4`) and drew their test picture at the size `CSI 16 t`
+  gave. The cursor rule was settled by them (SX2 9): with VT340's row of
+  the last band's top, both printed their next line over the picture's
+  bottom row; with the row after the picture, a blank line came between;
+  with the picture's bottom row, as xterm and foot leave it, their next
+  line came right under it.
+- **The tests:** fourteen in `vt/tests/src/Sixel.geng` (the colours,
+  P1 and P2, repeats, CAN, the cursor with and without 8452, a scroll,
+  DECSDM, a split read, Sixel off and at a limit of 0, XTSMGRAPHICS),
+  the pixels held as an Adler-32 worked out by hand; and the pixel case
+  `image-sixel-basic` (an RGB, an HLS and a partial band filled with
+  register 0, drawn in two frames and in one).
+- **Not yet seen:** a Sixel image in a `tmux -CC` pane (tmux 3.4+ built
+  with Sixel keeps the image itself and its control mode may not pass it
+  on); text written over an image erasing that cell's pixels (SX2 8);
+  the pixel size in `TIOCGWINSZ` and ssh's `pty-req`.
+
