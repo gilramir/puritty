@@ -494,10 +494,16 @@ show IM1's two findings live: tmux 3.8 takes the APC as the pane's title
 before puritty attached is not there (the first try ran chafa in the
 setup).
 
-**To measure next:** tmux, which does not parse a Kitty APC before
-master, does not move its cursor for it while puritty's pane does, so
-tmux's idea of the pane and puritty's part until the next recapture
-(IM1's question, now for Kitty too).
+**The cursor, measured** (`image-cursor-drift`, real 3.8): after
+`chafa -f kitty --size 30x6 …; echo below`, tmux's pane has `below` on
+its row 3 and the prompt on 4, as if no image were there; puritty's has
+them under the image's six rows, where the program meant them. A switch
+to another window and back changes nothing in puritty, which keeps each
+pane's terminal; the two would show only where puritty draws a pane
+again from tmux's capture (after `%pause`, TM15, and at attach), when
+tmux's text would land under the image. Left as it is: what puritty
+shows is the program's intent, and following tmux's cursor would draw
+text over the image. Gone with tmux master's Kitty parsing (IM1).
 
 ## IM10 · The user guide, drafted
 

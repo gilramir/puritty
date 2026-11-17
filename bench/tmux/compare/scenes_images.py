@@ -14,4 +14,10 @@ SCENES = [
     # wider than its pane: cut at the pane's edge, not drawn over the other
     dict(name="image-cut-at-pane", setup=[("split-window", "-h", "-t", "main:0"), ("select-pane", "-t", "main:0.0"), ("send-keys", "-t", "main:0.0", "clear", "Enter")],
          steps=[("sleep", 1.0), ("type", "python3 " + PIC.replace("test.png", "wide.py") + "\n"), ("sleep", 2.0), ("shot", "cut")]),
+    # tmux does not move its cursor for a Kitty image; puritty's pane does.
+    # Shown, then after a switch to another window and back, when puritty
+    # draws the pane again from what tmux holds (IM18's question)
+    dict(name="image-cursor-drift", setup=[("send-keys", "-t", "main:0", "clear", "Enter"), ("new-window", "-d", "-t", "main:1")],
+         steps=[("sleep", 1.0), ("type", "chafa -f kitty --size 30x6 " + PIC + "; echo below\n"), ("sleep", 2.0), ("shot", "shown"),
+                ("cli", "select-window", "-t", "main:1"), ("sleep", 1.0), ("cli", "select-window", "-t", "main:0"), ("sleep", 1.5), ("shot", "back")]),
 ]
