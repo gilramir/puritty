@@ -214,6 +214,41 @@ Test programs: chafa 1.18 (all three protocols) is in nixpkgs; img2sixel
 - **Direct transmission only** for now, a local shell too: no temporary
   files or shared memory (IM5).
 
+## IM11 · How a placement keeps to its text: the design
+
+A placement must move with its rows: on scroll, into the scrollback and
+back on screen, through a scroll region's moves (IL, DL, DECSTBM), and on a
+resize's reflow; and go when its rows are erased or leave the scrollback.
+Two ways, read in the core (2026-11-17):
+
+- **(a) A mark in the row.** Each row's meta slot (`Vt.Cell`: extent bits
+  0–15, wrapped 16, prompt 17–18) has room above bit 19 on the screen, so
+  a row could carry an anchor id the way it carries OSC 133's prompt mark,
+  and every operation that moves rows would move it for free, as
+  Ghostty's tracked pins do. But a row leaving the screen is packed into
+  a page whose row header is 16 bits (`Vt.Pages`: extent 0–9, prompt
+  10–11, unstyled 14, wrapped 15; 12–13 unused), so the anchor would need
+  the page format to grow, and every reader of it (unpack, recut, dump,
+  reflow) to carry it.
+- **(b) Absolute rows.** The core numbers rows absolutely already
+  (`Vt.rowsPushed`, `Point`), which selection and search use: a row keeps
+  its number while the screen scrolls and while it sits in the scrollback.
+  Placements in a table keyed by absolute row need nothing from the pages.
+  What (a) gets free, (b) does by hand: a scroll inside a region (IL, DL,
+  SU and SD under DECSTBM, DECSLRM's columns) moves or drops the placements
+  in it; an erase (ED, EL over the anchor, DECSTBM's region cleared) drops
+  them; a reflow maps each anchor through the reflow's row map, as it
+  must for the cursor; a row dropped off the scrollback's end drops them.
+
+**Chosen: (b).** It leaves the page format and the scrollback's code as
+they are, and each by-hand case is one place in the core (the scroll and
+erase primitives, the reflow's map), each with a replay case. Placements
+are per screen (primary and alternate each their own, as Ghostty's), and
+the images they show are shared by both and by every placement, counted
+for the memory limit once. If (b)'s cases prove many, (a) stays open: the
+page header's bits 12–13 could flag rows with anchors and a side table
+keyed by page carry them.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
