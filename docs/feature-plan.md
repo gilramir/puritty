@@ -335,6 +335,17 @@ decide later.
   folder pasted with bracketed paste (`paste-buffer -p`): the prompt read
   `[Image #1]`.
 
+**Where it already works: a session with an X display that holds the
+clipboard.** Measured 2026-11-17 in an ETX desktop: a partial screenshot
+taken on Windows (Flameshot) pasted into Claude Code reached it in
+xfce4-terminal, Terminator and puritty, each with Claude Code run directly
+and inside tmux. ETX copies the Windows clipboard, images too, into its X
+server, which `DISPLAY` names, so Claude Code's own `xclip` finds
+`image/png` there; the terminal carries no image. The same should hold for
+`ssh -X` to an X server that does so (not measured). What follows is for a
+session with no such display: puritty's own ssh from Windows, or a plain
+ssh.
+
 **The design that follows**, when the paste key finds an image and no
 text on the clipboard:
 
