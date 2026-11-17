@@ -10,9 +10,16 @@ particular distribution releases to come. Before it, the Windows previews
 (preview-2026-11-11 to -12c) were built with `app/release-windows.sh` and
 zipped by hand.
 
-    scripts/prerelease.sh TAG [TARGET...]
+    scripts/prerelease.sh [--sign] TAG [TARGET...]
 
 from puritty's devbox, with a clean working tree:
+
+- **`--sign`** signs puritty.exe before it is zipped, with Gilbert's
+  certificate (`scripts/sign-windows.sh`, `windows.md` WS28: SimplySign
+  Desktop logged in on beelink1); the README and notes then say so.
+  Gilbert, 2026-11-17: optional, since a quick build to try may be made
+  when he is not at his desktop; public releases are signed. A release
+  (a version tag) built without it is warned about at the end.
 
 - **Targets**: `windows-x64`, and `NAME-x64` for each folder of
   `app/distro` (`rhel8-x64`); all of them when none is named.

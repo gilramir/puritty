@@ -1069,8 +1069,15 @@ chosen. `signtool verify /pa` verifies it, chained to Certum Code Signing
 2021 CA and timestamped by Certum Timestamp 2026, and
 `Get-AuthenticodeSignature` says Valid. Tried on that day's cross-built
 puritty.exe. Still open: whether `osslsigncode` can sign here through
-Certum's Linux client (not needed while beelink1 can), and the release
-script's step. Every login needs Gilbert's phone, so a release is signed
+Certum's Linux client (not needed while beelink1 can).
+
+**In the release (2026-11-17).** `scripts/sign-windows.sh FILE` copies an
+exe to beelink1, signs and verifies it there as above, and copies it back
+over the file (refusing one that did not grow, and saying to log in to
+SimplySign when signing fails); `scripts/prerelease.sh --sign` runs it on
+puritty.exe before the zip (`releasing.md` RL1). Tried on that day's exe:
+7,642,012 bytes, 7,652,336 signed; `osslsigncode verify` here sees the
+signer and Certum's timestamp too. Every login needs Gilbert's phone, so a release is signed
 while he is there.
 
 ## WS29 · A profile-guided puritty.exe (2026-11-11)

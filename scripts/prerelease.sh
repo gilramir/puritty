@@ -2,9 +2,15 @@
 # Builds a pre-release of puritty from the commit checked out, every target
 # into dist/TAG/, ready for a draft GitHub release (docs/releasing.md):
 #
-#   scripts/prerelease.sh TAG [TARGET...]
+#   scripts/prerelease.sh [--sign] TAG [TARGET...]
 #   scripts/prerelease.sh preview-2026-11-13 windows-x64 rhel8-x64
-#   scripts/prerelease.sh 0.1.0
+#   scripts/prerelease.sh --sign 0.1.0
+#
+# --sign signs puritty.exe with Gilbert's certificate before it is zipped
+# (scripts/sign-windows.sh: SimplySign Desktop logged in on beelink1,
+# docs/windows.md WS28). Without it the exe is not signed, for a quick
+# build to try; a release (a version tag) built so is warned about at the
+# end.
 #
 # A tag that is a version (0.1.0) makes a release: the .deb's version is the
 # tag, and the notes and the gh command say release, not preview (RL9). Any
@@ -34,7 +40,12 @@
 # printed at the end, for whoever decides to run it. Run from puritty's
 # devbox (node, nix, the Windows toolchain); podman for the Linux targets.
 set -e
-tag=${1:?usage: scripts/prerelease.sh TAG [TARGET...]}
+sign=
+if [ "$1" = --sign ]; then
+    sign=yes
+    shift
+fi
+tag=${1:?usage: scripts/prerelease.sh [--sign] TAG [TARGET...]}
 shift
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -102,8 +113,15 @@ for t in $targets; do
         echo "== $t"
         app/build-windows.sh "$profile"
         cp app/puritty.exe "$stage/puritty.exe"
-        readme "$t" "Run puritty.exe. It is not signed yet: Windows may say \"Windows protected
+        if [ -n "$sign" ]; then
+            scripts/sign-windows.sh "$stage/puritty.exe"
+            readme "$t" "Run puritty.exe. It is signed by \"Open Source Developer Gilbert Ramirez\".
+A new publisher's program may still meet Windows' SmartScreen the first
+time; choose More info, then Run anyway." | sed 's/$/\r/' >"$stage/README.txt"
+        else
+            readme "$t" "Run puritty.exe. It is not signed: Windows may say \"Windows protected
 your PC\" the first time; choose More info, then Run anyway." | sed 's/$/\r/' >"$stage/README.txt"
+        fi
         (cd "$out/stage/$name" && python3 -c '
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
@@ -165,7 +183,13 @@ rm -rf "$out/stage"
     echo
     for t in $targets; do
         case $t in
-        windows-x64) echo "- **Windows**: \`puritty-$tag-$t.zip\`. Unzip it and run \`puritty.exe\`. Not signed yet: if Windows says \"Windows protected your PC\", choose *More info*, then *Run anyway*." ;;
+        windows-x64)
+            if [ -n "$sign" ]; then
+                echo "- **Windows**: \`puritty-$tag-$t.zip\`. Unzip it and run \`puritty.exe\`, signed by Open Source Developer Gilbert Ramirez. If SmartScreen still warns, choose *More info*, then *Run anyway*."
+            else
+                echo "- **Windows**: \`puritty-$tag-$t.zip\`. Unzip it and run \`puritty.exe\`. Not signed: if Windows says \"Windows protected your PC\", choose *More info*, then *Run anyway*."
+            fi
+            ;;
         rhel8-x64) echo "- **Linux, any x86-64** (built on RHEL 8): \`puritty-$tag-linux-rhel8-x64.tar.gz\`. Unpack it and run \`./puritty\`." ;;
         noble-x64) echo "- **Ubuntu 24.04 and Linux Mint 22**: \`puritty-$tag-ubuntu24.04-x64.tar.gz\`, or the \`.deb\`: \`sudo apt install ./puritty_*_ubuntu24.04_amd64.deb\`." ;;
         debian13-x64) echo "- **Debian 13**: \`puritty-$tag-$t.tar.gz\`, or the \`.deb\`: \`sudo apt install ./puritty_*_debian13_amd64.deb\`." ;;
@@ -191,3 +215,12 @@ echo
 echo "Write what is new into $out/notes.md, then, when the upload is wanted:"
 echo "  gh release create $tag --draft $(if [ -z "$release" ]; then echo "--prerelease "; fi)--target $full \\"
 echo "    --title \"puritty $tag\" --notes-file $out/notes.md $out/*.zip $out/*.tar.gz $out/*.deb $out/SHA256SUMS"
+case " $targets " in
+*" windows-x64 "*)
+    if [ -n "$release" ] && [ -z "$sign" ]; then
+        echo
+        echo "WARNING: $tag is a release and its puritty.exe is not signed. Build it again with --sign"
+        echo "(SimplySign Desktop logged in on beelink1) before it is published."
+    fi
+    ;;
+esac
