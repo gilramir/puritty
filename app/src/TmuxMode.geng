@@ -370,6 +370,10 @@ type alias Copying =
     , count : Int
     , partial : Bool
     , timedOut : Bool
+    -- when the view's top line was written, as tmux writes it (`t/p`:
+    -- `21:03`, `Mon16`), from 3.6; empty before, or for a line with no
+    -- time (TM103)
+    , lineTime : String
     , search : String
     }
 
@@ -673,7 +677,7 @@ type Expect
     | ForRan
     | ForCondition { pane : Int, mouse : Maybe { col : Int, row : Int }, yes : String, no : String, after : String }
     | ForNumbers
-    | ForCopy
+    | ForCopy Int
     | ForTreeSessions
     | ForTreeWindows
     | ForTreePanes
@@ -1069,7 +1073,7 @@ describe next e =
 
                             -- the search string is what was typed: only its
                             -- length (docs/diagnostics.md)
-                            Just ForCopy ->
+                            Just (ForCopy _) ->
                                 Array.takeFirst 3 r.lines |> Array.map withoutSearch
 
                             Just ForPanesTime ->
@@ -1099,13 +1103,13 @@ withoutSearch line =
             String.split " " (Bytes.toStringLossy line)
 
         search =
-            String.join " " (Array.dropFirst 16 words)
+            String.join " " (Array.dropFirst 17 words)
     in
-    if Array.length words <= 16 then
+    if Array.length words <= 17 then
         line
 
     else
-        Bytes.fromString (String.join " " (Array.takeFirst 16 words) ++ " <" ++ String.fromInt (String.count search) ++ " chars>")
+        Bytes.fromString (String.join " " (Array.takeFirst 17 words) ++ " <" ++ String.fromInt (String.count search) ++ " chars>")
 
 
 noticeLine : Notice -> String
@@ -1256,7 +1260,7 @@ expectName x =
         ForNumbers ->
             "the panes' numbers"
 
-        ForCopy ->
+        ForCopy _ ->
             "copy mode's state"
 
         ForTreeSessions ->
@@ -3511,10 +3515,20 @@ replied expect ok lines acc =
             in
             { acc | state = { st | dayAt = Maybe.map (\day -> { clock = st.clock, ms = day * 1000 }) seconds } }
 
-        ForCopy ->
+        ForCopy asked ->
             let
+                -- a pane that closed in copy mode, which tmux says nothing
+                -- of, answers with every field empty: forgotten, so it is
+                -- not asked about again with each modes answer (TM103)
+                gone =
+                    (Array.first lines |> Maybe.map (\l -> String.split " " (Bytes.toStringLossy l)) |> Maybe.andThen (Array.get 1)) == Just ""
+
                 st =
-                    acc.state
+                    if gone then
+                        forgetPane asked acc.state
+
+                    else
+                        acc.state
 
                 again =
                     Dict.foldl
@@ -4623,32 +4637,57 @@ paint s =
                                 |> Maybe.map
                                     (\c ->
                                         let
-                                            -- and the search's count, as
-                                            -- copy-mode-position-format's
-                                            -- default says it (TM41)
+                                            position =
+                                                "[" ++ String.fromInt c.scroll ++ "/" ++ String.fromInt c.hsize ++ "]"
+
+                                            -- the search's count, or that it
+                                            -- timed out (TM41)
+                                            said =
+                                                if c.timedOut then
+                                                    "(timed out)"
+
+                                                else if c.count > 0 then
+                                                    "("
+                                                        ++ String.fromInt c.count
+                                                        ++ (if c.partial then
+                                                                "+"
+
+                                                            else
+                                                                ""
+                                                           )
+                                                        ++ " results)"
+
+                                                else
+                                                    ""
+
+                                            -- from 3.6 as copy-mode-position-format's
+                                            -- default says it, the top line's
+                                            -- time first and the search's
+                                            -- count after (TM41, TM103);
+                                            -- before, tmux writes the count
+                                            -- first (`window_copy_write_line`;
+                                            -- only 3.5 tells it)
                                             text =
-                                                "["
-                                                    ++ String.fromInt c.scroll
-                                                    ++ "/"
-                                                    ++ String.fromInt c.hsize
-                                                    ++ "]"
-                                                    ++ (if c.timedOut then
-                                                            " (timed out)"
+                                                if s.version == 0 || s.version >= 36 then
+                                                    (if c.lineTime == "" then
+                                                        ""
 
-                                                        else if c.count > 0 then
-                                                            " ("
-                                                                ++ String.fromInt c.count
-                                                                ++ (if c.partial then
-                                                                        "+"
+                                                     else
+                                                        c.lineTime ++ " "
+                                                    )
+                                                        ++ position
+                                                        ++ (if said == "" then
+                                                                ""
 
-                                                                    else
-                                                                        ""
-                                                                   )
-                                                                ++ " results)"
+                                                            else
+                                                                " " ++ said
+                                                           )
 
-                                                        else
-                                                            ""
-                                                       )
+                                                else if said == "" then
+                                                    position
+
+                                                else
+                                                    said ++ " " ++ position
                                         in
                                         { row = p.y
                                         , col = p.x + max 0 (p.w - String.count text)
@@ -7208,7 +7247,7 @@ spans : Layout.Pane -> State -> Array { row : Int, from : Int, to : Int }
 spans q s =
     when Dict.get q.id s.copy |> Maybe.andThen .selection is
         Just sel ->
-            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, located = False, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, search = "" } (Dict.get q.id s.copy)) sel
+            copySpans q (Maybe.withDefault { scroll = 0, hsize = 0, located = False, cx = 0, cy = 0, selection = Nothing, rectangle = False, marked = False, count = 0, partial = False, timedOut = False, lineTime = "", search = "" } (Dict.get q.id s.copy)) sel
 
         Nothing ->
             meant Reason.NotOpen ownSpans q s
@@ -15776,10 +15815,16 @@ modeOverlay colors tmuxLook isActive mode time p =
 
 {-| What puritty asks of a pane in copy mode, one line: `C %pane` then
 `scroll_position`, `history_size`, the cursor, whether there is a
-selection and its ends, and `rectangle_toggle`. -}
-copyFormat : String
-copyFormat =
-    "C #{pane_id} #{scroll_position} #{history_size} #{copy_cursor_x} #{copy_cursor_y} #{selection_present} #{selection_start_x} #{selection_start_y} #{selection_end_x} #{selection_end_y} #{rectangle_toggle} #{search_present} #{search_count} #{search_count_partial} #{search_timed_out} #{pane_search_string}"
+selection and its ends, `rectangle_toggle`, the search's state, the top
+line's time (from 3.6, `top_line_time`; an empty word before, TM103) and
+the search string. -}
+copyFormat : Int -> String
+copyFormat version =
+    if version == 0 || version >= 36 then
+        "C #{pane_id} #{scroll_position} #{history_size} #{copy_cursor_x} #{copy_cursor_y} #{selection_present} #{selection_start_x} #{selection_start_y} #{selection_end_x} #{selection_end_y} #{rectangle_toggle} #{search_present} #{search_count} #{search_count_partial} #{search_timed_out} #{t/p:top_line_time} #{pane_search_string}"
+
+    else
+        "C #{pane_id} #{scroll_position} #{history_size} #{copy_cursor_x} #{copy_cursor_y} #{selection_present} #{selection_start_x} #{selection_start_y} #{selection_end_x} #{selection_end_y} #{rectangle_toggle} #{search_present} #{search_count} #{search_count_partial} #{search_timed_out}  #{pane_search_string}"
 
 
 inCopy : Int -> State -> Bool
@@ -15801,7 +15846,7 @@ askCopy pane acc =
         { acc | state = { st | copyAsked = Dict.set pane True st.copyAsked } }
 
     else
-        ask [ { command = Command.displayAt (paneName pane) copyFormat, expect = ForCopy } ] { acc | state = { st | copyAsked = Dict.set pane False st.copyAsked } }
+        ask [ { command = Command.displayAt (paneName pane) (copyFormat st.version), expect = ForCopy pane } ] { acc | state = { st | copyAsked = Dict.set pane False st.copyAsked } }
 
 
 {-| A search's matches in the panes in copy mode, where they show, as
@@ -15854,6 +15899,18 @@ searchMarks panes s =
         panes
 
 
+{-| A pane that is gone, out of every map kept by pane (TM103). -}
+forgetPane : Int -> (taken s : State) -> State
+forgetPane pane s =
+    { s
+        | copy = Dict.remove pane s.copy
+        , copyAsked = Dict.remove pane s.copyAsked
+        , back = Dict.remove pane s.back
+        , modes = Dict.remove pane s.modes
+        , paneModes = Dict.remove pane s.paneModes
+    }
+
+
 {-| An answer to `copyFormat`: the pane's copy mode kept, and its view
 scrolled back as far as tmux's, as far as puritty's own history goes. -}
 copyLine : Bytes -> (taken s : State) -> State
@@ -15903,7 +15960,8 @@ copyLine bytes s =
                         , count = num 13
                         , partial = num 14 == 1
                         , timedOut = num 15 == 1
-                        , search = String.join " " (Array.dropFirst 16 words)
+                        , lineTime = Maybe.withDefault (meant Reason.FromOutside "") (Array.get 16 words)
+                        , search = String.join " " (Array.dropFirst 17 words)
                         }
 
                     most =

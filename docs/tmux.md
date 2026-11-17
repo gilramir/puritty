@@ -4084,12 +4084,45 @@ serial. The prompt's answers check that a prompt is open. The window's
 own scroll, search and selection belong to the terminal under tmux,
 which control mode does not change.
 
-**Left:**
+**Left, then done in TM103:** a pane closed in copy mode kept and asked
+about again; copy mode's label without the top line's time.
 
-- The per-pane maps (`modes`, `paneModes`, `copy`, `back`, `info`) keep a
-  pane that closed; tmux never gives its id again, so it is a small leak,
-  and a pane killed in copy mode may be asked about again with each
-  modes answer. Not measured.
-- Since 3.6 tmux's copy mode position shows the top line's time
-  (`copy-mode-position-format`, `#{t/p:top_line_time}`), `21:03 [27/34]`;
-  puritty shows `[27/34]` only. Older than TM101, seen in the scene above.
+## TM103 · A pane closed in copy mode; the top line's time (2026-11-16)
+
+TM102's two remaining items.
+
+**A pane closed in copy mode.** tmux says nothing when a pane in copy
+mode is killed (no `%pane-mode-changed`), so puritty kept it as in copy
+mode, and each time another pane's mode changed it asked copy mode's
+state of the dead pane again (`ForModes` asks it of every pane it has in
+copy mode). tmux answers `ok` with every field empty. Measured with
+`bench/tmux/compare/scenes_deadpane.py` and the diagnostic log, on real
+3.8: a pane put in copy mode and killed, then `prefix [`, `q` twice in
+the other: 3 questions about the dead pane before, 1 after. The copy
+state's question now carries its pane (`ForCopy pane`), and an answer
+with no pane id forgets that pane in every map kept by pane
+(`forgetPane`: `copy`, `copyAsked`, `back`, `modes`, `paneModes`). A
+closed pane not in copy mode still keeps its small entries in `modes`
+and `paneModes` (tmux never gives its id again); nothing asks about it.
+
+**The top line's time.** tmux's copy mode label, read in every release:
+
+| | label |
+|---|---|
+| 2.7–3.3 | `[3/14]`; a search's count first: `(15 results) [3/14]` |
+| 3.4–3.5 | the top line's time, with seconds, first: `(15 results) 21:39:52 [3/14]` |
+| 3.6 on | `copy-mode-position-format`: `21:39 [3/14] (15 results)` |
+
+From 3.6 the time is `#{t/p:top_line_time}` (empty for a line with no
+time) and puritty now asks it with copy mode's state, a word before the
+search string, and draws it first. Before 3.6 tmux has no
+`top_line_time` (nor `search_count` before 3.5), so 3.4 and 3.5's time
+and 3.4's count are not puritty's to show; 3.5's count is now drawn
+first, as 3.5 does.
+
+**Checked:** the app tests (390) with the recordings made again, which
+give `12:00` for the fixed time 1700000000 (`timed` in the tests: 3.6a
+and 3.8 show it, the others not). Side by side on real tmux
+(`scenes_session.py`): 3.8 `21:39 [27/34]` in both; a search's label on
+3.8 `[0/14] (15 results)` and 3.5a `(15 results) [0/14]` in both; 3.4
+`(15 results) [0/14]` in tmux and `[0/14]` in puritty, as above.

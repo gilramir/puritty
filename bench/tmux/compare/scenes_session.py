@@ -15,3 +15,9 @@ SCENES = [
          steps=[("keys", P, ":"), ("type", "switch-client -t other"), ("keys", "Enter"), ("sleep", 1.0),
                 ("q", MODE), ("shot", "switched"), ("keys", "q"), ("sleep", 0.8), ("q", MODE), ("shot", "after-q")]),
 ]
+
+# copy mode's label with a search's count (TM103): from 3.6 the top
+# line's time, the position, then the count; 3.5 the count first
+SCENES.append(dict(name="session-search", conf="set -g mode-keys vi\n", setup=FILL,
+                   steps=[("keys", P, "["), ("sleep", 0.5), ("keys", "?"), ("sleep", 0.3), ("type", "1"), ("keys", "Enter"),
+                          ("sleep", 1.0), ("shot", "searched")]))
