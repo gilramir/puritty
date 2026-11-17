@@ -39,6 +39,7 @@ import Vt.Cell exposing (..)
 import Vt.Cursor exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Prompt exposing (..)
@@ -501,10 +502,25 @@ what was above a prompt cleared with ^L (#905, §VC22). -}
 eraseDisplay : Bool -> Int -> (taken t : Term) -> Term
 eraseDisplay selective how t =
     if how == 2 && not t.alt && atPrompt (t.rows - 1) t.screen then
-        erasePlain selective 2 (scrollClear t)
+        imagesErased how (erasePlain selective 2 (scrollClear t))
 
     else
-        erasePlain selective how t
+        imagesErased how (erasePlain selective how t)
+
+
+{-| What ED does to the Kitty graphics placements (`docs/images-kitty.md`
+KG7): 2 and 22 take those on the screen and the images left unshown, 3
+those in the scrollback. -}
+imagesErased : Int -> (taken t : Term) -> Term
+imagesErased how t =
+    if how == 2 || how == 22 then
+        Kitty.cleared t
+
+    else if how == 3 then
+        Kitty.clearedHistory t
+
+    else
+        t
 
 
 {-| From row `y` up, the first row with a prompt mark or text: a mark. -}

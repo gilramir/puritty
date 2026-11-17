@@ -41,6 +41,7 @@ import Vt.Cursor exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Edit exposing (..)
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Prompt exposing (..)
@@ -116,6 +117,7 @@ fresh config =
     , mouseTracking = 0
     , mouseFormat = 0
     , osc52 = noOsc52
+    , images = noImages
     , sets = 0
     , gl = 0
     , single = -1
@@ -492,7 +494,7 @@ toAlt : Bool -> (taken t : Term) -> Term
 toAlt clear t =
     if isAlt t then
         if clear then
-            { t | screen = clearAlt t.protectMode t.rows t.erase t.screen }
+            Kitty.cleared { t | screen = clearAlt t.protectMode t.rows t.erase t.screen }
 
         else
             t
@@ -504,8 +506,17 @@ toAlt clear t =
 
             alt =
                 altScreen clear t.cols t.rows t.otherProtect t.otherErase t.other
+
+            -- each screen its own Kitty images, the alternate's cleared
+            -- with its text (`docs/images-kitty.md` KG7)
+            swapped =
+                Kitty.screensSwapped (withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape })
         in
-        withScroll { t | other = Just main, screen = alt, alt = True, hidden = { x = t.x, y = t.y, wrap = t.wrapNext }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape }
+        if clear then
+            Kitty.cleared swapped
+
+        else
+            swapped
 
 
 {-| The alternate screen cleared, as Ghostty's ED 2: its protected cells
@@ -570,7 +581,7 @@ toMain clear t =
                     -- cleared, the alternate screen is erased as ED 2 does,
                     -- which ends a pending wrap before the cursor is carried
                     -- over, as in Ghostty (§VC17)
-                    withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape, wrapNext = t.wrapNext && not clear }
+                    Kitty.screensSwapped (withScroll { t | other = Just alt, screen = main, alt = False, hidden = { x = t.x, y = t.y, wrap = t.wrapNext && not clear }, keys = t.otherKeys, otherKeys = t.keys, protectMode = t.otherProtect, otherProtect = t.protectMode, otherErase = t.erase, otherPrompt = t.prompt, otherShape = t.cursorShape, wrapNext = t.wrapNext && not clear })
 
             Nothing ->
                 t
@@ -675,7 +686,7 @@ reset t =
         back =
             blank.back
     in
-    withScroll { blank | replies = replies, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped } }
+    withScroll { blank | replies = replies, colors = Dict.keepIf (\k _ -> k > 255) t.colors, named = t.named, embedder = t.embedder, back = { back | peak = peak, dropped = dropped }, images = { noImages | limit = t.images.limit } }
 
 
 {-| DECSTR. Like RIS, it brings back the checksum XTCHECKSUM changed (V14)

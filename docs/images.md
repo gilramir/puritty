@@ -249,6 +249,79 @@ for the memory limit once. If (b)'s cases prove many, (a) stays open: the
 page header's bits 12–13 could flag rows with anchors and a side table
 keyed by page carry them.
 
+## IM12 · Checkpoint A: Kitty's images and placements in the core (2026-11-17)
+
+`Vt.Kitty` (the protocol, `images-kitty.md`), the `images` field of
+`Vt.Term` (one field, as `osc52`: each screen's store, the APC being read
+and the limit), the parser's APC state (`psApc`, `apcString`: slices of
+each read as OSC 52's, at most 65 MiB, ESC or ST ends it, CAN, SUB or a C1
+abort it), and the hooks: ED 2 and 22 take the placements on the screen
+and the images left unshown, ED 3 those in the scrollback, the alternate
+screen's switch swaps the stores (clearing the alternate's with its
+text), RIS empties them. Placements are anchored to absolute rows (IM11).
+
+**Held to the oracle.** `harness/oracle/gdump.c` gives Ghostty the core's
+cell size (10 by 20, by a resize to the same size, which Ghostty needs to
+know it; no existing case changed) and prints the placements as
+`Vt.Kitty.dumpLines` does. Fifteen replay cases (`corpus/replay/kitty-*`):
+transmit and place, a=T sized by cells and by pixels with offsets, the
+cursor after (C=0 and C=1, a wrap at the last column, a scroll into the
+scrollback), the error replies and quiet, chunks, each delete (a, i, I,
+p, q, x, y, z, r, R, n, N, c), ED 2 and 3, the alternate screen, image
+numbers, the parser's corners (a key's value skipped, underscores and
+`+`, a trailing comma, an overlong value, a sign, an unknown action or
+compression, a non-`G` APC, bad base64), and a=q. All agree with Ghostty
+on the first run. The differential fuzzer's dictionary has Kitty commands.
+
+**Not yet**, each a known difference from the oracle: relative
+placements (`P`: answered "parent image not found"), animation (`a=f`,
+`a`, `c`: ignored), `o=z` (answered "decompression failed" until wuffs),
+the moves a scroll region and the alternate screen's scroll make (IM8
+step C), base64 with whitespace (the core's decoder is strict). The
+executors' records (IM2) are written but nothing sends them yet
+(checkpoint B).
+
+## IM13 · Checkpoint B: images drawn (2026-11-17)
+
+**The records** (`puritty_text.c`, read by both platforms): 0x0A defines
+an image (id, width, height, 3 or 4 bytes a pixel, the pixels as they
+came; premultiplied there into ARGB and kept as a picture by id), 0x0B
+frees one, 0x0C places one in 30 bytes (the image; the cells covered, the
+first's row signed, since a placement may start above the screen; the
+source rectangle; the offset in the first cell; the size drawn; under or
+over the text). Placements are drawn after the runs' backgrounds and
+before their glyphs (z below 0) or after them, clipped to their cells.
+`pt_picture_draw_part` draws part of a picture scaled: on X11 a RENDER
+transform with the bilinear filter and the composite's rectangle as the
+clip, on Windows the nearest pixel in the C blend. X11 uploads a picture
+in bands within the server's longest request (IM2's risk).
+
+**View** (`Vt.View.frameOn`) keeps in the shadow the placements it drew
+and the images the window holds by generation. Each frame the cells of
+placements that came, went or moved are forgotten before the diff, and a
+placement any of whose cells the frame drew is drawn again with all of
+its cells (up to three passes, as one drawn whole may make another's
+cells drawn), since a picture is composited over its cells and cells
+left as they were would take a translucent one twice. Images are defined
+the first time a drawn placement shows them at their generation, and
+freed once the core no longer has them. The view scrolled back shows the
+placements in it (`Kitty.shownPlacements back`).
+
+**Measured.** Five pixel cases (`corpus/pixels/cases/image-kitty-*`): an
+image between text, scaled to cells, cropped, offset in its cell; a
+translucent one over text with a cell under it changed a frame later; one
+deleted; one scrolled half off. The gate draws each in its frames and at
+once and holds the two equal, which the first build failed (the
+executor's record size was 34, View's 30: the text after a placement was
+lost) and the second passes. In the app under Xvfb a 32-pixel gradient
+placed scaled to 6 by 3 cells and at its own size shows as it should.
+The app's limit is 320 MB (`Vt.withImageLimit`, IM9).
+
+**Not yet:** tmux `-CC` panes (each pane's terminal keeps its images, but
+the canvas puritty draws panes on does not carry them), the Windows
+executor's drawing seen (it compiles; the pixel gate's pins are Linux's),
+and a frame's cost measured with an image (ETX, IM8 step 5).
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),

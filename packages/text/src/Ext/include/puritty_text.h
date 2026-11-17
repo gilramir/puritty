@@ -140,6 +140,12 @@ void *pt_picture_add(const uint32_t *argb, int w, int h);
 void pt_picture_draw(void *picture, int x, int y, int w, int h);
 void pt_picture_free(void *picture);
 
+/* Part of a picture drawn over the target (docs/images.md IM2): the
+ * source rectangle `sx, sy, sw, sh` of it scaled to `dw` by `dh` pixels at
+ * `dx, dy`, and clipped to the rectangle `cx, cy, cw, ch` of the target. */
+void pt_picture_draw_part(void *picture, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int cx, int cy, int cw,
+                          int ch);
+
 /* A new target for a screen of `c` by `r` cells; what it holds is filled
  * after. */
 void pt_target(int c, int r);

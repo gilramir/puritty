@@ -171,6 +171,65 @@ static bool on_size(GhosttyTerminal t, void *u, GhosttySizeReportSize *out) {
 }
 
 
+/* The Kitty graphics placements (docs/images.md IM7), as the core's
+ * Vt.Kitty.dumpLines prints them: each one's image and its size, the cell
+ * it is anchored at (its row from the screen's top, negative in the
+ * scrollback; "-" where Ghostty gives it no rectangle), the cells it
+ * covers, its source rectangle, offsets and z; sorted, since Ghostty's
+ * order is its hash map's. */
+static int by_text(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+static void dump_kitty(FILE *o, size_t history) {
+  GhosttyKittyGraphics g = NULL;
+  if (ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &g) != GHOSTTY_SUCCESS || !g) return;
+  GhosttyKittyGraphicsPlacementIterator it = NULL;
+  if (ghostty_kitty_graphics_placement_iterator_new(NULL, &it) != GHOSTTY_SUCCESS) return;
+  if (ghostty_kitty_graphics_get(g, GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, &it) != GHOSTTY_SUCCESS) {
+    ghostty_kitty_graphics_placement_iterator_free(it);
+    return;
+  }
+  enum { MAX = 4096 };
+  char *lines[MAX];
+  int n = 0;
+  while (n < MAX && ghostty_kitty_graphics_placement_next(it)) {
+    uint32_t id = 0, ox = 0, oy = 0, w = 0, h = 0, sx = 0, sy = 0, sw = 0, sh = 0, gc = 0, gr = 0;
+    bool virt = false;
+    int32_t z = 0;
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID, &id);
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL, &virt);
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET, &ox);
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET, &oy);
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z);
+    GhosttyKittyGraphicsImage img = ghostty_kitty_graphics_image(g, id);
+    if (!img) continue;
+    ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &w);
+    ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &h);
+    ghostty_kitty_graphics_placement_source_rect(it, img, &sx, &sy, &sw, &sh);
+    ghostty_kitty_graphics_placement_grid_size(it, img, term, &gc, &gr);
+    char where[64];
+    GhosttySelection sel;
+    GhosttyPointCoordinate at;
+    if (virt)
+      snprintf(where, sizeof where, "virtual");
+    else if (ghostty_kitty_graphics_placement_rect(it, img, term, &sel) == GHOSTTY_SUCCESS &&
+             ghostty_terminal_point_from_grid_ref(term, &sel.start, GHOSTTY_POINT_TAG_SCREEN, &at) == GHOSTTY_SUCCESS)
+      snprintf(where, sizeof where, "at %u,%lld", (unsigned)at.x, (long long)at.y - (long long)history);
+    else
+      snprintf(where, sizeof where, "at -");
+    char line[256];
+    snprintf(line, sizeof line, "image %u %ux%u %s cells %ux%u src %u,%u,%u,%u off %u,%u z %d", id, w, h, where, gc, gr, sx, sy, sw,
+             sh, ox, oy, z);
+    lines[n++] = strdup(line);
+  }
+  ghostty_kitty_graphics_placement_iterator_free(it);
+  qsort(lines, (size_t)n, sizeof lines[0], by_text);
+  for (int i = 0; i < n; i++) {
+    fprintf(o, "%s\n", lines[i]);
+    free(lines[i]);
+  }
+}
+
+
 static void dump_terminal(FILE *o) {
   uint16_t cx = 0, cy = 0;
   bool pending = false, visible = true;
@@ -202,6 +261,7 @@ static void dump_terminal(FILE *o) {
     snprintf(label, sizeof label, "%u", y);
     dump_row(o, label, GHOSTTY_POINT_TAG_ACTIVE, y);
   }
+  dump_kitty(o, history);
   for (size_t at = 0; at < replies.len;) {
     size_t n;
     memcpy(&n, replies.data + at, sizeof(size_t));
@@ -228,6 +288,10 @@ char *gdump(uint16_t c, uint16_t r, const uint8_t *in, size_t len,
   ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
                        (const void *)on_write_pty);
   ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SIZE, (const void *)on_size);
+  /* the cell's size in pixels, which Kitty graphics places images by and
+   * which Ghostty learns only from a resize: 10 by 20, as the core's dump
+   * has it (docs/images.md IM7) */
+  ghostty_terminal_resize(term, cols, rows_of_term, 10, 20);
   /* DECRQCRA on, as xterm's checksumExtension 23 makes it: the core's
    * calculation (docs/vt-core.md §VC10). */
   bool checksums = true;

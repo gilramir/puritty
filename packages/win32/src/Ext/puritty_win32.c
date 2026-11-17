@@ -686,6 +686,36 @@ void pt_picture_draw(void *picture, int x, int y, int w, int h) {
 
 void pt_picture_free(void *picture) { free(picture); }
 
+/* Part of a picture, each target pixel taking its nearest source pixel,
+ * clipped to the cells it covers and to the target (docs/images.md IM2). */
+void pt_picture_draw_part(void *picture, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int cx, int cy, int cw,
+                          int ch) {
+    Picture *p = picture;
+    if (!p || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    int x0 = dx > cx ? dx : cx, y0 = dy > cy ? dy : cy;
+    int x1 = dx + dw < cx + cw ? dx + dw : cx + cw, y1 = dy + dh < cy + ch ? dy + dh : cy + ch;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > pw) x1 = pw;
+    if (y1 > ph) y1 = ph;
+    for (int yy = y0; yy < y1; yy++) {
+        int v = sy + (int) ((long long) (yy - dy) * sh / dh);
+        if (v < 0 || v >= p->h) continue;
+        uint32_t *row = pixels + (size_t) yy * pw;
+        for (int xx = x0; xx < x1; xx++) {
+            int u = sx + (int) ((long long) (xx - dx) * sw / dw);
+            if (u < 0 || u >= p->w) continue;
+            uint32_t s = p->px[(size_t) v * p->w + u], sa = s >> 24;
+            if (sa == 0 && (s & 0xFFFFFF) == 0) continue;
+            uint32_t d = row[xx], na = 255 - sa;
+            uint32_t r = add8((s >> 16) & 0xff, mul8((d >> 16) & 0xff, na));
+            uint32_t g = add8((s >> 8) & 0xff, mul8((d >> 8) & 0xff, na));
+            uint32_t b = add8(s & 0xff, mul8(d & 0xff, na));
+            row[xx] = r << 16 | g << 8 | b;
+        }
+    }
+}
+
 /* THE WINDOW THREAD (WS4) */
 
 typedef struct holder {

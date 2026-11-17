@@ -399,8 +399,17 @@ void *pt_picture_add(const uint32_t *argb, int w, int h) {
     xcb_create_pixmap(conn, 32, pm, window, (uint16_t) w, (uint16_t) h);
     xcb_gcontext_t g32 = xcb_generate_id(conn);
     xcb_create_gc(conn, g32, pm, 0, NULL);
-    xcb_put_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pm, g32, (uint16_t) w, (uint16_t) h, 0, 0, 0, 32, (uint32_t) w * h * 4,
-                  (const uint8_t *) argb);
+    /* in bands of rows, each request within the server's longest
+     * (BIG-REQUESTS' when it has them): an image is far larger than a
+     * glyph's picture (docs/images.md IM2) */
+    uint32_t most = xcb_get_maximum_request_length(conn) * 4;
+    uint32_t band = most > 64 + (uint32_t) w * 4 ? (most - 64) / ((uint32_t) w * 4) : 1;
+    if (band < 1) band = 1;
+    for (int y = 0; y < h; y += (int) band) {
+        int rows = h - y < (int) band ? h - y : (int) band;
+        xcb_put_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pm, g32, (uint16_t) w, (uint16_t) rows, 0, (int16_t) y, 0, 32,
+                      (uint32_t) w * (uint32_t) rows * 4, (const uint8_t *) (argb + (size_t) y * w));
+    }
     xcb_free_gc(conn, g32);
     xcb_render_picture_t picture = xcb_generate_id(conn);
     xcb_render_create_picture(conn, picture, pm, argb32, 0, NULL);
@@ -414,6 +423,33 @@ void pt_picture_draw(void *picture, int x, int y, int w, int h) {
 }
 
 void pt_picture_free(void *picture) { xcb_render_free_picture(conn, (xcb_render_picture_t) (uintptr_t) picture); }
+
+/* Part of a picture, scaled by a RENDER transform when its drawn size is
+ * not its own, and clipped to the cells it covers by the composite's
+ * rectangle. The transform maps the target's pixels to the picture's. */
+void pt_picture_draw_part(void *picture, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int cx, int cy, int cw,
+                          int ch) {
+    xcb_render_picture_t pic = (xcb_render_picture_t) (uintptr_t) picture;
+    int x0 = dx > cx ? dx : cx, y0 = dy > cy ? dy : cy;
+    int x1 = dx + dw < cx + cw ? dx + dw : cx + cw, y1 = dy + dh < cy + ch ? dy + dh : cy + ch;
+    if (x1 <= x0 || y1 <= y0) return;
+    int scaled = sw != dw || sh != dh;
+    if (scaled) {
+        xcb_render_transform_t t = {(xcb_render_fixed_t) ((double) sw / dw * 65536), 0, 0, 0,
+                                    (xcb_render_fixed_t) ((double) sh / dh * 65536), 0, 0, 0, 65536};
+        xcb_render_set_picture_transform(conn, pic, t);
+        xcb_render_set_picture_filter(conn, pic, 8, "bilinear", 0, NULL);
+        /* the source's origin in the target's scale */
+        int ox = (int) ((double) sx * dw / sw), oy = (int) ((double) sy * dh / sh);
+        xcb_render_composite(conn, XCB_RENDER_PICT_OP_OVER, pic, 0, target, (int16_t) (ox + x0 - dx), (int16_t) (oy + y0 - dy), 0, 0,
+                             (int16_t) x0, (int16_t) y0, (uint16_t) (x1 - x0), (uint16_t) (y1 - y0));
+        xcb_render_transform_t id = {65536, 0, 0, 0, 65536, 0, 0, 0, 65536};
+        xcb_render_set_picture_transform(conn, pic, id);
+    } else {
+        xcb_render_composite(conn, XCB_RENDER_PICT_OP_OVER, pic, 0, target, (int16_t) (sx + x0 - dx), (int16_t) (sy + y0 - dy), 0, 0,
+                             (int16_t) x0, (int16_t) y0, (uint16_t) (x1 - x0), (uint16_t) (y1 - y0));
+    }
+}
 
 /* THE PIXMAP AND THE WINDOW */
 

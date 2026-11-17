@@ -38,6 +38,7 @@ module Vt exposing
     , viewPainted
     , withCellSize
     , withEmbedder
+    , withImageLimit
     , withPalette
     , wordAt
     )
@@ -83,6 +84,7 @@ import Vt.Cell exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Edit as Edit
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Modes exposing (fresh, modifyOtherKeysKey, privateState)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
@@ -1288,6 +1290,18 @@ withCellSize cell t =
     { t | config = { config | cellWidth = max 0 cell.width, cellHeight = max 0 cell.height } }
 
 
+{-| The most bytes a screen's Kitty graphics images may hold together
+(`docs/images.md` IM5, IM9): libghostty-vt's 10,000,000 until the embedder
+says; puritty's is 320 MB. -}
+withImageLimit : Int -> (taken t : Term) -> Term
+withImageLimit bytes t =
+    let
+        im =
+            t.images
+    in
+    { t | images = { im | limit = max 0 bytes } }
+
+
 {-| The terminal with its 16 named colors as its embedder's (puritty's
 `[colors] palette`, docs/phase3-select.md §22): the first `Array.length`
 of them, up to 16, in place of libghostty-vt's; the rest are kept. They are
@@ -1473,4 +1487,4 @@ dump t =
         replyLines =
             Array.map (\r -> "reply " ++ escapeReply r) t.replies
     in
-    String.join "\n" (Array.flatten [ head, Array.flatten histLines, Array.flatten screenLines, replyLines ]) ++ "\n"
+    String.join "\n" (Array.flatten [ head, Array.flatten histLines, Array.flatten screenLines, Kitty.dumpLines t, replyLines ]) ++ "\n"

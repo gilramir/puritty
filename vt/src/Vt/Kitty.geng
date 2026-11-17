@@ -1,0 +1,1527 @@
+module Vt.Kitty exposing
+    ( Shown
+    , apcDispatch
+    , apcMax
+    , cleared
+    , clearedHistory
+    , dumpLines
+    , imageOf
+    , screensSwapped
+    , shownPlacements
+    )
+
+{-| The Kitty graphics protocol (`docs/images.md`), as libghostty-vt has it
+(`docs/images-kitty.md`, KG1 to KG8): an APC beginning `G` is a command;
+images are kept on the screen that was active, placements anchored to its
+absolute rows (IM11). Not yet: relative placements (`P`), animation
+(`a=f`, `a`, `c`), compressed data (`o=z`, which waits for a zlib), and
+the moves a scroll region or the alternate screen's scroll make (IM8
+step C).
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Vt.Base64 as Base64
+import Vt.Cell exposing (byteAt)
+import Vt.Reason as Reason
+import Vt.Scroll exposing (historyBound, lineFeed)
+import Vt.Term exposing (..)
+
+
+{-| The most of an APC's payload kept: Ghostty's 65 MiB (KG1). -}
+apcMax : Int
+apcMax =
+    68157440
+
+
+{-| The rows pushed into the scrollback before the screen's top (as
+`Vt.rowsPushed`): a placement's anchor is this plus its screen row. -}
+pushed : Term -> (r : Int where 0 <= r && r <= 1073751017)
+pushed t =
+    clamp 0 1073751017 (historyBound t + clamp 0 536870912 t.back.gone)
+
+
+{-| What the geometry needs of the terminal (KG6): the cell's size in
+pixels, the screen's columns and rows, the absolute row of its top, and
+the rows that have left the scrollback. -}
+type alias Geo =
+    { cw : Int, ch : Int, cols : Int, rows : Int, top : Int, gone : Int where 0 <= cw && cw <= 4096 && 0 <= ch && ch <= 4096 && 1 <= cols && cols <= 1000 && 1 <= rows && rows <= 1000 && 0 <= top && top <= 1073751017 && 0 <= gone && gone <= 536870912 }
+
+
+geoOf : Term -> Geo
+geoOf t =
+    { cw = clamp 0 4096 t.config.cellWidth, ch = clamp 0 4096 t.config.cellHeight, cols = clamp 1 1000 t.cols, rows = clamp 1 1000 t.rows, top = pushed t, gone = clamp 0 536870912 t.back.gone }
+
+
+-- THE COMMAND
+
+
+type alias Command =
+    { kv : Dict Int Int
+    , payload : Bytes
+    }
+
+
+key : Int -> Command -> Int
+key k cmd =
+    Maybe.withDefault (meant Reason.NotSet 0) (Dict.get k cmd.kv)
+
+
+has : Int -> Command -> Bool
+has k cmd =
+    Dict.get k cmd.kv /= Nothing
+
+
+{-| The APC read, ended by ESC or ST (`ended`; CAN, SUB or a C1 abort it,
+and nothing is done): a Kitty command when its first byte is `G`. -}
+apcDispatch : Bool -> (taken t : Term) -> Term
+apcDispatch ended t =
+    let
+        im =
+            t.images
+
+        data =
+            Bytes.flatten im.apc
+
+        over =
+            im.apcOver
+
+        reset =
+            { t | images = { im | apc = [], apcLen = 0, apcOver = False } }
+    in
+    if over || not ended || Bytes.length data == 0 || byteAt data 0 /= 0x47 then
+        reset
+
+    else
+        when parse (Bytes.slice 1 (Bytes.length data) data) is
+            Just cmd ->
+                execute cmd reset
+
+            Nothing ->
+                meant Reason.FromOutside reset
+
+
+{-| `graphics_command.zig`'s parser (KG1): the control data, `key=value`
+pairs with commas between, then after `;` the payload in base64. -}
+parse : Bytes -> Maybe Command
+parse body =
+    let
+        n =
+            Bytes.length body
+
+        -- states: 0 a key, 1 a key ignored, 2 a value, 3 a value ignored
+        step i st =
+            if i >= n then
+                when finish st is
+                    Just kv ->
+                        Just { kv = kv, dataAt = n }
+
+                    Nothing ->
+                        meant Reason.FromOutside Nothing
+
+            else
+                let
+                    c =
+                        byteAt body i
+                in
+                if st.state == 0 then
+                    if c == 0x3D then
+                        if Array.length st.temp /= 1 then
+                            step (i + 1) { st | state = 3, temp = [] }
+
+                        else
+                            step (i + 1) { st | state = 2, current = Maybe.withDefault 0 (Array.first st.temp), temp = [] }
+
+                    else if c == 0x3B then
+                        Just { kv = st.kv, dataAt = i + 1 }
+
+                    else
+                        step (i + 1) (accumulate c 1 st)
+
+                else if st.state == 1 then
+                    if c == 0x3D then
+                        step (i + 1) { st | state = 3 }
+
+                    else
+                        step (i + 1) st
+
+                else if st.state == 2 then
+                    if c == 0x2C then
+                        Maybe.andThen (\kv -> step (i + 1) { st | state = 0, temp = [], kv = kv }) (value st)
+
+                    else if c == 0x3B then
+                        Maybe.map (\kv -> { kv = kv, dataAt = i + 1 }) (value st)
+
+                    else
+                        step (i + 1) (accumulate c 3 st)
+
+                else if c == 0x2C then
+                    step (i + 1) { st | state = 1 }
+
+                else if c == 0x3B then
+                    Just { kv = st.kv, dataAt = i + 1 }
+
+                else
+                    step (i + 1) st
+
+        finish st =
+            if st.state == 0 || st.state == 1 then
+                Nothing
+
+            else if st.state == 2 then
+                value st
+
+            else
+                Just st.kv
+    in
+    when step 0 { state = 0, temp = [], current = 0, kv = Dict.empty } is
+        Just r ->
+            let
+                encoded =
+                    Bytes.slice r.dataAt n body
+
+                decoded =
+                    if Bytes.length encoded == 0 then
+                        Just Bytes.empty
+
+                    else
+                        Base64.decode encoded
+            in
+            Maybe.andThen (\payload -> valid { kv = r.kv, payload = payload }) decoded
+
+        Nothing ->
+            meant Reason.FromOutside Nothing
+
+
+{-| A byte of a key or value; past eleven, the rest of it is ignored. -}
+accumulate : Int -> Int -> { state : Int, temp : Array Int, current : Int, kv : Dict Int Int } -> { state : Int, temp : Array Int, current : Int, kv : Dict Int Int }
+accumulate c overflow st =
+    if Array.length st.temp >= 11 then
+        { st | state = overflow, temp = [] }
+
+    else
+        { st | temp = Array.pushLast c st.temp }
+
+
+{-| A value ended: one character not a digit is its code; else a decimal,
+signed for `z`, `H` and `V`, as Zig's `parseInt` reads one; one that does
+not parse spoils the command. -}
+value : { state : Int, temp : Array Int, current : Int, kv : Dict Int Int } -> Maybe (Dict Int Int)
+value st =
+    when st.temp is
+        [ c ] ->
+            if c < 0x30 || c > 0x39 then
+                Just (Dict.set st.current c st.kv)
+
+            else
+                Just (Dict.set st.current (c - 0x30) st.kv)
+
+        _ ->
+            Maybe.map (\v -> Dict.set st.current v st.kv) (zigInt (st.current == 0x7A || st.current == 0x48 || st.current == 0x56) st.temp)
+
+
+{-| A u32 kept in an `Int` as its bits (ids from 2^31 up are negative
+there), as the u32 it is. -}
+u32 : Int -> Int64
+u32 v =
+    if v < 0 then
+        Int64.fromInt v + (4294967296 : Int64)
+
+    else
+        Int64.fromInt v
+
+
+u32String : Int -> String
+u32String v =
+    String.fromInt64 (u32 v)
+
+
+{-| Zig's `std.fmt.parseInt` in base 10: a sign (`-` only for a signed
+type, or `-0`), then digits with single underscores between them, within
+u32 or i32. -}
+zigInt : Bool -> Array Int -> Maybe Int
+zigInt signed chars =
+    let
+        first =
+            Maybe.withDefault (meant Reason.NoMore 0) (Array.first chars)
+
+        negative =
+            first == 0x2D
+
+        body =
+            if first == 0x2B || first == 0x2D then
+                Array.dropFirst 1 chars
+
+            else
+                chars
+
+        digits =
+            Array.foldl
+                (\c acc ->
+                    when acc is
+                        Just a ->
+                            if c >= 0x30 && c <= 0x39 then
+                                if a.value > (4294967296 : Int64) then
+                                    Nothing
+
+                                else
+                                    Just { value = a.value * 10 + Int64.fromInt (c - 0x30), last = c, any = True }
+
+                            else if c == 0x5F && a.any && a.last /= 0x5F then
+                                Just { a | last = c }
+
+                            else
+                                Nothing
+
+                        Nothing ->
+                            meant Reason.FromOutside Nothing
+                )
+                (Just { value = (0 : Int64), last = 0, any = False })
+                body
+    in
+    when digits is
+        Just d ->
+            if not d.any || d.last == 0x5F then
+                Nothing
+
+            else if signed then
+                if negative && d.value <= (2147483648 : Int64) then
+                    Just (Int64.toIntWrap (0 - d.value))
+
+                else if not negative && d.value <= (2147483647 : Int64) then
+                    Just (Int64.toIntWrap d.value)
+
+                else
+                    Nothing
+
+            else if negative then
+                if d.value == 0 then
+                    Just 0
+
+                else
+                    Nothing
+
+            else if d.value <= (4294967295 : Int64) then
+                -- a u32 kept as its bits: from 2^31 up, negative (`u32`)
+                Just (Int64.toIntWrap d.value)
+
+            else
+                Nothing
+
+        Nothing ->
+            meant Reason.FromOutside Nothing
+
+
+{-| The command's action and the keys each kind checks as it is parsed
+(KG1): `a` one of `q t T p d f a c`, `t` one of `d f t s`, `o` only `z`, a
+delete's `d` one Ghostty knows. -}
+valid : Command -> Maybe Command
+valid cmd =
+    let
+        a =
+            Maybe.withDefault (meant Reason.NotSet 0x74) (Dict.get 0x61 cmd.kv)
+
+        transmission =
+            Array.member a [ 0x74, 0x54, 0x71, 0x66 ]
+
+        medium =
+            not (has 0x74 cmd) || Array.member (key 0x74 cmd) [ 0x64, 0x66, 0x74, 0x73 ]
+
+        compression =
+            not (has 0x6F cmd) || key 0x6F cmd == 0x7A
+
+        what =
+            Maybe.withDefault (meant Reason.NotSet 0x61) (Dict.get 0x64 cmd.kv)
+    in
+    if not (Array.member a [ 0x71, 0x74, 0x54, 0x70, 0x64, 0x66, 0x61, 0x63 ]) then
+        Nothing
+
+    else if transmission && not (medium && compression) then
+        Nothing
+
+    else if a == 0x64 && not (String.contains (String.fromChar (Maybe.withDefault (meant Reason.OutOfRange ' ') (Char.fromCode what))) "aAiInNcCfFpPqQrRxXyYzZ") then
+        Nothing
+
+    else
+        Just cmd
+
+
+-- REPLIES
+
+
+type alias Response =
+    { id : Int, number : Int, placement : Int, message : String }
+
+
+respond : Int -> Response -> (taken t : Term) -> Term
+respond quiet r t =
+    let
+        fields =
+            [ if r.id /= 0 then
+                "i=" ++ u32String r.id
+
+              else
+                ""
+            , if r.number /= 0 then
+                "I=" ++ u32String r.number
+
+              else
+                ""
+            , if r.placement /= 0 then
+                "p=" ++ u32String r.placement
+
+              else
+                ""
+            ]
+                |> Array.keepIf (\f -> f /= "")
+
+        send =
+            r.id /= 0 || r.number /= 0
+    in
+    if not send || quiet >= 2 || (quiet == 1 && r.message == "OK") then
+        t
+
+    else
+        reply ("\u{001B}_G" ++ String.join "," fields ++ ";" ++ r.message ++ "\u{001B}\\") t
+
+
+quietOf : Command -> Int
+quietOf cmd =
+    when Dict.get 0x71 cmd.kv is
+        Just 0 ->
+            0
+
+        Just 1 ->
+            1
+
+        Just _ ->
+            2
+
+        Nothing ->
+            meant Reason.NotSet 0
+
+
+-- THE ACTIONS
+
+
+execute : Command -> (taken t : Term) -> Term
+execute cmd t =
+    let
+        a =
+            Maybe.withDefault (meant Reason.NotSet 0x74) (Dict.get 0x61 cmd.kv)
+
+        quiet =
+            quietOf cmd
+
+        i =
+            key 0x69 cmd
+
+        number =
+            key 0x49 cmd
+
+        p =
+            key 0x70 cmd
+    in
+    if i /= 0 && number /= 0 then
+        respond quiet { id = i, number = number, placement = p, message = "EINVAL: image ID and number are mutually exclusive" } t
+
+    else if a == 0x71 then
+        query cmd t
+
+    else if a == 0x70 then
+        let
+            done =
+                display cmd t
+        in
+        respond quiet done.response done.term
+
+    else if a == 0x64 then
+        delete cmd t
+
+    else if a == 0x74 || a == 0x54 then
+        transmit cmd t
+
+    else
+        -- animation (a=f, a, c): not yet
+        t
+
+
+{-| a=q (KG3): a load checked and dropped. -}
+query : Command -> (taken t : Term) -> Term
+query cmd t =
+    let
+        i =
+            key 0x69 cmd
+
+        r =
+            { id = i, number = key 0x49 cmd, placement = key 0x70 cmd, message = "OK" }
+    in
+    if i == 0 then
+        t
+
+    else
+        when loaded cmd cmd.payload is
+            Ok _ ->
+                respond (quietOf cmd) r t
+
+            Err why ->
+                meant Reason.FromOutside respond (quietOf cmd) { r | message = why } t
+
+
+{-| The pixels a transmission's first command and its payload make, or why
+not (KG5, `LoadingImage`'s `init` and `complete`). -}
+loaded : Command -> Bytes -> Result String { width : Int, height : Int, rgba : Bool, pixels : Bytes }
+loaded cmd data =
+    let
+        f =
+            key 0x66 cmd
+
+        format =
+            if not (has 0x66 cmd) then
+                32
+
+            else
+                f
+
+        width =
+            key 0x73 cmd
+
+        height =
+            key 0x76 cmd
+
+        bpp =
+            if format == 24 then
+                3
+
+            else
+                4
+    in
+    if has 0x66 cmd && not (Array.member f [ 24, 0, 32, 100 ]) then
+        Err "EINVAL: unsupported format"
+
+    else if has 0x74 cmd && key 0x74 cmd /= 0x64 then
+        Err "EINVAL: unsupported medium"
+
+    else if has 0x6F cmd then
+        -- zlib waits for wuffs (`docs/images.md` IM4)
+        Err "EINVAL: decompression failed"
+
+    else if format == 100 then
+        Err "EINVAL: unsupported format"
+
+    else if width == 0 || height == 0 then
+        Err "EINVAL: dimensions required"
+
+    else if width > 10000 || height > 10000 then
+        Err "EINVAL: dimensions too large"
+
+    else if Bytes.length data /= width * height * bpp then
+        Err "EINVAL: invalid data"
+
+    else
+        Ok { width = width, height = height, rgba = bpp == 4, pixels = data }
+
+
+{-| a=t and a=T (KG3, KG4): a load begun, continued or ended. -}
+transmit : Command -> (taken t : Term) -> Term
+transmit cmd t =
+    let
+        store0 =
+            t.images.shown
+
+        -- a load in progress is dropped by a transmission not direct
+        direct =
+            not (has 0x74 cmd) || key 0x74 cmd == 0x64
+
+        store1 =
+            if direct then
+                store0
+
+            else
+                { store0 | loading = Nothing }
+
+        more =
+            direct && key 0x6D cmd > 0
+    in
+    when store1.loading is
+        Just load ->
+            let
+                quiet =
+                    if quietOf cmd == 0 then
+                        load.quiet
+
+                    else
+                        quietOf cmd
+
+                data =
+                    Array.pushLast cmd.payload load.data
+
+                len =
+                    load.len + Bytes.length cmd.payload
+            in
+            if len > 400000000 then
+                -- over 400 MB gathered: the load is dropped
+                respond quiet (firstResponse load.command "EINVAL: invalid data") (withStore { store1 | loading = Nothing } t)
+
+            else if more then
+                withStore { store1 | loading = Just { load | data = data, len = len, quiet = quiet } } t
+
+            else
+                finishLoad load.command (Bytes.flatten data) quiet (withStore { store1 | loading = Nothing } t)
+
+        Nothing ->
+            meant Reason.NotOpen
+                (let
+                    i =
+                        key 0x69 cmd
+
+                    -- image i goes first, even if this transmission then fails
+                    cleared0 =
+                        if i /= 0 then
+                            deleteImage i store1
+
+                        else
+                            store1
+
+                    badFormat =
+                        has 0x66 cmd && not (Array.member (key 0x66 cmd) [ 24, 0, 32, 100 ])
+                 in
+                 if badFormat then
+                    respond (quietOf cmd) (firstResponse cmd.kv "EINVAL: unsupported format") (withStore cleared0 t)
+
+                 else if more then
+                    withStore { cleared0 | loading = Just { command = cmd.kv, data = [ cmd.payload ], len = Bytes.length cmd.payload, quiet = quietOf cmd } } t
+
+                 else
+                    finishLoad cmd.kv cmd.payload (quietOf cmd) (withStore cleared0 t)
+                )
+
+
+firstResponse : Dict Int Int -> String -> Response
+firstResponse kv message =
+    { id = Maybe.withDefault (meant Reason.NotSet 0) (Dict.get 0x69 kv)
+    , number = Maybe.withDefault (meant Reason.NotSet 0) (Dict.get 0x49 kv)
+    , placement = Maybe.withDefault (meant Reason.NotSet 0) (Dict.get 0x70 kv)
+    , message = message
+    }
+
+
+{-| A load's last part: the image made and added, then shown for a=T, and
+answered (an implicit id never is). -}
+finishLoad : Dict Int Int -> Bytes -> Int -> (taken t : Term) -> Term
+finishLoad kv data quiet t =
+    let
+        cmd =
+            { kv = kv, payload = data }
+
+        r =
+            firstResponse kv "OK"
+
+        store =
+            t.images.shown
+    in
+    when loaded cmd data is
+        Err why ->
+            meant Reason.FromOutside respond quiet { r | message = why } t
+
+        Ok px ->
+            let
+                given =
+                    key 0x69 cmd
+
+                number =
+                    key 0x49 cmd
+
+                implicit =
+                    given == 0 && number == 0
+
+                id =
+                    if given /= 0 then
+                        given
+
+                    else if number /= 0 then
+                        lowestFree 1 store
+
+                    else
+                        store.implicit
+
+                image =
+                    { id = id
+                    , number = number
+                    , width = px.width
+                    , height = px.height
+                    , rgba = px.rgba
+                    , pixels = px.pixels
+                    , generation = store.generation
+                    , transient = Bitwise.and 1 (key 0x4E cmd) /= 0
+                    , implicit = implicit
+                    }
+
+                counted =
+                    if implicit then
+                        { store | implicit = store.implicit + 1 }
+
+                    else
+                        store
+            in
+            when addImage t.images.limit image counted is
+                Err why ->
+                    meant Reason.FromOutside respond quiet { r | id = id, message = why } (withStore counted t)
+
+                Ok added ->
+                    let
+                        withImage =
+                            withStore added t
+                    in
+                    if Dict.get 0x61 kv == Just 0x54 then
+                        let
+                            shown =
+                                display { kv = Dict.set 0x69 id kv, payload = Bytes.empty } withImage
+                        in
+                        if implicit then
+                            shown.term
+
+                        else
+                            respond quiet shown.response shown.term
+
+                    else if implicit then
+                        withImage
+
+                    else
+                        respond quiet { r | id = id } withImage
+
+
+lowestFree : Int -> Store -> Int
+lowestFree i store =
+    if Dict.get i store.images == Nothing then
+        i
+
+    else
+        lowestFree (i + 1) store
+
+
+withStore : Store -> (taken t : Term) -> Term
+withStore store t =
+    let
+        im =
+            t.images
+    in
+    { t | images = { im | shown = store } }
+
+
+bytesOf : Image -> Int
+bytesOf image =
+    Bytes.length image.pixels
+
+
+{-| An image added (KG7): over the whole limit it is refused; a same-id
+one and its placements go; others are evicted, the least needed and
+oldest first, until it fits. -}
+addImage : Int -> Image -> Store -> Result String Store
+addImage limit image store0 =
+    if bytesOf image > limit then
+        Err "ENOMEM: out of memory"
+
+    else
+        let
+            store =
+                deleteImage image.id store0
+
+            fitted =
+                evict limit (bytesOf image) store
+        in
+        Ok { fitted | images = Dict.set image.id image fitted.images, bytes = fitted.bytes + bytesOf image, generation = store.generation + 1 }
+
+
+evict : Int -> Int -> Store -> Store
+evict limit adding store =
+    if store.bytes + adding <= limit then
+        store
+
+    else
+        let
+            used id =
+                Array.any (\pl -> pl.image == id) store.placements
+
+            rank image =
+                (if image.transient then
+                    0
+
+                 else
+                    2
+                )
+                    + (if used image.id then
+                        4
+
+                       else
+                        0
+                      )
+
+            -- transient unused, unused, transient used, used; then the
+            -- oldest generation, then the lowest id
+            order a b =
+                if rank a /= rank b then
+                    compare (rank a) (rank b)
+
+                else if a.generation /= b.generation then
+                    compare a.generation b.generation
+
+                else
+                    compare (u32 a.id) (u32 b.id)
+        in
+        when Dict.values store.images |> Array.sortWith order |> Array.first is
+            Just victim ->
+                evict limit adding (deleteImage victim.id store)
+
+            Nothing ->
+                meant Reason.NoMore store
+
+
+{-| Image `id` and its placements gone. -}
+deleteImage : Int -> Store -> Store
+deleteImage id store =
+    when Dict.get id store.images is
+        Just image ->
+            { store
+                | images = Dict.remove id store.images
+                , bytes = store.bytes - bytesOf image
+                , placements = Array.keepIf (\pl -> pl.image /= id) store.placements
+            }
+
+        Nothing ->
+            meant Reason.NotKnown { store | placements = Array.keepIf (\pl -> pl.image /= id) store.placements }
+
+
+{-| a=p (KG3, KG6): a placement at the cursor, and the cursor after it. -}
+display : Command -> (taken t : Term) -> { term : Term, response : Response }
+display cmd t =
+    let
+        i =
+            key 0x69 cmd
+
+        number =
+            key 0x49 cmd
+
+        p =
+            key 0x70 cmd
+
+        r =
+            { id = i, number = number, placement = p, message = "OK" }
+
+        store =
+            t.images.shown
+
+        virtual =
+            key 0x55 cmd /= 0
+
+        found =
+            if i /= 0 then
+                Dict.get i store.images
+
+            else
+                Dict.values store.images
+                    |> Array.keepIf (\im -> im.number == number)
+                    |> Array.sortBy .generation
+                    |> Array.last
+    in
+    if i == 0 && number == 0 then
+        { term = t, response = { r | message = "EINVAL: image ID or number required" } }
+
+    else if virtual && key 0x50 cmd > 0 then
+        { term = t, response = { r | message = "EINVAL: virtual placement cannot refer to a parent" } }
+
+    else
+        when found is
+            Nothing ->
+                meant Reason.NotKnown { term = t, response = { r | message = "ENOENT: image not found" } }
+
+            Just image ->
+                if key 0x50 cmd > 0 then
+                    -- relative placements: not yet
+                    { term = t, response = { r | id = image.id, message = "ENOPARENT: parent image not found" } }
+
+                else
+                    let
+                        cw =
+                            clamp 0 4096 t.config.cellWidth
+
+                        ch =
+                            clamp 0 4096 t.config.cellHeight
+
+                        offX =
+                            if cw > 0 then
+                                min (key 0x58 cmd) (cw - 1)
+
+                            else
+                                key 0x58 cmd
+
+                        offY =
+                            if ch > 0 then
+                                min (key 0x59 cmd) (ch - 1)
+
+                            else
+                                key 0x59 cmd
+
+                        id =
+                            if p > 0 then
+                                p
+
+                            else
+                                store.internal
+
+                        placement =
+                            { image = image.id
+                            , id = id
+                            , external = p > 0
+                            , virtual = virtual
+                            , row = clamp 0 1073752017 (pushed t + clamp 0 999 t.y)
+                            , col =
+                                clamp 0
+                                    999
+                                    (if t.wrapNext then
+                                        t.cols - 1
+
+                                     else
+                                        t.x
+                                    )
+                            , x = clamp 0 10000 (key 0x78 cmd)
+                            , y = clamp 0 10000 (key 0x79 cmd)
+                            , w = clamp 0 10000 (key 0x77 cmd)
+                            , h = clamp 0 10000 (key 0x68 cmd)
+                            , offX = clamp 0 4096 offX
+                            , offY = clamp 0 4096 offY
+                            , cols = clamp 0 10000 (key 0x63 cmd)
+                            , rows = clamp 0 10000 (key 0x72 cmd)
+                            , z = key 0x7A cmd
+                            }
+
+                        others =
+                            if p > 0 then
+                                Array.keepIf (\pl -> not (pl.image == image.id && pl.external && pl.id == p)) store.placements
+
+                            else
+                                store.placements
+
+                        placed =
+                            withStore
+                                { store
+                                    | placements = Array.pushLast placement others
+                                    , internal =
+                                        if p > 0 then
+                                            store.internal
+
+                                        else
+                                            store.internal + 1
+                                }
+                                t
+
+                        moved =
+                            if virtual || key 0x43 cmd == 1 then
+                                placed
+
+                            else
+                                cursorAfter (gridSize image placement (geoOf placed)) placement.col placed
+                    in
+                    { term = moved, response = { r | id = image.id } }
+
+
+{-| The cursor after a placement (KG6): down a row for each but the
+first it covers, and one more when it reaches the last column, by IND
+(which scrolls), then to the column after it or the first. -}
+cursorAfter : { cols : Int, rows : Int } -> Int -> (taken t : Term) -> Term
+cursorAfter size col t =
+    let
+        target =
+            clamp 0 999 col + clamp 0 10000 size.cols
+
+        wraps =
+            target >= t.cols
+
+        requested =
+            clamp 0 10000 (size.rows - 1)
+                + (if wraps then
+                    1
+
+                   else
+                    0
+                  )
+
+        inRegion =
+            t.y >= t.top && t.y <= t.bottom && t.x >= t.left && t.x <= t.right
+
+        before =
+            if inRegion then
+                t.bottom - t.y
+
+            else
+                0
+
+        moved =
+            indexTimes (min requested (before + t.rows)) t
+
+        x =
+            if wraps then
+                0
+
+            else
+                target
+    in
+    { moved | wrapNext = False, x = clamp 0 (moved.cols - 1) x }
+
+
+indexTimes : Int -> (taken t : Term) -> Term
+indexTimes n t =
+    if n <= 0 then
+        t
+
+    else
+        indexTimes (n - 1) (lineFeed t)
+
+
+-- GEOMETRY (KG6)
+
+
+{-| The source rectangle in the image's pixels. -}
+source : Image -> Placement -> { x : Int, y : Int, w : Int, h : Int }
+source image pl =
+    let
+        sx =
+            min pl.x image.width
+
+        sy =
+            min pl.y image.height
+    in
+    { x = sx
+    , y = sy
+    , w =
+        min
+            (if pl.w == 0 then
+                image.width
+
+             else
+                pl.w
+            )
+            (image.width - sx)
+    , h =
+        min
+            (if pl.h == 0 then
+                image.height
+
+             else
+                pl.h
+            )
+            (image.height - sy)
+    }
+
+
+{-| The size a placement is drawn at, in pixels. -}
+pixelSize : Image -> Placement -> Geo -> { w : Int, h : Int }
+pixelSize image pl geo =
+    let
+        src =
+            source image pl
+
+        cw =
+            geo.cw
+
+        ch =
+            geo.ch
+
+        rounded a b d =
+            if d <= 0 then
+                0
+
+            else
+                clamp 0 41000000 (Int64.toIntWrap ((Int64.fromInt a * Int64.fromInt b + Int64.fromInt (d // 2)) // Int64.fromInt d))
+    in
+    if pl.cols == 0 && pl.rows == 0 then
+        { w = src.w, h = src.h }
+
+    else if pl.cols > 0 && pl.rows > 0 then
+        { w = max 0 (cw * pl.cols - pl.offX), h = max 0 (ch * pl.rows - pl.offY) }
+
+    else if pl.cols > 0 then
+        let
+            w =
+                max 0 (cw * pl.cols - pl.offX)
+        in
+        { w = w, h = rounded w src.h src.w }
+
+    else
+        let
+            h =
+                max 0 (ch * pl.rows - pl.offY)
+        in
+        { w = rounded h src.w src.h, h = h }
+
+
+{-| The cells a placement covers. -}
+gridSize : Image -> Placement -> Geo -> { cols : Int, rows : Int }
+gridSize image pl geo =
+    let
+        cw =
+            geo.cw
+
+        ch =
+            geo.ch
+
+        px =
+            pixelSize image pl geo
+
+        up a d =
+            (a + d - 1) // d
+    in
+    if pl.cols > 0 && pl.rows > 0 then
+        { cols = pl.cols, rows = pl.rows }
+
+    else if cw == 0 || ch == 0 then
+        { cols = 0, rows = 0 }
+
+    else
+        { cols = up (px.w + pl.offX) cw, rows = up (px.h + pl.offY) ch }
+
+
+{-| The cells a placement covers on the screen and in the scrollback: its
+anchor's absolute row and column, then the last of each, or none when it
+covers no cell or is virtual. -}
+rect : Store -> Placement -> Geo -> Maybe { top : Int, left : Int, bottom : Int, right : Int }
+rect store pl geo =
+    when Dict.get pl.image store.images is
+        Just image ->
+            let
+                size =
+                    gridSize image pl geo
+            in
+            if pl.virtual || size.cols == 0 || size.rows == 0 then
+                Nothing
+
+            else
+                Just { top = pl.row, left = pl.col, bottom = pl.row + size.rows - 1, right = min (pl.col + size.cols - 1) (geo.cols - 1) }
+
+        Nothing ->
+            meant Reason.NotKnown Nothing
+
+
+-- DELETING (KG3)
+
+
+delete : Command -> (taken t : Term) -> Term
+delete cmd t =
+    let
+        what =
+            Maybe.withDefault (meant Reason.NotSet 0x61) (Dict.get 0x64 cmd.kv)
+
+        upper =
+            what >= 0x41 && what <= 0x5A
+
+        lower =
+            Bitwise.or what 0x20
+
+        store0 =
+            t.images.shown
+
+        store =
+            { store0 | loading = Nothing }
+
+        geo =
+            geoOf t
+
+        top =
+            geo.top
+
+        cx =
+            t.x
+
+        cy =
+            t.y
+
+        within pl test =
+            when rect store pl geo is
+                Just r ->
+                    test r
+
+                Nothing ->
+                    meant Reason.NotSet False
+
+        visible pl =
+            not pl.virtual
+                && (pl.row >= top
+                        || (when rect store pl geo is
+                                Just r ->
+                                    r.bottom >= top
+
+                                Nothing ->
+                                    meant Reason.NotSet False
+                           )
+                   )
+
+        x =
+            key 0x78 cmd
+
+        y =
+            key 0x79 cmd
+
+        cellAt pl =
+            within pl (\r -> r.left <= x - 1 && x - 1 <= r.right && r.top <= top + y - 1 && top + y - 1 <= r.bottom)
+
+        removing =
+            if lower == 0x61 then
+                Just visible
+
+            else if lower == 0x63 then
+                Just (\pl -> within pl (\r -> r.left <= cx && cx <= r.right && r.top <= top + cy && top + cy <= r.bottom))
+
+            else if lower == 0x70 then
+                if x == 0 || y == 0 then
+                    Nothing
+
+                else
+                    Just cellAt
+
+            else if lower == 0x71 then
+                if x == 0 || y == 0 then
+                    Nothing
+
+                else
+                    Just (\pl -> pl.z == key 0x7A cmd && cellAt pl)
+
+            else if lower == 0x78 then
+                Just (\pl -> within pl (\r -> r.left <= x - 1 && x - 1 <= r.right))
+
+            else if lower == 0x79 then
+                Just (\pl -> within pl (\r -> r.top <= top + y - 1 && top + y - 1 <= r.bottom))
+
+            else if lower == 0x7A then
+                Just (\pl -> not pl.virtual && pl.z == key 0x7A cmd)
+
+            else
+                Nothing
+    in
+    when removing is
+        Just test ->
+            withStore (removeWhere upper test store) t
+
+        Nothing ->
+            meant Reason.NotKnown
+                (if lower == 0x69 then
+                    withStore (deleteById upper (key 0x69 cmd) (key 0x70 cmd) store) t
+
+                 else if lower == 0x6E then
+                    let
+                        newest =
+                            Dict.values store.images
+                                |> Array.keepIf (\im -> im.number == key 0x49 cmd)
+                                |> Array.sortBy .generation
+                                |> Array.last
+                    in
+                    when newest is
+                        Just im ->
+                            withStore (deleteById upper im.id (key 0x70 cmd) store) t
+
+                        Nothing ->
+                            meant Reason.NotKnown withStore store t
+
+                 else if lower == 0x72 then
+                    let
+                        first =
+                            key 0x78 cmd
+
+                        last =
+                            key 0x79 cmd
+
+                        inRange id =
+                            u32 first <= u32 id && u32 id <= u32 last
+                    in
+                    if last == 0 || u32 first > u32 last then
+                        withStore store t
+
+                    else
+                        let
+                            kept =
+                                { store | placements = Array.keepIf (\pl -> not (inRange pl.image)) store.placements }
+                        in
+                        if upper then
+                            withStore (Array.foldl deleteIfUnused kept (Dict.keys store.images |> Array.keepIf inRange)) t
+
+                        else
+                            withStore kept t
+
+                 else if what == 0x46 then
+                    -- F on a still image deletes it
+                    withStore (deleteById True (key 0x69 cmd) 0 store) t
+
+                 else
+                    withStore store t
+                )
+
+
+{-| The placements `test` picks removed; uppercase, each image they showed
+freed once nothing shows it. -}
+removeWhere : Bool -> (Placement -> Bool) -> Store -> Store
+removeWhere upper test store =
+    let
+        gone =
+            Array.keepIf test store.placements
+
+        kept =
+            { store | placements = Array.keepIf (\pl -> not (test pl)) store.placements }
+    in
+    if upper then
+        Array.foldl deleteIfUnused kept (Array.map .image gone)
+
+    else
+        kept
+
+
+deleteIfUnused : Int -> Store -> Store
+deleteIfUnused id store =
+    if Array.any (\pl -> pl.image == id) store.placements then
+        store
+
+    else
+        deleteImage id store
+
+
+{-| d=i, d=I: image `id`'s placements, or its external placement `p`;
+uppercase, the image freed when the selector matched and none is left. -}
+deleteById : Bool -> Int -> Int -> Store -> Store
+deleteById upper id p store =
+    if id == 0 || Dict.get id store.images == Nothing then
+        store
+
+    else if p > 0 then
+        let
+            matched =
+                Array.any (\pl -> pl.image == id && pl.external && pl.id == p) store.placements
+
+            kept =
+                { store | placements = Array.keepIf (\pl -> not (pl.image == id && pl.external && pl.id == p)) store.placements }
+        in
+        if upper && matched then
+            deleteIfUnused id kept
+
+        else
+            kept
+
+    else
+        let
+            kept =
+                { store | placements = Array.keepIf (\pl -> pl.image /= id) store.placements }
+        in
+        if upper then
+            deleteIfUnused id kept
+
+        else
+            kept
+
+
+-- WHAT THE REST OF THE TERMINAL DOES TO THEM (KG7)
+
+
+{-| ED 2 (`clearScreen`): the placements on the screen gone, as d=A, then
+every image nothing shows. -}
+cleared : (taken t : Term) -> Term
+cleared t =
+    let
+        geo =
+            geoOf t
+
+        top =
+            geo.top
+
+        store0 =
+            t.images.shown
+
+        visible pl =
+            not pl.virtual
+                && (pl.row >= top
+                        || (when rect store0 pl geo is
+                                Just r ->
+                                    r.bottom >= top
+
+                                Nothing ->
+                                    meant Reason.NotSet False
+                           )
+                   )
+
+        kept =
+            { store0 | placements = Array.keepIf (\pl -> not (visible pl)) store0.placements }
+    in
+    withStore (Array.foldl deleteIfUnused kept (Dict.keys store0.images)) t
+
+
+{-| ED 3: the placements anchored in the scrollback gone; images kept. -}
+clearedHistory : (taken t : Term) -> Term
+clearedHistory t =
+    let
+        top =
+            pushed t
+
+        store0 =
+            t.images.shown
+    in
+    withStore { store0 | placements = Array.keepIf (\pl -> pl.virtual || pl.row >= top) store0.placements } t
+
+
+{-| The screens swapped (`?47`, `?1047`, `?1049`): each its own images, the
+other made when it is first shown. -}
+screensSwapped : (taken t : Term) -> Term
+screensSwapped t =
+    let
+        im =
+            t.images
+    in
+    { t | images = { im | shown = Maybe.withDefault (meant Reason.NotYet noStore) im.other, other = Just im.shown } }
+
+
+-- WHAT IS SHOWN
+
+
+{-| A placement as drawn: its image's id and size, the cells it covers on
+the screen (its row may be above the screen's top, `y` negative), the
+source rectangle, its offset in the first cell, the size drawn, and
+whether it lies under the text (`z` below 0) or over it. -}
+type alias Shown =
+    { image : Int
+    , y : Int
+    , x : Int
+    , cols : Int
+    , rows : Int
+    , src : { x : Int, y : Int, w : Int, h : Int }
+    , offX : Int
+    , offY : Int
+    , w : Int
+    , h : Int
+    , under : Bool
+    }
+
+
+{-| The shown screen's image `id`. -}
+imageOf : Int -> Term -> Maybe Image
+imageOf id t =
+    Dict.get id t.images.shown.images
+
+
+{-| The placements in view, lowest z first, the view `back` rows up into
+the scrollback (`Vt.View.frameBack`). -}
+shownPlacements : Int -> Term -> Array Shown
+shownPlacements back t =
+    let
+        geo =
+            geoOf t
+
+        top =
+            geo.top - clamp 0 1073751017 back
+
+        rows =
+            t.rows
+
+        store =
+            t.images.shown
+    in
+    store.placements
+        |> Array.sortBy .z
+        |> Array.mapAndKeepJust
+            (\pl ->
+                when { image = Dict.get pl.image store.images, r = rect store pl geo } is
+                    { image = Just image, r = Just r } ->
+                        if r.bottom < top || r.top >= top + rows then
+                            Nothing
+
+                        else
+                            let
+                                px =
+                                    pixelSize image pl geo
+                            in
+                            Just
+                                { image = image.id
+                                , y = r.top - top
+                                , x = r.left
+                                , cols = r.right - r.left + 1
+                                , rows = r.bottom - r.top + 1
+                                , src = source image pl
+                                , offX = pl.offX
+                                , offY = pl.offY
+                                , w = px.w
+                                , h = px.h
+                                , under = pl.z < 0
+                                }
+
+                    _ ->
+                        Nothing
+            )
+
+
+{-| The dump's lines for the shown screen's placements (`docs/vt-core.md`
+§VC3, `images.md` IM7): each one's image, its size, the cells it covers
+and where, its source rectangle, offsets and z, sorted, as
+`harness/oracle` prints libghostty-vt's. Placement ids are not printed:
+Ghostty's for p=0 are its own counter's. -}
+dumpLines : Term -> Array String
+dumpLines t =
+    let
+        store =
+            t.images.shown
+
+        geo =
+            geoOf t
+
+        gone =
+            geo.gone
+    in
+    store.placements
+        |> Array.mapAndKeepJust
+            (\pl ->
+                Maybe.map
+                    (\image ->
+                        let
+                            src =
+                                source image pl
+
+                            size =
+                                gridSize image pl geo
+
+                            n =
+                                String.fromInt
+                        in
+                        "image "
+                            ++ u32String image.id
+                            ++ " "
+                            ++ n image.width
+                            ++ "x"
+                            ++ n image.height
+                            ++ (if pl.virtual then
+                                    " virtual"
+
+                                else if pl.row < gone || rect store pl geo == Nothing then
+                                    -- no cells, or its row has left the scrollback
+                                    " at -"
+
+                                else
+                                    " at " ++ n pl.col ++ "," ++ n (pl.row - geo.top)
+                               )
+                            ++ " cells "
+                            ++ n size.cols
+                            ++ "x"
+                            ++ n size.rows
+                            ++ " src "
+                            ++ n src.x
+                            ++ ","
+                            ++ n src.y
+                            ++ ","
+                            ++ n src.w
+                            ++ ","
+                            ++ n src.h
+                            ++ " off "
+                            ++ n pl.offX
+                            ++ ","
+                            ++ n pl.offY
+                            ++ " z "
+                            ++ n pl.z
+                    )
+                    (Dict.get pl.image store.images)
+            )
+        |> Array.sort

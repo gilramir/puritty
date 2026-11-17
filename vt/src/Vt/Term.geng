@@ -3,23 +3,31 @@ module Vt.Term exposing
     , Clip
     , Config
     , Embedder
+    , Image
+    , Images
     , Keys
+    , Loading
     , Osc52
     , Page
+    , Placement
     , Plainness(..)
     , Saved
     , Screen
+    , Store
     , Term
     , ghosttyEmbedder
     , heardAt
     , isAlt
     , keyFlags
     , newScreen
+    , noImages
     , noKeys
     , noOsc52
     , noSaved
+    , noStore
     , note
     , popKeys
+    , psApc
     , psClip
     , psCsi
     , psCsiIgnore
@@ -361,6 +369,10 @@ type alias Term =
     -- an OSC 52 (docs/phase3-select.md §16): one field, since every
     -- field of the term costs each of its updates (§16's perf)
     , osc52 : Osc52
+    -- the Kitty graphics protocol's images and placements, each screen
+    -- its own, and the APC being read (`docs/images.md`, `images-kitty.md`):
+    -- one field, as `osc52`
+    , images : Images
     , sets : Int
     , gl : Int
     , single : Int
@@ -448,6 +460,103 @@ psString =
 psClip : Int
 psClip =
     9
+
+
+{-| An APC's text, a Kitty graphics command's (`docs/images-kitty.md` KG1). -}
+psApc : Int
+psApc =
+    10
+
+
+{-| The APC being read, each read's run of it kept as a slice (`apcLen`
+in all, `apcOver` past `Vt.Kitty.apcMax`, `apcAbort` once CAN, SUB or a
+C1 has ended it with nothing done), and the images of the screen shown
+and of the other, which is made when it is first used (KG7). -}
+type alias Images =
+    { apc : Array Bytes
+    , apcLen : Int
+    , apcOver : Bool
+    , shown : Store
+    , other : Maybe Store
+    -- the most bytes a screen's images hold together: libghostty-vt's
+    -- 10,000,000 unless the embedder says (`Vt.withImageLimit`)
+    , limit : Int
+    }
+
+
+noImages : Images
+noImages =
+    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000 }
+
+
+{-| A screen's images (KG7): by id, the placements showing them, the bytes
+they hold (w · h · bytes a pixel), the generation the next one is given
+(for eviction, oldest first), the next implicit id (from 2147483647) and
+internal placement id (from 0), and a chunked load in progress (KG4). -}
+type alias Store =
+    { images : Dict Int Image
+    , placements : Array Placement
+    , bytes : Int
+    , generation : Int
+    , implicit : Int
+    , internal : Int
+    , loading : Maybe Loading
+    }
+
+
+noStore : Store
+noStore =
+    { images = Dict.empty, placements = [], bytes = 0, generation = 0, implicit = 2147483647, internal = 0, loading = Nothing }
+
+
+{-| An image: its pixels as they came, RGB (`rgba` False) or RGBA, a row
+after another. -}
+type alias Image =
+    { id : Int
+    , number : Int
+    , width : Int
+    , height : Int
+    , rgba : Bool
+    , pixels : Bytes
+    , generation : Int
+    , transient : Bool
+    , implicit : Bool
+    }
+
+
+{-| A placement (KG3, KG6): its image; its id, the program's `p` when
+`external`, else the store's own; its anchor, an absolute row (the rows
+pushed into the scrollback before the screen's row, `Vt.rowsPushed`;
+`docs/images.md` IM11) and a column; the source rectangle, offset in the
+cell, columns and rows as the command gave them (0 for none), and z. -}
+type alias Placement =
+    { image : Int
+    , id : Int
+    , external : Bool
+    , virtual : Bool
+    , row : Int
+    , col : Int
+    , x : Int
+    , y : Int
+    , w : Int
+    , h : Int
+    , offX : Int
+    , offY : Int
+    , cols : Int
+    , rows : Int
+    , z : Int where 0 <= row && row <= 1073752017 && 0 <= col && col <= 999 && 0 <= x && x <= 10000 && 0 <= y && y <= 10000 && 0 <= w && w <= 10000 && 0 <= h && h <= 10000 && 0 <= offX && offX <= 4096 && 0 <= offY && offY <= 4096 && 0 <= cols && cols <= 10000 && 0 <= rows && rows <= 10000
+    }
+
+
+{-| A chunked transmission (KG4): the first chunk's command, which fixes
+everything but the payload, the payload so far, its length, and the
+quiet the chunks have set. -}
+type alias Loading =
+    { command : Dict Int Int
+    , data : Array Bytes
+    , len : Int
+    , quiet : Int
+    }
 
 
 {-| An OSC 52 being read: what follows its `52;`, each read's run of it

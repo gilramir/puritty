@@ -41,6 +41,7 @@ import Vt.Dispatch exposing (..)
 import Vt.Dump exposing (..)
 import Vt.Edit exposing (..)
 import Vt.Keys as Keys
+import Vt.Kitty as Kitty
 import Vt.Modes exposing (..)
 import Vt.Osc exposing (..)
 import Vt.Pages exposing (..)
@@ -95,6 +96,9 @@ feed bytes t =
 
     else if t.ps == psClip then
         oscClip bytes n 0 { t | ps = psGround }
+
+    else if t.ps == psApc then
+        apcString bytes n 0 { t | ps = psGround }
 
     else
         ignoreString bytes n 0 { t | ps = psGround }
@@ -451,7 +455,10 @@ escape bytes n i t =
         else if b == 0x50 then
             dcsString bytes n (i + 1) { t | str = Builder.empty 64 }
 
-        else if b == 0x58 || b == 0x5E || b == 0x5F then
+        else if b == 0x5F then
+            apcString bytes n (i + 1) t
+
+        else if b == 0x58 || b == 0x5E then
             ignoreString bytes n (i + 1) t
 
         else if b >= 0x20 && b < 0x30 then
@@ -714,7 +721,10 @@ c1 bytes n i b t =
     else if b == 0x90 then
         dcsString bytes n i { t | str = Builder.empty 64 }
 
-    else if b == 0x98 || b == 0x9E || b == 0x9F then
+    else if b == 0x9F then
+        apcString bytes n i t
+
+    else if b == 0x98 || b == 0x9E then
         ignoreString bytes n i t
 
     else if b == 0x9C then
@@ -724,7 +734,69 @@ c1 bytes n i b t =
         resume bytes n i (escDispatch (b - 0x40) t)
 
 
-{-| SOS, PM or APC: skipped to ST. -}
+{-| An APC (`docs/images-kitty.md` KG1): each read's run of it up to a
+control kept as a slice, as `oscClip` keeps an OSC 52's, at most
+`Kitty.apcMax` bytes; ESC or ST ends it and it is done, CAN, SUB or
+another C1 abort it. -}
+apcString : Bytes -> Int -> (i : Int where 0 <= i) -> (taken t : Term) -> Term
+apcString bytes n i t =
+    let
+        j =
+            apcEnd bytes i n
+
+        im =
+            t.images
+
+        kept =
+            if im.apcOver || j <= i then
+                t
+
+            else if im.apcLen > Kitty.apcMax - (j - i) then
+                { t | images = { im | apcOver = True, apc = [], apcLen = 0 } }
+
+            else
+                { t | images = { im | apc = Array.pushLast (Bytes.slice i j bytes) im.apc, apcLen = im.apcLen + (j - i) } }
+    in
+    if j >= n then
+        { kept | ps = psApc }
+
+    else
+        let
+            b =
+                byteAt bytes j
+        in
+        if b == 0x1B then
+            escape bytes n (j + 1) (Kitty.apcDispatch True kept)
+
+        else if b == 0x9C then
+            resume bytes n (j + 1) (Kitty.apcDispatch True kept)
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (j + 1) (Kitty.apcDispatch False kept)
+
+        else
+            c1 bytes n (j + 1) b (Kitty.apcDispatch False kept)
+
+
+{-| Where an APC's run ends: ESC, CAN, SUB or a C1, or `n`. -}
+apcEnd : Bytes -> (i : Int where 0 <= i) -> Int -> (r : Int where i <= r)
+apcEnd bytes i n =
+    if i >= n then
+        i
+
+    else
+        let
+            b =
+                byteAt bytes i
+        in
+        if b == 0x1B || b == 0x18 || b == 0x1A || (b >= 0x80 && b < 0xA0) then
+            i
+
+        else
+            apcEnd bytes (i + 1) n
+
+
+{-| SOS or PM: skipped to ST. -}
 ignoreString : Bytes -> Int -> (i : Int where 0 <= i) -> (taken t : Term) -> Term
 ignoreString bytes n i t =
     if i >= n then
