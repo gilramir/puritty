@@ -1,4 +1,4 @@
-module Backend exposing (Backend, Incoming(..), pty, ssh)
+module Backend exposing (Backend, Incoming(..), Size, pty, ssh)
 
 {-| What a window's terminal talks to (`docs/ssh-client.md` SC11 step 1,
 SC18): the bytes the remote end writes, the bytes it is sent, its size,
@@ -26,6 +26,17 @@ type Incoming
     | Notice Session.Notice
 
 
+{-| A terminal's size: its cells, and its pixels as the program on it reads
+them (`TIOCGWINSZ`, ssh's `pty-req` and `window-change`), 0 when not known
+(`docs/images.md` IM21). -}
+type alias Size =
+    { columns : Int
+    , rows : Int
+    , widthInPixels : Int
+    , heightInPixels : Int
+    }
+
+
 {-| `read` answers what came; `writeSome` takes what it can and answers how
 much; `writable` waits until it can take more, and the loop races it beside
 `read` (V48). `kill` ends the remote end; `waitForExit` answers its exit
@@ -42,11 +53,11 @@ type alias Backend =
     { read : Task Error Incoming
     , writeSome : Bytes -> Task Error Int
     , writable : Task Error {}
-    , resize : { columns : Int, rows : Int } -> Task Error {}
+    , resize : Size -> Task Error {}
     , kill : Task String {}
     , waitForExit : Task String Int
     , answer : Session.Answer -> Task Error {}
-    , reconnect : { columns : Int, rows : Int } -> Task Error {}
+    , reconnect : Size -> Task Error {}
     , busy : Task Error (Maybe String)
     , directory : Task Error (Maybe Path)
     }

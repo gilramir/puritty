@@ -1,0 +1,143 @@
+module Iterm exposing (suite)
+
+{-| iTerm2's inline images (`docs/images-iterm.md` IT2): what is decoded
+(an uncompressed TIFF as chafa sends, a PNG as timg sends), the sizes, the
+multipart form and the cursor. No oracle has them, so these hold them; the
+images are 2 by 2 (red, green, blue, half-transparent white), their
+pixels' Adler-32 worked out by hand.
+-}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+{-| A terminal of 10 by 5 cells of 10 by 20 pixels, the images on. -}
+images : {} -> Vt.Term
+images {} =
+    Vt.withExtraImages True (Vt.withCellSize { width = 10, height = 20 } (term 10 5))
+
+
+tiff : String
+tiff =
+    "SUkqABgAAAD/AAD/AP8A/wAA//////+ACgAAAQQAAQAAAAIAAAABAQQAAQAAAAIAAAACAQMABAAAAJYAAAAGAQMAAQAAAAIAAAARAQQAAQAAAAgAAAAVAQMAAQAAAAQAAAAWAQQAAQAAAAIAAAAXAQQAAQAAABAAAAAcAQMAAQAAAAEAAABSAQMAAQAAAAIAAAAAAAAACAAIAAgACAA="
+
+
+png : String
+png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAGUlEQVR4nAXBAQ0AAAjAINwsbvILImlH4h4/gAaBNbRWFQAAAABJRU5ErkJggg=="
+
+
+file : String -> String -> String
+file args data =
+    "\u{001B}]1337;File=" ++ args ++ ":" ++ data ++ "\u{0007}"
+
+
+{-| The dump's image lines, the image's id (an implicit one) left out. -}
+shown : Vt.Term -> Array String
+shown t =
+    String.split "\n" (Vt.dump t)
+        |> Array.keepIf (\l -> String.startsWith "image " l)
+        |> Array.map (\l -> String.split " " l |> Array.dropFirst 2 |> String.join " ")
+
+
+{-| As `shown`, the pixels' checksum left out too. -}
+sizes : Vt.Term -> Array String
+sizes t =
+    shown t |> Array.map (\l -> String.split " " l |> Array.set 2 "-" |> String.join " ")
+
+
+cursor : Vt.Term -> { x : Int, y : Int }
+cursor t =
+    let
+        c =
+            Vt.cursorOf t
+    in
+    { x = c.x, y = c.y }
+
+
+suite : U.Suite
+suite =
+    Support.run "Iterm"
+        [ { name = "an uncompressed TIFF, as chafa sends, at its own size, the cursor right of it"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed (file "inline=1" tiff) (images {})
+                    in
+                    Expect.equal { images = [ "2x2 rgba 1162545528 at 0,0 cells 1x1 src 0,0,2,2 off 0,0 z -1" ], cursor = { x = 1, y = 0 } }
+                        { images = shown t, cursor = cursor t }
+          }
+        , { name = "a PNG, as timg sends, gives the same pixels"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x2 rgba 1162545528 at 0,0 cells 1x1 src 0,0,2,2 off 0,0 z -1" ]
+                        (shown (feed (file "size=79;inline=1" png) (images {})))
+          }
+        , { name = "without inline=1 it is a download, and nothing is shown"
+          , test =
+                \_ ->
+                    Expect.equal [] (shown (feed (file "name=dC50aWY=" tiff) (images {})))
+          }
+        , { name = "a size in cells is drawn by its placement; the cursor right of its last row"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed (file "inline=1;width=3;height=2;preserveAspectRatio=0" tiff) (images {})
+                    in
+                    Expect.equal { images = [ "2x2 rgba - at 0,0 cells 3x2 src 0,0,2,2 off 0,0 z -1" ], cursor = { x = 3, y = 1 } }
+                        { images = sizes t, cursor = cursor t }
+          }
+        , { name = "with the aspect kept, the image fits the box"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x2 rgba - at 0,0 cells 2x1 src 0,0,2,2 off 0,0 z -1" ]
+                        (sizes (feed (file "inline=1;width=4;height=1" tiff) (images {})))
+          }
+        , { name = "a size in pixels not its own is resampled to it"
+          , test =
+                \_ ->
+                    Expect.equal [ "7x7 rgba - at 0,0 cells 1x1 src 0,0,7,7 off 0,0 z -1" ]
+                        (sizes (feed (file "inline=1;width=7px" tiff) (images {})))
+          }
+        , { name = "doNotMoveCursor leaves the cursor"
+          , test =
+                \_ ->
+                    Expect.equal { x = 0, y = 0 } (cursor (feed (file "inline=1;width=3;height=2;doNotMoveCursor=1" tiff) (images {})))
+          }
+        , { name = "the multipart form: MultipartFile, FileParts, FileEnd"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x2 rgba 1162545528 at 0,0 cells 1x1 src 0,0,2,2 off 0,0 z -1" ]
+                        (shown
+                            (feed
+                                ("\u{001B}]1337;MultipartFile=inline=1\u{0007}\u{001B}]1337;FilePart="
+                                    ++ String.takeFirst 106 tiff
+                                    ++ "\u{001B}\\\u{001B}]1337;FilePart="
+                                    ++ String.dropFirst 106 tiff
+                                    ++ "\u{0007}\u{001B}]1337;FileEnd\u{0007}"
+                                )
+                                (images {})
+                            )
+                        )
+          }
+        , { name = "split across reads, a File gives the image one read gives"
+          , test =
+                \_ ->
+                    Expect.equal [ "2x2 rgba 1162545528 at 0,0 cells 1x1 src 0,0,2,2 off 0,0 z -1" ]
+                        (shown (feed (String.dropFirst 60 (file "inline=1" tiff)) (feed (String.takeFirst 60 (file "inline=1" tiff)) (images {}))))
+          }
+        , { name = "with them off (the oracle's terminal) nothing is shown"
+          , test =
+                \_ ->
+                    Expect.equal [] (shown (feed (file "inline=1" tiff) (Vt.withCellSize { width = 10, height = 20 } (term 10 5))))
+          }
+        , { name = "with an image limit of 0 nothing is shown (IM16)"
+          , test =
+                \_ ->
+                    Expect.equal [] (shown (feed (file "inline=1" tiff) (Vt.withImageLimit 0 (images {}))))
+          }
+        ]

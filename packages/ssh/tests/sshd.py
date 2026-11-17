@@ -90,6 +90,10 @@ SESSION_CASES = [
     ("session-exit-3", ["--exec", "exit 3"], []),
     ("session-pty-size", ["--exec", "stty size", "--pty", "100,30"], []),
     ("session-resize", ["--exec", "read x; stty size; exit 5", "--pty", "100,30", "--resize", "120,40", "--stdin2", "\\n"], []),
+    # the size in pixels pty-req and window-change carry (puritty
+    # docs/images.md IM21): rows, columns, width, height as the pty says
+    ("session-pty-pixels", ["--exec", "python3 -c 'import fcntl, termios, struct; print(*struct.unpack(\"4H\", fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))))'", "--pty", "100,30,800,480"], []),
+    ("session-resize-pixels", ["--exec", "read x; python3 -c 'import fcntl, termios, struct; print(*struct.unpack(\"4H\", fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))))'; exit 5", "--pty", "100,30,800,480", "--resize", "120,40,960,640", "--stdin2", "\\n"], []),
     ("session-iutf8", ["--exec", "stty -a | tr ' ;' '\\n\\n' | grep iutf8", "--pty", "80,24"], []),
     ("session-not-iutf8", ["--exec", "stty -a | tr ' ;' '\\n\\n' | grep iutf8", "--pty", "80,24", "--not-utf8"], []),
     ("session-env", ["--exec", "echo $LANG", "--env", "LANG=ko_KR.EUC-KR"], ["AcceptEnv LANG"]),

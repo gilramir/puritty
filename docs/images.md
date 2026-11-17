@@ -518,6 +518,39 @@ puritty with no flag (IM17 needed `-f kitty`). Sixel is the embedder's
 the oracle's terminal, so the differential fuzzer and the replay corpus
 see the core ignore a Sixel DCS as Ghostty does.
 
+## IM20 · iTerm2's images (2026-11-17)
+
+Built as `docs/images-iterm.md` says (IT1 the protocol, IT2 the choices,
+IT3 what was measured): `OSC 1337 File` and the multipart form, read as
+long strings; PNG and uncompressed TIFF decoded in Geng (`Vt.Tiff` new);
+sizes in cells drawn by the placement, other sizes resampled in the
+core; kept in the Kitty store as Sixel's are. With Sixel, it is the
+embedder's (`extraImages`, renamed from `sixel`). JPEG and GIF are left:
+the guide's promise of "all three" holds for what chafa and timg send,
+not yet for `imgcat` of a photo.
+
+## IM21 · The terminal's size in pixels (2026-11-17)
+
+Every pty puritty started, and every ssh `pty-req` and `window-change`,
+said the terminal was 0 by 0 pixels: a program that sizes its images by
+`TIOCGWINSZ` alone could not. chafa and timg ask `CSI 16 t` as well, so
+they drew right (SX3), but timg takes the pty's pixels when they are set.
+
+Now the size goes with its pixels, the cells times the cell size, at
+most 65,535 each: at the start of a local program and of each new tab,
+at each resize, at a reconnect, and in ssh's `pty-req` (the cell when the
+window opened) and `window-change` (sent as the session starts, SC26).
+For a local program this needed `Os.Process` to carry pixels (geng-lang
+`m3-os.md` OS38, Dnene61); on Windows a pseudo console has none, so only
+ssh sessions get them there. A zoom that keeps the columns and rows does
+not send the new pixels: the resize is sent when the cells change.
+
+**Measured:** puritty under the gate's font, a local `python3` reading
+`TIOCGWINSZ`: 24 80 720 408, the 9 by 17 cell. The ssh package's
+`session-pty-pixels` and `session-resize-pixels` against OpenSSH's sshd:
+the remote pty says 800 by 480, then 960 by 640 after a resize (68 of 68
+cases pass).
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),

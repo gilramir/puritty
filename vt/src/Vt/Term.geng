@@ -36,6 +36,7 @@ module Vt.Term exposing
     , psEscInter
     , psEscape
     , psGround
+    , psIterm
     , psOsc
     , psSixel
     , psString
@@ -79,9 +80,10 @@ type alias Embedder =
     , attributes : String
     , version : String
     , listening : Int
-    -- whether a Sixel DCS is drawn (`docs/images-sixel.md`): libghostty-vt
-    -- has no Sixel, so the oracle's terminal ignores one, as Ghostty does
-    , sixel : Bool
+    -- whether Sixel and iTerm2's images are drawn (`docs/images-sixel.md`,
+    -- `images-iterm.md` IT2): libghostty-vt has neither, so the oracle's
+    -- terminal ignores them, as Ghostty does
+    , extraImages : Bool
     }
 
 
@@ -91,7 +93,7 @@ ghosttyEmbedder =
     , attributes = "\u{001B}[?62;22c"
     , version = "puritty"
     , listening = 0
-    , sixel = False
+    , extraImages = False
     }
 
 
@@ -480,6 +482,12 @@ psSixel =
     11
 
 
+{-| An iTerm2 `File`'s or `FilePart`'s base64 (`docs/images-iterm.md`). -}
+psIterm : Int
+psIterm =
+    12
+
+
 {-| The APC being read, each read's run of it kept as a slice (`apcLen`
 in all, `apcOver` past `Vt.Kitty.apcMax`, `apcAbort` once CAN, SUB or a
 C1 has ended it with nothing done), and the images of the screen shown
@@ -495,6 +503,12 @@ type alias Images =
     , limit : Int
     -- a Sixel DCS being read: its parameters (its data in `apc`)
     , sixel : Maybe (Array Int)
+    -- an iTerm2 `File` or `FilePart` being read (`docs/images-iterm.md`):
+    -- its arguments, or a part of the multipart file (its data in `apc`)
+    , iterm : Maybe { args : String, part : Bool }
+    -- a multipart file begun by `MultipartFile`: its arguments and the
+    -- base64 of its parts so far
+    , multipart : Maybe { args : String, data : Array Bytes, len : Int }
     -- on a canvas the panes are composed on (`Vt.composeStyled`), their
     -- placements in view, moved to the canvas and clipped to their pane,
     -- each with its image (`docs/images.md` IM18)
@@ -525,7 +539,7 @@ type alias Composed =
 
 noImages : Images
 noImages =
-    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000, sixel = Nothing, composed = [] }
+    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000, sixel = Nothing, iterm = Nothing, multipart = Nothing, composed = [] }
 
 
 {-| A screen's images (KG7): by id, the placements showing them, the bytes

@@ -89,10 +89,10 @@ Where the references differ, xterm's semantics as WT emulates them:
     window clamped to 10000, and 10000 by 10000 for the most).
 11. ANSI `CSI 80h` is nothing, as it is today.
 
-Follow-ups noted: `pty-req` and `window-change` send 0 pixels, and the
-local pty's pixel size is not set; chafa and timg ask `CSI 16 t`, which
+Follow-ups noted: `pty-req` and `window-change` sent 0 pixels, and the
+local pty's pixel size was not set; chafa and timg ask `CSI 16 t`, which
 the core answers, but a program that reads only `TIOCGWINSZ` would not
-know the cell's pixels.
+know the cell's pixels. Done in `images.md` IM21.
 
 ## SX3 · What was measured (2026-11-17)
 
@@ -111,6 +111,5 @@ know the cell's pixels.
   register 0, drawn in two frames and in one).
 - **Not yet seen:** a Sixel image in a `tmux -CC` pane (tmux 3.4+ built
   with Sixel keeps the image itself and its control mode may not pass it
-  on); text written over an image erasing that cell's pixels (SX2 8);
-  the pixel size in `TIOCGWINSZ` and ssh's `pty-req`.
+  on); text written over an image erasing that cell's pixels (SX2 8).
 

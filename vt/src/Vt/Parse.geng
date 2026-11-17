@@ -103,6 +103,9 @@ feed bytes t =
     else if t.ps == psSixel then
         sixelString bytes n 0 { t | ps = psGround }
 
+    else if t.ps == psIterm then
+        itermString bytes n 0 { t | ps = psGround }
+
     else
         ignoreString bytes n 0 { t | ps = psGround }
 
@@ -613,10 +616,10 @@ oscString bytes n i t =
                 byteAt bytes i
         in
         if b == 7 then
-            resume bytes n (i + 1) (oscDispatch "\u{0007}" t)
+            resume bytes n (i + 1) (oscEnded "\u{0007}" t)
 
         else if b == 0x1B then
-            escape bytes n (i + 1) (oscDispatch "\u{001B}\\" t)
+            escape bytes n (i + 1) (oscEnded "\u{001B}\\" t)
 
         else if b == 0x18 || b == 0x1A then
             resume bytes n (i + 1) { t | str = Builder.empty 0 }
@@ -628,8 +631,117 @@ oscString bytes n i t =
             -- OSC 52: the rest kept whole, not to `stringMax`
             oscClip bytes n (i + 1) { t | str = Builder.empty 0, osc52 = { noOsc52 | requests = t.osc52.requests } }
 
+        else if (b == 0x3A || b == 0x3D) && t.embedder.extraImages && itermLong b t then
+            -- iTerm2's `File=ARGS:` or `FilePart=`: the base64 kept whole,
+            -- as an APC's is (`docs/images-iterm.md` IT2 1)
+            let
+                text =
+                    keptText t.str
+
+                im =
+                    t.images
+
+                reading =
+                    if b == 0x3A then
+                        { args = String.dropFirst 10 text, part = False }
+
+                    else
+                        { args = "", part = True }
+            in
+            itermString bytes n (i + 1) { t | str = Builder.empty 0, images = { im | iterm = Just reading, apc = [], apcLen = 0, apcOver = False } }
+
         else
             oscString bytes n (i + 1) (keepByte b t)
+
+
+{-| The text of a string kept so far, read without taking it. -}
+keptText : Builder UInt8 -> String
+keptText str =
+    Array.range 0 (Builder.length str - 1)
+        |> Array.mapAndKeepJust (\k -> Builder.get k str)
+        |> Bytes.fromUInt8s
+        |> Bytes.toStringLossy
+
+
+{-| Whether the OSC kept so far is the start of iTerm2's long strings: at a
+`:`, `1337;File=` and its arguments; at a `=`, `1337;FilePart`. -}
+itermLong : Int -> Term -> Bool
+itermLong b t =
+    let
+        text =
+            keptText t.str
+    in
+    if b == 0x3A then
+        String.startsWith "1337;File=" text
+
+    else
+        text == "1337;FilePart"
+
+
+{-| An OSC ended: iTerm2's `MultipartFile=` and `FileEnd` while its images
+are on (`docs/images-iterm.md`), any other the OSC dispatch's. -}
+oscEnded : String -> (taken t : Term) -> Term
+oscEnded ender t =
+    if t.embedder.extraImages && Builder.length t.str >= 12 then
+        let
+            text =
+                keptText t.str
+        in
+        if String.startsWith "1337;MultipartFile=" text || text == "1337;FileEnd" then
+            Kitty.itermOsc (String.dropFirst 5 text) { t | str = Builder.empty 0 }
+
+        else
+            oscDispatch ender t
+
+    else
+        oscDispatch ender t
+
+
+{-| iTerm2's base64 after `File=ARGS:` or `FilePart=`: each read's run to a
+control kept as a slice, as `sixelString` keeps a Sixel's, at most
+`Kitty.apcMax` bytes; BEL or ESC ends it, CAN or SUB drop it, other
+controls are skipped. -}
+itermString : Bytes -> Int -> (i : Int where 0 <= i) -> (taken t : Term) -> Term
+itermString bytes n i t =
+    let
+        j =
+            controlFrom bytes i n
+
+        im =
+            t.images
+
+        kept =
+            if im.apcOver || j <= i then
+                t
+
+            else if im.apcLen > Kitty.apcMax - (j - i) then
+                { t | images = { im | apcOver = True, apc = [], apcLen = 0 } }
+
+            else
+                { t | images = { im | apc = Array.pushLast (Bytes.slice i j bytes) im.apc, apcLen = im.apcLen + (j - i) } }
+    in
+    if j >= n then
+        { kept | ps = psIterm }
+
+    else
+        let
+            b =
+                byteAt bytes j
+
+            ki =
+                kept.images
+        in
+        if b == 7 then
+            resume bytes n (j + 1) (Kitty.itermDispatch kept)
+
+        else if b == 0x1B then
+            escape bytes n (j + 1) (Kitty.itermDispatch kept)
+
+        else if b == 0x18 || b == 0x1A then
+            resume bytes n (j + 1) { kept | images = { ki | apc = [], apcLen = 0, apcOver = False, iterm = Nothing } }
+
+        else
+            itermString bytes n (j + 1) kept
 
 
 {-| An OSC 52 after its `52;` (`docs/phase3-select.md` §16), to BEL or ST:
@@ -704,7 +816,7 @@ dcsString bytes n i t =
         else if b >= 0x80 && b < 0xA0 && dcsHeader t.str 0 0 then
             c1 bytes n (i + 1) b { t | str = Builder.empty 0 }
 
-        else if b == 0x71 && t.embedder.sixel && sixelHeader t.str 0 then
+        else if b == 0x71 && t.embedder.extraImages && sixelHeader t.str 0 then
             -- `q` after parameters alone: Sixel (`docs/images-sixel.md`)
             let
                 im =

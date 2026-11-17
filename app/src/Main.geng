@@ -286,7 +286,7 @@ type alias TabInfo =
 {-| How a tab is started: a local program at a size, with the character set
 of a local tab; or a session to a host, as the window's first was. -}
 type alias Starter =
-    { local : { columns : Int, rows : Int, directory : Maybe Path.Path } -> Task String Backend
+    { local : { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, directory : Maybe Path.Path } -> Task String Backend
     , ssh : Config.Host -> Task String { remote : Backend, problems : Array String }
     , charset : Charset
     }
@@ -905,7 +905,7 @@ begin cp vars given problems locale config cell restoring =
         options =
             -- the pty's IUTF8 says whether the program's bytes are UTF-8;
             -- a restored local tab in its directory (TB10)
-            Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 })
+            Process.defaultSpawnOptions (Terminal { columns = config.columns, rows = config.rows, widthInPixels = pixelsOf config.columns cell.width, heightInPixels = pixelsOf config.rows cell.height, utf8 = charset == Charset.Utf8 })
                 |> (\o -> { o | workingDirectory = firstDirectory restoring })
 
         charset =
@@ -939,7 +939,7 @@ begin cp vars given problems locale config cell restoring =
                 in
                 (when config.remote is
                     Just host ->
-                        sshBackend vars config charset host
+                        sshBackend vars config cell charset host
 
                     Nothing ->
                         meant Reason.NotSet
@@ -969,7 +969,7 @@ begin cp vars given problems locale config cell restoring =
                                         \size ->
                                             spawnFirst cp
                                                 commands
-                                                (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, utf8 = localCharset == Charset.Utf8 })
+                                                (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels, utf8 = localCharset == Charset.Utf8 })
                                                     |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
                                                 )
                                                 |> Task.mapError Os.Error.toString
@@ -982,7 +982,7 @@ begin cp vars given problems locale config cell restoring =
                                                             Just remote ->
                                                                 Task.succeed remote
                                                     )
-                                    , ssh = \host -> sshBackend vars config charset host
+                                    , ssh = \host -> sshBackend vars config cell charset host
                                     , charset = localCharset
                                     }
                             in
@@ -994,8 +994,8 @@ begin cp vars given problems locale config cell restoring =
 {-| The built-in ssh client's session to a host (`docs/ssh-client.md`
 SC18): its options from `~/.ssh/config` with the host entry's over them,
 the home, the local user and the agent's socket from the environment. -}
-sshBackend : Dict String String -> Config -> Charset -> Config.Host -> Task String { remote : Backend, problems : Array String }
-sshBackend vars config charset host =
+sshBackend : Dict String String -> Config -> Window.Cell -> Charset -> Config.Host -> Task String { remote : Backend, problems : Array String }
+sshBackend vars config cell charset host =
     Task.map2 (\net fs -> { net = net, fs = fs }) Net.initialize File.initialize
         |> Task.andThen
             (\permissions ->
@@ -1022,7 +1022,7 @@ sshBackend vars config charset host =
                                             , home = home
                                             , localUser = localUser
                                             , agents = agents
-                                            , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, utf8 = charset == Charset.Utf8 }
+                                            , terminal = Just { term = "xterm-256color", columns = config.columns, rows = config.rows, widthInPixels = pixelsOf config.columns cell.width, heightInPixels = pixelsOf config.rows cell.height, utf8 = charset == Charset.Utf8 }
                                             }
                                             |> Task.andThen
                                                 (\resolved ->
@@ -1485,8 +1485,22 @@ embedderOf config =
     , attributes = "\u{001B}[?62;4;21;22;52c"
     , version = "puritty " ++ purittyVersion
     , listening = listeningOf config
-    , sixel = True
+    , extraImages = True
     }
+
+
+{-| A terminal's size for the program on it: its cells, and its pixels as
+the cell size gives them (`docs/images.md` IM21), 0 while it is not
+known, at most 65,535 as a pty holds them. -}
+ptySize : Int -> Int -> Vt.Term -> Backend.Size
+ptySize cols rows term =
+    { columns = cols, rows = rows, widthInPixels = pixelsOf cols term.config.cellWidth, heightInPixels = pixelsOf rows term.config.cellHeight }
+
+
+{-| `cells` cells of `cell` pixels, at most 65,535. -}
+pixelsOf : Int -> Int -> Int
+pixelsOf cells cell =
+    clamp 0 65535 (clamp 0 32767 cells * clamp 0 4096 cell)
 
 
 {-| What the terminals tell the diagnostic log of the programs
@@ -3522,7 +3536,7 @@ sshTold : Session.Notice -> (taken m : Model) -> Task Error Model
 sshTold told m =
     when told is
         Session.Started ->
-            m.remote.resize { columns = m.term.cols, rows = m.term.rows }
+            m.remote.resize (ptySize m.term.cols m.term.rows m.term)
                 |> Task.map (\_ -> sshNoticed told m)
 
         Session.Asking (Session.HostKeyChanged k) ->
@@ -3762,7 +3776,7 @@ sshKey remote k m =
                             -- (docs/tmux.md TM93); and none of the old
                             -- session's modes kept, its screen left in place
                             -- (docs/tabs.md TB19)
-                            remote.reconnect { columns = m.term.cols, rows = m.term.rows }
+                            remote.reconnect (ptySize m.term.cols m.term.rows m.term)
                                 |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, tmux = freshTmux m.config m.term, term = Vt.restarted m.term, back = 0, selection = Nothing, urgent = True })
 
                         else if (screen.failed /= Nothing && enter) || escape then
@@ -6252,6 +6266,10 @@ openTabWith with m =
         host =
             m.tab.host
 
+        -- its pixels as the shown tab's cells give them (IM21)
+        px =
+            ptySize cols rows m.term
+
         -- a local tab starts in the shown one's directory (TB4), or the
         -- program's own when that cannot be read
         here =
@@ -6273,7 +6291,7 @@ openTabWith with m =
                             |> Task.mapError Os.Error.toString
                             |> Task.andThen
                                 (\dir ->
-                                    m.starter.local { columns = cols, rows = rows, directory = dir }
+                                    m.starter.local { columns = cols, rows = rows, widthInPixels = px.widthInPixels, heightInPixels = px.heightInPixels, directory = dir }
                                         -- a directory removed under the shown
                                         -- tab cannot be started in: the
                                         -- program's own, as when it cannot be
@@ -6284,7 +6302,7 @@ openTabWith with m =
                                                     Task.fail why
 
                                                 else
-                                                    m.starter.local { columns = cols, rows = rows, directory = Nothing }
+                                                    m.starter.local { columns = cols, rows = rows, widthInPixels = px.widthInPixels, heightInPixels = px.heightInPixels, directory = Nothing }
                                             )
                                 )
                             |> Task.map (\remote -> { remote = remote, problems = [] })
@@ -6635,7 +6653,7 @@ resizeShown cols rows m =
             told =
                 TmuxMode.resized { cols = cols, rows = rows } m.tmux
         in
-        m.remote.resize { columns = cols, rows = rows }
+        m.remote.resize (ptySize cols rows m.term)
             |> Task.map (\_ -> sendCommands told.commands { m | term = Vt.resize cols rows m.term, tmux = told.state, urgent = True, back = 0, selection = Nothing })
 
 

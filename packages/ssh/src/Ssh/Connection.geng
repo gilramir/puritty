@@ -42,7 +42,7 @@ whether it is UTF-8), the variables to ask for, and the command, or the
 user's shell for none.
 -}
 type alias Session =
-    { terminal : Maybe { term : String, columns : Int, rows : Int, utf8 : Bool }
+    { terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool }
     , env : Array { name : String, value : String }
     , command : Maybe String
     }
@@ -321,8 +321,8 @@ afterOpen st =
                                     [ Wire.writeText t.term
                                     , Wire.writeUint32 t.columns
                                     , Wire.writeUint32 t.rows
-                                    , Wire.writeUint32 0
-                                    , Wire.writeUint32 0
+                                    , Wire.writeUint32 t.widthInPixels
+                                    , Wire.writeUint32 t.heightInPixels
                                     , Wire.writeString (modes t.utf8)
                                     ]
                                 )
@@ -638,14 +638,14 @@ sendEof (Connection st) =
 
 
 {-| The terminal's new size (`window-change`). -}
-resize : { columns : Int, rows : Int } -> Connection -> Step
+resize : { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int } -> Connection -> Step
 resize size (Connection st) =
     let
         session =
             st.session
 
         terminal =
-            Maybe.map (\t -> { t | columns = size.columns, rows = size.rows }) session.terminal
+            Maybe.map (\t -> { t | columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels }) session.terminal
     in
     if st.phase == Closed || st.phase == Opening || terminal == Nothing then
         finish { st | session = { session | terminal = terminal } }
@@ -653,7 +653,7 @@ resize size (Connection st) =
     else
         finish
             (queue
-                (channelRequest st "window-change" False (Bytes.flatten [ Wire.writeUint32 size.columns, Wire.writeUint32 size.rows, Wire.writeUint32 0, Wire.writeUint32 0 ]))
+                (channelRequest st "window-change" False (Bytes.flatten [ Wire.writeUint32 size.columns, Wire.writeUint32 size.rows, Wire.writeUint32 size.widthInPixels, Wire.writeUint32 size.heightInPixels ]))
                 { st | session = { session | terminal = terminal } }
             )
 

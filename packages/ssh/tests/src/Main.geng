@@ -1473,15 +1473,10 @@ sessionOf options =
                 |> Maybe.map (String.split ",")
                 |> Maybe.andThen
                     (\parts ->
-                        when parts is
-                            [ c, r ] ->
-                                Maybe.map2 (\columns rows -> { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
-
-                            _ ->
-                                Nothing
+                        sizeOf parts
                     )
     in
-    { terminal = Maybe.map (\s -> { term = "xterm-256color", columns = s.columns, rows = s.rows, utf8 = not (Array.member "--not-utf8" options) }) size
+    { terminal = Maybe.map (\s -> { term = "xterm-256color", columns = s.columns, rows = s.rows, widthInPixels = s.widthInPixels, heightInPixels = s.heightInPixels, utf8 = not (Array.member "--not-utf8" options) }) size
     , env =
         option "--env" options
             |> Maybe.map
@@ -1549,14 +1544,7 @@ onConnectionEvent event session =
                     , option "--resize" options
                         |> Maybe.map (String.split ",")
                         |> Maybe.andThen
-                            (\parts ->
-                                when parts is
-                                    [ c, r ] ->
-                                        Maybe.map2 (\columns rows -> Connection.resize { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
-
-                                    _ ->
-                                        Nothing
-                            )
+                            (\parts -> sizeOf parts |> Maybe.map Connection.resize)
                     , Maybe.map Connection.write (text "--stdin2")
                     , if Array.member "--eof" options then
                         Just Connection.sendEof
@@ -1754,3 +1742,23 @@ watch args sources output =
                     Just Session.Ended ->
                         say "ended"
             )
+
+
+{-| `COLUMNS,ROWS`, or `COLUMNS,ROWS,WIDTH,HEIGHT` with the size in pixels
+(0 by 0 when not given). -}
+sizeOf : Array String -> Maybe { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int }
+sizeOf parts =
+    let
+        sized c r w h =
+            Maybe.map2 (\columns rows -> { columns = columns, rows = rows }) (String.toInt c) (String.toInt r)
+                |> Maybe.andThen (\cells -> Maybe.map2 (\width height -> { columns = cells.columns, rows = cells.rows, widthInPixels = width, heightInPixels = height }) (String.toInt w) (String.toInt h))
+    in
+    when parts is
+        [ c, r ] ->
+            sized c r "0" "0"
+
+        [ c, r, w, h ] ->
+            sized c r w h
+
+        _ ->
+            Nothing

@@ -1,0 +1,195 @@
+module Vt.Tiff exposing (Decoded, decode)
+
+{-| An uncompressed TIFF decoded to 8-bit RGBA (`docs/images-iterm.md`
+IT2): chafa's form of iTerm2's images. Either byte order; the first image
+of the file; no compression, 8 bits a sample, RGB with or without an extra
+sample (taken as its alpha), or a grey level; the strips in order, chunky.
+Anything else is not decoded, and says why.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+import Vt.Cell exposing (byteAt)
+import Vt.Reason as Reason
+
+
+type alias Decoded =
+    { width : Int
+    , height : Int
+    , pixels : Bytes
+    }
+
+
+type alias Entry =
+    { tag : Int, kind : Int, count : Int, at : Int }
+
+
+decode : Bytes -> Result String Decoded
+decode data =
+    let
+        b0 =
+            byteAt data 0
+
+        b1 =
+            byteAt data 1
+
+        little =
+            b0 == 0x49 && b1 == 0x49
+
+        big =
+            b0 == 0x4D && b1 == 0x4D
+    in
+    if Bytes.length data < 8 || not (little || big) then
+        Err "not a TIFF"
+
+    else
+        let
+            u16 at =
+                if little then
+                    Bitwise.or (byteAt data at) (Bitwise.shiftLeftBy 8 (byteAt data (at + 1)))
+
+                else
+                    Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt data at)) (byteAt data (at + 1))
+
+            u32 at =
+                if little then
+                    Bitwise.or (u16 at) (Bitwise.shiftLeftBy 16 (Bitwise.and 0x7FFF (u16 (at + 2))))
+
+                else
+                    Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0x7FFF (u16 at))) (u16 (at + 2))
+
+            ifd =
+                u32 4
+
+            count =
+                clamp 0 4096 (u16 ifd)
+
+            entries =
+                Array.range 0 (count - 1)
+                    |> Array.map (\k -> ifd + 2 + 12 * k)
+                    |> Array.map (\at -> { tag = u16 at, kind = u16 (at + 2), count = clamp 0 100000 (u32 (at + 4)), at = at + 8 })
+
+            size kind =
+                if kind == 3 then
+                    2
+
+                else if kind == 4 then
+                    4
+
+                else
+                    1
+
+            -- an entry's values: in the entry when they fit in its four
+            -- bytes, else where its offset says
+            values e =
+                let
+                    start =
+                        if e.count * size e.kind <= 4 then
+                            e.at
+
+                        else
+                            u32 e.at
+                in
+                Array.range 0 (e.count - 1)
+                    |> Array.map
+                        (\k ->
+                            if e.kind == 3 then
+                                u16 (start + 2 * k)
+
+                            else if e.kind == 4 then
+                                u32 (start + 4 * k)
+
+                            else
+                                byteAt data (start + k)
+                        )
+
+            field tag fallback =
+                when Array.findFirst (\e -> e.tag == tag) entries is
+                    Just found ->
+                        values found.value
+
+                    Nothing ->
+                        -- a tag the file leaves out: TIFF's default
+                        meant Reason.NotSet fallback
+
+            first tag fallback =
+                Maybe.withDefault (meant Reason.NotSet -1) (Array.first (field tag [ fallback ]))
+
+            width =
+                first 256 0
+
+            height =
+                first 257 0
+
+            samples =
+                first 277 1
+
+            photometric =
+                first 262 -1
+
+            strips =
+                Array.map2 (\o c -> Bytes.slice o (o + c) data) (field 273 []) (field 279 [])
+
+            raw =
+                Bytes.flatten strips
+        in
+        if width < 1 || height < 1 || width > 10000 || height > 10000 then
+            Err "dimensions"
+
+        else if first 259 1 /= 1 then
+            Err "compressed"
+
+        else if first 284 1 /= 1 then
+            Err "planar"
+
+        else if Array.any (\v -> v /= 8) (field 258 [ 8 ]) then
+            Err "not 8 bits a sample"
+
+        else if not ((photometric == 2 && samples >= 3 && samples <= 4) || (photometric <= 1 && photometric >= 0 && samples == 1)) then
+            Err "colors"
+
+        else if Bytes.length raw < width * height * samples then
+            Err "short"
+
+        else
+            Ok { width = width, height = height, pixels = rgba samples photometric (width * height) raw }
+
+
+{-| The samples of `n` pixels as RGBA. -}
+rgba : Int -> Int -> Int -> Bytes -> Bytes
+rgba samples photometric n raw =
+    if samples == 4 then
+        Bytes.slice 0 (n * 4) raw
+
+    else
+        Bytes.fromUInt8s
+            (Builder.toArray
+                (Array.foldl
+                    (\i out ->
+                        let
+                            at =
+                                i * samples
+
+                            px =
+                                if samples == 3 then
+                                    [ byteAt raw at, byteAt raw (at + 1), byteAt raw (at + 2), 255 ]
+
+                                else
+                                    let
+                                        v =
+                                            if photometric == 0 then
+                                                255 - byteAt raw at
+
+                                            else
+                                                byteAt raw at
+                                    in
+                                    [ v, v, v, 255 ]
+                        in
+                        Array.foldl (\v o -> Builder.pushLast (UInt8.fromInt v) o) out px
+                    )
+                    (Builder.empty (n * 4))
+                    (Array.range 0 (n - 1))
+                )
+            )

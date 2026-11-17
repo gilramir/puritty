@@ -1,0 +1,291 @@
+module Vt.Iterm exposing (Shown, file)
+
+{-| iTerm2's inline images (`docs/images-iterm.md` IT2): a `File`'s
+arguments and base64 made into the image to show, its size and how it is
+placed. Pure: the caller keeps and places it (`Vt.Kitty.itermDispatch`).
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Math
+import UInt8
+import Vt.Base64 as Base64
+import Vt.Cell exposing (byteAt)
+import Vt.Png as Png
+import Vt.Reason as Reason
+import Vt.Tiff as Tiff
+
+
+{-| An image to show: its pixels (RGBA), and the cells it is drawn in (0
+and 0 for its own size, as Kitty's placements say), and whether the
+cursor moves past it. -}
+type alias Shown =
+    { width : Int
+    , height : Int
+    , pixels : Bytes
+    , cols : Int
+    , rows : Int
+    , moves : Bool
+    }
+
+
+type Dimension
+    = Auto
+    | Cells Int
+    | Pixels Int
+    | Percent Int
+
+
+{-| The image of a `File` (its arguments, its base64), for a terminal of
+`cols` by `rows` cells of `cw` by `ch` pixels (0 unknown), holding at most
+`limit` bytes of pixels; none for a download (`inline` not set), a format
+not decoded, or an image too big. -}
+file : { args : String, base64 : Bytes, cw : Int, ch : Int, cols : Int, rows : Int, limit : Int } -> Maybe Shown
+file r =
+    let
+        args =
+            arguments r.args
+
+        flag key fallback =
+            when Dict.get key args is
+                Just v ->
+                    v /= "0"
+
+                Nothing ->
+                    meant Reason.NotSet fallback
+    in
+    if not (flag "inline" False) then
+        -- a download: puritty does not save files a program sends
+        Nothing
+
+    else
+        when Base64.decode r.base64 is
+            Nothing ->
+                meant Reason.FromOutside Nothing
+
+            Just data ->
+                when decoded r.limit data is
+                    Err _ ->
+                        meant Reason.FromOutside Nothing
+
+                    Ok img ->
+                        sized r args (flag "preserveAspectRatio" True) (not (flag "doNotMoveCursor" False)) img
+
+
+{-| PNG (at most `most` bytes of pixels), or an uncompressed TIFF. -}
+decoded : Int -> Bytes -> Result String { width : Int, height : Int, pixels : Bytes }
+decoded most data =
+    if byteAt data 0 == 0x89 then
+        Png.decode most data
+            |> Result.map (\png -> { width = png.width, height = png.height, pixels = png.pixels })
+
+    else
+        Tiff.decode data
+
+
+{-| `key=value` separated by `;`; a piece with no `=` left out. -}
+arguments : String -> Dict String String
+arguments text =
+    String.split ";" text
+        |> Array.foldl
+            (\piece acc ->
+                when String.firstIndexOf "=" piece is
+                    Just at ->
+                        Dict.set (String.takeFirst at piece) (String.dropFirst (at + 1) piece) acc
+
+                    Nothing ->
+                        meant Reason.FromOutside acc
+            )
+            Dict.empty
+
+
+dimension : Maybe String -> Dimension
+dimension text =
+    when text is
+        Nothing ->
+            meant Reason.NotSet Auto
+
+        Just s ->
+            if s == "auto" then
+                Auto
+
+            else if String.endsWith "px" s then
+                number Pixels (String.dropLast 2 s)
+
+            else if String.endsWith "%" s then
+                number Percent (String.dropLast 1 s)
+
+            else
+                number Cells s
+
+
+number : (Int -> Dimension) -> String -> Dimension
+number make s =
+    when String.toInt s is
+        Just n ->
+            make (clamp 0 100000 n)
+
+        Nothing ->
+            meant Reason.FromOutside Auto
+
+
+{-| A dimension in pixels, for a cell of `cell` pixels and `count` cells. -}
+pixels : Dimension -> Int -> Int -> Maybe Int
+pixels d cell count =
+    when d is
+        Auto ->
+            Nothing
+
+        Cells n ->
+            Just (clamp 0 10000 (n * clamp 0 4096 cell))
+
+        Pixels n ->
+            Just (clamp 0 10000 n)
+
+        Percent n ->
+            Just (clamp 0 10000 (clamp 0 100 n * clamp 0 1000 count * clamp 0 4096 cell // 100))
+
+
+{-| `w` by `h` scaled by the smaller of `bw/w` and `bh/h`, so that it fits
+the box keeping its aspect. -}
+fit : Int -> Int -> Int -> Int -> { w : Int, h : Int }
+fit w h bw bh =
+    if toFloat bw * toFloat h <= toFloat bh * toFloat w then
+        -- the width is what limits it
+        { w = bw, h = max 1 (Math.round (toFloat h * toFloat bw / toFloat w)) }
+
+    else
+        { w = max 1 (Math.round (toFloat w * toFloat bh / toFloat h)), h = bh }
+
+
+{-| The size as `docs/images-iterm.md` IT2 3 says, and the image drawn at
+it: in whole cells by its placement, at its own size, or resampled. -}
+sized : { args : String, base64 : Bytes, cw : Int, ch : Int, cols : Int, rows : Int, limit : Int } -> Dict String String -> Bool -> Bool -> { width : Int, height : Int, pixels : Bytes } -> Maybe Shown
+sized r args keep moves img =
+    let
+        cw =
+            clamp 0 4096 r.cw
+
+        ch =
+            clamp 0 4096 r.ch
+
+        nw =
+            clamp 1 10000 img.width
+
+        nh =
+            clamp 1 10000 img.height
+
+        wanted =
+            { w = pixels (dimension (Dict.get "width" args)) cw r.cols, h = pixels (dimension (Dict.get "height" args)) ch r.rows }
+
+        target =
+            -- a width or height not given is `auto`
+            when wanted.w is
+                Nothing ->
+                    meant Reason.NotSet
+                        when wanted.h is
+                            Nothing ->
+                                -- its own size, fitted to the terminal
+                                meant Reason.NotSet
+                                    let
+                                        sw =
+                                            clamp 0 10000 (cw * clamp 0 1000 r.cols)
+
+                                        sh =
+                                            clamp 0 10000 (ch * clamp 0 1000 r.rows)
+                                    in
+                                    if sw > 0 && sh > 0 && (nw > sw || nh > sh) then
+                                        fit nw nh sw sh
+
+                                    else
+                                        { w = nw, h = nh }
+
+                            Just h ->
+                                { w = max 1 (Math.round (toFloat nw * toFloat h / toFloat nh)), h = h }
+
+                Just w ->
+                    when wanted.h is
+                        Nothing ->
+                            meant Reason.NotSet { w = w, h = max 1 (Math.round (toFloat nh * toFloat w / toFloat nw)) }
+
+                        Just h ->
+                            if keep && w > 0 && h > 0 then
+                                fit nw nh w h
+
+                            else
+                                { w = w, h = h }
+
+        tw =
+            clamp 0 10000 target.w
+
+        th =
+            clamp 0 10000 target.h
+    in
+    if tw == 0 || th == 0 || tw * th > r.limit // 4 then
+        Nothing
+
+    else if tw == nw && th == nh then
+        Just { width = nw, height = nh, pixels = img.pixels, cols = 0, rows = 0, moves = moves }
+
+    else if cw > 0 && ch > 0 && modBy cw tw == 0 && modBy ch th == 0 then
+        -- whole cells: the placement scales it
+        Just { width = nw, height = nh, pixels = img.pixels, cols = tw // cw, rows = th // ch, moves = moves }
+
+    else
+        Just { width = tw, height = th, pixels = resample nw nh img.pixels tw th, cols = 0, rows = 0, moves = moves }
+
+
+{-| RGBA of `w` by `h` resampled bilinearly to `tw` by `th`. -}
+resample : Int -> Int -> Bytes -> Int -> Int -> Bytes
+resample w h src tw th =
+    let
+        sx =
+            toFloat w / toFloat tw
+
+        sy =
+            toFloat h / toFloat th
+
+        at x y c =
+            toFloat (byteAt src ((clamp 0 (h - 1) y * w + clamp 0 (w - 1) x) * 4 + c))
+
+        pixel x y out =
+            let
+                fx =
+                    max 0 ((toFloat x + 0.5) * sx - 0.5)
+
+                fy =
+                    max 0 ((toFloat y + 0.5) * sy - 0.5)
+
+                x0 =
+                    Math.floor fx
+
+                y0 =
+                    Math.floor fy
+
+                ax =
+                    fx - toFloat x0
+
+                ay =
+                    fy - toFloat y0
+
+                channel c o =
+                    let
+                        top =
+                            at x0 y0 c * (1 - ax) + at (x0 + 1) y0 c * ax
+
+                        bottom =
+                            at x0 (y0 + 1) c * (1 - ax) + at (x0 + 1) (y0 + 1) c * ax
+                    in
+                    Builder.pushLast (UInt8.fromInt (clamp 0 255 (Math.round (top * (1 - ay) + bottom * ay)))) o
+            in
+            channel 3 (channel 2 (channel 1 (channel 0 out)))
+    in
+    Bytes.fromUInt8s
+        (Builder.toArray
+            (Array.foldl
+                (\y out -> Array.foldl (\x o -> pixel x y o) out (Array.range 0 (tw - 1)))
+                (Builder.empty (tw * th * 4))
+                (Array.range 0 (th - 1))
+            )
+        )

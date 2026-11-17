@@ -7,6 +7,8 @@ module Vt.Kitty exposing
     , dumpLines
     , imageByKey
     , imageOf
+    , itermDispatch
+    , itermOsc
     , screensSwapped
     , shownPlacements
     , sixelDispatch
@@ -28,6 +30,7 @@ import Int64
 import Vt.Base64 as Base64
 import Vt.Cell exposing (byteAt)
 import Vt.Inflate as Inflate
+import Vt.Iterm as Iterm
 import Vt.Placed as Placed exposing (gridSize, pixelSize, rect, source)
 import Vt.Png as Png
 import Vt.Reason as Reason
@@ -1046,14 +1049,40 @@ sixelDispatch t =
                 meant Reason.FromOutside reset
 
 
-{-| A decoded Sixel image kept and placed (SX2 8, 9): in the store as an
-implicit, transient image, its placement under the text at the cursor, or
-at the top left with DECSDM (mode 80) set; then, without DECSDM, the
-cursor taken down through the rows the image covers by IND (which
-scrolls), to the start column of its bottom row, or right of the image
-there with mode 8452 set. -}
+{-| A decoded Sixel image kept and placed (SX2 8, 9): at the cursor, or at
+the top left with DECSDM (mode 80) set, the cursor then kept; else left in
+the start column of its bottom row, or right of the image there with mode
+8452 set. -}
 placeSixel : Sixel.Decoded -> (taken t : Term) -> Term
 placeSixel d t =
+    let
+        decsdm =
+            Dict.get 80 t.modes == Just True
+    in
+    placeShown { width = d.width, height = d.height, pixels = d.pixels, cols = 0, rows = 0 }
+        { home = decsdm
+        , cursor =
+            if decsdm then
+                0
+
+            else if Dict.get 8452 t.modes == Just True then
+                2
+
+            else
+                1
+        }
+        t
+
+
+{-| An image of Sixel or iTerm2 kept and placed (SX2 8, `images-iterm.md`
+IT2 4): in the store as an implicit, transient image, its placement under
+the text at the cursor (`home`: at the screen's top left), drawn in `cols`
+by `rows` cells or at its own size (0 and 0); then the cursor (`cursor` 0
+kept) taken down through the rows the image covers by IND (which scrolls),
+to the start column of its bottom row (1) or right of the image there
+(2). -}
+placeShown : { width : Int, height : Int, pixels : Bytes, cols : Int, rows : Int } -> { home : Bool, cursor : Int } -> (taken t : Term) -> Term
+placeShown d how t =
     let
         store =
             t.images.shown
@@ -1073,12 +1102,6 @@ placeSixel d t =
         counted =
             { store | implicit = store.implicit + 1 }
 
-        decsdm =
-            Dict.get 80 t.modes == Just True
-
-        right =
-            Dict.get 8452 t.modes == Just True
-
         geo =
             geoOf t
 
@@ -1086,14 +1109,14 @@ placeSixel d t =
             geo.top
 
         row =
-            if decsdm then
+            if how.home then
                 top
 
             else
                 clamp 0 1073752017 (top + clamp 0 999 t.y)
 
         col =
-            if decsdm then
+            if how.home then
                 0
 
             else
@@ -1118,15 +1141,15 @@ placeSixel d t =
                     , h = 0
                     , offX = 0
                     , offY = 0
-                    , cols = 0
-                    , rows = 0
+                    , cols = clamp 0 10000 d.cols
+                    , rows = clamp 0 10000 d.rows
                     , z = -1
                     }
 
                 placed =
                     withStore { added | placements = Array.pushLast placement added.placements, internal = added.internal + 1 } t
             in
-            if decsdm then
+            if how.cursor == 0 then
                 placed
 
             else
@@ -1140,7 +1163,10 @@ placeSixel d t =
                     rowsCovered =
                         clamp 1
                             10000
-                            (if ch > 0 then
+                            (if d.rows > 0 then
+                                d.rows
+
+                             else if ch > 0 then
                                 (clamp 0 10000 d.height + ch - 1) // ch
 
                              else
@@ -1148,25 +1174,21 @@ placeSixel d t =
                             )
 
                     colsCovered =
-                        if cw > 0 then
-                            (clamp 0 10000 d.width + cw - 1) // cw
+                        clamp 1
+                            10000
+                            (if d.cols > 0 then
+                                d.cols
 
-                        else
-                            1
+                             else if cw > 0 then
+                                (clamp 0 10000 d.width + cw - 1) // cw
 
-                    lastTop =
-                        clamp 0 10000 ((d.bands - 1) * 6 * d.aspect)
+                             else
+                                1
+                            )
 
-                    lastRow =
-                        if ch > 0 then
-                            lastTop // ch
-
-                        else
-                            0
-
-                    -- on the image's bottom row, as xterm and foot leave it
-                    -- and chafa and timg expect (they print the newline
-                    -- after it); with 8452, right of the image there (SX2 9)
+                    -- on the image's bottom row, as xterm and foot leave a
+                    -- Sixel's and chafa and timg expect (they print the
+                    -- newline after it); right of the image there for 2
                     moved =
                         indexTimes (rowsCovered - 1) placed
 
@@ -1174,13 +1196,114 @@ placeSixel d t =
                         row + (rowsCovered - 1) - pushed moved
 
                     x =
-                        if right then
-                            col + clamp 0 10000 colsCovered
+                        if how.cursor == 2 then
+                            col + colsCovered
 
                         else
                             col
                 in
                 { moved | wrapNext = False, y = clamp 0 (moved.rows - 1) y, x = clamp 0 (moved.cols - 1) x }
+
+
+-- ITERM2 (`docs/images-iterm.md`)
+
+
+{-| An iTerm2 `File` or `FilePart` ended: a file shown, a part added to the
+multipart file begun. Nothing when images are off (a limit of 0). -}
+itermDispatch : (taken t : Term) -> Term
+itermDispatch t =
+    let
+        im =
+            t.images
+
+        data =
+            Bytes.flatten im.apc
+
+        over =
+            im.apcOver
+
+        reset =
+            { t | images = { im | apc = [], apcLen = 0, apcOver = False, iterm = Nothing } }
+    in
+    when im.iterm is
+        Nothing ->
+            meant Reason.NotKnown reset
+
+        Just reading ->
+            if over || im.limit == 0 then
+                -- too long, or images off: the multipart file too
+                let
+                    r =
+                        reset.images
+                in
+                { reset | images = { r | multipart = Nothing } }
+
+            else if reading.part then
+                when im.multipart is
+                    Just m ->
+                        let
+                            r =
+                                reset.images
+                        in
+                        if m.len + Bytes.length data > apcMax then
+                            { reset | images = { r | multipart = Nothing } }
+
+                        else
+                            { reset | images = { r | multipart = Just { m | data = Array.pushLast data m.data, len = m.len + Bytes.length data } } }
+
+                    Nothing ->
+                        -- a part with no `MultipartFile` before it
+                        meant Reason.FromOutside reset
+
+            else
+                itermShow reading.args data reset
+
+
+{-| `MultipartFile=ARGS` begins a file in parts; `FileEnd` shows it. -}
+itermOsc : String -> (taken t : Term) -> Term
+itermOsc text t =
+    let
+        im =
+            t.images
+    in
+    if String.startsWith "MultipartFile=" text then
+        { t | images = { im | multipart = Just { args = String.dropFirst 14 text, data = [], len = 0 } } }
+
+    else
+        when im.multipart is
+            Just m ->
+                itermShow m.args (Bytes.flatten m.data) { t | images = { im | multipart = Nothing } }
+
+            Nothing ->
+                -- `FileEnd` with nothing begun
+                meant Reason.FromOutside t
+
+
+itermShow : String -> Bytes -> (taken t : Term) -> Term
+itermShow args base64 t =
+    let
+        geo =
+            geoOf t
+    in
+    if t.images.limit == 0 then
+        t
+
+    else
+        when Iterm.file { args = args, base64 = base64, cw = geo.cw, ch = geo.ch, cols = t.cols, rows = t.rows, limit = t.images.limit } is
+            Just shown ->
+                placeShown { width = shown.width, height = shown.height, pixels = shown.pixels, cols = shown.cols, rows = shown.rows }
+                    { home = False
+                    , cursor =
+                        if shown.moves then
+                            2
+
+                        else
+                            0
+                    }
+                    t
+
+            Nothing ->
+                meant Reason.FromOutside t
 
 
 -- DELETING (KG3)
