@@ -1,0 +1,465 @@
+module Vt.Placed exposing
+    ( Geo
+    , Plan
+    , altScrolled
+    , geoAt
+    , gridSize
+    , pixelSize
+    , rect
+    , scrollApply
+    , scrollPlan
+    , source
+    )
+
+{-| Part of `Vt.Kitty` that the scrolls need too (`docs/images-kitty.md`
+KG6, KG7): a placement's geometry, and what a scroll within margins does
+to the placements, planned in screen rows before the scroll and applied
+after it, when the rows pushed into the scrollback are known
+(`docs/images.md` IM11, IM14). Below `Vt.Scroll`, which calls it.
+-}
+
+import Dict
+import Int64
+import Vt.Reason as Reason
+import Vt.Term exposing (..)
+
+
+{-| What the geometry needs of the terminal (KG6): the cell's size in
+pixels, the screen's columns and rows, the absolute row of its top, and
+the rows that have left the scrollback. -}
+type alias Geo =
+    { cw : Int, ch : Int, cols : Int, rows : Int, top : Int, gone : Int where 0 <= cw && cw <= 4096 && 0 <= ch && ch <= 4096 && 1 <= cols && cols <= 1000 && 1 <= rows && rows <= 1000 && 0 <= top && top <= 1073751017 && 0 <= gone && gone <= 536870912 }
+
+
+-- GEOMETRY (KG6)
+
+
+{-| The source rectangle in the image's pixels. -}
+source : Image -> Placement -> { x : Int, y : Int, w : Int, h : Int }
+source image pl =
+    let
+        sx =
+            min pl.x image.width
+
+        sy =
+            min pl.y image.height
+    in
+    { x = sx
+    , y = sy
+    , w =
+        min
+            (if pl.w == 0 then
+                image.width
+
+             else
+                pl.w
+            )
+            (image.width - sx)
+    , h =
+        min
+            (if pl.h == 0 then
+                image.height
+
+             else
+                pl.h
+            )
+            (image.height - sy)
+    }
+
+
+{-| The size a placement is drawn at, in pixels. -}
+pixelSize : Image -> Placement -> Geo -> { w : Int, h : Int }
+pixelSize image pl geo =
+    let
+        src =
+            source image pl
+
+        cw =
+            geo.cw
+
+        ch =
+            geo.ch
+
+        rounded a b d =
+            if d <= 0 then
+                0
+
+            else
+                clamp 0 41000000 (Int64.toIntWrap ((Int64.fromInt a * Int64.fromInt b + Int64.fromInt (d // 2)) // Int64.fromInt d))
+    in
+    if pl.cols == 0 && pl.rows == 0 then
+        { w = src.w, h = src.h }
+
+    else if pl.cols > 0 && pl.rows > 0 then
+        { w = max 0 (cw * pl.cols - pl.offX), h = max 0 (ch * pl.rows - pl.offY) }
+
+    else if pl.cols > 0 then
+        let
+            w =
+                max 0 (cw * pl.cols - pl.offX)
+        in
+        { w = w, h = rounded w src.h src.w }
+
+    else
+        let
+            h =
+                max 0 (ch * pl.rows - pl.offY)
+        in
+        { w = rounded h src.w src.h, h = h }
+
+
+{-| The cells a placement covers. -}
+gridSize : Image -> Placement -> Geo -> { cols : Int, rows : Int }
+gridSize image pl geo =
+    let
+        cw =
+            geo.cw
+
+        ch =
+            geo.ch
+
+        px =
+            pixelSize image pl geo
+
+        up a d =
+            (a + d - 1) // d
+    in
+    if pl.cols > 0 && pl.rows > 0 then
+        { cols = pl.cols, rows = pl.rows }
+
+    else if cw == 0 || ch == 0 then
+        { cols = 0, rows = 0 }
+
+    else
+        { cols = up (px.w + pl.offX) cw, rows = up (px.h + pl.offY) ch }
+
+
+{-| The cells a placement covers on the screen and in the scrollback: its
+anchor's absolute row and column, then the last of each, or none when it
+covers no cell or is virtual. -}
+rect : Store -> Placement -> Geo -> Maybe { top : Int, left : Int, bottom : Int, right : Int }
+rect store pl geo =
+    when Dict.get pl.image store.images is
+        Just image ->
+            let
+                size =
+                    gridSize image pl geo
+            in
+            if pl.virtual || size.cols == 0 || size.rows == 0 then
+                Nothing
+
+            else
+                Just { top = pl.row, left = pl.col, bottom = pl.row + size.rows - 1, right = min (pl.col + size.cols - 1) (geo.cols - 1) }
+
+        Nothing ->
+            meant Reason.NotKnown Nothing
+
+
+{-| The geometry's terminal, `top` the rows pushed into the scrollback. -}
+geoAt : Int -> Term -> Geo
+geoAt top t =
+    { cw = clamp 0 4096 t.config.cellWidth, ch = clamp 0 4096 t.config.cellHeight, cols = clamp 1 1000 t.cols, rows = clamp 1 1000 t.rows, top = clamp 0 1073751017 top, gone = clamp 0 536870912 t.back.gone }
+
+
+-- SCROLLS WITHIN MARGINS (KG7)
+
+
+{-| A scroll's plan for the placements: each one kept, with its screen row
+after the scroll, or its absolute row kept (`Nothing`) for one the scroll
+does not touch; those scrolled out of the region left out. -}
+type alias Plan =
+    Maybe (Array { placement : Placement, row : Maybe Int })
+
+
+{-| What a scroll of `delta` rows (up negative) within the margins does to
+the shown screen's placements, as libghostty-vt's `scrollMarginsBegin`:
+one wholly inside the region moves, clipped at a margin (its source
+rectangle and rows shrinking) or gone when nothing is left; any other on
+the screen keeps its screen row (`inPlace` false: the rows that leave go
+to the scrollback, so it is anchored again); one in the scrollback is not
+touched, nor, in place, one outside the region's rows. `geo.top` is the
+rows pushed before the scroll. None when the region is the whole screen
+or there are no placements. -}
+scrollPlan : Int -> Bool -> Geo -> Term -> Plan
+scrollPlan delta0 inPlace geo t =
+    let
+        delta =
+            clamp -1000 1000 delta0
+
+        store =
+            t.images.shown
+
+        top =
+            t.top
+
+        bottom =
+            t.bottom
+
+        whole =
+            t.top == 0 && t.bottom == t.rows - 1 && t.left == 0 && t.right == t.cols - 1
+    in
+    if whole || Array.isEmpty store.placements then
+        Nothing
+
+    else
+        Just
+            (Array.mapAndKeepJust
+                (\pl ->
+                    let
+                        y =
+                            pl.row - geo.top
+                    in
+                    if pl.virtual || y < 0 || (inPlace && (y < top || y > bottom)) then
+                        Just { placement = pl, row = Nothing }
+
+                    else
+                        when Dict.get pl.image store.images is
+                            Just image ->
+                                let
+                                    grid =
+                                        gridSize image pl geo
+
+                                    inside =
+                                        grid.rows > 0
+                                            && grid.cols > 0
+                                            && y >= top
+                                            && y + grid.rows - 1 <= bottom
+                                            && pl.col >= t.left
+                                            && min (pl.col + grid.cols - 1) (t.cols - 1) <= t.right
+                                in
+                                if not inside then
+                                    Just { placement = pl, row = Just y }
+
+                                else
+                                    let
+                                        newY =
+                                            y + delta
+
+                                        topClip =
+                                            max 0 (top - newY)
+
+                                        bottomClip =
+                                            max 0 (newY + grid.rows - 1 - bottom)
+                                    in
+                                    if topClip >= grid.rows || bottomClip >= grid.rows then
+                                        Nothing
+
+                                    else if topClip > 0 then
+                                        Maybe.map (\c -> { placement = c, row = Just top }) (clipTop image geo topClip grid.rows pl)
+
+                                    else if bottomClip > 0 then
+                                        Maybe.map (\c -> { placement = c, row = Just newY }) (clipBottom image geo bottomClip grid.rows pl)
+
+                                    else
+                                        Just { placement = pl, row = Just newY }
+
+                            Nothing ->
+                                meant Reason.NotKnown Just { placement = pl, row = Just y }
+                )
+                store.placements
+            )
+
+
+{-| `clipTop`: the first `count` of a placement's `span` rows cut off: a
+scaled one loses that share of its source, one at its own size a cell's
+height of pixels a row; none when nothing is left. -}
+clipTop : Image -> Geo -> Int -> Int -> Placement -> Maybe Placement
+clipTop image geo count0 span0 pl =
+    let
+        count =
+            clamp 0 10000 count0
+
+        span =
+            clamp 1 10000 span0
+
+        src0 =
+            source image pl
+
+        src =
+            { x = clamp 0 10000 src0.x, y = clamp 0 10000 src0.y, w = clamp 0 10000 src0.w, h = clamp 0 10000 src0.h }
+
+        crop =
+            clamp 0
+                40960000
+                (if pl.rows > 0 then
+                    src.h * count // span
+
+                 else
+                    geo.ch * count
+                )
+    in
+    if crop >= src.h then
+        Nothing
+
+    else
+        let
+            nx =
+                clamp 0 10000 src.x
+
+            ny =
+                clamp 0 10000 (src.y + crop)
+
+            nw =
+                clamp 0 10000 src.w
+
+            nh =
+                clamp 0 10000 (src.h - crop)
+
+            nrows =
+                if pl.rows > 0 then
+                    clamp 0 10000 (pl.rows - count)
+
+                else
+                    0
+        in
+        Just { pl | x = nx, y = ny, w = nw, h = nh, rows = nrows }
+
+
+{-| `clipBottom`: the last `count` of a placement's `span` rows cut off. -}
+clipBottom : Image -> Geo -> Int -> Int -> Placement -> Maybe Placement
+clipBottom image geo count0 span0 pl =
+    let
+        count =
+            clamp 0 10000 count0
+
+        span =
+            clamp 1 10000 span0
+
+        src0 =
+            source image pl
+
+        src =
+            { x = clamp 0 10000 src0.x, y = clamp 0 10000 src0.y, w = clamp 0 10000 src0.w, h = clamp 0 10000 src0.h }
+    in
+    if src.h == 0 then
+        Nothing
+
+    else if pl.rows > 0 then
+        let
+            crop =
+                clamp 0 10000 (src.h * count // span)
+        in
+        if crop >= src.h then
+            Nothing
+
+        else
+            let
+                nx =
+                    clamp 0 10000 src.x
+
+                ny =
+                    clamp 0 10000 src.y
+
+                nw =
+                    clamp 0 10000 src.w
+
+                nh =
+                    clamp 0 10000 (src.h - crop)
+
+                nrows =
+                    clamp 0 10000 (pl.rows - count)
+            in
+            Just { pl | x = nx, y = ny, w = nw, h = nh, rows = nrows }
+
+    else
+        let
+            visible =
+                geo.ch * clamp 0 10000 (span - count)
+        in
+        if visible <= pl.offY then
+            Nothing
+
+        else
+            let
+                nx =
+                    clamp 0 10000 src.x
+
+                ny =
+                    clamp 0 10000 src.y
+
+                nw =
+                    clamp 0 10000 src.w
+
+                nh =
+                    clamp 0 10000 (min src.h (visible - pl.offY))
+            in
+            Just { pl | x = nx, y = ny, w = nw, h = nh }
+
+
+{-| The plan applied after the scroll, `pushed` the rows pushed then. -}
+scrollApply : Plan -> Int -> (taken t : Term) -> (r : Term where r.rows == t.rows && r.cols == t.cols)
+scrollApply plan pushed0 t =
+    let
+        pushed =
+            clamp 0 1073751017 pushed0
+    in
+    when plan is
+        Just placed ->
+            let
+                im =
+                    t.images
+
+                store =
+                    im.shown
+
+                moved =
+                    Array.map
+                        (\p ->
+                            when p.row is
+                                Just y ->
+                                    let
+                                        pl =
+                                            p.placement
+                                    in
+                                    { pl | row = clamp 0 1073752017 (pushed + clamp -1000 1000 y) }
+
+                                Nothing ->
+                                    meant Reason.NotSet p.placement
+                        )
+                        placed
+            in
+            { t | images = { im | shown = { store | placements = moved } } }
+
+        Nothing ->
+            meant Reason.NotOpen t
+
+
+{-| A scroll up of `count` rows of the alternate screen's whole region, in
+place (it keeps no scrollback): each placement goes up with its row, and
+one whose row leaves stays on the top row, at its first column, as
+Ghostty's pins do. `top` is the rows pushed, which this does not change. -}
+altScrolled : Int -> Int -> (taken t : Term) -> (r : Term where r.rows == t.rows && r.cols == t.cols)
+altScrolled count0 top0 t =
+    let
+        count =
+            clamp 0 1000 count0
+
+        top =
+            clamp 0 1073751017 top0
+
+        im =
+            t.images
+
+        store =
+            im.shown
+    in
+    if Array.isEmpty store.placements then
+        t
+
+    else
+        let
+            moved =
+                Array.map
+                    (\pl ->
+                        if pl.virtual || pl.row < top then
+                            pl
+
+                        else if pl.row - top - count < 0 then
+                            { pl | row = top, col = 0 }
+
+                        else
+                            { pl | row = clamp 0 1073752017 (pl.row - count) }
+                    )
+                    store.placements
+        in
+        { t | images = { im | shown = { store | placements = moved } } }

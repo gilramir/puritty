@@ -13,10 +13,9 @@ module Vt.Kitty exposing
 {-| The Kitty graphics protocol (`docs/images.md`), as libghostty-vt has it
 (`docs/images-kitty.md`, KG1 to KG8): an APC beginning `G` is a command;
 images are kept on the screen that was active, placements anchored to its
-absolute rows (IM11). Not yet: relative placements (`P`), animation
-(`a=f`, `a`, `c`), compressed data (`o=z`, which waits for a zlib), and
-the moves a scroll region or the alternate screen's scroll make (IM8
-step C).
+absolute rows (IM11); compressed data and PNG decoded here (`Vt.Inflate`,
+`Vt.Png`, IM15). Not yet: relative placements (`P`), animation (`a=f`,
+`a`, `c`), and placements through a resize's rewrap (IM14).
 -}
 
 import Array.Builder as Builder exposing (Builder)
@@ -26,6 +25,9 @@ import Dict exposing (Dict)
 import Int64
 import Vt.Base64 as Base64
 import Vt.Cell exposing (byteAt)
+import Vt.Inflate as Inflate
+import Vt.Placed as Placed exposing (gridSize, pixelSize, rect, source)
+import Vt.Png as Png
 import Vt.Reason as Reason
 import Vt.Scroll exposing (historyBound, lineFeed)
 import Vt.Term exposing (..)
@@ -44,16 +46,9 @@ pushed t =
     clamp 0 1073751017 (historyBound t + clamp 0 536870912 t.back.gone)
 
 
-{-| What the geometry needs of the terminal (KG6): the cell's size in
-pixels, the screen's columns and rows, the absolute row of its top, and
-the rows that have left the scrollback. -}
-type alias Geo =
-    { cw : Int, ch : Int, cols : Int, rows : Int, top : Int, gone : Int where 0 <= cw && cw <= 4096 && 0 <= ch && ch <= 4096 && 1 <= cols && cols <= 1000 && 1 <= rows && rows <= 1000 && 0 <= top && top <= 1073751017 && 0 <= gone && gone <= 536870912 }
-
-
-geoOf : Term -> Geo
+geoOf : Term -> Placed.Geo
 geoOf t =
-    { cw = clamp 0 4096 t.config.cellWidth, ch = clamp 0 4096 t.config.cellHeight, cols = clamp 1 1000 t.cols, rows = clamp 1 1000 t.rows, top = pushed t, gone = clamp 0 536870912 t.back.gone }
+    Placed.geoAt (pushed t) t
 
 
 -- THE COMMAND
@@ -485,19 +480,6 @@ loaded cmd data =
 
             else
                 f
-
-        width =
-            key 0x73 cmd
-
-        height =
-            key 0x76 cmd
-
-        bpp =
-            if format == 24 then
-                3
-
-            else
-                4
     in
     if has 0x66 cmd && not (Array.member f [ 24, 0, 32, 100 ]) then
         Err "EINVAL: unsupported format"
@@ -505,14 +487,53 @@ loaded cmd data =
     else if has 0x74 cmd && key 0x74 cmd /= 0x64 then
         Err "EINVAL: unsupported medium"
 
-    else if has 0x6F cmd then
-        -- zlib waits for wuffs (`docs/images.md` IM4)
-        Err "EINVAL: decompression failed"
+    else
+        -- compressed data inflated first, then a PNG decoded, both in the
+        -- core (`docs/images.md` IM4), held to Ghostty's 400 MB
+        let
+            inflated =
+                if has 0x6F cmd then
+                    Result.mapError (\_ -> "EINVAL: decompression failed") (Inflate.zlib maxSize data)
 
-    else if format == 100 then
-        Err "EINVAL: unsupported format"
+                else
+                    Ok data
+        in
+        when inflated is
+            Ok raw ->
+                if format == 100 then
+                    when Png.decode maxSize raw is
+                        Ok png ->
+                            sized png.width png.height 4 png.pixels
 
-    else if width == 0 || height == 0 then
+                        Err _ ->
+                            meant Reason.FromOutside Err "EINVAL: invalid data"
+
+                else
+                    sized (key 0x73 cmd)
+                        (key 0x76 cmd)
+                        (if format == 24 then
+                            3
+
+                         else
+                            4
+                        )
+                        raw
+
+            Err why ->
+                meant Reason.FromOutside Err why
+
+
+{-| Ghostty's `max_size`: the most a load holds, inflated or decoded. -}
+maxSize : Int
+maxSize =
+    400 * 1024 * 1024
+
+
+{-| The checks on a load's size and length (KG5), after any inflating and
+decoding. -}
+sized : Int -> Int -> Int -> Bytes -> Result String { width : Int, height : Int, rgba : Bool, pixels : Bytes }
+sized width height bpp data =
+    if width == 0 || height == 0 then
         Err "EINVAL: dimensions required"
 
     else if width > 10000 || height > 10000 then
@@ -981,130 +1002,6 @@ indexTimes n t =
         indexTimes (n - 1) (lineFeed t)
 
 
--- GEOMETRY (KG6)
-
-
-{-| The source rectangle in the image's pixels. -}
-source : Image -> Placement -> { x : Int, y : Int, w : Int, h : Int }
-source image pl =
-    let
-        sx =
-            min pl.x image.width
-
-        sy =
-            min pl.y image.height
-    in
-    { x = sx
-    , y = sy
-    , w =
-        min
-            (if pl.w == 0 then
-                image.width
-
-             else
-                pl.w
-            )
-            (image.width - sx)
-    , h =
-        min
-            (if pl.h == 0 then
-                image.height
-
-             else
-                pl.h
-            )
-            (image.height - sy)
-    }
-
-
-{-| The size a placement is drawn at, in pixels. -}
-pixelSize : Image -> Placement -> Geo -> { w : Int, h : Int }
-pixelSize image pl geo =
-    let
-        src =
-            source image pl
-
-        cw =
-            geo.cw
-
-        ch =
-            geo.ch
-
-        rounded a b d =
-            if d <= 0 then
-                0
-
-            else
-                clamp 0 41000000 (Int64.toIntWrap ((Int64.fromInt a * Int64.fromInt b + Int64.fromInt (d // 2)) // Int64.fromInt d))
-    in
-    if pl.cols == 0 && pl.rows == 0 then
-        { w = src.w, h = src.h }
-
-    else if pl.cols > 0 && pl.rows > 0 then
-        { w = max 0 (cw * pl.cols - pl.offX), h = max 0 (ch * pl.rows - pl.offY) }
-
-    else if pl.cols > 0 then
-        let
-            w =
-                max 0 (cw * pl.cols - pl.offX)
-        in
-        { w = w, h = rounded w src.h src.w }
-
-    else
-        let
-            h =
-                max 0 (ch * pl.rows - pl.offY)
-        in
-        { w = rounded h src.w src.h, h = h }
-
-
-{-| The cells a placement covers. -}
-gridSize : Image -> Placement -> Geo -> { cols : Int, rows : Int }
-gridSize image pl geo =
-    let
-        cw =
-            geo.cw
-
-        ch =
-            geo.ch
-
-        px =
-            pixelSize image pl geo
-
-        up a d =
-            (a + d - 1) // d
-    in
-    if pl.cols > 0 && pl.rows > 0 then
-        { cols = pl.cols, rows = pl.rows }
-
-    else if cw == 0 || ch == 0 then
-        { cols = 0, rows = 0 }
-
-    else
-        { cols = up (px.w + pl.offX) cw, rows = up (px.h + pl.offY) ch }
-
-
-{-| The cells a placement covers on the screen and in the scrollback: its
-anchor's absolute row and column, then the last of each, or none when it
-covers no cell or is virtual. -}
-rect : Store -> Placement -> Geo -> Maybe { top : Int, left : Int, bottom : Int, right : Int }
-rect store pl geo =
-    when Dict.get pl.image store.images is
-        Just image ->
-            let
-                size =
-                    gridSize image pl geo
-            in
-            if pl.virtual || size.cols == 0 || size.rows == 0 then
-                Nothing
-
-            else
-                Just { top = pl.row, left = pl.col, bottom = pl.row + size.rows - 1, right = min (pl.col + size.cols - 1) (geo.cols - 1) }
-
-        Nothing ->
-            meant Reason.NotKnown Nothing
-
-
 -- DELETING (KG3)
 
 
@@ -1493,6 +1390,15 @@ dumpLines t =
                             ++ n image.width
                             ++ "x"
                             ++ n image.height
+                            -- the pixels, as an Adler-32 of them, so that a
+                            -- decoded PNG is held to Ghostty's (IM4)
+                            ++ (if image.rgba then
+                                    " rgba "
+
+                                else
+                                    " rgb "
+                               )
+                            ++ u32String (Inflate.adler32 image.pixels)
                             ++ (if pl.virtual then
                                     " virtual"
 

@@ -131,6 +131,20 @@ reports take as unknown): the image layer gives them one (IM8 step 1).
   giflib, zlib: four dependencies pinned old on RHEL8, each with its own
   CVE history, and giflib leaves animation to the caller).
 
+**Changed, 2026-11-17 (Gilbert): PNG and zlib in Geng, in the core.**
+The core must know an image's size and whether it is valid when the
+command arrives: to place it, move the cursor, count it against the limit,
+and answer as Ghostty does ("OK" or "EINVAL: invalid data", KG5); `o=z`
+needs the inflated length too. The core (`vt/`) is pure Geng, run on node
+as well as natively, so a C decoder cannot sit in it. So inflate (RFC 1950
+and 1951) and PNG (its filters, colour types, palette, Adam7) are written
+in Geng in the core, where no buffer can be overrun, which matters for
+data a remote program sends. Its speed is to be measured on real images;
+wuffs stays the fast path to add in the renderer if that is too slow.
+JPEG and GIF (iTerm2's) are decided when iTerm2's step comes. The oracle
+gets a PNG decoder from its host (`GHOSTTY_SYS_OPT_DECODE_PNG`, wuffs,
+which Ghostty bundles), so both sides accept PNG.
+
 ## IM5 · Safety and limits
 
 - **Transmission.** Kitty can ask the terminal to read a file, a
@@ -321,6 +335,72 @@ The app's limit is 320 MB (`Vt.withImageLimit`, IM9).
 the canvas puritty draws panes on does not carry them), the Windows
 executor's drawing seen (it compiles; the pixel gate's pins are Linux's),
 and a frame's cost measured with an image (ETX, IM8 step 5).
+
+## IM14 · Checkpoint C: what scrolls and resizes do to placements (2026-11-17)
+
+Read in libghostty-vt (`scrollMarginsBegin`, `clipTop`, `clipBottom`,
+`index`, `scrollUp`, `scrollDown`), then held to it by eight replay cases
+written first (`kitty-region-*`, `kitty-alt-scroll`, `kitty-resize-rows`).
+
+- **A scroll within margins** (IND at the bottom margin, SU, SD, RI at the
+  top margin; never IL or DL): a placement wholly inside the region (rows,
+  and columns between DECSLRM's margins) moves with it, clipped at a
+  margin, a scaled one losing that share of its source and a row, one at
+  its own size a cell's height of pixels a row, and gone when nothing is
+  left; any other on the screen keeps its screen row, which on the main
+  screen with the region at the top means anchoring it again, since the
+  rows that leave go to the scrollback; one in the scrollback is not
+  touched. `Vt.Placed` (below `Vt.Scroll`, which calls it) plans this in
+  screen rows before the scroll and applies it after (`scrollPlan`,
+  `scrollApply`). The full screen's scroll on the main screen needs
+  nothing: absolute rows (IM11) carry the placements into the scrollback.
+- **The alternate screen's full scroll** (it keeps no scrollback): each
+  placement goes up with its row, and one whose row leaves stays on the top
+  row at the first column, as Ghostty's pins do (`altScrolled`).
+- **A resize that changes the rows only** agrees already.
+- **A resize that rewraps lines does not** (`kitty-resize-reflow`, with
+  its divergence): Ghostty's pins reflow with their rows and by rules of
+  their own; the core keeps absolute rows. Held for the reflow to carry
+  the placements as it carries the cursor.
+
+The 24 Kitty replay cases agree with Ghostty but that one.
+
+## IM15 · PNG and zlib in the core (2026-11-17)
+
+As IM4 was changed to: `Vt.Inflate` (RFC 1950 and 1951, after zlib's
+`puff.c`: canonical codes decoded a bit at a time, stored, fixed and
+dynamic blocks, the zlib header and Adler-32 checked, the output held to a
+limit) and `Vt.Png` (the signature, the chunks with the critical ones'
+CRCs, IHDR's legal depths and colour types, PLTE, tRNS, the IDATs joined,
+the five filters, every colour type and depth to 8-bit RGBA, Adam7). A
+width or height past 10,000 is "dimensions too large" from the header, as
+Ghostty answers a valid one (a corrupt one so large it would call "invalid
+data"). `Vt.Kitty.loaded` inflates `o=z` ("EINVAL: decompression failed")
+then decodes `f=100` ("EINVAL: invalid data"), the size then the PNG's,
+as libghostty-vt does.
+
+**The oracle** decodes with the wuffs Ghostty vendors, given to it through
+`GHOSTTY_SYS_OPT_DECODE_PNG` in `harness/oracle/gdump.c`, called as
+Ghostty's app calls it (`pkg/wuffs/src/png.zig`), so both sides take PNG.
+Both dumps now give each image's format and an Adler-32 of its pixels.
+
+**Held to it.** `kitty-png-types`: 22 PNGs, grey at 1, 2, 4, 8 and 16 bits,
+RGB and RGBA at 8 and 16, grey with alpha at 8 and 16, a palette at 1, 2, 4
+and 8 bits with tRNS, colour keys for grey and RGB, all five filters, Adam7
+at three sizes, three IDATs and an ancillary chunk, 1 by 1: every pixel's
+checksum equal to wuffs'. `kitty-png-errors`: a bad CRC, a truncated file,
+a bad Adler-32, an unknown critical chunk, a bad signature, no data,
+`s`/`v` overridden by the PNG's. `kitty-zlib`: RGB and RGBA inflated, a bad
+checksum, a truncated stream, a compressed PNG, a chunked compressed load.
+All agree with Ghostty on the first run.
+
+**Measured** (`harness/dump/core-dump`, the whole run, three times each):
+an 800 by 600 RGBA photo-like PNG (531 KB) loads in 0.05 s at 27 MB at
+most; 1920 by 1080 (2.3 MB) in 0.19 s at 79 MB; the same bytes as an APC
+not Kitty's take 0.00 s. Enough to show an image; slow for flicking through
+previews (yazi). The memory is the output builders' (a `Builder UInt8`
+element costs more than a byte): the first thing to look at if it matters,
+before wuffs in the renderer (IM4).
 
 ## IM10 · The user guide, drafted
 

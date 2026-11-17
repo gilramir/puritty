@@ -30,6 +30,7 @@ import Vt.Modes exposing (..)
 import Vt.Osc exposing (..)
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
+import Vt.Placed as Placed
 import Vt.Print exposing (..)
 import Vt.Probe as Probe
 import Vt.Prompt exposing (..)
@@ -428,39 +429,39 @@ dispatchRare final params t =
             t
 
     else if final == 0x53 then
-        if margined t then
-            marginUp (param 0 1 params) t.top t.bottom t
+        -- SU, and what it does to the Kitty graphics placements in the
+        -- region (`docs/images.md` IM14)
+        let
+            count =
+                min (count0 params) (t.bottom - t.top + 1)
+
+            plan =
+                imagesPlan (0 - count) (not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == t.rows - 1))) t
+
+            whole =
+                isAlt t && wholeRegion t
+
+            scrolled =
+                scrollUpRegion params t
+        in
+        if whole then
+            Placed.altScrolled count (pushedRows scrolled) scrolled
 
         else
-            -- no more rows to the scrollback than the region has; a
-            -- region that is not the screen's top, or on the alternate
-            -- screen not its bottom, is DL's and its rows stop wrapping, as
-            -- in Ghostty (§VC16)
-            let
-                scrolls =
-                    t.top == 0 && (not (isAlt t) || t.bottom == t.rows - 1)
-
-                top =
-                    t.top
-
-                bottom =
-                    t.bottom
-
-                up =
-                    regionUp (min (count0 params) (bottom - top + 1)) top bottom t
-            in
-            if scrolls then
-                up
-
-            else
-                unwrapRegion top bottom up
+            imagesApplied plan scrolled
 
     else if final == 0x54 then
-        if margined t then
-            marginDown (param 0 1 params) t.top t.bottom t
+        let
+            plan =
+                imagesPlan (min (param 0 1 params) (t.bottom - t.top + 1)) True t
+        in
+        imagesApplied plan
+            (if margined t then
+                marginDown (param 0 1 params) t.top t.bottom t
 
-        else
-            unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
+             else
+                unwrapRegion t.top t.bottom (regionDown (param 0 1 params) t.top t.bottom t)
+            )
 
     else if final == 0x4C then
         if t.y < t.top || t.y > t.bottom then
@@ -750,3 +751,34 @@ rectChecksum params t =
 
     else
         Bitwise.and 0xFFFF (0 - sum)
+
+
+{-| SU's rows scrolled up. -}
+scrollUpRegion : Array Int -> (taken t : Term) -> Term
+scrollUpRegion params t =
+    if margined t then
+        marginUp (param 0 1 params) t.top t.bottom t
+
+    else
+        -- no more rows to the scrollback than the region has; a
+        -- region that is not the screen's top, or on the alternate
+        -- screen not its bottom, is DL's and its rows stop wrapping, as
+        -- in Ghostty (§VC16)
+        let
+            scrolls =
+                t.top == 0 && (not (isAlt t) || t.bottom == t.rows - 1)
+
+            top =
+                t.top
+
+            bottom =
+                t.bottom
+
+            up =
+                regionUp (min (count0 params) (bottom - top + 1)) top bottom t
+        in
+        if scrolls then
+            up
+
+        else
+            unwrapRegion top bottom up

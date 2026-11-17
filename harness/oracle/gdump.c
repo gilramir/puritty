@@ -4,6 +4,21 @@
 #define _GNU_SOURCE
 #include "gdump.h"
 #include <ghostty/vt.h>
+
+/* Ghostty's app decodes a Kitty graphics PNG with wuffs; libghostty-vt has
+ * no decoder until its host gives one (GHOSTTY_SYS_OPT_DECODE_PNG). The
+ * oracle gives it the app's, the wuffs Ghostty vendors, called as
+ * pkg/wuffs/src/png.zig calls it, so that the core's PNG (docs/images.md
+ * IM4) is held to it. */
+#define WUFFS_IMPLEMENTATION
+#define WUFFS_CONFIG__MODULES
+#define WUFFS_CONFIG__MODULE__BASE
+#define WUFFS_CONFIG__MODULE__ADLER32
+#define WUFFS_CONFIG__MODULE__CRC32
+#define WUFFS_CONFIG__MODULE__DEFLATE
+#define WUFFS_CONFIG__MODULE__ZLIB
+#define WUFFS_CONFIG__MODULE__PNG
+#include "wuffs-v0.4.c"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -158,6 +173,46 @@ static void dump_row(FILE *o, const char *label, GhosttyPointTag tag,
   }
 }
 
+static bool decode_png(void *userdata, const GhosttyAllocator *allocator, const uint8_t *data, size_t len, GhosttySysImage *out) {
+  (void)userdata;
+  bool ok = false;
+  wuffs_png__decoder *dec = calloc(1, sizeof__wuffs_png__decoder());
+  uint8_t *work = NULL;
+  if (!dec) return false;
+  wuffs_base__status st = wuffs_png__decoder__initialize(dec, sizeof__wuffs_png__decoder(), WUFFS_VERSION, 0);
+  if (!wuffs_base__status__is_ok(&st)) goto done;
+  wuffs_base__io_buffer src = wuffs_base__ptr_u8__reader((uint8_t *)data, len, true);
+  wuffs_base__image_config ic;
+  st = wuffs_png__decoder__decode_image_config(dec, &ic, &src);
+  if (!wuffs_base__status__is_ok(&st)) goto done;
+  uint32_t w = wuffs_base__pixel_config__width(&ic.pixcfg), h = wuffs_base__pixel_config__height(&ic.pixcfg);
+  wuffs_base__pixel_config__set(&ic.pixcfg, WUFFS_BASE__PIXEL_FORMAT__RGBA_NONPREMUL, WUFFS_BASE__PIXEL_SUBSAMPLING__NONE, w, h);
+  size_t size = (size_t)w * (size_t)h * 4;
+  if (size > (size_t)4 * 1024 * 1024 * 1024) goto done;
+  uint8_t *dst = ghostty_alloc(allocator, size ? size : 1);
+  if (!dst) goto done;
+  size_t wlen = (size_t)wuffs_png__decoder__workbuf_len(dec).max_incl;
+  work = malloc(wlen ? wlen : 1);
+  wuffs_base__pixel_buffer pb;
+  st = wuffs_base__pixel_buffer__set_from_slice(&pb, &ic.pixcfg, wuffs_base__make_slice_u8(dst, size));
+  if (work && wuffs_base__status__is_ok(&st))
+    st = wuffs_png__decoder__decode_frame(dec, &pb, &src, WUFFS_BASE__PIXEL_BLEND__SRC, wuffs_base__make_slice_u8(work, wlen), NULL);
+  if (!work || !wuffs_base__status__is_ok(&st)) {
+    ghostty_free(allocator, dst, size ? size : 1);
+    goto done;
+  }
+  out->width = w;
+  out->height = h;
+  out->data = dst;
+  out->data_len = size ? size : 1;
+  ok = true;
+done:
+  free(work);
+  free(dec);
+  return ok;
+}
+
+
 /* XTWINOPS's size reports: the grid, as the core answers CSI 18 t. */
 static uint16_t rows_of_term;
 static bool on_size(GhosttyTerminal t, void *u, GhosttySizeReportSize *out) {
@@ -204,6 +259,18 @@ static void dump_kitty(FILE *o, size_t history) {
     if (!img) continue;
     ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &w);
     ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &h);
+    /* the pixels as an Adler-32 of them, and their format, as the core's */
+    GhosttyKittyImageFormat fmt = 0;
+    const uint8_t *px = NULL;
+    size_t pxlen = 0;
+    ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &fmt);
+    ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, &px);
+    ghostty_kitty_graphics_image_get(img, GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, &pxlen);
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < pxlen; i++) {
+      a = (a + px[i]) % 65521;
+      b = (b + a) % 65521;
+    }
     ghostty_kitty_graphics_placement_source_rect(it, img, &sx, &sy, &sw, &sh);
     ghostty_kitty_graphics_placement_grid_size(it, img, term, &gc, &gr);
     char where[64];
@@ -217,8 +284,8 @@ static void dump_kitty(FILE *o, size_t history) {
     else
       snprintf(where, sizeof where, "at -");
     char line[256];
-    snprintf(line, sizeof line, "image %u %ux%u %s cells %ux%u src %u,%u,%u,%u off %u,%u z %d", id, w, h, where, gc, gr, sx, sy, sw,
-             sh, ox, oy, z);
+    snprintf(line, sizeof line, "image %u %ux%u %s %u %s cells %ux%u src %u,%u,%u,%u off %u,%u z %d", id, w, h,
+             fmt == GHOSTTY_KITTY_IMAGE_FORMAT_RGB ? "rgb" : "rgba", (b << 16) | a, where, gc, gr, sx, sy, sw, sh, ox, oy, z);
     lines[n++] = strdup(line);
   }
   ghostty_kitty_graphics_placement_iterator_free(it);
@@ -281,6 +348,7 @@ char *gdump(uint16_t c, uint16_t r, const uint8_t *in, size_t len,
             const GResize *resizes, size_t nresizes, const size_t *max_lines,
             size_t *out_len) {
   replies.len = 0;
+  ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, (const void *)decode_png);
   cols = c;
   rows_of_term = r;
   if (ghostty_terminal_new(NULL, &term, cols, rows_of_term) != GHOSTTY_SUCCESS)

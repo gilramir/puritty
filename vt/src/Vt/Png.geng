@@ -1,0 +1,605 @@
+module Vt.Png exposing (Decoded, decode)
+
+{-| PNG decoded to 8-bit RGBA for the Kitty graphics protocol's `f=100`
+(`docs/images.md` IM4, `images-kitty.md` KG5): in the core, in Geng, as
+`Vt.Inflate` is. The signature; the chunks, IHDR first, PLTE, tRNS and
+the IDATs to IEND, the critical ones' CRCs checked; the IDATs joined and
+inflated; each scanline unfiltered (none, sub, up, average, Paeth); every
+colour type and depth made RGBA (16-bit channels by their high byte, grey
+spread, the palette looked up, tRNS giving alpha); Adam7's seven passes
+put in their places. Held to `most` bytes of pixels and of inflated data.
+-}
+
+import Array.Builder as Builder exposing (Builder)
+import Bitwise
+import Bytes exposing (Bytes)
+import UInt8
+import Vt.Cell exposing (byteAt)
+import Vt.Inflate as Inflate
+import Vt.Reason as Reason
+
+
+type alias Decoded =
+    { width : Int, height : Int, pixels : Bytes }
+
+
+type alias Header =
+    { width : Int
+    , height : Int
+    , depth : Int
+    , color : Int
+    , interlace : Int where 1 <= width && width <= 10000 && 1 <= height && height <= 10000 && 1 <= depth && depth <= 16 && 0 <= color && color <= 6 && 0 <= interlace && interlace <= 1
+    }
+
+
+type alias Chunks =
+    { header : Maybe Header
+    , palette : Bytes
+    , trns : Bytes
+    , idat : Array Bytes
+    , ended : Bool
+    }
+
+
+u32 : Bytes -> Int -> Int
+u32 data at =
+    Bitwise.or (Bitwise.shiftLeftBy 24 (byteAt data at)) (Bitwise.or (Bitwise.shiftLeftBy 16 (byteAt data (at + 1))) (Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt data (at + 2))) (byteAt data (at + 3))))
+
+
+signature : Array Int
+signature =
+    [ 137, 80, 78, 71, 13, 10, 26, 10 ]
+
+
+{-| The image, or why not: "dimensions too large" for a width or height
+past 10,000, which Ghostty answers so too. -}
+decode : Int -> Bytes -> Result String Decoded
+decode most data =
+    if Bytes.length data < 8 || Array.any not (Array.indexedMap (\i b -> byteAt data i == b) signature) then
+        Err "signature"
+
+    else if Bytes.length data > 419430400 then
+        Err "too large"
+
+    else
+        when chunks data (clamp 0 419430400 (Bytes.length data)) 8 { header = Nothing, palette = Bytes.empty, trns = Bytes.empty, idat = [], ended = False } is
+            Ok c ->
+                when c.header is
+                    Just h ->
+                        pixelsOf most h c
+
+                    Nothing ->
+                        meant Reason.FromOutside Err "no IHDR"
+
+            Err why ->
+                meant Reason.FromOutside Err why
+
+
+{-| The chunks from `at` to IEND. -}
+chunks : Bytes -> (n : Int where 0 <= n && n <= 419430400) -> (at : Int where 0 <= at && at <= n) -> Chunks -> Result String Chunks
+chunks data n at acc =
+    if acc.ended then
+        Ok acc
+
+    else if at > n - 12 then
+        Err "truncated"
+
+    else
+        let
+            len =
+                u32 data at
+
+            kind =
+                Bytes.slice (at + 4) (at + 8) data
+
+            name =
+                Maybe.withDefault (meant Reason.FromOutside "") (Bytes.toString kind)
+
+            body =
+                Bytes.slice (at + 8) (at + 8 + len) data
+
+            critical =
+                Bitwise.and 0x20 (byteAt data (at + 4)) == 0
+
+            crcOk =
+                crc32 (Bytes.slice (at + 4) (at + 8 + len) data) == u32 data (at + 8 + len)
+
+            -- the chunk's end; checked within the data below
+            next =
+                clamp 0 n (at + 12 + clamp 0 419430400 len)
+        in
+        if len < 0 || len > n - at - 12 then
+            Err "truncated"
+
+        else if critical && not crcOk then
+            Err "crc"
+
+        else if acc.header == Nothing && name /= "IHDR" then
+            Err "IHDR not first"
+
+        else if name == "IHDR" then
+            when header body is
+                Ok h ->
+                    chunks data n next { acc | header = Just h }
+
+                Err why ->
+                    meant Reason.FromOutside Err why
+
+        else if name == "PLTE" then
+            chunks data n next { acc | palette = body }
+
+        else if name == "tRNS" then
+            chunks data n next { acc | trns = body }
+
+        else if name == "IDAT" then
+            chunks data n next { acc | idat = Array.pushLast body acc.idat }
+
+        else if name == "IEND" then
+            Ok { acc | ended = True }
+
+        else if critical then
+            Err "unknown critical chunk"
+
+        else
+            chunks data n next acc
+
+
+header : Bytes -> Result String Header
+header body =
+    let
+        width =
+            u32 body 0
+
+        height =
+            u32 body 4
+
+        depth =
+            byteAt body 8
+
+        color =
+            byteAt body 9
+
+        interlace =
+            byteAt body 12
+
+        depths =
+            if color == 0 then
+                [ 1, 2, 4, 8, 16 ]
+
+            else if color == 3 then
+                [ 1, 2, 4, 8 ]
+
+            else if Array.member color [ 2, 4, 6 ] then
+                [ 8, 16 ]
+
+            else
+                []
+    in
+    if Bytes.length body /= 13 || width <= 0 || height <= 0 || not (Array.member depth depths) || byteAt body 10 /= 0 || byteAt body 11 /= 0 || interlace > 1 then
+        Err "IHDR"
+
+    else if width > 10000 || height > 10000 then
+        Err "dimensions too large"
+
+    else
+        Ok { width = clamp 1 10000 width, height = clamp 1 10000 height, depth = clamp 1 16 depth, color = clamp 0 6 color, interlace = clamp 0 1 interlace }
+
+
+channels : Int -> (r : Int where 1 <= r && r <= 4)
+channels color =
+    if color == 2 then
+        3
+
+    else if color == 4 then
+        2
+
+    else if color == 6 then
+        4
+
+    else
+        1
+
+
+{-| A pass's scanline in bytes, and the bytes a pixel spans for the
+filters (at least one). -}
+stride : Header -> Int -> (r : Int where 0 <= r && r <= 80000)
+stride h width =
+    clamp 0 80000 ((clamp 0 10000 width * channels h.color * h.depth + 7) // 8)
+
+
+pixelBytes : Header -> (r : Int where 1 <= r && r <= 8)
+pixelBytes h =
+    clamp 1 8 (channels h.color * h.depth // 8)
+
+
+{-| Adam7's passes: where each starts and its step, in columns and rows. -}
+adam7 : Array { x0 : Int, y0 : Int, dx : Int, dy : Int }
+adam7 =
+    [ { x0 = 0, y0 = 0, dx = 8, dy = 8 }
+    , { x0 = 4, y0 = 0, dx = 8, dy = 8 }
+    , { x0 = 0, y0 = 4, dx = 4, dy = 8 }
+    , { x0 = 2, y0 = 0, dx = 4, dy = 4 }
+    , { x0 = 0, y0 = 2, dx = 2, dy = 4 }
+    , { x0 = 1, y0 = 0, dx = 2, dy = 2 }
+    , { x0 = 0, y0 = 1, dx = 1, dy = 2 }
+    ]
+
+
+passes : Header -> Array { x0 : Int, y0 : Int, dx : Int, dy : Int, w : Int, h : Int }
+passes h =
+    if h.interlace == 0 then
+        [ { x0 = 0, y0 = 0, dx = 1, dy = 1, w = h.width, h = h.height } ]
+
+    else
+        Array.map
+            (\p ->
+                let
+                    dx =
+                        clamp 1 8 p.dx
+
+                    dy =
+                        clamp 1 8 p.dy
+
+                    x0 =
+                        clamp 0 7 p.x0
+
+                    y0 =
+                        clamp 0 7 p.y0
+                in
+                { x0 = x0, y0 = y0, dx = dx, dy = dy, w = clamp 0 10000 ((h.width - x0 + dx - 1) // dx), h = clamp 0 10000 ((h.height - y0 + dy - 1) // dy) }
+            )
+            adam7
+
+
+pixelsOf : Int -> Header -> Chunks -> Result String Decoded
+pixelsOf most h c =
+    let
+        ps =
+            passes h
+
+        -- each pass's rows: a filter byte and its scanline
+        raw =
+            Array.foldl
+                (\p acc ->
+                    if p.w == 0 || p.h == 0 then
+                        acc
+
+                    else
+                        -- past `most`, it is refused below
+                        min 419430401 (clamp 0 419430401 acc + clamp 0 10000 p.h * (1 + stride h p.w))
+                )
+                0
+                ps
+    in
+    if h.width * h.height > most // 4 || raw > most then
+        Err "too large"
+
+    else if h.color == 3 && Bytes.length c.palette == 0 then
+        Err "no palette"
+
+    else
+        when Inflate.zlib raw (Bytes.flatten c.idat) is
+            Ok inflated ->
+                if Bytes.length inflated < raw then
+                    Err "short image data"
+
+                else
+                    let
+                        out =
+                            Array.foldl
+                                (\p acc ->
+                                    if p.w == 0 || p.h == 0 then
+                                        acc
+
+                                    else
+                                        let
+                                            rows =
+                                                unfilter h p.w p.h inflated acc.at
+
+                                            placed =
+                                                place h c p rows.bytes acc.out
+                                        in
+                                        { at = rows.next, out = placed, ok = acc.ok && rows.ok }
+                                )
+                                { at = 0, out = Builder.fromArray (Array.repeat (h.width * h.height * 4) (UInt8.fromInt 0)), ok = True }
+                                ps
+                    in
+                    if not out.ok then
+                        Err "filter type"
+
+                    else
+                        Ok { width = h.width, height = h.height, pixels = Bytes.fromUInt8s (Builder.toArray out.out) }
+
+            Err why ->
+                meant Reason.FromOutside Err why
+
+
+{-| A pass's `rows` rows of `width` pixels unfiltered from `at`: the
+scanlines without their filter bytes, and where the next pass starts. -}
+unfilter : Header -> Int -> Int -> Bytes -> Int -> { bytes : Bytes, next : Int, ok : Bool }
+unfilter h width rows0 data at =
+    let
+        s =
+            stride h width
+
+        rows =
+            clamp 0 10000 rows0
+
+        done =
+            unfilterRows h s (pixelBytes h) rows data 0 0 (clamp 0 1000000000 at) True (Builder.empty 4096)
+    in
+    { bytes = Bytes.fromUInt8s (Builder.toArray done.out), next = done.pos, ok = done.ok }
+
+
+unfilterRows : Header -> (s : Int where 0 <= s && s <= 80000) -> (bpp : Int where 1 <= bpp && bpp <= 8) -> (rows : Int where 0 <= rows && rows <= 10000) -> Bytes -> (y : Int where 0 <= y) -> (rowStart : Int where 0 <= rowStart && rowStart <= 800000000) -> (pos : Int where 0 <= pos && pos <= 1000000000) -> Bool -> (taken out : Builder UInt8) -> { out : Builder UInt8, pos : Int, ok : Bool }
+unfilterRows h s bpp rows data y rowStart pos ok out =
+    if y >= rows then
+        { out = out, pos = pos, ok = ok }
+
+    else
+        let
+            filter =
+                byteAt data pos
+        in
+        unfilterRows h s bpp rows data (y + 1) (clamp 0 800000000 (rowStart + s)) (clamp 0 1000000000 (pos + 1 + s)) (ok && filter <= 4) (unfilterRow filter data (pos + 1) s bpp rowStart 0 out)
+
+
+{-| A scanline's bytes unfiltered onto `out`, which holds the rows before
+it (`rowStart` is where this one begins in it). -}
+unfilterRow : Int -> Bytes -> (from : Int where 0 <= from && from <= 1000000001) -> (s : Int where 0 <= s && s <= 80000) -> (bpp : Int where 1 <= bpp && bpp <= 8) -> (rowStart : Int where 0 <= rowStart && rowStart <= 800000000) -> (i : Int where 0 <= i) -> (taken out : Builder UInt8) -> Builder UInt8
+unfilterRow filter data from s bpp rowStart i out =
+    if i >= s then
+        out
+
+    else
+        let
+            x =
+                byteAt data (from + i)
+
+            a =
+                if i >= bpp then
+                    UInt8.toInt (Maybe.withDefault (meant Reason.OutOfRange (UInt8.fromInt 0)) (Builder.get (rowStart + i - bpp) out))
+
+                else
+                    0
+
+            b =
+                if rowStart > 0 then
+                    UInt8.toInt (Maybe.withDefault (meant Reason.OutOfRange (UInt8.fromInt 0)) (Builder.get (rowStart - s + i) out))
+
+                else
+                    0
+
+            c =
+                if i >= bpp && rowStart > 0 then
+                    UInt8.toInt (Maybe.withDefault (meant Reason.OutOfRange (UInt8.fromInt 0)) (Builder.get (rowStart - s + i - bpp) out))
+
+                else
+                    0
+
+            v =
+                if filter == 1 then
+                    x + a
+
+                else if filter == 2 then
+                    x + b
+
+                else if filter == 3 then
+                    x + (a + b) // 2
+
+                else if filter == 4 then
+                    x + paeth a b c
+
+                else
+                    x
+        in
+        unfilterRow filter data from s bpp rowStart (i + 1) (Builder.pushLast (UInt8.fromInt (Bitwise.and 0xFF v)) out)
+
+
+paeth : Int -> Int -> Int -> Int
+paeth a b c =
+    let
+        p =
+            a + b - c
+
+        dist v =
+            if v < 0 then
+                0 - v
+
+            else
+                v
+
+        pa =
+            dist (p - a)
+
+        pb =
+            dist (p - b)
+
+        pc =
+            dist (p - c)
+    in
+    if pa <= pb && pa <= pc then
+        a
+
+    else if pb <= pc then
+        b
+
+    else
+        c
+
+
+{-| A pass's unfiltered rows made RGBA and set in their places. -}
+place : Header -> Chunks -> { x0 : Int, y0 : Int, dx : Int, dy : Int, w : Int, h : Int } -> Bytes -> (taken out : Builder UInt8) -> Builder UInt8
+place h c p rows out =
+    placeAt h c p rows 0 0 out
+
+
+placeAt : Header -> Chunks -> { x0 : Int, y0 : Int, dx : Int, dy : Int, w : Int, h : Int } -> Bytes -> (px : Int where 0 <= px) -> (py : Int where 0 <= py) -> (taken out : Builder UInt8) -> Builder UInt8
+placeAt h c p rows px py out =
+    if py >= clamp 0 10000 p.h then
+        out
+
+    else if px >= clamp 0 10000 p.w then
+        placeAt h c p rows 0 (py + 1) out
+
+    else
+        let
+            x =
+                clamp 0 9999 (clamp 0 7 p.x0 + px * clamp 1 8 p.dx)
+
+            y =
+                clamp 0 9999 (clamp 0 7 p.y0 + py * clamp 1 8 p.dy)
+
+            rgba =
+                pixel h c (py * stride h p.w) px rows
+
+            o =
+                (y * h.width + x) * 4
+        in
+        placeAt h c p rows (px + 1) py (Builder.setMany o (Array.map UInt8.fromInt rgba) out)
+
+
+{-| Sample `k` of the pixel at `x` of the row starting at `row`, at the
+image's depth, as 8 bits. -}
+sample : Header -> Bytes -> Int -> Int -> Int -> Int
+sample h rows row x k =
+    let
+        n =
+            channels h.color
+
+        index =
+            x * n + k
+    in
+    if h.depth == 8 then
+        byteAt rows (row + index)
+
+    else if h.depth == 16 then
+        byteAt rows (row + 2 * index)
+
+    else
+        let
+            bitAt =
+                index * h.depth
+
+            byte =
+                byteAt rows (row + bitAt // 8)
+
+            v =
+                Bitwise.and (Bitwise.shiftLeftBy h.depth 1 - 1) (Bitwise.shiftRightZfBy (8 - h.depth - modBy 8 bitAt) byte)
+        in
+        if h.color == 3 then
+            v
+
+        else
+            v * 255 // (Bitwise.shiftLeftBy h.depth 1 - 1)
+
+
+{-| The raw sample, for the colour key of tRNS: 16 bits at that depth. -}
+rawSample : Header -> Bytes -> Int -> Int -> Int -> Int
+rawSample h rows row x k =
+    let
+        index =
+            x * channels h.color + k
+    in
+    if h.depth == 16 then
+        Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt rows (row + 2 * index))) (byteAt rows (row + 2 * index + 1))
+
+    else if h.depth == 8 then
+        byteAt rows (row + index)
+
+    else
+        let
+            bitAt =
+                index * h.depth
+        in
+        Bitwise.and (Bitwise.shiftLeftBy h.depth 1 - 1) (Bitwise.shiftRightZfBy (8 - h.depth - modBy 8 bitAt) (byteAt rows (row + bitAt // 8)))
+
+
+pixel : Header -> Chunks -> Int -> Int -> Bytes -> Array Int
+pixel h c row x rows =
+    let
+        s k =
+            sample h rows row x k
+
+        trnsAt i =
+            Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt c.trns i)) (byteAt c.trns (i + 1))
+    in
+    if h.color == 0 then
+        let
+            g =
+                s 0
+
+            a =
+                if Bytes.length c.trns >= 2 && rawSample h rows row x 0 == trnsAt 0 then
+                    0
+
+                else
+                    255
+        in
+        [ g, g, g, a ]
+
+    else if h.color == 2 then
+        let
+            keyed =
+                Bytes.length c.trns >= 6 && rawSample h rows row x 0 == trnsAt 0 && rawSample h rows row x 1 == trnsAt 2 && rawSample h rows row x 2 == trnsAt 4
+        in
+        [ s 0
+        , s 1
+        , s 2
+        , if keyed then
+            0
+
+          else
+            255
+        ]
+
+    else if h.color == 3 then
+        let
+            i =
+                s 0
+        in
+        [ byteAt c.palette (3 * i)
+        , byteAt c.palette (3 * i + 1)
+        , byteAt c.palette (3 * i + 2)
+        , if i < Bytes.length c.trns then
+            byteAt c.trns i
+
+          else
+            255
+        ]
+
+    else if h.color == 4 then
+        [ s 0, s 0, s 0, s 1 ]
+
+    else
+        [ s 0, s 1, s 2, s 3 ]
+
+
+{-| CRC-32 (ISO 3309), as PNG's chunks carry it. -}
+crc32 : Bytes -> Int
+crc32 data =
+    let
+        n =
+            Bytes.length data
+
+        go i crc =
+            if i >= n then
+                Bitwise.xor crc -1
+
+            else
+                go (i + 1) (crcByte (Bitwise.xor crc (byteAt data i)) 0)
+    in
+    go 0 -1
+
+
+crcByte : Int -> Int -> Int
+crcByte c k =
+    if k >= 8 then
+        c
+
+    else if Bitwise.and c 1 /= 0 then
+        -- the polynomial 0xEDB88320, as the 32 bits of an Int
+        crcByte (Bitwise.xor -306674912 (Bitwise.shiftRightZfBy 1 c)) (k + 1)
+
+    else
+        crcByte (Bitwise.shiftRightZfBy 1 c) (k + 1)

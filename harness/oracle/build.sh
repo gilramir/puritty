@@ -23,7 +23,8 @@ if [ ! -f "$G/zig-out/lib/libghostty-vt.a" ] || [ "$want" != "$have" ]; then
   (cd "$G" && zig build -Demit-lib-vt=true -Doptimize=ReleaseFast)
   echo "$want" > "$G/zig-out/.puritty-patches"
 fi
-clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-dump.c gdump.c \
+W=$(dirname "$(ls "$G"/zig-pkg/*/release/c/wuffs-v0.4.c | head -1)")
+clang -O2 -Wall -Wextra -I"$G/zig-out/include" -I"$W" ghostty-dump.c gdump.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-dump
 clang -O2 -Wall -Wextra -I"$G/zig-out/include" ghostty-keys.c \
   "$G/zig-out/lib/libghostty-vt.a" -lm -lpthread -o ghostty-keys

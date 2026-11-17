@@ -4,9 +4,12 @@ module Vt.Scroll exposing
     , feedRegion
     , freshLine
     , historyBound
+    , imagesApplied
+    , imagesPlan
     , keepsScrollback
     , lineFeed
     , noteReach
+    , pushedRows
     , regionDown
     , regionUp
     , resizeQuiet
@@ -20,6 +23,7 @@ module Vt.Scroll exposing
     , setMargins
     , unheadEnd
     , unwrapRegion
+    , wholeRegion
     , withScroll
     )
 
@@ -40,6 +44,7 @@ import Vt.Dump exposing (..)
 import Vt.Keys as Keys
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
+import Vt.Placed as Placed
 import Vt.Prompt exposing (..)
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
@@ -144,17 +149,67 @@ lineFeed t =
         if t.scroll == scrollFull then
             feedFull t
 
-        else if t.scroll == scrollRegion then
-            feedRegion t
+        else if Array.isEmpty t.images.shown.placements then
+            if t.scroll == scrollRegion then
+                feedRegion t
+
+            else
+                feedOther t
 
         else
-            feedOther t
+            -- the Kitty graphics placements in the region move with it
+            -- (`docs/images.md` IM14)
+            let
+                plan =
+                    imagesPlan -1 (not (t.top == 0 && t.left == 0 && t.right == t.cols - 1 && (not (isAlt t) || t.bottom == 0))) t
+
+                whole =
+                    isAlt t && wholeRegion t
+
+                fed =
+                    if t.scroll == scrollRegion then
+                        feedRegion t
+
+                    else
+                        feedOther t
+            in
+            if whole then
+                Placed.altScrolled 1 (pushedRows fed) fed
+
+            else
+                imagesApplied plan fed
 
     else if t.y < t.rows - 1 then
         { t | y = t.y + 1 }
 
     else
         t
+
+
+{-| The rows pushed into the scrollback before the screen's top, as
+`Vt.rowsPushed` counts them: a placement's anchor is this plus its row. -}
+pushedRows : Term -> Int
+pushedRows t =
+    clamp 0 1073751017 (historyBound t + clamp 0 536870912 t.back.gone)
+
+
+wholeRegion : Term -> Bool
+wholeRegion t =
+    t.top == 0 && t.bottom == t.rows - 1 && t.left == 0 && t.right == t.cols - 1
+
+
+{-| What a scroll of `delta` rows within the margins will do to the Kitty
+graphics placements, planned before it (`Vt.Placed.scrollPlan`): `inPlace`
+when the rows that leave do not go to the scrollback. -}
+imagesPlan : Int -> Bool -> Term -> Placed.Plan
+imagesPlan delta inPlace t =
+    Placed.scrollPlan delta inPlace (Placed.geoAt (pushedRows t) t) t
+
+
+{-| The plan applied after the scroll. -}
+imagesApplied : Placed.Plan -> (taken t : Term) -> Term
+imagesApplied plan t =
+    Placed.scrollApply plan (pushedRows t) t
 
 
 {-| A line feed at the region's bottom that is neither `feedFull`'s nor
@@ -284,7 +339,11 @@ reverseIndex t =
 
     else if t.y == t.top then
         -- Ghostty's scrollDown, as SD: no row of the region wraps (§VC17)
-        unwrapRegion t.top t.bottom (regionDown 1 t.top t.bottom t)
+        let
+            plan =
+                imagesPlan 1 True t
+        in
+        imagesApplied plan (unwrapRegion t.top t.bottom (regionDown 1 t.top t.bottom t))
 
     else if t.y > 0 then
         { t | y = t.y - 1, wrapNext = False }
