@@ -455,10 +455,12 @@ rgb16 c =
     "rgb:" ++ channel (Bitwise.shiftRightZfBy 16 c) ++ "/" ++ channel (Bitwise.shiftRightZfBy 8 c) ++ "/" ++ channel c
 
 
-{-| A color as XParseColor reads one, as Ghostty reads it: `#` and 1 to 4
-hex digits a channel, 3 or 6 hex digits alone, `rgb:` and 1 to 4 a channel,
-or `rgbi:` and an intensity from 0 to 1 a channel; each scaled to 8 bits.
-X11's color names are not taken (§VC12). -}
+{-| A color as XParseColor reads one: `#` and 1 to 4 hex digits a
+channel, the digits a channel's most significant bits (`#f` is `f0`, as
+X11 says and xterm and WezTerm read it; Ghostty scales them, patched in
+the oracle, §VC71); 3 or 6 hex digits alone, scaled, as Ghostty reads
+them; `rgb:` and 1 to 4 a channel, scaled; or `rgbi:` and an intensity
+from 0 to 1 a channel. X11's color names are not taken (§VC12). -}
 parseColor : String -> Maybe Int
 parseColor spec0 =
     let
@@ -468,8 +470,8 @@ parseColor spec0 =
         n =
             String.count spec
 
-        groups text k =
-            Maybe.map3 rgbOf (scaledHex (String.slice 0 k text)) (scaledHex (String.slice k (2 * k) text)) (scaledHex (String.slice (2 * k) (3 * k) text))
+        groups f text k =
+            Maybe.map3 rgbOf (f (String.slice 0 k text)) (f (String.slice k (2 * k) text)) (f (String.slice (2 * k) (3 * k) text))
 
         parts text f =
             when String.split "/" text is
@@ -481,13 +483,13 @@ parseColor spec0 =
     in
     if String.startsWith "#" spec then
         if n == 4 || n == 7 || n == 10 || n == 13 then
-            groups (String.dropFirst 1 spec) ((n - 1) // 3)
+            groups highHex (String.dropFirst 1 spec) ((n - 1) // 3)
 
         else
             Nothing
 
     else if n == 3 || n == 6 then
-        groups spec (n // 3)
+        groups scaledHex spec (n // 3)
 
     else if String.startsWith "rgbi:" spec then
         parts (String.dropFirst 5 spec) intensity
@@ -499,8 +501,50 @@ parseColor spec0 =
         Nothing
 
 
+{-| 1 to 4 hex digits as a channel's most significant bits, its top 8
+(XParseColor's `#`): `f` is `f0`, `f00` and `f000` are `f0`. -}
+highHex : String -> Maybe Int
+highHex text =
+    let
+        n =
+            String.count text
+    in
+    hexValue text
+        |> Maybe.andThen
+            (\v ->
+                if n == 1 then
+                    Just (v * 16)
+
+                else if n == 2 then
+                    Just v
+
+                else if n == 3 then
+                    Just (v // 16)
+
+                else if n == 4 then
+                    Just (v // 256)
+
+                else
+                    Nothing
+            )
+
+
 scaledHex : String -> Maybe Int
 scaledHex text =
+    let
+        n =
+            String.count text
+    in
+    if n < 1 || n > 4 then
+        Nothing
+
+    else
+        Maybe.map (\v -> v * 255 // (Bitwise.shiftLeftBy (4 * n) 1 - 1)) (hexValue text)
+
+
+{-| Hex digits' value, or none for another character or more than four. -}
+hexValue : String -> Maybe Int
+hexValue text =
     let
         n =
             String.count text
@@ -535,7 +579,7 @@ scaledHex text =
         Nothing
 
     else
-        Maybe.map (\v -> v * 255 // (Bitwise.shiftLeftBy (4 * n) 1 - 1)) value
+        value
 
 
 intensity : String -> Maybe Int

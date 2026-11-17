@@ -111,6 +111,43 @@ probed final priv inter params t =
         done
 
 
+{-| The DEC status reports (`CSI ? Ps n`) that have one answer, each
+what is true of the core, as the VT510 manual and xterm's ctlseqs give
+them (§VC71): no printer, user-defined keys locked (there are none), a
+North American keyboard, no DEC locator and its type
+unknown, no macro space, data integrity ready, no sessions. -}
+decStatus : Int -> Maybe String
+decStatus p =
+    when p is
+        15 ->
+            Just "\u{001B}[?13n"
+
+        25 ->
+            Just "\u{001B}[?21n"
+
+        26 ->
+            -- at the level DA says, VT220's: the language only
+            Just "\u{001B}[?27;1n"
+
+        55 ->
+            Just "\u{001B}[?50n"
+
+        56 ->
+            Just "\u{001B}[?57;0n"
+
+        62 ->
+            Just "\u{001B}[0*{"
+
+        75 ->
+            Just "\u{001B}[?70n"
+
+        85 ->
+            Just "\u{001B}[?83n"
+
+        _ ->
+            Nothing
+
+
 {-| A sequence the terminal does nothing with, said to the diagnostic log
 when it listens for them (DG6). -}
 ignoredCsi : Int -> Int -> Int -> Array Int -> (taken t : Term) -> Term
@@ -160,6 +197,11 @@ dispatchOther final priv inter params t =
         else if final == 0x72 then
             Array.foldl restoreMode t params
 
+        else if final == 0x6E && param 0 0 params == 63 then
+            -- DECCKSR: the memory checksum, for the id asked; the core
+            -- keeps no macros, so it is 0 (§VC71)
+            reply ("\u{001B}P" ++ String.fromInt (param 1 0 params) ++ "!~0000\u{001B}\\") t
+
         else if Array.length params > 1 then
             t
 
@@ -182,6 +224,15 @@ dispatchOther final priv inter params t =
 
         else if final == 0x6E && param 0 0 params == 6 then
             reply ("\u{001B}[?" ++ String.fromInt (reportY t + 1) ++ ";" ++ String.fromInt (reportX t + 1) ++ ";1R") t
+
+        else if final == 0x6E then
+            when decStatus (param 0 0 params) is
+                Just answer ->
+                    reply answer t
+
+                Nothing ->
+                    -- a status the core has no answer for
+                    meant Reason.NotKnown ignoredCsi final priv inter params t
 
         else
             ignoredCsi final priv inter params t

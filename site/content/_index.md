@@ -95,7 +95,7 @@ title = "Written in a memory-safe language with compile-time constraint checking
 body = """
 The terminal core is tested against libghostty-vt on recorded sessions,
 fuzzed, and run against the `esctest2` conformance suite, where it passes
-392 of 567 tests; Ghostty 1.4 passes 388. Every buffer a remote program can
+410 of 567 tests; Ghostty 1.4 passes 388. Every buffer a remote program can
 fill has a limit.
 
 puritty is written in [Geng](https://geng-lang.org), whose compiler proves

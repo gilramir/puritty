@@ -68,7 +68,7 @@ Remote X11 is a main path in puritty, not an afterthought.
 
 The terminal core is tested against libghostty-vt on recorded sessions,
 fuzzed, and run against the `esctest2` conformance suite, where it passes
-386 of 567 tests (Ghostty 1.4 passes 388). Every buffer a remote program can
+410 of 567 tests (Ghostty 1.4 passes 388). Every buffer a remote program can
 fill has a limit. puritty is written in Geng, a memory-safe language whose
 compiler proves array and byte reads in range before it builds the program.
 
