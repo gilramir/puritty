@@ -38,9 +38,9 @@ terminal ignores the sequence as Ghostty does.
 1. `File` and the multipart form, read as long strings as OSC 52's and
    Kitty's are (up to Kitty's 65 MiB); `inline=0` is a download, which
    puritty does not do: nothing is kept.
-2. Decoded in Geng: PNG (`Vt.Png`) and uncompressed TIFF of 8-bit RGB or
-   RGBA (`Vt.Tiff`), what chafa and timg send. JPEG and GIF are not yet
-   decoded: an image in them is not shown (IT3).
+2. Decoded in Geng: PNG (`Vt.Png`), uncompressed TIFF of 8-bit RGB or
+   RGBA (`Vt.Tiff`), what chafa and timg send, and JPEG (`Vt.Jpeg`) and
+   GIF's first frame (`Vt.Gif`), what `imgcat` of a photo sends (IT4).
 3. The size as iTerm2's documentation says (fit within the box with the
    aspect kept), `%` of the terminal's cells, `auto` the image's own
    size fitted to the terminal. Drawn in whole cells, a size the
@@ -72,6 +72,57 @@ terminal ignores the sequence as Ghostty does.
   the multipart form, a split read, off, a limit of 0), and the pixel
   case `image-iterm-basic` (a PNG at its own size and the TIFF in 3 by 1
   cells, each with text after it).
-- **Not yet:** JPEG and GIF (`imgcat photo.jpg` shows nothing yet), and
-  an animated GIF's frames.
+- **Not yet** (then): JPEG and GIF, done in IT4; an animated GIF's frames
+  after its first are still not shown.
 
+## IT4 · JPEG and GIF, decoded in Geng (2026-11-17)
+
+As PNG and zlib are (IM4, the user's choice for a remote program's
+data: no C decoder, so no buffer overrun), both in the core:
+
+- **`Vt.Jpeg`**: the baseline and extended sequential processes with
+  Huffman coding (SOF0, SOF1), 8-bit samples; grey, YCbCr, or RGB where an
+  Adobe marker says its transform is 0; any sampling factors; restart
+  intervals (the entropy data is unstuffed and cut at each RST into a
+  segment of its own); scans interleaved or one component each. Each
+  block dequantized and transformed in floating point (a block with only
+  its DC is one value). Chroma half as wide, or half as wide and tall, is
+  smoothed as libjpeg does it ("fancy upsampling", h2v1 and h2v2, its
+  weights and rounding); any other ratio takes the nearest sample.
+  Progressive, arithmetic-coded, lossless, 12-bit and CMYK files are not
+  decoded and say which. EXIF orientation is not applied: a phone's
+  photo taken on its side shows on its side.
+- **`Vt.Gif`**: the first frame, as a still picture on the logical
+  screen (clear where the frame does not reach): the global or the
+  frame's own colour table, the graphic control extension's transparent
+  index, LZW codes from 3 to 12 bits with the table cleared and grown as
+  the format says, and interlaced rows put in their places.
+
+Both are chosen by their first bytes (`FF D8`, `GIF`) in
+`Vt.Iterm.decoded`, beside PNG and TIFF, and held to the terminal's image
+limit. `Vt.Jpeg` and `Vt.Gif` are exposed by the package, for their tests.
+
+**Measured** (2026-11-17):
+
+- **Against libjpeg**: six JPEGs Pillow made (`vt/tests/gen-jpeg.py`:
+  4:4:4, 4:2:0, 4:2:2 at 13 by 7, grey, a restart marker every block,
+  optimized tables), each decoded and held to libjpeg's pixels through
+  Pillow. Taking the nearest chroma sample, they differed by up to 21;
+  with libjpeg's smoothing, by at most 2, and 3 where chroma is
+  subsampled, which is the integer transform's against this one's; held
+  to 3. A progressive JPEG says "progressive JPEG". Grey matched exactly.
+- **Against Pillow's GIF reader**: five GIFs (`vt/tests/gen-gif.py`: 256
+  colours, 4 colours and 3-bit codes, interlaced, a transparent index, an
+  animation's first frame), each first frame byte for byte the same.
+- **Speed**, natively, `core-bench FILE images` (the app's image limit
+  and a 9 by 17 cell), an iTerm2 sequence of a photo-like JPEG at quality
+  90, 4:2:0: 1920 by 1080 in 189 ms and 4000 by 3000 in 807 ms, each
+  with its resize to fit 160 by 50 cells. The first version took 492 ms
+  and 2,558 ms: `Array.range` in the inner loops and each sample finding
+  its component again; the transform's sums are now written out, the
+  loops counted, and each component's place found once.
+- **Drawn**: the pixel case `image-iterm-jpeg-gif`, a JPEG and a GIF each
+  with text after it.
+
+**Not done**: progressive JPEG (common for images from the web), EXIF
+orientation, and an animated GIF's later frames.

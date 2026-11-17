@@ -12,6 +12,8 @@ import Math
 import UInt8
 import Vt.Base64 as Base64
 import Vt.Cell exposing (byteAt)
+import Vt.Gif as Gif
+import Vt.Jpeg as Jpeg
 import Vt.Png as Png
 import Vt.Reason as Reason
 import Vt.Tiff as Tiff
@@ -73,12 +75,19 @@ file r =
                         sized r args (flag "preserveAspectRatio" True) (not (flag "doNotMoveCursor" False)) img
 
 
-{-| PNG (at most `most` bytes of pixels), or an uncompressed TIFF. -}
+{-| PNG, JPEG or GIF's first frame (at most `most` bytes of pixels), or
+an uncompressed TIFF, by their first bytes. -}
 decoded : Int -> Bytes -> Result String { width : Int, height : Int, pixels : Bytes }
 decoded most data =
     if byteAt data 0 == 0x89 then
         Png.decode most data
             |> Result.map (\png -> { width = png.width, height = png.height, pixels = png.pixels })
+
+    else if byteAt data 0 == 0xFF && byteAt data 1 == 0xD8 then
+        Jpeg.decode most data
+
+    else if byteAt data 0 == 0x47 && byteAt data 1 == 0x49 && byteAt data 2 == 0x46 then
+        Gif.decode most data
 
     else
         Tiff.decode data

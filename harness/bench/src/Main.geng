@@ -199,20 +199,21 @@ main =
                                             t =
                                                 feedAll bytes
                                                     0
-                                                    (Vt.new
-                                                        { cols = 160
-                                                        , rows = 50
-                                                        , scrollbackBytes =
-                                                            if (Array.get 1 s.args == Just "drag" || Array.get 1 s.args == Just "resizes") && number 5 s.args > 0 then
-                                                                number 5 s.args
+                                                    (withImages (Array.get 1 s.args == Just "images") <|
+                                                        Vt.new
+                                                            { cols = 160
+                                                            , rows = 50
+                                                            , scrollbackBytes =
+                                                                if (Array.get 1 s.args == Just "drag" || Array.get 1 s.args == Just "resizes") && number 5 s.args > 0 then
+                                                                    number 5 s.args
 
-                                                            else
-                                                                Vt.scrollbackBytesFor { cols = 160, rows = 25000 }
-                                                        , pageRows = Vt.defaultPageRows
-                                                        , checksums = False
-                                                        , cellWidth = 0
-                                                        , cellHeight = 0
-                                                        }
+                                                                else
+                                                                    Vt.scrollbackBytesFor { cols = 160, rows = 25000 }
+                                                            , pageRows = Vt.defaultPageRows
+                                                            , checksums = False
+                                                            , cellWidth = 0
+                                                            , cellHeight = 0
+                                                            }
                                                     )
                                         in
                                         if Array.get 1 s.args == Just "drag" then
@@ -249,3 +250,17 @@ main =
                         )
                     |> Task.onError (\_ -> Console.write "core-bench: cannot read the file\n")
             )
+
+
+{-| The app's image protocols and limit and a 9 by 17 cell, to time an
+image's decoding (docs/images-iterm.md IT4), or the terminal as it is. A
+plain call, not a function chosen: a terminal passed through a function
+value is not shown fresh, and every write of it then copies
+(docs/images.md IM24). -}
+withImages : Bool -> (taken t : Vt.Term) -> Vt.Term
+withImages on t =
+    if on then
+        Vt.withExtraImages True (Vt.withImageLimit 320000000 (Vt.withCellSize { width = 9, height = 17 } t))
+
+    else
+        t

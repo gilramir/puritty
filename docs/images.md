@@ -141,7 +141,8 @@ and 1951) and PNG (its filters, colour types, palette, Adam7) are written
 in Geng in the core, where no buffer can be overrun, which matters for
 data a remote program sends. Its speed is to be measured on real images;
 wuffs stays the fast path to add in the renderer if that is too slow.
-JPEG and GIF (iTerm2's) are decided when iTerm2's step comes. The oracle
+JPEG and GIF (iTerm2's) are decided when iTerm2's step comes (done:
+in Geng as well, `images-iterm.md` IT4). The oracle
 gets a PNG decoder from its host (`GHOSTTY_SYS_OPT_DECODE_PNG`, wuffs,
 which Ghostty bundles), so both sides accept PNG.
 
@@ -525,7 +526,8 @@ IT3 what was measured): `OSC 1337 File` and the multipart form, read as
 long strings; PNG and uncompressed TIFF decoded in Geng (`Vt.Tiff` new);
 sizes in cells drawn by the placement, other sizes resampled in the
 core; kept in the Kitty store as Sixel's are. With Sixel, it is the
-embedder's (`extraImages`, renamed from `sixel`). JPEG and GIF are left:
+embedder's (`extraImages`, renamed from `sixel`). JPEG and GIF were left
+(done in `images-iterm.md` IT4):
 the guide's promise of "all three" holds for what chafa and timg send,
 not yet for `imgcat` of a photo.
 
@@ -678,6 +680,12 @@ and cycles):
 | the four region inputs | +5.2% | +2.8% to +3.5% |
 | vte-scrolling_fullscreen | +4.7% | +1.7% |
 | vte-unicode | −0.1% | +1.7% |
+
+The same rule caught `core-bench` itself when IT4 gave it an `images`
+mode: the terminal chosen as `(if images then f else identity) <| Vt.new
+…` passed through a function value, which is never shown fresh, and the
+counts went back to 2,681 M; `withImages`, a plain function, put them
+back to the table's.
 
 So the gate still fails at its 1%, by what all of today's image work adds
 to a screen with no image (IM12 to IM23): the parser's Sixel and iTerm2

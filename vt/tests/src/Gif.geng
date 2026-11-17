@@ -1,0 +1,53 @@
+module Gif exposing (suite)
+
+{-| `Vt.Gif` (`docs/images-iterm.md` IT4): small GIFs Pillow made
+(`gen-gif.py`, `GifCases`), each first frame held to Pillow's RGBA of it,
+exactly: a colour table's lookup leaves nothing to round.
+-}
+
+import Bytes exposing (Bytes)
+import Expect
+import GifCases
+import Support
+import Test.Runner.UnitNode as U
+import UInt8
+import Vt.Base64 as Base64
+import Vt.Gif as Gif
+
+
+{-| The bytes that differ from Pillow's, or -1 for an image not decoded or
+of another size. -}
+differing : GifCases.Case -> Int
+differing c =
+    when Base64.decode (Bytes.fromString c.gif) |> Maybe.map (Gif.decode 100000000) is
+        Just (Ok img) ->
+            if img.width /= c.width || img.height /= c.height then
+                -1
+
+            else
+                Array.range 0 (c.width * c.height * 4 - 1)
+                    |> Array.foldl
+                        (\i acc ->
+                            if Maybe.map UInt8.toInt (Bytes.get i img.pixels) == Array.get i c.rgba then
+                                acc
+
+                            else
+                                acc + 1
+                        )
+                        0
+
+        _ ->
+            -1
+
+
+suite : U.Suite
+suite =
+    Support.run "Gif"
+        (Array.map
+            (\c ->
+                { name = c.name ++ ": as Pillow decodes it"
+                , test = \_ -> Expect.equal 0 (differing c)
+                }
+            )
+            GifCases.cases
+        )
