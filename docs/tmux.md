@@ -3536,7 +3536,7 @@ sections since:
   done (TM89).
 - **Completing options and targets** at the prompt, and the matches' menu:
   commands, options and layouts as each tmux, and 3.8's list, done
-  (TM96); targets before 3.2 done (TM97); 3.2–3.7's menus not yet.
+  (TM96); targets before 3.2 (TM97) and 3.2–3.7's menus (TM98) done.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
   in customize mode: done (TM86, TM87).
 - **`bell-action`** (any, none, current, other: which windows' bells are
@@ -3925,3 +3925,32 @@ as it was (`ForTargets`, `targetCompleted`).
 3.2 neither changes. Side by side on real 2.7
 (`scenes_complete.py`'s `complete-target-*`, and its earlier scenes): the
 same `-tmain:`, `-t:second `, `split-window ` and `status-keys `.
+
+## TM98 · 3.2 to 3.7's menu of matches, and their targets (2026-11-16)
+
+From 3.2 to 3.7, when Tab's matches agree no further than what is typed,
+tmux opens a menu of them (`status_prompt_complete_list_menu`): at most
+ten, the last ten when there are more, numbered from 0, over the status
+line's row (under it when the status line is at the top), its left edge
+two cells left of the word, the first item chosen; a key takes the menu,
+and an item, by its digit or Enter, takes the word's place without a
+space after it (`status_prompt_menu_callback`). A `-t` or `-s` word: with
+no `:` a session, `name:`, the matches as far as they agree and the same
+menu when no further; with `:` a window of that session (the client's for
+`:…`) by its index, one alone written, more in a menu of
+`session:index (name)` (`status_prompt_complete_window_menu`), each such
+menu from after the `-t`.
+
+**Built.** A menu that completes (`Menuing.completes`): its items' commands
+are the text for the word (`wordReplaced`); it takes the keys before the
+prompt does (`typedHere`). Tab on 3.2 to 3.7 opens it (`completionMenu`)
+for the matches, and for a target when tmux's sessions and windows come
+(`targetMenu`, asked as TM97 asks them).
+
+**Checked:** an app test on each tmux (366): `select-` and Tab opens a
+menu showing `select-window` on 3.2a, 3.4 and 3.6a, `1` making the line
+`select-pane`; on the others no menu; TM97's test now has 3.2 to 3.7
+completing `-tma` to `-tmain:`. Side by side on real 3.6a
+(`scenes_complete.py`'s `complete-select`, `complete-window-menu`): the
+same menus in the same place, with the same items, keys and first item
+chosen, and `1` giving `-tmain:1`.

@@ -542,6 +542,9 @@ type alias Menuing =
     -- a mode's own menu (TM87): each item's command is a key given to the
     -- mode, as `mode_tree_menu_callback` gives it
     , forMode : Bool
+    -- the prompt's menu of what Tab matched (3.2 to 3.7, TM98): each
+    -- item's command is the text that takes the word's place
+    , completes : Bool
     }
 
 
@@ -3130,7 +3133,11 @@ replied expect ok lines acc =
                                 acc.state
                         in
                         -- the client's own session, asked just before
-                        { acc | state = { st | asking = Just (targetCompleted rows st.targetSession a) } }
+                        if st.version >= 32 then
+                            { acc | state = targetMenu rows st.targetSession a st }
+
+                        else
+                            { acc | state = { st | asking = Just (targetCompleted rows st.targetSession a) } }
 
                     else
                         acc
@@ -4961,6 +4968,20 @@ typedHere k bytes ms s =
 
     else
         when { asking = s.asking, menu = s.menu, numbers = s.numbers, view = s.view } is
+            { asking = Just _, menu = Just m, numbers = _, view = _ } ->
+                -- the prompt's menu of matches takes the keys over the
+                -- prompt (TM98); another menu waits
+                if m.completes then
+                    menuKey k m { s | clock = ms }
+
+                else
+                    when s.asking is
+                        Just a ->
+                            promptKey k bytes ms a { s | clock = ms }
+
+                        Nothing ->
+                            { state = s, commands = [] }
+
             { asking = Just a, menu = _, numbers = _, view = _ } ->
                 promptKey k bytes ms a { s | clock = ms }
 
@@ -5394,15 +5415,24 @@ promptKey k bytes ms a0 s =
                     if p.incremental then
                         incrementalKey name text plainText enter cancel a s
 
-                    else if name == "Tab" && p.template == Nothing && s.version > 0 && s.version < 32 && targetWord a then
-                        -- before 3.2 a -t or -s word is a session or a
-                        -- window, which tmux is asked for (TM97)
+                    else if name == "Tab" && p.template == Nothing && s.version > 0 && s.version < 38 && targetWord a then
+                        -- before 3.8 a -t or -s word is a session or a
+                        -- window, which tmux is asked for (TM97, TM98)
                         sendAsking [ { command = Command.display "#{session_name}", expect = ForTargetSession }, { command = Command.listWindowsAll "#{session_name}\t#{window_index}\t#{window_name}", expect = ForTargets { line = String.fromArray a.chars, caret = a.caret } } ] s
 
                     else if name == "Tab" && p.template == Nothing then
                         -- the colon prompt: a word completed as this tmux
-                        -- completes it (TM57, TM96)
-                        { state = { s | asking = Just (completed (completions s) s.version a) }, commands = [] }
+                        -- completes it (TM57, TM96); 3.2 to 3.7 show what
+                        -- they cannot choose between in a menu (TM98)
+                        let
+                            done =
+                                completed (completions s) s.version a
+                        in
+                        if s.version >= 32 && s.version < 38 && done.chars == a.chars && Array.length (completionMatches (completions s) a) > 1 then
+                            { state = completionMenu 0 (Array.map (\m -> { shown = m, text = m }) (Array.takeLast 10 (completionMatches (completions s) a))) a s, commands = [] }
+
+                        else
+                            { state = { s | asking = Just done }, commands = [] }
 
                     else if enter then
                         answer (String.fromArray a.chars) a s
@@ -5776,6 +5806,218 @@ targetCompleted rows current a =
                             ""
                        )
                 )
+
+
+{-| The word at the caret made `text` (`status_prompt_replace_complete`). -}
+wordReplaced : String -> Asking -> Asking
+wordReplaced text a =
+    let
+        at =
+            caretWord a
+
+        added =
+            String.toArray text
+    in
+    { a | chars = Array.takeFirst at.start a.chars ++ added ++ Array.dropFirst a.caret a.chars, caret = at.start + Array.length added, edited = True }
+
+
+{-| What the word at the caret matches, sorted, each once (TM96). -}
+completionMatches : { first : Array String, other : Array String } -> Asking -> Array String
+completionMatches lists a =
+    let
+        at =
+            caretWord a
+
+        pool =
+            if at.start == 0 then
+                lists.first
+
+            else
+                lists.other
+    in
+    if at.word == "" then
+        []
+
+    else
+        pool
+            |> Array.keepIf (\c -> String.startsWith at.word c)
+            |> Array.foldl
+                (\m acc ->
+                    if Array.member m acc then
+                        acc
+
+                    else
+                        Array.pushLast m acc
+                )
+                []
+            |> Array.sort
+
+
+{-| The prompt's menu of matches (3.2 to 3.7's
+`status_prompt_complete_list_menu` and `_window_menu`, TM98): its items
+numbered from 0, each standing for the text that takes the word's place;
+over the status line's row, its left edge two cells left of the word, as
+tmux places it. -}
+completionMenu : Int -> Array { shown : String, text : String } -> Asking -> (taken s : State) -> State
+completionMenu shift items a s =
+    let
+        at =
+            caretWord a
+
+        lines =
+            max 1 (statusRows s)
+
+        height =
+            Array.length items
+
+        -- a target's menu from after its `-t` (`offset += 2`)
+        x =
+            max 0 (textCells a.label + at.start + shift - 2)
+
+        y =
+            if s.barTop then
+                lines
+
+            else
+                s.canvas.rows - 3 - height
+    in
+    { s
+        | serial = s.serial + 1
+        , menu =
+            Just
+                { serial = s.serial + 1
+                , title = ""
+                , items = Array.indexedMap (\i item -> { name = item.shown, key = String.fromInt i, command = item.text }) items
+                , pending = 0
+                -- the first item chosen, as the keyboard opens a menu
+                , selected = 0
+                , pane = s.active
+                , mouse = Nothing
+                , x = String.fromInt x
+                , y = String.fromInt y
+                , armed = False
+                , stayOpen = False
+                , start = Nothing
+                , forMode = False
+                , completes = True
+                }
+    }
+
+
+{-| A `-t` or `-s` word on 3.2 to 3.7 (`status_prompt_complete`, TM98):
+with no `:` a session, `name:`, the matches as far as they agree and a
+menu of them when that is no further; with one, a window of that session
+(of the client's for `:…`) by its index, one alone written, more in a
+menu, `session:index (name)` each. -}
+targetMenu : Array { session : String, index : String, name : String } -> String -> Asking -> (taken s : State) -> State
+targetMenu rows current a s =
+    let
+        at =
+            caretWord a
+
+        flag =
+            String.slice 1 2 at.word
+
+        wanted =
+            String.dropFirst 2 at.word
+
+        dash text =
+            "-" ++ flag ++ text
+
+        unique items =
+            Array.foldl
+                (\m acc ->
+                    if Array.member m acc then
+                        acc
+
+                    else
+                        Array.pushLast m acc
+                )
+                []
+                items
+    in
+    when String.indices ":" wanted |> Array.first is
+        Nothing ->
+            -- no `:`: a session
+            meant Reason.NoMore
+                let
+                    sessions =
+                        rows |> Array.map .session |> unique |> Array.sort |> Array.keepIf (\n -> String.startsWith wanted n) |> Array.map (\n -> n ++ ":")
+
+                    common =
+                        commonPrefix sessions
+                in
+                when sessions is
+                    [] ->
+                        s
+
+                    [ only ] ->
+                        { s | asking = Just (wordReplaced (dash only) a) }
+
+                    _ ->
+                        if dash common /= at.word then
+                            { s | asking = Just (wordReplaced (dash common) a) }
+
+                        else
+                            completionMenu 2 (Array.map (\m -> { shown = m, text = dash m }) (Array.takeLast 10 sessions)) a s
+
+        Just colon ->
+            let
+                named =
+                    String.slice 0 colon wanted
+
+                session =
+                    if named == "" then
+                        current
+
+                    else
+                        named
+
+                index =
+                    String.dropFirst (colon + 1) wanted
+
+                windows =
+                    rows
+                        |> Array.keepIf (\r -> r.session == session && String.startsWith index r.index)
+                        |> Array.takeFirst 10
+            in
+            if String.contains "." index then
+                s
+
+            else
+                when windows is
+                    [] ->
+                        s
+
+                    [ only ] ->
+                        { s | asking = Just (wordReplaced (dash (session ++ ":" ++ only.index)) a) }
+
+                    _ ->
+                        completionMenu 2 (Array.map (\w -> { shown = session ++ ":" ++ w.index ++ " (" ++ w.name ++ ")", text = dash (session ++ ":" ++ w.index) }) windows) a s
+
+
+{-| The longest start all of `items` share. -}
+commonPrefix : Array String -> String
+commonPrefix items =
+    when Array.first items is
+        Just first ->
+            Array.foldl
+                (\m acc ->
+                    let
+                        shared =
+                            Array.range 0 (min (String.count m) (String.count acc))
+                                |> Array.findLast (\k -> String.takeFirst k m == String.takeFirst k acc)
+                                |> Maybe.map .value
+                                -- nothing in common
+                                |> Maybe.withDefault (meant Reason.NoMore 0)
+                    in
+                    String.takeFirst shared acc
+                )
+                first
+                items
+
+        Nothing ->
+            meant Reason.NoMore ""
 
 
 {-| Text typed at the caret. -}
@@ -7295,6 +7537,7 @@ modeMenuOpen outside col row r =
                     , stayOpen = False
                     , start = Nothing
                     , forMode = True
+                    , completes = False
                     }
 
                 -- centred on the pointer: half its width to the left
@@ -8995,6 +9238,7 @@ openMenu ctx menu after s =
                 , stayOpen = menu.stayOpen
                 , start = menu.start
                 , forMode = False
+                , completes = False
                 }
 
         opened =
@@ -9494,7 +9738,12 @@ chooseItem index m s =
         command =
             Array.get index m.items |> Maybe.map .command |> Maybe.withDefault ""
     in
-    if m.forMode then
+    if m.completes then
+        -- the prompt's word made the item (`status_prompt_menu_callback`,
+        -- TM98)
+        { state = { s | menu = Nothing, asking = Maybe.map (wordReplaced command) s.asking }, commands = [] }
+
+    else if m.forMode then
         -- a mode's menu: its key given to the mode (TM87)
         modeKeyed (keyNamed command) { s | menu = Nothing }
 

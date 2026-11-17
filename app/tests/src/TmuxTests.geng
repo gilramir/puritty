@@ -898,14 +898,50 @@ onVersion version =
                         older =
                             Array.member version [ "2.7", "3.0" ]
                     in
+                    -- 3.2 to 3.7 complete the session too, and a window
+                    -- by its index only (TM98); 3.8 neither
                     Expect.equal
                         (if older then
                             { session = "select-window -tmain:", window = "select-window -t:sh " }
 
-                         else
+                         else if version == "3.8" then
                             { session = "select-window -tma", window = "select-window -t:s" }
+
+                         else
+                            { session = "select-window -tmain:", window = "select-window -t:s" }
                         )
                         { session = tabbed "select-window -tma", window = tabbed "select-window -t:s" }
+          }
+        , { name = "on 3.2 to 3.7 Tab opens a menu of what it cannot choose between, a digit choosing (TM98)"
+          , test =
+                \_ ->
+                    let
+                        opened =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> typeText "select-"
+                                |> named tabKey
+
+                        menuShown =
+                            look opened
+
+                        chosen =
+                            typeKey "1" menuShown.run
+
+                        typedOf run =
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(none)"
+
+                        menu =
+                            Array.member version [ "3.2a", "3.4", "3.6a" ]
+                    in
+                    Expect.equal
+                        (if menu then
+                            { shown = True, typed = "select-pane" }
+
+                         else
+                            { shown = False, typed = "select-1" }
+                        )
+                        { shown = Array.any (String.contains "select-window") menuShown.rows, typed = typedOf chosen }
           }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =

@@ -13,4 +13,8 @@ SCENES = [
          steps=[("keys", P, ":"), ("type", "select-window -tma"), ("keys", "Tab"), ("shot", "session"), ("keys", "C-c")]),
     dict(name="complete-target-window", setup=[("new-window", "-t", "main", "-n", "second")],
          steps=[("keys", P, ":"), ("type", "select-window -t:se"), ("keys", "Tab"), ("shot", "window"), ("keys", "C-c")]),
+    # 3.2 to 3.7: a window by its index from a menu (TM98)
+    dict(name="complete-window-menu", setup=[("new-window", "-t", "main", "-n", "second")],
+         steps=[("keys", P, ":"), ("type", "select-window -tmain:"), ("keys", "Tab"), ("shot", "menu"), ("keys", "1"),
+                ("shot", "chosen"), ("keys", "C-c")]),
 ]
