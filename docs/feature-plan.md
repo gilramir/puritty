@@ -309,3 +309,55 @@ and the settings window.
 **Where they go in §4's order**: the window-wide indicator any time after
 the settings window; the per-pane overlay and the tmux settings helper
 right after phase 4, before images.
+
+## 8. A pasted screenshot reaching a remote program (2026-11-17, not decided)
+
+Gilbert, 2026-11-17: a screenshot taken on Windows, pasted into Claude
+Code running in puritty over ssh and tmux. Noted as a possible feature, to
+decide later.
+
+**Today** a paste is text only (`CF_UNICODETEXT` on Windows,
+`UTF8_STRING` on X11), so an image on the clipboard pastes nothing.
+
+**What Claude Code does** (read in its 2.1.326 binary, 2026-11-17):
+
+- Its image-paste key (`chat:imagePaste`: Ctrl+V, Alt+V on Windows) runs
+  a clipboard program on the machine Claude Code runs on: `xclip` or
+  `wl-paste` asked for `image/png`, then `image/bmp`; PowerShell's
+  `Clipboard.GetImage` on Windows and from WSL. Over ssh that machine is
+  the server, which cannot see the user's clipboard. It does not speak
+  Kitty's clipboard protocol (OSC 5522) or read images through OSC 52.
+- **Pasted text that is an absolute path ending in `.png`, `.jpg`,
+  `.jpeg`, `.gif` or `.webp`** (quotes and backslash escapes taken off) is
+  read as a file and attached as an image; BMP content is converted to PNG.
+  From WSL a Windows path (`C:\…`) is translated.
+- Measured: Claude Code in a tmux, a 40×20 PNG's path outside its working
+  folder pasted with bracketed paste (`paste-buffer -p`): the prompt read
+  `[Image #1]`.
+
+**The design that follows**, when the paste key finds an image and no
+text on the clipboard:
+
+1. Read the image: Windows' registered `PNG` format as it is, where the
+   snipping tool puts one (not checked), else `CF_DIBV5`/`CF_DIB` made into
+   a PNG, which needs an encoder (puritty decodes PNG only); on X11,
+   `image/png` from the CLIPBOARD's targets.
+2. Put it on the machine the tab's program runs on. A built-in ssh tab
+   opens a second channel on its connection (an `exec` writing standard
+   input to a new file under `~/.cache/puritty/paste/`, mode 0600, older
+   files deleted) and learns the path. A local tab uses the temporary
+   folder.
+3. Paste the absolute path as text, bracketed as any paste. It passes
+   tmux and `tmux -CC` as text does, and tmux runs on the same machine.
+
+Where it can't work: `ssh` run as a program in a local tab (puritty cannot
+reach that server; it should say so rather than paste nothing), and a
+second ssh from the server (the path names a file on the wrong machine).
+Any other program receives a path, which in a shell is harmless.
+
+**The work**: `packages/ssh` holds one channel per connection
+(`Connection.ourChannel` is a constant), so a second channel beside the
+session is the main change, and the start of port forwarding or SFTP; then
+the Windows clipboard formats, a PNG encoder, and the paste. Open: on the
+normal paste key automatically (with a setting to turn it off), or a key
+of its own.
