@@ -4912,3 +4912,14 @@ either; the oracle now gives the same fixed answers
 (`harness/oracle/patches/0013`; DECCKSR's id passed through Ghostty's
 stream, which took one parameter only), and the four no longer differ.
 With both patches the oracle passes 403 of esctest's tests (from 388).
+
+**What the next steps cost (measured 2026-11-17).** Ghostty implements
+none of DECIC, DECDC, DECFI, DECBI or the rectangle operations: of their
+esctest tests it passes only those where the sequence does nothing
+(the cursor does not move, an invalid area is ignored). The core held to
+the oracle, each one built in the core is to be built again in the
+oracle's Zig (a patch, as 0013 is for the reports) or the differential
+fuzzer finds it at once, as it found the reports. That is the column
+and index operations' 16 tests and the rectangles' 24 at twice the work,
+for VT420 sequences that ncurses, vim and tmux do not send. Not started;
+held for a decision.
