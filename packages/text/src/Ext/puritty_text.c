@@ -1470,7 +1470,9 @@ static const uint8_t *ui_record(const uint8_t *p, const uint8_t *end) {
  * columns and rows in 2 bytes each; the source
  * rectangle in its pixels, x, y, width, height; where in the first cell it
  * starts, x and y in pixels; the size it is drawn at in pixels, width and
- * height; and a byte, 0 to draw it under the text and 1 over it). The
+ * height; the cells it is cut to, x, y (signed), columns and rows, as a
+ * tmux pane's edges cut it (docs/images.md IM18); and a byte, 0 to draw it
+ * under the text and 1 over it). The
  * images are kept by id until freed; the core's View sends a placement
  * only with every cell it covers, so that what lay under it is drawn
  * first. */
@@ -1532,7 +1534,7 @@ static const uint8_t *image_define(const uint8_t *p, const uint8_t *end) {
 
 static int u16(const uint8_t *p) { return (p[0] << 8) | p[1]; }
 
-#define PLACE_SIZE 30
+#define PLACE_SIZE 38
 
 /* A placement drawn: its image's part over its cells, clipped to them. */
 static void image_place(const uint8_t *p) {
@@ -1543,11 +1545,16 @@ static void image_place(const uint8_t *p) {
     int x = u16(p + 5), y = (int16_t) u16(p + 7), cols = u16(p + 9), rows = u16(p + 11);
     int sx = u16(p + 13), sy = u16(p + 15), sw = u16(p + 17), sh = u16(p + 19);
     int ox = u16(p + 21), oy = u16(p + 23), dw = u16(p + 25), dh = u16(p + 27);
+    int cx = u16(p + 29), cy = (int16_t) u16(p + 31), ccols = u16(p + 33), crows = u16(p + 35);
     if (sx >= im->w || sy >= im->h || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
     if (sw > im->w - sx) sw = im->w - sx;
     if (sh > im->h - sy) sh = im->h - sy;
-    pt_picture_draw_part(im->picture, sx, sy, sw, sh, x * pt_cw + ox, y * pt_ch + oy, dw, dh, x * pt_cw, y * pt_ch, cols * pt_cw,
-                         rows * pt_ch);
+    /* the cells it covers, cut to its clip */
+    int x0 = x > cx ? x : cx, y0 = y > cy ? y : cy;
+    int x1 = x + cols < cx + ccols ? x + cols : cx + ccols, y1 = y + rows < cy + crows ? y + rows : cy + crows;
+    if (x1 <= x0 || y1 <= y0) return;
+    pt_picture_draw_part(im->picture, sx, sy, sw, sh, x * pt_cw + ox, y * pt_ch + oy, dw, dh, x0 * pt_cw, y0 * pt_ch, (x1 - x0) * pt_cw,
+                         (y1 - y0) * pt_ch);
 }
 
 void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
@@ -1604,7 +1611,7 @@ void pt_frame(const uint8_t *list, size_t length, PtFrame *out) {
         } else if (p[0] == 0x0C && p + PLACE_SIZE <= end) {
             /* drawn after the runs' backgrounds, under or over their glyphs */
             if (nplaces < MAX_PLACES) places[nplaces++] = p;
-            int y = (int16_t) u16(p + 7), rows = u16(p + 11);
+            int y = (int16_t) u16(p + 31), rows = u16(p + 35);
             int y0 = y < 0 ? 0 : y, y1 = y + rows - 1 < pt_rows ? y + rows - 1 : pt_rows - 1;
             if (y1 >= y0) {
                 if (y0 < first) first = y0;

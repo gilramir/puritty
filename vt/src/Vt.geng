@@ -7,6 +7,7 @@ module Vt exposing
     , View
     , compose
     , composeStyled
+    , composedPlaces
     , cursorOf
     , defaultPageRows
     , defaultWordBoundaries
@@ -40,6 +41,7 @@ module Vt exposing
     , withEmbedder
     , withImageLimit
     , withPalette
+    , withoutComposed
     , wordAt
     )
 
@@ -324,8 +326,102 @@ composeStyled panes places t =
 
         written =
             Array.map (\cells -> { cells = cells, wrapped = False, prompt = 0 }) done.rows
+
+        im =
+            t.images
+
+        -- each pane's Kitty graphics placements in view, moved to its place
+        -- and cut to it; a pane laid later lies over what is there, so a
+        -- placement it meets is left out (`docs/images.md` IM18)
+        composed =
+            Array.foldl
+                (\place acc ->
+                    when Builder.get place.index panes is
+                        Just pane ->
+                            let
+                                area =
+                                    { x = place.x, y = place.y, cols = pane.cols, rows = pane.rows }
+
+                                kept =
+                                    Array.keepIf (\c -> not (meets c.clip area)) acc
+                            in
+                            kept ++ paneImages (place.index + 1) place.x place.y place.back cols rows pane
+
+                        Nothing ->
+                            meant Reason.NotKnown acc
+                )
+                im.composed
+                places
     in
-    { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters }
+    { t | screen = writeRows written 0 0 rows t.screen, styles = done.styles, clusters = done.clusters, images = { im | composed = composed } }
+
+
+{-| Whether two rectangles of cells share a cell. -}
+meets : { x : Int, y : Int, cols : Int, rows : Int } -> { x : Int, y : Int, cols : Int, rows : Int } -> Bool
+meets a b =
+    a.x < b.x + b.cols && b.x < a.x + a.cols && a.y < b.y + b.rows && b.y < a.y + a.rows
+
+
+{-| A pane's placements in view as the canvas shows them: moved by its
+place, cut to its rectangle and to the canvas, each with its image and a
+key that names the pane (`origin`). -}
+paneImages : Int -> Int -> Int -> Int -> Int -> Int -> Term -> Array Composed
+paneImages origin px py back cols rows pane =
+    Kitty.shownPlacements back pane
+        |> Array.mapAndKeepJust
+            (\sh ->
+                Maybe.map
+                    (\image ->
+                        let
+                            x0 =
+                                max (max 0 px) (sh.clip.x + px)
+
+                            y0 =
+                                max (max 0 py) (sh.clip.y + py)
+
+                            x1 =
+                                min (min cols (px + pane.cols)) (sh.clip.x + px + sh.clip.cols)
+
+                            y1 =
+                                min (min rows (py + pane.rows)) (sh.clip.y + py + sh.clip.rows)
+                        in
+                        { key = String.fromInt origin ++ String.dropFirst 1 sh.key
+                        , image = image
+                        , y = sh.y + py
+                        , x = sh.x + px
+                        , cols = sh.cols
+                        , rows = sh.rows
+                        , clip = { x = x0, y = y0, cols = max 0 (x1 - x0), rows = max 0 (y1 - y0) }
+                        , src = sh.src
+                        , offX = sh.offX
+                        , offY = sh.offY
+                        , w = sh.w
+                        , h = sh.h
+                        , under = sh.under
+                        }
+                    )
+                    (Kitty.imageByKey sh.key pane)
+            )
+        |> Array.keepIf (\c -> c.clip.cols > 0 && c.clip.rows > 0)
+
+
+{-| Where a canvas shows its panes' placements (`docs/images.md` IM18):
+the cells each starts at and covers, and the cells it is cut to. -}
+composedPlaces : Term -> Array { x : Int, y : Int, cols : Int, rows : Int, clip : { x : Int, y : Int, cols : Int, rows : Int } }
+composedPlaces t =
+    Array.map (\c -> { x = c.x, y = c.y, cols = c.cols, rows = c.rows, clip = c.clip }) t.images.composed
+
+
+{-| The canvas without the panes' placements of its last composing: what
+an embedder that composes its panes again each frame clears first
+(`docs/images.md` IM18). -}
+withoutComposed : (taken t : Term) -> Term
+withoutComposed t =
+    let
+        im =
+            t.images
+    in
+    { t | images = { im | composed = [] } }
 
 
 composePane : (cols : Int where 1 <= cols && cols <= 1000) -> (rows : Int where 1 <= rows && rows <= 1000) -> Term -> Int -> Int -> Int -> { fg : Int, bg : Int } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters } -> { rows : Array (Array Int64), styles : Styles, clusters : Clusters }

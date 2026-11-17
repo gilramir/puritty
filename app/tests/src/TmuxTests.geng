@@ -808,6 +808,30 @@ onVersion version =
                         , overwritten = selecting (output "\\033[4;1Hchanged" (dragged {}))
                         }
           }
+        , { name = "a Kitty graphics image in a pane's output is shown on the canvas, cut to its pane (images IM18)"
+          , test =
+                \_ ->
+                    let
+                        run =
+                            attached (start version)
+
+                        sized =
+                            { run | tmux = TmuxMode.setCell { width = 10, height = 20, limit = 10000000 } run.tmux }
+
+                        -- a 2 by 1 RGB image shown 3 columns by 2 rows, as
+                        -- tmux sends it (`%output`, ESC in octal)
+                        shown =
+                            deliver (Bytes.fromString "%output %0 \\033_Ga=T,f=24,s=2,v=1,c=3,r=2;/wAAAP8A\\033\\\\\u{000D}\n") sized
+
+                        canvas =
+                            (TmuxMode.paint shown.tmux).canvas
+
+                        placed =
+                            Vt.composedPlaces canvas
+                    in
+                    Expect.equal [ { cols = 3, rows = 2, inside = True } ]
+                        (Array.map (\p -> { cols = p.cols, rows = p.rows, inside = p.clip.cols == 3 && p.clip.rows == 2 && p.clip.x >= 0 && p.clip.y >= 0 }) placed)
+          }
         , { name = "once what detaches this client has gone, nothing more is sent, which tmux would no longer read (TM92)"
           , test =
                 \_ ->

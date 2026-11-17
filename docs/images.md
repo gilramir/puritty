@@ -443,6 +443,62 @@ after tmux's panes. Until then a user tells them (`chafa -f kitty`, or
 will say. Asking chafa and timg to know puritty by name is a later
 question, Gilbert's, once puritty's XTVERSION name is settled for good.
 
+## IM18 · Images in tmux `-CC` panes: the design (2026-11-17)
+
+Under `tmux -CC` each pane is a `Vt.Term` of its own, fed its `%output`,
+so a pane's images are already kept (IM1), on its own rows. The window
+draws one terminal, the canvas, which `Vt.composeStyled` makes of the
+panes' cells (`TmuxMode.paint`). What is needed:
+
+1. **The panes' terminals sized.** They are made with no cell size (so
+   no placement covers a cell) and libghostty-vt's 10 MB: `TmuxMode` is
+   given the window's cell size and the image limit, and makes and
+   resizes its panes with them, as the window's own terminal has them.
+2. **The canvas carries the panes' placements.** `composeStyled` takes
+   each place's pane's placements in view (`Kitty.shownPlacements`, the
+   pane's own scrolled-back rows for copy mode), moves them by the
+   place's row and column, and keeps them, with their images, beside the
+   canvas's own, each clipped to its pane's rectangle.
+3. **View keys images by where they come from.** Two panes may both
+   have an image 1; the executor's table is the window's. So View gives
+   each image it sends an id of its own (a counter in the shadow), by a
+   key of the pane, the image and its generation, frees one when no
+   placement shows its key, and a placement's record names that id.
+4. **A placement's record carries a clip** besides the cells it starts
+   at: a pane cuts an image at its edges without moving it. The record
+   grows by the clip's x, y, columns and rows.
+
+Not in this step: an image of a tiled pane lies under a floating pane
+over it only as far as the floating pane's cells are drawn after it;
+placements a floating pane covers are left out where they meet it.
+Images drawn before attach are gone (IM1), as is a pane's after a
+recapture.
+
+**Built (2026-11-17).** `TmuxMode.setCell` (the window's cell and the
+image limit, given by `Main` where it makes a tmux state and after a
+zoom) and `celled`, which gives them to every pane's terminal as `paint`
+begins; `Vt.composeStyled` carries each place's placements onto the
+canvas (`images.composed`), cut to the pane and to the canvas, dropping
+those a later pane meets; `Vt.withoutComposed` clears them as `paint`
+composes again. View sends each image under an id of its own by key, and
+a placement's record (38 bytes now) carries its clip.
+
+**Seen** (`bench/tmux/compare/scenes_images.py`, puritty under real tmux
+3.8 `-CC`): `chafa -f kitty` run in the right pane of a split draws its
+picture in that pane, the text above and below it where they belong; a
+Kitty image 70 columns wide in a 50-column pane is cut at the pane's
+edge and nothing reaches the other pane. An app test on each tmux (402)
+holds a pane's image on the canvas, its size and its clip. Both scenes
+show IM1's two findings live: tmux 3.8 takes the APC as the pane's title
+(the status line shows `Gm=0`, or the command's text), and an image run
+before puritty attached is not there (the first try ran chafa in the
+setup).
+
+**To measure next:** tmux, which does not parse a Kitty APC before
+master, does not move its cursor for it while puritty's pane does, so
+tmux's idea of the pane and puritty's part until the next recapture
+(IM1's question, now for Kitty too).
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),

@@ -1,6 +1,7 @@
 module Vt.Term exposing
     ( Back
     , Clip
+    , Composed
     , Config
     , Embedder
     , Image
@@ -481,12 +482,37 @@ type alias Images =
     -- the most bytes a screen's images hold together: libghostty-vt's
     -- 10,000,000 unless the embedder says (`Vt.withImageLimit`)
     , limit : Int
+    -- on a canvas the panes are composed on (`Vt.composeStyled`), their
+    -- placements in view, moved to the canvas and clipped to their pane,
+    -- each with its image (`docs/images.md` IM18)
+    , composed : Array Composed
+    }
+
+
+{-| A pane's placement as the canvas shows it (IM18): where it starts, the
+cells it covers and the cells it is cut to, all the canvas's; its source,
+offset and drawn size; under or over the text; its image, and the key
+View knows the image by (its pane, its id and its generation). -}
+type alias Composed =
+    { key : String
+    , image : Image
+    , y : Int
+    , x : Int
+    , cols : Int
+    , rows : Int
+    , clip : { x : Int, y : Int, cols : Int, rows : Int }
+    , src : { x : Int, y : Int, w : Int, h : Int }
+    , offX : Int
+    , offY : Int
+    , w : Int
+    , h : Int
+    , under : Bool
     }
 
 
 noImages : Images
 noImages =
-    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000 }
+    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000, composed = [] }
 
 
 {-| A screen's images (KG7): by id, the placements showing them, the bytes

@@ -5,6 +5,7 @@ module Vt.Kitty exposing
     , cleared
     , clearedHistory
     , dumpLines
+    , imageByKey
     , imageOf
     , screensSwapped
     , shownPlacements
@@ -1283,16 +1284,19 @@ screensSwapped t =
 -- WHAT IS SHOWN
 
 
-{-| A placement as drawn: its image's id and size, the cells it covers on
-the screen (its row may be above the screen's top, `y` negative), the
+{-| A placement as drawn: the key its image is known by (`origin:id:
+generation`, the origin 0 for the terminal's own and a pane's for one a
+canvas composed, IM18), the cells it covers on the screen (its row may be
+above the screen's top, `y` negative) and the cells it is cut to, the
 source rectangle, its offset in the first cell, the size drawn, and
 whether it lies under the text (`z` below 0) or over it. -}
 type alias Shown =
-    { image : Int
+    { key : String
     , y : Int
     , x : Int
     , cols : Int
     , rows : Int
+    , clip : { x : Int, y : Int, cols : Int, rows : Int }
     , src : { x : Int, y : Int, w : Int, h : Int }
     , offX : Int
     , offY : Int
@@ -1300,6 +1304,22 @@ type alias Shown =
     , h : Int
     , under : Bool
     }
+
+
+keyOf : Int -> Image -> String
+keyOf origin image =
+    String.fromInt origin ++ ":" ++ u32String image.id ++ ":" ++ String.fromInt image.generation
+
+
+{-| The image a shown placement's key names: the terminal's own (origin
+0) at that generation, or one a canvas composed. -}
+imageByKey : String -> Term -> Maybe Image
+imageByKey wanted t =
+    if String.startsWith "0:" wanted then
+        Dict.values t.images.shown.images |> Array.findFirst (\im -> keyOf 0 im == wanted) |> Maybe.map .value
+
+    else
+        t.images.composed |> Array.findFirst (\c -> c.key == wanted) |> Maybe.map (\c -> c.value.image)
 
 
 {-| The shown screen's image `id`. -}
@@ -1340,11 +1360,12 @@ shownPlacements back t =
                                     pixelSize image pl geo
                             in
                             Just
-                                { image = image.id
+                                { key = keyOf 0 image
                                 , y = r.top - top
                                 , x = r.left
                                 , cols = r.right - r.left + 1
                                 , rows = r.bottom - r.top + 1
+                                , clip = { x = r.left, y = r.top - top, cols = r.right - r.left + 1, rows = r.bottom - r.top + 1 }
                                 , src = source image pl
                                 , offX = pl.offX
                                 , offY = pl.offY
@@ -1356,6 +1377,25 @@ shownPlacements back t =
                     _ ->
                         Nothing
             )
+        -- and a canvas's panes' placements (IM18)
+        |> (\own -> own ++ Array.map composedShown t.images.composed)
+
+
+composedShown : Composed -> Shown
+composedShown c =
+    { key = c.key
+    , y = c.y
+    , x = c.x
+    , cols = c.cols
+    , rows = c.rows
+    , clip = c.clip
+    , src = c.src
+    , offX = c.offX
+    , offY = c.offY
+    , w = c.w
+    , h = c.h
+    , under = c.under
+    }
 
 
 {-| The dump's lines for the shown screen's placements (`docs/vt-core.md`

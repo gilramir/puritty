@@ -1220,7 +1220,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                         Maybe.map
                             (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
                             config.remote
-                     , tmux = TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
+                     , tmux = TmuxMode.setCell (paneCell cell) (TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))))
                      , overlaid = False
                      , search = Nothing
                      , barDrag = False
@@ -2858,13 +2858,13 @@ terminal and every tab's, which answer `CSI 14 t` and `CSI 16 t` from it
 and size images by it (`docs/images.md` IM3); a tab made later copies it. -}
 cellSized : { width : Int, height : Int } -> (taken m : Model) -> Model
 cellSized cell m =
-    { m | term = Vt.withCellSize cell m.term, tabs = tabsSized cell 0 m.tabs }
+    { m | term = Vt.withCellSize cell m.term, tmux = TmuxMode.setCell (paneCell cell) m.tmux, tabs = tabsSized cell 0 m.tabs }
 
 
 tabsSized : { width : Int, height : Int } -> Int -> (taken tabs : Builder (Maybe Tab)) -> Builder (Maybe Tab)
 tabsSized cell i tabs =
     if i < Builder.length tabs then
-        tabsSized cell (i + 1) (Builder.update i (Maybe.map (\t -> { t | term = Vt.withCellSize cell t.term })) tabs)
+        tabsSized cell (i + 1) (Builder.update i (Maybe.map (\t -> { t | term = Vt.withCellSize cell t.term, tmux = TmuxMode.setCell (paneCell cell) t.tmux })) tabs)
 
     else
         tabs
@@ -3546,9 +3546,17 @@ sshTold told m =
 
 {-| tmux control mode not running, with the settings' look, bar and
 background. -}
-freshTmux : Config -> TmuxMode.State
-freshTmux config =
+freshTmux : Config -> Vt.Term -> TmuxMode.State
+freshTmux config like =
     TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {})))
+        |> TmuxMode.setCell (paneCell { width = like.config.cellWidth, height = like.config.cellHeight })
+
+
+{-| What a tmux pane's terminal is given (`docs/images.md` IM18): the
+window's cell size and the image limit. -}
+paneCell : { width : Int, height : Int } -> { width : Int, height : Int, limit : Int }
+paneCell cell =
+    { width = cell.width, height = cell.height, limit = imageLimit }
 
 
 {-| What a changed host key is said with, in the platform's dialog, the box
@@ -3743,7 +3751,7 @@ sshKey remote k m =
                             -- output and send it the keys as tmux's commands
                             -- (docs/tmux.md TM93)
                             remote.reconnect { columns = m.term.cols, rows = m.term.rows }
-                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, tmux = freshTmux m.config, selection = Nothing, urgent = True })
+                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, tmux = freshTmux m.config m.term, selection = Nothing, urgent = True })
 
                         else if (screen.failed /= Nothing && enter) || escape then
                             -- this tab's session given up: the tab closed, and
@@ -6349,7 +6357,7 @@ freshTab id remote host name color cols rows m =
     , clips = []
     , clipRead = Nothing
     , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-    , tmux = freshTmux m.config
+    , tmux = freshTmux m.config m.term
     , search = Nothing
     , syncSince = -1
     }
@@ -6389,7 +6397,7 @@ reopened k id remote host m =
         , clips = []
         , clipRead = Nothing
         , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
-        , tmux = freshTmux m.config
+        , tmux = freshTmux m.config m.term
         , search = Nothing
         , syncSince = -1
     }

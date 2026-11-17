@@ -27,6 +27,7 @@ module TmuxMode exposing
     , selectedText
     , setBackground
     , setBar
+    , setCell
     , setLook
     , tabKey
     , tick
@@ -136,6 +137,10 @@ type alias State =
     -- the bells tmux's options let sound (`bell-action`, `visual-bell`,
     -- `monitor-bell`), counted as the panes ring (TM99)
     , audible : Int
+    -- the window's cell size and the image limit, which the panes'
+    -- terminals are given, so that their Kitty graphics placements cover
+    -- cells (`docs/images.md` IM18)
+    , paneCell : { width : Int, height : Int, limit : Int }
     -- tmux's version in tenths (3.6a 36, 3.8 38, next-3.9 39), 0 until
     -- it is known: what tmux draws differs by it (TM44)
     , version : Int
@@ -766,6 +771,7 @@ idle _ =
     , keys = Bindings.follow
     , said = ""
     , audible = 0
+    , paneCell = { width = 0, height = 0, limit = 10000000 }
     , version = 0
     , modes = Dict.empty
     , modeKeys = "emacs"
@@ -1674,6 +1680,29 @@ tabsQuery =
     Command.listWindows "T #{window_id} #{window_index} #{window_name}"
 
 
+{-| The window's cell size and the image limit, for the panes' terminals
+(`docs/images.md` IM18). -}
+setCell : { width : Int, height : Int, limit : Int } -> (taken s : State) -> State
+setCell cell s =
+    { s | paneCell = cell }
+
+
+{-| Every pane's terminal given the window's cell size and image limit,
+those made since and those made before a zoom alike. -}
+celled : (taken s : State) -> State
+celled s =
+    { s | panes = celledFrom s.paneCell 0 s.panes }
+
+
+celledFrom : { width : Int, height : Int, limit : Int } -> Int -> (taken panes : Builder Vt.Term) -> (r : Builder Vt.Term where Builder.length r == Builder.length panes)
+celledFrom cell i panes =
+    if i < Builder.length panes then
+        celledFrom cell (i + 1) (Builder.update i (\t -> Vt.withImageLimit cell.limit (Vt.withCellSize { width = cell.width, height = cell.height } t)) panes)
+
+    else
+        panes
+
+
 {-| The tab bar at the top (`True`) or the bottom of the window. -}
 setBar : Bool -> (taken s : State) -> State
 setBar top s =
@@ -2322,6 +2351,7 @@ event size e acc =
                             , clock = st.clock
                             , serial = st.serial
                             , audible = st.audible
+                            , paneCell = st.paneCell
                         }
                 , outside = acc.outside ++ said
             }
@@ -4214,7 +4244,11 @@ sizePane place acc =
 the floating ones over them in boxes, the bottom first, and the cursor at
 the active pane's. -}
 paint : (taken s : State) -> State
-paint s =
+paint s0 =
+    let
+        s =
+            celled s0
+    in
     when s.layout is
         Nothing ->
             meant Reason.NotYet s
@@ -4742,6 +4776,7 @@ paint s =
                 -- pane in its box, the bottom one first
                 composed =
                     s.canvas
+                        |> Vt.withoutComposed
                         |> Vt.feed (Bytes.fromString "\u{001B}[?7l\u{001B}[0m\u{001B}[H\u{001B}[2J")
                         |> Vt.composeStyled s.panes tiledPlaces
                         |> Vt.invert tiledSpans
