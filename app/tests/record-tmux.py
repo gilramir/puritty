@@ -28,6 +28,7 @@ each step that changes what puritty asks (docs/tmux-versions.md TV8), the
 older built by tmux-versions/releases.sh. The first is the newest: what
 each lacks of its variables and options is written from the dumps.
 """
+import os
 import re
 import shlex
 import socket
@@ -129,12 +130,19 @@ class Control:
 
 def recorded(binary):
     """One tmux's version, its (state, question, lines) and its list-keys."""
+    # tmux's defaults whoever records: status-keys and mode-keys follow
+    # $EDITOR and $VISUAL when the server starts (vi when either names
+    # vi), so neither is passed; mode-keys is then set vi, as the fake's
+    # copy mode is (docs/tmux.md TM100)
+    quiet = {k: v for k, v in os.environ.items() if k not in ("EDITOR", "VISUAL")}
+
     def tmux(*args):
-        return subprocess.run([binary, "-L", SOCKET, *args], capture_output=True, text=True, check=True).stdout
+        return subprocess.run([binary, "-L", SOCKET, *args], capture_output=True, text=True, check=True, env=quiet).stdout
 
     subprocess.run([binary, "-L", SOCKET, "kill-server"], capture_output=True)
     tmux("-f", "/dev/null", "new-session", "-d", "-s", "main", "-n", "sh", "-x", "80", "-y", "24",
          "sh -c \"seq -f 'line %g' 200 | head -c -1; sleep 600; exit 0\"")
+    tmux("set-option", "-g", "mode-keys", "vi")
     time.sleep(1)
     control = Control(binary)
     version = control.ask("display-message -p '#{version}'")[0]

@@ -978,6 +978,53 @@ onVersion version =
                         , unmonitored = rung [ { name = "monitor-bell", value = "off" } ]
                         }
           }
+        , { name = "with status-keys vi the prompt has vi's insert and command modes, as each tmux (TM100)"
+          , test =
+                \_ ->
+                    let
+                        prompt steps =
+                            let
+                                made =
+                                    start version
+
+                                run =
+                                    attached { made | options = Dict.set "status-keys" "vi" made.options }
+                                        |> prefixThen ":"
+                                        |> steps
+                            in
+                            TmuxMode.promptBox run.tmux |> Maybe.map .typed |> Maybe.withDefault "(closed)"
+
+                        newer n =
+                            Array.member version [ "3.2a", "3.4", "3.6a", "3.8" ] && (n <= 32 || Array.member version [ "3.4", "3.6a", "3.8" ])
+                    in
+                    Expect.equal
+                        { edit = "ello world!"
+                        , word =
+                            -- before 3.3 w is M-f: to the separator, back one
+                            if newer 33 then
+                                "abc ef"
+
+                            else
+                                "ab def"
+                        , quit =
+                            if newer 32 then
+                                "(closed)"
+
+                            else
+                                "keep"
+                        , ctrlA =
+                            if newer 33 then
+                                "zxy"
+
+                            else
+                                "xyz"
+                        }
+                        { edit = prompt (\r -> r |> typeText "hello world" |> named escapeKey |> typeKey "0" |> typeKey "x" |> typeKey "A" |> typeKey "!")
+                        , word = prompt (\r -> r |> typeText "abc def" |> named escapeKey |> typeKey "0" |> typeKey "w" |> typeKey "x")
+                        , quit = prompt (\r -> r |> typeText "keep" |> named escapeKey |> typeKey "q")
+                        , ctrlA = prompt (\r -> r |> typeText "xy" |> ctrl "a" |> typeKey "z")
+                        }
+          }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
                 \_ ->

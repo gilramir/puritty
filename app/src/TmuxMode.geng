@@ -437,6 +437,9 @@ optionNames =
     , "menu-border-style"
     , "tree-mode-border-style"
     , "display-panes-border-style"
+    -- the prompt's keys and its words (TM100)
+    , "status-keys"
+    , "word-separators"
     -- what a bell does (TM99)
     , "bell-action"
     , "visual-bell"
@@ -448,6 +451,8 @@ optionNames =
 defaults (TM47). -}
 type alias Colors =
     { message : String
+    -- the prompt in vi's command mode (TM100)
+    , messageCommand : String
     , mode : String
     , menuSelected : String
     , match : String
@@ -491,6 +496,7 @@ colorsOf status =
                     meant Reason.NotSet fallback
     in
     { message = styled "message-style" messageColor
+    , messageCommand = styled "message-command-style" messageColor
     , mode = styled "mode-style" messageColor
     , menuSelected = styled "menu-selected-style" (styled "mode-style" messageColor)
     , match = styled "copy-mode-match-style" matchColor
@@ -600,6 +606,8 @@ type alias Asking =
     -- the names Tab matched and could not choose between, shown after
     -- the line until the next key (3.8's `prompt_store_complete`, TM96)
     , matches : Array String
+    -- vi's command mode, with `status-keys vi` (TM100)
+    , commandMode : Bool
     }
 
 
@@ -4628,6 +4636,20 @@ paint s =
                 messageInk =
                     (colorsOf s.status).message
 
+                -- the prompt in vi's command mode in message-command-style
+                -- (TM100)
+                promptInk =
+                    when s.asking is
+                        Just a ->
+                            if a.commandMode then
+                                (colorsOf s.status).messageCommand
+
+                            else
+                                messageInk
+
+                        Nothing ->
+                            meant Reason.NotOpen messageInk
+
                 -- each pane's scrollbar (TM53)
                 scrollbars =
                     Array.mapAndFlatten (\p -> scrollbarPieces s p) (tiled ++ floating)
@@ -4683,9 +4705,9 @@ paint s =
                                         |> drawText barColor saidPiece
                            )
                         |> drawText "\u{001B}[0m" promptClear
-                        |> drawText messageInk tmuxLine
-                        |> drawText (messageInk ++ "\u{001B}[4m") matchesPiece
-                        |> drawText messageInk caretPiece
+                        |> drawText promptInk tmuxLine
+                        |> drawText (promptInk ++ "\u{001B}[4m") matchesPiece
+                        |> drawText promptInk caretPiece
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c viewDrawn.pieces)
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c numbersDrawn)
                         |> (\c -> Array.foldl (\piece acc -> drawText piece.color [ { row = piece.row, col = piece.col, text = piece.text } ] acc) c menuDrawn)
@@ -5208,7 +5230,7 @@ opening : Syntax.Ask -> String -> { asking : Asking, expand : Array { command : 
 opening question after =
     let
         start =
-            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0, cut = "", matches = [] }
+            { ask = question, after = after, step = 0, answers = [], label = "", chars = [], caret = 0, edited = False, recall = "", purpose = 0, cut = "", matches = [], commandMode = False }
 
         opened =
             stepTo 0 [] start
@@ -5370,6 +5392,413 @@ answering and then going on as typed. The commands after the prompt run
 when it closes, answered or not, as tmux runs them. -}
 promptKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> Asking -> (taken s : State) -> { state : State, commands : Array String }
 promptKey k bytes ms a0 s =
+    if Dict.get "status-keys" s.status.options == Just "vi" then
+        viKey k bytes ms a0 s
+
+    else
+        emacsKey k bytes ms a0 s
+
+
+{-| A key at the prompt as `status-keys vi` takes it (`prompt_translate_key`,
+`status_prompt_translate_key` before 3.8; TM100): in insert mode the
+editing keys this tmux passes go as emacs takes them, Escape enters
+command mode (the caret one left), and any other key is typed; in command
+mode a letter is an editing key (`h`, `l`, `0`, `$`, `x`, `X`, `D`, `d`,
+`p`, `j`, `k`, `b`), a vi word motion (`w`, `W`, `e`, `E`, `B`), or goes
+back to insert mode (`i`, `a`, `A`, `I`, `s`, `S`, `C`); `q` cancels from
+3.2; anything else does nothing. -}
+viKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+viKey k bytes ms a s =
+    let
+        name =
+            Maybe.withDefault (meant Reason.NotKnown "") (lookupName k)
+
+        v =
+            s.version
+
+        newer n =
+            v == 0 || v >= n
+
+        -- what insert mode passes to the editing keys
+        passed =
+            [ "C-c", "C-h", "Tab", "C-u", "C-w", "Enter", "C-m", "C-j", "BSpace", "DC", "Down", "End", "Home", "Left", "Right", "Up" ]
+                ++ (if newer 32 then
+                        [ "C-g" ]
+
+                    else
+                        []
+                   )
+                ++ (if newer 33 then
+                        [ "C-a", "C-e", "C-k", "C-n", "C-p", "C-t", "C-y", "C-Left", "C-Right" ]
+
+                    else
+                        []
+                   )
+                ++ (if newer 37 then
+                        [ "C-v" ]
+
+                    else
+                        []
+                   )
+
+        escape =
+            name == "Escape" || (newer 37 && name == "C-[")
+
+        separators =
+            Maybe.withDefault (meant Reason.NotSet " -_@") (Dict.get "word-separators" s.status.options)
+
+        editAs other st =
+            emacsKey (keyNamed other) bytes ms a st
+
+        editIn other st =
+            emacsKey (keyNamed other) bytes ms { a | commandMode = False } st
+
+        moved caret st =
+            { state = { st | asking = Just { a | caret = caret } }, commands = [] }
+
+        mode inCommand st =
+            { state = { st | asking = Just { a | commandMode = inCommand } }, commands = [] }
+    in
+    if not a.commandMode then
+        if escape then
+            { state = { s | asking = Just { a | commandMode = True, caret = max 0 (a.caret - 1) } }, commands = [] }
+
+        else if
+            -- an editing key, or text typed; a key with Ctrl or Alt that
+            -- this tmux does not pass is not typed
+            Array.member name passed || Bitwise.and k.mods 6 == 0
+        then
+            emacsKey k bytes ms a s
+
+        else
+            { state = s, commands = [] }
+
+    else if escape then
+        -- in command mode Escape goes back to insert mode up to 3.6, and
+        -- from 3.7 does nothing
+        if newer 37 then
+            { state = s, commands = [] }
+
+        else
+            mode False s
+
+    else if name == "BSpace" then
+        editAs "Left" s
+
+    else if name == "i" then
+        mode False s
+
+    else if name == "S" then
+        editIn "C-u" s
+
+    else if name == "A" then
+        editIn "End" s
+
+    else if name == "I" then
+        editIn "Home" s
+
+    else if name == "C" then
+        editIn "C-k" s
+
+    else if name == "s" then
+        editIn "DC" s
+
+    else if name == "a" then
+        editIn "Right" s
+
+    else if name == "$" then
+        editAs "End" s
+
+    else if name == "0" || name == "^" then
+        editAs "Home" s
+
+    else if name == "D" then
+        editAs "C-k" s
+
+    else if name == "X" then
+        editAs "BSpace" s
+
+    else if name == "x" || name == "DC" then
+        editAs "DC" s
+
+    else if name == "b" || (name == "B" && not (newer 33)) then
+        -- before 3.3 both b and B go back a word by the separators
+        -- (`M-b`); from 3.3 b does, as `prompt_backward_word`
+        if newer 33 then
+            moved (viBackward separators a) s
+
+        else
+            moved (oldBackward separators a) s
+
+    else if not (newer 33) && Array.member name [ "w", "W", "e", "E" ] then
+        -- before 3.3 each is `M-f`: to the next separator, then back one
+        moved (oldForward separators a) s
+
+    else if name == "d" then
+        editAs "C-u" s
+
+    else if name == "p" then
+        editAs "C-y" s
+
+    else if name == "q" && newer 32 then
+        editAs "C-c" s
+
+    else if name == "j" || name == "Down" then
+        editAs "Down" s
+
+    else if name == "k" || name == "Up" then
+        editAs "Up" s
+
+    else if name == "h" || name == "Left" then
+        editAs "Left" s
+
+    else if name == "l" || name == "Right" then
+        editAs "Right" s
+
+    else if name == "C-h" || name == "C-c" || name == "Enter" || name == "C-m" || name == "C-j" then
+        emacsKey k bytes ms a s
+
+    else if name == "w" then
+        moved (viForward True separators a) s
+
+    else if name == "W" then
+        moved (viForward True "" a) s
+
+    else if name == "e" then
+        moved (viEnd separators a) s
+
+    else if name == "E" then
+        moved (viEnd "" a) s
+
+    else if name == "B" then
+        moved (viBackward "" a) s
+
+    else
+        { state = s, commands = [] }
+
+
+{-| `prompt_forward_word` (vi): from the caret over its class (separators
+or not), then over spaces to the next word. -}
+viForward : Bool -> String -> Asking -> Int
+viForward vi separators a =
+    let
+        n =
+            Array.length a.chars
+
+        at i =
+            Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i a.chars)
+
+        space i =
+            at i == ' '
+
+        isSep i =
+            String.contains (String.fromChar (at i)) separators && not (space i)
+
+        skipSpaces i =
+            if i < n && space i then
+                skipSpaces (i + 1)
+
+            else
+                i
+
+        start =
+            if vi then
+                a.caret
+
+            else
+                skipSpaces a.caret
+
+        cls =
+            isSep start
+
+        go i =
+            let
+                next =
+                    i + 1
+            in
+            if next >= n then
+                n
+
+            else if space next then
+                if vi then
+                    skipSpaces next
+
+                else
+                    next
+
+            else if isSep next /= cls then
+                next
+
+            else
+                go next
+    in
+    if start >= n then
+        n
+
+    else
+        go start
+
+
+{-| Before 3.3, `M-f` with `status-keys vi` (`status_prompt_key`): past
+the separators after the caret, on to the next separator or the end, then
+back one. -}
+oldForward : String -> Asking -> Int
+oldForward separators a =
+    let
+        n =
+            Array.length a.chars
+
+        sep i =
+            i < n && String.contains (String.fromChar (Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i a.chars))) separators
+
+        pastSeparators i =
+            if i >= n then
+                n
+
+            else if not (sep (i + 1)) then
+                i + 1
+
+            else
+                pastSeparators (i + 1)
+
+        toSeparator i =
+            if i >= n then
+                n
+
+            else if sep (i + 1) then
+                i + 1
+
+            else
+                toSeparator (i + 1)
+
+        found =
+            toSeparator (pastSeparators a.caret)
+    in
+    if found > 0 then
+        found - 1
+
+    else
+        found
+
+
+{-| Before 3.3, `M-b` (`status_prompt_key`): back over separators, then to
+the start of the word. -}
+oldBackward : String -> Asking -> Int
+oldBackward separators a =
+    let
+        sep i =
+            String.contains (String.fromChar (Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i a.chars))) separators
+
+        pastSeparators i =
+            if i <= 0 then
+                0
+
+            else if not (sep (i - 1)) then
+                i - 1
+
+            else
+                pastSeparators (i - 1)
+
+        toStart i =
+            if i <= 0 then
+                0
+
+            else if sep (i - 1) then
+                i
+
+            else
+                toStart (i - 1)
+    in
+    toStart (pastSeparators a.caret)
+
+
+{-| `prompt_end_word`: to the last character of the next word. -}
+viEnd : String -> Asking -> Int
+viEnd separators a =
+    let
+        n =
+            Array.length a.chars
+
+        at i =
+            Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i a.chars)
+
+        isSep i =
+            String.contains (String.fromChar (at i)) separators
+
+        next i =
+            if i >= n - 1 then
+                n
+
+            else if at (i + 1) == ' ' then
+                next (i + 1)
+
+            else
+                i + 1
+
+        found =
+            next a.caret
+
+        last i =
+            if i + 1 >= n then
+                n - 1
+
+            else if at (i + 1) == ' ' || isSep (i + 1) /= isSep found then
+                i
+
+            else
+                last (i + 1)
+    in
+    if a.caret >= n then
+        a.caret
+
+    else if found >= n then
+        n
+
+    else
+        last found
+
+
+{-| `prompt_backward_word`: to the start of the word before the caret. -}
+viBackward : String -> Asking -> Int
+viBackward separators a =
+    let
+        at i =
+            Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i a.chars)
+
+        isSep i =
+            String.contains (String.fromChar (at i)) separators
+
+        nonSpace i =
+            if i <= 0 then
+                0
+
+            else if at (i - 1) /= ' ' then
+                i - 1
+
+            else
+                nonSpace (i - 1)
+
+        found =
+            nonSpace a.caret
+
+        cls =
+            isSep found
+
+        start i =
+            if i <= 0 then
+                0
+
+            else if at (i - 1) == ' ' || isSep (i - 1) /= cls then
+                i
+
+            else
+                start (i - 1)
+    in
+    start found
+
+
+emacsKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Bytes -> Int -> Asking -> (taken s : State) -> { state : State, commands : Array String }
+emacsKey k bytes ms a0 s =
     let
         -- the matches Tab listed go with the next key, as 3.8's
         -- `prompt_clear_complete` (TM96); Tab lists them again
@@ -7656,11 +8085,44 @@ keyNamed name =
         "Right" ->
             symKey 0xFF53
 
-        "C-t" ->
-            { action = 0, keycode = 0, mods = 2, consumed = 0, unshifted = 0x74, sym = 0x74, text = Bytes.fromString "\u{0014}" }
+        "Left" ->
+            symKey 0xFF51
+
+        "Up" ->
+            symKey 0xFF52
+
+        "Down" ->
+            symKey 0xFF54
+
+        "Home" ->
+            symKey 0xFF50
+
+        "End" ->
+            symKey 0xFF57
+
+        "BSpace" ->
+            symKey 0xFF08
+
+        "DC" ->
+            symKey 0xFFFF
+
+        "M-b" ->
+            { action = 0, keycode = 0, mods = 4, consumed = 0, unshifted = 0x62, sym = 0x62, text = Bytes.fromString "b" }
 
         _ ->
-            textKey name
+            if String.startsWith "C-" name && String.count name == 3 then
+                -- a Ctrl letter, its control character the text
+                let
+                    letter =
+                        String.dropFirst 2 name
+
+                    code =
+                        String.toArray letter |> Array.first |> Maybe.map Char.toCode |> Maybe.withDefault (meant Reason.NotKnown 0x61) |> clamp 0x61 0x7A
+                in
+                { action = 0, keycode = 0, mods = 2, consumed = 0, unshifted = code, sym = code, text = Bytes.fromString (String.fromChar (Maybe.withDefault ' ' (Char.fromCode (code - 0x60)))) }
+
+            else
+                textKey name
 
 
 {-| The mode's row `i` made the chosen one, its preview or detail asked
@@ -13900,6 +14362,7 @@ treePrompt version purpose label first =
     , recall = ""
     , cut = ""
     , matches = []
+    , commandMode = False
     , purpose = purpose
     }
 

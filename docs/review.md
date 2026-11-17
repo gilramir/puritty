@@ -27,3 +27,25 @@ is cut at a different place.
 `cursor_x`, `cursor_y` and `cursor_flag` (`pane_height`, `pane_width` it
 has), pick the rows and columns as tmux does, and draw the cursor; in
 tmux's look only, or in both.
+
+## RV2 · The prompt's emacs word keys and `word-separators` (2026-11-16)
+
+Found with TM100. puritty's Alt-B and Ctrl+Left, Alt-F and Ctrl+Right, and
+Ctrl-W at tmux's prompt stop at spaces only (`editLine`'s `wordStart`,
+`wordEnd`). tmux's stop at the session's `word-separators` too (space,
+`-`, `_` and `@` by default): 2.7 to 3.2 skip the separators and take a
+word as the run between them (`status_prompt_key`'s `M-f`, `M-b`, C-w);
+from 3.3 a run of separators is a word of its own (`prompt_forward_word`,
+`prompt_backward_word`, C-w by the same classes). With
+`new-window -n my_logs` and the caret at the end:
+
+| keys | tmux 3.8 | puritty |
+|---|---|---|
+| Ctrl-W | deletes `logs`, leaving `my_` | deletes `my_logs` |
+| Alt-B | to the start of `logs` | to the start of `my_logs` |
+| Alt-F from the start of `new-window` | after `new` | after `new-window` |
+
+The vi keys (TM100) follow tmux.
+
+**To match it**, the three keys would take the separators puritty asks
+(`word-separators`, TM100) and each version's rule, as the vi keys do.

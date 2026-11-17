@@ -3530,8 +3530,7 @@ App tests 300.
 The -CC items not yet done, gathered from TM57's "not yet" and the
 sections since:
 
-- **`status-keys vi`** at the prompt: tmux's vi keys (3.8's
-  `status_prompt_translate_key`, and the older `status.c` tables).
+- **`status-keys vi`** at the prompt: done (TM100).
 - **tmux's own prompt history** (3.3 on), shared with other clients:
   done (TM89).
 - **Completing options and targets** at the prompt, and the matches' menu:
@@ -3978,3 +3977,48 @@ not sound; with `both` does both; with `bell-action none` or `other` or
 `monitor-bell off` neither. Side by side on real 3.8
 (`bench/tmux/compare/scenes_bell.py`): `Bell in current window` and, from
 a window not shown, `Bell in window 1`.
+
+## TM100 · `status-keys vi` at the prompt (2026-11-16)
+
+The last of TM85's items. With `status-keys vi` tmux's prompt has vi's
+modes (`status_prompt_translate_key`; 3.8's `prompt_translate_key`). In
+insert mode the editing keys this tmux passes go as the emacs keys do,
+Escape enters command mode with the caret one left, and any other key is
+typed. In command mode: `h`, `l`, Backspace (left), `0`, `^`, `$`, `x`,
+`X`, `D`, `d` (the line), `p` (as C-y), `j`, `k`; `i`, `a`, `A`, `I`, `s`,
+`S`, `C` back to insert mode, some after an edit; anything else nothing.
+What differs by version, read in every release:
+
+| | 2.7–3.1 | 3.2 | 3.3–3.6 | 3.7–3.8 |
+|---|---|---|---|---|
+| insert mode passes | C-c, C-h, Tab, C-u, C-w, Enter, BSpace, DC, the arrows, Home, End | and C-g | and C-a, C-e, C-k, C-n, C-p, C-t, C-y, C-Left, C-Right | and C-v; C-[ as Escape |
+| `q` (cancel) | no | yes | yes | yes |
+| `w` `W` `e` `E` | each `M-f`: to the next separator, then back one | the same | vi's motions (`prompt_forward_word`, `_end_word`), `W` and `E` without separators | the same |
+| `b` `B` | `M-b` | the same | `b` by the separators, `B` without | the same |
+| Escape in command mode | back to insert mode | the same | the same | nothing |
+
+The separators are the session's `word-separators` (` -_@`). Command mode
+draws the prompt in `message-command-style`.
+
+**Built.** `status-keys` and `word-separators` join the options the status
+line asks; `Asking.commandMode`; `viKey` translates a key and gives it to
+`emacsKey` (the prompt's keys as they were) or moves the caret itself
+(`viForward`, `viEnd`, `viBackward`, and before 3.3 `oldForward`,
+`oldBackward`). The recordings the fake answers from were made with
+`$EDITOR` set to vim, so tmux recorded `status-keys` and `mode-keys` as
+vi: `record-tmux.py` now starts its servers without `EDITOR` and
+`VISUAL` and sets `mode-keys vi` itself, so what it records is the same
+whoever runs it.
+
+**Checked:** an app test on each tmux (378): `hello world`, Escape, `0`,
+`x`, `A`, `!` give `ello world!`; `abc def`, Escape, `0`, `w`, `x` give
+`abc ef` from 3.3 and `ab def` before; Escape, `q` closes the prompt from
+3.2; C-a in insert mode moves from 3.3 and before it is not typed. Side by
+side on real 3.8, 3.6a and 2.7 (`bench/tmux/compare/scenes_vi.py`): the
+same lines and caret, `abc de-ghi` on 2.7 and `abc defghi` from 3.3 for
+`0 w w x` over `abc def-ghi`, and command mode in `message-command-style`.
+The harness waits a second after Escape, which tmux otherwise reads with
+the next key as one Meta key.
+
+Left as it is (`docs/review.md` RV2): the emacs word keys stop at spaces,
+not at `word-separators`.

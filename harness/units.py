@@ -123,8 +123,9 @@ SUITES = [
         # since TM96: Tab at the prompt as each tmux completes, on each;
         # 360 since TM97: a -t word's session and window before 3.2; 366
         # since TM98: 3.2 to 3.7's menu of matches, on each; 372 since
-        # TM99: a bell as bell-action, visual-bell and monitor-bell say
-        372,
+        # TM99: a bell as bell-action, visual-bell and monitor-bell say;
+        # 378 since TM100: status-keys vi at the prompt, on each
+        378,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
