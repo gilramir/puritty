@@ -1,0 +1,32 @@
+# A desktop like the RHEL8 ETX desktop measured in docs/rhel8-etx.md RE2,
+# to run the RHEL8 build in by hand (RE12): AlmaLinux 8.10, the X
+# libraries puritty links, the fonts, Korean locales and IBus that desktop
+# has, tmux 2.7 from the RPM and 3.8 first on PATH, xfwm4, and the tools to
+# look at and drive a window. Built by app/distro/rhel8/etx/etx.sh, which
+# puts tmux-3.8.tar.gz in the context.
+FROM docker.io/library/almalinux:8 AS tmux
+RUN dnf -y install gcc make bison pkgconf-pkg-config libevent-devel ncurses-devel && dnf clean all
+COPY tmux-3.8.tar.gz /src/
+RUN cd /src && tar xzf tmux-3.8.tar.gz && cd tmux-3.8 \
+ && ./configure --prefix=/usr/local -q && make -s -j"$(nproc)" && make -s install
+
+FROM docker.io/library/almalinux:8
+RUN dnf -y install epel-release dnf-plugins-core \
+ && dnf config-manager --set-enabled powertools \
+ && dnf -y install \
+      libxcb xcb-util xcb-util-image xcb-util-renderutil libxkbcommon-x11 \
+      fontconfig libpng zlib libevent ncurses \
+      dejavu-sans-mono-fonts dejavu-sans-fonts google-noto-sans-cjk-ttc-fonts thai-scalable-waree-fonts \
+      glibc-langpack-ko glibc-langpack-en \
+      ibus ibus-hangul \
+      xorg-x11-server-Xvfb mesa-dri-drivers glx-utils xkeyboard-config xorg-x11-utils xorg-x11-apps xorg-x11-xauth \
+      xfwm4 dbus-x11 xterm xdotool x11vnc ImageMagick \
+      tmux zsh python36 procps-ng strace gdb less \
+ && dnf clean all
+COPY --from=tmux /usr/local/bin/tmux /usr/local/bin/tmux
+COPY xproxy.py session.sh /etx/
+RUN useradd -m -s /bin/zsh etx && touch /home/etx/.zshrc && chown etx: /home/etx/.zshrc
+USER etx
+WORKDIR /home/etx
+ENV LANG=en_US.UTF-8 XMODIFIERS= DISPLAY=etx-server:32 SHELL=/bin/zsh
+CMD ["/bin/sh", "/etx/session.sh"]

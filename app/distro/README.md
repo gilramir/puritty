@@ -18,3 +18,8 @@ The scripts take the name:
 the libraries (`build-libs.sh` into `vendor/distro/NAME`) when they are not
 there. Adding a distribution is adding its folder; its clang should be the
 devbox's version for a profile-guided build (`scripts/prerelease.sh`).
+
+`rhel8/etx/` is a third kind: a desktop like the RHEL8 ETX one to try the
+RHEL8 build in by hand, kept running between commands
+(`rhel8/etx/etx.sh start`, `puritty`, `shot`, `vnc`, `bytes`, `stop`;
+`docs/rhel8-etx.md` RE12).
