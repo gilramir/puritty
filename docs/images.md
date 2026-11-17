@@ -414,6 +414,8 @@ after it: `imageLimit = 320000000` in `app/src/Main.geng` (IM9). A vt
 test holds the switch (104); in the app under Xvfb the script that drew
 two placements draws none and is answered nothing.
 
+**Back on (2026-11-17)**, 0.1.1 published: `imageLimit` is 320 MB again.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
