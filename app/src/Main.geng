@@ -2852,6 +2852,23 @@ applyLook new m =
             )
 
 
+{-| The window's cell size after a zoom or a font change, told to the
+terminal and every tab's, which answer `CSI 14 t` and `CSI 16 t` from it
+and size images by it (`docs/images.md` IM3); a tab made later copies it. -}
+cellSized : { width : Int, height : Int } -> (taken m : Model) -> Model
+cellSized cell m =
+    { m | term = Vt.withCellSize cell m.term, tabs = tabsSized cell 0 m.tabs }
+
+
+tabsSized : { width : Int, height : Int } -> Int -> (taken tabs : Builder (Maybe Tab)) -> Builder (Maybe Tab)
+tabsSized cell i tabs =
+    if i < Builder.length tabs then
+        tabsSized cell (i + 1) (Builder.update i (Maybe.map (\t -> { t | term = Vt.withCellSize cell t.term })) tabs)
+
+    else
+        tabs
+
+
 {-| The font opened again, or sized again, when the settings ask (ST4). -}
 refontOr : Config -> Config -> (Config -> String) -> (taken applied : Model) -> Task Error Model
 refontOr new old language applied =
@@ -2864,8 +2881,8 @@ refontOr new old language applied =
             |> Task.andThen
                 (\done ->
                     when done is
-                        Ok _ ->
-                            Task.succeed { applied | points = new.points }
+                        Ok cell ->
+                            Task.succeed (cellSized cell { applied | points = new.points })
 
                         Err why ->
                             meant Reason.Refused
@@ -2874,7 +2891,7 @@ refontOr new old language applied =
                 )
 
     else if new.points /= old.points then
-        Window.zoom new.points |> Task.map (\_ -> { applied | points = new.points })
+        Window.zoom new.points |> Task.map (\cell -> cellSized cell { applied | points = new.points })
 
     else
         Task.succeed applied
@@ -4132,9 +4149,9 @@ handleOne remote ms rest ev m =
                     Just points ->
                         Window.zoom points
                             |> Task.andThen
-                                (\_ ->
+                                (\cell ->
                                     -- every cell is drawn again at the new size
-                                    handle remote ms rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
+                                    handle remote ms rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
                                 )
 
                     Nothing ->
@@ -4424,8 +4441,8 @@ handleOne remote ms rest ev m =
                 else
                     Window.zoom points
                         |> Task.andThen
-                            (\_ ->
-                                handle remote ms steps.rest { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True }
+                            (\cell ->
+                                handle remote ms steps.rest (cellSized cell { m | points = points, shadow = View.shadowIn m.term.cols m.term.rows m.windowRows, urgent = True })
                             )
 
             else

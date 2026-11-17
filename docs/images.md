@@ -104,6 +104,14 @@ program asking the cell size is told the old one, and an image sized by
 it comes out the wrong size. To fix first (IM8 step 0): a
 `Vt.withCellSize`, applied to every tab's terminal.
 
+**Fixed (2026-11-17).** `Vt.withCellSize`, and `Main.cellSized` gives the
+window's new cell to the terminal and every tab's at the four places; a
+tab made later copies it (`freshTerm`). Measured in the app under Xvfb,
+a program asking `CSI 16 t`, then Ctrl+=, then asking again: 0.1.0
+answers `6;17;9t` both times; now `6;17;9t`, then `6;19;10t`. A vt unit
+test (103). tmux panes' terminals still have no cell size (0, which the
+reports take as unknown): the image layer gives them one (IM8 step 1).
+
 ## IM4 · Decoders
 
 - **Sixel** is text (a palette and six-pixel columns): decoded in Geng, in
@@ -195,16 +203,16 @@ pane (IM1), so these are puritty's answers to programs outside tmux.
 Test programs: chafa 1.18 (all three protocols) is in nixpkgs; img2sixel
 (libsixel) and timg too. They join the devbox when step 2 starts.
 
-## IM9 · For Gilbert to decide
+## IM9 · Decided (Gilbert, 2026-11-17)
 
-- **The memory limit's default** for all images together (IM5): Ghostty
-  and WezTerm use 320 MB; on ETX it is the shared X server's memory too.
-- **Sixel first** (§5's order) or **Kitty first**: under `-CC` all three
-  reach puritty alike (IM1), so tmux no longer favors Sixel; Kitty has
-  the oracle and the most modern programs (yazi, image.nvim), Sixel is
-  smaller and what plain tmux 3.4+ redraws.
-- **Temporary-file transmission for a local shell** (IM5): off at first,
-  or allowed with Ghostty's checks.
+- **Kitty first**, after the image layer: it has the oracle (IM7) and the
+  most modern programs; then Sixel, then iTerm2's. IM8's steps 2 to 4
+  are taken in that order: Kitty (with wuffs, which its PNG and zlib
+  need), Sixel, iTerm2.
+- **The memory limit's default is 320 MB** for all images together, as
+  Ghostty's app and WezTerm have it; a setting on the Advanced page.
+- **Direct transmission only** for now, a local shell too: no temporary
+  files or shared memory (IM5).
 
 ## IM10 · The user guide, drafted
 
