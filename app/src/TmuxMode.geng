@@ -133,6 +133,9 @@ type alias State =
     -- what tmux said (`%message`) or puritty says of a key, shown at the
     -- tab bar's right until the next key (TM24)
     , said : String
+    -- the bells tmux's options let sound (`bell-action`, `visual-bell`,
+    -- `monitor-bell`), counted as the panes ring (TM99)
+    , audible : Int
     -- tmux's version in tenths (3.6a 36, 3.8 38, next-3.9 39), 0 until
     -- it is known: what tmux draws differs by it (TM44)
     , version : Int
@@ -434,6 +437,10 @@ optionNames =
     , "menu-border-style"
     , "tree-mode-border-style"
     , "display-panes-border-style"
+    -- what a bell does (TM99)
+    , "bell-action"
+    , "visual-bell"
+    , "monitor-bell"
     ]
 
 
@@ -678,6 +685,7 @@ type Expect
     | ForAliases
     | ForTargets { line : String, caret : Int }
     | ForTargetSession
+    | ForBellWindow
     | ForCustomize Int
     | ForCustomizeNotes String
     | ForCustomizeFilter { filter : String, ids : Array String }
@@ -745,6 +753,7 @@ idle _ =
     , barTopConfig = False
     , keys = Bindings.follow
     , said = ""
+    , audible = 0
     , version = 0
     , modes = Dict.empty
     , modeKeys = "emacs"
@@ -876,9 +885,15 @@ readHere size bytes s =
         fed =
             Control.feed bytes s.reader
 
+        -- each pane's bells before the output, so that one that rang is
+        -- found (TM99)
+        rangBefore =
+            paneBells s
+
         done =
             Array.foldl (\e a -> event size e (traced e a)) { state = { s | reader = fed.reader }, outside = [], commands = [], trace = [], run = Nothing } fed.events
                 |> endRun
+                |> bellsRung rangBefore
 
         view =
             if done.state.on then
@@ -1289,6 +1304,9 @@ expectName x =
 
         ForTargetSession ->
             "the client's session, for -t"
+
+        ForBellWindow ->
+            "the window a bell rang in"
 
         ForListPreview _ ->
             "the list's preview"
@@ -3099,6 +3117,24 @@ replied expect ok lines acc =
                                 st.listing
                     }
             }
+
+        ForBellWindow ->
+            -- `Bell in window N`, as tmux says a bell in another window
+            -- with `visual-bell` (`alerts_set_message`, TM99)
+            when Array.first lines is
+                Just line ->
+                    if ok then
+                        let
+                            st =
+                                acc.state
+                        in
+                        { acc | state = { st | said = "Bell in window " ++ Bytes.toStringLossy line } }
+
+                    else
+                        acc
+
+                Nothing ->
+                    meant Reason.FromOutside acc
 
         ForTargetSession ->
             -- the client's session, which `:…` completes a window of (TM97)
@@ -8541,7 +8577,128 @@ themeAsked value acc =
 {-| The bells tmux's panes have rung, added up (docs/sounds.md SN6). -}
 bells : State -> Int
 bells s =
-    bellsFrom 0 0 s.panes
+    s.audible
+
+
+{-| Each pane's bells so far, by its id. -}
+paneBells : State -> Dict Int Int
+paneBells s =
+    paneBellsFrom 0 s.ids s.panes Dict.empty
+
+
+paneBellsFrom : (i : Int where 0 <= i) -> Array Int -> Builder Vt.Term -> Dict Int Int -> Dict Int Int
+paneBellsFrom i ids panes acc =
+    if i < Builder.length panes then
+        paneBellsFrom (i + 1)
+            ids
+            panes
+            (when Array.get i ids is
+                Just id ->
+                    Dict.set id (0 + (Builder.getProven i panes).bells) acc
+
+                Nothing ->
+                    acc
+            )
+
+    else
+        acc
+
+
+{-| A bell rung in a pane since `before`, taken as tmux takes one
+(`alerts_check_bell`, `alerts_action_applies`, `alerts_set_message`;
+the same from 2.7 to 3.8, TM99): nothing with `monitor-bell` off;
+`bell-action` any, none, current (the window shown) or other; then by
+`visual-bell` the sound (off), a message (on), or both: `Bell in current
+window`, or for another `Bell in window N`, its number asked of tmux.
+Once a read, as tmux alerts a session once. -}
+bellsRung : Dict Int Int -> (taken acc : Acc) -> Acc
+bellsRung rangBefore acc =
+    let
+        after =
+            paneBells acc.state
+
+        rung =
+            Dict.foldl
+                (\id n found ->
+                    if n > Maybe.withDefault (meant Reason.NotSet 0) (Dict.get id rangBefore) then
+                        Array.pushLast id found
+
+                    else
+                        found
+                )
+                []
+                after
+
+        option name default =
+            when Dict.get name acc.state.status.options is
+                Just "" ->
+                    default
+
+                Just v ->
+                    v
+
+                Nothing ->
+                    meant Reason.NotSet default
+
+        shown =
+            when acc.state.layout is
+                Just cell ->
+                    Layout.panes cell |> Array.map .id
+
+                Nothing ->
+                    meant Reason.NotYet []
+
+        action =
+            option "bell-action" "any"
+
+        applies id =
+            if action == "any" then
+                True
+
+            else if action == "current" then
+                Array.member id shown
+
+            else if action == "other" then
+                not (Array.member id shown)
+
+            else
+                False
+
+        monitored =
+            not (Array.member (option "monitor-bell" "on") [ "off", "0" ])
+
+        visual =
+            option "visual-bell" "off"
+    in
+    when Array.findFirst applies rung |> Maybe.map .value is
+        Just id ->
+            if not monitored then
+                acc
+
+            else
+                let
+                    st =
+                        acc.state
+
+                    sounded =
+                        if visual == "on" || visual == "1" then
+                            st
+
+                        else
+                            { st | audible = st.audible + 1 }
+                in
+                if visual == "off" || visual == "0" then
+                    { acc | state = sounded }
+
+                else if Array.member id shown then
+                    { acc | state = { sounded | said = "Bell in current window" } }
+
+                else
+                    ask [ { command = Command.displayAt ("%" ++ String.fromInt id) "#{window_index}", expect = ForBellWindow } ] { acc | state = sounded }
+
+        Nothing ->
+            -- no pane rang, or none whose bell counts
+            meant Reason.NoMore acc
 
 
 bellsFrom : (i : Int where 0 <= i) -> Int -> Builder Vt.Term -> Int

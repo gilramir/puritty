@@ -943,6 +943,41 @@ onVersion version =
                         )
                         { shown = Array.any (String.contains "select-window") menuShown.rows, typed = typedOf chosen }
           }
+        , { name = "a pane's bell sounds, shows or is ignored as bell-action, visual-bell and monitor-bell say (TM99)"
+          , test =
+                \_ ->
+                    let
+                        -- pane %0 rings, with these options set
+                        rung settings =
+                            let
+                                made =
+                                    start version
+
+                                run =
+                                    attached { made | options = Array.foldl (\o d -> Dict.set o.name o.value d) made.options settings }
+                                        |> deliver (Bytes.fromString "%output %0 \\007\u{000D}\n")
+
+                                seen =
+                                    look run
+                            in
+                            { sounds = TmuxMode.bells seen.run.tmux, says = Array.any (String.contains "Bell in current window") seen.rows }
+                    in
+                    Expect.equal
+                        { plain = { sounds = 1, says = False }
+                        , visual = { sounds = 0, says = True }
+                        , both = { sounds = 1, says = True }
+                        , none = { sounds = 0, says = False }
+                        , other = { sounds = 0, says = False }
+                        , unmonitored = { sounds = 0, says = False }
+                        }
+                        { plain = rung []
+                        , visual = rung [ { name = "visual-bell", value = "on" } ]
+                        , both = rung [ { name = "visual-bell", value = "both" } ]
+                        , none = rung [ { name = "bell-action", value = "none" } ]
+                        , other = rung [ { name = "bell-action", value = "other" } ]
+                        , unmonitored = rung [ { name = "monitor-bell", value = "off" } ]
+                        }
+          }
         , { name = "a click on [z] in a pane's title zooms it, as tmux 3.8's MouseDown1Control8 (TM83)"
           , test =
                 \_ ->

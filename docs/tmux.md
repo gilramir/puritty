@@ -3539,10 +3539,7 @@ sections since:
   (TM96); targets before 3.2 (TM97) and 3.2–3.7's menus (TM98) done.
 - **The mouse** in the tree (choose-tree, choose-client, choose-buffer) and
   in customize mode: done (TM86, TM87).
-- **`bell-action`** (any, none, current, other: which windows' bells are
-  shown) and **`visual-bell`** (on, off, both: a message in place of the
-  sound, or beside it). puritty shows every window's bell (TM30) and sounds
-  as its own bell setting says, whatever these are.
+- **`bell-action`** and **`visual-bell`**: done (TM99).
 - **Editing a buffer** (choose-buffer's `e`): not under -CC for now (TM80).
 
 ## TM86 · The mouse in tmux's modes (2026-11-16)
@@ -3954,3 +3951,30 @@ completing `-tma` to `-tmain:`. Side by side on real 3.6a
 (`scenes_complete.py`'s `complete-select`, `complete-window-menu`): the
 same menus in the same place, with the same items, keys and first item
 chosen, and `1` giving `-tmain:1`.
+
+## TM99 · A bell as `bell-action`, `visual-bell` and `monitor-bell` say (2026-11-16)
+
+The fourth of TM85's items. puritty sounded every pane's bell, whatever
+tmux's options. tmux (`alerts_check_bell`, `alerts_action_applies`,
+`alerts_set_message`, the same from 2.7 to 3.8): with the window's
+`monitor-bell` off nothing; the window's tab is flagged (`!`) whatever
+else; the session's `bell-action` (any, none, current, other) says
+whether to alert; then `visual-bell` off sounds the client's bell, on
+puts `Bell in current window` or `Bell in window N` on the status line in
+its place, and both does both; once for a session however many panes
+rang.
+
+**Built.** The three options join those the status line asks (`optionNames`,
+by subscription from 3.2, by the poll before). A read notes each pane's
+bells before tmux's output and, for those that rang, applies tmux's rules
+once (`bellsRung`): `TmuxMode.bells`, which `Main` sounds, counts the
+bells allowed to sound (`audible`), and the message is said at the bar;
+another window's number is asked of tmux (`display -t %N
+'#{window_index}'`). `monitor-bell` is read for the window shown.
+
+**Checked:** an app test on each tmux (372): pane `%0`'s `\a` sounds once
+by default; with `visual-bell on` says `Bell in current window` and does
+not sound; with `both` does both; with `bell-action none` or `other` or
+`monitor-bell off` neither. Side by side on real 3.8
+(`bench/tmux/compare/scenes_bell.py`): `Bell in current window` and, from
+a window not shown, `Bell in window 1`.
