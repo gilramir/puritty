@@ -1040,6 +1040,30 @@ certificate, and `signtool verify /pa` on beelink1 checks it. An installer
 publisher's signed exe may still meet SmartScreen's warning until it has
 reputation; signing ends "unknown publisher" and shows tampering.
 
+**The certificate (2026-11-17).** Gilbert's is Certum's Open Source Code
+Signing, its key in Certum's cloud and reached through SimplySign (the
+desktop client logs in with a one-time code from the SimplySign phone
+app, and while it is logged in shows the certificate to Windows as a
+virtual smart card). The certificate itself, which every signed exe
+carries, is `app/signing/certum-2026-11-17.pem`:
+
+| | |
+|---|---|
+| subject | `CN = Open Source Developer Gilbert Ramirez, O = Open Source Developer, ST = Texas, C = US` |
+| issuer | `Certum Code Signing 2021 CA` (Asseco Data Systems) |
+| valid | 2026-11-17 to 2027-11-17 (renew before; a timestamped signature outlives it) |
+| key, use | RSA 3072, Code Signing |
+| SHA-256 | `60:0C:E6:E3:FA:84:EC:B1:82:EC:41:A3:5C:73:C8:3B:17:77:F4:90:CD:87:61:02:CD:02:9D:6F:C0:2A:AA:23` |
+
+The signing step to try first, on beelink1 with SimplySign Desktop logged
+in: `signtool sign /n "Open Source Developer Gilbert Ramirez" /fd sha256
+/tr http://time.certum.pl /td sha256 puritty.exe`, then `signtool verify
+/pa`. Not tried yet. Open: whether an ssh session reaches the smart card
+SimplySign mounts in Gilbert's desktop session, and whether Certum's Linux
+client and its PKCS#11 library let `osslsigncode` sign the cross-built exe
+here. Every login needs Gilbert's phone, so a release is signed while he
+is there.
+
 ## WS29 · A profile-guided puritty.exe (2026-11-11)
 
 *Gilbert, 2026-11-11:* profile-guided on Windows as on Linux, before the
