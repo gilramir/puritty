@@ -1055,14 +1055,23 @@ carries, is `app/signing/certum-2026-11-17.pem`:
 | key, use | RSA 3072, Code Signing |
 | SHA-256 | `60:0C:E6:E3:FA:84:EC:B1:82:EC:41:A3:5C:73:C8:3B:17:77:F4:90:CD:87:61:02:CD:02:9D:6F:C0:2A:AA:23` |
 
-The signing step to try first, on beelink1 with SimplySign Desktop logged
-in: `signtool sign /n "Open Source Developer Gilbert Ramirez" /fd sha256
-/tr http://time.certum.pl /td sha256 puritty.exe`, then `signtool verify
-/pa`. Not tried yet. Open: whether an ssh session reaches the smart card
-SimplySign mounts in Gilbert's desktop session, and whether Certum's Linux
-client and its PKCS#11 library let `osslsigncode` sign the cross-built exe
-here. Every login needs Gilbert's phone, so a release is signed while he
-is there.
+**Signed over ssh (2026-11-17).** With SimplySign Desktop logged in in
+Gilbert's session on beelink1, an ssh session there sees the certificate
+in `Cert:\CurrentUser\My` with its private key (thumbprint
+`8BFCB2EA9F2D53D0497E39EA1C6C08D32796D8C2`), and signs with it:
+
+    signtool sign /sha1 8BFCB2EA9F2D53D0497E39EA1C6C08D32796D8C2 /fd sha256 /tr http://time.certum.pl /td sha256 puritty.exe
+
+(signtool from `Windows Kits\10\bin\10.0.26100.0\x64`; the login shell
+is PowerShell 5, so `&` before the quoted path and `;`, not `&&`). The
+thumbprint, not `/n`, so that no other certificate in the store is
+chosen. `signtool verify /pa` verifies it, chained to Certum Code Signing
+2021 CA and timestamped by Certum Timestamp 2026, and
+`Get-AuthenticodeSignature` says Valid. Tried on that day's cross-built
+puritty.exe. Still open: whether `osslsigncode` can sign here through
+Certum's Linux client (not needed while beelink1 can), and the release
+script's step. Every login needs Gilbert's phone, so a release is signed
+while he is there.
 
 ## WS29 · A profile-guided puritty.exe (2026-11-11)
 
