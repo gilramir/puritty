@@ -5517,7 +5517,7 @@ viKey k bytes ms a s =
             name == "Escape" || (newer 37 && name == "C-[")
 
         separators =
-            Maybe.withDefault (meant Reason.NotSet " -_@") (Dict.get "word-separators" s.status.options)
+            (wordRules s).separators
 
         editAs other st =
             emacsKey (keyNamed other) bytes ms a st
@@ -5604,7 +5604,7 @@ viKey k bytes ms a s =
 
     else if not (newer 33) && Array.member name [ "w", "W", "e", "E" ] then
         -- before 3.3 each is `M-f`: to the next separator, then back one
-        moved (oldForward separators a) s
+        moved (oldForward True separators a) s
 
     else if name == "d" then
         editAs "C-u" s
@@ -5711,11 +5711,11 @@ viForward vi separators a =
         go start
 
 
-{-| Before 3.3, `M-f` with `status-keys vi` (`status_prompt_key`): past
-the separators after the caret, on to the next separator or the end, then
-back one. -}
-oldForward : String -> Asking -> Int
-oldForward separators a =
+{-| Before 3.3, `M-f` (`status_prompt_key`): past the separators after
+the caret, on to the next separator or the end; with `status-keys vi`
+then back one. -}
+oldForward : Bool -> String -> Asking -> Int
+oldForward vi separators a =
     let
         n =
             Array.length a.chars
@@ -5746,7 +5746,7 @@ oldForward separators a =
         found =
             toSeparator (pastSeparators a.caret)
     in
-    if found > 0 then
+    if vi && found > 0 then
         found - 1
 
     else
@@ -5935,7 +5935,7 @@ emacsKey k bytes ms a0 s =
                         closePrompt [] a s
 
                     else if name == "BSpace" || name == "C-h" then
-                        { state = { s | asking = Just (editLine name a (historyFor (promptKind s a) s)) }, commands = [] }
+                        { state = { s | asking = Just (editLine name a (historyFor (promptKind s a) s) (wordRules s)) }, commands = [] }
 
                     else
                         -- the count answered, and the key goes on as typed
@@ -5984,7 +5984,7 @@ emacsKey k bytes ms a0 s =
                         pasteInPrompt a s
 
                     else
-                        { state = { s | asking = Just (editLine name a (historyFor (promptKind s a) s)) }, commands = [] }
+                        { state = { s | asking = Just (editLine name a (historyFor (promptKind s a) s) (wordRules s)) }, commands = [] }
 
 
 {-| A key in an incremental prompt (`-i`), as tmux's: each change to the
@@ -6007,7 +6007,7 @@ incrementalKey name text plainText enter cancel a s =
                 insert text a
 
             else
-                editLine name a (historyFor (promptKind s a) s)
+                editLine name a (historyFor (promptKind s a) s) (wordRules s)
     in
     if enter then
         closePrompt []
@@ -6606,58 +6606,63 @@ promptPasted version text =
         |> String.fromArray
 
 
-{-| An editing key, by its tmux name, on the line. -}
-editLine : String -> Asking -> Array String -> Asking
-editLine name a history =
+{-| What the prompt's word keys go by: this tmux and the session's
+`word-separators` (RV2). -}
+wordRules : State -> { version : Int, separators : String }
+wordRules s =
+    { version = s.version
+    , separators =
+        when Dict.get "word-separators" s.status.options is
+            Just ws ->
+                ws
+
+            Nothing ->
+                -- not asked yet: this tmux's default (`options-table.c`)
+                meant Reason.NotSet
+                    (if s.version > 0 && s.version < 30 then
+                        " -_@"
+
+                     else if s.version > 0 && s.version < 33 then
+                        " "
+
+                     else
+                        "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
+                    )
+    }
+
+
+{-| An editing key, by its tmux name, on the line. The word keys (M-b,
+M-f, C-w, and Ctrl+Left and Ctrl+Right from 3.0) stop at the session's
+`word-separators` as tmux's do (docs/review.md RV2): before 3.3 a word
+is the run between separators (`status_prompt_key`), from 3.3 a run of
+separators is a word of its own and spaces part words
+(`prompt_forward_word`, `prompt_backward_word`). -}
+editLine : String -> Asking -> Array String -> { version : Int, separators : String } -> Asking
+editLine name a history rules =
     let
         n =
             Array.length a.chars
 
+        newer =
+            rules.version == 0 || rules.version >= 33
+
         wordStart =
-            -- the start of the word before the caret, spaces before it too
-            let
-                back i skipping =
-                    if i <= 0 then
-                        0
+            if newer then
+                viBackward rules.separators a
 
-                    else
-                        let
-                            space =
-                                Array.get (i - 1) a.chars == Just ' '
-                        in
-                        if skipping && space then
-                            back (i - 1) True
+            else
+                oldBackward rules.separators a
 
-                        else if space then
-                            i
-
-                        else
-                            back (i - 1) False
-            in
-            back a.caret True
-
-        -- the end of the word after the caret, spaces before it too
         wordEnd =
-            let
-                on i skipping =
-                    if i >= n then
-                        n
+            if newer then
+                viForward False rules.separators a
 
-                    else
-                        let
-                            space =
-                                Array.get i a.chars == Just ' '
-                        in
-                        if skipping && space then
-                            on (i + 1) True
+            else
+                oldForward False rules.separators a
 
-                        else if space then
-                            i
-
-                        else
-                            on (i + 1) False
-            in
-            on a.caret True
+        -- Ctrl+Left and Ctrl+Right move by words from 3.0
+        ctrlArrows =
+            rules.version == 0 || rules.version >= 30
 
         recalled step =
             -- Up goes back through earlier answers, Down forward
@@ -6721,10 +6726,10 @@ editLine name a history =
         -- the whole line, as tmux's (3.6a, 3.8)
         { a | chars = [], caret = 0, edited = True }
 
-    else if name == "M-b" || name == "C-Left" then
+    else if name == "M-b" || (name == "C-Left" && ctrlArrows) then
         { a | caret = wordStart }
 
-    else if name == "M-f" || name == "C-Right" then
+    else if name == "M-f" || (name == "C-Right" && ctrlArrows) then
         { a | caret = wordEnd }
 
     else if name == "C-t" then

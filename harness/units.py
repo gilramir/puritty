@@ -126,8 +126,9 @@ SUITES = [
         # TM99: a bell as bell-action, visual-bell and monitor-bell say;
         # 378 since TM100: status-keys vi at the prompt, on each;
         # 384 since TM101: leaving copy mode shows the live screen;
-        # 390 since TM102: nothing of an ended session comes back
-        390,
+        # 390 since TM102: nothing of an ended session comes back;
+        # 396 since TM104: the prompt's word keys by word-separators
+        396,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

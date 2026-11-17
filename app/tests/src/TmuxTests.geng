@@ -978,6 +978,68 @@ onVersion version =
                         , unmonitored = rung [ { name = "monitor-bell", value = "off" } ]
                         }
           }
+        , { name = "the prompt's word keys stop at word-separators as each tmux's do (RV2)"
+          , test =
+                \_ ->
+                    let
+                        prompt steps =
+                            attached (start version)
+                                |> prefixThen ":"
+                                |> steps
+                                |> (\r -> TmuxMode.promptBox r.tmux)
+                                |> Maybe.map .typed
+                                |> Maybe.withDefault "(closed)"
+
+                        -- each as the window gives it: Alt with the letter,
+                        -- the others with their bytes
+                        alt letter r =
+                            press { mods = 4, sym = Char.toCode letter, unshifted = Char.toCode letter, text = Bytes.fromString (String.fromChar letter) } r
+
+                        ctrlLeft r =
+                            press { mods = 2, sym = 0xFF51, unshifted = 0xFF51, text = Bytes.fromString "\u{001B}[1;5D" } r
+
+                        home r =
+                            press { mods = 0, sym = 0xFF50, unshifted = 0xFF50, text = Bytes.fromString "\u{001B}[H" } r
+
+                        -- each tmux's default word-separators: ` -_@` before
+                        -- 3.0, a space to 3.2, and from 3.3 the punctuation
+                        -- but `_`, a run of which is a word of its own
+                        newer =
+                            Array.member version [ "3.4", "3.6a", "3.8" ]
+                    in
+                    Expect.equal
+                        { forward =
+                            if newer then
+                                "aX--b c"
+
+                            else
+                                "a--bX c"
+                        , back =
+                            if newer then
+                                "a bX--"
+
+                            else
+                                "a Xb--"
+                        , cut =
+                            if version == "2.7" then
+                                "new-window -n my_"
+
+                            else
+                                "new-window -n "
+                        , ctrlArrow =
+                            -- Ctrl+Left moves by words from 3.0
+                            if version == "2.7" then
+                                "ab cX"
+
+                            else
+                                "ab Xc"
+                        }
+                        { forward = prompt (\r -> r |> typeText "a--b c" |> home |> alt 'f' |> typeText "X")
+                        , back = prompt (\r -> r |> typeText "a b--" |> alt 'b' |> typeText "X")
+                        , cut = prompt (\r -> r |> typeText "new-window -n my_logs" |> ctrl "w")
+                        , ctrlArrow = prompt (\r -> r |> typeText "ab c" |> ctrlLeft |> typeText "X")
+                        }
+          }
         , { name = "with status-keys vi the prompt has vi's insert and command modes, as each tmux (TM100)"
           , test =
                 \_ ->

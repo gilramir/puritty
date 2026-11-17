@@ -3997,8 +3997,9 @@ What differs by version, read in every release:
 | `b` `B` | `M-b` | the same | `b` by the separators, `B` without | the same |
 | Escape in command mode | back to insert mode | the same | the same | nothing |
 
-The separators are the session's `word-separators` (` -_@`). Command mode
-draws the prompt in `message-command-style`.
+The separators are the session's `word-separators` (by default ` -_@`
+before 3.0, a space to 3.2, and from 3.3 the ASCII punctuation but `_`).
+Command mode draws the prompt in `message-command-style`.
 
 **Built.** `status-keys` and `word-separators` join the options the status
 line asks; `Asking.commandMode`; `viKey` translates a key and gives it to
@@ -4020,8 +4021,7 @@ same lines and caret, `abc de-ghi` on 2.7 and `abc defghi` from 3.3 for
 The harness waits a second after Escape, which tmux otherwise reads with
 the next key as one Meta key.
 
-Left as it is (`docs/review.md` RV2): the emacs word keys stop at spaces,
-not at `word-separators`.
+The emacs word keys' separators were `docs/review.md` RV2, done in TM104.
 
 ## TM101 · Leaving copy mode left the view scrolled (2026-11-16)
 
@@ -4126,3 +4126,27 @@ and 3.8 show it, the others not). Side by side on real tmux
 (`scenes_session.py`): 3.8 `21:39 [27/34]` in both; a search's label on
 3.8 `[0/14] (15 results)` and 3.5a `(15 results) [0/14]` in both; 3.4
 `(15 results) [0/14]` in tmux and `[0/14]` in puritty, as above.
+
+## TM104 · The prompt's emacs word keys by `word-separators` (2026-11-16)
+
+RV2, decided: as tmux. puritty's M-b, M-f, C-w and Ctrl+Left/Right at the
+prompt stopped at spaces only. tmux's, read in every release:
+
+| | 2.7–2.9 | 3.0–3.2 | 3.3 on |
+|---|---|---|---|
+| default `word-separators` | ` -_@` | a space | the ASCII punctuation but `_` |
+| M-f | past separators, on to the next one | the same | `prompt_forward_word`: over the caret's class (separators or not) to a space or the other class, spaces skipped first |
+| M-b, C-w | back over separators, to the word's start | the same | `prompt_backward_word`, C-w the same: a run of separators is a word |
+| Ctrl+Left, Ctrl+Right | nothing | as M-b, M-f | as M-b, M-f |
+
+`editLine` now takes the version and the separators (`wordRules`), with
+the ports TM100 made for the vi keys (`oldForward`, `oldBackward`,
+`viForward`, `viBackward`); before the options are known a version's
+own default is used. **Checked:** an app test on each tmux (396):
+M-f from the start of `a--b c`, M-b at the end of `a b--`, C-w after
+`new-window -n my_logs`, Ctrl+Left in `ab c`, each with a mark typed
+after; side by side on real 3.8, 3.2a and 2.7
+(`bench/tmux/compare/scenes_words.py`), tmux's line and caret in each:
+`aX--b c`, `a bX--`, `new-window -n `, `ab Xc` on 3.8; `a--bX c`,
+`a Xb--`, `new-window -n `, `ab Xc` on 3.2a; and on 2.7 `my_` kept by
+C-w and Ctrl+Left doing nothing.

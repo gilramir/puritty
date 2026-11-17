@@ -30,6 +30,11 @@ tmux's look only, or in both.
 
 ## RV2 · The prompt's emacs word keys and `word-separators` (2026-11-16)
 
+**Decided 2026-11-16: as tmux; done in `docs/tmux.md` TM104.** The
+defaults below were wrong: ` -_@` is 2.7–2.9's; 3.0–3.2's is a space and
+3.3's on the punctuation but `_`, so on 3.3 on Ctrl-W after `my_logs`
+deletes it whole, as puritty did.
+
 Found with TM100. puritty's Alt-B and Ctrl+Left, Alt-F and Ctrl+Right, and
 Ctrl-W at tmux's prompt stop at spaces only (`editLine`'s `wordStart`,
 `wordEnd`). tmux's stop at the session's `word-separators` too (space,
