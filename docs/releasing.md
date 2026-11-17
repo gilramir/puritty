@@ -219,3 +219,14 @@ change.
 
 The script also builds while `site/` has changes: the website is in no
 package, and Gilbert edits it while a release is built.
+
+## RL10 · The version the program says (2026-11-17)
+
+0.1.1 went out saying 0.1.0, in `puritty --version`, the settings
+program's and XTVERSION's answer (`puritty 0.1.0`): three literals in
+`app/src/Main.geng`, not changed for the release. They are one constant
+now, `purittyVersion`, and `scripts/prerelease.sh` refuses a version tag
+(a release) that is not it, so a release is made only once the program
+says its number. A preview tag is not checked. The 0.1.1 builds stay as
+published; 0.1.2 is the first to say its own number.
+

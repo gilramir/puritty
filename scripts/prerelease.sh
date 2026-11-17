@@ -64,6 +64,16 @@ case $tag in
 *) release= ;;
 esac
 
+# a release's tag is the version the program says (RL10): 0.1.1 went out
+# saying 0.1.0
+if [ -n "$release" ]; then
+    said=$(sed -n 's/^    "\([0-9][0-9.]*\)"$/\1/p' app/src/Main.geng | head -1)
+    if [ "$said" != "$tag" ]; then
+        echo "the tag is $tag but app/src/Main.geng's purittyVersion is $said: make them the same and commit" >&2
+        exit 1
+    fi
+fi
+
 if [ -n "$(git status --porcelain -- . ':!site')" ]; then
     echo "the working tree has changes: commit them first, so that the build is a commit's" >&2
     git status --short -- . ':!site' >&2
