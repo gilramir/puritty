@@ -21,6 +21,7 @@ module Window exposing
     , select
     , setFont
     , setMaximized
+    , setPadding
     , setPointer
     , setTitle
     , shot
@@ -45,7 +46,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
 
 -}
 
@@ -59,7 +60,9 @@ import X11.Reason as Reason
 {-| What the window is opened with: its size in cells, the primary font as
 fontconfig names it and its size in points, the language fallback fonts
 are asked for (V25; empty for none), the bytes of glyphs the X server may
-hold before the glyph set is begun again (V37), and the title. -}
+hold before the glyph set is begun again (V37), the title, and the gap
+between the cells and the window's edges in points, 0 for none (puritty
+`docs/renderer.md` R20). -}
 type alias Settings =
     { cols : Int
     , rows : Int
@@ -68,6 +71,7 @@ type alias Settings =
     , lang : String
     , glyphCap : Int
     , title : String
+    , padding : Int
     }
 
 
@@ -82,7 +86,7 @@ type alias Cell =
 font, no X server, or no RENDER formats it needs. -}
 open : Settings -> Task x (Result String Cell)
 open s =
-    openExtern s.cols s.rows s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap (Bytes.fromString s.title)
+    openExtern s.cols s.rows s.points (Bytes.fromString s.font) (Bytes.fromString s.lang) s.glyphCap (Bytes.fromString s.title) (max 0 s.padding)
         |> Task.map
             (\code ->
                 if code == -1 then
@@ -100,7 +104,7 @@ open s =
 
 
 @extern(c, "puritty_x11_open")
-openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Task x Int
+openExtern : Int -> Int -> Int -> Bytes -> Bytes -> Int -> Bytes -> Int -> Task x Int
 
 
 {-| Executes one frame's display list, and answers the ink of the cells it
@@ -298,6 +302,18 @@ resize size =
 
 @extern(c, "puritty_x11_resize")
 resizeExtern : Int -> Int -> Task x Int
+
+
+{-| The gap between the cells and the window's edges set again, in points
+(R20): the window kept at its size in pixels, so a `Resized` follows with
+the cells that now fit it. -}
+setPadding : Int -> Task x {}
+setPadding points =
+    paddingExtern (max 0 points) |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_x11_padding")
+paddingExtern : Int -> Task x Int
 
 
 {-| The font at a new size in points (V50): every face sized again, the

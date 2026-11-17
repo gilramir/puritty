@@ -906,3 +906,66 @@ Tested: the pixel gate, four cases in Fira Code (`ligature-cursor-first`,
 `-second`, `-blinkoff`, `ligatures-off`), each picture looked at before it
 was pinned (46 of 46); the view gate (345) and replay (325) unchanged.
 
+
+## R20. A gap between the cells and the window's edges (2026-11-17)
+
+Gilbert, 2026-11-17, from a screenshot on Windows: the first row's
+letters sat two pixels under the title bar. puritty drew cell (0, 0) at the
+window's (0, 0), with no gap on any side; what was past the last whole
+cell, right and below, was filled with the default background (`margins`).
+
+**What other terminals do by default**, read in their vendored source:
+
+| terminal | gap | where |
+|---|---|---|
+| Windows Terminal | 8 px every side | `defaults.json`, `"padding": "8, 8, 8, 8"` |
+| WezTerm | 1 cell left and right, ½ cell top and bottom | `config.rs`, `impl Default for WindowPadding` |
+| Ghostty | 2 points every side, at the display's scale | `Config.zig`, `window-padding-x/y` |
+| PuTTY | 1 px ("Gap between text and window edge") | `conf.h`, `window_border` |
+| Alacritty | 0 | `window.rs`, `padding: Default::default()` |
+
+Ghostty (`window-padding-balance`) and Alacritty (`dynamic_padding`) can
+also spread what is past the last whole cell over every side. xterm's
+manual gives `internalBorder` 2; not read in source here.
+
+**Gilbert's choice:** a gap measured in points, not cells, 8 by default:
+`[window] padding`, 0 to 72, on the settings window's Window page, taken
+by an open window at once. 8 points is `8 · dpi / 72` pixels, rounded:
+11 at 96 dpi (100%), 16 at 144 (150%); Windows Terminal's 8 is 8 at 100%.
+
+**Where it is accounted for:** in the two platform layers alone
+(`puritty_x11.c`, `puritty_win32.c`). The core, `tmux -CC`'s canvas and
+the app's 44 conversions of the pointer to a cell never see it:
+
+1. The cells that fit: `(width − 2·pad) / cell` across, and down.
+2. The window for c by r cells: `c · cell + 2·pad`, at open, a restored
+   size, a resize asked (SG11), and a move to another monitor's scale
+   (Windows' `rescale`, the gap at the new resolution).
+3. X11's size hints: the base `2·pad`, a step of a cell, the least a
+   cell and the gaps.
+4. The frame's picture drawn at `(pad, pad)`: X11's copies from the
+   pixmap and its exposes, Windows' `SetDIBitsToDevice` and the rows it
+   invalidates.
+5. The gaps filled with the default background, as the space past the
+   last cells was: X11's window background pixel cleared over the four,
+   Windows' four `FillRect`s.
+6. The pointer reported from the cells' corner, `pad` taken off each
+   coordinate, and with the window's size less the two gaps, which the
+   app divides by the cell for the columns; a press in a gap is a
+   negative offset, which the app already takes as the first column or
+   row.
+7. The input method's spot, `pad` added back.
+
+`Window.Settings` gains `padding`, and `Window.setPadding` sets it on an
+open window, which keeps its size in pixels, so a `Resized` with the cells
+that now fit follows, as a zoom's does. The settings window and the pixel
+gate open with 0; the host list's window, when it becomes a session, is
+given the session's before it is sized. The tab bar is a row of cells, so
+it lies inside the gap too.
+
+**Checked**, at 96 dpi: under Xvfb, a 40 by 6 window is 382 by 124 pixels
+(360 + 22, 102 + 22), its text 11 pixels in from each edge; a click on the
+middle of the cell at column 5, row 2, with mouse reports on, reported
+`ESC [ M` with `&#`, that cell. The Windows build, under Wine 11 on Xvfb
+with DejaVu Sans Mono (Wine has no Cascadia Mono): the text 11 pixels in
+from the client area's corner. Not yet seen on Windows itself.

@@ -766,7 +766,11 @@ becomeSession cp fs vars given asked got chosen =
                                                                 -- the first window: the settings' size
                                                                 meant Reason.NotSet config
                                                 in
-                                                Window.resize { cols = sized.columns, rows = sized.rows }
+                                                -- the terminal's gap around its cells, which the
+                                                -- settings window has none of (docs/renderer.md R20),
+                                                -- before the size, which counts it
+                                                Window.setPadding sized.padding
+                                                    |> Task.andThen (\_ -> Window.resize { cols = sized.columns, rows = sized.rows })
                                                     |> Task.andThen (\_ -> Window.setMaximized (Maybe.map .maximized last |> Maybe.withDefault (meant Reason.NotSet False)))
                                                     |> Task.andThen (\_ -> Text.ligatures sized.ligatures)
                                                     |> Task.andThen (\_ -> begin cp vars given got.problems locale sized cell { dir = Nothing, claimed = Nothing })
@@ -825,6 +829,7 @@ openWindow cp vars given problems locale config restoring =
         , lang = Maybe.withDefault (meant Reason.NotSet locale.language) config.language
         , glyphCap = config.glyphCacheMb * 1024 * 1024
         , title = config.title
+        , padding = config.padding
         }
         |> Task.andThen
             (\opened ->
@@ -2866,6 +2871,16 @@ applyLook new m =
         Task.succeed {}
     )
         |> Task.andThen (\_ -> Text.ligatures new.ligatures)
+        |> Task.andThen
+            (\_ ->
+                -- the gap around the cells (docs/renderer.md R20); a
+                -- Resized follows with the cells that now fit
+                if new.padding /= old.padding then
+                    Window.setPadding new.padding
+
+                else
+                    Task.succeed {}
+            )
         |> Task.andThen (\_ -> refontOr new old language applied)
         |> Task.andThen
             (\next ->

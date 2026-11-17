@@ -118,6 +118,15 @@ static double ns(void) {
 static int dpi0 = 96;
 /* The window in cells, as its size was last reported. */
 static int win_cols, win_rows, focused = -1, win_w, win_h;
+/* The gap between the cells and the window's edges, on every side
+ * (docs/renderer.md R20): asked in points, kept in pixels at the screen's
+ * dpi. The cells' (0, 0) is the window's (pad, pad); the pointer's place
+ * is reported from there, and the window's size less the two gaps. */
+static int pad_pt = 0, pad = 0;
+static int pad_px(int points) {
+    return points <= 0 ? 0 : (points * dpi0 + 36) / 72;
+}
+static void size_hints(void);
 static uint32_t margin_bg = 0xFFFFFFFF;
 
 static xcb_atom_t wm_protocols, wm_delete, net_wm_name, utf8_string;
@@ -480,8 +489,13 @@ static void margins(void) {
     if (bg == margin_bg) return;
     margin_bg = bg;
     xcb_change_window_attributes(conn, window, XCB_CW_BACK_PIXEL, &bg);
-    xcb_clear_area(conn, 0, window, (int16_t) (pt_cols * pt_cw), 0, 0, 0);
-    xcb_clear_area(conn, 0, window, 0, (int16_t) (pt_rows * pt_ch), 0, 0);
+    /* the gaps on every side, and what is past the last cells */
+    if (pad > 0) {
+        xcb_clear_area(conn, 0, window, 0, 0, 0, (uint16_t) pad);
+        xcb_clear_area(conn, 0, window, 0, 0, (uint16_t) pad, 0);
+    }
+    xcb_clear_area(conn, 0, window, (int16_t) (pad + pt_cols * pt_cw), 0, 0, 0);
+    xcb_clear_area(conn, 0, window, 0, (int16_t) (pad + pt_rows * pt_ch), 0, 0);
 }
 
 static void stats(void) {
@@ -678,7 +692,7 @@ static void xkb_event_in(xcb_generic_event_t *e) {
 static void size_in(int w, int h) {
     win_w = w;
     win_h = h;
-    int c = w / pt_cw, r = h / pt_ch;
+    int c = (w - 2 * pad) / pt_cw, r = (h - 2 * pad) / pt_ch;
     if (c < 1) c = 1;
     if (r < 1) r = 1;
     if (c > 65535) c = 65535;
@@ -703,6 +717,12 @@ static void focus_in(int in) {
 static void pointer_event(int action, int xbutton, int x, int y, uint16_t state) {
     int button = xbutton == 2 ? 3 : xbutton == 3 ? 2 : xbutton;
     if (button > 11) return;
+    /* from the cells' corner, in the cells' area (R20) */
+    x -= pad;
+    y -= pad;
+    int gw = win_w - 2 * pad, gh = win_h - 2 * pad;
+    if (gw < 0) gw = 0;
+    if (gh < 0) gh = 0;
     int mods = 0;
     if (keymap) {
         struct xkb_state *st = xkb_state_new(keymap);
@@ -714,7 +734,7 @@ static void pointer_event(int action, int xbutton, int x, int y, uint16_t state)
     }
     uint8_t r[17] = {9, (uint8_t) action, (uint8_t) button, (uint8_t) (mods >> 8), (uint8_t) mods,
                      (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
-                     (uint8_t) (win_w >> 8), (uint8_t) win_w, (uint8_t) (win_h >> 8), (uint8_t) win_h,
+                     (uint8_t) (gw >> 8), (uint8_t) gw, (uint8_t) (gh >> 8), (uint8_t) gh,
                      (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
     if (action == 2) {
         flush_motion();
@@ -764,7 +784,7 @@ static void note(const char *fmt, int a, int b, int c, int d) {
  * it (ETX, RE9) would otherwise leave blank. */
 static void repaint_all(void) {
     if (!pixmap) return;
-    xcb_copy_area(conn, pixmap, window, gc, 0, 0, 0, 0, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
+    xcb_copy_area(conn, pixmap, window, gc, 0, 0, (int16_t) pad, (int16_t) pad, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
     margins();
     xcb_flush(conn);
 }
@@ -935,9 +955,22 @@ static void drain(void) {
         else if (type == XCB_EXPOSE) {
             xcb_expose_event_t *x = (xcb_expose_event_t *) e;
             if (x->count == 0) note("expose %d,%d %dx%d", x->x, x->y, x->width, x->height);
-            if (pixmap)
-                xcb_copy_area(conn, pixmap, window, gc, (int16_t) x->x, (int16_t) x->y, (int16_t) x->x, (int16_t) x->y, x->width,
-                              x->height);
+            if (pixmap) {
+                /* the part of the cells exposed; the gaps the server fills
+                 * with the background pixel itself */
+                int sx = x->x - pad, sy = x->y - pad, w = x->width, h = x->height;
+                if (sx < 0) {
+                    w += sx;
+                    sx = 0;
+                }
+                if (sy < 0) {
+                    h += sy;
+                    sy = 0;
+                }
+                if (w > 0 && h > 0)
+                    xcb_copy_area(conn, pixmap, window, gc, (int16_t) sx, (int16_t) sy, (int16_t) (sx + pad), (int16_t) (sy + pad),
+                                  (uint16_t) w, (uint16_t) h);
+            }
             xcb_flush(conn);
         } else if (type == XCB_CONFIGURE_NOTIFY) {
             xcb_configure_notify_event_t *c = (xcb_configure_notify_event_t *) e;
@@ -1093,7 +1126,8 @@ static void pointers_setup(void) {
 }
 
 geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
-                              void *title_bytes, geng_wait *wait) {
+                              void *title_bytes, int32_t padding, geng_wait *wait) {
+    pad_pt = padding;
     /* the display first: the font's size in pixels is its dpi's (V50) */
     int screen_number = 0;
     conn = xcb_connect(NULL, &screen_number);
@@ -1130,11 +1164,12 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     visual_format = visual->format;
     win_cols = c;
     win_rows = r;
-    win_w = c * pt_cw;
-    win_h = r * pt_ch;
+    pad = pad_px(pad_pt);
+    win_w = c * pt_cw + 2 * pad;
+    win_h = r * pt_ch + 2 * pad;
     window = xcb_generate_id(conn);
     uint32_t values[2] = {screen->black_pixel, BASE_EVENTS};
-    xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) (c * pt_cw), (uint16_t) (r * pt_ch), 0,
+    xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) win_w, (uint16_t) win_h, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
     wm_protocols = atom("WM_PROTOCOLS");
     wm_delete = atom("WM_DELETE_WINDOW");
@@ -1147,10 +1182,7 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
      * px: 33 KB, sent with each window, over ssh -X too */
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom("_NET_WM_ICON"), XCB_ATOM_CARDINAL, 32,
                         (uint32_t) (sizeof puritty_icon / sizeof puritty_icon[0]), puritty_icon);
-    /* WM_NORMAL_HINTS (ICCCM 4.1.2.3): a minimum of one cell, the base 0,
-     * and a step of a cell. Flags: PMinSize 16, PResizeInc 64, PBaseSize 256. */
-    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+    size_hints();
     geng_bytes *t = title_bytes;
     set_title(t->data, (int) t->length);
     key_setup();
@@ -1183,7 +1215,7 @@ geng_cancel puritty_x11_draw(void *list, geng_wait *wait) {
     pt_frame(b->data, (size_t) b->length, &frame);
     int first = frame.first, last = frame.last, sized = frame.sized;
     if (last >= first)
-        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * pt_ch), 0, (int16_t) (first * pt_ch), (uint16_t) (pt_cols * pt_cw),
+        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * pt_ch), (int16_t) pad, (int16_t) (pad + first * pt_ch), (uint16_t) (pt_cols * pt_cw),
                       (uint16_t) ((last - first + 1) * pt_ch));
     if (sized || pt_default_bg() != margin_bg) margins();
     xcb_flush(conn);
@@ -1272,14 +1304,22 @@ geng_cancel puritty_x11_take(geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
+/* WM_NORMAL_HINTS (ICCCM 4.1.2.3): the base the two gaps, a step of a
+ * cell, and a minimum of one cell and the gaps. Flags: PMinSize 16,
+ * PResizeInc 64, PBaseSize 256. */
+static void size_hints(void) {
+    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) (pt_cw + 2 * pad), (uint32_t) (pt_ch + 2 * pad), 0, 0, (uint32_t) pt_cw,
+                          (uint32_t) pt_ch, 0, 0, 0, 0, (uint32_t) (2 * pad), (uint32_t) (2 * pad), 0};
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+}
+
 /* The font at `points` (V50's zoom): every face sized again, the glyph
  * set begun again, the window kept at its size in pixels and so the cells
  * that fit it reported as a new size. Answers the new cell as `open` does. */
 /* The window fitted to a new cell: its size hints, and the cells that now
  * fit it reported as a new size. */
 static void refit(void) {
-    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, (uint32_t) pt_cw, (uint32_t) pt_ch, 0, 0, 0, 0, 0, 0, 0};
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+    size_hints();
     xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(conn, xcb_get_geometry(conn, window), NULL);
     if (g) {
         win_cols = -1;
@@ -1295,9 +1335,25 @@ static void refit(void) {
  * where it is; the window manager may refuse or adjust it, and the
  * ConfigureNotify that follows reports what it is. */
 geng_cancel puritty_x11_resize(int32_t cols, int32_t rows, geng_wait *wait) {
-    uint32_t wh[2] = {(uint32_t) (cols * pt_cw), (uint32_t) (rows * pt_ch)};
+    uint32_t wh[2] = {(uint32_t) (cols * pt_cw + 2 * pad), (uint32_t) (rows * pt_ch + 2 * pad)};
     xcb_configure_window(conn, window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, wh);
     xcb_flush(conn);
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
+/* The gap around the cells set again, in points (R20): the window kept at
+ * its size in pixels, so the cells that now fit it are reported as a new
+ * size, and the whole window drawn again at the new corner. */
+geng_cancel puritty_x11_padding(int32_t points, geng_wait *wait) {
+    pad_pt = points;
+    int p = pad_px(points);
+    if (p != pad) {
+        pad = p;
+        refit();
+        margin_bg = 0xFFFFFFFF;
+        repaint_all();
+    }
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
@@ -1719,7 +1775,7 @@ geng_cancel puritty_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
     if (have_xic && (x != spot_x || y != spot_y)) {
         spot_x = x;
         spot_y = y;
-        xcb_point_t spot = {(int16_t) (x * pt_cw), (int16_t) (y * pt_ch + pt_ascent)};
+        xcb_point_t spot = {(int16_t) (pad + x * pt_cw), (int16_t) (pad + y * pt_ch + pt_ascent)};
         xcb_xim_nested_list pre = xcb_xim_create_nested_list(xim, XCB_XIM_XNSpotLocation, &spot, NULL);
         xcb_xim_set_ic_values(xim, xic, NULL, NULL, XCB_XIM_XNPreeditAttributes, &pre, NULL);
         free(pre.data);

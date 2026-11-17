@@ -82,6 +82,8 @@ packages/win32/src/Ext/win32_keycodes.h	Ghostty.txt
 packages/win32/gen-keycodes.py	Ghostty.txt
 vt/src/Vt/EucKrIndex.geng	own
 vt/gen-euckr.py	own
+vt/tests/src/JpegCases.geng	own
+vt/tests/src/GifCases.geng	own
 probes/euckr/*	own
 probes/geng/core/*	Ghostty.txt Unicode.txt
 app/tests/src/RealTmux.geng	tmux.txt
