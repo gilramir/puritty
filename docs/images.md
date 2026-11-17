@@ -402,6 +402,18 @@ previews (yazi). The memory is the output builders' (a `Builder UInt8`
 element costs more than a byte): the first thing to look at if it matters,
 before wuffs in the renderer (IM4).
 
+## IM16 · Off for 0.1.1 (2026-11-17)
+
+*Gilbert, 2026-11-17:* 0.1.1 is released for its fixes with images off,
+since they are not ready (tmux panes, reflow, real programs untried).
+libghostty-vt's own switch is used: an image limit of 0 turns the
+protocol off, every command ignored and none answered, a query too
+(`Vt.Kitty.apcDispatch`), so a program asking finds no support and sends
+none. `Main.imageLimit` is 0 for the release. **To turn images back on**
+after it: `imageLimit = 320000000` in `app/src/Main.geng` (IM9). A vt
+test holds the switch (104); in the app under Xvfb the script that drew
+two placements draws none and is answered nothing.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
