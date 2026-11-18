@@ -1557,3 +1557,25 @@ changed", the warning icon, the key's type, the line of `known_hosts`, the
 new key's fingerprint and what Yes, No and Cancel do, Cancel focused. Esc
 answered Cancel, and the probe's `known_hosts` was as it was. The probe and
 its files were removed after; Gilbert's own `~/.ssh` was not touched.
+
+## SC29 · A session whose program fails keeps its window (2026-11-18; decided, not built)
+
+Gilbert, puritty 0.1.1 on Windows: the built-in client to a host with
+the command `tmux -CC attach -t main` logged in, and the window closed.
+The log said only `outside control mode 21 bytes`, `the program exited,
+status 1`. The cause was the host's: its zsh puts `tmux` on `PATH` in a
+file a command's shell does not read (a command runs in a shell that is
+neither interactive nor a login one, as OpenSSH and PuTTY run it), so the
+shell said it could not find `tmux`. The full path worked.
+
+puritty's part: the one line that said why was thrown away with the
+window. Measured here, the same command against a server without a
+`main` session: tmux says `can't find session: main` inside control mode
+(2.7 to 3.8 alike), puritty logs it and the window closes too.
+
+**Decided** (Gilbert, 2026-11-18): when a session's program ends with a
+status other than 0, or tmux's control mode ends with an error, the
+window stays open. It shows what the program wrote, tmux's error lines
+among them, then a line of puritty's own, `the command "tmux -CC attach
+-t main" ended with status 1` (or the error tmux gave), and closes on the
+next key. A program that ends with 0 closes the window as now.

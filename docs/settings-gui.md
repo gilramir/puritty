@@ -590,3 +590,41 @@ then build-box and the quick connection (its name cut by Windows), each with
 puritty's icon, above Windows' own items. The probe, its folder and its
 jump list's file were removed after.
 
+
+## SG20 · Text boxes that behave, and a connection edited before it is made (2026-11-18; decided, not built)
+
+Gilbert, connecting from the host list on Windows with a long quick
+connect line, `HOST tmux -CC attach -t main`, which needed `tmux`'s full
+path (the remote zsh puts it on `PATH` in a file a command's shell does
+not read):
+
+- **The box did not scroll.** It is drawn from its first character and
+  cut at its right edge, so the caret ran off it and what was typed could
+  not be seen.
+- **Ctrl+V did nothing.** `quickKey` drops every key with Ctrl held, and
+  no box reads the clipboard.
+- **A recent connection could not be edited**, only connected to, so
+  changing `tmux` to its full path meant typing the whole line again.
+
+**Decided** (Gilbert, 2026-11-18, "I agree; go ahead"):
+
+1. **Every text box** of the host list and the settings window (they
+   share the drawing): the text scrolls to keep the caret in view, a faint
+   `…` at an end that is cut; Ctrl+V, Shift+Insert and the paste mouse
+   button paste, the lines of a paste joined by spaces; Ctrl+Left and
+   Right move by a word, Ctrl+Backspace deletes one; Shift with the arrows,
+   Home and End selects, Ctrl+A selects all, Ctrl+C and Ctrl+X copy and
+   cut, and what is typed replaces a selection.
+2. **F2 on a row** (a recent connection or a saved host) puts its
+   connection line into quick connect, the caret at its end, and connects
+   to nothing; Enter on a row still connects. A small pencil on the row
+   chosen does the same with the mouse. → is not used for it: on a recent
+   connection it already saves it as a host (SG14).
+3. **Up in quick connect while it is empty** brings back the recent
+   connections one at a time, newest first, as a shell's history does;
+   Down goes back towards the newest, and from it into the list as now.
+4. **Delete on a recent** forgets it, as SG14 built, so the wrong line can
+   go once the right one has been used.
+
+With it, a session whose program fails says so (`docs/ssh-client.md`
+SC29): the line that was wrong is then seen, not only logged.
