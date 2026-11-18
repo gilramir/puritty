@@ -28,6 +28,7 @@ module TmuxMode exposing
     , setBackground
     , setBar
     , setCell
+    , setEmbedder
     , setLook
     , tabKey
     , tick
@@ -63,6 +64,7 @@ import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Customize as Customize
 import Tmux.Layout as Layout
+import Tmux.Passthrough as Passthrough
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax
 import Vt
@@ -141,6 +143,12 @@ type alias State =
     -- terminals are given, so that their Kitty graphics placements cover
     -- cells (`docs/images.md` IM18)
     , paneCell : { width : Int, height : Int, limit : Int }
+    -- what the panes' terminals say of themselves when asked (puritty's
+    -- version, DA1, colors), as the window's terminal does: they answer
+    -- only what a program asks past tmux (`docs/images.md` IM33)
+    , paneEmbedder : Maybe Vt.Embedder
+    -- each pane's place in tmux's passthrough envelopes (IM33)
+    , scans : Dict Int Passthrough.Scan
     -- tmux's version in tenths (3.6a 36, 3.8 38, next-3.9 39), 0 until
     -- it is known: what tmux draws differs by it (TM44)
     , version : Int
@@ -738,6 +746,13 @@ type alias PaneInfo =
     , bottom : Int
     , modes : Array Int
     , saved : Array Bytes
+    -- the cell tmux takes the window's to be, in pixels, which a program
+    -- in the pane is told (`CSI 14t`, the pane's size in pixels) and
+    -- sizes its pictures by: tmux's default, 16 by 32, for a control
+    -- client gives none (`docs/images.md` IM32); 0 before tmux 3.3,
+    -- which does not say
+    , cellW : Int
+    , cellH : Int
     }
 
 
@@ -772,6 +787,8 @@ idle _ =
     , said = ""
     , audible = 0
     , paneCell = { width = 0, height = 0, limit = 10000000 }
+    , paneEmbedder = Nothing
+    , scans = Dict.empty
     , version = 0
     , modes = Dict.empty
     , modeKeys = "emacs"
@@ -1687,17 +1704,70 @@ setCell cell s =
     { s | paneCell = cell }
 
 
+{-| What the panes' terminals say of themselves, the window's (IM33). -}
+setEmbedder : Vt.Embedder -> (taken s : State) -> State
+setEmbedder embedder s =
+    { s | paneEmbedder = Just embedder }
+
+
 {-| Every pane's terminal given the window's cell size and image limit,
 those made since and those made before a zoom alike. -}
 celled : (taken s : State) -> State
 celled s =
-    { s | panes = celledFrom s.paneCell 0 s.panes }
+    let
+        -- each pane's cell as tmux takes it, where tmux says (IM32)
+        cells =
+            Array.map
+                (\id ->
+                    when Dict.get id s.info is
+                        Just i ->
+                            if i.cellW > 0 && i.cellH > 0 then
+                                { width = i.cellW, height = i.cellH }
+
+                            else
+                                { width = s.paneCell.width, height = s.paneCell.height }
+
+                        Nothing ->
+                            -- a pane listed before its info is read
+                            meant Reason.NotYet { width = s.paneCell.width, height = s.paneCell.height }
+                )
+                s.ids
+    in
+    { s | panes = celledFrom s.paneCell s.paneEmbedder cells 0 s.panes }
 
 
-celledFrom : { width : Int, height : Int, limit : Int } -> Int -> (taken panes : Builder Vt.Term) -> (r : Builder Vt.Term where Builder.length r == Builder.length panes)
-celledFrom cell i panes =
+{-| Each pane's terminal given its cell, tmux's (`cells`, by the pane's
+place in `ids`) or else the window's, and the window's image limit; its
+pictures are drawn on the canvas scaled from that cell to the window's
+(`Vt.composeStyled`, `docs/images.md` IM32). -}
+celledFrom : { width : Int, height : Int, limit : Int } -> Maybe Vt.Embedder -> Array { width : Int, height : Int } -> Int -> (taken panes : Builder Vt.Term) -> (r : Builder Vt.Term where Builder.length r == Builder.length panes)
+celledFrom window embedder cells i panes =
     if i < Builder.length panes then
-        celledFrom cell (i + 1) (Builder.update i (\t -> Vt.withKittyErases True (Vt.withExtraImages True (Vt.withImageLimit cell.limit (Vt.withCellSize { width = cell.width, height = cell.height } t)))) panes)
+        let
+            cell =
+                Maybe.withDefault { width = window.width, height = window.height } (Array.get i cells)
+
+            -- the window's embedder, Kitty's pictures drawn into the cells
+            -- (IM30) and Sixel's and iTerm2's drawn; told only when it
+            -- differs, since telling may answer a theme's change
+            told t =
+                when embedder is
+                    Just e ->
+                        let
+                            wanted =
+                                { e | extraImages = True, kittyErases = True }
+                        in
+                        if Vt.embedderOf t == wanted then
+                            t
+
+                        else
+                            (Vt.takeReplies (Vt.withEmbedder wanted t)).term
+
+                    Nothing ->
+                        -- before the window has told its own (setEmbedder)
+                        meant Reason.NotYet (Vt.withKittyErases True (Vt.withExtraImages True t))
+        in
+        celledFrom window embedder cells (i + 1) (Builder.update i (\t -> told (Vt.withImageLimit window.limit (Vt.withCellSize cell t))) panes)
 
     else
         panes
@@ -2255,7 +2325,7 @@ moment, and the cursor that goes with it is read at that moment too. -}
 infoOf : Int -> String
 infoOf pane =
     Command.displayAt ("%" ++ String.fromInt pane)
-        "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{keypad_cursor_flag} #{keypad_flag} #{cursor_flag} #{wrap_flag} #{origin_flag}"
+        "P #{pane_id} #{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on} #{scroll_region_upper} #{scroll_region_lower} #{pane_private_modes} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{keypad_cursor_flag} #{keypad_flag} #{cursor_flag} #{wrap_flag} #{origin_flag} #{window_cell_width} #{window_cell_height}"
 
 
 {-| A pane's history and screen, with its colors and attributes, wrapped
@@ -2352,6 +2422,7 @@ event size e acc =
                             , serial = st.serial
                             , audible = st.audible
                             , paneCell = st.paneCell
+                            , paneEmbedder = st.paneEmbedder
                         }
                 , outside = acc.outside ++ said
             }
@@ -3694,6 +3765,10 @@ paneLine bytes =
                     else
                         flag 10 1000 ++ flag 11 1002 ++ flag 12 1003 ++ flag 13 1006 ++ flag 14 1005 ++ flag 15 1 ++ flag 16 66 ++ flag 17 25 ++ flag 18 7 ++ flag 19 6
                 , saved = []
+                -- empty before tmux 3.1 (recorded on 3.0 and 2.7): 0, the
+                -- window's own cell kept
+                , cellW = Array.get 20 words |> Maybe.andThen String.toInt |> Maybe.withDefault (meant Reason.FromOutside 0)
+                , cellH = Array.get 21 words |> Maybe.andThen String.toInt |> Maybe.withDefault (meant Reason.FromOutside 0)
                 }
             }
 
@@ -3916,13 +3991,36 @@ notice n acc =
                             in
                             { acc | state = detached.state, commands = acc.commands ++ detached.commands }
 
-                        else if inCopy o.pane st then
-                            -- tmux keeps a copy mode's view where it was as lines
-                            -- arrive: asked again (TM31)
-                            askCopy o.pane { acc | state = feedPane o.pane o.bytes st }
-
                         else
-                            { acc | state = feedPane o.pane o.bytes st }
+                            let
+                                copying =
+                                    inCopy o.pane st
+
+                                caps =
+                                    st.caps
+
+                                -- what a program asked past tmux, answered
+                                -- into its pane (IM33)
+                                out =
+                                    feedOutput o.pane o.bytes st
+
+                                answered =
+                                    if Array.isEmpty out.replies then
+                                        { state = out.state, commands = [] }
+
+                                    else
+                                        sent (bytesTo caps o.pane (Bytes.flatten out.replies)) out.state
+
+                                next =
+                                    { acc | state = answered.state, commands = acc.commands ++ answered.commands }
+                            in
+                            if copying then
+                                -- tmux keeps a copy mode's view where it was as
+                                -- lines arrive: asked again (TM31)
+                                askCopy o.pane next
+
+                            else
+                                next
 
         LayoutChange l ->
             if l.window == st.window || st.window < 0 then
@@ -4160,6 +4258,71 @@ feedPane id bytes s =
 
     else
         { s | ids = Array.pushLast id s.ids, panes = Builder.pushLast (Vt.takeReplies (Vt.feed bytes (blank 80 24))).term s.panes }
+
+
+{-| A pane's output fed to its terminal as `feedPane` feeds it, but for
+the sequences a program wrapped in tmux's passthrough envelope
+(`Tmux.Passthrough`): tmux reads those to no terminal of a control
+client's, so they are fed unwrapped and what the pane's terminal answers
+is kept, for the pane (`docs/images.md` IM33). Outside an envelope the
+replies are dropped, as tmux has answered them. -}
+feedOutput : Int -> Bytes -> (taken s : State) -> { state : State, replies : Array Bytes }
+feedOutput id bytes s =
+    let
+        got =
+            Passthrough.split bytes (Maybe.withDefault (meant Reason.NotYet Passthrough.idle) (Dict.get id s.scans))
+
+        scanned =
+            if got.scan == Passthrough.idle then
+                { s | scans = Dict.remove id s.scans }
+
+            else
+                { s | scans = Dict.set id got.scan s.scans }
+    in
+    Array.foldl
+        (\part acc ->
+            if part.inside then
+                let
+                    r =
+                        feedAnswering id part.bytes acc.state
+                in
+                { state = r.state, replies = acc.replies ++ r.replies }
+
+            else
+                { state = feedPane id part.bytes acc.state, replies = acc.replies }
+        )
+        { state = scanned, replies = [] }
+        got.parts
+
+
+{-| A pane's terminal fed, what it answers kept: taken out of `panes` and
+set back, so that it is fed in place. The view scrolled back and the
+selection are left as they were: an envelope's sequence is a question or
+a picture. -}
+feedAnswering : Int -> Bytes -> (taken s : State) -> { state : State, replies : Array Bytes }
+feedAnswering id bytes s =
+    let
+        at =
+            Array.findIndex (\i -> i == id) s.ids
+    in
+    if at < 0 then
+        { state = feedPane id bytes s, replies = [] }
+
+    else
+        let
+            out =
+                Builder.swap at (blank 1 1) s.panes
+        in
+        when out.old is
+            Just t ->
+                let
+                    r =
+                        Vt.takeReplies (Vt.feed bytes t)
+                in
+                { state = { s | panes = Builder.set at r.term out.builder }, replies = r.replies }
+
+            Nothing ->
+                meant Reason.NotYet { state = { s | panes = out.builder }, replies = [] }
 
 
 {-| A layout: its panes' terminals made or sized to their boxes. -}
@@ -4777,6 +4940,9 @@ paint s0 =
                 composed =
                     s.canvas
                         |> Vt.withoutComposed
+                        -- the window's cell, which the panes' pictures are
+                        -- scaled to (IM32)
+                        |> Vt.withCellSize { width = s.paneCell.width, height = s.paneCell.height }
                         |> Vt.feed (Bytes.fromString "\u{001B}[?7l\u{001B}[0m\u{001B}[H\u{001B}[2J")
                         |> Vt.composeStyled s.panes tiledPlaces
                         |> Vt.invert tiledSpans

@@ -928,7 +928,7 @@ Windows' PURITTY_SHOT wrote the cells from the frame's top left, where
 WM_PAINT puts them at (pad, pad), so it showed no padding; `write_shot`
 now places them as the window does.
 
-**Findings, for Gilbert** (none changed yet):
+**Findings, for Gilbert** (1 and 2 since done, IM32 and IM33):
 
 1. **Under `-CC`, pictures come out too large** for the cells tmux keeps
    for them. A control client never gives tmux a size in pixels, so tmux
@@ -1004,7 +1004,7 @@ chafa's Kitty pictures is now held to leave none. chafa's goes; when
 gnuplot's picture was drawn twice (IM31) the second stays, and the check
 fails on it, as it should until IM31 is found.
 
-## IM31 · Under `-CC`, gnuplot's Kitty picture sometimes drawn twice (2026-11-18, open)
+## IM31 · Under `-CC`, gnuplot's Kitty picture sometimes drawn twice (2026-11-18, found and fixed)
 
 Found by IM29's runs: in a `-CC` pane, `gnuplot` with `kittycairo` drew
 its plot twice in one run of three (84,160 green pixels against 41,554),
@@ -1018,8 +1018,133 @@ the diagnostic log on it did not happen in the runs made. So it hangs on
 timing, and on gnuplot's own writes (several, a tty's) rather than the
 bytes. That it moves with scrolled rows suggests the window's copy of
 scrolled pixels (`renderer.md`) carrying a picture's pixels where the
-canvas no longer has one; not yet shown. To be looked at next, before
-0.2.0.
+canvas no longer has one.
+
+**Found.** With IM32's cell, chafa's picture in a `-CC` pane, then
+`seq 1 12`, left a second picture every time; frames read 30 ms apart
+showed it in the first frame after the scroll, seven rows below where the
+picture had been, the scroll's own seven rows. The core held one
+placement where it should be (a vt probe: row 16, then row 9). It was
+the window: View finds a scroll by the rows' text (`searchK`) and moves
+the band with one `CopyArea`, which carries whatever pixels are in it,
+pictures too; it then draws again the cells of the placements that came,
+went or moved. The rows under a Sixel picture are blank, and blank rows
+match blank rows at any shift, so the band found may move the rows the
+picture was on where its placement did not go: its pixels landed on rows
+nothing drew again. Text drawn there later painted its own cells only,
+which is why the copy looked holed.
+
+**Fixed** (`View`): after a band's copy, the cells where it put each
+placement drawn the frame before (`shiftedUp`, the band's `k` rows up)
+are forgotten as well, so they are drawn again, and a placement there is
+drawn over them. Measured: the picture scrolled 12 lines and then away
+gives 18,054, 16,830, 0 red pixels (it was 18,054, 30,600, 15,147);
+gnuplot's Kitty plot five times, one picture each time, and `clear` takes
+it. It was the window's, so the window's own terminal could meet it too,
+in any program that leaves blank rows under a picture and scrolls.
+
+## IM32 · Under `-CC`, pictures in tmux's cell, drawn in puritty's (2026-11-18)
+
+Gilbert, on IM29's first finding: agreed. A control client gives tmux no
+size in pixels, so tmux takes its default cell, 16 by 32, for every window
+a control client alone shows, and tells the panes' programs that
+(`CSI 14t`, `TIOCGWINSZ`); they size their pictures by it, and tmux's rows
+hold them by it.
+
+**What it does.** `TmuxMode` reads the cell tmux takes, with each pane's
+state (`#{window_cell_width}`, `#{window_cell_height}`, tmux 3.3 on; empty
+before, and the window's own cell kept), and gives each pane's terminal
+that cell (`celled`), so a picture covers the rows tmux gives it. The
+canvas takes the window's cell, and `Vt.composeStyled` scales each pane's
+placement's drawn size and offsets from the pane's cell to the canvas's
+(`paneImages`): X11's renderer draws a picture at that size and cuts it to
+its cells, so unscaled it would be cut.
+
+**Measured** (`bench/images/programs.py`, the scroll probe): chafa's 20 by
+6 cells in a `-CC` pane, 18,054 red pixels, where a shell gives 17,340 and
+it was 61,350; gnuplot's plots and timg's no larger than their cells.
+
+## IM33 · Under `-CC`, what a program asks past tmux is answered (2026-11-18)
+
+Gilbert, on IM29's second finding: "#2 sounds right, we should do it; but
+do a search to see if there are other programs besides yazi that do
+this". Read in their sources: **yazi**, **snacks.nvim** (folke's Neovim
+collection: everything it writes inside tmux, its `CSI > q` among it,
+unless tmux's `extended-keys` is on) and **ratatui-image** (the picture
+library of Rust's terminal programs: its whole probe, Kitty's `a=q`, the
+Sixel probe, the cell size) wrap their questions in tmux's passthrough.
+kitty's `icat` skips its probe inside tmux; timg and chafa ask bare, which
+tmux answers; neovim wraps only its cursor color; image.nvim asks tmux's
+commands and the pty.
+
+**What it does.** A control client gets a pane's bytes before tmux reads
+them; tmux answers a bare question itself, and sends what is inside an
+envelope to no terminal of a control client's. So `TmuxMode` cuts each
+`%output` with `Tmux.Passthrough.split` into the parts outside an envelope
+and the sequences inside one (ESCs single again; an envelope cut by the
+reads carried in a `Scan` per pane): outside, fed as before, the replies
+dropped; inside, fed to the pane's terminal taken out of the panes and set
+back (`feedAnswering`), what it answers sent into the pane (`send-keys
+-H`). The panes' terminals now say what the window's says (`setEmbedder`:
+puritty's name and version, DA1 with Sixel, the colors), with IM30's
+Kitty pictures in the cells.
+
+**Measured**: yazi in a `-CC` pane now finds Sixel and shows its previews
+(it found none, and was slow to start and to quit, waiting out its
+questions); `programs.py`, 52 checks in the three modes, all pass. tmux
+suite: the envelope read whole, cut at every byte, a DCS not tmux's left
+outside (129).
+
+## IM34 · snacks.nvim and ratatui-image: Kitty's pictures are placeholders (2026-11-18)
+
+Gilbert: "let's do more testing of our image support with snacks.vim and
+ratatui-image". `bench/images/apps.py` runs each in a shell, plain tmux
+and tmux `-CC`, as `programs.py` runs its programs, counting the test
+picture's blue: snacks.nvim (882c996) in neovim 0.12.5 with a picture
+file open, and ratatui-image's demo (5d350c6), whose five panels show one
+picture fixed, sliced, fitted, cropped and scaled.
+
+**Both draw Kitty's pictures with Unicode placeholders**, which puritty
+does not have. The picture is sent as a virtual placement (`U=1`), and the
+cells it covers are written as U+10EEEE, its row and column in combining
+marks and its id in the foreground color; the terminal draws the picture
+in those cells. puritty shows the characters, a box each, where the
+picture belongs:
+- ratatui-image's Kitty is placeholders only (`src/protocol/kitty.rs`),
+  and Kitty is the first it takes when the terminal answers Kitty's `a=q`,
+  as puritty does, before Sixel; it leaves Kitty out only for WezTerm and
+  Konsole, by their variables, as getting placeholders wrong. So **every
+  ratatui-image program shows boxes in puritty**, where without Kitty's
+  answer it would use Sixel.
+- snacks.nvim takes only the terminals it knows by XTVERSION's name:
+  kitty and Ghostty with placeholders, WezTerm with direct placements
+  (`lua/snacks/image/terminal.lua`). puritty is not on the list, so it
+  says "terminal does not support the kitty graphics protocol" and shows
+  none, unless told (`SNACKS_GHOSTTY=1`: boxes; `SNACKS_WEZTERM=1`: the
+  picture).
+
+**What works**, 26 checks, all pass: snacks.nvim told it is in WezTerm
+shows the picture in the three modes (36701 blue pixels in a shell, 33044
+in tmux) and it goes when neovim quits; the demo with Sixel or iTerm2
+forced (`bench/images/ratatui-demo.patch`: `DEMO_PROTOCOL`, and
+`DEMO_IMAGE` for the picture) shows it in all five panels in the three
+modes, and every picture goes when it quits. Both ask through tmux's
+passthrough, which IM33 answers: under `-CC` the demo finds Kitty and
+the cell (16×32, tmux's, IM32) as in plain tmux.
+
+**Under `-CC` a picture at its own size is smaller.** The demo's fixed and
+cropped panels draw the picture at its pixels: in tmux's 16×32 cell it
+covers 16 columns where plain tmux's 9×17 gives 28 (66159 blue pixels
+against 106620). This is IM32 as decided: the program is told tmux's cell,
+and a control client has no way to tell tmux its own.
+
+**Decision left to Gilbert: Kitty's Unicode placeholders.** Until puritty
+has them, its answer to Kitty's question costs ratatui-image's programs
+their pictures. Two ways: implement them (a virtual placement kept by
+id; a cell whose character is U+10EEEE drawn as the part of that picture
+its marks and color name), as kitty and Ghostty have; or, for 0.2.0, stop
+answering Kitty's `a=q`, which turns ratatui-image to Sixel but changes
+what the other programs choose too, not yet measured. Not done yet.
 
 ## IM10 · The user guide, drafted
 

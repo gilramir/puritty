@@ -21,6 +21,7 @@ import Tmux.Command as Command
 import Tmux.Control as Control exposing (Event(..), Notice(..))
 import Tmux.Customize as Customize
 import Tmux.Layout as Layout
+import Tmux.Passthrough as Passthrough
 import Tmux.Style as Style
 import Tmux.Syntax as Syntax exposing (Ask(..), Entry(..))
 import Tmux27
@@ -32,7 +33,7 @@ import UInt8
 (`native/`'s `Native`). -}
 suites : Array U.Suite
 suites =
-    [ control, layout, command, bindings, syntax, style, borders, customize, caps, catalog, keys27 ]
+    [ control, layout, command, bindings, syntax, style, borders, customize, caps, catalog, keys27, passthrough ]
 
 
 run : String -> Array { name : String, test : {} -> Expectation } -> U.Suite
@@ -1466,5 +1467,91 @@ keys27 =
           }
         , { name = "every sequence of up to three bytes reaches the pane as typed (TK3.1)"
           , test = \_ -> Expect.equal [] (Array.takeFirst 8 failures)
+          }
+        ]
+
+
+{-| tmux's passthrough envelope read out of a pane's output (puritty
+`docs/images.md` IM33). -}
+passthrough : U.Suite
+passthrough =
+    let
+        esc =
+            "\u{001B}"
+
+        -- a Kitty graphics query as a program wraps it for tmux: each ESC
+        -- of it doubled, the envelope's own ESC \ after
+        query =
+            esc ++ "_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA" ++ esc ++ "\\"
+
+        wrapped =
+            esc ++ "Ptmux;" ++ String.replace esc (esc ++ esc) query ++ esc ++ "\\"
+
+        shown parts =
+            Array.map
+                (\p ->
+                    (if p.inside then
+                        "in "
+
+                     else
+                        "out "
+                    )
+                        ++ Bytes.toStringLossy p.bytes
+                )
+                parts
+
+        -- the parts of reads fed one after another, those of a kind next
+        -- to each other joined, as a pane's terminal is fed them
+        fedIn reads =
+            let
+                r =
+                    Array.foldl
+                        (\b acc ->
+                            let
+                                got =
+                                    Passthrough.split b acc.scan
+                            in
+                            { scan = got.scan, parts = acc.parts ++ got.parts }
+                        )
+                        { scan = Passthrough.idle, parts = [] }
+                        reads
+            in
+            Array.foldl
+                (\p acc ->
+                    when Array.last acc is
+                        Just last ->
+                            if last.inside == p.inside then
+                                Array.pushLast { last | bytes = Bytes.flatten [ last.bytes, p.bytes ] } (Array.dropLast 1 acc)
+
+                            else
+                                Array.pushLast p acc
+
+                        Nothing ->
+                            [ p ]
+                )
+                []
+                r.parts
+                |> shown
+    in
+    run "Passthrough"
+        [ { name = "output with no envelope is one part, outside"
+          , test = \_ -> Expect.equal [ "out ab" ++ esc ++ "[1mc" ] (shown (Passthrough.split (Bytes.fromString ("ab" ++ esc ++ "[1mc")) Passthrough.idle).parts)
+          }
+        , { name = "an envelope's sequence is read out, its ESCs single, between the parts outside"
+          , test = \_ -> Expect.equal [ "out ab", "in " ++ query, "out cd" ] (shown (Passthrough.split (Bytes.fromString ("ab" ++ wrapped ++ "cd")) Passthrough.idle).parts)
+          }
+        , { name = "an envelope cut by the reads at every byte gives the same parts"
+          , test =
+                \_ ->
+                    let
+                        all =
+                            Bytes.fromString ("ab" ++ wrapped ++ "cd")
+                    in
+                    Expect.equal
+                        (Array.repeat (Bytes.length all - 1) [ "out ab", "in " ++ query, "out cd" ])
+                        (Array.map (\at -> fedIn [ Bytes.slice 0 at all, Bytes.slice at (Bytes.length all) all ]) (Array.range 1 (Bytes.length all - 1)))
+          }
+        , { name = "a DCS that is not tmux's envelope stays outside"
+          , test = \_ -> Expect.equal [ "out " ++ esc ++ "Pq#0~" ++ esc ++ "\\" ] (shown (Passthrough.split (Bytes.fromString (esc ++ "Pq#0~" ++ esc ++ "\\")) Passthrough.idle).parts)
           }
         ]

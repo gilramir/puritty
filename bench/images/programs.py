@@ -81,6 +81,22 @@ def plot(term, color):
             f"set style fill solid; plot [0:1] [0:1] 1 with filledcurves y1=0 lc rgb \"{hexc}\"'")
 
 
+def whole_ppm(data):
+    """A P6 picture's rows from its bytes, or None while it is cut."""
+    parts = data[:64].split(maxsplit=4)
+    if len(parts) < 5 or parts[0] != b"P6":
+        return None
+    try:
+        w, h = int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    # the header ends after the maximum value and one whitespace byte
+    at = data.index(parts[3], len(parts[0]) + len(parts[1]) + len(parts[2])) + len(parts[3]) + 1
+    if len(data) - at != w * h * 3:
+        return None
+    return [data[at + y * w * 3:at + (y + 1) * w * 3] for y in range(h)]
+
+
 class Run:
     """puritty on Xvfb, in one mode, and how to type into what it runs."""
 
@@ -154,13 +170,11 @@ class Run:
         for _ in range(10):
             # puritty may be writing the file as it is read: read again
             try:
-                # an empty or cut file sends read_ppm round its header for
-                # ever: only a file as long as its header says
-                data = self.shot.read_bytes()
-                head = data[:64].split()
-                w, h = int(head[1]), int(head[2])
-                rows = read_ppm(self.shot) if len(data) >= w * h * 3 else None
-            except (ValueError, IndexError, OSError):
+                # one read, parsed here: the file is written again each
+                # frame, and an empty or cut one sends read_ppm round its
+                # header for ever
+                rows = whole_ppm(self.shot.read_bytes())
+            except OSError:
                 rows = None
             if rows and len(rows[-1]) == len(rows[0]):
                 break
@@ -259,18 +273,14 @@ def programs(a, mode, path):
             r.keys("j", wait=0.3)
         r.keys("k", "k", "k", wait=2.0)  # back to blue.jpg, the first entry
         rows = r.snap("yazi")
-        if mode == "cc":
-            # yazi asks the terminal through tmux's passthrough, which under
-            # -CC nobody answers (TmuxMode's panes answer nothing), so it
-            # finds no graphics and draws none (docs/images.md IM29)
-            note(f"{mode}: yazi's preview of blue.jpg, blue pixels (none expected yet, IM29): {count(rows, BLUE)}")
-        else:
-            check(f"{mode}: yazi's preview of blue.jpg", count(rows, BLUE), that("more than 1000 pixels", lambda n: n > 1000))
-            r.keys("j", wait=2.0)  # blue.png
-            r.keys("j", wait=2.0)  # green.png
-            rows = r.snap("yazi-green")
-            check(f"{mode}: yazi moved on to green.png: green shown", count(rows, GREEN), that("more than 1000 pixels", lambda n: n > 1000))
-            check(f"{mode}: and blue gone", count(rows, BLUE), that("fewer than 200 pixels", lambda n: n < 200))
+        # under -CC yazi asks through tmux's passthrough, which puritty
+        # answers into the pane (docs/images.md IM33)
+        check(f"{mode}: yazi's preview of blue.jpg", count(rows, BLUE), that("more than 1000 pixels", lambda n: n > 1000))
+        r.keys("j", wait=2.0)  # blue.png
+        r.keys("j", wait=2.0)  # green.png
+        rows = r.snap("yazi-green")
+        check(f"{mode}: yazi moved on to green.png: green shown", count(rows, GREEN), that("more than 1000 pixels", lambda n: n > 1000))
+        check(f"{mode}: and blue gone", count(rows, BLUE), that("fewer than 200 pixels", lambda n: n < 200))
         r.keys("q", wait=1.0)
         # until yazi has ended: under -CC it waits out its unanswered
         # questions first, and would take the keys typed after it

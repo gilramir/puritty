@@ -564,8 +564,22 @@ frameOn look focus preedit hl s clusters back t sh0 =
         moved =
             Array.keepIf (\p -> not (Array.member p desired)) sh2.placed ++ Array.keepIf (\p -> not (Array.member p sh2.placed)) desired
 
+        -- a scroll's copy carries the pixels of the placements drawn last
+        -- frame with its rows, `band.k` rows up: their cells there are
+        -- forgotten too, so that a picture's pixels the copy brought where
+        -- no placement now is are drawn over. The band is found by rows'
+        -- text, and the blank rows under a Sixel picture match blank rows
+        -- anywhere, so the copy need not move a picture as its placement
+        -- moved (`docs/images.md` IM31)
+        carried =
+            if band.bottom >= band.top then
+                Array.map (shiftedUp band.k) sh2.placed
+
+            else
+                []
+
         diffed =
-            imagesDrawn desired 3 s clusters cursor rows cols (diffRows s clusters cursor 0 rows cols (Array.foldl (forgetPlaced rows cols) sh2 moved) scrolled.list)
+            imagesDrawn desired 3 s clusters cursor rows cols (diffRows s clusters cursor 0 rows cols (Array.foldl (forgetPlaced rows cols) sh2 (moved ++ carried)) scrolled.list)
 
         sh3 =
             diffed.shadow
@@ -626,6 +640,16 @@ forgetPlaced rows cols p sh =
             cellsCut p
     in
     { sh | cells = forgetRows r.y0 r.y1 (max 0 r.x0) (min cols r.x1) rows cols sh.cells }
+
+
+{-| A placement where a scroll's copy of `k` rows up put its pixels. -}
+shiftedUp : Int -> Kitty.Shown -> Kitty.Shown
+shiftedUp k p =
+    let
+        c =
+            p.clip
+    in
+    { p | y = p.y - k, clip = { c | y = c.y - k } }
 
 
 {-| The cells a placement draws in: those it covers, cut to its clip. -}

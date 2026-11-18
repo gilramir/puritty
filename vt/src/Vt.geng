@@ -12,6 +12,7 @@ module Vt exposing
     , defaultPageRows
     , defaultWordBoundaries
     , dump
+    , embedderOf
     , feed
     , historyBound
     , historyReached
@@ -349,7 +350,7 @@ composeStyled panes places t =
                                 kept =
                                     Array.keepIf (\c -> not (meets c.clip area)) acc
                             in
-                            kept ++ paneImages (place.index + 1) place.x place.y place.back cols rows pane
+                            kept ++ paneImages (place.index + 1) place.x place.y place.back cols rows { width = t.config.cellWidth, height = t.config.cellHeight } pane
 
                         Nothing ->
                             meant Reason.NotKnown acc
@@ -369,8 +370,27 @@ meets a b =
 {-| A pane's placements in view as the canvas shows them: moved by its
 place, cut to its rectangle and to the canvas, each with its image and a
 key that names the pane (`origin`). -}
-paneImages : Int -> Int -> Int -> Int -> Int -> Int -> Term -> Array Composed
-paneImages origin px py back cols rows pane =
+paneImages : Int -> Int -> Int -> Int -> Int -> Int -> { width : Int, height : Int } -> Term -> Array Composed
+paneImages origin px py back cols rows cell pane =
+    let
+        -- a picture's pixels in the pane's cell drawn in the canvas's:
+        -- tmux tells a pane's programs a cell of its own (16 by 32 for a
+        -- control client), by which they size their pictures, and the
+        -- pane's rows hold them as tmux's do (`docs/images.md` IM32)
+        scaleX v =
+            if cell.width > 0 && pane.config.cellWidth > 0 && cell.width /= pane.config.cellWidth then
+                v * cell.width // pane.config.cellWidth
+
+            else
+                v
+
+        scaleY v =
+            if cell.height > 0 && pane.config.cellHeight > 0 && cell.height /= pane.config.cellHeight then
+                v * cell.height // pane.config.cellHeight
+
+            else
+                v
+    in
     Kitty.shownPlacements back pane
         |> Array.mapAndKeepJust
             (\sh ->
@@ -397,10 +417,10 @@ paneImages origin px py back cols rows pane =
                         , rows = sh.rows
                         , clip = { x = x0, y = y0, cols = max 0 (x1 - x0), rows = max 0 (y1 - y0) }
                         , src = sh.src
-                        , offX = sh.offX
-                        , offY = sh.offY
-                        , w = sh.w
-                        , h = sh.h
+                        , offX = scaleX sh.offX
+                        , offY = scaleY sh.offY
+                        , w = scaleX sh.w
+                        , h = scaleY sh.h
                         , under = sh.under
                         }
                     )
@@ -1400,6 +1420,13 @@ withExtraImages on t =
             t.embedder
     in
     { t | embedder = { e | extraImages = on } }
+
+
+{-| What the terminal says of itself when asked, as the embedder told it
+(`withEmbedder`). -}
+embedderOf : Term -> Embedder
+embedderOf t =
+    t.embedder
 
 
 {-| Whether Kitty's images are drawn into the cells, as Sixel's and
