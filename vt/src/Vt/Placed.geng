@@ -4,6 +4,7 @@ module Vt.Placed exposing
     , altScrolled
     , geoAt
     , gridSize
+    , onScreen
     , pixelSize
     , rect
     , scrollMoved
@@ -153,6 +154,44 @@ rect store pl geo =
 
         Nothing ->
             meant Reason.NotKnown Nothing
+
+
+{-| Whether a placement of the shown screen covers a row at or below the
+screen's top, `top` the rows pushed: any, or (`cellsOnly`) one of an image
+drawn into the cells, which text erases (`docs/images.md` IM27). What
+the fast ways for text and for a region's scroll are taken without. -}
+onScreen : Bool -> Int -> Term -> Bool
+onScreen cellsOnly top t =
+    -- a loop with the store as an argument, not `Array.any` with a closure
+    -- over it: a closure over a part of the term made `withScroll`'s
+    -- result not fresh, and every update of the term copy (IM24, IM27)
+    anyOnScreen cellsOnly (geoAt top t) t.images.shown 0
+
+
+anyOnScreen : Bool -> Geo -> Store -> Int -> Bool
+anyOnScreen cellsOnly geo store i =
+    when Array.get i store.placements is
+        Nothing ->
+            meant Reason.NoMore False
+
+        Just pl ->
+            let
+                shown =
+                    when Dict.get pl.image store.images is
+                        Just image ->
+                            (not cellsOnly || image.textErases)
+                                && (when rect store pl geo is
+                                        Just r ->
+                                            r.bottom >= geo.top
+
+                                        Nothing ->
+                                            meant Reason.NotSet False
+                                   )
+
+                        Nothing ->
+                            meant Reason.NotKnown False
+            in
+            shown || anyOnScreen cellsOnly geo store (i + 1)
 
 
 {-| The geometry's terminal, `top` the rows pushed into the scrollback. -}

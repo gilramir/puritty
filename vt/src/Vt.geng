@@ -1569,7 +1569,7 @@ resize cols rows t =
         -- width change reflows the main screen's lines (`docs/images.md`
         -- IM25): numbers alone, so the resize takes the term unshared
         anchors =
-            if clamp 1 1000 cols /= t.cols && not t.alt && t.autowrap && not (Array.isEmpty t.images.shown.placements) then
+            if clamp 1 1000 cols /= t.cols && t.autowrap && not (Array.isEmpty (mainStore t).placements) then
                 pinsBefore (clamp 1 1000 cols) t
 
             else
@@ -1600,14 +1600,23 @@ pinsBefore cols t =
         pushed =
             rowsPushed t
 
+        -- the main screen's scrollback, which `scrollbackRows` counts as
+        -- none while the alternate screen is shown (IM27)
         back =
-            scrollbackRows t
+            Scroll.historyBound t
+
+        -- the main screen's, which the alternate's being shown hides (IM27)
+        store =
+            mainStore t
+
+        cy =
+            clamp 0 1000 (mainCursorY t)
 
         ys =
-            Array.map (\pl -> pl.row - pushed) t.images.shown.placements
+            Array.map (\pl -> pl.row - pushed) store.placements
 
         lowest =
-            Array.foldl min t.y ys
+            Array.foldl min cy ys
 
         -- the rows from a few hundred above the highest anchor, for its
         -- line's start, down to the screen's end
@@ -1615,7 +1624,7 @@ pinsBefore cols t =
             clamp (0 - back) t.rows (clamp (0 - back) t.rows lowest - 256)
 
         read =
-            (rowsBetween first (clamp 0 (t.rows - first) (t.rows - first)) t).rows
+            mainRows first (clamp 0 (t.rows - first) (t.rows - first)) t
 
         starts =
             lineStarts read
@@ -1624,9 +1633,9 @@ pinsBefore cols t =
             Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (y - first)) starts)
 
         cursorLine =
-            lineOf t.y
+            lineOf cy
     in
-    t.images.shown.placements
+    store.placements
         |> Array.indexedMap
             (\i pl ->
                 let
@@ -1679,24 +1688,27 @@ pinsAfter anchors t =
                 rowsPushed t
 
             back =
-                scrollbackRows t
+                Scroll.historyBound t
 
             far =
                 Array.foldl (\a m -> max m a.dist) 0 anchors
 
             -- as many rows above the cursor as the lines asked for can
             -- take, at the most a few hundred rows each
+            cy =
+                clamp 0 1000 (mainCursorY t)
+
             first =
-                clamp (0 - back) t.rows (clamp 0 t.rows t.y - 256 * (clamp 0 1000 far + 1))
+                clamp (0 - back) t.rows (clamp 0 t.rows cy - 256 * (clamp 0 1000 far + 1))
 
             read =
-                (rowsBetween first (clamp 0 (t.rows - first) (t.rows - first)) t).rows
+                mainRows first (clamp 0 (t.rows - first) (t.rows - first)) t
 
             starts =
                 lineStarts read
 
             cursorLine =
-                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (t.y - first)) starts)
+                Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (clamp 0 (Array.length read - 1) (cy - first)) starts)
 
             -- the row a line begins on, by its number
             startOf line =
@@ -1717,7 +1729,7 @@ pinsAfter anchors t =
                 t.images
 
             store =
-                im.shown
+                mainStore t
 
             moved =
                 Array.foldl
@@ -1737,7 +1749,81 @@ pinsAfter anchors t =
                     store.placements
                     anchors
         in
-        { t | images = { im | shown = { store | placements = moved } } }
+        if t.alt then
+            { t | images = { im | other = Just { store | placements = moved } } }
+
+        else
+            { t | images = { im | shown = { store | placements = moved } } }
+
+
+{-| The main screen's images: the shown store, or with the alternate screen
+shown, the other one. -}
+mainStore : Term -> Store
+mainStore t =
+    if t.alt then
+        Maybe.withDefault (meant Reason.NotYet State.noStore) t.images.other
+
+    else
+        t.images.shown
+
+
+{-| The main screen's cursor row, which it keeps while the alternate screen
+is shown (`hidden`). -}
+mainCursorY : Term -> Int
+mainCursorY t =
+    if t.alt then
+        clamp 0 1000 t.hidden.y
+
+    else
+        t.y
+
+
+{-| `count` rows of the main screen and its scrollback from row `first`,
+as `rowsBetween` reads them, whichever screen is shown. -}
+mainRows : Int -> Int -> Term -> Array Row
+mainRows first0 count0 t =
+    if t.alt then
+        when t.other is
+            Just main ->
+                rowsOfScreen first0 count0 main t
+
+            Nothing ->
+                meant Reason.NotOpen (rowsOfScreen first0 count0 t.screen t)
+
+    else
+        rowsOfScreen first0 count0 t.screen t
+
+
+rowsOfScreen : Int -> Int -> Screen -> Term -> Array Row
+rowsOfScreen first0 count0 s t =
+    let
+        hist =
+            s.hist
+
+        first =
+            clamp (0 - 536880105) s.rows first0
+
+        count =
+            clamp 0 (s.rows - first) count0
+
+        fromPages =
+            min count (max 0 (0 - hist - first))
+
+        paged =
+            viewPages t.back t.back.head 0 (t.back.rows + first + hist) fromPages t.clusters []
+    in
+    paged.rows ++ screenRing (clamp (0 - hist) s.rows (first + fromPages)) (clamp (0 - hist) s.rows (first + count)) s []
+
+
+{-| The rows of screen `s`'s ring from `y` up to `stop`, as `ringRows`
+reads the shown screen's. -}
+screenRing : (y : Int where 0 - s.hist <= y) -> (stop : Int where stop <= s.rows) -> (s : Screen) -> Array Row -> Array Row
+screenRing y stop s acc =
+    if y >= stop then
+        acc
+
+    else
+        screenRing (y + 1) stop s (Array.pushLast (ringRowOf (rowOffset s y) s) acc)
 
 
 {-| Each row's line, counted from the first row's: a row begins a line

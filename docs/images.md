@@ -746,8 +746,8 @@ day's fuzz runs before this one tested the core from before IM19; built
 again, 8 minutes, 142 inputs, 0 findings. The resize inputs of
 `perf.py` are within their record.
 
-**Not done**: the alternate screen shown during the resize, whose main
-screen's placements, in the store's other slot, keep their anchors.
+**Not done** (then): the alternate screen shown during the resize; done
+in IM27.
 
 ## IM26 · No image on the screen, no cost (2026-11-17)
 
@@ -800,6 +800,62 @@ build before this change, and now:
 
 The cost moved to text written while an image is on the screen, a
 character at a time, which is what was asked.
+
+## IM27 · Slower only for a picture text can erase, on the screen; and the alternate screen's resize (2026-11-17)
+
+IM26 made any placement turn off the fast ways: text a character at a
+time, a region's line feed by `feedImaged`. Gilbert, 2026-11-17: narrow it.
+
+**What changed.** `Placed.onScreen` says whether a placement covers a row
+at or below the screen's top: any, or one of an image drawn into the cells
+(Sixel's, iTerm2's), which text erases (IM23).
+
+- `plain` (`Cursor.withPlain`) asks the narrow question: a Kitty picture,
+  which text never erases, or one in the scrollback, which text never
+  reaches, leaves text its fast way.
+- `withScroll` asks the wide one: a region's fast line feed is not taken
+  while any picture is on the screen, since the region's scroll moves it
+  (IM14); one in the scrollback leaves it.
+- Both are found again once a read while there are placements
+  (`Parse.feed`), for a picture scrolled off the screen.
+
+`onScreen` is a loop with the store as an argument: its first form, an
+`Array.any` with a closure over the store, made `withScroll`'s result not
+fresh, and every update of the term copied (311 M instructions on
+`vte-light_cells` against 261 M), as in IM24.
+
+**Measured** (instructions in millions, `core-bench FILE images`, 200,000
+lines of 62 characters, no clear), the commit before and now:
+
+| text after | before | now |
+|---|---|---|
+| no picture | 605 | 605 |
+| a Kitty picture, scrolled away | 7,268 | 606 |
+| a Sixel picture, scrolled away | 11,586 | 662 |
+| a Kitty picture kept by a scroll region | 7,853 | 1,208 |
+| a Sixel picture kept by a scroll region | 12,169 | 12,172 |
+
+So a Kitty picture, and any picture once scrolled away, costs text
+nothing; a Kitty picture beside a region costs the region's line feeds
+twice (`feedImaged`'s plan, 3,000 instructions a line). A Sixel or iTerm2
+picture on the screen still makes text some 20 times slower: a character
+at a time through `printGraphic`, each telling the images of its cell. That
+is left (IM28 to come): a second copy of the ground loop for that case,
+taking runs with a hole each, would bring it near the fast way, with the
+loop without images untouched.
+
+**The alternate screen** (IM25's "not done"): `Vt.resize` now carries the
+main screen's placements while the alternate screen is shown: its rows
+read from the main screen (`mainRows`, a reader of a given screen's ring),
+its cursor from `hidden`, its store from the `other` slot, and the moved
+placements written back there. `kitty-reflow-alt-screen` (a placement on
+the main screen's text, the alternate shown, 6 and then 20 columns, back)
+agrees with Ghostty: column 12, its `c`. The diff fuzzer found the same at
+5 rows putting the placement at column 4: the narrowing pushes the line
+into the main screen's scrollback, and the readers took the scrollback's
+size from `scrollbackRows`, which is 0 while the alternate screen is
+shown; they take `Scroll.historyBound`, the main screen's, now, and
+`kitty-reflow-alt-scrollback` keeps the case.
 
 ## IM10 · The user guide, drafted
 
