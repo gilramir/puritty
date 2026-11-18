@@ -372,3 +372,50 @@ session is the main change, and the start of port forwarding or SFTP; then
 the Windows clipboard formats, a PNG encoder, and the paste. Open: on the
 normal paste key automatically (with a setting to turn it off), or a key
 of its own.
+
+## 9. A file dropped on the window, uploaded where the user chooses (2026-11-18, not implemented)
+
+Gilbert, 2026-11-18: a file dragged onto puritty's window is uploaded to
+the host the tab is connected to. **Not into a set folder**: a dialog
+opens and the user chooses the remote folder to put it in. Written down
+to build later.
+
+**Which tabs it can work in**, as for §8's screenshot:
+
+- A host from the host list on the built-in client (`client =
+  "built-in"`, the default on Windows): a second channel on the tab's
+  connection, the `sftp` subsystem, with no second login, through a jump
+  host as the session goes.
+- A host from the host list on OpenSSH, on Linux: `ssh` started with
+  `ControlMaster`/`ControlPath` on a socket of puritty's, and `sftp` over
+  that socket, the same connection again. Windows' OpenSSH is understood
+  not to share connections (general knowledge, not checked): there the
+  built-in client is the way.
+- Not `ssh` typed in a local tab's shell: puritty knows nothing of that
+  host, and should say so, not drop the file silently.
+
+**The dialog**: the remote folders, read over SFTP (`opendir`, `readdir`,
+`stat`), opened first at the shell's current folder where the shell
+reports it (OSC 7), else the home folder; move up and into folders, make
+a new one, choose. Then the upload with its progress and a cancel. A file
+of the same name already there is asked about (replace, keep both, skip),
+never replaced silently. Several files dropped at once go to one chosen
+folder.
+
+**The work**: the second channel on a connection (`packages/ssh` has one,
+`Connection.ourChannel`), shared with §8; an SFTP client (version 3, as
+OpenSSH speaks it: open, write, close, stat, opendir, readdir, mkdir);
+drops (XDND on X11; `IDropTarget` or `WM_DROPFILES` on Windows); the
+dialog.
+
+**Open, for Gilbert**:
+
+- Whether the dialog is puritty's own, drawn over the screen as its
+  prompts are (`ssh-client.md` SC23), or the platform's.
+- What a drop does in a local tab: paste the file's path, as most
+  terminals do, or nothing.
+- After an upload, whether the remote path is pasted (as §8 does) or not.
+- Whether §8's screenshot should ask for its folder the same way, rather
+  than `~/.cache/puritty/paste/`.
+- A server with SFTP turned off: refuse, or fall back to an `exec`
+  channel writing the file (`cat > …`), which needs only a shell.
