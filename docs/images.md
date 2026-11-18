@@ -840,7 +840,7 @@ nothing; a Kitty picture beside a region costs the region's line feeds
 twice (`feedImaged`'s plan, 3,000 instructions a line). A Sixel or iTerm2
 picture on the screen still makes text some 20 times slower: a character
 at a time through `printGraphic`, each telling the images of its cell. That
-is left (IM28 to come): a second copy of the ground loop for that case,
+is left (IM28, tried and not done): a second copy of the ground loop for that case,
 taking runs with a hole each, would bring it near the fast way, with the
 loop without images untouched.
 
@@ -856,6 +856,43 @@ into the main screen's scrollback, and the readers took the scrollback's
 size from `scrollbackRows`, which is 0 while the alternate screen is
 shown; they take `Scroll.historyBound`, the main screen's, now, and
 `kitty-reflow-alt-scrollback` keeps the case.
+
+## IM28 · Runs of text beside a Sixel or iTerm2 picture: tried, not done (2026-11-18)
+
+IM27 left text some 20 times slower while a picture text erases is on the
+screen. Tried: a flag `textPlain` (`plain` without the picture test), and
+for that case the run written at once and the picture's cells lost for the
+run together (`Kitty.overwritten` over the run's span), not a character at
+a time.
+
+**What it gave**: a Sixel picture kept by a scroll region, 200,000 lines
+of text, 12,172 M instructions to about 1,260 M, near the Kitty picture's
+1,208 M.
+
+**What it cost text without pictures** (instructions in millions, the
+throughput inputs, against f20d778), through every shape tried:
+
+| shape | light_cells | scrolling_top_region | scrolling | cup |
+|---|---|---|---|---|
+| f20d778 | 261.4 | 1,035.7 | 1,418.0 | 1,645.7 |
+| a copy of `printAscii` in `ground`'s group | 295.5 | 1,113.1 | 1,498.0 | 1,717.7 |
+| an empty wrapper, in the group, around the old branch | 286.1 | 1,041.1 | 1,423.3 | 1,669.9 |
+| the hole first, then `printAscii` called a second time | 296.7 | 1,198.4 | 1,580.6 | 1,816.3 |
+| the hole first, through `printAscii`'s one call | 301.5 | 1,025.1 | 1,409.9 | 1,644.5 |
+| outside the group, with its own copies of `asciiRow` and `writeAscii` (the best) | 261.6 | 1,059.7 | 1,442.0 | 1,657.7 |
+| the same, routed by `resume` to `groundMargined` | 261.7 | 1,051.7 | 1,434.0 | 1,677.7 |
+
+The new code never runs on these inputs. The cost is clang's: each member
+the group gains, and each hot function that gains a caller (`asciiRow`,
+`writeAscii`, `printAscii`), changes how it compiles the loop's step
+function. Taken apart, the best shape's hole alone costs nothing
+(1,030.4, 1,412.6, 1,641.7), and its write alone all of it: a second
+writer of runs is what the loop pays for.
+
+**Decided** (Gilbert, 2026-11-18): not done. Text with no picture on the
+screen, which is the measurement that matters, stays at the speed it had
+before images; a Sixel or iTerm2 picture on the screen keeps text slow
+until it scrolls away, as IM27 left it.
 
 ## IM10 · The user guide, drafted
 
