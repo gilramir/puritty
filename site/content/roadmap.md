@@ -42,7 +42,8 @@ stands, and what comes next.
   passphrases remembered in Windows' Credential Manager when you ask.
 - **The diagnostic log**, to see what a program sent when something looks
   wrong.
-- **Builds** for Windows, RHEL 8 (which also runs on any later x86-64
+- **Builds** for Windows (signed with the author's code-signing
+  certificate), RHEL 8 (which also runs on any later x86-64
   Linux), RHEL 9, and a `.deb` for Ubuntu 24.04 and Linux Mint 22.
 
 ## Next
@@ -55,6 +56,5 @@ Not in a fixed order:
 - **GPU drawing** for local use, with OpenGL ES; the X11 renderer stays
   for remote X11 and machines with no GPU.
 - **Tabs**: dragging to reorder them, and typing into several at once.
-- **A signed Windows release**: 0.2.0 is the first.
 - **1.0.0**, with the first alpha of [Geng](https://geng-lang.org), the
   language puritty is written in.
