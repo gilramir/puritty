@@ -26,14 +26,25 @@ Gilbert's.
 
 ## PW2 · What other programs do
 
-General knowledge, not measured here:
+General knowledge where not said otherwise:
 
 - **PuTTY** stores no passwords at all, on purpose (its FAQ): keys and
   Pageant are its answer.
 - **WinSCP** stores a session's password in its own settings, obfuscated
   rather than encrypted unless a master password is set.
-- **MobaXterm** keeps passwords in its own store, protected by a master
-  password it asks for at start (or by Windows' DPAPI, by an option).
+- **Tabby** (an Electron terminal with an ssh client) is the one ssh
+  client found that uses Windows' Credential Manager: read in its source
+  (`tabby-ssh/src/services/passwordStorage.service.ts`), it keeps an ssh
+  password by `ssh@HOST:PORT` and the user, and a key's passphrase,
+  through `keytar`, which is Credential Manager on Windows, the Secret
+  Service on Linux and the Keychain on macOS; with its own vault turned
+  on (a master passphrase) they go there instead. Its issue #9645 reports
+  saved passwords gone after a reboot on Windows.
+- **MobaXterm 25** keeps them in its registry key, encrypted under a
+  master password, now required; before 25.0 each was encrypted with an
+  all-zero IV (CVE-2025-0714). Searches found no ssh client but Tabby that
+  uses Credential Manager (SecureCRT, Xshell, Bitvise, Royal TS and
+  mRemoteNG keep their own encrypted stores).
 - **Windows' own Remote Desktop** and **Git Credential Manager** keep
   theirs in Windows' Credential Manager, as `TERMSRV/host` and
   `git:https://host` entries the user can see and remove in Control
