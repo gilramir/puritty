@@ -88,7 +88,7 @@ CASES = [
      # it is, and wrong: the shell after it waits in `read` and says
      # nothing, so nothing tells puritty control mode is over, and the
      # first key goes as `send-keys` (TK13: a timeout on an unanswered
-     # command is the only sign, not taken)
+     # command is the only sign; left as it is, Gilbert 2026-11-18)
      "echo first > {size}; T=sw-k; (sleep 2; pkill -9 -f 'tmux -L sw-[k] -f') & tmux -L $T -f /dev/null -CC new-session; read l; echo $l >> {size}; tmux -L $T kill-server; exit 0"),
     # the same with an interactive shell after it, as a login shell that
     # ran tmux is: its prompt is the first thing after control mode

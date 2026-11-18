@@ -811,8 +811,9 @@ shell. Made to fail on purpose: both failed with the build before.
 `tmux-client-killed` waits in `read` after tmux: nothing comes, so
 nothing tells puritty control mode is over, and the first key goes as
 `send-keys`. The only sign would be a command tmux never answers; a
-timeout on that would also fire on a tmux that is only slow, so it is
-left for Gilbert. The case is pinned as it is, with a comment saying so.
+timeout on that would also fire on a tmux that is only slow. *Decided*
+(Gilbert, 2026-11-18): left as it is, and written down here. The case is
+pinned as it is, with a comment saying so.
 A login shell, or `exec tmux`, does not hit it: the prompt, or the end of
 the session, comes.
 
