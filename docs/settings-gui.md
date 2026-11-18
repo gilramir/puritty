@@ -591,7 +591,7 @@ puritty's icon, above Windows' own items. The probe, its folder and its
 jump list's file were removed after.
 
 
-## SG20 · Text boxes that behave, and a connection edited before it is made (2026-11-18; decided, not built)
+## SG20 · Text boxes that behave, and a connection edited before it is made (2026-11-18)
 
 Gilbert, connecting from the host list on Windows with a long quick
 connect line, `HOST tmux -CC attach -t main`, which needed `tmux`'s full
@@ -628,3 +628,39 @@ not read):
 
 With it, a session whose program fails says so (`docs/ssh-client.md`
 SC29): the line that was wrong is then seen, not only logged.
+
+**Built.** `TextEdit` (new, pure) takes a box's keys and says what they
+did: the text or the caret changed, a copy, a paste asked, or a key not
+its own (Enter, Esc, Tab, Up, Down), which the box's own handling keeps.
+A word's separators are blanks and `/ \ @ : . , ; =`, so Ctrl+Left stops
+inside `user@host:/path`; Ctrl+Right goes to the next word's start, as
+Windows' boxes do. `Typing` gains the selection's other end (`anchor`)
+and `recall`, Up's place among the recents. The window asks the program
+for a paste (`PasteAsked`: the clipboard, through `Window.paste`; the
+middle button clicks the box under it, then pastes the primary
+selection) and gets its text as `Pasted`, made one line (`oneLine`);
+Ctrl+V or Shift+Insert where nothing is typed yet pastes into the search,
+or into quick connect or a new host's name. A copy is `Copy` (`Window.select`).
+`typingField` draws the selection and scrolls: the text from its start
+until the caret would pass the right edge, then moved left to keep the
+caret there, a dim `…` at an end that is cut. It holds for every typed
+box (quick connect, a new host, a setting's value, a font), the search
+field aside, which takes a paste but is not typed with a caret.
+
+F2 on a host row, or the chosen row's pencil (`✎`, `OnEdit`), puts its
+line in quick connect: a recent quick connection's own; a saved host's
+`user@host:port` and command (`Hosts.spec`, now exposed); an alias of
+~/.ssh/config's, its name. A saved host's other settings (key, jump host,
+colors) are not in a quick line, and a connection made from it is a quick
+one. The hints at the foot say F2 and Up (English and Korean), and the
+user guide's host list says the keys.
+
+**Measured**: six tests in the app suite (408, from 402): a word left and
+a selection typed over; Ctrl+Backspace and Ctrl+Delete by words; Ctrl+V
+and Shift+Insert asking a paste and its two lines joined; Ctrl+A with
+Ctrl+C, and Ctrl+X; F2 on a recent and on a saved host, connecting to
+nothing until Enter, and an edited line connected to; Up and Down through
+two recents and back to empty. On Xvfb, `puritty hosts`: a 96-character
+line scrolled to its end with the dots at the left, a selection drawn,
+a real Ctrl+V of two lines set by xclip pasted as one, the pencil on the
+chosen row, and F2 filling quick connect. Not yet seen on Windows.

@@ -1,0 +1,266 @@
+module TextEdit exposing (Done(..), Edit, key, oneLine, replaceSelection, selected, selection)
+
+{-| One line of text being edited, as the host list's and the settings
+window's boxes edit it (`docs/settings-gui.md` SG20): its characters, the
+caret, and the selection's other end (`anchor`, the caret's own place when
+nothing is selected).
+
+`key` takes a key and says what it did: the text or the caret changed, a
+copy asked (Ctrl+C, Ctrl+Insert; Ctrl+X cuts), a paste asked (Ctrl+V,
+Shift+Insert), or a key that is not an editing one, left to the caller
+(Enter, Esc, Tab, Up, Down). Ctrl with Left and Right moves by a word,
+with Backspace and Delete deletes one; Shift with the arrows, Home and End
+selects; Ctrl+A selects all; what is typed replaces the selection.
+
+Keys are X's keysyms, as both platforms' windows give them, and `mods`
+their bits: Shift 1, Ctrl 2, Alt 4.
+-}
+
+import Bitwise
+import Reason
+
+
+type alias Edit =
+    { chars : Array Char, caret : Int, anchor : Int }
+
+
+type Done
+    = Edited Edit
+    | Copied { edit : Edit, text : String }
+    | PasteAsked
+    | NotMine
+
+
+key : { sym : Int, mods : Int, text : String } -> Edit -> Done
+key k e =
+    let
+        shift =
+            Bitwise.and k.mods 1 /= 0
+
+        ctrl =
+            Bitwise.and k.mods 2 /= 0
+
+        alt =
+            Bitwise.and k.mods 4 /= 0
+
+        n =
+            Array.length e.chars
+
+        -- the caret moved, the selection grown with Shift, else gone
+        moved to =
+            Edited
+                { e
+                    | caret = to
+                    , anchor =
+                        if shift then
+                            e.anchor
+
+                        else
+                            to
+                }
+
+        sel =
+            selection e
+
+        letter =
+            if k.sym >= 0x41 && k.sym <= 0x5A then
+                k.sym + 32
+
+            else
+                k.sym
+    in
+    if k.sym == 0xFF51 then
+        -- Left
+        if ctrl then
+            moved (wordLeft e.chars e.caret)
+
+        else if not shift && sel.from /= sel.to then
+            moved sel.from
+
+        else
+            moved (max 0 (e.caret - 1))
+
+    else if k.sym == 0xFF53 then
+        -- Right
+        if ctrl then
+            moved (wordRight e.chars e.caret)
+
+        else if not shift && sel.from /= sel.to then
+            moved sel.to
+
+        else
+            moved (min n (e.caret + 1))
+
+    else if k.sym == 0xFF50 then
+        moved 0
+
+    else if k.sym == 0xFF57 then
+        moved n
+
+    else if k.sym == 0xFF08 then
+        -- Backspace
+        if sel.from /= sel.to then
+            Edited (replaceSelection "" e)
+
+        else if ctrl then
+            Edited (cut (wordLeft e.chars e.caret) e.caret e)
+
+        else if e.caret > 0 then
+            Edited (cut (e.caret - 1) e.caret e)
+
+        else
+            Edited e
+
+    else if k.sym == 0xFFFF then
+        -- Delete
+        if sel.from /= sel.to then
+            Edited (replaceSelection "" e)
+
+        else if ctrl then
+            Edited (cut e.caret (wordRight e.chars e.caret) e)
+
+        else if e.caret < n then
+            Edited (cut e.caret (e.caret + 1) e)
+
+        else
+            Edited e
+
+    else if k.sym == 0xFF63 then
+        -- Insert: Shift pastes, Ctrl copies, as Windows' boxes and xterm take them
+        if shift then
+            PasteAsked
+
+        else if ctrl then
+            Copied { edit = e, text = selected e }
+
+        else
+            NotMine
+
+    else if ctrl && not alt then
+        if letter == 0x61 then
+            Edited { e | anchor = 0, caret = n }
+
+        else if letter == 0x63 then
+            Copied { edit = e, text = selected e }
+
+        else if letter == 0x78 then
+            Copied { edit = replaceSelection "" e, text = selected e }
+
+        else if letter == 0x76 then
+            PasteAsked
+
+        else
+            NotMine
+
+    else if k.text /= "" && not alt && printable k.text then
+        Edited (replaceSelection k.text e)
+
+    else
+        NotMine
+
+
+{-| The selection, its two ends in order. -}
+selection : Edit -> { from : Int, to : Int }
+selection e =
+    { from = min e.caret e.anchor, to = max e.caret e.anchor }
+
+
+{-| The text selected. -}
+selected : Edit -> String
+selected e =
+    let
+        s =
+            selection e
+    in
+    String.fromArray (Array.slice s.from s.to e.chars)
+
+
+{-| The selection replaced by `text` (put in at the caret when nothing is
+selected), the caret after it. -}
+replaceSelection : String -> Edit -> Edit
+replaceSelection text e =
+    let
+        s =
+            selection e
+
+        new =
+            String.toArray text
+
+        at =
+            s.from + Array.length new
+    in
+    { chars = Array.slice 0 s.from e.chars ++ new ++ Array.slice s.to (Array.length e.chars) e.chars, caret = at, anchor = at }
+
+
+{-| A paste made one line: its lines joined by spaces, a last line end
+dropped, a tab a space. -}
+oneLine : String -> String
+oneLine text =
+    String.lines text
+        |> Array.map (\l -> String.replace "\t" " " (String.replace "\u{000D}" "" l))
+        |> dropLastEmpty
+        |> String.join " "
+
+
+dropLastEmpty : Array String -> Array String
+dropLastEmpty ls =
+    if Array.last ls == Just "" then
+        Array.dropLast 1 ls
+
+    else
+        ls
+
+
+cut : Int -> Int -> Edit -> Edit
+cut from to e =
+    { chars = Array.slice 0 from e.chars ++ Array.slice to (Array.length e.chars) e.chars, caret = from, anchor = from }
+
+
+{-| Where a word begins, left of `at`: the separators before it skipped,
+then the word. A word's separators are blanks and what splits a path or
+an address (`/ \ @ : . , ; =`), so Ctrl+Left stops inside
+`user@host:/path`. -}
+wordLeft : Array Char -> Int -> Int
+wordLeft chars at =
+    let
+        skip test i =
+            if i > 0 && test (charAt (i - 1) chars) then
+                skip test (i - 1)
+
+            else
+                i
+    in
+    skip (\c -> not (isSeparator c)) (skip isSeparator at)
+
+
+{-| Where the next word begins, right of `at`: the rest of the word
+skipped, then the separators after it, as Windows' boxes move. -}
+wordRight : Array Char -> Int -> Int
+wordRight chars at =
+    let
+        n =
+            Array.length chars
+
+        skip test i =
+            if i < n && test (charAt i chars) then
+                skip test (i + 1)
+
+            else
+                i
+    in
+    skip isSeparator (skip (\c -> not (isSeparator c)) at)
+
+
+charAt : Int -> Array Char -> Char
+charAt i chars =
+    Maybe.withDefault (meant Reason.OutOfRange ' ') (Array.get i chars)
+
+
+isSeparator : Char -> Bool
+isSeparator c =
+    Array.member c [ ' ', '\t', '/', '\\', '@', ':', '.', ',', ';', '=' ]
+
+
+printable : String -> Bool
+printable text =
+    String.all (\c -> Char.toCode c >= 0x20 && Char.toCode c /= 0x7F) text

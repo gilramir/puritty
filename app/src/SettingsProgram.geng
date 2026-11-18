@@ -490,6 +490,29 @@ one ev s =
                                     meant Reason.OutOfRange Task.succeed pressed
                         )
 
+            else if p.action == 0 && p.button == 2 then
+                -- the paste button: the box under it clicked, then the
+                -- selection pasted into it, as X's programs take it (SG20)
+                let
+                    hit =
+                        Array.findFirst (\b -> p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h) s.hits
+                            |> Maybe.map (\found -> found.value.target)
+                in
+                when hit is
+                    Just t ->
+                        input (SettingsWindow.Hit { target = t, count = 1 }) s
+                            |> Task.andThen
+                                (\after ->
+                                    if after.window.typing /= Nothing || after.window.focus == SettingsWindow.OnSearch then
+                                        Window.paste Window.Primary |> Task.map (\_ -> after)
+
+                                    else
+                                        Task.succeed after
+                                )
+
+                    Nothing ->
+                        meant Reason.OutOfRange Task.succeed s
+
             else if p.action == 0 && (p.button == 4 || p.button == 5) then
                 -- the wheel: a step up or down
                 input
@@ -505,6 +528,10 @@ one ev s =
 
             else
                 Task.succeed s
+
+        Window.Pasted _ ->
+            -- a paste's text as it comes, each piece put in at the caret
+            Window.pasted |> Task.andThen (\text -> input (SettingsWindow.Pasted (Bytes.toStringLossy text)) s)
 
         Window.Close ->
             Task.succeed { s | closed = True }
@@ -586,6 +613,14 @@ effect e s =
 
             else
                 connect (Config.host "" "") [ "shell" ] (Words.message "message.openedLocal") s
+
+        SettingsWindow.Copy text ->
+            -- a box's selection copied (SG20)
+            Window.select Window.Clipboard (Bytes.fromString text) |> Task.map (\_ -> s)
+
+        SettingsWindow.PasteAsked ->
+            -- its text comes as Pasted events (SG20)
+            Window.paste Window.Clipboard |> Task.map (\_ -> s)
 
         SettingsWindow.ForgetRecent recent ->
             when s.stateDir is

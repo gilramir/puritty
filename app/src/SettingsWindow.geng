@@ -57,6 +57,7 @@ import Hosts
 import Reason
 import Recent exposing (Recent(..))
 import Schema exposing (Kind(..), Setting, Value(..))
+import TextEdit
 import Words exposing (Message)
 
 
@@ -67,15 +68,25 @@ type Focus
 
 
 {-| What is being typed into a setting: its text as characters, where the
-caret is among them, the value it had when typing began, and why what is
-there is not a value it takes, if it is not. -}
+caret is among them, the selection's other end (`anchor`, the caret when
+nothing is selected, SG20), the value it had when typing began, why what
+is there is not a value it takes, if it is not, and in quick connect
+which recent connection Up brought back (`recall`, -1 for none). -}
 type alias Typing =
     { chars : Array Char
     , caret : Int
+    , anchor : Int
     , before : Value
     , problem : Maybe Message
     , pick : Int
+    , recall : Int
     }
+
+
+{-| A box typed into anew, holding `chars`, the caret at their end. -}
+fresh : Array Char -> Typing
+fresh chars =
+    { chars = chars, caret = Array.length chars, anchor = Array.length chars, before = Unset, problem = Nothing, pick = -1, recall = -1 }
 
 
 type alias Model =
@@ -125,10 +136,12 @@ type Undo
 
 {-| What the window is told. `Key`'s `sym` is X's keysym, as both
 platforms' `Window` give it, and `mods` its bits: Shift 1, Ctrl 2, Alt 4.
-`Typed` is text an input method committed or a paste. -}
+`Typed` is text an input method committed; `Pasted`, a paste asked by
+`PasteAsked`, its lines joined by spaces (SG20). -}
 type Input
     = Key { sym : Int, mods : Int, text : String }
     | Typed String
+    | Pasted String
     | Hit { target : Target, count : Int }
     | Scroll Int
     | Resized { cols : Int, rows : Int }
@@ -147,10 +160,12 @@ type Target
     | OnReset Int
     | OnSuggestion Int
     | OnChoice Int
+    | OnEdit Int
 
 
 {-| What the window asks of the program: a setting written to the file, or
-the window closed. -}
+the window closed; text copied to the clipboard, or the clipboard's text
+asked for, which comes as `Pasted` (SG20). -}
 type Effect
     = Write { setting : Setting, value : Value }
     | Close
@@ -162,6 +177,8 @@ type Effect
     | Hear { setting : Setting, value : Value }
     | ForgetRecent Recent
     | OpenLocal
+    | Copy String
+    | PasteAsked
 
 
 init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, launcher : Bool } -> Model
@@ -184,7 +201,7 @@ init r =
     , modifiedOnly = False
     , typing =
         if r.launcher then
-            Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }
+            Just (fresh [])
 
         else
             Nothing
@@ -592,6 +609,9 @@ update input m =
         Resized r ->
             done (keepInView { m | cols = r.cols, rows = r.rows })
 
+        Pasted text ->
+            update (Typed (TextEdit.oneLine text)) m
+
         Typed text ->
             when m.typing is
                 Just t ->
@@ -603,7 +623,7 @@ update input m =
                             done (searched (m.search ++ String.toArray text) m)
 
                         else if m.focus == OnRows && inList m && m.row <= 1 then
-                            typed (insert text { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }) m
+                            typed (insert text (fresh [])) m
 
                         else
                             done m
@@ -662,15 +682,32 @@ keyed k m =
 
         Nothing ->
             meant Reason.NotOpen
-                when m.focus is
-                    OnSearch ->
-                        searchKey k m
+                when
+                    (if k.sym == sym.insert && Bitwise.and k.mods 1 /= 0 then
+                        pasteHere m
 
-                    OnPages ->
-                        pagesKey k m
+                     else
+                        Nothing
+                    )
+                is
+                    Just r ->
+                        r
 
-                    OnRows ->
-                        rowsKey k m
+                    Nothing ->
+                        meant Reason.NotKnown (focusKey k m)
+
+
+focusKey : { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+focusKey k m =
+    when m.focus is
+        OnSearch ->
+            searchKey k m
+
+        OnPages ->
+            pagesKey k m
+
+        OnRows ->
+            rowsKey k m
 
 
 done : Model -> { model : Model, effects : Array Effect }
@@ -695,6 +732,8 @@ sym =
     , pageUp = 0xFF55
     , pageDown = 0xFF56
     , space = 0x20
+    , insert = 0xFF63
+    , f2 = 0xFFBF
     }
 
 
@@ -787,7 +826,32 @@ control k m =
 
             else
                 k.sym
+
+        -- an editing key in the box typed into, or a paste where none is
+        -- typed yet (SG20)
+        editing =
+            when m.typing is
+                Just t ->
+                    edited k t m
+
+                Nothing ->
+                    meant Reason.NotOpen
+                        if letter == 0x76 then
+                            pasteHere m
+
+                        else
+                            Nothing
     in
+    when editing is
+        Just r ->
+            r
+
+        Nothing ->
+            meant Reason.NotKnown (controlNotEditing letter k m)
+
+
+controlNotEditing : Int -> { sym : Int, mods : Int, text : String } -> Model -> { model : Model, effects : Array Effect }
+controlNotEditing letter k m =
     if letter == 0x7A then
         undo { m | typing = Nothing }
 
@@ -949,12 +1013,12 @@ rowsKey k m =
 
                 else if inList m && m.row <= 1 && k.text /= "" && k.text /= " " && Bitwise.and k.mods 4 == 0 && printable k.text then
                     -- a key typed on quick connect or a new host begins typing it
-                    quickKey k { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 } { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
+                    quickKey k (fresh []) { m | typing = Just (fresh []), message = Nothing }
 
                 else if (isEnter k.sym || k.sym == sym.space) && inList m then
                     if m.row <= 1 then
                         -- quick connect, or a new host's name
-                        done { m | typing = Just { chars = [], caret = 0, before = Unset, problem = Nothing, pick = -1 }, message = Nothing }
+                        done { m | typing = Just (fresh []), message = Nothing }
 
                     else if m.row == 2 then
                         -- the local shell (SG15)
@@ -979,6 +1043,10 @@ rowsKey k m =
 
                             Nothing ->
                                 meant Reason.OutOfRange done m
+
+                else if k.sym == sym.f2 && inList m && m.row >= 3 then
+                    -- the row's connection into quick connect, to edit (SG20)
+                    editRow m.row m
 
                 else if k.sym == sym.right && inList m then
                     -- a host's form; one of ~/.ssh/config's is saved as a host first
@@ -1234,7 +1302,7 @@ change s m =
                 chars =
                     String.toArray (Schema.toText now)
             in
-            done { m | typing = Just { chars = chars, caret = Array.length chars, before = now, problem = Nothing, pick = -1 }, message = Nothing }
+            done { m | typing = Just { chars = chars, caret = Array.length chars, anchor = Array.length chars, before = now, problem = Nothing, pick = -1, recall = -1 }, message = Nothing }
 
 
 {-| A sound setting's value played as it is chosen (`docs/sounds.md` SN7):
@@ -1447,33 +1515,13 @@ typingKey k t m =
                         Nothing ->
                             meant Reason.NotOpen done { m | typing = Nothing }
 
-    else if k.sym == sym.left then
-        done { m | typing = Just { t | caret = max 0 (t.caret - 1) } }
-
-    else if k.sym == sym.right then
-        done { m | typing = Just { t | caret = min (Array.length t.chars) (t.caret + 1) } }
-
-    else if k.sym == sym.home then
-        done { m | typing = Just { t | caret = 0 } }
-
-    else if k.sym == sym.end then
-        done { m | typing = Just { t | caret = Array.length t.chars } }
-
-    else if k.sym == sym.backspace then
-        if t.caret == 0 then
-            done m
-
-        else
-            typed { t | chars = Array.slice 0 (t.caret - 1) t.chars ++ Array.slice t.caret (Array.length t.chars) t.chars, caret = t.caret - 1 } m
-
-    else if k.sym == sym.delete then
-        typed { t | chars = Array.slice 0 t.caret t.chars ++ Array.slice (t.caret + 1) (Array.length t.chars) t.chars } m
-
-    else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
-        typed (insert k.text t) m
-
     else
-        done m
+        when edited k t m is
+            Just r ->
+                r
+
+            Nothing ->
+                meant Reason.NotKnown (done m)
 
 
 {-| A new host's name typed: on Enter the host is made, where to connect
@@ -1511,12 +1559,15 @@ quickKey k t m =
     let
         text =
             String.trim (String.fromArray t.chars)
-
-        edited chars caret =
-            done { m | typing = Just { t | chars = chars, caret = caret }, message = Nothing }
     in
     if k.sym == sym.escape then
         done { m | typing = Nothing, message = Nothing }
+
+    else if k.sym == sym.up && m.row == 0 && (Array.isEmpty t.chars || t.recall >= 0) then
+        recalled (t.recall + 1) t m
+
+    else if k.sym == sym.down && m.row == 0 && t.recall >= 0 then
+        recalled (t.recall - 1) t m
 
     else if k.sym == sym.down || k.sym == sym.up then
         -- what is typed is left, and the list moved in
@@ -1542,42 +1593,164 @@ quickKey k t m =
             Nothing ->
                 meant Reason.FromOutside done { m | message = Just (Words.message "message.notAnAddress" |> Words.with "text" text) }
 
-    else if k.sym == sym.backspace && t.caret > 0 then
-        edited (Array.slice 0 (t.caret - 1) t.chars ++ Array.slice t.caret (Array.length t.chars) t.chars) (t.caret - 1)
-
-    else if k.sym == sym.left then
-        edited t.chars (max 0 (t.caret - 1))
-
-    else if k.sym == sym.right then
-        edited t.chars (min (Array.length t.chars) (t.caret + 1))
-
-    else if k.sym == sym.home then
-        edited t.chars 0
-
-    else if k.sym == sym.end then
-        edited t.chars (Array.length t.chars)
-
-    else if k.sym == sym.delete && t.caret < Array.length t.chars then
-        edited (Array.slice 0 t.caret t.chars ++ Array.slice (t.caret + 1) (Array.length t.chars) t.chars) t.caret
-
-    else if k.text /= "" && Bitwise.and k.mods 4 == 0 && printable k.text then
-        let
-            i =
-                insert k.text t
-        in
-        edited i.chars i.caret
-
     else
-        done m
+        when edited k t m is
+            Just r ->
+                r
+
+            Nothing ->
+                meant Reason.NotKnown (done m)
 
 
 insert : String -> Typing -> Typing
 insert text t =
     let
-        new =
-            String.toArray text
+        e =
+            TextEdit.replaceSelection text { chars = t.chars, caret = t.caret, anchor = t.anchor }
     in
-    { t | chars = Array.slice 0 t.caret t.chars ++ new ++ Array.slice t.caret (Array.length t.chars) t.chars, caret = t.caret + Array.length new }
+    { t | chars = e.chars, caret = e.caret, anchor = e.anchor }
+
+
+{-| An editing key in the box typed into (SG20), as `TextEdit` takes it:
+the text or the caret moved, what is typed written as `typed` writes it
+when the text changed; a copy or a paste asked of the program. Nothing for
+a key that is not an editing one. -}
+edited : { sym : Int, mods : Int, text : String } -> Typing -> Model -> Maybe { model : Model, effects : Array Effect }
+edited k t m =
+    when TextEdit.key k { chars = t.chars, caret = t.caret, anchor = t.anchor } is
+        TextEdit.Edited e ->
+            Just (afterEdit e t m)
+
+        TextEdit.Copied c ->
+            let
+                r =
+                    afterEdit c.edit t m
+            in
+            Just
+                { r
+                    | effects =
+                        if c.text == "" then
+                            r.effects
+
+                        else
+                            r.effects ++ [ Copy c.text ]
+                }
+
+        TextEdit.PasteAsked ->
+            Just { model = m, effects = [ PasteAsked ] }
+
+        TextEdit.NotMine ->
+            Nothing
+
+
+afterEdit : TextEdit.Edit -> Typing -> Model -> { model : Model, effects : Array Effect }
+afterEdit e t m =
+    let
+        next =
+            { t | chars = e.chars, caret = e.caret, anchor = e.anchor }
+    in
+    if e.chars == t.chars then
+        done { m | typing = Just next }
+
+    else
+        typed { next | recall = -1 } { m | message = Nothing }
+
+
+{-| A paste asked where nothing is typed yet: into the search, or into
+quick connect or a new host's name, which it begins typing. -}
+pasteHere : Model -> Maybe { model : Model, effects : Array Effect }
+pasteHere m =
+    if m.focus == OnSearch then
+        Just { model = m, effects = [ PasteAsked ] }
+
+    else if m.focus == OnRows && inList m && m.row <= 1 then
+        Just { model = { m | typing = Just (fresh []), message = Nothing }, effects = [ PasteAsked ] }
+
+    else
+        Nothing
+
+
+{-| The line quick connect takes for a listed row (SG20): a recent quick
+connection's own; a saved host's address, `user@host:port`, and its
+command; one of ~/.ssh/config's, its name. -}
+rowLine : Model -> { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent } -> String
+rowLine m h =
+    when h.recent is
+        Just r ->
+            recentLine m r
+
+        Nothing ->
+            meant Reason.NotSet
+                if h.own then
+                    savedLine m h.name
+
+                else
+                    h.name
+
+
+recentLine : Model -> Recent -> String
+recentLine m r =
+    when r is
+        Quick text ->
+            text
+
+        Saved name ->
+            savedLine m name
+
+
+savedLine : Model -> String -> String
+savedLine m name =
+    when hostNamed m name is
+        Just h ->
+            Hosts.spec h
+                ++ (when h.command is
+                        Just c ->
+                            " " ++ c
+
+                        Nothing ->
+                            meant Reason.NotSet ""
+                   )
+
+        Nothing ->
+            meant Reason.Gone name
+
+
+{-| A row's connection put into quick connect to be edited, the caret at
+its end, and nothing connected to (F2, or the row's pencil; SG20). -}
+editRow : Int -> Model -> { model : Model, effects : Array Effect }
+editRow i m =
+    when hostAt m i is
+        Just h ->
+            done (keepInView { m | row = 0, focus = OnRows, form = Nothing, typing = Just (fresh (String.toArray (rowLine m h))), message = Nothing })
+
+        Nothing ->
+            meant Reason.OutOfRange done m
+
+
+{-| Up and Down in quick connect while it is empty or holds one brought
+back: the recent connections, newest first, as a shell's history (SG20);
+past the newest, empty again. -}
+recalled : Int -> Typing -> Model -> { model : Model, effects : Array Effect }
+recalled i t m =
+    let
+        lines =
+            Array.map (recentLine m) m.recents
+    in
+    if i < 0 then
+        done { m | typing = Just { t | chars = [], caret = 0, anchor = 0, recall = -1 }, message = Nothing }
+
+    else
+        when Array.get i lines is
+            Just line ->
+                let
+                    f =
+                        fresh (String.toArray line)
+                in
+                done { m | typing = Just { f | recall = i }, message = Nothing }
+
+            Nothing ->
+                -- past the oldest: kept
+                meant Reason.NoMore done m
 
 
 {-| What is typed, written while it is a value the setting takes, so that
@@ -1631,6 +1804,10 @@ hit h m =
     when { target = h.target, typing = m.typing } is
         { target = OnChoice i, typing = _ } ->
             chosen i m
+
+        { target = OnEdit i, typing = _ } ->
+            -- a row's pencil: its connection into quick connect (SG20)
+            editRow i { m | typing = Nothing, choosing = Nothing }
 
         { target = OnSuggestion i, typing = Just t } ->
             typingKey { sym = sym.enter, mods = 0, text = "" } { t | pick = i } m
@@ -1721,6 +1898,9 @@ hitOn h m =
 
         OnChoice _ ->
             done m
+
+        OnEdit i ->
+            editRow i m
 
 
 {-| Whether a setting's row shows it changed, the marker and the reset

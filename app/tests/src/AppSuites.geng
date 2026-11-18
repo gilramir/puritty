@@ -639,6 +639,18 @@ ctrl c =
     SettingsWindow.Key { sym = Char.toCode c, mods = 2, text = "" }
 
 
+{-| A key with modifiers: Shift 1, Ctrl 2. -}
+held : Int -> Int -> SettingsWindow.Input
+held mods sym =
+    SettingsWindow.Key { sym = sym, mods = mods, text = "" }
+
+
+{-| The text typed in the box being typed into, or "(none)". -}
+typedText : SettingsWindow.Model -> String
+typedText m =
+    Maybe.withDefault "(none)" (Maybe.map (\t -> String.fromArray t.chars) m.typing)
+
+
 k =
     { enter = press 0xFF0D, escape = press 0xFF1B, tab = press 0xFF09, down = press 0xFF54, up = press 0xFF52, backspace = press 0xFF08, delete = press 0xFFFF, left = press 0xFF51 }
 
@@ -683,6 +695,12 @@ said effects =
 
                 SettingsWindow.OpenLocal ->
                     "open the local shell"
+
+                SettingsWindow.Copy text ->
+                    "copy " ++ text
+
+                SettingsWindow.PasteAsked ->
+                    "paste"
 
                 SettingsWindow.ForgetRecent r ->
                     "forget "
@@ -1059,6 +1077,76 @@ window =
                     in
                     Expect.equal [ [ "connect to me@h tmux -CC attach" ], [ "connect build-box" ] ]
                         [ (onHostsWith recents False [ k.down, k.down, k.down, k.enter ]).said, (onHostsWith recents False [ k.down, k.down, k.down, k.down, k.enter ]).said ]
+          }
+        , { name = "in quick connect Ctrl+Left moves by a word, Shift+End selects, and what is typed replaces it (SG20)"
+          , test =
+                \_ ->
+                    Expect.equal "me@host tmux new"
+                        (typedText (onHostsWith [] False ([ k.enter ] ++ typeIn "me@host tmux attach" ++ [ held 2 0xFF51, held 1 0xFF57 ] ++ typeIn "new")).model)
+          }
+        , { name = "Ctrl+Backspace deletes a word, Ctrl+Left stops inside an address (SG20)"
+          , test =
+                \_ ->
+                    Expect.equal [ "me@host ", "me@" ]
+                        [ typedText (onHostsWith [] False ([ k.enter ] ++ typeIn "me@host tmux" ++ [ held 2 0xFF08 ])).model
+                        , typedText (onHostsWith [] False ([ k.enter ] ++ typeIn "me@host" ++ [ held 2 0xFF51, held 2 0xFFFF ])).model
+                        ]
+          }
+        , { name = "Ctrl+V and Shift+Insert ask for a paste, and its lines come joined by spaces (SG20)"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            onHostsWith [] False [ ctrl 'v', SettingsWindow.Pasted "me@h\ntmux -CC attach\n" ]
+                    in
+                    Expect.equal { said = [ "paste" ], shifted = [ "paste" ], text = "me@h tmux -CC attach" }
+                        { said = r.said, shifted = (onHostsWith [] False [ k.enter, held 1 0xFF63 ]).said, text = typedText r.model }
+          }
+        , { name = "Ctrl+A then Ctrl+C copies the box's text, Ctrl+X cuts it (SG20)"
+          , test =
+                \_ ->
+                    let
+                        cut =
+                            onHostsWith [] False ([ k.enter ] ++ typeIn "me@h" ++ [ ctrl 'a', ctrl 'x' ])
+                    in
+                    Expect.equal { copied = [ "copy me@h" ], cut = [ "copy me@h" ], left = "" }
+                        { copied = (onHostsWith [] False ([ k.enter ] ++ typeIn "me@h" ++ [ ctrl 'a', ctrl 'c' ])).said, cut = cut.said, left = typedText cut.model }
+          }
+        , { name = "F2 on a recent connection or a saved host puts its line into quick connect, and connects to nothing (SG20)"
+          , test =
+                \_ ->
+                    let
+                        recents =
+                            [ Recent.Quick "me@h tmux -CC attach", Recent.Saved "build-box" ]
+
+                        f2 n =
+                            onHostsWith recents False (Array.repeat n k.down ++ [ press 0xFFBF ])
+
+                        changedOne =
+                            onHostsWith recents False ([ k.down, k.down, k.down, press 0xFFBF, held 2 0xFF08 ] ++ typeIn "main" ++ [ k.enter ])
+                    in
+                    Expect.equal
+                        { quick = { said = [], row = 0, text = "me@h tmux -CC attach" }
+                        , saved = "gilbert@build.example.com:2222 tmux new -A -s main"
+                        , edited = [ "connect to me@h tmux -CC main" ]
+                        }
+                        { quick = { said = (f2 3).said, row = (f2 3).model.row, text = typedText (f2 3).model }
+                        , saved = typedText (f2 4).model
+                        , edited = changedOne.said
+                        }
+          }
+        , { name = "Up in empty quick connect brings back the recent connections, newest first; Down goes back (SG20)"
+          , test =
+                \_ ->
+                    let
+                        recents =
+                            [ Recent.Quick "me@h tmux -CC attach", Recent.Quick "old@h" ]
+
+                        at keys =
+                            typedText (onHostsWith recents False ([ k.enter ] ++ keys)).model
+                    in
+                    Expect.equal [ "me@h tmux -CC attach", "old@h", "old@h", "me@h tmux -CC attach", "" ]
+                        [ at [ k.up ], at [ k.up, k.up ], at [ k.up, k.up, k.up ], at [ k.up, k.up, k.down ], at [ k.up, k.down ] ]
           }
         , { name = "Delete forgets a recent connection, and the saved host stays"
           , test =

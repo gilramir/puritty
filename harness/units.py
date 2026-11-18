@@ -136,8 +136,9 @@ SUITES = [
         # 384 since TM101: leaving copy mode shows the live screen;
         # 390 since TM102: nothing of an ended session comes back;
         # 396 since TM104: the prompt's word keys by word-separators;
-        # 402 since IM18: a pane's image on the canvas, on each
-        402,
+        # 402 since IM18: a pane's image on the canvas, on each;
+        # 408 since SG20: the host list's boxes edited, F2 and Up's recall
+        408,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

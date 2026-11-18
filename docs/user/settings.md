@@ -129,7 +129,14 @@ a host (on Windows, PowerShell). It offers the connections you made last first (
 many as `[connections] recent` says; 0 for none): Enter makes one again,
 Delete forgets it, and Right saves a quick one as a host. In quick connect,
 anything after a space is a command to run there, as with `ssh`:
-`gilbert@build tmux -CC attach`. The same recent connections are in the
+`gilbert@build tmux -CC attach`. To change a connection before making
+it, choose its row and press F2 (or click its pencil): its line goes into
+quick connect, where you can edit it and press Enter. Up in an empty quick
+connect brings back your recent connections one at a time, as a shell's
+history does. The boxes take Ctrl+V and Shift+Insert to paste (a paste of
+several lines comes as one, joined by spaces), Ctrl+C and Ctrl+X to copy
+and cut, Ctrl+A to select everything, Shift with the arrows to select,
+and Ctrl with the arrows and Backspace to move and delete by a word. The same recent connections are in the
 menu (Ctrl and the right button, and on Windows the title bar's menu), as
 "Connect to …" before your saved hosts, and on Windows in the taskbar's
 jump list: right-click puritty's button, under **Recent connections**. If
