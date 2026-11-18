@@ -89,7 +89,7 @@ SUITES = [
     # erases over an image drawn into the cells, nine; 153 since IT4: JPEG,
     # seven, and GIF, five; 161 since IT6: Exif orientation, four,
     # progressive, four, the progressive "says so" made a lossless one
-    Suite("vt", 161, runs_of("vt/tests")),
+    Suite("vt", 163, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

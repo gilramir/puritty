@@ -894,6 +894,133 @@ screen, which is the measurement that matters, stays at the speed it had
 before images; a Sixel or iTerm2 picture on the screen keeps text slow
 until it scrolls away, as IM27 left it.
 
+## IM29 · Real programs, in tmux and on Windows (2026-11-18)
+
+Before 0.2.0 (`releasing.md` RL11): pictures from real programs, in a
+shell, in plain tmux and under `tmux -CC`, on Linux and on Windows.
+
+**How.** `bench/images/programs.py` runs puritty on Xvfb in each mode and
+types into it (tmux's `send-keys`, or xdotool in a shell): gnuplot 6.0.5
+(`sixelgd`, `kittycairo`), chafa 1.18 and timg 1.6 left to choose and told
+each protocol, and yazi 26.9's preview, moved from one picture to the
+next. With tmux the pane is split beside a picture, narrowed and zoomed;
+in every mode the window is made small and large again, and `clear` run.
+Each frame (PURITTY_SHOT) is counted for the test pictures' red, green or
+blue, which no text has. `bench/images/windows.py` does the same on
+Windows: `puritty.exe` on beelink1 connects with its built-in ssh client
+to a tmux on nene, plain and `-CC`, and nene types into that tmux.
+
+**Measured**: Linux 48 checks, Windows 15, all pass, with what tmux does
+held as tmux's (below). puritty ran through every step, in every mode.
+
+| | shell | plain tmux 3.8 | `tmux -CC` |
+|---|---|---|---|
+| gnuplot Sixel, chafa, timg, a JPEG | drawn | drawn | drawn |
+| gnuplot Kitty, chafa Kitty and iTerm2 | drawn | dropped by tmux | drawn |
+| the pane split beside a picture | | gone: tmux frees a resized pane's images (3.8 `screen.c:381`) | still drawn |
+| the window made small and large | drawn | | drawn |
+| yazi's preview, moved on | drawn | drawn (Sixel) | none (finding 2) |
+| Windows, built-in ssh client | | as Linux | as Linux |
+
+**The padding on Windows** (R20) shows in the frames: the text, the
+pictures and tmux's status line sit 13 pixels in, 8 points at 120 dpi.
+Windows' PURITTY_SHOT wrote the cells from the frame's top left, where
+WM_PAINT puts them at (pad, pad), so it showed no padding; `write_shot`
+now places them as the window does.
+
+**Findings, for Gilbert** (none changed yet):
+
+1. **Under `-CC`, pictures come out too large** for the cells tmux keeps
+   for them. A control client never gives tmux a size in pixels, so tmux
+   keeps its default cell, 16 by 32, and answers programs with it
+   (`CSI 14t`, the pane's `TIOCGWINSZ`). chafa's 20 by 6 cells became
+   320 by 192 pixels, which puritty drew pixel for pixel in its 9 by 17
+   cells: 61,350 pixels against 17,340 in a shell, 1.8 times wider and
+   taller. tmux moves its cursor by its own cells, so the text after a
+   picture lands on its lower part, which IM23 then erases: gnuplot's
+   plots with `scroll` came out cut and in strips. tmux says the cell it
+   assumes (`#{window_cell_width}`, `#{window_cell_height}`, 3.8
+   `format.c:3158`); a pane's core could take a picture's pixels in
+   those cells and draw it scaled into its own, as plain tmux does for
+   Sixel (`sixel_scale`). That keeps puritty's rows and tmux's together.
+2. **Under `-CC`, questions in tmux's passthrough get no answer.** yazi
+   asks the terminal through `ESC P tmux;` (its version, Kitty's probe,
+   Sixel); in plain tmux they reach puritty, which answers ("puritty
+   0.1.1", Kitty and Sixel: yazi chooses Sixel), but a `-CC` pane's
+   terminal answers nothing (`TmuxMode`: "tmux answered their programs
+   already"), and passthrough is the one case tmux does not. yazi then
+   finds no graphics and shows no preview, and is slow to start and to
+   quit, waiting out its questions. puritty could answer only what came
+   inside the envelope, sending it into the pane (`send-keys -H`).
+3. **RV3 with real programs**: under `-CC`, gnuplot's and chafa's Kitty
+   pictures stayed after `clear` and piled up over what followed.
+   Decided and done in IM30.
+
+**tmux's own, held as such**: plain tmux 3.8 drops a Kitty or iTerm2
+picture not wrapped for passthrough, frees a pane's pictures when the
+pane is resized, and scales a Sixel picture from the window's pixel size
+to the client's; a session made detached keeps 16 by 32 until a client
+resizes it, so the harness's plain-tmux pictures are smaller than a
+shell's (11,799 pixels against 41,131).
+
+**The website's shot.** `programs.py --showcase` draws gnuplot's plots at
+144 dpi in Fira Code and Ghostty's colors: in a shell, by Kitty's
+protocol and by Sixel, and in two `-CC` panes (which finding 1 spoils
+for now). gnuplot's `scroll` puts each plot under its command, where its
+default, `anchor`, sends `CSI H` first and draws at the top left.
+`docs/images/gnuplot.png` is the shell's, by Kitty's protocol, for the
+home page with 0.2.0; the Sixel one shows the edge of its background,
+Sixel's 256 colors not quite Ghostty's.
+
+## IM30 · In tmux's panes, `clear` takes Kitty's pictures (2026-11-18)
+
+*Gilbert, 2026-11-18*, on `review.md` RV3 after IM29: "Clear should
+remove them. I think that's the more logical approach."
+
+**What it does.** A pane's terminal under `-CC` draws Kitty's pictures
+into its cells, as every terminal draws Sixel's and iTerm2's (IM23): a
+cell written or erased loses the picture there, ICH, DCH, IL and DL move
+or take it, and tmux's `clear` (ED 0 from the top left) takes it whole.
+An embedder setting, `kittyErases` (`Vt.withKittyErases`), marks each
+Kitty image loaded as `textErases`; `TmuxMode.celledFrom` turns it on for
+every pane. puritty's own window and the oracle's terminal keep Ghostty's
+rule, where a Kitty picture stays under text and only ED 2 or a deletion
+takes it, so the replay corpus is unchanged.
+
+**Why the cells' way and not tmux's.** tmux (master, which has Kitty's
+pictures) frees a whole picture when any cell of it is written; the
+panes already treat Sixel's and iTerm2's pictures by the cell, so a
+pane's three kinds now behave alike, and `clear`, which is what was
+asked, takes each of them whole either way.
+
+**The cost**: a pane's Kitty picture on the screen sends text a
+character at a time, as a Sixel picture does (IM27, IM28), in that pane
+only.
+
+**Checked**: two vt tests (text over a pane's Kitty picture takes those
+cells; ED 0 from the top left takes it), 163 in all; and
+`bench/images/programs.py --mode cc`, whose `clear` after gnuplot's and
+chafa's Kitty pictures is now held to leave none. chafa's goes; when
+gnuplot's picture was drawn twice (IM31) the second stays, and the check
+fails on it, as it should until IM31 is found.
+
+## IM31 · Under `-CC`, gnuplot's Kitty picture sometimes drawn twice (2026-11-18, open)
+
+Found by IM29's runs: in a `-CC` pane, `gnuplot` with `kittycairo` drew
+its plot twice in one run of three (84,160 green pixels against 41,554),
+the second copy below the prompt; after `clear` the second stays, moved
+down with the scrolled rows. It was so before IM30.
+
+**What it is not.** gnuplot sends one picture (`pipe-pane` of its
+output: `CSI 0 J`, `CSI H`, one `a=T` APC, `CSI 0 J`), and `cat` of
+those bytes into the same pane never doubled; a shell never doubled; with
+the diagnostic log on it did not happen in the runs made. So it hangs on
+timing, and on gnuplot's own writes (several, a tty's) rather than the
+bytes. That it moves with scrolled rows suggests the window's copy of
+scrolled pixels (`renderer.md`) carrying a picture's pixels where the
+canvas no longer has one; not yet shown. To be looked at next, before
+0.2.0.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
@@ -924,7 +1051,9 @@ until the first protocol works; then it moves to `docs/user/images.md`.
 > **Text over a picture.** Text written over a Sixel or iTerm2 picture
 > takes the picture's place in those cells, and erasing cells (`clear`,
 > deleting a line) erases the picture there too, as in xterm. A Kitty
-> picture stays until the program removes it or the screen is cleared.
+> picture stays until the program removes it or the screen is cleared;
+> in tmux's panes (`tmux -CC`) it behaves as a Sixel picture does, so
+> tmux's `clear` takes it.
 >
 > **Limits.** A remote program can't make puritty open your files: it
 > must send the picture itself. Very large pictures are refused, and

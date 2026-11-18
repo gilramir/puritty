@@ -76,3 +76,7 @@ erased, a line inserted or deleted through it, frees the image, and RI, a
 scroll down and a clear free them all. Or Kitty images in a pane could
 take IM23's per-cell holes, as Sixel's do. Either is a day's work; left
 until there is a call.
+
+**Decided, 2026-11-18**: Gilbert, after gnuplot's and chafa's pictures
+piled up under `-CC` (`images.md` IM29): "Clear should remove them."
+Done as the per-cell way, in tmux's panes only (`images.md` IM30).

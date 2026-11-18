@@ -1814,6 +1814,11 @@ geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
 static int write_shot(const char *path) {
     RECT client = {0, 0, 0, 0};
     if (win) GetClientRect(win, &client);
+    /* the cells where paint_window puts them, at the padding's (gap,
+     * gap), the rest the margin's color, as the window shows them */
+    EnterCriticalSection(&queue_lock);
+    int gap = pad;
+    LeaveCriticalSection(&queue_lock);
     EnterCriticalSection(&paint);
     int w = client.right > 0 ? client.right : pw, h = client.bottom > 0 ? client.bottom : ph;
     FILE *o = fopen(path, "wb");
@@ -1825,7 +1830,8 @@ static int write_shot(const char *path) {
     uint8_t *line = malloc((size_t) w * 3);
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            uint32_t p = x < pw && y < ph ? pixels[(size_t) y * pw + x] : margin_rgb;
+            int cx = x - gap, cy = y - gap;
+            uint32_t p = cx >= 0 && cy >= 0 && cx < pw && cy < ph ? pixels[(size_t) cy * pw + cx] : margin_rgb;
             line[x * 3] = (uint8_t) (p >> 16);
             line[x * 3 + 1] = (uint8_t) (p >> 8);
             line[x * 3 + 2] = (uint8_t) p;
