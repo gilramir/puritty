@@ -60,11 +60,21 @@ import Vt.Width as Width
 
 
 {-| The terminal fed one read's bytes. -}
-feed : Bytes -> (taken t : Term) -> Term
-feed bytes t =
+feed : Bytes -> (taken t0 : Term) -> Term
+feed bytes t0 =
     let
         n =
             Bytes.length bytes
+
+        -- `plain` and the kind of scroll found again once a read where
+        -- `plain` is off: the last image gone by a scroll or an erase
+        -- leaves them as they were for images until then (IM26)
+        t =
+            if t0.plain then
+                t0
+
+            else
+                withScroll (withPlain t0)
     in
     if t.ps == psGround then
         resume bytes n 0 t
@@ -121,6 +131,9 @@ ground bytes n i t =
                 byteAt bytes i
         in
         if b >= 0x20 && b < 0x7F then
+            -- a run of text at once; not with an image on the screen,
+            -- which `plain` says: then a character at a time, which
+            -- `printGraphic` tells the images of (IM26)
             if t.plain then
                 printAscii bytes n i b t
 
@@ -273,30 +286,21 @@ printAscii bytes n i b t0 =
             -- or a wide character's head in column 1 written over, which
             -- one wrapped there under a left margin has (§VC18)
             t.heads && t.x <= 1 && t.y > 0 && (cellWide (peekCell o 0 s) == wideHead || (x > 1 && cols > 2 && cellWide (peekCell o 1 s) == wideHead))
-
-        -- read before the update: a read of it after makes it copy (IM24)
-        y0 =
-            t.y
-
-        x0 =
-            t.x
     in
     ground bytes
         n
         end
-        (overwrittenRow y0 x0 (min cols x - 1) <|
-            { t
-                | screen = unheadIf stale t.y { s | cells = asciiRow bytes i end t.pen t.erase cols o t.x x b s.cells }
-                , x = min (cols - 1) x
-                , wrapNext = x >= cols
-                , lastPoint =
-                    if end == i + 1 then
-                        b
+        { t
+            | screen = unheadIf stale t.y { s | cells = asciiRow bytes i end t.pen t.erase cols o t.x x b s.cells }
+            , x = min (cols - 1) x
+            , wrapNext = x >= cols
+            , lastPoint =
+                if end == i + 1 then
+                    b
 
-                    else
-                        byteAt bytes (end - 1)
-            }
-        )
+                else
+                    byteAt bytes (end - 1)
+        }
 
 
 {-| A run of UTF-8, and the printable ASCII inside it, written to the
@@ -362,29 +366,16 @@ printUnicode bytes n i b t =
 
             stale =
                 headAt0 && (t.x == 1 || cellWide (Maybe.withDefault 0 (Builder.get o tidy)) /= wideHead) || headAt1 && r.x > 1 && cellWide (Maybe.withDefault 0 (Builder.get (o + 1) tidy)) == 0
-
-            -- read before the update: a read of it after makes it copy
-            -- (IM24)
-            y0 =
-                t.y
-
-            x0 =
-                t.x
-
-            last =
-                min t.cols r.x - 1
         in
         ground bytes
             n
             r.next
-            (overwrittenRow y0 x0 last <|
-                { t
-                    | screen = unheadIf stale t.y { s | cells = extendTo o t.cols r.x tidy }
-                    , x = min (t.cols - 1) r.x
-                    , wrapNext = r.x >= t.cols
-                    , lastPoint = r.last
-                }
-            )
+            { t
+                | screen = unheadIf stale t.y { s | cells = extendTo o t.cols r.x tidy }
+                , x = min (t.cols - 1) r.x
+                , wrapNext = r.x >= t.cols
+                , lastPoint = r.last
+            }
 
 
 {-| A UTF-8 sequence's lead byte, in the ground state. A byte that cannot
@@ -1206,15 +1197,3 @@ csiIgnore bytes n i t =
 
         else
             csiIgnore bytes n (i + 1) t
-
-
-{-| Columns `left` to `right` of row `y` written: an image drawn into the
-cells loses them (`docs/images.md` IM23). The test for placements is
-here, so that a run of text with none on the screen costs no call. -}
-overwrittenRow : Int -> Int -> Int -> (taken t : Term) -> Term
-overwrittenRow y left right t =
-    if Array.isEmpty t.images.shown.placements then
-        t
-
-    else
-        Kitty.overwritten y y left right t

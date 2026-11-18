@@ -749,6 +749,58 @@ again, 8 minutes, 142 inputs, 0 findings. The resize inputs of
 **Not done**: the alternate screen shown during the resize, whose main
 screen's placements, in the store's other slot, keep their anchors.
 
+## IM26 · No image on the screen, no cost (2026-11-17)
+
+Gilbert, 2026-11-17: slower with an image on the screen is understood, but
+with none it is to be as fast as before images. After IM24 the throughput
+inputs were still 0 to 6.4% over the build before images (2bc73b0) in
+instructions.
+
+**What it was**, found by taking the image code out of a copy one piece
+at a time and counting (`perf stat -e instructions:u`, `setarch -R`):
+
+- All of it was IM23's test in Parse's two fast paths for text
+  (`printAscii`, `printUnicode`), and the extra test in `lineFeed` that
+  IM14 added. The tests in `printGraphic`, in the erases and elsewhere cost
+  nothing measurable.
+- Not the work of the test, nor the copies IM24 removed: testing a Bool of
+  the term in its place cost the same, and so did a branch to the image
+  code that never ran. `ground` runs once a run of text, so anything at all
+  it does more costs a few instructions a run, 3% of `vte-light_cells`,
+  whose runs are short; and a call out of the fast path with the term,
+  even one never taken, made `vte-scrolling_top_region` cost more again.
+
+**What does it now**: the tests the hot loops already make.
+
+- `plain`, which `ground` tests before it takes a run of text, now also
+  says there are no placements (`Vt.Cursor.withPlain`). With an image on
+  the screen, text goes a character at a time, by `printGraphic`, which
+  tells the images of each cell it writes (IM23). The fast paths are as
+  they were before images, with no image code in them.
+- `scroll`, which `lineFeed` tests at the region's bottom, is no longer
+  `scrollRegion` while there are placements (`withScroll`): a region's
+  line feed with an image takes the other way, which moves the placements
+  (`feedImaged`); without one, `lineFeed`'s three branches are as before.
+- Both are found again where placements come and go: `Kitty.withStore`,
+  which every placement added goes through, and the screens' swap; and
+  once a read where `plain` is off (`Parse.feed`), for the last image gone
+  by a scroll, a clip or an erase.
+
+**Measured**, instructions in millions, the build before images, the
+build before this change, and now:
+
+| input | before images | before this | now |
+|---|---|---|---|
+| vte-light_cells | 261.4 | 278.1 | 261.4 |
+| vte-scrolling_top_region | 1,035.8 | 1,089.2 | 1,035.8 |
+| vte-scrolling | 1,417.7 | 1,449.9 | 1,418.0 |
+| ls | 1,390.1 | 1,440.2 | 1,390.3 |
+| vte-scrolling_fullscreen | 345.6 | 362.0 | 345.6 |
+| cup | 1,645.1 | 1,671.9 | 1,645.7 |
+
+The cost moved to text written while an image is on the screen, a
+character at a time, which is what was asked.
+
 ## IM10 · The user guide, drafted
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
