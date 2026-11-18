@@ -17,8 +17,15 @@ stands, and what comes next.
   modal panes included, are drawn as puritty's own, with tmux's windows as
   tabs, the mouse on panes, scrollback and selection in each pane, and
   tmux's own screens (its prompt, menus, session tree, copy mode and
-  options editor) drawn by puritty, in its look or tmux's. It adapts to
-  each tmux from 2.7 to 3.8, and is checked against every release between.
+  options editor) drawn by puritty, in its look or tmux's, with vi keys
+  and tmux's own history at its prompt, completion of commands, options
+  and targets, the mouse in its session tree and options editor, and
+  tmux's `bell-action` and `visual-bell`. It adapts to each tmux from 2.7
+  to 3.8, is checked against every release between, and is tested with
+  the server killed, the client cut off and other ways a session goes
+  wrong.
+- **Inline images**: Sixel, Kitty graphics (Unicode placeholders too) and
+  iTerm2 images, in a shell, through tmux and in the panes of `tmux -CC`.
 - **Tabs**: colors of your own or per host, renaming, reopening a closed
   tab, and your tabs opened again when puritty starts.
 - **Search** in the scrollback.
@@ -28,10 +35,11 @@ stands, and what comes next.
   by every open window at once: fonts, color schemes, your own keys,
   bells and key sounds.
 - **Hosts**: a host list with quick connect, hosts kept in the settings and
-  read from `~/.ssh/config`, and your recent connections in the menus and
-  Windows' taskbar.
+  read from `~/.ssh/config` and PuTTY's saved sessions, and your recent
+  connections in the menus and Windows' taskbar.
 - **Windows**: the same terminal, with the ssh client built in, jump hosts,
-  keys and agents, and a changed host key asked about.
+  keys and agents, a changed host key asked about, and passwords and
+  passphrases remembered in Windows' Credential Manager when you ask.
 - **The diagnostic log**, to see what a program sent when something looks
   wrong.
 - **Builds** for Windows, RHEL 8 (which also runs on any later x86-64
@@ -41,14 +49,12 @@ stands, and what comes next.
 
 Not in a fixed order:
 
-- **tmux control mode, the last of it**: vi keys at tmux's prompt, tmux's
-  own prompt history, completing options and targets, the mouse in tmux's
-  session tree and options editor, and tmux's `bell-action` and
-  `visual-bell`.
-- **Inline images**: Sixel, Kitty graphics and iTerm2 images.
 - **A scrollbar.**
+- **A native Wayland window**, in place of running through Xwayland on a
+  Wayland desktop.
+- **GPU drawing** for local use, with OpenGL ES; the X11 renderer stays
+  for remote X11 and machines with no GPU.
 - **Tabs**: dragging to reorder them, and typing into several at once.
-- **A signed Windows release**, and passwords kept in the Windows
-  credential store.
+- **A signed Windows release**: 0.2.0 is the first.
 - **1.0.0**, with the first alpha of [Geng](https://geng-lang.org), the
   language puritty is written in.

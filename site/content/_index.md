@@ -49,21 +49,26 @@ alt = "puritty in Ghostty's colors: the command gnuplot seashell.gp, under it a 
 script = "seashell.gp"
 
 [[extra.features]]
-kicker = "Remote X11"
-title = "Fast when it runs over remote X11"
+kicker = "Local and remote X11"
+title = "Fast over remote X11, and at home on your desktop"
 body = """
 GPU terminals draw every frame with OpenGL. Run one on a remote host and
 the whole window crosses the network as pixels, about **4.9 MB a frame**.
 
-puritty has a renderer of its own for X11. It sends the X server text and
-small instructions, only what changed, and moves scrolled text with one
-copy on the server. Measured over `ssh -X`:
+puritty draws with a renderer of its own for X11. It sends the X server
+text and small instructions, only what changed, and moves scrolled text
+with one copy on the server. It's the same renderer on your own desktop
+and over `ssh -X`. Measured over `ssh -X`:
 
 | what you're doing | what crosses the network |
 |---|---|
 | scrolling in vim | about 500 bytes a line |
 | `tail -f` on a log | about 420 bytes a line |
 | `htop` updating | about 8–10 KB a second |
+
+On a Wayland desktop, such as GNOME or KDE Plasma, puritty runs through
+Xwayland, as X11 programs do there. A native Wayland window and GPU drawing
+for local use are on the [roadmap](@/roadmap.md).
 """
 
 [[extra.features]]
