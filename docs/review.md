@@ -80,3 +80,21 @@ until there is a call.
 **Decided, 2026-11-18**: Gilbert, after gnuplot's and chafa's pictures
 piled up under `-CC` (`images.md` IM29): "Clear should remove them."
 Done as the per-cell way, in tmux's panes only (`images.md` IM30).
+
+## RV4 · A passphrase offered to the ssh agent (2026-11-18)
+
+Found building remembered passphrases (`saved-secrets.md` PW8): PW7
+chose "both, plus agent", a key's passphrase remembered and the key also
+offered to OpenSSH's agent or Pageant. Adding a key to an agent
+(`SSH2_AGENTC_ADD_IDENTITY`) sends its private numbers over the agent's
+pipe, which is written from Geng (`Ssh.Agent`), while SC16 keeps a
+private key in C, never as Geng bytes.
+
+**To build it**: either the message passes through Geng once, as the
+session keys do (accepted by SC12 question 7), or C writes it to the
+pipe itself, a bigger change. Then a key in the passphrase box ("A: add
+to the agent"), and the agent's answer said.
+
+**Left, 2026-11-18**: Gilbert, "Let's skip this feature for now. We will
+revisit later." The passphrase is remembered in Credential Manager
+alone.

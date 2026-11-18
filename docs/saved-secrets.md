@@ -216,5 +216,5 @@ OpenSSH's `SSH2_AGENTC_ADD_IDENTITY` carries the key's private numbers,
 and SC16 keeps a private key in C, never as Geng bytes, while the agent's
 pipe is written from Geng (`Ssh.Agent`, `Os`). So either the message
 passes through Geng once, as the session keys do (accepted by SC12
-question 7), or C writes it to the pipe itself, a bigger change. For
-Gilbert.
+question 7), or C writes it to the pipe itself, a bigger change. Gilbert, 2026-11-18: skipped for now, to
+revisit later (`review.md` RV4).
