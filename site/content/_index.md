@@ -30,6 +30,25 @@ image = "tmux-panes.png"
 alt = "puritty attached to tmux 3.8 with tmux -CC, in Ghostty's colors: two panes side by side, English in bold, italic, curly, dotted and dashed underlines and 24-bit color on the left, a Korean poem and table on the right, a floating pane of git history over both, and tmux's windows as tabs"
 
 [[extra.features]]
+kicker = "Pictures"
+title = "Plots and pictures, right in the terminal"
+body = """
+Programs draw pictures where they put them, in the three ways
+terminals know: **Sixel**, **Kitty's graphics** (its Unicode
+placeholders too) and **iTerm2's images** (PNG, JPEG and GIF).
+gnuplot, chafa, timg, yazi's previews and ratatui-image work as they do
+in the terminals they were written for.
+
+They work in a plain shell, through tmux, and in the panes of
+`tmux -CC`, where each pane keeps its own pictures as you split, zoom
+and resize.
+And on Windows, through puritty's own ssh client.
+"""
+image = "seashell.png"
+alt = "puritty in Ghostty's colors: the command gnuplot seashell.gp, under it a lit spiral seashell drawn by gnuplot in purple, red, orange and yellow, and the prompt below it"
+script = "seashell.gp"
+
+[[extra.features]]
 kicker = "Remote X11"
 title = "Fast when it runs over remote X11"
 body = """

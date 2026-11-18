@@ -1243,3 +1243,31 @@ until the first protocol works; then it moves to `docs/user/images.md`.
 > must send the picture itself. Very large pictures are refused, and
 > when pictures together use more memory than the limit in the settings
 > (Advanced), the oldest ones no longer on screen go first.
+
+## IM36 · The home page's picture: gnuplot's seashell (2026-11-18)
+
+Gilbert, 2026-11-18: the home page should show the new graphics, with
+gnuplot for one picture, and the script offered too.
+
+- **The picture** (`docs/images/seashell.png`, copied to the site by
+  `site/sync.py`): a seashell, a parametric surface lit by `pm3d`
+  (`depthorder`, `lighting`) in a sunset palette, drawn by gnuplot 6.0.5's
+  `kittycairo` in puritty on Xvfb, under the command that drew it, at
+  144 dpi in Fira Code and Ghostty's colors, as the site's other shots
+  are. `bench/images/programs.py --seashell` draws it again.
+- **The script** (`site/static/plots/seashell.gp`) is the file readers
+  download, and the shot is drawn from it, its `set term` line alone made
+  the shot's size, so the two cannot drift apart. It is commented, its
+  lines fit the page's box (68 characters at most, gnuplot's `\` for the
+  long ones; the same picture as before they were broken), and it has a
+  commented `sixelgd` line for a gnuplot built without cairo. Both
+  terminal lines were run.
+- **On the page**: the second feature, "Plots and pictures, right in the
+  terminal", with "Show the script (seashell.gp)" folded under the
+  picture (`<details>`, no script). The template reads the file into the
+  fold (`load_data`) and links to it. A feature names one with
+  `script`. The picture's column no longer widens when the fold opens
+  (`min-width: 0`), and with it open the text stays at the top. Looked at
+  in headless Chromium, dark and light, and at a phone's width.
+- The features after it changed sides: the template alternates them by
+  their place, and this one is second (Gilbert: fine).

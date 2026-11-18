@@ -21,6 +21,7 @@ Stops what it started.
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -102,7 +103,7 @@ class Run:
 
     def __init__(self, a, mode, path, dpi=96, config=None, columns=100, rows=30, size="1600x1000"):
         self.a, self.mode = a, mode
-        self.bare = mode in ("shell", "showcase-shell")   # a shell, no tmux
+        self.bare = mode in ("shell", "showcase-shell", "seashell")   # a shell, no tmux
         self.work = WORK / mode
         if self.work.exists():
             shutil.rmtree(self.work)
@@ -131,6 +132,7 @@ class Run:
             time.sleep(0.5)
         command = {"shell": ["bash", "--norc", "--noprofile"],
                    "showcase-shell": ["bash", "--norc", "--noprofile"],
+                   "seashell": ["bash", "--norc", "--noprofile"],
                    "plain": [*self.tmux, "attach", "-t", "img"],
                    "cc": [*self.tmux, "-CC", "attach", "-t", "img"],
                    "showcase": [*self.tmux, "-CC", "attach", "-t", "img"]}[self.mode]
@@ -333,6 +335,34 @@ plot [0:20] exp(-x/8)*sin(2*x) w l lw 2 lc rgb '#61afef' t 'damped', \\
      0.6*cos(x)*exp(-x/12) w filledcurves y1=0 fs transparent solid 0.35 lc rgb '#c678dd' t 'cos'
 """
 
+# the home page's picture (docs/images.md IM36): the script the site
+# offers (site/static/plots/seashell.gp), its size made the shot's
+SEASHELL = ROOT / "site" / "static" / "plots" / "seashell.gp"
+
+
+def seashell(a, path):
+    """The home page's picture: the seashell drawn by gnuplot by Kitty's
+    protocol in a shell, under the command that drew it, at 144 dpi in
+    Fira Code and Ghostty's colors."""
+    config = ("[window]\ncolumns = 120\nrows = 34\npadding = 8\n\n[font]\nfamily = \"Fira Code\"\nsize = 11\n\n"
+              "[colors]\nscheme = \"ghostty\"\n")
+    prompt = ("G=$(printf '\\033[32m') B=$(printf '\\033[34m') N=$(printf '\\033[0m'); "
+              "PS1=\"${G}you@linux${N}:${B}~/plots${N}\\$ \"")
+    r = Run(a, "seashell", path, dpi=144, config=config, size="2400x1500")
+    plots = r.work / "plots"
+    plots.mkdir()
+    try:
+        r.start()
+        script = SEASHELL.read_text()
+        # the term line and its continuations, made the shot's size
+        script = re.sub(r"(?m)^set term kittycairo(?:.*\\\n)*.*$", "set term kittycairo scroll size 1380,660 background rgb '#282c34'", script)
+        (plots / "seashell.gp").write_text(script)
+        r.run(f"{prompt}; cd {plots}; clear", wait=0.8)
+        r.run("gnuplot seashell.gp", wait=10)
+        r.snap("seashell")
+    finally:
+        r.stop()
+
 
 def showcase(a, path):
     """The website's shots, at 144 dpi in Fira Code and Ghostty's colors:
@@ -382,11 +412,15 @@ def main():
     ap.add_argument("--tmux", default="tmux")
     ap.add_argument("--mode", default="all", choices=["shell", "plain", "cc", "all"])
     ap.add_argument("--showcase", action="store_true")
+    ap.add_argument("--seashell", action="store_true", help="the home page's picture alone")
     a = ap.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
     path = ":".join([tool("gnuplot"), tool("yazi"), tool("file")])
     if a.showcase:
         showcase(a, path)
+        return
+    if a.seashell:
+        seashell(a, path)
         return
     for mode in (["shell", "plain", "cc"] if a.mode == "all" else [a.mode]):
         programs(a, mode, path)
