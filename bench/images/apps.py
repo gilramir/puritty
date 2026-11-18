@@ -8,11 +8,12 @@ snacks.nvim shows a picture file opened in neovim, and ratatui-image's
 demo shows one in five panels; each is counted by the test picture's blue.
 The demo says the way it chose (`Protocol: Sixel`, `Kitty`, `Iterm2`, or
 `Halfblocks`, its text fallback), read from the pane with tmux's
-capture-pane. Both draw Kitty's pictures with Unicode placeholders, which
-puritty lacks (IM34): snacks.nvim is told it runs in WezTerm, which it
-gives direct placements, and the demo is run again with Sixel and iTerm2
-forced, by `ratatui-demo.patch` (DEMO_PROTOCOL, and DEMO_IMAGE for the
-picture shown).
+capture-pane. Both draw Kitty's pictures with Unicode placeholders (IM34,
+IM35): snacks.nvim knows terminals by name and puritty is not one, so it is
+told it runs in WezTerm (direct placements) and then in Ghostty
+(placeholders); the demo shows its own choice, Kitty with placeholders,
+then Sixel and iTerm2 forced by `ratatui-demo.patch` (DEMO_PROTOCOL, and
+DEMO_IMAGE for the picture shown).
 
 Both are fetched and built in .harness-work/images-tools: snacks.nvim's
 source (git), and ratatui-image's demo built by cargo, without chafa:
@@ -32,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from programs import BLUE, ROOT, Run, count, pictures, tool  # noqa: E402
-from show import check, note, report, that  # noqa: E402
+from show import check, report, that  # noqa: E402
 
 TOOLS = ROOT / ".harness-work" / "images-tools"
 SNACKS = TOOLS / "snacks.nvim"
@@ -84,7 +85,8 @@ def apps(a, mode, path):
         check(f"{mode}: neovim's picture gone after it quits", count(r.snap("snacks-quit"), BLUE), 0)
 
         r.run(f"SNACKS_GHOSTTY=1 nvim -u {init} {blue}", wait=6)
-        note(f"{mode}: snacks.nvim with placeholders (as in Ghostty): {count(r.snap('snacks-placeholders'), BLUE)} blue pixels")
+        check(f"{mode}: snacks.nvim shows blue.png by Kitty's placeholders, as in Ghostty (IM35)",
+              count(r.snap("snacks-placeholders"), BLUE), that("more than 1000 pixels", lambda n: n > 1000))
         nvim_quit(r)
         r.run("clear", wait=1.0)
 
@@ -99,11 +101,8 @@ def apps(a, mode, path):
                 if not forced:
                     check(f"{mode}: ratatui-image's demo chose a picture protocol", protocol,
                           that("Sixel, Kitty or Iterm2, not Halfblocks", lambda p: p in ("Sixel", "Kitty", "Iterm2")))
-            if forced:
-                check(f"{mode}: ratatui-image's demo shows blue.png by {forced}", n,
-                      that("more than 1000 pixels", lambda n: n > 1000))
-            else:
-                note(f"{mode}: ratatui-image's demo by its choice (Kitty's placeholders): {n} blue pixels")
+            check(f"{mode}: ratatui-image's demo shows blue.png by {forced or 'its choice, Kitty with placeholders (IM35)'}", n,
+                  that("more than 1000 pixels", lambda n: n > 1000))
             r.keys("q", wait=2)
             r.run("clear", wait=1.0)
             check(f"{mode}: the demo's pictures gone after it quits ({name})", count(r.snap(f"ratatui-{name}-quit"), BLUE), 0)

@@ -88,8 +88,10 @@ SUITES = [
     # 132 since IT2: iTerm2's images, eleven; 141 since IM23: text and
     # erases over an image drawn into the cells, nine; 153 since IT4: JPEG,
     # seven, and GIF, five; 161 since IT6: Exif orientation, four,
-    # progressive, four, the progressive "says so" made a lossless one
-    Suite("vt", 163, runs_of("vt/tests")),
+    # progressive, four, the progressive "says so" made a lossless one;
+    # 163 since IM30: Kitty's images in tmux's panes, two; 174 since IM35:
+    # Kitty's Unicode placeholders, eleven
+    Suite("vt", 174, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

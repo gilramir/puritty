@@ -1,0 +1,627 @@
+module Vt.Placeholder exposing (Cell, Fit, Run, decode, diacriticIndex, fit, isPlaceholder, runsOfRow)
+
+{-| Kitty's Unicode placeholders (`docs/images.md` IM35), as Ghostty reads
+them (`src/terminal/kitty/graphics_unicode.zig`, `render.zig`'s
+`PlaceholderDecoder`): a virtual placement (`U=1`) is shown by cells that
+hold U+10EEEE, each naming its image in its foreground color (the low 24
+bits; a third diacritic gives the high 8), its placement in its underline
+color (0 for whichever of the image's virtual placements is preferred),
+and the row and the column of the image's grid it shows in its first and
+second diacritics, from Kitty's table (`rowcolumn-diacritics.txt`). A cell
+that leaves out its row or column continues the run to its left.
+
+The cells of a row are cut into runs, each drawn as one piece of the
+image: `fit` is Ghostty's `renderPlacement`, which fits the whole image
+into the placement's grid keeping its aspect ratio, centred, and gives the
+piece a run of cells shows.
+-}
+
+import Bitwise
+import Dict exposing (Dict)
+import Math
+import Vt.Reason as Reason
+import Vt.Style exposing (Attrs)
+
+
+{-| The code point a placeholder cell holds. -}
+isPlaceholder : Int -> Bool
+isPlaceholder cp =
+    cp == 0x10EEEE
+
+
+{-| What one placeholder cell says: its image's id's low 24 bits and its
+high 8 (-1 when not given), its placement (0 for none), and its row and
+column in the image's grid (-1 when not given). -}
+type alias Cell =
+    { low : Int, high : Int, placement : Int, row : Int, col : Int }
+
+
+{-| A run of placeholder cells on a row: its first column and how many,
+the image and the placement it asks for, and the row and column of the
+image's grid its first cell shows; each next cell shows the next column. -}
+type alias Run =
+    { x : Int, width : Int, image : Int, placement : Int, row : Int, col : Int }
+
+
+{-| A cell read from its style and the code points that follow U+10EEEE.
+A diacritic not in the table is taken as not there, as Kitty does; those
+past the third are ignored. -}
+decode : Attrs -> Array Int -> Cell
+decode attrs marks =
+    let
+        mark i =
+            when Array.get i marks is
+                Just cp ->
+                    diacriticIndex cp
+
+                Nothing ->
+                    -- a cell may leave its row, column or high byte out
+                    meant Reason.FromOutside -1
+
+        high =
+            mark 2
+    in
+    { low = colorId attrs.fg
+    , high =
+        if high > 255 then
+            -1
+
+        else
+            high
+    , placement = colorId attrs.ulc
+    , row = mark 0
+    , col = mark 1
+    }
+
+
+{-| A color as an id: a palette index's own number, an RGB color's 24
+bits (`Vt.Style.Attrs`: 0 the default, 1 to 256 a palette index and one
+more, `0x1000000` and the RGB value). -}
+colorId : Int -> Int
+colorId c =
+    if c <= 0 then
+        0
+
+    else if c <= 256 then
+        c - 1
+
+    else
+        -- an RGB color, `0x1000000` and its value
+        Bitwise.and c 0xFFFFFF
+
+
+{-| The runs of a row's placeholder cells, given left to right with their
+columns: a cell continues the run before it when it is in the next column
+and names the same image and placement, and its row and column, where it
+gives them, are the run's row and its next column. -}
+runsOfRow : Array { x : Int, cell : Cell } -> Array Run
+runsOfRow cells =
+    let
+        step c acc =
+            when acc.run is
+                Just r ->
+                    if c.x == r.x + r.width && continues r acc.high c.cell then
+                        { acc | run = Just { r | width = r.width + 1 } }
+
+                    else
+                        { run = Just (started c), high = startHigh c.cell, done = Array.pushLast (withHigh acc.high r) acc.done }
+
+                Nothing ->
+                    -- the row's first placeholder cell
+                    meant Reason.NotYet { run = Just (started c), high = startHigh c.cell, done = acc.done }
+
+        last =
+            Array.foldl step { run = Nothing, high = -1, done = [] } cells
+    in
+    when last.run is
+        Just r ->
+            Array.pushLast (withHigh last.high r) last.done
+
+        Nothing ->
+            -- a row with no placeholder cells
+            meant Reason.NoMore last.done
+
+
+{-| A cell beginning a run: a row or column it leaves out is 0. The run's
+`image` holds the low bits until the run ends (`withHigh`). -}
+started : { x : Int, cell : Cell } -> Run
+started c =
+    { x = c.x
+    , width = 1
+    , image = c.cell.low
+    , placement = c.cell.placement
+    , row = max 0 c.cell.row
+    , col = max 0 c.cell.col
+    }
+
+
+startHigh : Cell -> Int
+startHigh cell =
+    cell.high
+
+
+continues : Run -> Int -> Cell -> Bool
+continues r high cell =
+    r.image == cell.low
+        && r.placement == cell.placement
+        && (cell.row < 0 || cell.row == r.row)
+        && (cell.col < 0 || cell.col == r.col + r.width)
+        && (cell.high < 0 || cell.high == high)
+
+
+withHigh : Int -> Run -> Run
+withHigh high r =
+    { r | image = Bitwise.or r.image (Bitwise.shiftLeftBy 24 (max 0 high)) }
+
+
+{-| What a run draws (Ghostty's `RenderPlacement`): its offset in its
+first cell, the source rectangle in the image's pixels, and the size
+drawn, in pixels. -}
+type alias Fit =
+    { offX : Int, offY : Int, srcX : Int, srcY : Int, srcW : Int, srcH : Int, w : Int, h : Int }
+
+
+{-| The piece of an image a run shows (Ghostty's `renderPlacement`, its
+names kept): the image of `imgW` by `imgH` pixels fitted into the virtual
+placement's grid (`cols` by `rows`, or the image's own size in cells where
+it gives 0), keeping its aspect ratio and centred, and the run's `width`
+cells of the grid's row `row` from column `col`. Nothing when the piece
+lies outside the image, or there is no cell size. -}
+fit : { cols : Int, rows : Int } -> { imgW : Int, imgH : Int } -> { cw : Int, ch : Int } -> { col : Int, row : Int, width : Int } -> Maybe Fit
+fit placement img cell run =
+    if cell.cw <= 0 || cell.ch <= 0 || img.imgW <= 0 || img.imgH <= 0 then
+        Nothing
+
+    else
+        let
+            gridRows =
+                if placement.rows > 0 then
+                    placement.rows
+
+                else
+                    (img.imgH + cell.ch - 1) // cell.ch
+
+            gridCols =
+                if placement.cols > 0 then
+                    placement.cols
+
+                else
+                    (img.imgW + cell.cw - 1) // cell.cw
+
+            imgWidth =
+                toFloat img.imgW
+
+            imgHeight =
+                toFloat img.imgH
+
+            pRowsPx =
+                toFloat (gridRows * cell.ch)
+
+            pColsPx =
+                toFloat (gridCols * cell.cw)
+
+            pScale =
+                if imgWidth * pRowsPx > imgHeight * pColsPx then
+                    -- wider than the grid: fit the width, centre the height
+                    let
+                        s =
+                            pColsPx / max imgWidth 1
+                    in
+                    { xOffset = 0, yOffset = (pRowsPx - imgHeight * s) / 2, xScale = s, yScale = s }
+
+                else
+                    -- taller: fit the height, centre the width
+                    let
+                        s =
+                            pRowsPx / max imgHeight 1
+                    in
+                    { xOffset = (pColsPx - imgWidth * s) / 2, yOffset = 0, xScale = s, yScale = s }
+
+            scaledXOffset =
+                pScale.xOffset / pScale.xScale
+
+            scaledYOffset =
+                pScale.yOffset / pScale.yScale
+
+            scaledWidth =
+                imgWidth + scaledXOffset * 2
+
+            scaledHeight =
+                imgHeight + scaledYOffset * 2
+
+            vpWidth =
+                toFloat run.width
+
+            vpCol =
+                toFloat run.col
+
+            vpRow =
+                toFloat run.row
+
+            source0 =
+                { w = scaledWidth * (vpWidth / toFloat gridCols)
+                , h = scaledHeight * (1 / toFloat gridRows)
+                , x = scaledWidth * (vpCol / toFloat gridCols)
+                , y = scaledHeight * (vpRow / toFloat gridRows)
+                }
+
+            vertical =
+                axis source0.y source0.h scaledYOffset scaledHeight imgHeight pScale.yScale (toFloat cell.ch)
+
+            horizontal =
+                axis source0.x source0.w scaledXOffset scaledWidth imgWidth pScale.xScale (toFloat (run.width * cell.cw))
+        in
+        if horizontal.size <= 0 || vertical.size <= 0 then
+            Nothing
+
+        else
+            Just
+                { offX = Math.round (horizontal.offset * pScale.xScale)
+                , offY = Math.round (vertical.offset * pScale.yScale)
+                , srcX = Math.round horizontal.start
+                , srcY = Math.round vertical.start
+                , srcW = Math.round horizontal.size
+                , srcH = Math.round vertical.size
+                , w = Math.round horizontal.dest
+                , h = Math.round vertical.dest
+                }
+
+
+{-| One axis of `renderPlacement`'s destination: the source's start and
+size in the scaled image, cut where they reach into the centring's blank
+margins (which the image itself does not have), the destination's offset
+in the scaled image's pixels and its size in the cells' pixels. -}
+axis : Float -> Float -> Float -> Float -> Float -> Float -> Float -> { start : Float, size : Float, offset : Float, dest : Float }
+axis start size margin scaled original scale dest =
+    if start < margin then
+        let
+            cut =
+                margin - start
+
+            size1 =
+                size - cut
+
+            dest1 =
+                dest - cut * scale
+        in
+        if size1 > original then
+            { start = 0, size = original, offset = cut, dest = original * scale }
+
+        else
+            { start = 0, size = size1, offset = cut, dest = dest1 }
+
+    else if start + size > scaled - margin then
+        let
+            start1 =
+                start - margin
+
+            size1 =
+                scaled - margin - start1 - margin
+        in
+        { start = start1, size = size1, offset = 0, dest = size1 * scale }
+
+    else
+        { start = start - margin, size = size, offset = 0, dest = dest }
+
+
+{-| A diacritic's index in Kitty's table, its row's or column's number,
+or -1 for a code point not in it. -}
+diacriticIndex : Int -> Int
+diacriticIndex cp =
+    when Dict.get cp diacriticIndices is
+        Just i ->
+            i
+
+        Nothing ->
+            -- not a diacritic of the table: taken as not there, as Kitty does
+            meant Reason.NotKnown -1
+
+
+diacriticIndices : Dict Int Int
+diacriticIndices =
+    Array.indexedMap (\i cp -> { key = cp, value = i }) diacritics
+        |> Array.foldl (\e d -> Dict.set e.key e.value d) Dict.empty
+
+
+{-| Kitty's `rowcolumn-diacritics.txt`, 297 combining marks of class 230,
+as Ghostty lists them. -}
+diacritics : Array Int
+diacritics =
+    [ 0x0305
+    , 0x030D
+    , 0x030E
+    , 0x0310
+    , 0x0312
+    , 0x033D
+    , 0x033E
+    , 0x033F
+    , 0x0346
+    , 0x034A
+    , 0x034B
+    , 0x034C
+    , 0x0350
+    , 0x0351
+    , 0x0352
+    , 0x0357
+    , 0x035B
+    , 0x0363
+    , 0x0364
+    , 0x0365
+    , 0x0366
+    , 0x0367
+    , 0x0368
+    , 0x0369
+    , 0x036A
+    , 0x036B
+    , 0x036C
+    , 0x036D
+    , 0x036E
+    , 0x036F
+    , 0x0483
+    , 0x0484
+    , 0x0485
+    , 0x0486
+    , 0x0487
+    , 0x0592
+    , 0x0593
+    , 0x0594
+    , 0x0595
+    , 0x0597
+    , 0x0598
+    , 0x0599
+    , 0x059C
+    , 0x059D
+    , 0x059E
+    , 0x059F
+    , 0x05A0
+    , 0x05A1
+    , 0x05A8
+    , 0x05A9
+    , 0x05AB
+    , 0x05AC
+    , 0x05AF
+    , 0x05C4
+    , 0x0610
+    , 0x0611
+    , 0x0612
+    , 0x0613
+    , 0x0614
+    , 0x0615
+    , 0x0616
+    , 0x0617
+    , 0x0657
+    , 0x0658
+    , 0x0659
+    , 0x065A
+    , 0x065B
+    , 0x065D
+    , 0x065E
+    , 0x06D6
+    , 0x06D7
+    , 0x06D8
+    , 0x06D9
+    , 0x06DA
+    , 0x06DB
+    , 0x06DC
+    , 0x06DF
+    , 0x06E0
+    , 0x06E1
+    , 0x06E2
+    , 0x06E4
+    , 0x06E7
+    , 0x06E8
+    , 0x06EB
+    , 0x06EC
+    , 0x0730
+    , 0x0732
+    , 0x0733
+    , 0x0735
+    , 0x0736
+    , 0x073A
+    , 0x073D
+    , 0x073F
+    , 0x0740
+    , 0x0741
+    , 0x0743
+    , 0x0745
+    , 0x0747
+    , 0x0749
+    , 0x074A
+    , 0x07EB
+    , 0x07EC
+    , 0x07ED
+    , 0x07EE
+    , 0x07EF
+    , 0x07F0
+    , 0x07F1
+    , 0x07F3
+    , 0x0816
+    , 0x0817
+    , 0x0818
+    , 0x0819
+    , 0x081B
+    , 0x081C
+    , 0x081D
+    , 0x081E
+    , 0x081F
+    , 0x0820
+    , 0x0821
+    , 0x0822
+    , 0x0823
+    , 0x0825
+    , 0x0826
+    , 0x0827
+    , 0x0829
+    , 0x082A
+    , 0x082B
+    , 0x082C
+    , 0x082D
+    , 0x0951
+    , 0x0953
+    , 0x0954
+    , 0x0F82
+    , 0x0F83
+    , 0x0F86
+    , 0x0F87
+    , 0x135D
+    , 0x135E
+    , 0x135F
+    , 0x17DD
+    , 0x193A
+    , 0x1A17
+    , 0x1A75
+    , 0x1A76
+    , 0x1A77
+    , 0x1A78
+    , 0x1A79
+    , 0x1A7A
+    , 0x1A7B
+    , 0x1A7C
+    , 0x1B6B
+    , 0x1B6D
+    , 0x1B6E
+    , 0x1B6F
+    , 0x1B70
+    , 0x1B71
+    , 0x1B72
+    , 0x1B73
+    , 0x1CD0
+    , 0x1CD1
+    , 0x1CD2
+    , 0x1CDA
+    , 0x1CDB
+    , 0x1CE0
+    , 0x1DC0
+    , 0x1DC1
+    , 0x1DC3
+    , 0x1DC4
+    , 0x1DC5
+    , 0x1DC6
+    , 0x1DC7
+    , 0x1DC8
+    , 0x1DC9
+    , 0x1DCB
+    , 0x1DCC
+    , 0x1DD1
+    , 0x1DD2
+    , 0x1DD3
+    , 0x1DD4
+    , 0x1DD5
+    , 0x1DD6
+    , 0x1DD7
+    , 0x1DD8
+    , 0x1DD9
+    , 0x1DDA
+    , 0x1DDB
+    , 0x1DDC
+    , 0x1DDD
+    , 0x1DDE
+    , 0x1DDF
+    , 0x1DE0
+    , 0x1DE1
+    , 0x1DE2
+    , 0x1DE3
+    , 0x1DE4
+    , 0x1DE5
+    , 0x1DE6
+    , 0x1DFE
+    , 0x20D0
+    , 0x20D1
+    , 0x20D4
+    , 0x20D5
+    , 0x20D6
+    , 0x20D7
+    , 0x20DB
+    , 0x20DC
+    , 0x20E1
+    , 0x20E7
+    , 0x20E9
+    , 0x20F0
+    , 0x2CEF
+    , 0x2CF0
+    , 0x2CF1
+    , 0x2DE0
+    , 0x2DE1
+    , 0x2DE2
+    , 0x2DE3
+    , 0x2DE4
+    , 0x2DE5
+    , 0x2DE6
+    , 0x2DE7
+    , 0x2DE8
+    , 0x2DE9
+    , 0x2DEA
+    , 0x2DEB
+    , 0x2DEC
+    , 0x2DED
+    , 0x2DEE
+    , 0x2DEF
+    , 0x2DF0
+    , 0x2DF1
+    , 0x2DF2
+    , 0x2DF3
+    , 0x2DF4
+    , 0x2DF5
+    , 0x2DF6
+    , 0x2DF7
+    , 0x2DF8
+    , 0x2DF9
+    , 0x2DFA
+    , 0x2DFB
+    , 0x2DFC
+    , 0x2DFD
+    , 0x2DFE
+    , 0x2DFF
+    , 0xA66F
+    , 0xA67C
+    , 0xA67D
+    , 0xA6F0
+    , 0xA6F1
+    , 0xA8E0
+    , 0xA8E1
+    , 0xA8E2
+    , 0xA8E3
+    , 0xA8E4
+    , 0xA8E5
+    , 0xA8E6
+    , 0xA8E7
+    , 0xA8E8
+    , 0xA8E9
+    , 0xA8EA
+    , 0xA8EB
+    , 0xA8EC
+    , 0xA8ED
+    , 0xA8EE
+    , 0xA8EF
+    , 0xA8F0
+    , 0xA8F1
+    , 0xAAB0
+    , 0xAAB2
+    , 0xAAB3
+    , 0xAAB7
+    , 0xAAB8
+    , 0xAABE
+    , 0xAABF
+    , 0xAAC1
+    , 0xFE20
+    , 0xFE21
+    , 0xFE22
+    , 0xFE23
+    , 0xFE24
+    , 0xFE25
+    , 0xFE26
+    , 0x10A0F
+    , 0x10A38
+    , 0x1D185
+    , 0x1D186
+    , 0x1D187
+    , 0x1D188
+    , 0x1D189
+    , 0x1D1AA
+    , 0x1D1AB
+    , 0x1D1AC
+    , 0x1D1AD
+    , 0x1D242
+    , 0x1D243
+    , 0x1D244
+    ]

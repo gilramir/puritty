@@ -23,6 +23,7 @@ module Vt exposing
     , mouseModes
     , new
     , paint
+    , placeholderPlacements
     , promptJump
     , recutHolds
     , resize
@@ -96,6 +97,7 @@ import Vt.Modes as Modes
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Parse as Parse
+import Vt.Placeholder as Placeholder
 import Vt.Print exposing (wrapped)
 import Vt.Reason as Reason
 import Vt.Recut exposing (recut)
@@ -198,6 +200,57 @@ viewAt back0 t =
     in
     -- a ring has a row past its screen's, which a view never uses
     { screen = writeRows read.rows 0 0 t.rows (newScreen t.cols t.rows (t.rows + 1)), clusters = read.clusters }
+
+
+{-| The pieces of images Kitty's Unicode placeholders show in the view
+`back` rows up into the scrollback (`docs/images.md` IM35): each row's
+placeholder cells read and cut into runs (`Vt.Placeholder`), each run's
+piece placed as `Vt.Kitty.placeholderShown` finds it. The rows are read
+only when a virtual placement exists, which is all placeholder cells can
+show, so a terminal without one pays nothing. -}
+placeholderPlacements : Int -> Term -> Array Kitty.Shown
+placeholderPlacements back0 t =
+    if not (Kitty.hasVirtual t) then
+        []
+
+    else
+        let
+            back =
+                clamp 0 (scrollbackRows t) back0
+
+            read =
+                rowsBetween (0 - back) t.rows t
+        in
+        Kitty.placeholderShown
+            (Array.indexedMap (\y r -> { y = y, runs = Placeholder.runsOfRow (placeholderCells r.cells read.clusters t.styles) }) read.rows
+                |> Array.keepIf (\r -> not (Array.isEmpty r.runs))
+            )
+            t
+
+
+{-| A row's placeholder cells, with their columns, each read from its
+style and the marks after U+10EEEE. -}
+placeholderCells : Array Int64 -> Clusters -> Styles -> Array { x : Int, cell : Placeholder.Cell }
+placeholderCells cells clusters styles =
+    Array.indexedMap (\x c -> { x = x, c = c }) cells
+        |> Array.mapAndKeepJust
+            (\e ->
+                let
+                    points =
+                        cellPoints e.c clusters
+                in
+                when Array.first points is
+                    Just cp ->
+                        if Placeholder.isPlaceholder cp then
+                            Just { x = e.x, cell = Placeholder.decode (styleOf (cellStyle e.c) styles) (Array.dropFirst 1 points) }
+
+                        else
+                            Nothing
+
+                    Nothing ->
+                        -- an empty cell
+                        meant Reason.OutOfRange Nothing
+            )
 
 
 {-| The screen as a view (`viewAt 0`), with text painted over its cells
@@ -391,7 +444,7 @@ paneImages origin px py back cols rows cell pane =
             else
                 v
     in
-    Kitty.shownPlacements back pane
+    (Kitty.shownPlacements back pane ++ placeholderPlacements back pane)
         |> Array.mapAndKeepJust
             (\sh ->
                 Maybe.map

@@ -100,6 +100,7 @@ import Bytes exposing (Bytes)
 import Dict
 import Int64
 import UInt8
+import Vt
 import Vt.Cell exposing (..)
 import Vt.Kitty as Kitty
 import Vt.Palette exposing (paletteColor, programColor)
@@ -559,7 +560,7 @@ frameOn look focus preedit hl s clusters back t sh0 =
         -- came, went or moved are drawn again, so that what lay under one
         -- that went shows and one that came has its cells under it
         desired =
-            Kitty.shownPlacements back t
+            Kitty.shownPlacements back t ++ Vt.placeholderPlacements back t
 
         moved =
             Array.keepIf (\p -> not (Array.member p desired)) sh2.placed ++ Array.keepIf (\p -> not (Array.member p sh2.placed)) desired
@@ -1595,8 +1596,18 @@ writeRun s clusters cursor o ext row x end stamp cells stamps styleIds list =
             c =
                 cellAt s cursor o ext row x
 
+            -- Kitty's placeholder, U+10EEEE with its marks, is drawn
+            -- blank, as Ghostty draws it: the image's piece is under it
+            -- (`docs/images.md` IM35)
             points =
                 Array.takeFirst 63 (Maybe.withDefault (meant Reason.NotOpen cellPoints c clusters) (preCellPoints cursor (row + x)))
+                    |> (\ps ->
+                            if Array.first ps == Just 0x10EEEE then
+                                []
+
+                            else
+                                ps
+                       )
 
             under =
                 isCursor cursor (row + x)

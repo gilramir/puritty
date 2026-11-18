@@ -1144,7 +1144,61 @@ their pictures. Two ways: implement them (a virtual placement kept by
 id; a cell whose character is U+10EEEE drawn as the part of that picture
 its marks and color name), as kitty and Ghostty have; or, for 0.2.0, stop
 answering Kitty's `a=q`, which turns ratatui-image to Sixel but changes
-what the other programs choose too, not yet measured. Not done yet.
+what the other programs choose too, not yet measured. Decided: implemented
+(IM35).
+
+## IM35 · Kitty's Unicode placeholders (2026-11-18)
+
+Gilbert, on IM34's decision: "yes, let's implement it". Ported from
+Ghostty, the core's oracle, which has them: `graphics_unicode.zig`
+(`IncompletePlacement`, `renderPlacement`, the diacritics),
+`graphics_storage.zig`'s `placeholderTarget`, `render.zig`'s
+`PlaceholderDecoder` and its runs.
+
+**How it works.** A virtual placement (`a=p` or `a=T` with `U=1`) was
+already kept and never drawn. It is drawn where cells hold U+10EEEE: each
+cell names its image in its foreground color (a palette index's number,
+or an RGB color's 24 bits; a third mark gives the high byte), its
+placement in its underline color (0 for any), and the row and column of
+the placement's grid it shows in its first two marks, from Kitty's table
+of 297 combining marks. A cell that leaves out its row or column continues
+the run to its left. `Vt.Placeholder` reads the cells, cuts each row's
+into runs, and fits a run's piece as Ghostty's `renderPlacement` does: the
+whole image fitted into the placement's grid (`c`, `r`, or the image's
+own size in cells) keeping its aspect ratio and centred, the run's cells
+showing their columns of one of its rows. `Vt.Kitty.placeholderShown`
+finds the virtual placement a run shows (with a placement id, that one;
+without, the image's, one given an id before the terminal's own, then
+the lowest id) and makes the run a `Shown`, under the text, one row tall,
+as Ghostty draws them (z -1). `Vt.placeholderPlacements` reads the view's
+rows, the scrollback's when scrolled back, and View draws them with the
+placements and the -CC canvas composes them with its panes'. The cell
+itself is drawn blank, as Ghostty's shaper draws it.
+
+**What it costs without them.** The rows are read only when the shown
+screen has a virtual placement, which is all placeholder cells can show:
+a terminal with none pays one look at its placements a frame, and View one
+comparison a cell drawn.
+
+**Because the picture is text**, what moves or takes the text moves or
+takes the picture: scrolling, the scrollback, `clear`, a line erased or
+overwritten, tmux's panes. None of it needs code of its own. (Under `-CC`
+a reattach rebuilds the panes from tmux's capture, and the image the
+cells name was sent before it: as for any picture, IM18, it is gone.)
+
+**Measured.** Eleven tests in the core (174): Ghostty's three
+`renderPlacement` cases, their numbers kept (the dog of 500 by 306 in
+grids of 4×2, 2×2 with a run wider than the grid, and 1×1); a cell's
+reading; runs continued, ended by a gap, another image or a column that
+does not follow; the high byte; a terminal fed a virtual placement and
+its cells, a piece a row, under the text; nothing without the placement;
+a row erased taking its piece; a view scrolled back. `bench/images/apps.py`,
+28 checks in a shell, plain tmux and `-CC`: ratatui-image's demo by its
+own choice, Kitty with placeholders, shows the picture in its five panels
+(107106 blue pixels, as by Sixel and iTerm2), and snacks.nvim told it is
+in Ghostty shows it (35221 in a shell). snacks.nvim still shows nothing
+unless told: it knows terminals by XTVERSION's name, and puritty's is not
+on its list.
 
 ## IM10 · The user guide, drafted
 
@@ -1158,7 +1212,12 @@ until the first protocol works; then it moves to `docs/user/images.md`.
 > send the picture in one of three ways, and puritty understands all
 > three: **Sixel**, **Kitty graphics** and **iTerm2's inline images**.
 > There is nothing to install or turn on; most programs ask the terminal
-> which it supports and choose.
+> which it supports and choose. Kitty's way includes its *placeholders*,
+> which Neovim's snacks.nvim and the Rust programs built on ratatui-image
+> use: the picture is drawn under special characters in the text, so it
+> scrolls and is erased with the text around it. snacks.nvim only turns
+> its pictures on for terminals it knows by name; start Neovim with
+> `SNACKS_GHOSTTY=1` set to have it use them in puritty.
 >
 > **Over ssh** it works the same: the picture travels in the program's
 > output.

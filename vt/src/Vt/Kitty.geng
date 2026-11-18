@@ -5,11 +5,13 @@ module Vt.Kitty exposing
     , cleared
     , clearedHistory
     , dumpLines
+    , hasVirtual
     , imageByKey
     , imageOf
     , itermDispatch
     , itermOsc
     , overwritten
+    , placeholderShown
     , screensSwapped
     , shownPlacements
     , sixelDispatch
@@ -35,6 +37,7 @@ import Vt.Cursor exposing (withPlain)
 import Vt.Inflate as Inflate
 import Vt.Iterm as Iterm
 import Vt.Placed as Placed exposing (gridSize, pixelSize, rect, source)
+import Vt.Placeholder as Placeholder
 import Vt.Png as Png
 import Vt.Reason as Reason
 import Vt.Scroll exposing (historyBound, lineFeed, withScroll)
@@ -1917,6 +1920,94 @@ shownPlacements back t =
             )
         -- and a canvas's panes' placements (IM18)
         |> (\own -> own ++ Array.map composedShown t.images.composed)
+
+
+{-| Whether the shown screen has a virtual placement, which only
+placeholder cells show (IM35): without one, the cells need not be read. -}
+hasVirtual : Term -> Bool
+hasVirtual t =
+    Array.any .virtual t.images.shown.placements
+
+
+{-| What placeholder cells' runs show (IM35), each run a piece of its
+image drawn under the text, one row tall, as Ghostty draws them (z -1):
+`y` the run's row on the view. A run whose image or virtual placement is
+not there, or that lies outside its image, shows nothing. -}
+placeholderShown : Array { y : Int, runs : Array Placeholder.Run } -> Term -> Array Shown
+placeholderShown rows t =
+    let
+        store =
+            t.images.shown
+
+        cell =
+            { cw = clamp 0 4096 t.config.cellWidth, ch = clamp 0 4096 t.config.cellHeight }
+    in
+    rows
+        |> Array.mapAndFlatten
+            (\row ->
+                Array.mapAndKeepJust
+                    (\run ->
+                        when Dict.get run.image store.images is
+                            Just image ->
+                                when placeholderTarget run.image run.placement store is
+                                    Just target ->
+                                        Placeholder.fit { cols = target.cols, rows = target.rows } { imgW = image.width, imgH = image.height } cell { col = run.col, row = run.row, width = run.width }
+                                            |> Maybe.map
+                                                (\f ->
+                                                    { key = keyOf 0 image
+                                                    , y = row.y
+                                                    , x = run.x
+                                                    , cols = run.width
+                                                    , rows = 1
+                                                    , clip = { x = run.x, y = row.y, cols = run.width, rows = 1 }
+                                                    , src = { x = f.srcX, y = f.srcY, w = f.srcW, h = f.srcH }
+                                                    , offX = f.offX
+                                                    , offY = f.offY
+                                                    , w = f.w
+                                                    , h = f.h
+                                                    , under = True
+                                                    }
+                                                )
+
+                                    Nothing ->
+                                        -- no virtual placement of the image
+                                        meant Reason.NotKnown Nothing
+
+                            Nothing ->
+                                -- an image the cells name that is not here
+                                meant Reason.NotKnown Nothing
+                    )
+                    row.runs
+            )
+
+
+{-| The virtual placement placeholder cells show (Ghostty's
+`ImageStorage.placeholderTarget`): with a placement id, the image's
+placement of that id; without, of the image's virtual placements, one
+with an id given (`p`) before one of the terminal's own, then the lowest
+id. -}
+placeholderTarget : Int -> Int -> Store -> Maybe Placement
+placeholderTarget image placement store =
+    if placement > 0 then
+        Array.findFirst (\pl -> pl.image == image && pl.external && pl.id == placement) store.placements
+            |> Maybe.map .value
+
+    else
+        let
+            virtuals =
+                Array.keepIf (\pl -> pl.image == image && pl.virtual) store.placements
+
+            given =
+                Array.keepIf .external virtuals
+        in
+        (if Array.isEmpty given then
+            virtuals
+
+         else
+            given
+        )
+            |> Array.sortBy .id
+            |> Array.first
 
 
 composedShown : Composed -> Shown
