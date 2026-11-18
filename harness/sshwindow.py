@@ -6,7 +6,8 @@ xdotool.
 
 Each case holds to harness/sshwindow/expected/NAME.txt: the window's title
 while puritty's own screen is up (puritty's, never the server's), the keys
-pressed there, puritty's exit status (the remote command's), whether
+pressed there, puritty's exit status (the remote command's; one other than 0 keeps the
+window until a key, SC29), whether
 known_hosts holds the server's key afterwards, and the terminal's size as
 the remote side saw it (the command writes `stty size` to a file, the
 server being this machine).
@@ -42,33 +43,41 @@ DISPLAY = ":88"
 # (empty, holding the server's key, holding another), the keys pressed on
 # puritty's screen (each after a pause), the command run there
 CASES = [
-    ("trust-remember", "ed", "", "empty", ["a"], "stty size > {size}; exit 7"),
-    ("trust-once", "ed", "", "empty", ["o"], "exit 7"),
-    ("known", "ed", "", "known", [], "stty size > {size}; exit 7"),
-    ("passphrase", "ecdsa521", "hunter2", "known", ["type:hunter2", "Return"], "exit 7"),
-    ("wrong-passphrase-then-right", "ecdsa521", "hunter2", "known", ["type:nope", "Return", "type:hunter2", "Return"], "exit 7"),
-    ("decline", "ed", "", "empty", ["Escape", "Return"], "exit 7"),
+    ("trust-remember", "ed", "", "empty", ["a"], "stty size > {size}; exit 0"),
+    ("trust-once", "ed", "", "empty", ["o"], "exit 0"),
+    ("known", "ed", "", "known", [], "stty size > {size}; exit 0"),
+    ("passphrase", "ecdsa521", "hunter2", "known", ["type:hunter2", "Return"], "exit 0"),
+    ("wrong-passphrase-then-right", "ecdsa521", "hunter2", "known", ["type:nope", "Return", "type:hunter2", "Return"], "exit 0"),
+    ("decline", "ed", "", "empty", ["Escape", "Return"], "exit 0"),
     # a changed key (docs/ssh-client.md SC28): Enter does nothing, Esc
     # refuses and Enter closes; O trusts it once; A puts it in place
-    ("changed", "ed", "", "other", ["Return", "Escape", "Return"], "exit 7"),
-    ("changed-once", "ed", "", "other", ["o"], "exit 7"),
-    ("changed-replace", "ed", "", "other", ["a"], "exit 7"),
-    ("no-key-then-reconnect", "other", "", "known", ["r", "Return"], "exit 7"),
+    ("changed", "ed", "", "other", ["Return", "Escape", "Return"], "exit 0"),
+    ("changed-once", "ed", "", "other", ["o"], "exit 0"),
+    ("changed-replace", "ed", "", "other", ["a"], "exit 0"),
+    ("no-key-then-reconnect", "other", "", "known", ["r", "Return"], "exit 0"),
     # through a jump host (docs/ssh-client.md SC21): the host's `jump` is a
     # second sshd, its key from ~/.ssh/config's IdentityFile for it
-    ("jump", "ed", "", "known", [], "stty size > {size}; exit 7"),
+    ("jump", "ed", "", "known", [], "stty size > {size}; exit 0"),
     # the window resized before the session runs, or while it is down, then
     # its terminal at the new size (docs/ssh-client.md SC26): first while
     # the passphrase is asked; then the connection dropped (the command
     # kills its sshd, no exit status) and a reconnect after the resize
-    ("resize-while-asking", "ecdsa521", "hunter2", "known", ["resize:900:500", "type:hunter2", "Return"], "stty size > {size}; exit 7"),
+    ("resize-while-asking", "ecdsa521", "hunter2", "known", ["resize:900:500", "type:hunter2", "Return"], "stty size > {size}; exit 0"),
     ("resize-then-reconnect", "ed", "", "known", ["resize:900:500", "r"],
-     "if [ -e {size} ]; then stty size >> {size}; exit 7; else stty size > {size}; kill -9 $PPID; fi"),
+     "if [ -e {size} ]; then stty size >> {size}; exit 0; else stty size > {size}; kill -9 $PPID; fi"),
     # tmux -CC attached when the connection drops (no %exit), then a
     # reconnect: what is typed reaches the new shell, not tmux (TM93); the
     # first press only waits for the drop
     ("tmux-then-reconnect", "ed", "", "known", ["shift", "r", "type:hello", "Return"],
-     "if [ -e {size} ]; then read l; echo $l >> {size}; exit 7; else echo first > {size}; (sleep 2; kill -9 $PPID) & tmux -L sshwindow -f /dev/null -CC new-session; fi"),
+     "if [ -e {size} ]; then read l; echo $l >> {size}; exit 0; else echo first > {size}; (sleep 2; kill -9 $PPID) & tmux -L sshwindow -f /dev/null -CC new-session; fi"),
+    # a command that fails keeps the window, its own words behind puritty's
+    # box (docs/ssh-client.md SC29): Enter closes it, its status the
+    # window's; the second, a command the shell cannot find, as Gilbert's
+    # `tmux -CC attach -t main` on a host whose tmux is not on a command's PATH
+    ("command-fails", "ed", "", "known", ["sleep:1", "Return"], "echo it went wrong; exit 7"),
+    ("command-not-found", "ed", "", "known", ["sleep:1", "Return"], "no-such-tmux -CC attach -t main"),
+    # tmux -CC refusing the attach, its error said inside control mode
+    ("tmux-attach-fails", "ed", "", "known", ["sleep:1", "Return"], "tmux -L sshwindow-none -f /dev/null -CC attach -t main"),
 ]
 
 
@@ -121,6 +130,9 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
                 if k.startswith("resize:"):
                     w, h = k.split(":")[1:]
                     subprocess.run([hosts.XDO, "windowsize", "--sync", win[0], w, h], env=env, capture_output=True, timeout=10)
+                elif k.startswith("sleep:"):
+                    time.sleep(float(k[6:]))
+                    titles.append(reload.title_of(env))
                 elif k.startswith("type:"):
                     subprocess.run([hosts.XDO, "type", "--delay", "40", k[5:]], env=env, check=True)
                 else:

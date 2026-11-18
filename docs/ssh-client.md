@@ -1558,7 +1558,7 @@ new key's fingerprint and what Yes, No and Cancel do, Cancel focused. Esc
 answered Cancel, and the probe's `known_hosts` was as it was. The probe and
 its files were removed after; Gilbert's own `~/.ssh` was not touched.
 
-## SC29 · A session whose program fails keeps its window (2026-11-18; decided, not built)
+## SC29 · A session whose program fails keeps its window (2026-11-18)
 
 Gilbert, puritty 0.1.1 on Windows: the built-in client to a host with
 the command `tmux -CC attach -t main` logged in, and the window closed.
@@ -1579,3 +1579,25 @@ window stays open. It shows what the program wrote, tmux's error lines
 among them, then a line of puritty's own, `the command "tmux -CC attach
 -t main" ended with status 1` (or the error tmux gave), and closes on the
 next key. A program that ends with 0 closes the window as now.
+
+**Built.** It holds for a host whose entry gives a command: a login
+shell's exit status is its last command's, so a shell left with `exit`
+after a failed `grep` would otherwise keep its window. `Main.commandFailed`
+says why, and a session that ends with that keeps its screen, as a dropped
+one does (TB8): the box "The session could not go on" with the last four
+lines the program left on its terminal (`lastWritten`, read from the
+screen and the rows just above it, so tmux's error from inside control
+mode is among them, TM70), then `the command "…"` and `ended with status
+N` on their own lines, so a long command is not cut. Enter closes it, the
+window's exit status the command's; R connects again. tmux's control mode
+ending with an error needs nothing of its own: tmux then exits with 1.
+
+**Measured** in `harness/sshwindow.py`, three cases, the window's picture
+read: `echo it went wrong; exit 7` shows `it went wrong` and status 7;
+`no-such-tmux -CC attach -t main` shows the shell's `command not found:
+no-such-tmux` and status 127, the case reported; `tmux -CC attach -t main`
+with no server shows tmux's `no sessions` and status 1. Each stays until
+Enter and exits with the status. The other cases' commands now end with
+`exit 0`, closing as before (`exit 7` would now wait for a key); two
+resizes' pins moved from 29×100 to 28×97, R20's gap (0fb39e4), not pinned
+again then. 17 of 17 pass.

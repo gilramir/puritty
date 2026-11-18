@@ -292,11 +292,13 @@ type alias Starter =
     }
 
 
-{-| puritty's own screen for an ssh session: the host, what has happened,
+{-| puritty's own screen for an ssh session: the host, the command run
+there if one was given, what has happened,
 the question asked and what has been typed for it, whether the session
 runs, why it failed, and its exit status. -}
 type alias SshScreen =
     { host : String
+    , command : Maybe String
     , lines : Array String
     , asking : Maybe { ask : Session.Ask, typed : String, given : Array String }
     , started : Bool
@@ -1231,7 +1233,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , shownItems = []
                      , ssh =
                         Maybe.map
-                            (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
+                            (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
                             config.remote
                      , tmux = TmuxMode.setEmbedder (embedderOf config) <| TmuxMode.setCell (paneCell cell) (TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))))
                      , overlaid = False
@@ -3649,7 +3651,9 @@ sshNoticed told m =
 
                         Session.Ended ->
                             if screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing then
-                                screen
+                                -- a command that failed keeps its screen, with
+                                -- the last lines it wrote (SC29)
+                                { screen | failed = commandFailed screen |> Maybe.map (\why -> String.join "\n" (lastWritten 4 m.term ++ [ why ])) }
 
                             else
                                 -- a session that ends without its shell's exit status
@@ -3667,16 +3671,60 @@ sshNoticed told m =
 `exit`, which the server says with an exit status before the end: its tab
 then closes as a local tab's does when its program ends, and the window
 with its last tab, its exit status the window's (TB8). A session that
-failed, never started, or dropped without an exit status keeps its screen
+failed, never started, dropped without an exit status, or whose command
+ended with a status other than 0 (`commandFailed`) keeps its screen
 and its tab, to reconnect. -}
 endsSession : Session.Notice -> Maybe SshScreen -> Bool
 endsSession told ssh =
     when ssh is
         Just screen ->
-            told == Session.Ended && screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing
+            told == Session.Ended && screen.started && screen.failed == Nothing && screen.exitStatus /= Nothing && commandFailed screen == Nothing
 
         Nothing ->
             meant Reason.NotSet False
+
+
+{-| The last `n` lines a session's program left on its terminal, not
+blank, each cleaned of what could not be shown: the screen and a few rows
+of scrollback above it, which is where a command's last words are when it
+fails (SC29). -}
+lastWritten : Int -> Vt.Term -> Array String
+lastWritten n term =
+    let
+        top =
+            Vt.rowsPushed term
+    in
+    Vt.selectionText { row = max 0 (top - n), col = 0 } { row = top + 100000, col = 0 } term
+        |> String.lines
+        |> Array.map (\l -> cleanText (String.trimRight l))
+        |> Array.keepIf (\l -> String.trim l /= "")
+        |> Array.takeLast n
+
+
+{-| Why a session's command failed, when one was given and its exit status
+is not 0 (`docs/ssh-client.md` SC29): `tmux -CC attach` that finds no
+session, or a command its shell cannot find, said in the program's own
+words on the terminal behind. A login shell's status is its last
+command's, so a shell closes its window whatever its status. -}
+commandFailed : SshScreen -> Maybe String
+commandFailed screen =
+    when screen.command is
+        Just command ->
+            when screen.exitStatus is
+                Just status ->
+                    if status /= 0 then
+                        Just ("the command \"" ++ cleanText command ++ "\"\nended with status " ++ String.fromInt status)
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    -- the session has not said its status
+                    meant Reason.NotYet Nothing
+
+        Nothing ->
+            -- a login shell, no command given
+            meant Reason.NotSet Nothing
 
 
 {-| Text from the server or the network made safe to show: control
@@ -3922,7 +3970,7 @@ dialogOf screen =
             meant Reason.NotOpen
                 when screen.failed is
                     Just why ->
-                        Just { title = "The session could not go on", lines = [ why ], field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
+                        Just { title = "The session could not go on", lines = String.lines why, field = Nothing, swatches = [], hint = "Enter: close    R: connect again", buttons = [] }
 
                     Nothing ->
                         meant Reason.NotOpen Nothing
@@ -4024,7 +4072,7 @@ ownTerm m boxed screen =
                     meant Reason.NotOpen
                         when screen.failed is
                             Just why ->
-                                [ line "", line (bold "The session could not go on:"), line ("  " ++ why), line "", line "  Enter: close    R: connect again" ]
+                                [ line "", line (bold "The session could not go on:") ] ++ Array.map (\l -> line ("  " ++ l)) (String.lines why) ++ [ line "", line "  Enter: close    R: connect again" ]
 
                             Nothing ->
                                 meant Reason.NotOpen []
@@ -6403,7 +6451,7 @@ freshTab id remote host name color cols rows m =
     , pasting = Nothing
     , clips = []
     , clipRead = Nothing
-    , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+    , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
     , tmux = freshTmux m.config m.term
     , search = Nothing
     , syncSince = -1
@@ -6443,7 +6491,7 @@ reopened k id remote host m =
         , pasting = Nothing
         , clips = []
         , clipRead = Nothing
-        , ssh = Maybe.map (\h -> { host = h.name, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+        , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
         , tmux = freshTmux m.config m.term
         , search = Nothing
         , syncSince = -1
