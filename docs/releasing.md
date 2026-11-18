@@ -230,3 +230,23 @@ now, `purittyVersion`, and `scripts/prerelease.sh` refuses a version tag
 says its number. A preview tag is not checked. The 0.1.1 builds stay as
 published; 0.1.2 is the first to say its own number.
 
+
+## RL11 · The next release is 0.2.0, with images (2026-11-18)
+
+Gilbert, 2026-11-18: the next release has the images (Sixel, Kitty
+graphics, iTerm2's inline images, `docs/images.md`) and is **0.2.0**, not
+0.1.2; RL10's "0.1.2" is that release. Before it is tagged:
+
+- `purittyVersion` in `app/src/Main.geng` says `0.2.0` (it says `0.1.1`
+  now), which `prerelease.sh` checks (RL10).
+- The user guide drafted in `docs/images.md` IM10 moves to
+  `docs/user/images.md`, which `site/sync.py` publishes; not before, so
+  that the website does not offer images a published build lacks.
+- `imageLimit` stays on (IM16's switch, 320 MB).
+
+The speed the release ships with (IM26, IM27, IM28): text with no picture
+on the screen, or one scrolled away, as fast as before images; a Kitty
+picture kept on the screen beside a scroll region costs its line feeds
+about 4 times; a Sixel or iTerm2 picture kept on the screen makes text
+about 19 times slower, some 30 MB/s on 12.8 MB of text, more than an ssh
+link brings.
