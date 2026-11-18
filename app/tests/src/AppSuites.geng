@@ -14,6 +14,7 @@ import Chord
 import Clock
 import Config
 import Diag
+import Dict
 import Expect exposing (Expectation)
 import Explorer
 import Hosts
@@ -21,6 +22,7 @@ import I18Next
 import Int64
 import LastWindow
 import Platform
+import Putty
 import Recent
 import RestoreFile exposing (TabColor(..))
 import Schema
@@ -40,7 +42,7 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, tabOrder, clock, TmuxTests.tmuxMode, Explorer.explorer ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, tabOrder, clock, TmuxTests.tmuxMode, Explorer.explorer ]
 
 
 {-| The window's clock, which starts over every 2^30 ms (`docs/rhel8-etx.md`
@@ -76,6 +78,147 @@ clock =
                 \_ ->
                     Expect.equal [ "000001 00:00:00.020 note   x" ]
                         (Diag.start "log" { ms = late, dayMs = 0 } [] |> Diag.add 10 "note" "x" |> Diag.take 10 |> .bytes |> Bytes.toString |> Maybe.withDefault "" |> String.lines |> Array.keepIf (\l -> String.contains "note" l))
+          }
+        ]
+
+
+{-| PuTTY's saved sessions as hosts (`docs/settings-gui.md` SG21). -}
+putty : U.Suite
+putty =
+    let
+        session name lines =
+            Putty.parseFile name (String.join "\n" lines)
+
+        one lines =
+            Putty.hosts [ session "s" lines ]
+
+        bare =
+            Config.host "s" "h.example.com"
+
+        sessions =
+            Putty.hosts
+                [ session "bastion" [ "Protocol=ssh", "HostName=b.example.com", "UserName=me" ]
+                , session "inner" [ "Protocol=ssh", "HostName=10.0.0.5", "ProxyMethod=6", "ProxyHost=bastion" ]
+                , session "build-box" [ "Protocol=ssh", "HostName=other.example.com" ]
+                ]
+
+        start =
+            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [], putty = sessions, launcher = False }
+
+        typed inputs =
+            Screen.feedInputs ([ press 0xFF09, press 0xFF09 ] ++ Array.repeat (Array.length Schema.pages) (press 0xFF54) ++ [ press 0xFF53 ] ++ inputs) start
+
+        onInner =
+            -- PuTTY's rows are last, by name: bastion, inner
+            [ press 0xFF57 ]
+    in
+    run "PuTTY"
+        [ { name = "a name unescaped as PuTTY escapes it, its bytes UTF-8"
+          , test = \_ -> Expect.equal [ "my box.one", "한 %zz" ] [ Putty.unescape "my%20box%2Eone", Putty.unescape "%ED%95%9C%20%zz" ]
+          }
+        , { name = "the registry's text read as sessions"
+          , test =
+                \_ ->
+                    Expect.equal [ { name = "a b", host = "x" }, { name = "c", host = "y" } ]
+                        (Putty.parseSessions "[a b]\nHostName=x\nPortNumber=22\n[c]\r\nHostName=y\r\n" |> Array.map (\s -> { name = s.name, host = Maybe.withDefault "" (Dict.get "HostName" s.values) }))
+          }
+        , { name = "where it goes: user@ in the host name, a port that is not 22, the command and title"
+          , test =
+                \_ ->
+                    Expect.equal [ { bare | user = Just "root", port = Just 2222, command = Just "tmux a", title = Just "Prod" } ]
+                        (one [ "Protocol=ssh", "HostName=root@h.example.com", "UserName=ignored", "PortNumber=2222", "RemoteCommand=tmux a", "WinTitle=Prod" ])
+          }
+        , { name = "UserName where the host name has none; port 22 left out"
+          , test = \_ -> Expect.equal [ { bare | user = Just "me" } ] (one [ "Protocol=ssh", "HostName=h.example.com", "UserName=me", "PortNumber=22" ])
+          }
+        , { name = "telnet, serial, no host and Default Settings are left out"
+          , test =
+                \_ ->
+                    Expect.equal []
+                        (Putty.hosts
+                            [ session "t" [ "Protocol=telnet", "HostName=x" ]
+                            , session "serial" [ "Protocol=serial", "HostName=" ]
+                            , session "empty" [ "Protocol=ssh", "HostName=" ]
+                            , session "Default Settings" [ "Protocol=ssh", "HostName=x" ]
+                            ]
+                        )
+          }
+        , { name = "a jump through another session by its name, or user@host:port"
+          , test =
+                \_ ->
+                    Expect.equal [ Just "bastion", Just "me@b2.example.com:2200", Nothing ]
+                        (Array.map .jump
+                            (Putty.hosts
+                                [ session "bastion" [ "HostName=b.example.com" ]
+                                , session "c1" [ "HostName=a", "ProxyMethod=6", "ProxyHost=bastion" ]
+                                , session "c2" [ "HostName=a", "ProxyMethod=6", "ProxyHost=b2.example.com", "ProxyPort=2200", "ProxyUsername=me" ]
+                                , session "c3" [ "HostName=a", "ProxyMethod=2", "ProxyHost=socks.example.com" ]
+                                ]
+                                |> Array.keepIf (\h -> h.name /= "bastion")
+                            )
+                        )
+          }
+        , { name = "Use font encoding with a Hangul font is CP949; UTF-8 is the default"
+          , test =
+                \_ ->
+                    Expect.equal [ Just "cp949", Nothing, Nothing ]
+                        (Array.map .charset
+                            (Putty.hosts
+                                [ session "a" [ "HostName=x", "LineCodePage=Use font encoding", "FontCharSet=129" ]
+                                , session "b" [ "HostName=x", "LineCodePage=UTF-8" ]
+                                , session "c" [ "HostName=x", "LineCodePage=Use font encoding", "FontCharSet=0" ]
+                                ]
+                            )
+                        )
+          }
+        , { name = "PuTTY's default colors and font are puritty's; changed ones are taken"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ { foreground = Nothing, background = Nothing, palette = Nothing, font = Nothing, points = Nothing }
+                        , { foreground = Nothing, background = Just 0x000040, palette = Just [ 0, 0xBB0000, 0x00BB00, 0xBBBB00, 0x0000BB, 0xBB00BB, 0x00BBBB, 0xBBBBBB, 0x555555, 0xFF8080, 0x55FF55, 0xFFFF55, 0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF ], font = Just "Consolas", points = Just 12 }
+                        ]
+                        (Array.map (\h -> { foreground = h.foreground, background = h.background, palette = h.palette, font = h.font, points = h.points })
+                            (Putty.hosts
+                                [ session "a" [ "HostName=x", "Colour0=187,187,187", "Colour2=0,0,0", "Font=Courier New", "FontHeight=10" ]
+                                , session "b" [ "HostName=x", "Colour2=0,0,64", "Colour9=255,128,128", "Font=Consolas", "FontHeight=12" ]
+                                ]
+                            )
+                        )
+          }
+        , { name = "listed after the hosts, from PuTTY, but not one the settings name"
+          , test =
+                \_ ->
+                    Expect.equal [ "bastion", "inner" ]
+                        (SettingsWindow.hostRows start |> Array.keepIf (\r -> r.putty /= Nothing) |> Array.map .name)
+          }
+        , { name = "Enter saves it, and the session it jumps through, then connects"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            typed (onInner ++ [ press 0xFF0D ])
+                    in
+                    Expect.equal { said = [ "put inner", "put bastion", "connect inner" ], jump = Just "bastion" }
+                        { said = said r.effects, jump = Hosts.named "inner" r.model.config |> .jump }
+          }
+        , { name = "Delete on one says it is PuTTY's, and removes nothing"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            typed (onInner ++ [ press 0xFFFF ])
+                    in
+                    Expect.equal { said = [], foot = "inner is PuTTY's; it is removed in PuTTY" } { said = said r.effects, foot = foot r.model }
+          }
+        , { name = "Right saves it and opens its form"
+          , test =
+                \_ ->
+                    let
+                        r =
+                            typed (onInner ++ [ press 0xFF53 ])
+                    in
+                    Expect.equal { said = [ "put inner", "put bastion" ], form = Just "inner" } { said = said r.effects, form = r.model.form }
           }
         ]
 
@@ -621,7 +764,7 @@ writing =
 
 opened : SettingsWindow.Model
 opened =
-    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], aliases = [], launcher = False }
+    SettingsWindow.init { config = Config.defaults, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [ "DejaVu Sans Mono", "Fira Code", "Fira Mono", "Noto Sans Mono" ], aliases = [], putty = [], launcher = False }
 
 
 press : Int -> SettingsWindow.Input
@@ -737,7 +880,7 @@ onHostsWith : Array Recent.Recent -> Bool -> Array SettingsWindow.Input -> { sai
 onHostsWith recents launcher inputs =
     let
         start =
-            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], launcher = launcher }
+            SettingsWindow.init { config = decoded Schema.example, path = "config.toml", reports = [], cols = 100, rows = 24, fonts = [], aliases = [ "work", "build-box" ], putty = [], launcher = launcher }
                 |> SettingsWindow.withRecents recents
 
         toPage =

@@ -2418,3 +2418,149 @@ geng_cancel puritty_win32_pageantParts(geng_wait *wait) {
     geng_succeed(wait, geng_slot_P(b));
     return (geng_cancel) {0};
 }
+
+/* PUTTY'S SAVED SESSIONS
+ *
+ * Each session under HKCU\Software\SimonTatham\PuTTY\Sessions as text
+ * (docs/settings-gui.md SG21): a `[name]` line, then a `Key=Value` line a
+ * value, UTF-8. The key's name is PuTTY's %-escape of the session's name
+ * in the machine's ANSI code page (windows/utils/escape_registry_key.c),
+ * so it is unescaped and read in that code page here; a string value is read as
+ * UTF-16, a DWORD as PuTTY's int. A line end or control character in a
+ * name or value becomes a space, so the text stays one line a value.
+ * Nothing when PuTTY has saved no session. */
+
+typedef struct { char *s; size_t n, cap; } Text;
+
+static void text_put(Text *t, const char *s, size_t n) {
+    if (t->n + n + 1 > t->cap) {
+        t->cap = (t->n + n + 1) * 2;
+        t->s = realloc(t->s, t->cap);
+    }
+    memcpy(t->s + t->n, s, n);
+    t->n += n;
+}
+
+static void text_line_part(Text *t, const char *s) {
+    for (; *s; s++) {
+        char c = (unsigned char) *s < 0x20 ? ' ' : *s;
+        text_put(t, &c, 1);
+    }
+}
+
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+/* The machine's ANSI code page, as PuTTY's process has it. Not CP_ACP:
+ * Geng's manifest makes this process's UTF-8 (activeCodePage), so a
+ * name PuTTY wrote in CP949 or 1252 would not decode. The registry's
+ * value is the machine's, and says 65001 where Windows' "Use Unicode
+ * UTF-8" option is on; else the system locale's. */
+static UINT machine_code_page(void) {
+    wchar_t acp[16];
+    DWORD size = sizeof acp;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", L"ACP",
+                     RRF_RT_REG_SZ, NULL, acp, &size) == ERROR_SUCCESS) {
+        UINT n = (UINT) wcstoul(acp, NULL, 10);
+        if (n) return n;
+    }
+    UINT locale = 0;
+    if (GetLocaleInfoEx(LOCALE_NAME_SYSTEM_DEFAULT, LOCALE_IDEFAULTANSICODEPAGE | LOCALE_RETURN_NUMBER,
+                        (LPWSTR) &locale, sizeof locale / sizeof(wchar_t)) && locale)
+        return locale;
+    return CP_ACP;
+}
+
+static char *putty_session_name(const wchar_t *key) {
+    size_t n = wcslen(key);
+    char *bytes = malloc(n + 1);
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (key[i] == L'%' && i + 2 < n && key[i + 1] < 0x80 && key[i + 2] < 0x80
+            && hex_value((char) key[i + 1]) >= 0 && hex_value((char) key[i + 2]) >= 0) {
+            bytes[k++] = (char) (hex_value((char) key[i + 1]) * 16 + hex_value((char) key[i + 2]));
+            i += 2;
+        } else
+            bytes[k++] = (char) key[i];
+    }
+    bytes[k] = 0;
+    UINT page = machine_code_page();
+    int w = MultiByteToWideChar(page, 0, bytes, -1, NULL, 0);
+    wchar_t *wide = malloc(sizeof *wide * (size_t) (w > 0 ? w : 1));
+    if (w <= 0 || !MultiByteToWideChar(page, 0, bytes, -1, wide, w)) wide[0] = 0;
+    free(bytes);
+    char *utf8 = narrow(wide);
+    free(wide);
+    return utf8;
+}
+
+geng_cancel puritty_win32_puttySessions(geng_wait *wait) {
+    Text t = {0};
+    HKEY sessions;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\SimonTatham\\PuTTY\\Sessions", 0, KEY_READ, &sessions) == ERROR_SUCCESS) {
+        for (DWORD i = 0;; i++) {
+            wchar_t name[512];
+            DWORD nn = 512;
+            LONG r = RegEnumKeyExW(sessions, i, name, &nn, NULL, NULL, NULL, NULL);
+            if (r == ERROR_NO_MORE_ITEMS) break;
+            if (r != ERROR_SUCCESS) continue;
+            HKEY session;
+            if (RegOpenKeyExW(sessions, name, 0, KEY_READ, &session) != ERROR_SUCCESS) continue;
+            char *shown = putty_session_name(name);
+            text_put(&t, "[", 1);
+            text_line_part(&t, shown);
+            text_put(&t, "]\n", 2);
+            free(shown);
+            for (DWORD j = 0;; j++) {
+                wchar_t value[256];
+                DWORD vn = 256, type, size = 0;
+                LONG q = RegEnumValueW(session, j, value, &vn, NULL, &type, NULL, &size);
+                if (q == ERROR_NO_MORE_ITEMS) break;
+                if (q != ERROR_SUCCESS && q != ERROR_MORE_DATA) continue;
+                BYTE *data = malloc(size + sizeof(wchar_t));
+                DWORD got = size;
+                vn = 256;
+                if (RegEnumValueW(session, j, value, &vn, NULL, &type, data, &got) != ERROR_SUCCESS) {
+                    free(data);
+                    continue;
+                }
+                char *key = narrow(value);
+                if (type == REG_SZ || type == REG_EXPAND_SZ) {
+                    ((wchar_t *) data)[got / sizeof(wchar_t)] = 0;
+                    char *v = narrow((wchar_t *) data);
+                    text_line_part(&t, key);
+                    text_put(&t, "=", 1);
+                    text_line_part(&t, v);
+                    text_put(&t, "\n", 1);
+                    free(v);
+                } else if (type == REG_DWORD && got == sizeof(DWORD)) {
+                    char v[16];
+                    snprintf(v, sizeof v, "%d", (int) *(DWORD *) data);
+                    text_line_part(&t, key);
+                    text_put(&t, "=", 1);
+                    text_line_part(&t, v);
+                    text_put(&t, "\n", 1);
+                }
+                free(key);
+                free(data);
+            }
+            RegCloseKey(session);
+        }
+        RegCloseKey(sessions);
+    }
+    int n = (int) t.n;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + (size_t) n, GENG_HEADER_BYTES(sizeof *b + (size_t) n));
+    b->length = n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, t.s, (size_t) n);
+    free(t.s);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}

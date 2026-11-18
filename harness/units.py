@@ -139,8 +139,9 @@ SUITES = [
         # 390 since TM102: nothing of an ended session comes back;
         # 396 since TM104: the prompt's word keys by word-separators;
         # 402 since IM18: a pane's image on the canvas, on each;
-        # 408 since SG20: the host list's boxes edited, F2 and Up's recall
-        408,
+        # 408 since SG20: the host list's boxes edited, F2 and Up's recall;
+        # 420 since SG21: PuTTY's sessions read and listed as hosts, twelve
+        420,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),
@@ -327,11 +328,16 @@ def main() -> int:
         (WORK / "checks.log").write_text(text)
         totals = next((l.strip() for l in text.splitlines() if "checks hold" in l and "fallbacks never run" in l), "")
         against = next((l.strip() for l in text.splitlines() if "entries against" in l), "")
-        checks_ok = checked.returncode == 0
+        # a program that does not compile has no report, and geng checks
+        # has said so with status 0: no report is a failure either way
+        checks_ok = checked.returncode == 0 and against != ""
         print(f"[{'  ok  ' if checks_ok else ' FAIL '}] {'checks':<24} {totals}; {against} ({time.monotonic() - start_checks:.0f} s)")
         if not checks_ok:
             for line in [l for l in text.splitlines() if l.startswith(("NEW", "  STALE", "  UNUSED", "  open"))][:40]:
                 print("         " + line)
+            if not against:
+                for line in [l for l in text.splitlines() if l.startswith("-- ")][:10]:
+                    print("         " + line)
             print(f"         the whole report: {(WORK / 'checks.log').relative_to(ROOT)}")
     sys.stdout.flush()
     why_not = None if args.no_windows else windows_ready()

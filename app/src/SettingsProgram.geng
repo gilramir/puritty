@@ -24,6 +24,8 @@ import Os.File as File
 import Os.Path as Path
 import Os.Process as Process
 import Platform
+import Putty
+import PuttyStore
 import Reason
 import Recent exposing (Recent)
 import RecentFile
@@ -173,16 +175,20 @@ openWindow r given locale =
                                     meant Reason.Refused Task.fail ("cannot open the window: " ++ why)
 
                                 Ok cell ->
-                                    Task.map3 (\events fonts aliases -> { events = events, fonts = fonts, aliases = aliases })
+                                    Task.map3 (\events fonts elsewhere -> { events = events, fonts = fonts, aliases = elsewhere.aliases, putty = elsewhere.putty })
                                         (SettingsSource.watchSettings given)
                                         Window.fonts
-                                        (sshAliases r)
-                                        |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = recents }))
+                                        -- the hosts of ~/.ssh/config and PuTTY's sessions (SG21)
+                                        (Task.map2 (\aliases putty -> { aliases = aliases, putty = putty })
+                                            (sshAliases r)
+                                            (PuttyStore.sessions r.fs r.vars |> Task.map Putty.hosts)
+                                        )
+                                        |> Task.andThen (\w -> recentsOf r |> Task.map (\recents -> { events = w.events, fonts = w.fonts, aliases = w.aliases, putty = w.putty, recents = recents }))
                                         -- the page it was last on while puritty runs (SG16)
-                                        |> Task.andThen (\w -> lastPage r |> Task.map (\at -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = at }))
+                                        |> Task.andThen (\w -> lastPage r |> Task.map (\at -> { events = w.events, fonts = w.fonts, aliases = w.aliases, putty = w.putty, recents = w.recents, page = at }))
                                         -- the family the terminal shows for the file's font,
                                         -- when it is not the system's (ST35)
-                                        |> Task.andThen (\w -> Window.fontUsed (fontOf read) |> Task.map (\used -> { events = w.events, fonts = w.fonts, aliases = w.aliases, recents = w.recents, page = w.page, used = used }))
+                                        |> Task.andThen (\w -> Window.fontUsed (fontOf read) |> Task.map (\used -> { events = w.events, fonts = w.fonts, aliases = w.aliases, putty = w.putty, recents = w.recents, page = w.page, used = used }))
                                         -- an arrow over a window of choices, not the
                                         -- terminal's I-beam (Gilbert, 2026-11-10)
                                         |> Task.andThen (\w -> Window.setPointer Window.ArrowPointer |> Task.map (\_ -> w))
@@ -268,7 +274,7 @@ sshAliases r =
             meant Reason.NotSet Task.succeed []
 
 
-first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, recents : Array Recent, page : Maybe String, used : String } -> Maybe String -> Words.Lang -> State
+first : Asked -> Given -> Read -> Window.Cell -> { events : Maybe (Source Directory.Change), fonts : Array String, aliases : Array String, putty : Array Config.Host, recents : Array Recent, page : Maybe String, used : String } -> Maybe String -> Words.Lang -> State
 first r given read cell w shotPath lang =
     let
         got =
@@ -291,6 +297,7 @@ first r given read cell w shotPath lang =
             , rows = size.rows
             , fonts = w.fonts
             , aliases = w.aliases
+            , putty = w.putty
             , launcher = r.launcher
             }
             |> SettingsWindow.withRecents w.recents

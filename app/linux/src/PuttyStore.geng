@@ -1,0 +1,83 @@
+module PuttyStore exposing (sessions)
+
+{-| PuTTY's saved sessions on Linux (`docs/settings-gui.md` SG21), apart
+from `Platform` as `SshAgents` is. `app/windows` reads the registry.
+-}
+
+import Bytes
+import Dict exposing (Dict)
+import Os.Directory as Directory
+import Os.File as File
+import Os.Path as Path
+import Putty
+import Reason
+import Task exposing (Task)
+
+
+{-| The sessions, a file each in PuTTY's `sessions` folder
+(`unix/storage.c`'s `make_filename`): `PUTTYSESSIONS`, else
+`PUTTYDIR/sessions`, else `$XDG_CONFIG_HOME/putty/sessions` (or
+`~/.config/putty/sessions`), else `~/.putty/sessions`; the first that can
+be listed. None when PuTTY has saved none. -}
+sessions : File.Permission -> Dict String String -> Task x (Array Putty.Session)
+sessions fs vars =
+    let
+        home =
+            Dict.get "HOME" vars |> Maybe.andThen nonEmpty
+
+        xdg =
+            when Dict.get "XDG_CONFIG_HOME" vars |> Maybe.andThen nonEmpty is
+                Just dir ->
+                    Just dir
+
+                Nothing ->
+                    meant Reason.NotSet Maybe.map (\h -> h ++ "/.config") home
+
+        folders =
+            [ Dict.get "PUTTYSESSIONS" vars |> Maybe.andThen nonEmpty
+            , Dict.get "PUTTYDIR" vars |> Maybe.andThen nonEmpty |> Maybe.map (\d -> d ++ "/sessions")
+            , Maybe.map (\d -> d ++ "/putty/sessions") xdg
+            , Maybe.map (\h -> h ++ "/.putty/sessions") home
+            ]
+                |> Array.mapAndKeepJust identity
+    in
+    firstListed fs folders
+
+
+nonEmpty : String -> Maybe String
+nonEmpty s =
+    if s == "" then
+        Nothing
+
+    else
+        Just s
+
+
+firstListed : File.Permission -> Array String -> Task x (Array Putty.Session)
+firstListed fs folders =
+    when Array.popFirst folders is
+        Just { first, rest } ->
+            Directory.list fs (Path.fromString first)
+                |> Task.map Ok
+                |> Task.onError (\e -> Task.succeed (Err e))
+                |> Task.andThen
+                    (\listed ->
+                        when listed is
+                            Ok entries ->
+                                Task.sequence (Array.map (\e -> readOne fs e.path) entries)
+                                    |> Task.map (Array.mapAndKeepJust identity)
+
+                            Err _ ->
+                                -- no such folder: PuTTY looks at the next
+                                meant Reason.NotSet firstListed fs rest
+                    )
+
+        Nothing ->
+            meant Reason.NoMore Task.succeed []
+
+
+readOne : File.Permission -> Path.Path -> Task x (Maybe Putty.Session)
+readOne fs path =
+    File.readFile fs path
+        |> Task.map (\b -> Just (Putty.parseFile (Putty.unescape (Path.filename path)) (Bytes.toStringLossy b)))
+        |> Task.onError (\_ -> Task.succeed Nothing)

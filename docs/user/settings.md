@@ -124,6 +124,16 @@ tab = "#c62828"                  # its tabs' color in the bar
 A name the file doesn't have is looked up in `~/.ssh/config`, so your
 aliases work as they are.
 
+**PuTTY's saved sessions** are in the host list too, marked "from PuTTY",
+after your own hosts and `~/.ssh/config`'s, so there is nothing to
+import. Connecting to one (Enter), or opening it with Right, makes it a
+host of your file first, with the session's host, user, port, command,
+jump host ("SSH to proxy and use port forwarding"), title, and its colors
+and font where you changed them from PuTTY's. From then on it is yours to
+change; PuTTY's copy is left as it was. Sessions that are not ssh
+(telnet, serial) are not listed. PuTTY's key files (`.ppk`) are not read
+yet: if you log in with one, keep it in Pageant, which puritty uses.
+
 The host list's **Local shell** opens a shell on this computer instead of
 a host (on Windows, PowerShell). It offers the connections you made last first (eight, or as
 many as `[connections] recent` says; 0 for none): Enter makes one again,

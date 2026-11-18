@@ -111,6 +111,8 @@ type alias Model =
     -- the hosts of ~/.ssh/config, listed with the file's (V63), and
     -- whether the window is the host list, which a session replaces (V65)
     , aliases : Array String
+    -- PuTTY's saved sessions as hosts, listed after them (SG21)
+    , putty : Array Config.Host
     , launcher : Bool
     -- the connections made last, newest first, listed before the saved
     -- hosts (SG14)
@@ -181,7 +183,7 @@ type Effect
     | PasteAsked
 
 
-init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, launcher : Bool } -> Model
+init : { config : Config, path : String, reports : Array String, cols : Int, rows : Int, fonts : Array String, aliases : Array String, putty : Array Config.Host, launcher : Bool } -> Model
 init r =
     { config = r.config
     , path = r.path
@@ -209,6 +211,7 @@ init r =
     , fonts = r.fonts
     , fontUsed = { name = "", used = "" }
     , aliases = r.aliases
+    , putty = r.putty
     , launcher = r.launcher
     , recents = []
     , form = Nothing
@@ -338,10 +341,17 @@ onHosts m =
     m.page == hostsPage && Array.isEmpty m.search
 
 
+{-| A row of the host list: its name, where it goes and where it is from;
+whether it is a host of the settings, a recent connection, or one of
+PuTTY's sessions (SG21), the host it is made when it is used. -}
+type alias HostRow =
+    { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent, putty : Maybe Config.Host }
+
+
 {-| The connections made last (SG14), then the hosts listed: the file's,
-then ~/.ssh/config's that the file does not name, each with where it goes
-and where it is from. -}
-hostRows : Model -> Array { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent }
+then ~/.ssh/config's that the file does not name, then PuTTY's sessions
+that neither names (SG21), each with where it goes and where it is from. -}
+hostRows : Model -> Array HostRow
 hostRows m =
     let
         whereOf h =
@@ -370,6 +380,7 @@ hostRows m =
                                 meant Reason.NotSet Words.message "message.hostFromSettings"
                     , own = True
                     , recent = Nothing
+                    , putty = Nothing
                     }
                 )
                 m.config.hosts
@@ -377,7 +388,12 @@ hostRows m =
         theirs =
             m.aliases
                 |> Array.keepIf (\a -> not (Array.any (\h -> h.name == a) m.config.hosts))
-                |> Array.map (\a -> { name = a, detail = Words.message "message.asSshConfig", from = Words.message "message.hostFromSshConfig", own = False, recent = Nothing })
+                |> Array.map (\a -> { name = a, detail = Words.message "message.asSshConfig", from = Words.message "message.hostFromSshConfig", own = False, recent = Nothing, putty = Nothing })
+
+        puttys =
+            m.putty
+                |> Array.keepIf (\p -> not (Array.any (\h -> h.name == p.name) m.config.hosts) && not (Array.member p.name m.aliases))
+                |> Array.map (\p -> { name = p.name, detail = Words.plain (whereOf p), from = Words.message "message.hostFromPutty", own = False, recent = Nothing, putty = Just p })
 
         recent =
             m.recents
@@ -396,13 +412,14 @@ hostRows m =
                                 , from = Words.message "message.recentSaved"
                                 , own = False
                                 , recent = Just r
+                                , putty = Nothing
                                 }
 
                             Quick text ->
-                                { name = text, detail = Words.message "message.quickConnected", from = Words.message "message.recent", own = False, recent = Just r }
+                                { name = text, detail = Words.message "message.quickConnected", from = Words.message "message.recent", own = False, recent = Just r, putty = Nothing }
                     )
     in
-    recent ++ own ++ theirs
+    recent ++ own ++ theirs ++ puttys
 
 
 {-| The page's name, as `settings-page.txt` keeps it (SG16): a page of
@@ -486,7 +503,7 @@ inList m =
 
 {-| The host on a row of the list (quick connect, New connection and the
 local shell come first). -}
-hostAt : Model -> Int -> Maybe { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent }
+hostAt : Model -> Int -> Maybe HostRow
 hostAt m row =
     -- below the three fixed rows; Array.get would count a negative place
     -- from the end
@@ -544,7 +561,7 @@ saveRecent recent m =
 
 {-| Right on a host's row: its form; one of ~/.ssh/config's is saved as a
 host first. -}
-rightOnHost : { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent } -> Model -> { model : Model, effects : Array Effect }
+rightOnHost : HostRow -> Model -> { model : Model, effects : Array Effect }
 rightOnHost h m =
     if h.own then
         done (keepInView { m | form = Just h.name, row = 1, scroll = 0, message = Nothing })
@@ -552,12 +569,45 @@ rightOnHost h m =
     else
         let
             saved =
-                hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
+                when h.putty is
+                    Just p ->
+                        fromPutty p m
+
+                    Nothing ->
+                        meant Reason.NotSet hostsChanged (m.config.hosts ++ [ Config.host h.name h.name ]) [ PutHost (Config.host h.name h.name) ] (Words.message "message.hostAdded" |> Words.with "name" h.name) m
 
             after =
                 saved.model
         in
         { saved | model = keepInView { after | form = Just h.name, row = 1, scroll = 0 } }
+
+
+{-| One of PuTTY's sessions made a host of the settings (SG21), and the
+sessions it jumps through that are not hosts yet with it, so that its
+`jump` names a host. -}
+fromPutty : Config.Host -> Model -> { model : Model, effects : Array Effect }
+fromPutty p m =
+    let
+        chain h acc =
+            if Array.any (\a -> a.name == h.name) acc || hostNamed m h.name /= Nothing then
+                acc
+
+            else
+                let
+                    more =
+                        Array.pushLast h acc
+                in
+                when h.jump |> Maybe.andThen (\j -> Array.findFirst (\q -> q.name == j) m.putty) is
+                    Just found ->
+                        chain found.value more
+
+                    Nothing ->
+                        meant Reason.NotSet more
+
+        made =
+            chain p []
+    in
+    hostsChanged (m.config.hosts ++ made) (Array.map PutHost made) (Words.message "message.hostFromPuttySaved" |> Words.with "name" p.name) m
 
 
 {-| A host of the settings, by name. -}
@@ -1027,19 +1077,33 @@ rowsKey k m =
                     else
                         when hostAt m m.row is
                             Just h ->
-                                { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }
-                                , effects =
-                                    when h.recent is
-                                        Just (Quick text) ->
-                                            [ ConnectQuick text ]
+                                when h.putty is
+                                    Just p ->
+                                        -- PuTTY's: made a host, then connected (SG21)
+                                        let
+                                            saved =
+                                                fromPutty p m
 
-                                        Just (Saved name) ->
-                                            [ ConnectHost name ]
+                                            after =
+                                                saved.model
+                                        in
+                                        { model = { after | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }, effects = saved.effects ++ [ ConnectHost h.name ] }
 
-                                        Nothing ->
-                                            -- a saved host's own row
-                                            meant Reason.NotSet [ ConnectHost h.name ]
-                                }
+                                    Nothing ->
+                                        meant Reason.NotSet
+                                            { model = { m | message = Just (Words.message "message.connecting" |> Words.with "name" h.name) }
+                                            , effects =
+                                                when h.recent is
+                                                    Just (Quick text) ->
+                                                        [ ConnectQuick text ]
+
+                                                    Just (Saved name) ->
+                                                        [ ConnectHost name ]
+
+                                                    Nothing ->
+                                                        -- a saved host's own row
+                                                        meant Reason.NotSet [ ConnectHost h.name ]
+                                            }
 
                             Nothing ->
                                 meant Reason.OutOfRange done m
@@ -1094,6 +1158,9 @@ rowsKey k m =
 
                             else if h.own then
                                 hostsChanged (Array.keepIf (\o -> o.name /= h.name) m.config.hosts) [ DeleteHost h.name ] (Words.message "message.hostRemoved" |> Words.with "name" h.name) m
+
+                            else if h.putty /= Nothing then
+                                done { m | message = Just (Words.message "message.fromPutty" |> Words.with "name" h.name) }
 
                             else
                                 done { m | message = Just (Words.message "message.fromSshConfig" |> Words.with "name" h.name) }
@@ -1673,7 +1740,7 @@ pasteHere m =
 {-| The line quick connect takes for a listed row (SG20): a recent quick
 connection's own; a saved host's address, `user@host:port`, and its
 command; one of ~/.ssh/config's, its name. -}
-rowLine : Model -> { name : String, detail : Message, from : Message, own : Bool, recent : Maybe Recent } -> String
+rowLine : Model -> HostRow -> String
 rowLine m h =
     when h.recent is
         Just r ->
@@ -1685,7 +1752,12 @@ rowLine m h =
                     savedLine m h.name
 
                 else
-                    h.name
+                    when h.putty is
+                        Just p ->
+                            hostLine p
+
+                        Nothing ->
+                            meant Reason.NotSet h.name
 
 
 recentLine : Model -> Recent -> String
@@ -1702,17 +1774,22 @@ savedLine : Model -> String -> String
 savedLine m name =
     when hostNamed m name is
         Just h ->
-            Hosts.spec h
-                ++ (when h.command is
-                        Just c ->
-                            " " ++ c
-
-                        Nothing ->
-                            meant Reason.NotSet ""
-                   )
+            hostLine h
 
         Nothing ->
             meant Reason.Gone name
+
+
+hostLine : Config.Host -> String
+hostLine h =
+    Hosts.spec h
+        ++ (when h.command is
+                Just c ->
+                    " " ++ c
+
+                Nothing ->
+                    meant Reason.NotSet ""
+           )
 
 
 {-| A row's connection put into quick connect to be edited, the caret at

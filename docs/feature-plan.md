@@ -52,7 +52,8 @@ hosts:
    each host. Termius is the model.
 2. Quick-connect without first saving a host.
 3. Import from `~/.ssh/config`, PuTTY's registry sessions and MobaXterm's
-   session file.
+   session file. `~/.ssh/config`'s are listed (V63), PuTTY's too
+   (`settings-gui.md` SG21); MobaXterm's waits on a real file.
 4. Passwords and key passphrases in the Windows credential store, never in
    `config.toml`.
 5. File transfer inside the session: an SFTP panel or drag-and-drop.
