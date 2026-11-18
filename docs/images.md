@@ -1204,6 +1204,10 @@ on its list.
 
 Kept here, not in `docs/user/` (which `site/sync.py` publishes whole),
 until the first protocol works; then it moves to `docs/user/images.md`.
+*Moved, 2026-11-18: `docs/user/images.md`, after the tmux guide, with
+what chafa, timg and snacks.nvim need told since they know terminals by
+name (IM17, IM34). The memory limit below is not a setting: it is 320 MB
+(`Main.imageLimit`), and the guide says so.*
 
 > **# Images in the terminal**
 >
