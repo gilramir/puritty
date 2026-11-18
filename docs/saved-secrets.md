@@ -145,3 +145,13 @@ as a small client of its own.
 4. **Machine or roaming**: `CRED_PERSIST_LOCAL_MACHINE`, kept on this
    machine, or `CRED_PERSIST_ENTERPRISE`, which follows a domain user's
    roaming profile to other machines? *Leaning:* this machine only.
+
+## PW7 · Decided: Windows' Credential Manager, nothing on Linux (2026-11-18, Dnene63)
+
+*Gilbert, 2026-11-18*, after PW2's answer that Tabby is the one ssh
+client found that uses it: "we will use windows credential manager.
+Nothing on Linux right now." So PW6's third question is answered (no
+Linux store for now; a built-in-client host on Linux goes on asking each
+time), and the store on Windows is Credential Manager, not a vault of
+puritty's own with a master password. PW6's first, second and fourth
+questions are still open.
