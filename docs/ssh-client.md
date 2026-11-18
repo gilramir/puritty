@@ -1193,7 +1193,7 @@ with no `client` line logged in through Pageant, which `ssh.exe` does not
 use, and exited with the command's status.
 
 **Not yet, of step 9:** Gilbert's own session to an EUC-KR host;
-passwords kept in Windows' Credential Manager; the strip of SC18. (The
+passwords kept in Windows' Credential Manager (built: `saved-secrets.md` PW8); the strip of SC18. (The
 jump host was built the same day, SC21; the changed-key dialog in SC28.)
 
 ## SC20 · A typed secret shown as bullets (2026-11-10)

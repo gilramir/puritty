@@ -95,9 +95,9 @@ type AgentPath
 type Ask
     = TrustHostKey { host : String, algorithm : String, fingerprint : String, knownTypes : Array String }
     | HostKeyChanged { host : String, algorithm : String, fingerprint : String, lineNumbers : Array Int }
-    | Password { prompt : String }
+    | Password { prompt : String, account : String }
     | Passphrase { file : String }
-    | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool } }
+    | Responses { name : String, instruction : String, prompts : Array { text : String, echo : Bool }, account : String }
 
 
 {-| The user's answer to the last [`Ask`](#Ask). `Trust`: connect, and
@@ -978,10 +978,18 @@ onRequest request st =
                             meant Reason.NotSet signWith need file.text Bytes.empty st
 
         { request = Auth.NeedPassword need } ->
-            tell (Asking (Password { prompt = need.prompt })) { st | waiting = ForPassword }
+            tell (Asking (Password { prompt = need.prompt, account = accountOf st.options })) { st | waiting = ForPassword }
 
         { request = Auth.NeedResponses need } ->
-            tell (Asking (Responses need)) { st | waiting = ForResponses }
+            tell (Asking (Responses { name = need.name, instruction = need.instruction, prompts = need.prompts, account = accountOf st.options })) { st | waiting = ForResponses }
+
+
+{-| Whom a password is for, `user@host:port`, as the connection was made
+(the host's address, or its `HostKeyAlias`'s name is not used): a jump
+host's question says its own (`docs/saved-secrets.md` PW8). -}
+accountOf : Options -> String
+accountOf o =
+    o.user ++ "@" ++ o.host ++ ":" ++ String.fromInt o.port
 
 
 {-| A signature by a key file's key: loaded, used and forgotten, so the

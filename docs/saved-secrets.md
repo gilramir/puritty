@@ -153,5 +153,68 @@ client found that uses it: "we will use windows credential manager.
 Nothing on Linux right now." So PW6's third question is answered (no
 Linux store for now; a built-in-client host on Linux goes on asking each
 time), and the store on Windows is Credential Manager, not a vault of
-puritty's own with a master password. PW6's first, second and fourth
-questions are still open.
+puritty's own with a master password. The rest, the same day, as PW6
+leaned: **passwords and key passphrases both**, a key's also offered to
+the agent; **a "Remember" checkbox, off by default**, with
+`remember_secrets = "ask" | "never"` (`ask` the default) to turn saving
+off; **this machine only** (`CRED_PERSIST_LOCAL_MACHINE`). And build it.
+
+## PW8 · Built: remembered in Credential Manager (2026-11-18)
+
+- **What is asked carries whom it is for.** `Ssh.Session`'s `Password`
+  and `Responses` questions gain `account`, `user@host:port` of the
+  connection that asks, so a jump host's question names its own.
+- **`Remembered`** (pure, in the app) says which questions may be kept
+  and by what name: a password as `puritty:ssh:USER@HOST:PORT`, the user
+  beside it; a keyboard-interactive question only when it asks one thing
+  that does not echo and says "password", "passwd", "암호" or "비밀번호"
+  (a "Verification code:" is never kept); a key's passphrase as
+  `puritty:key:PATH`, the file as the client was given it. PW5 named it
+  by the key's fingerprint, but the window is told the path, not the
+  key; a moved key is asked for again. It also says what the store gets
+  at the login (`changesAt`).
+- **`SecretStore`**, a module per platform as `SshAgents` is: Windows'
+  is `packages/win32`'s new `Credentials` (`CredReadW`, `CredWriteW`,
+  `CredDeleteW` on generic credentials, `CRED_PERSIST_LOCAL_MACHINE`,
+  in `puritty_win32.c`); Linux's keeps nothing, so nothing is offered.
+- **In `Main`**: a question that may be kept is first answered from the
+  store (a line says so) when the store holds it and it has not been given
+  on this connection. Asked again for it, the answer was refused: the box
+  says "The remembered one was refused.", with Remember checked. Else the
+  box asks, with "[ ] Remember it in Windows' Credential Manager" and
+  Tab to check it. What the box was told to remember is written when the
+  session has logged in (`Started`), never before. A remembered one that
+  was refused, and not to be remembered again, is taken away then. A
+  question asked again drops what was waiting for its name. R starts
+  over.
+- **`[connections] remember_secrets`**: `ask` (the default) or `never`,
+  on the settings window's Program page, English and Korean.
+
+**Measured**: five tests in the app suite (425): the names; which
+keyboard-interactive prompts are kept; never offered on Linux, with
+`never`, or for a host key; a checked answer replacing one waiting for
+the same name; a refused one forgotten, an unchecked one left alone.
+On beelink1 (`harness/windows/secrets/remember.py`, in the desktop
+session; nene's test sshd on the LAN, the test key encrypted with
+"hunter2"), four runs of `puritty.exe --host test`, each `exit 0`:
+the passphrase typed, Tab, Enter, and Credential Manager then held
+`puritty:key:…\id_test`; nothing typed, logged in from it; a wrong one
+put in its place by `cmdkey`, asked again, the right one typed and
+Enter (Remember already checked); nothing typed, logged in from it. The
+credential, the files and the scheduled task were removed after.
+Passwords use the same path but no test sshd here takes a password (it
+would be the machine's own account's), so that path is held by the
+tests alone.
+
+**Secrets in Geng's heap** (SC12 question 7, SC16): a remembered
+secret is a Geng string only from the read to the answer, as a typed one
+already is (SC20), and one to be remembered only until the login; what
+lives long is in Credential Manager, not in puritty.
+
+**Not built: "Add to the agent"** for a passphrase (PW7's "plus agent").
+OpenSSH's `SSH2_AGENTC_ADD_IDENTITY` carries the key's private numbers,
+and SC16 keeps a private key in C, never as Geng bytes, while the agent's
+pipe is written from Geng (`Ssh.Agent`, `Os`). So either the message
+passes through Geng once, as the session keys do (accepted by SC12
+question 7), or C writes it to the pipe itself, a bigger change. For
+Gilbert.

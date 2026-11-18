@@ -161,3 +161,11 @@ against `~/.ssh/known_hosts` and asks before trusting a new one, uses your
 keys and the Windows ssh agent or Pageant, asks for a passphrase or a
 password in the window, and goes through jump hosts as `ProxyJump` does.
 On Linux puritty runs OpenSSH, unless a host says `client = "built-in"`.
+
+When the window asks for a password or a key's passphrase on Windows,
+Tab checks "Remember it in Windows' Credential Manager", and the next
+connection logs in without asking. Remembered ones are listed in Control
+Panel's Credential Manager under "Generic credentials", named
+`puritty:ssh:…` and `puritty:key:…`, where you can remove them; one the
+server refuses is asked for again. `remember_secrets = "never"` under
+`[connections]` turns the offer off. Nothing is remembered on Linux.

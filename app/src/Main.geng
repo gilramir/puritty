@@ -68,10 +68,12 @@ import Process as Sleep
 import Reason
 import Recent exposing (Recent)
 import RecentFile
+import Remembered
 import Restore
 import RestoreFile exposing (TabColor(..))
 import Schema
 import Search
+import SecretStore
 import SessionFile
 import SettingsGui
 import SettingsProgram
@@ -295,15 +297,21 @@ type alias Starter =
 {-| puritty's own screen for an ssh session: the host, the command run
 there if one was given, what has happened,
 the question asked and what has been typed for it, whether the session
-runs, why it failed, and its exit status. -}
+runs, why it failed, and its exit status. A question that may be
+remembered says whether it is to be (`remember`, the box's checkbox) and
+whether a saved answer was refused; `tried` are the names answered from
+the store on this connection, `changes` what the store is to get once the
+session has logged in (`docs/saved-secrets.md` PW8). -}
 type alias SshScreen =
     { host : String
     , command : Maybe String
     , lines : Array String
-    , asking : Maybe { ask : Session.Ask, typed : String, given : Array String }
+    , asking : Maybe { ask : Session.Ask, typed : String, given : Array String, offer : Bool, remember : Bool, refused : Bool }
     , started : Bool
     , failed : Maybe String
     , exitStatus : Maybe Int
+    , tried : Array String
+    , changes : Array Remembered.Change
     }
 
 
@@ -1233,7 +1241,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , shownItems = []
                      , ssh =
                         Maybe.map
-                            (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing })
+                            (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] })
                             config.remote
                      , tmux = TmuxMode.setEmbedder (embedderOf config) <| TmuxMode.setCell (paneCell cell) (TmuxMode.setBackground config.background (TmuxMode.setLook (config.tmuxLook == "tmux") (TmuxMode.setBar (config.tmuxTabs == "top") (TmuxMode.idle {}))))
                      , overlaid = False
@@ -3556,6 +3564,7 @@ sshTold told m =
         Session.Started ->
             m.remote.resize (ptySize m.term.cols m.term.rows m.term)
                 |> Task.map (\_ -> sshNoticed told m)
+                |> Task.andThen rememberChanges
 
         Session.Asking (Session.HostKeyChanged k) ->
             -- asked by the platform's own dialog where there is one, which
@@ -3582,8 +3591,126 @@ sshTold told m =
                                 Task.succeed asked
                     )
 
+        Session.Asking ask ->
+            sshAsked ask m
+
         _ ->
             Task.succeed (sshNoticed told m)
+
+
+{-| A question that may be remembered (`docs/saved-secrets.md` PW8):
+answered from the store when it holds the answer and it has not been
+given on this connection; asked again with a note, "Remember" checked,
+when it was given and refused; else asked, the box offering to remember
+it. A change waiting for the same name is dropped, since being asked
+again means the answer given was refused. -}
+sshAsked : Session.Ask -> (taken m : Model) -> Task Error Model
+sshAsked ask m =
+    let
+        asked =
+            sshNoticed (Session.Asking ask) m
+    in
+    when { kept = Remembered.offered { available = SecretStore.available, setting = m.config.rememberSecrets } (questionOf ask), ssh = asked.ssh } is
+        { kept = Just k, ssh = Just screen0 } ->
+            let
+                screen =
+                    { screen0 | changes = Array.keepIf (\c -> c.target /= k.target) screen0.changes }
+
+                offering refused model =
+                    when screen.asking is
+                        Just a ->
+                            { model | ssh = Just { screen | asking = Just { a | offer = True, remember = refused, refused = refused } } }
+
+                        Nothing ->
+                            meant Reason.NotOpen model
+            in
+            if Array.member k.target screen.tried then
+                Task.succeed (offering True asked)
+
+            else
+                SecretStore.read k.target
+                    |> Task.andThen
+                        (\got ->
+                            when got is
+                                Ok secret ->
+                                    let
+                                        answer =
+                                            when ask is
+                                                Session.Responses _ ->
+                                                    Session.GiveAll [ secret ]
+
+                                                _ ->
+                                                    Session.Give secret
+                                    in
+                                    sshAnswered asked.remote answer "the remembered one given, from Windows' Credential Manager" { screen | tried = Array.pushLast k.target screen.tried } asked
+
+                                Err _ ->
+                                    -- none kept, or the store could not be read
+                                    meant Reason.NotSet Task.succeed (offering False asked)
+                        )
+
+        _ ->
+            Task.succeed asked
+
+
+{-| A question of the session, as `Remembered` takes it. -}
+questionOf : Session.Ask -> Remembered.Question
+questionOf ask =
+    when ask is
+        Session.Password p ->
+            Remembered.Password { account = p.account }
+
+        Session.Passphrase p ->
+            Remembered.Passphrase { file = p.file }
+
+        Session.Responses r ->
+            Remembered.Responses { prompts = r.prompts, account = r.account }
+
+        Session.TrustHostKey _ ->
+            Remembered.NotSecret
+
+        Session.HostKeyChanged _ ->
+            Remembered.NotSecret
+
+
+{-| What the store is to get, now that the session has logged in: each
+answer the box was told to remember written, each refused one not
+replaced taken away; what happened said on the screen. -}
+rememberChanges : (taken m : Model) -> Task Error Model
+rememberChanges m =
+    when m.ssh is
+        Just screen ->
+            if Array.isEmpty screen.changes then
+                Task.succeed m
+
+            else
+                screen.changes
+                    |> Array.map
+                        (\c ->
+                            when c.secret is
+                                Just secret ->
+                                    SecretStore.write { target = c.target, user = c.user, secret = secret }
+                                        |> Task.map
+                                            (\written ->
+                                                when written is
+                                                    Ok _ ->
+                                                        "remembered in Windows' Credential Manager as " ++ c.target
+
+                                                    Err why ->
+                                                        meant Reason.Refused ("not remembered: Windows' Credential Manager said error " ++ why)
+                                            )
+
+                                Nothing ->
+                                    meant Reason.NotSet
+                                        (SecretStore.forget c.target
+                                            |> Task.map (\_ -> "the remembered one, refused, is forgotten: " ++ c.target)
+                                        )
+                        )
+                    |> Task.sequence
+                    |> Task.map (\said -> { m | ssh = Just { screen | changes = [], lines = Array.takeLast 200 (screen.lines ++ said) }, urgent = True })
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed m
 
 
 {-| tmux control mode not running, with the settings' look, bar and
@@ -3638,7 +3765,7 @@ sshNoticed told m =
                             { screen | lines = Array.takeLast 200 (screen.lines ++ Array.map (\l -> "| " ++ cleanText l) (String.lines (String.trimRight text))) }
 
                         Session.Asking ask ->
-                            { screen | asking = Just { ask = ask, typed = "", given = [] } }
+                            { screen | asking = Just { ask = ask, typed = "", given = [], offer = False, remember = False, refused = False } }
 
                         Session.Started ->
                             { screen | started = True }
@@ -3761,6 +3888,9 @@ sshKey remote k m =
         backspace =
             k.sym == 0xFF08
 
+        tab =
+            k.sym == 0xFF09
+
         letter =
             String.toLower (Bytes.toStringLossy k.text)
     in
@@ -3774,6 +3904,20 @@ sshKey remote k m =
                     let
                         answered answer line model =
                             sshAnswered remote answer line screen model
+
+                        -- an answer the box offered to remember: what the
+                        -- store is to get at the login, by its checkbox
+                        answeredKeeping secret answer line model =
+                            when Remembered.offered { available = SecretStore.available, setting = model.config.rememberSecrets } (questionOf asking.ask) is
+                                Just name ->
+                                    if asking.offer then
+                                        sshAnswered remote answer line { screen | changes = Remembered.changesAt { kept = name, remember = asking.remember, refused = asking.refused, secret = secret } screen.changes } model
+
+                                    else
+                                        sshAnswered remote answer line screen model
+
+                                Nothing ->
+                                    meant Reason.NotSet sshAnswered remote answer line screen model
                     in
                     when asking.ask is
                         Session.HostKeyChanged _ ->
@@ -3807,13 +3951,16 @@ sshKey remote k m =
                             if escape then
                                 answered Session.Decline "the prompts are not answered" m
 
+                            else if tab && asking.offer then
+                                Task.succeed { m | ssh = Just { screen | asking = Just { asking | remember = not asking.remember } }, urgent = True }
+
                             else if enter then
                                 let
                                     given =
                                         Array.pushLast asking.typed asking.given
                                 in
                                 if Array.length given >= Array.length r.prompts then
-                                    answered (Session.GiveAll given) "answered" m
+                                    answeredKeeping asking.typed (Session.GiveAll given) "answered" m
 
                                 else
                                     Task.succeed { m | ssh = Just { screen | asking = Just { asking | typed = "", given = given } }, urgent = True }
@@ -3826,7 +3973,10 @@ sshKey remote k m =
                                 answered Session.Decline "not given" m
 
                             else if enter then
-                                answered (Session.Give asking.typed) "given" m
+                                answeredKeeping asking.typed (Session.Give asking.typed) "given" m
+
+                            else if tab && asking.offer then
+                                Task.succeed { m | ssh = Just { screen | asking = Just { asking | remember = not asking.remember } }, urgent = True }
 
                             else
                                 Task.succeed (editTyped backspace k m)
@@ -3842,7 +3992,7 @@ sshKey remote k m =
                             -- session's modes kept, its screen left in place
                             -- (docs/tabs.md TB19)
                             remote.reconnect (ptySize m.term.cols m.term.rows m.term)
-                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing }, tmux = freshTmux m.config m.term, term = Vt.restarted m.term, back = 0, selection = Nothing, urgent = True })
+                                |> Task.map (\_ -> { m | ssh = Just { screen | lines = [ "connecting again" ], failed = Nothing, started = False, exitStatus = Nothing, tried = [], changes = [] }, tmux = freshTmux m.config m.term, term = Vt.restarted m.term, back = 0, selection = Nothing, urgent = True })
 
                         else if (screen.failed /= Nothing && enter) || escape then
                             -- this tab's session given up: the tab closed, and
@@ -3895,6 +4045,50 @@ screen (docs/ssh-client.md SC23): what `ownTerm` writes on the screen
 without one. -}
 dialogOf : SshScreen -> Maybe Dialog.Dialog
 dialogOf screen =
+    questionDialog screen
+        |> Maybe.map
+            (\d ->
+                when screen.asking is
+                    Just asking ->
+                        remembering asking d
+
+                    Nothing ->
+                        meant Reason.NotOpen d
+            )
+
+
+{-| A question's box with "Remember" (`docs/saved-secrets.md` PW8), where
+the question may be remembered: its checkbox, Tab to change it, and a
+note when a remembered answer was refused. -}
+remembering : { ask : Session.Ask, typed : String, given : Array String, offer : Bool, remember : Bool, refused : Bool } -> Dialog.Dialog -> Dialog.Dialog
+remembering asking d =
+    if asking.offer then
+        { d
+            | lines =
+                (if asking.refused then
+                    [ "The remembered one was refused." ]
+
+                 else
+                    []
+                )
+                    ++ d.lines
+                    ++ [ (if asking.remember then
+                            "[x]"
+
+                          else
+                            "[ ]"
+                         )
+                            ++ " Remember it in Windows' Credential Manager"
+                       ]
+            , hint = d.hint ++ "    Tab: remember"
+        }
+
+    else
+        d
+
+
+questionDialog : SshScreen -> Maybe Dialog.Dialog
+questionDialog screen =
     when screen.asking is
         Just asking ->
             when asking.ask is
@@ -6451,7 +6645,7 @@ freshTab id remote host name color cols rows m =
     , pasting = Nothing
     , clips = []
     , clipRead = Nothing
-    , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+    , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
     , tmux = freshTmux m.config m.term
     , search = Nothing
     , syncSince = -1
@@ -6491,7 +6685,7 @@ reopened k id remote host m =
         , pasting = Nothing
         , clips = []
         , clipRead = Nothing
-        , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing }) host
+        , ssh = Maybe.map (\h -> { host = h.name, command = h.command, lines = [], asking = Nothing, started = False, failed = Nothing, exitStatus = Nothing, tried = [], changes = [] }) host
         , tmux = freshTmux m.config m.term
         , search = Nothing
         , syncSince = -1

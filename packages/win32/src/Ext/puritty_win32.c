@@ -72,6 +72,7 @@
 #include <windows.h>
 #include <imm.h>
 #include <windowsx.h>
+#include <wincred.h>
 #include <mmsystem.h>
 
 #include <ft2build.h>
@@ -2562,5 +2563,93 @@ geng_cancel puritty_win32_puttySessions(geng_wait *wait) {
     if (n) memcpy(b->data, t.s, (size_t) n);
     free(t.s);
     geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* SAVED PASSWORDS
+ *
+ * Windows' Credential Manager (docs/saved-secrets.md PW7, PW8): a generic
+ * credential by its target, kept on this machine
+ * (CRED_PERSIST_LOCAL_MACHINE), its secret the bytes given, a user name
+ * beside it. Measured on beelink1 (PW3): a secret of up to 2560 bytes, and
+ * no call works from an ssh logon (ERROR_NO_SUCH_LOGON_SESSION). */
+
+static geng_bytes *bytes_from(const void *data, size_t n) {
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + n, GENG_HEADER_BYTES(sizeof *b + n));
+    b->length = (int32_t) n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, data, n);
+    return b;
+}
+
+/* The secret: 1 and its bytes when there is one, 0 and the error's code
+ * (as text) when there is none or it cannot be read. */
+geng_cancel puritty_win32_credRead(void *target_bytes, geng_wait *wait) {
+    char *target = string_of(target_bytes);
+    wchar_t *wtarget = wide(target);
+    free(target);
+    PCREDENTIALW cred = NULL;
+    geng_bytes *b;
+    if (CredReadW(wtarget, CRED_TYPE_GENERIC, 0, &cred)) {
+        size_t n = cred->CredentialBlobSize;
+        uint8_t *out = malloc(n + 1);
+        out[0] = 1;
+        if (n) memcpy(out + 1, cred->CredentialBlob, n);
+        b = bytes_from(out, n + 1);
+        SecureZeroMemory(out, n + 1);
+        free(out);
+        CredFree(cred);
+    } else {
+        char why[16];
+        int k = snprintf(why + 1, sizeof why - 1, "%lu", (unsigned long) GetLastError());
+        why[0] = 0;
+        b = bytes_from(why, (size_t) k + 1);
+    }
+    free(wtarget);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* The secret written: empty when it was, else the error's code as text. */
+geng_cancel puritty_win32_credWrite(void *target_bytes, void *user_bytes, void *secret_bytes, geng_wait *wait) {
+    char *target = string_of(target_bytes), *user = string_of(user_bytes);
+    wchar_t *wtarget = wide(target), *wuser = wide(user);
+    free(target);
+    free(user);
+    geng_bytes *secret = secret_bytes;
+    CREDENTIALW cred;
+    memset(&cred, 0, sizeof cred);
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = wtarget;
+    cred.UserName = wuser;
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    cred.CredentialBlobSize = (DWORD) secret->length;
+    cred.CredentialBlob = secret->data;
+    geng_bytes *b;
+    if (CredWriteW(&cred, 0)) {
+        b = bytes_from("", 0);
+    } else {
+        char why[16];
+        int k = snprintf(why, sizeof why, "%lu", (unsigned long) GetLastError());
+        b = bytes_from(why, (size_t) k);
+    }
+    free(wtarget);
+    free(wuser);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
+/* The secret removed: 1 when it was, 0 when there was none or it could
+ * not be. */
+geng_cancel puritty_win32_credDelete(void *target_bytes, geng_wait *wait) {
+    char *target = string_of(target_bytes);
+    wchar_t *wtarget = wide(target);
+    free(target);
+    int ok = CredDeleteW(wtarget, CRED_TYPE_GENERIC, 0) ? 1 : 0;
+    free(wtarget);
+    geng_succeed(wait, geng_slot_I4(ok));
     return (geng_cancel) {0};
 }

@@ -24,6 +24,7 @@ import LastWindow
 import Platform
 import Putty
 import Recent
+import Remembered
 import RestoreFile exposing (TabColor(..))
 import Schema
 import Screen
@@ -42,7 +43,7 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, tabOrder, clock, TmuxTests.tmuxMode, Explorer.explorer ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, TmuxTests.tmuxMode, Explorer.explorer ]
 
 
 {-| The window's clock, which starts over every 2^30 ms (`docs/rhel8-etx.md`
@@ -219,6 +220,74 @@ putty =
                             typed (onInner ++ [ press 0xFF53 ])
                     in
                     Expect.equal { said = [ "put inner", "put bastion" ], form = Just "inner" } { said = said r.effects, form = r.model.form }
+          }
+        ]
+
+
+{-| Remembered passwords and passphrases (`docs/saved-secrets.md` PW8). -}
+remembered : U.Suite
+remembered =
+    let
+        on =
+            { available = True, setting = "ask" }
+
+        kept =
+            { target = "puritty:ssh:me@h:22", user = "me" }
+    in
+    run "Remembered"
+        [ { name = "a password by its connection, a passphrase by its file"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ Just { target = "puritty:ssh:me@h.example.com:2222", user = "me" }, Just { target = "puritty:key:C:\\Users\\me\\.ssh\\id_ed25519", user = "C:\\Users\\me\\.ssh\\id_ed25519" } ]
+                        [ Remembered.keptFor (Remembered.Password { account = "me@h.example.com:2222" })
+                        , Remembered.keptFor (Remembered.Passphrase { file = "C:\\Users\\me\\.ssh\\id_ed25519" })
+                        ]
+          }
+        , { name = "keyboard-interactive: one hidden prompt that says password, in English or Korean"
+          , test =
+                \_ ->
+                    let
+                        asked prompts =
+                            Remembered.keptFor (Remembered.Responses { prompts = prompts, account = "me@h:22" }) /= Nothing
+                    in
+                    Expect.equal [ True, True, True, False, False, False ]
+                        [ asked [ { text = "Password: ", echo = False } ]
+                        , asked [ { text = "비밀번호: ", echo = False } ]
+                        , asked [ { text = "암호:", echo = False } ]
+                        , asked [ { text = "Verification code: ", echo = False } ]
+                        , asked [ { text = "Password: ", echo = True } ]
+                        , asked [ { text = "Password: ", echo = False }, { text = "Code: ", echo = False } ]
+                        ]
+          }
+        , { name = "never offered on Linux, with remember_secrets never, or for a host key"
+          , test =
+                \_ ->
+                    let
+                        password =
+                            Remembered.Password { account = "me@h:22" }
+                    in
+                    Expect.equal [ False, False, False, True ]
+                        [ Remembered.offered { available = False, setting = "ask" } password /= Nothing
+                        , Remembered.offered { available = True, setting = "never" } password /= Nothing
+                        , Remembered.offered on Remembered.NotSecret /= Nothing
+                        , Remembered.offered on password /= Nothing
+                        ]
+          }
+        , { name = "checked: written at the login, in place of one waiting for the same name"
+          , test =
+                \_ ->
+                    Expect.equal [ { target = "puritty:ssh:me@h:22", user = "me", secret = Just "new" } ]
+                        (Remembered.changesAt { kept = kept, remember = True, refused = False, secret = "new" } [ { target = "puritty:ssh:me@h:22", user = "me", secret = Just "old" } ])
+          }
+        , { name = "a refused remembered one, not to be remembered again: forgotten; unchecked otherwise: nothing"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ { target = "puritty:ssh:me@h:22", user = "me", secret = Nothing } ], [] ]
+                        [ Remembered.changesAt { kept = kept, remember = False, refused = True, secret = "typed" } []
+                        , Remembered.changesAt { kept = kept, remember = False, refused = False, secret = "typed" } []
+                        ]
           }
         ]
 
