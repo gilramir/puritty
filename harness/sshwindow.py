@@ -78,6 +78,35 @@ CASES = [
     ("command-not-found", "ed", "", "known", ["sleep:1", "Return"], "no-such-tmux -CC attach -t main"),
     # tmux -CC refusing the attach, its error said inside control mode
     ("tmux-attach-fails", "ed", "", "known", ["sleep:1", "Return"], "tmux -L sshwindow-none -f /dev/null -CC attach -t main"),
+    # control mode ending oddly over the built-in client (docs/tmux-checks.md
+    # TK13), then a line typed, which must reach the shell after it: the
+    # client killed with no %exit; the server killed; the client detached
+    # from elsewhere
+    ("tmux-client-killed", "ed", "", "known", ["sleep:2", "type:hello", "Return"],
+     # (the socket's name through a variable: the shell's own command line
+     # holds the whole command, and pkill -f would match it too). Pinned as
+     # it is, and wrong: the shell after it waits in `read` and says
+     # nothing, so nothing tells puritty control mode is over, and the
+     # first key goes as `send-keys` (TK13: a timeout on an unanswered
+     # command is the only sign, not taken)
+     "echo first > {size}; T=sw-k; (sleep 2; pkill -9 -f 'tmux -L sw-[k] -f') & tmux -L $T -f /dev/null -CC new-session; read l; echo $l >> {size}; tmux -L $T kill-server; exit 0"),
+    # the same with an interactive shell after it, as a login shell that
+    # ran tmux is: its prompt is the first thing after control mode
+    ("tmux-client-killed-shell", "ed", "", "known", ["sleep:2", "type:echo hello >> size.txt", "Return", "type:exit", "Return"],
+     "cd $(dirname {size}); echo first > {size}; T=sw-ks; (sleep 2; pkill -9 -f 'tmux -L sw-k[s] -f') & tmux -L $T -f /dev/null -CC new-session; tmux -L $T kill-server; PS1='$ ' exec sh -i"),
+    ("tmux-server-killed", "ed", "", "known", ["sleep:2", "type:hello", "Return"],
+     "echo first > {size}; (sleep 2; tmux -L sw-s kill-server) & tmux -L sw-s -f /dev/null -CC new-session; read l; echo $l >> {size}; exit 0"),
+    ("tmux-detached-elsewhere", "ed", "", "known", ["sleep:2", "type:hello", "Return"],
+     "echo first > {size}; (sleep 2; tmux -L sw-d detach-client -s 0) & tmux -L sw-d -f /dev/null -CC new-session; read l; echo $l >> {size}; tmux -L sw-d kill-server; exit 0"),
+    # the connection dropped while tmux -CC is attached and puritty's prompt,
+    # its tree, or a flood of output is up; then R, and a line typed into
+    # the new shell
+    ("tmux-drop-at-prompt", "ed", "", "known", ["ctrl+b", "comma", "sleep:4", "r", "type:hello", "Return"],
+     "if [ -e {size} ]; then read l; echo $l >> {size}; exit 0; else echo first > {size}; (sleep 5; tmux -L sw-p kill-server; kill -9 $PPID) & tmux -L sw-p -f /dev/null -CC new-session; fi"),
+    ("tmux-drop-in-tree", "ed", "", "known", ["ctrl+b", "w", "sleep:4", "r", "type:hello", "Return"],
+     "if [ -e {size} ]; then read l; echo $l >> {size}; exit 0; else echo first > {size}; (sleep 5; tmux -L sw-t kill-server; kill -9 $PPID) & tmux -L sw-t -f /dev/null -CC new-session; fi"),
+    ("tmux-drop-in-flood", "ed", "", "known", ["sleep:4", "r", "type:hello", "Return"],
+     "if [ -e {size} ]; then read l; echo $l >> {size}; exit 0; else echo first > {size}; (sleep 3; tmux -L sw-f kill-server; kill -9 $PPID) & tmux -L sw-f -f /dev/null -CC new-session 'seq 1 100000000'; fi"),
 ]
 
 
@@ -107,7 +136,9 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             jump = f'jump = "{getpass.getuser()}@127.0.0.1:{bastion.port}"\n'
         (home / "config" / "puritty" / "config.toml").write_text(
             f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
-            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size)}"\n' + jump)
+            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size)}"\n' + jump
+            # the diagnostic log, for a case that fails
+            + "\n[debug]\nlog = true\n")
         env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser(),
                    PURITTY_SHOT=str(home / "shot.ppm"))
         env.pop("SSH_AUTH_SOCK", None)
@@ -160,6 +191,7 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--update", action="store_true")
+    ap.add_argument("only", nargs="*", help="these cases alone")
     ap.add_argument("--shots", action="store_true", help="save the window's picture before each key, in .harness-work/sshwindow")
     a = ap.parse_args()
     global SHOTS
@@ -177,7 +209,8 @@ def main():
     time.sleep(0.5)
     fails = 0
     try:
-        for name, key, passphrase, known, presses, command in CASES:
+        chosen = [c for c in CASES if not a.only or c[0] in a.only]
+        for name, key, passphrase, known, presses, command in chosen:
             got = run_case(env, name, key, passphrase, known, presses, command, keys)
             pin = PINS / f"{name}.txt"
             if a.update:
@@ -193,7 +226,7 @@ def main():
         xvfb.terminate()
         xvfb.wait()
     if not a.update:
-        print(f"{len(CASES) - fails} of {len(CASES)} cases pass")
+        print(f"{len(chosen) - fails} of {len(chosen)} cases pass")
         sys.exit(1 if fails else 0)
 
 

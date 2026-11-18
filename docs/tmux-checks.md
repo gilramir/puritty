@@ -746,3 +746,88 @@ out the rotate step fails on 2.7, 3.4 and 3.8. On 3.7 `prefix !` ended
 tmux's server: 3.7's own bug, `break-pane` with no name, fixed in 3.7a
 (TV6); the harness leaves that step out on 3.7 (`SKIP`), saying so, and 3.7
 passes the other 47.
+
+## TK13 · The puppet's odd cases: errors and disconnects (2026-11-18)
+
+Gilbert, 2026-11-18: more puppet tests, with weird scenarios, errors and
+disconnects among them, since this is where problems keep turning up.
+
+**`harness/puppet-trials.py`** runs each trial on its own tmux and
+puritty (TK12's container, `podman exec … -CC attach`), since many end the
+session. puritty's program is a shell that attaches and, when control
+mode ends, says the status and goes on as a shell with `OUTER=outer` in
+its environment. So after control mode ends a trial types
+`echo $OUTER > /sock/typed` into puritty: the file says `outer` only when
+the line reached that shell. A tmux pane in the same container would
+write it empty, and a key still sent as a tmux command writes nothing.
+While a session goes on, the `tmux=` line is held to tmux, as TK12 holds
+it, for the session the control client is in. 23 trials:
+
+| trial | what |
+|---|---|
+| kill-server, detached-elsewhere, only-session-killed, session-killed-detaches, last-pane-killed | control mode ended by tmux: typing reaches the shell after it |
+| session-killed-other-left | `detach-on-destroy off`: the client moves to the other session, and puritty with it |
+| switched-elsewhere | `switch-client` by another client, there and back, and a window made in the other |
+| client-killed | the control client SIGKILLed (no `%exit`), then `tmux -CC attach` typed into the shell, and a window made by `prefix c` |
+| client-stopped | the client SIGSTOPped while the server gains a window and a pane, renames and kills, then let go |
+| server-crashed | the server SIGKILLed: the client says `%exit` itself |
+| respawned, burst, odd-names, no-room-to-split | `respawn-pane -k` and `respawn-window -k`; thirty windows, then `kill-window -a`; names in Hangul, with `%`, quotes, an emoji, 120 characters, a format, and empty; splits until tmux refuses |
+| bad-command, fake-control-lines, garbage-output | a command tmux refuses at puritty's prompt; a pane printing `%exit`, `%begin` and `ESC P1000p…ESC \`; 300 KB from `/dev/urandom` |
+| tiny-window, output-while-resized | the window made 120×80 pixels and back; `seq` writing while it is resized three times |
+| killed-at-prompt, killed-in-tree, killed-in-copy-mode | the server killed while puritty's prompt, its tree or copy mode is up |
+| puritty-ended | puritty ended (SIGTERM): its program ends with it and the session stays |
+
+`harness/sshwindow.py` gained the same over the built-in client, against
+its local sshd: the client killed with no `%exit` (the shell after it
+silent, and an interactive one), the server killed, the client detached
+from elsewhere; and the connection dropped while puritty's prompt, its
+tree, or a flood of output is up, then R and a line typed into the new
+shell. Each case now writes puritty's diagnostic log.
+
+**Found: a client killed with no `%exit` left puritty in control mode for
+good.** Every line the shell wrote after it (its prompt, `sh: send-keys:
+not found`) was taken as an unknown notification, the title kept
+`tmux: zsh`, and every key went to the shell as a tmux command
+(`send-keys -K -H 68`); over ssh the session never ended. tmux's
+`control.c`, 2.7 to 3.8: outside a reply tmux writes only `%` lines and
+the `ESC \` that ends control mode. 2.7's `parse error:` is inside
+`%begin`/`%error`, and config errors go to a pane (2.7) or
+`%config-error`. The one bare line is the attach command's own error,
+before anything else (TM70: `ESC P1000p unknown command: attacth-t`,
+then `%exit`).
+
+**Fixed** (`Tmux.Control`): once tmux has written a `%` line, a line
+outside a reply that does not begin with `%` (an escape too: a colored
+prompt) ends control mode as `ESC \` does, and its bytes go to the
+terminal. Five tests in the tmux suite (133): a shell's `Killed` and
+prompt after a notification, a prompt with no line end and a colored
+one, a reply's lines of any kind, and TM70's bare line before the first
+`%` line still a notice. Against real tmux 3.8 the local trial and the
+ssh case with an interactive shell now pass: the prompt ends control
+mode, the title goes back to the host's, and what is typed runs in the
+shell. Made to fail on purpose: both failed with the build before.
+
+**Not fixed: a client killed where the shell says nothing.**
+`tmux-client-killed` waits in `read` after tmux: nothing comes, so
+nothing tells puritty control mode is over, and the first key goes as
+`send-keys`. The only sign would be a command tmux never answers; a
+timeout on that would also fire on a tmux that is only slow, so it is
+left for Gilbert. The case is pinned as it is, with a comment saying so.
+A login shell, or `exec tmux`, does not hit it: the prompt, or the end of
+the session, comes.
+
+**Not puritty's**, recorded so that the trials stay honest:
+
+- tmux 2.7 with the window made tiny says the window is 10×2 while its
+  two panes, 10×2 and 10×3 with the line between, take 6 rows; puritty
+  draws the panes. The step is left out on 2.7 (`KNOWN`), saying so.
+- `podman exec`'s process in the container outlives the `podman exec`
+  client, so puritty's end does not end the tmux client there, as a real
+  terminal's hangup would. `puritty-ended` holds puritty's own child
+  ended, and the session kept.
+- Three harness mistakes the first runs made, each a false pass or a
+  false failure: the image has no `kill` program (the shell's is used);
+  `pkill -f` and a `/proc` scan match their own command line and the
+  shell's that holds the tmux command (a bracket in the pattern, and the
+  attach through a variable); and `-t main` is looked up as a window
+  first, so a window named `main …` answered for the session (`main:`).

@@ -257,6 +257,31 @@ control =
                     Expect.equal [ Notice (Unknown "%frobnicate @1"), Notice SessionsChanged ]
                         (events (Bytes.fromString "\u{001B}P1000p%frobnicate @1\r\n%sessions-changed\r\n") |> Array.dropFirst 1)
           }
+        , { name = "the client killed: the shell's line outside a reply ends control mode, and is the terminal's (TK13)"
+          , test =
+                \_ ->
+                    Expect.equal [ Entered, Notice SessionsChanged, Exited, Outside (Bytes.fromString "Killed\r\n$ ") ]
+                        (merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\r\nKilled\r\n$ ")))
+          }
+        , { name = "the client killed: a prompt with no line end, or a colored one, ends it too"
+          , test =
+                \_ ->
+                    Expect.equal
+                        [ [ Entered, Notice SessionsChanged, Exited, Outside (Bytes.fromString "$ ") ], [ Entered, Notice SessionsChanged, Exited, Outside (Bytes.fromString "\u{001B}[32m$ ") ] ]
+                        [ merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\n$ ")), merged (events (Bytes.fromString "\u{001B}P1000p%sessions-changed\n\u{001B}[32m$ ")) ]
+          }
+        , { name = "before tmux's first % line a bare line is its error, and control mode goes on to %exit (TM70)"
+          , test =
+                \_ ->
+                    Expect.equal [ Entered, Notice (Unknown "unknown command: x"), Notice (Exit ""), Exited ]
+                        (events (Bytes.fromString "\u{001B}P1000punknown command: x\r\n%exit\r\n\u{001B}\\"))
+          }
+        , { name = "inside a reply any line is the reply's, and control mode goes on"
+          , test =
+                \_ ->
+                    Expect.equal [ Entered, Reply { number = 7, flags = 1, ok = True, lines = [ Bytes.fromString "plain", Bytes.fromString "$ x" ] }, Notice SessionsChanged ]
+                        (events (Bytes.fromString "\u{001B}P1000p%begin 1 7 1\nplain\n$ x\n%end 1 7 1\n%sessions-changed\n"))
+          }
         , { name = "a reply's line that starts with an escape is a line, not the end of control mode"
           , test =
                 \_ ->

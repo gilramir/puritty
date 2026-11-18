@@ -174,6 +174,10 @@ and xcb-util-cursor (Linux), and zlib, libpng and mingw-w64's runtime
 Linux build to every tmux release from 2.7 to 3.8 in turn and holds what it
 shows to what tmux has after each of a puppet's 19 steps. It takes about
 25 minutes and is run before a release, beside the unit gate.
+`harness/puppet-trials.py -v 2.7 -v 3.0 -v 3.2 -v 3.4 -v 3.6a -v 3.8`
+(TK13) runs the puppet's odd cases on those six: the server killed, the
+client killed or detached from elsewhere, the session killed, odd names,
+a bad command, garbage output. About 50 minutes; before a release too.
 
 ## RL7 · The noble build is profile-guided (2026-11-16)
 

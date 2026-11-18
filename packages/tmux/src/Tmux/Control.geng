@@ -32,6 +32,9 @@ type alias Reader =
     { inside : Bool
     , held : Bytes
     , block : Maybe Block
+    -- whether tmux has written a `%` line since control mode began: a
+    -- line that is not one ends it only after (TK13)
+    , spoken : Bool
     }
 
 
@@ -46,7 +49,7 @@ type alias Block =
 
 reader : Reader
 reader =
-    { inside = False, held = Bytes.empty, block = Nothing }
+    { inside = False, held = Bytes.empty, block = Nothing, spoken = False }
 
 
 isInside : Reader -> Bool
@@ -108,7 +111,7 @@ feed bytes r =
             else
                 Bytes.flatten [ r.held, bytes ]
     in
-    step data 0 { inside = r.inside, held = Bytes.empty, block = r.block } []
+    step data 0 { r | held = Bytes.empty } []
 
 
 step : Bytes -> Int -> Reader -> Array Event -> { reader : Reader, events : Array Event }
@@ -145,7 +148,7 @@ outside data from at r events =
                 Bytes.slice esc (min n (esc + 7)) data
         in
         if seen == entry then
-            step data (esc + 7) { r | inside = True } (Array.pushLast Entered (withOutside data from esc events))
+            step data (esc + 7) { r | inside = True, spoken = False } (Array.pushLast Entered (withOutside data from esc events))
 
         else if Bytes.length seen < 7 && seen == Bytes.slice 0 (Bytes.length seen) entry then
             -- the start of `ESC P 1000 p`, or not: the next read says
@@ -181,6 +184,17 @@ inside data at r events =
     else if byteAt at data == 0x1B && byteAt (at + 1) data == 0x5C then
         step data (at + 2) { r | inside = False, block = Nothing } (Array.pushLast Exited events)
 
+    else if r.block == Nothing && r.spoken && byteAt at data /= 0x25 then
+        -- once tmux has begun, it writes outside a reply only `%` lines
+        -- and the `ESC \` that ends control mode (above), from 2.7 to 3.8
+        -- (`control.c`; 2.7's parse error is inside its guards). Before,
+        -- a command it cannot read is said as a bare line, then `%exit`
+        -- (TM70). Anything else after, an escape too (a colored prompt),
+        -- is not tmux's: its client is gone with no `%exit`, killed, and
+        -- the shell it ran in writes again (docs/tmux-checks.md TK13).
+        -- Control mode is over, and these bytes are the terminal's
+        step data at { r | inside = False, block = Nothing } (Array.pushLast Exited events)
+
     else
         -- a line, which may start with an escape: a reply's line is the
         -- command's output as it is, and `capture-pane -e`'s starts with
@@ -204,7 +218,7 @@ inside data at r events =
                 read =
                     line (Bytes.slice at end data) r.block events
             in
-            inside data (nl + 1) { r | block = read.block } read.events
+            inside data (nl + 1) { r | block = read.block, spoken = r.spoken || byteAt at data == 0x25 } read.events
 
 
 {-| One line: a reply's, a guard, or a notification. -}
