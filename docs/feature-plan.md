@@ -55,7 +55,8 @@ hosts:
    session file. `~/.ssh/config`'s are listed (V63), PuTTY's too
    (`settings-gui.md` SG21); MobaXterm's waits on a real file.
 4. Passwords and key passphrases in the Windows credential store, never in
-   `config.toml`.
+   `config.toml`. Surveyed in `saved-secrets.md` (PW1–PW6), with
+   questions for Gilbert.
 5. File transfer inside the session: an SFTP panel or drag-and-drop.
 6. Reconnect, restoring tabs, layouts and titles. tmux control mode does much
    of this for free when the remote end runs tmux.
