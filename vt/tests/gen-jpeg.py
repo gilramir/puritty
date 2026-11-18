@@ -12,7 +12,7 @@ import io
 import math
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 OUT = Path(__file__).resolve().parent / "src" / "JpegCases.geng"
 
@@ -42,9 +42,32 @@ CASES = [
 ]
 
 
+def exif(orientation):
+    e = Image.Exif()
+    e[0x0112] = orientation
+    return e.tobytes()
+
+
+# a camera's orientation (IT5): the picture turned as the tag says, which
+# Pillow's exif_transpose does as a browser does
+CASES += [
+    ("Exif orientation %d" % o, picture(16, 8), dict(quality=95, subsampling=0, exif=exif(o)))
+    for o in (2, 3, 6, 8)
+]
+
+# progressive (IT6): the DC and AC bands in scans of their own, refined a
+# bit at a time
+CASES += [
+    ("progressive 4:2:0", picture(32, 24), dict(quality=90, subsampling=2, progressive=True)),
+    ("progressive 4:4:4", picture(24, 16), dict(quality=95, subsampling=0, progressive=True)),
+    ("progressive grey", picture(16, 16, "L"), dict(quality=85, progressive=True)),
+    ("progressive, a restart marker every block", picture(24, 24), dict(quality=85, subsampling=2, progressive=True, restart_marker_blocks=1)),
+]
+
+
 def main():
     lines = [
-        "module JpegCases exposing (Case, cases, progressive)",
+        "module JpegCases exposing (Case, cases)",
         "",
         "{-| Written by vt/tests/gen-jpeg.py: each JPEG Pillow made, as base64,",
         "and the RGB libjpeg decodes it to. -}",
@@ -62,18 +85,15 @@ def main():
         b = io.BytesIO()
         im.save(b, "JPEG", **opts)
         data = b.getvalue()
-        back = Image.open(io.BytesIO(data)).convert("RGB")
+        back = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
         rgb = list(back.tobytes())
         items.append(
             "{ name = %s, jpeg = %s, width = %d, height = %d, rgb = [ %s ] }"
-            % ('"' + name + '"', '"' + base64.b64encode(data).decode() + '"', im.width, im.height, ", ".join(map(str, rgb)))
+            % ('"' + name + '"', '"' + base64.b64encode(data).decode() + '"', back.width, back.height, ", ".join(map(str, rgb)))
         )
     lines.append("    [ " + "\n    , ".join(items))
     lines.append("    ]")
-    b = io.BytesIO()
-    picture(16, 16).save(b, "JPEG", quality=90, progressive=True)
-    lines += ["", "", "{-| A progressive JPEG, which is not decoded. -}", "progressive : String", "progressive =",
-              '    "' + base64.b64encode(b.getvalue()).decode() + '"', ""]
+    lines.append("")
     OUT.write_text("\n".join(lines))
     print(OUT)
 

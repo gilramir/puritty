@@ -87,8 +87,9 @@ SUITES = [
     # 121 since TB19: a reconnect resets the modes, keeps the screen;
     # 132 since IT2: iTerm2's images, eleven; 141 since IM23: text and
     # erases over an image drawn into the cells, nine; 153 since IT4: JPEG,
-    # seven, and GIF, five
-    Suite("vt", 153, runs_of("vt/tests")),
+    # seven, and GIF, five; 161 since IT6: Exif orientation, four,
+    # progressive, four, the progressive "says so" made a lossless one
+    Suite("vt", 161, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

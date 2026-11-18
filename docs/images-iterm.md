@@ -89,9 +89,9 @@ data: no C decoder, so no buffer overrun), both in the core:
   its DC is one value). Chroma half as wide, or half as wide and tall, is
   smoothed as libjpeg does it ("fancy upsampling", h2v1 and h2v2, its
   weights and rounding); any other ratio takes the nearest sample.
-  Progressive, arithmetic-coded, lossless, 12-bit and CMYK files are not
-  decoded and say which. EXIF orientation is not applied: a phone's
-  photo taken on its side shows on its side.
+  Progressive (done in IT6), arithmetic-coded, lossless, 12-bit and CMYK
+  files are not decoded and say which. EXIF orientation is not applied: a phone's
+  photo taken on its side shows on its side (done in IT5).
 - **`Vt.Gif`**: the first frame, as a still picture on the logical
   screen (clear where the frame does not reach): the global or the
   frame's own colour table, the graphic control extension's transparent
@@ -124,5 +124,46 @@ limit. `Vt.Jpeg` and `Vt.Gif` are exposed by the package, for their tests.
 - **Drawn**: the pixel case `image-iterm-jpeg-gif`, a JPEG and a GIF each
   with text after it.
 
-**Not done**: progressive JPEG (common for images from the web), EXIF
-orientation, and an animated GIF's later frames.
+**Not done** (then): progressive JPEG and EXIF orientation, done in IT6
+and IT5; an animated GIF's later frames, still.
+
+## IT5 · A camera's orientation (2026-11-17)
+
+A phone stores a photo as its sensor saw it and writes how to turn it in
+the Exif data (APP1, `Exif\0\0` and a TIFF directory, tag 0x0112, 1 to
+8). Browsers and macOS's image views turn it; puritty showed it on its
+side. `Vt.Jpeg` now reads the tag (either byte order; Pillow writes
+big-endian, which the first version read wrongly, and the tests caught)
+and turns the decoded picture as it says: 2 mirrored, 3 a half turn, 4
+flipped, 5 transposed, 6 a quarter clockwise, 7 transverse, 8 a quarter
+counterclockwise, 5 to 8 swapping width and height. The size asked for
+(IT2 3) is the turned picture's.
+
+**Checked**: four JPEGs of 16 by 8 with orientation 2, 3, 6 and 8,
+each held within 3 to what Pillow's `ImageOps.exif_transpose` makes of
+libjpeg's pixels; 6 and 8 come out 8 by 16.
+
+## IT6 · Progressive JPEG (2026-11-17)
+
+A progressive JPEG (SOF2), as many pictures on the web are, sends each
+block in parts: the DC in one scan, then bands of the AC coefficients, and
+then each again a bit at a time. So every block's coefficients are kept
+across the scans (in the planes' own places: a plane holds 64 samples a
+block), and each block is dequantized and transformed once they are all
+read. The four procedures are stb_image's (`stbi__jpeg_decode_block_prog_dc`
+and `_ac`): the DC's first bits and its refinement, an AC band's first
+bits with its end-of-band runs over the blocks after, and an AC band's
+refinement, which places new values of ±1 past runs of zeros and gives
+each coefficient already not zero a correction bit. A progressive scan
+uses one of its two Huffman tables, and the other may not be defined yet,
+which a baseline scan's may not. Restart intervals reset the predictions
+and the end-of-band run. Differential and arithmetic-coded processes still
+say they are not decoded.
+
+**Checked**: four progressive JPEGs Pillow made (4:2:0, 4:4:4, grey, a
+restart marker every block), each within 3 of libjpeg, as the baseline
+ones are. A lossless one (SOF3) says it is not decoded. **Speed**, a
+photo-like progressive JPEG through `core-bench FILE images`: 1920 by
+1080 in 231 ms, 4000 by 3000 in 988 ms (baseline: 189 and 807). The first
+version took 1,825 ms: each coefficient found its zigzag place by a
+search, now a table.

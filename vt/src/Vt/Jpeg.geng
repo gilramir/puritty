@@ -54,7 +54,7 @@ type alias ScanComp =
 
 
 type alias Scan =
-    { comps : Array ScanComp, segments : Array Bytes, restart : Int }
+    { comps : Array ScanComp, segments : Array Bytes, restart : Int, ss : Int, se : Int, ah : Int, al : Int }
 
 
 type alias Parsed =
@@ -64,6 +64,8 @@ type alias Parsed =
     , ac : Dict Int Table
     , restart : Int
     , adobe : Int
+    , orientation : Int
+    , progressive : Bool
     , scans : Array Scan
     }
 
@@ -80,7 +82,7 @@ decode most data =
         Err "not a JPEG"
 
     else
-        markers data 2 { frame = Nothing, quant = Dict.empty, dc = Dict.empty, ac = Dict.empty, restart = 0, adobe = -1, scans = [] }
+        markers data 2 { frame = Nothing, quant = Dict.empty, dc = Dict.empty, ac = Dict.empty, restart = 0, adobe = -1, orientation = 1, progressive = False, scans = [] }
             |> Result.andThen (pixelsOf most)
 
 
@@ -131,8 +133,12 @@ markers data at p =
             else if m == 0xC0 || m == 0xC1 then
                 frameOf body |> Result.andThen (\f -> markers data after { p | frame = Just f })
 
-            else if m == 0xC2 || m == 0xC6 || m == 0xCA || m == 0xCE then
-                Err "progressive JPEG"
+            else if m == 0xC2 then
+                -- progressive, Huffman coded (IT6)
+                frameOf body |> Result.andThen (\f -> markers data after { p | frame = Just f, progressive = True })
+
+            else if m == 0xC6 || m == 0xCA || m == 0xCE then
+                Err "a progressive JPEG process not decoded (differential or arithmetic)"
 
             else if m >= 0xC3 && m <= 0xCF && m /= 0xC4 && m /= 0xC8 && m /= 0xCC then
                 Err "a JPEG process not decoded (lossless, hierarchical or arithmetic)"
@@ -150,6 +156,11 @@ markers data at p =
                 -- Adobe: its colour transform, 0 for RGB
                 markers data after { p | adobe = byteAt body 11 }
 
+            else if m == 0xE1 && Bytes.length body >= 14 && byteAt body 0 == 0x45 && byteAt body 1 == 0x78 && byteAt body 2 == 0x69 && byteAt body 3 == 0x66 then
+                -- Exif: the orientation a camera wrote, which the picture
+                -- is turned by as a browser turns it (IT5)
+                markers data after { p | orientation = orientationOf (Bytes.slice 6 (Bytes.length body) body) }
+
             else if m == 0xDA then
                 when scanOf body p is
                     Err why ->
@@ -160,7 +171,31 @@ markers data at p =
                             coded =
                                 entropy data after after [] []
                         in
-                        markers data coded.next { p | scans = Array.pushLast { comps = comps, segments = coded.segments, restart = p.restart } p.scans }
+                        let
+                            -- the spectral selection and successive
+                            -- approximation after the components: for a
+                            -- progressive scan its band and its bits
+                            n =
+                                byteAt body 0
+
+                            ahal =
+                                byteAt body (3 + 2 * n)
+                        in
+                        markers data
+                            coded.next
+                            { p
+                                | scans =
+                                    Array.pushLast
+                                        { comps = comps
+                                        , segments = coded.segments
+                                        , restart = p.restart
+                                        , ss = clamp 0 63 (byteAt body (1 + 2 * n))
+                                        , se = clamp 0 63 (byteAt body (2 + 2 * n))
+                                        , ah = clamp 0 13 (Bitwise.shiftRightBy 4 ahal)
+                                        , al = clamp 0 13 (Bitwise.and 15 ahal)
+                                        }
+                                        p.scans
+                            }
 
             else
                 -- APPn, COM and the rest: skipped
@@ -311,7 +346,9 @@ scanOf body p =
                         q =
                             (component f index).q
                     in
-                    when { dc = Dict.get (Bitwise.shiftRightBy 4 td) p.dc, ac = Dict.get (Bitwise.and 15 td) p.ac, quant = Dict.get q p.quant } is
+                    -- a progressive scan uses one of its two tables, and
+                    -- the other need not be defined yet (IT6)
+                    when { dc = tableOr p.progressive (Dict.get (Bitwise.shiftRightBy 4 td) p.dc), ac = tableOr p.progressive (Dict.get (Bitwise.and 15 td) p.ac), quant = Dict.get q p.quant } is
                         { dc = Just dc, ac = Just ac, quant = Just quant } ->
                             if index < 0 then
                                 Err "a scan's component not in the frame"
@@ -323,6 +360,24 @@ scanOf body p =
                             Err "a table not defined"
             in
             Array.foldl (\i acc -> Result.andThen (\a -> Result.map (\c -> Array.pushLast c a) (one i)) acc) (Ok []) (Array.range 0 (n - 1))
+
+
+{-| A table not defined, for a progressive scan, which does not use it: an
+empty one. -}
+tableOr : Bool -> Maybe Table -> Maybe Table
+tableOr progressive t =
+    when t is
+        Just found ->
+            Just found
+
+        Nothing ->
+            meant Reason.NotSet
+                (if progressive then
+                    Just { counts = Array.repeat 16 0, symbols = [] }
+
+                 else
+                    Nothing
+                )
 
 
 {-| The entropy-coded data from `at`: its stuffed 0xFF 0x00 made 0xFF, cut
@@ -403,9 +458,385 @@ pixelsOf most p =
             else
                 let
                     planes =
-                        Array.foldl (\scan out -> scanned f offsets.list scan out) (Builder.repeat total 0) p.scans
+                        if p.progressive then
+                            -- every block's coefficients over all the
+                            -- scans, then each transformed (IT6)
+                            Array.foldl (\scan out -> progressiveScan f offsets.list scan out) (Builder.repeat total 0) p.scans
+                                |> Builder.toArray
+                                |> transformed f offsets.list p.quant
+
+                        else
+                            Array.foldl (\scan out -> scanned f offsets.list scan out) (Builder.repeat total 0) p.scans
                 in
-                Ok { width = f.width, height = f.height, pixels = colored f offsets.list (p.adobe == 0) (Builder.toArray planes) }
+                Ok (oriented p.orientation { width = f.width, height = f.height, pixels = colored f offsets.list (p.adobe == 0) (Builder.toArray planes) })
+
+
+-- PROGRESSIVE (IT6)
+
+
+{-| A progressive scan's bits added to the coefficients, which are kept in
+the planes' places, block `(bx, by)`'s 64 from `64 · (by · blocks a row +
+bx)`, in the natural order, not yet dequantized. Each restart interval is a
+segment of its own, its predictions and end-of-band run set to 0. As
+stb_image decodes them (`stbi__jpeg_decode_block_prog_dc`, `_ac`). -}
+progressiveScan : Frame -> Array Int -> Scan -> (taken out : Builder Int) -> Builder Int
+progressiveScan f offsets scan out =
+    let
+        blocksOf =
+            blocksOfScan f scan
+
+        perSegment =
+            if scan.restart > 0 then
+                scan.restart
+
+            else
+                blocksOf.units
+
+        segmentOf s data acc =
+            let
+                first =
+                    s * perSegment
+
+                last =
+                    min blocksOf.units (first + perSegment) - 1
+            in
+            Array.foldl
+                (\u st ->
+                    Array.foldl (\b st2 -> progressiveBlock f offsets scan data b st2) st (blocksOf.unit u)
+                )
+                { pos = 0, preds = Array.repeat (Array.length scan.comps) 0, eob = 0, out = acc }
+                (Array.range first last)
+                |> .out
+    in
+    Array.foldl
+        (\s acc ->
+            segmentOf s (Maybe.withDefault (meant Reason.FromOutside Bytes.empty) (Array.get s scan.segments)) acc
+        )
+        out
+        (Array.range 0 ((blocksOf.units + perSegment - 1) // perSegment - 1))
+
+
+progressiveBlock : Frame -> Array Int -> Scan -> Bytes -> { k : Int, bx : Int, by : Int } -> (taken st : { pos : Int, preds : Array Int, eob : Int, out : Builder Int }) -> { pos : Int, preds : Array Int, eob : Int, out : Builder Int }
+progressiveBlock f offsets scan data b st =
+    when Array.get b.k scan.comps is
+        Nothing ->
+            meant Reason.OutOfRange st
+
+        Just sc ->
+            let
+                c =
+                    component f sc.index
+
+                base =
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get sc.index offsets) + 64 * (b.by * f.mcusX * c.h + b.bx)
+            in
+            if scan.ss == 0 then
+                if scan.ah == 0 then
+                    -- the DC's first bits: its difference, as baseline's
+                    let
+                        size =
+                            huffman data sc.dc st.pos
+
+                        diff =
+                            received data size.sym size.pos
+
+                        dc =
+                            Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get b.k st.preds) + diff.value
+                    in
+                    { pos = diff.pos, preds = Array.set b.k dc st.preds, eob = st.eob, out = Builder.set base (dc * Bitwise.shiftLeftBy scan.al 1) st.out }
+
+                else
+                    -- one more bit of the DC
+                    { pos = st.pos + 1
+                    , preds = st.preds
+                    , eob = st.eob
+                    , out =
+                        if bitAt data st.pos == 1 then
+                            Builder.set base (getOr base st.out + Bitwise.shiftLeftBy scan.al 1) st.out
+
+                        else
+                            st.out
+                    }
+
+            else if scan.ah == 0 then
+                if st.eob > 0 then
+                    -- in an end-of-band run: nothing of this block
+                    { st | eob = st.eob - 1 }
+
+                else
+                    let
+                        r =
+                            acFirst data sc.ac scan st.pos scan.ss base st.out
+                    in
+                    { pos = r.pos, preds = st.preds, eob = r.eob, out = r.out }
+
+            else if st.eob > 0 then
+                let
+                    r =
+                        refineRest data scan st.pos scan.ss base st.out
+                in
+                { pos = r.pos, preds = st.preds, eob = st.eob - 1, out = r.out }
+
+            else
+                let
+                    r =
+                        acRefine data sc.ac scan st.pos scan.ss base st.out
+                in
+                { pos = r.pos, preds = st.preds, eob = r.eob, out = r.out }
+
+
+getOr : Int -> Builder Int -> Int
+getOr i b =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Builder.get i b)
+
+
+{-| An AC band's first bits, from `k`: each value shifted by the scan's
+`al`; an end-of-band ends the block and begins a run of blocks with
+nothing in the band. -}
+acFirst : Bytes -> Table -> Scan -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, eob : Int, out : Builder Int }
+acFirst data table scan pos k base out =
+    if k > scan.se || k > 63 then
+        { pos = pos, eob = 0, out = out }
+
+    else
+        let
+            rs =
+                huffman data table pos
+
+            r =
+                Bitwise.shiftRightBy 4 rs.sym
+
+            s =
+                Bitwise.and 15 rs.sym
+        in
+        if s == 0 then
+            if r < 15 then
+                -- the band's end here, and in so many blocks after
+                { pos = rs.pos + r, eob = Bitwise.shiftLeftBy r 1 - 1 + bits data rs.pos r 0, out = out }
+
+            else
+                acFirst data table scan rs.pos (k + 16) base out
+
+        else
+            let
+                at =
+                    k + r
+
+                v =
+                    received data s rs.pos
+            in
+            acFirst data table scan v.pos (at + 1) base (Builder.set (base + zigzagAt at) (v.value * Bitwise.shiftLeftBy scan.al 1) out)
+
+
+{-| An AC band's next bit, from `k`: each value coded is a new one of ±1
+shifted by `al`, placed past a run of zeros; each coefficient already not
+zero that the run passes takes a correction bit. -}
+acRefine : Bytes -> Table -> Scan -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, eob : Int, out : Builder Int }
+acRefine data table scan pos k base out =
+    if k > scan.se || k > 63 then
+        { pos = pos, eob = 0, out = out }
+
+    else
+        let
+            one =
+                Bitwise.shiftLeftBy scan.al 1
+
+            rs =
+                huffman data table pos
+
+            r0 =
+                Bitwise.shiftRightBy 4 rs.sym
+
+            s =
+                Bitwise.and 15 rs.sym
+
+            -- an end-of-band: the run of blocks after, and this block's
+            -- coefficients not zero refined to its end (`r` 64)
+            eob =
+                if s == 0 && r0 < 15 then
+                    Bitwise.shiftLeftBy r0 1 - 1 + bits data rs.pos r0 0
+
+                else
+                    0
+
+            afterRun =
+                if s == 0 && r0 < 15 then
+                    rs.pos + r0
+
+                else
+                    rs.pos
+
+            value =
+                if s == 0 then
+                    0
+
+                else if bitAt data afterRun == 1 then
+                    one
+
+                else
+                    0 - one
+
+            valuePos =
+                if s == 0 then
+                    afterRun
+
+                else
+                    afterRun + 1
+
+            stepped =
+                advance data
+                    scan
+                    valuePos
+                    k
+                    base
+                    value
+                    (if s == 0 && r0 < 15 then
+                        64
+
+                     else
+                        r0
+                    )
+                    out
+        in
+        if s == 0 && r0 < 15 then
+            { pos = stepped.pos, eob = eob, out = stepped.out }
+
+        else
+            acRefine data table scan stepped.pos stepped.k base stepped.out
+
+
+{-| Through the band from `k`: a coefficient not zero takes a correction
+bit; a zero counts down the run `r`, and at its end takes `value`. -}
+advance : Bytes -> Scan -> Int -> Int -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, k : Int, out : Builder Int }
+advance data scan pos k base value r out =
+    if k > scan.se || k > 63 then
+        { pos = pos, k = k, out = out }
+
+    else
+        let
+            z =
+                base + zigzagAt k
+
+            v =
+                getOr z out
+        in
+        if v /= 0 then
+            advance data scan (pos + 1) (k + 1) base value r (corrected data pos scan.al z v out)
+
+        else if r == 0 then
+            { pos = pos, k = k + 1, out = Builder.set z value out }
+
+        else
+            advance data scan pos (k + 1) base value (r - 1) out
+
+
+{-| In an end-of-band run: the band's coefficients not zero refined. -}
+refineRest : Bytes -> Scan -> Int -> Int -> Int -> (taken out : Builder Int) -> { pos : Int, out : Builder Int }
+refineRest data scan pos k base out =
+    if k > scan.se || k > 63 then
+        { pos = pos, out = out }
+
+    else
+        let
+            z =
+                base + zigzagAt k
+
+            v =
+                getOr z out
+        in
+        if v /= 0 then
+            refineRest data scan (pos + 1) (k + 1) base (corrected data pos scan.al z v out)
+
+        else
+            refineRest data scan pos (k + 1) base out
+
+
+{-| A coefficient `v` not zero at `z` given its correction bit: when set and
+the coefficient does not have that bit yet, one more away from zero. -}
+corrected : Bytes -> Int -> Int -> Int -> Int -> (taken out : Builder Int) -> Builder Int
+corrected data pos al z v out =
+    let
+        one =
+            Bitwise.shiftLeftBy al 1
+    in
+    if bitAt data pos == 1 && Bitwise.and v one == 0 then
+        Builder.set z
+            (if v > 0 then
+                v + one
+
+             else
+                v - one
+            )
+            out
+
+    else
+        out
+
+
+{-| The coefficients made samples: each block dequantized by its
+component's table (its values in zigzag order) and transformed, in place
+in its plane. -}
+transformed : Frame -> Array Int -> Dict Int (Array Int) -> Array Int -> Builder Int
+transformed f offsets quants coefs =
+    Array.foldl
+        (\k out ->
+            let
+                c =
+                    component f k
+
+                quant =
+                    Maybe.withDefault (meant Reason.FromOutside (Array.repeat 64 1)) (Dict.get c.q quants)
+
+                bpl =
+                    f.mcusX * c.h
+
+                w =
+                    planeWidth f c
+
+                off =
+                    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get k offsets)
+            in
+            Array.foldl
+                (\blockIndex0 o ->
+                    let
+                        -- a plane holds at most 400,000,000 samples (`pixelsOf`)
+                        blockIndex =
+                            clamp 0 6250000 blockIndex0
+
+                        at =
+                            clamp 0 400000000 off + 64 * blockIndex
+
+                        natural =
+                            Array.initialize 64 0 (\i -> Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get (at + clamp 0 63 i) coefs) * quantAt quant (unzigAt i))
+
+                        samples =
+                            idct natural
+
+                        bx =
+                            modBy (max 1 bpl) blockIndex
+
+                        by =
+                            blockIndex // max 1 bpl
+                    in
+                    written samples (off + by * 8 * w + bx * 8) w 0 o
+                )
+                out
+                (Array.range 0 (bpl * f.mcusY * c.v - 1))
+        )
+        (Builder.repeat (Array.length coefs) 0)
+        (Array.range 0 (Array.length f.comps - 1))
+
+
+{-| The zigzag position of natural index `i`. -}
+unzigAt : Int -> Int
+unzigAt i =
+    Maybe.withDefault (meant Reason.OutOfRange 0) (Array.get i unzig)
+
+
+{-| `zigzag` turned about: each natural index's zigzag position. -}
+unzig : Array Int
+unzig =
+    [ 0, 1, 5, 6, 14, 15, 27, 28, 2, 4, 7, 13, 16, 26, 29, 42, 3, 8, 12, 17, 25, 30, 41, 43, 9, 11, 18, 24, 31, 40, 44, 53, 10, 19, 23, 32, 39, 45, 52, 54, 20, 22, 33, 38, 46, 51, 55, 60, 21, 34, 37, 47, 50, 56, 59, 61, 35, 36, 48, 49, 57, 58, 62, 63 ]
 
 
 {-| The blocks of a scan, in order: an interleaved scan's MCUs, each its
@@ -414,46 +845,8 @@ interval is a segment of its own, its predictions set to 0. -}
 scanned : Frame -> Array Int -> Scan -> (taken out : Builder Int) -> Builder Int
 scanned f offsets scan out =
     let
-        -- each block of the scan: its component in the scan and its column
-        -- and row of blocks in the component's plane
         blocksOf =
-            when scan.comps is
-                [ sc ] ->
-                    let
-                        c =
-                            component f sc.index
-
-                        bw =
-                            ((f.width * c.h + f.hmax - 1) // f.hmax + 7) // 8
-
-                        bh =
-                            ((f.height * c.v + f.vmax - 1) // f.vmax + 7) // 8
-                    in
-                    { units = bw * bh, unit = \u -> [ { k = 0, bx = modBy (max 1 bw) u, by = u // max 1 bw } ] }
-
-                _ ->
-                    { units = f.mcusX * f.mcusY
-                    , unit =
-                        \u ->
-                            let
-                                mx =
-                                    modBy (max 1 f.mcusX) u
-
-                                my =
-                                    u // max 1 f.mcusX
-                            in
-                            Array.indexedMap
-                                (\k sc ->
-                                    let
-                                        c =
-                                            component f sc.index
-                                    in
-                                    Array.range 0 (c.v * c.h - 1)
-                                        |> Array.map (\i -> { k = k, bx = mx * c.h + modBy c.h i, by = my * c.v + i // c.h })
-                                )
-                                scan.comps
-                                |> Array.flatten
-                    }
+            blocksOfScan f scan
 
         perSegment =
             if scan.restart > 0 then
@@ -484,6 +877,51 @@ scanned f offsets scan out =
         )
         out
         (Array.range 0 ((blocksOf.units + perSegment - 1) // perSegment - 1))
+
+
+{-| Each block of a scan, by its unit: an interleaved scan's units are its
+MCUs, each its components' blocks; one component's units are its blocks,
+row by row, as many as its own size holds. A block is its component in
+the scan and its column and row of blocks in the component's plane. -}
+blocksOfScan : Frame -> Scan -> { units : Int, unit : Int -> Array { k : Int, bx : Int, by : Int } }
+blocksOfScan f scan =
+    when scan.comps is
+        [ sc ] ->
+            let
+                c =
+                    component f sc.index
+
+                bw =
+                    ((f.width * c.h + f.hmax - 1) // f.hmax + 7) // 8
+
+                bh =
+                    ((f.height * c.v + f.vmax - 1) // f.vmax + 7) // 8
+            in
+            { units = bw * bh, unit = \u -> [ { k = 0, bx = modBy (max 1 bw) u, by = u // max 1 bw } ] }
+
+        _ ->
+            { units = f.mcusX * f.mcusY
+            , unit =
+                \u ->
+                    let
+                        mx =
+                            modBy (max 1 f.mcusX) u
+
+                        my =
+                            u // max 1 f.mcusX
+                    in
+                    Array.indexedMap
+                        (\k sc ->
+                            let
+                                c =
+                                    component f sc.index
+                            in
+                            Array.range 0 (c.v * c.h - 1)
+                                |> Array.map (\i -> { k = k, bx = mx * c.h + modBy c.h i, by = my * c.v + i // c.h })
+                        )
+                        scan.comps
+                        |> Array.flatten
+            }
 
 
 component : Frame -> Int -> Component
@@ -922,3 +1360,130 @@ pixels w h pixel x y out =
 
     else
         pixels w h pixel (x + 1) y (pixel x y out)
+
+
+-- ORIENTATION (IT5)
+
+
+{-| Exif's orientation, 1 to 8, from its TIFF data: the first directory's
+tag 0x0112, either byte order; 1, as it is, for anything else. -}
+orientationOf : Bytes -> Int
+orientationOf tiff =
+    let
+        little =
+            byteAt tiff 0 == 0x49
+
+        u16le at =
+            if little then
+                Bitwise.or (byteAt tiff at) (Bitwise.shiftLeftBy 8 (byteAt tiff (at + 1)))
+
+            else
+                Bitwise.or (Bitwise.shiftLeftBy 8 (byteAt tiff at)) (byteAt tiff (at + 1))
+
+        -- the first directory's offset, a 32-bit value in the file's order
+        ifd =
+            clamp 0
+                65535
+                (if little then
+                    Bitwise.or (u16le 4) (Bitwise.shiftLeftBy 16 (Bitwise.and 0x7FFF (u16le 6)))
+
+                 else
+                    Bitwise.or (Bitwise.shiftLeftBy 16 (Bitwise.and 0x7FFF (u16le 4))) (u16le 6)
+                )
+
+        count =
+            clamp 0 512 (u16le ifd)
+
+        found =
+            Array.range 0 (count - 1)
+                |> Array.findFirst (\k -> u16le (ifd + 2 + 12 * k) == 0x0112)
+    in
+    when found is
+        Just k ->
+            let
+                v =
+                    u16le (ifd + 2 + 12 * k.value + 8)
+            in
+            if v >= 1 && v <= 8 then
+                v
+
+            else
+                -- a value Exif does not have: as it is
+                1
+
+        Nothing ->
+            meant Reason.NotSet 1
+
+
+{-| The pixels turned as orientation `o` says: 2 mirrored, 3 turned half,
+4 flipped, 5 transposed, 6 turned a quarter clockwise, 7 transverse, 8 a
+quarter counterclockwise. Each output pixel's source is found from its
+place. -}
+oriented : Int -> Decoded -> Decoded
+oriented o img =
+    if o <= 1 || o > 8 then
+        img
+
+    else
+        let
+            w =
+                clamp 1 10000 img.width
+
+            h =
+                clamp 1 10000 img.height
+
+            swap =
+                o >= 5
+
+            ow =
+                if swap then
+                    h
+
+                else
+                    w
+
+            oh =
+                if swap then
+                    w
+
+                else
+                    h
+
+            -- the source pixel of output pixel (x, y)
+            from x y =
+                if o == 2 then
+                    { x = w - 1 - x, y = y }
+
+                else if o == 3 then
+                    { x = w - 1 - x, y = h - 1 - y }
+
+                else if o == 4 then
+                    { x = x, y = h - 1 - y }
+
+                else if o == 5 then
+                    { x = y, y = x }
+
+                else if o == 6 then
+                    { x = y, y = h - 1 - x }
+
+                else if o == 7 then
+                    { x = w - 1 - y, y = h - 1 - x }
+
+                else
+                    { x = w - 1 - y, y = x }
+
+            pixel x y out =
+                let
+                    s =
+                        from x y
+
+                    at =
+                        (clamp 0 9999 s.y * w + clamp 0 9999 s.x) * 4
+                in
+                out
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels at))
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels (at + 1)))
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels (at + 2)))
+                    |> Builder.pushLast (UInt8.fromInt (byteAt img.pixels (at + 3)))
+        in
+        { width = ow, height = oh, pixels = Bytes.fromUInt8s (Builder.toArray (pixels ow oh pixel 0 0 (Builder.empty (ow * oh * 4)))) }
