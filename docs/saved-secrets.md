@@ -182,7 +182,7 @@ off; **this machine only** (`CRED_PERSIST_LOCAL_MACHINE`). And build it.
   on this connection. Asked again for it, the answer was refused: the box
   says "The remembered one was refused.", with Remember checked. Else the
   box asks, with "[ ] Remember it in Windows' Credential Manager" and
-  Tab to check it. What the box was told to remember is written when the
+  Tab to check it (a checkbox since PW10). What the box was told to remember is written when the
   session has logged in (`Started`), never before. A remembered one that
   was refused, and not to be remembered again, is taken away then. A
   question asked again drops what was waiting for its name. R starts
@@ -218,3 +218,43 @@ pipe is written from Geng (`Ssh.Agent`, `Os`). So either the message
 passes through Geng once, as the session keys do (accepted by SC12
 question 7), or C writes it to the pipe itself, a bigger change. Gilbert, 2026-11-18: skipped for now, to
 revisit later (`review.md` RV4).
+
+## PW10 · The checkbox as a checkbox (2026-11-19)
+
+Gilbert, 2026-11-19, on beelink1: the box's "[ ] Remember it in
+Windows' Credential Manager" was text, and Tab ticked it, which is not
+how a checkbox works anywhere else. People click it, or Tab to it and
+press Space.
+
+**Now:** the box (`Dialog`) has a real checkbox under the field, drawn as
+the settings window draws its controls: a rounded square, filled in the
+accent color with a check mark when ticked, and a ring in the accent
+color when it has the keys. Its label is beside it.
+
+- **The mouse**: a click on the square or on its label ticks or unticks
+  it and gives it the keys (`Dialog.checkAt`). A click anywhere else in
+  the window gives the keys back to the field.
+- **The keys**: Tab moves the focus from the field to the checkbox and
+  back. Space ticks it while it has the focus. Enter answers from
+  either, as before, and Esc declines. While the checkbox has the keys,
+  the field shows no caret and its border is no longer the accent's, and
+  what is typed goes nowhere, as in any dialog.
+- The hint loses "Tab: remember".
+
+**Checked:** on beelink1, the box drawn by `remember.py`'s new picture
+run: the checkbox and its label under the field, unticked, the field
+focused. The keys themselves (Tab, Space, Enter) could not be checked by
+the harness this time. Its keys went to Windows Search, whose panel kept
+the keyboard although Windows reported puritty's window in front, so the
+key runs were stopped, to be tried by hand.
+
+**A correction to PW8's measurement.** `cmdkey` run over ssh works on the
+ssh logon's credentials, not the desktop session's that puritty uses
+(PW3). So PW8's run 3 ("a wrong one put in its place by `cmdkey`") put
+nothing in the desktop's store, and its cleanup removed nothing there:
+the test's credential, with "hunter2", stayed in beelink1's Credential
+Manager. On 2026-11-19 it made the runs log in unasked. `remember.py` now
+runs each `cmdkey` in the desktop session (`on_desktop`) and checks the
+store is empty at the start and the end; the credential is gone. It also
+sends keys only while puritty is running and reported in front.
+
