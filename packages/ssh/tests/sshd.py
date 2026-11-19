@@ -132,6 +132,29 @@ SESSION_DRIVER_CASES = [
 ]
 
 
+# side channels beside the session (docs/sftp.md FT12): name, client
+# options after the driver's own, sshd config lines. The session's command
+# waits for a line, which the driver sends once every side channel is over,
+# so a side channel's end never ends the session; each side channel's lines
+# are said at the end by its number.
+SFTP_SERVER = "/usr/lib/openssh/sftp-server"
+SIDE_CASES = [
+    ("side-exec", ["--side-exec", "echo side one; exit 2"], []),
+    ("side-two", ["--side-exec", "echo a", "--side-exec", "echo b; exit 1"], []),
+    # 3 MB pumped through the server's window, then the end
+    ("side-stdin", ["--side-exec", "wc -c", "--side-stdin-bytes", "3000000", "--side-eof"], []),
+    ("side-stderr", ["--side-exec", "echo oops >&2; exit 7"], []),
+    ("side-sftp", ["--side-subsystem", "sftp", "--side-eof"], [f"Subsystem sftp {SFTP_SERVER}"]),
+    # no Subsystem line: the request is refused, the channel closed, and
+    # the session goes on
+    ("side-sftp-off", ["--side-subsystem", "sftp"], []),
+    # one session per connection: the side channel is not opened at all
+    ("side-max-sessions", ["--side-exec", "echo never"], ["MaxSessions 1"]),
+    # a side channel that refuses does not stop the next
+    ("side-refused-then-exec", ["--side-subsystem", "nosuch", "--side-exec", "echo still"], []),
+]
+
+
 # jump hosts (SC21): name, how many jump hosts before the host, which of
 # the servers' keys known_hosts holds ("all", or "host" for the host's
 # only), client options, sshd config lines for the jump hosts. The host is
@@ -320,6 +343,26 @@ def main():
         else:
             print(f"ok   {name}")
     server_pub = (WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
+    for name, options, extra in SIDE_CASES:
+        server = Server(extra)
+        kh = WORK / f"known_hosts.{name}"
+        kh.write_text(f"[127.0.0.1]:{server.port} {' '.join(server_pub)}\n")
+        try:
+            got = run_client(["session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--known-hosts", str(kh),
+                              "--identity", keys["ed"], "--exec", "read x; echo main done", *options])
+        finally:
+            server.stop()
+        got = re.sub(r"SHA256:[A-Za-z0-9+/]+", "SHA256:FINGERPRINT", got.replace(str(kh), "KNOWN_HOSTS").replace(str(server.port), "PORT"))
+        got = got.replace(f"as {getpass.getuser()}", "as USER")
+        pin = PINS / f"{name}.txt"
+        if a.update:
+            pin.write_text(got)
+            print(f"wrote {name}:\n  " + got.strip().replace("\n", "\n  "))
+        elif not pin.exists() or pin.read_text() != got:
+            fails += 1
+            print(f"FAIL {name}\n  want {pin.read_text() if pin.exists() else '(no pin)'}\n  got  {got}")
+        else:
+            print(f"ok   {name}")
     for name, hops, known, options, extra in JUMP_CASES:
         host = Server([])
         jumps = [Server(extra) for _ in range(hops)]
@@ -385,7 +428,7 @@ def main():
         else:
             fails += 1
             print(f"FAIL replay {replay.stem}\n  {got}")
-    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
+    total = len(CASES) + len(LOGIN_CASES) + len(SESSION_CASES) + len(SESSION_DRIVER_CASES) + len(SIDE_CASES) + len(JUMP_CASES) + len(AGENT_CASES) + len(replays)
     if not a.update:
         print(f"{total - fails} of {total} cases pass")
         sys.exit(1 if fails else 0)

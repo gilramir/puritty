@@ -191,6 +191,77 @@ connectionSuite =
         , ends "data that does not read" (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, short ])
         , ends "extended data that does not read" (Bytes.flatten [ Wire.writeByte 95, Wire.writeUint32 0, Wire.writeUint32 1, short ])
         , ends "a window adjustment that does not read" (Bytes.flatten [ Wire.writeByte 93, Wire.writeUint32 0, Wire.writeByte 1 ])
+        , caseTest "a side channel's bad data closes only it"
+            (\_ ->
+                let
+                    -- an exec channel beside it, number 1, the server's 9,
+                    -- confirmed and its command started
+                    side =
+                        Connection.openExec "true" opened.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                    started =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                    bad =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 1, short ]) started.connection
+
+                    sideEvents =
+                        Array.map .event bad.side
+
+                    stillMain =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 94, Wire.writeUint32 0, Wire.writeString (Bytes.fromString "abc") ]) bad.connection
+                in
+                if side.channel /= 1 then
+                    Just "the side channel is not number 1"
+
+                else if not (Array.member Connection.Started (Array.map .event started.side)) then
+                    Just "the side channel did not start"
+
+                else if not (refused sideEvents && Array.member Connection.Ended sideEvents) then
+                    Just "the side channel went on"
+
+                else if not (Array.isEmpty bad.events) then
+                    Just "the session was told of the side channel's data"
+
+                else if not (Array.member (Connection.Output (Bytes.fromString "abc")) stillMain.events) then
+                    Just "the session stopped"
+
+                else
+                    Nothing
+            )
+        , caseTest "a side channel's data waits for a pump"
+            (\_ ->
+                let
+                    side =
+                        Connection.openExec "cat" opened.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                    started =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                    written =
+                        Connection.writeSide 1 (Bytes.fromString (String.repeat 100000 "x")) started.connection
+
+                    pumped =
+                        Connection.pump 32768 written.connection
+                in
+                if not (Array.isEmpty written.send) then
+                    Just "a side channel's write was sent before a pump"
+
+                else if Array.length pumped.send /= 1 then
+                    Just ("a pump of 32 KiB sent " ++ String.fromInt (Array.length pumped.send) ++ " packets")
+
+                else if Connection.sideWaiting pumped.connection <= 0 then
+                    Just "nothing waits after one pump of 100,000 bytes"
+
+                else
+                    Nothing
+            )
         ]
 
 
@@ -1646,14 +1717,21 @@ sessionMode r target =
         |> Task.andThen
             (\sources ->
                 Process.spawn (Session.run { net = r.net, fs = r.fs } jumps options sources.notices sources.inputs)
-                    |> Task.andThen (\_ -> watch r.args sources [])
+                    |> Task.andThen (\_ -> watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 })
             )
 
 
 {-| The session's notices, each a line, each question answered from the
-options; the output shown at the end. -}
-watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Array Bytes -> Task Never {}
-watch args sources output =
+options; the output shown at the end. The side channels' lines
+(`--side-exec`, `--side-subsystem`, docs/sftp.md FT12) are kept by channel
+and said at the end, in order, so that how their events interleave with
+the session's does not move the pins. -}
+type alias Watch =
+    { output : Array Bytes, sides : Dict.Dict Int { lines : Array String, output : Array Bytes }, open : Int, opened : Int }
+
+
+watch : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Watch -> Task Never {}
+watch args sources w =
     Source.next sources.notices
         |> Task.andThen
             (\notice ->
@@ -1662,7 +1740,7 @@ watch args sources output =
                         Source.emit sources.inputs (Session.Answered a)
 
                     next =
-                        watch args sources output
+                        watch args sources w
                 in
                 when notice is
                     Nothing ->
@@ -1726,22 +1804,148 @@ watch args sources output =
                                         Nothing ->
                                             Task.succeed {}
                                 )
-                            |> Task.andThen (\_ -> next)
+                            |> Task.andThen (\_ -> openSides args sources)
+                            |> Task.andThen (\opened -> watch args sources { w | open = opened, opened = opened })
 
                     Just (Session.Output bytes) ->
-                        watch args sources (Array.pushLast bytes output)
+                        if Array.member "--echo" args then
+                            -- what the command writes goes back as keys, at
+                            -- once (a latency measurement, docs/sftp.md FT12)
+                            Source.emit sources.inputs (Session.Keys bytes) |> Task.andThen (\_ -> next)
+
+                        else
+                            watch args sources { w | output = Array.pushLast bytes w.output }
 
                     Just (Session.Exited status) ->
-                        say ("output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten output))))
+                        say ("output: " ++ String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten w.output))))
                             |> Task.andThen (\_ -> say ("exit status " ++ String.fromInt status))
-                            |> Task.andThen (\_ -> watch args sources [])
+                            |> Task.andThen (\_ -> watch args sources { w | output = [] })
+
+                    Just (Session.Side side) ->
+                        let
+                            was =
+                                Dict.get side.ref w.sides |> Maybe.withDefault { lines = [], output = [] }
+
+                            line text =
+                                { was | lines = Array.pushLast text was.lines }
+
+                            shown =
+                                if Array.member "--hex" args then
+                                    String.fromInt (Bytes.length (Bytes.flatten was.output)) ++ " bytes"
+
+                                else
+                                    String.replace "\r" "" (String.trim (Bytes.toStringLossy (Bytes.flatten was.output)))
+
+                            now =
+                                when side.event is
+                                    Connection.Output bytes ->
+                                        { was | output = Array.pushLast bytes was.output }
+
+                                    Connection.ErrorOutput bytes ->
+                                        { was | output = Array.pushLast bytes was.output }
+
+                                    Connection.Started ->
+                                        line "started"
+
+                                    Connection.Refused why ->
+                                        line ("refused: " ++ why)
+
+                                    Connection.Exited status ->
+                                        line ("output: " ++ shown ++ "; exit status " ++ String.fromInt status)
+
+                                    Connection.Killed k ->
+                                        line ("killed by " ++ k.signal)
+
+                                    Connection.Ended ->
+                                        line "ended"
+
+                                    Connection.KeepaliveUnanswered _ ->
+                                        was
+
+                            stillOpen =
+                                if side.event == Connection.Ended then
+                                    w.open - 1
+
+                                else
+                                    w.open
+
+                            after =
+                                { w | sides = Dict.set side.ref now w.sides, open = stillOpen }
+                        in
+                        if stillOpen == 0 && w.open > 0 then
+                            -- every side channel is over: the session's
+                            -- command reads a line to end (`read x`)
+                            Source.emit sources.inputs (Session.Keys (Bytes.fromString "\n"))
+                                |> Task.andThen (\_ -> watch args sources after)
+
+                        else
+                            watch args sources after
 
                     Just (Session.Failed why) ->
                         say ("failed: " ++ why) |> Task.andThen (\_ -> next)
 
                     Just Session.Ended ->
-                        say "ended"
+                        Dict.foldl
+                            (\ref side acc -> Array.foldl (\l a -> a |> Task.andThen (\_ -> say ("side " ++ String.fromInt ref ++ ": " ++ l))) acc side.lines)
+                            (Task.succeed {})
+                            w.sides
+                            |> Task.andThen (\_ -> say "ended")
             )
+
+
+{-| The side channels the options ask for, opened once the session has
+started, numbered from 1 in order: `--side-exec CMD` and `--side-subsystem
+NAME`, each again for more. The first is given `--side-stdin TEXT` and
+`--side-stdin-bytes N` (that many `x`s), then its end,
+when `--side-eof`. How many were opened. -}
+openSides : Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never Int
+openSides args sources =
+    let
+        indexed =
+            Array.indexedMap (\i a -> { index = i, arg = a }) args
+
+        asked =
+            indexed
+                |> Array.mapAndFlatten
+                    (\a ->
+                        when { arg = a.arg, value = Array.get (a.index + 1) args } is
+                            { arg = "--side-exec", value = Just command } ->
+                                [ \ref -> Session.OpenExec { ref = ref, command = command } ]
+
+                            { arg = "--side-subsystem", value = Just name } ->
+                                [ \ref -> Session.OpenSubsystem { ref = ref, name = name } ]
+
+                            _ ->
+                                []
+                    )
+
+        emit input =
+            Source.emit sources.inputs input
+
+        first =
+            [ option "--side-stdin" args |> Maybe.map (\t -> Session.SideWrite { ref = 1, bytes = Bytes.fromString (unescape t) })
+            , option "--side-stdin-bytes" args
+                |> Maybe.andThen String.toInt
+                |> Maybe.map (\n -> Session.SideWrite { ref = 1, bytes = Bytes.fromString (String.repeat n "x") })
+            , if Array.member "--side-eof" args then
+                Just (Session.SideEof 1)
+
+              else
+                Nothing
+            ]
+                |> Array.mapAndFlatten (\m -> Maybe.map (\x -> [ x ]) m |> Maybe.withDefault [])
+    in
+    Array.foldl (\x acc -> acc |> Task.andThen (\_ -> emit x))
+        (Task.succeed {})
+        (Array.indexedMap (\i make -> make (i + 1)) asked
+            ++ (if Array.isEmpty asked then
+                    []
+
+                else
+                    first
+               )
+        )
+        |> Task.map (\_ -> Array.length asked)
 
 
 {-| `COLUMNS,ROWS`, or `COLUMNS,ROWS,WIDTH,HEIGHT` with the size in pixels

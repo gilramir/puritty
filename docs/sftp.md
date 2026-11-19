@@ -716,3 +716,73 @@ formats as the Snipping Tool row; he closed it without taking one, so
 that is inferred, not listed. Alt+Print Screen and Win+Print Screen still
 copy without the overlay, as measured above. Not measured: the RHEL8
 hosts, which aren't reachable from here.
+
+## FT12 · Step 1 built: channels beside the session (2026-11-19)
+
+**`Ssh.Connection`** holds a table of channels instead of one. Channel 0
+is the session (or a jump host's `direct-tcpip`), with its API as before.
+Beside it:
+
+- `openExec COMMAND` and `openSubsystem NAME` open more `session`
+  channels on the same connection, numbered from 1, and answer the
+  number; `writeSide`, `sendEofSide` and `closeSide` act on one.
+- A side channel's events come in the step's `side` field, each with its
+  number. Its refusal, a message about it that does not read, and its end
+  close that channel only; the session goes on (Tabby's failure, FT1).
+- Messages are dispatched by the recipient channel in them, which the
+  one-channel code read and ignored.
+- The session's bytes are sent as soon as the server's window allows. A
+  side channel's wait until the caller calls `pump BUDGET`, which sends
+  at most that many bytes from the side channels, then their EOFs;
+  `sideWaiting` says whether anything could go.
+
+**`Ssh.Session`** takes `OpenExec`, `OpenSubsystem`, `SideWrite`,
+`SideEof` and `SideClose` as inputs, each naming the channel by a number
+of the window's choosing (`ref`), and tells `Side { ref, event }`. Its
+loop races `writable` on the socket beside the server's bytes and the
+window's inputs whenever a side channel has something to send, and pumps
+32 KiB each time the socket has room. The socket is set with geng-lang's
+new `Os.Net.limitUnsent` (Dnene62, its `m4-puritty.md` §VA68) to keep at
+most 64 KiB unsent. The app logs side notices and otherwise ignores them
+until step 2 uses them.
+
+**Measured** (`ssh-tests session --echo` to gmktec7: the session's
+command writes a byte every 50 ms and times its echo, 80 of them, while a
+side channel uploads 256 MiB to a reader that times itself):
+
+| | echo during the upload | upload |
+|---|---|---|
+| idle (no upload) | 3.9 ms | |
+| pumped 32 KiB, no unsent limit | 32.5 ms median, p90 41.9 | 49.0 MB/s |
+| pumped 32 KiB, 64 KiB unsent (chosen; three runs) | **5.2, 5.7, 5.4 ms** median, p90 7.2–7.8 | 34.8, 34.5, 34.4 MB/s |
+| pumped 32 KiB, 128 KiB unsent (three runs) | 16.0, 15.7, 15.6 ms | 34.9, 30.9, 33.0 MB/s |
+| pumped 128 KiB, 64 KiB unsent (one run) | 14.0 ms | 48.5 MB/s |
+| OpenSSH, upload on the same connection (FT11) | 42.9 ms | 41.5 MB/s (`sftp`) |
+| OpenSSH, upload on its own connection (FT11) | 17.2 ms | |
+
+The same build uploads at 383 and 387 MB/s to a local sshd, so
+puritty's loop is not what costs the 30% to gmktec7; the small unsent
+buffer is, on that link, whose runs vary by several MB/s. The setting
+puts keys first, as puritty's priorities do; the throughput is to be
+looked at again with SFTP's own numbers (step 3) and on Windows.
+
+**Tested.** `packages/ssh/tests/sshd.py` has eight side cases against
+the local sshd: an exec beside the session, two, 3 MB written and
+counted, standard error, `sftp` started and ended, `sftp` refused where
+the server has no `Subsystem` line, a side channel refused under
+`MaxSessions 1`, and a refused subsystem followed by an exec that works;
+in each the session's own command ends after them, untouched. The unit
+suite adds two: a side channel's unreadable data closes only it, and its
+data waits for a pump. The gate's other cases are unchanged (76 sshd, 25
+scripted, the replays, fuzz, known_hosts, config). The unit suite passes
+on beelink1 too.
+
+**Left for later steps:**
+
+- On Windows `limitUnsent` does nothing (geng-lang's register, M7):
+  measure the echo during an upload on beelink1 in step 2.
+- No back-pressure to the window yet: `SideWrite` is kept in memory until
+  pumped, and each one copies what waits (`Bytes.flatten`). Step 2's
+  files are at most tens of MB; step 4's transfer engine needs a notice
+  of how much waits.
+- A side channel closed before the server confirms it is not closed.

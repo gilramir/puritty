@@ -201,9 +201,11 @@ SUITES = [
         ],
     ),
     Suite(
-        # since SC27: a channel message that does not read ends the session
+        # since SC27: a channel message that does not read ends the session;
+        # 7 since sftp.md FT12: a side channel's bad data closes only it, and
+        # its data waits for a pump
         "ssh-connection",
-        5,
+        7,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "connection"], cwd="packages/ssh/tests"),
             Run(

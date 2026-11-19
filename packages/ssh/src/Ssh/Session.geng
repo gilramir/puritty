@@ -111,13 +111,28 @@ type Answer
     | Decline
 
 
-{-| What the window gives the session. -}
+{-| What the window gives the session. The side channels (puritty
+`docs/sftp.md` FT12) are named by a number of the window's choosing,
+`ref`, which their [`Side`](#Notice) notices carry back:
+
+  - `OpenExec`: a channel beside the session running a command, no
+    terminal; `OpenSubsystem`: one running a subsystem (`sftp`).
+  - `SideWrite`: bytes for its program, sent as the connection has room,
+    after the session's keys; `SideEof`: the end of them; `SideClose`: the
+    channel closed.
+
+-}
 type Input
     = Keys Bytes
     | Resize { columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int }
     | Answered Answer
     | Hangup
     | Reconnect
+    | OpenExec { ref : Int, command : String }
+    | OpenSubsystem { ref : Int, name : String }
+    | SideWrite { ref : Int, bytes : Bytes }
+    | SideEof Int
+    | SideClose Int
 
 
 {-| What the window is told:
@@ -131,6 +146,8 @@ type Input
     for a signal, as OpenSSH's `ssh` gives).
   - `Failed`: why the session could not start or ended badly.
   - `Ended`: nothing more comes.
+  - `Side`: what happened on a side channel, by its `ref`. Its `Ended`
+    is its last; a side channel ends with the session too, said or not.
 
 -}
 type Notice
@@ -142,6 +159,7 @@ type Notice
     | Exited Int
     | Failed String
     | Ended
+    | Side { ref : Int, event : Connection.Event }
 
 
 {-| A key's fingerprint as OpenSSH prints it: `SHA256:` and the hash in
@@ -169,14 +187,33 @@ jump host's channel. `read` answers empty bytes at the end. -}
 type alias Link =
     { read : Task Os.Error.Error Bytes
     , write : Bytes -> Task Os.Error.Error {}
+    , writable : Task Os.Error.Error {}
     , close : Task Os.Error.Error {}
     }
+
+
+{-| A socket that keeps little unsent in its buffer (geng-lang
+`Os.Net.limitUnsent`, Dnene62), so a side channel's file, pumped as the
+socket has room, never sits in front of the session's keys by more than
+that (docs/sftp.md FT12). A system that will not set it is used as it
+is. -}
+limited : Net.Socket -> Task Os.Error.Error Link
+limited socket =
+    Net.limitUnsent unsentLimit socket
+        |> Task.onError (\_ -> Task.succeed {})
+        |> Task.map (\_ -> socketLink socket)
+
+
+unsentLimit : Int
+unsentLimit =
+    65536
 
 
 socketLink : Net.Socket -> Link
 socketLink socket =
     { read = Net.read socket
     , write = \bytes -> Net.write bytes socket
+    , writable = Net.writable socket
     , close = Net.close socket |> Task.onError (\_ -> Task.succeed {})
     }
 
@@ -200,6 +237,8 @@ type alias State =
     , transport : Transport.Transport
     , auth : Maybe Auth.Auth
     , connection : Maybe Connection.Connection
+    , sides : Dict.Dict Int Int
+    , refs : Dict.Dict Int Int
     , identities : Array Identity
     , known : Array KnownHosts.Entry
     , hostKeyTrusted : Bool
@@ -287,6 +326,7 @@ through permissions jumps target notices inputs given =
                                                         (Just
                                                             { read = Source.next pipes.toInner |> Task.map (Maybe.withDefault Bytes.empty)
                                                             , write = \bytes -> Source.emit pipes.fromInner bytes
+                                                            , writable = Task.succeed {}
                                                             , close = Source.close pipes.fromInner
                                                             }
                                                         )
@@ -344,7 +384,7 @@ connectTo permissions options notices label given =
                         Task.succeed link
 
                     Nothing ->
-                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.map socketLink
+                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.andThen limited
             )
 
 
@@ -390,6 +430,8 @@ session permissions options role label link notices =
                                                         , transport = started.transport
                                                         , auth = Nothing
                                                         , connection = Nothing
+                                                        , sides = Dict.empty
+                                                        , refs = Dict.empty
                                                         , identities = files ++ agent.identities
                                                         , known = known
                                                         , hostKeyTrusted = False
@@ -527,6 +569,7 @@ type Turn
     | FromWindow (Maybe Input)
     | FromInner (Maybe Bytes)
     | Tick
+    | Pump
 
 
 {-| The server's bytes, the other side's (the window's inputs, or for a
@@ -547,8 +590,22 @@ loop other st =
 
                 else
                     []
+
+            -- side channels' bytes go only when the link has room, so
+            -- the session's keys never wait behind more than a pump
+            pumping =
+                when st.connection is
+                    Just c ->
+                        if Connection.sideWaiting c > 0 then
+                            [ st.link.writable |> Task.map (\_ -> Pump) ]
+
+                        else
+                            []
+
+                    Nothing ->
+                        meant Reason.NotYet []
         in
-        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer)
+        Task.race (st.link.read |> Task.map FromServer) ([ other ] ++ timer ++ pumping)
             |> Task.andThen
                 (\turn ->
                     when turn is
@@ -579,8 +636,18 @@ loop other st =
 
                             else
                                 withConnection Connection.keepalive st
+
+                        Pump ->
+                            withConnection (Connection.pump pumpBudget) st
                 )
             |> Task.andThen (loop other)
+
+
+{-| The side channels' bytes sent for each time the link has room: one
+packet's worth. -}
+pumpBudget : Int
+pumpBudget =
+    32768
 
 
 {-| The session over: why, unless it already said how the program ended. -}
@@ -626,6 +693,54 @@ onInput input st =
 
         { input = Reconnect } ->
             Task.succeed st
+
+        { role = Forward _ } ->
+            -- a hop has no side channels
+            Task.succeed st
+
+        { input = OpenExec o } ->
+            openSide o.ref (Connection.openExec o.command) st
+
+        { input = OpenSubsystem o } ->
+            openSide o.ref (Connection.openSubsystem o.name) st
+
+        { input = SideWrite w } ->
+            onSide w.ref (\channel -> Connection.writeSide channel w.bytes) st
+
+        { input = SideEof ref } ->
+            onSide ref Connection.sendEofSide st
+
+        { input = SideClose ref } ->
+            onSide ref Connection.closeSide st
+
+
+{-| A side channel opened under the window's `ref`; before the session has
+a connection, refused at once. -}
+openSide : Int -> (Connection.Connection -> { channel : Int, step : Connection.Step }) -> State -> Task Os.Error.Error State
+openSide ref opener st =
+    when st.connection is
+        Just c ->
+            let
+                opened =
+                    opener c
+            in
+            onConnection opened.step { st | sides = Dict.set ref opened.channel st.sides, refs = Dict.set opened.channel ref st.refs }
+
+        Nothing ->
+            meant Reason.NotYet
+                tell (Side { ref = ref, event = Connection.Refused "the session is not connected" }) st
+                    |> Task.andThen (tell (Side { ref = ref, event = Connection.Ended }))
+
+
+onSide : Int -> (Int -> Connection.Connection -> Connection.Step) -> State -> Task Os.Error.Error State
+onSide ref f st =
+    when Dict.get ref st.sides is
+        Just channel ->
+            withConnection (f channel) st
+
+        Nothing ->
+            -- a channel already ended, or never opened
+            meant Reason.NotKnown Task.succeed st
 
 
 {-| The options with the terminal at a new size, for a session not yet
@@ -1089,7 +1204,26 @@ onAnswer answer st =
 onConnection : Connection.Step -> State -> Task Os.Error.Error State
 onConnection step st0 =
     Array.foldl (\payload acc -> acc |> Task.andThen (send payload)) (Task.succeed { st0 | connection = Just step.connection }) step.send
+        |> (\sent -> Array.foldl (\e acc -> acc |> Task.andThen (onSideEvent e)) sent step.side)
         |> (\sent -> Array.foldl (\e acc -> acc |> Task.andThen (onConnectionEvent e)) sent step.events)
+
+
+{-| A side channel's event, told to the window by its `ref`; after its
+`Ended`, the channel's number is forgotten. -}
+onSideEvent : Connection.SideEvent -> State -> Task Os.Error.Error State
+onSideEvent e st =
+    when Dict.get e.channel st.refs is
+        Just ref ->
+            tell (Side { ref = ref, event = e.event })
+                (if e.event == Connection.Ended then
+                    { st | sides = Dict.remove ref st.sides, refs = Dict.remove e.channel st.refs }
+
+                 else
+                    st
+                )
+
+        Nothing ->
+            meant Reason.NotKnown Task.succeed st
 
 
 onConnectionEvent : Connection.Event -> State -> Task Os.Error.Error State

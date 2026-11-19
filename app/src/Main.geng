@@ -83,6 +83,7 @@ import SettingsGui
 import SettingsProgram
 import SettingsSource exposing (Given, Read(..), Settings, overridden, readSettings, reloadDelayMs, settingsFile, watchSettings)
 import Source exposing (Source)
+import Ssh.Connection as Connection
 import Ssh.Session as Session
 import SshAgents
 import TabOrder
@@ -2976,6 +2977,38 @@ sshLine n =
         Session.Ended ->
             "ended"
 
+        Session.Side side ->
+            "side channel " ++ String.fromInt side.ref ++ ": " ++ sideLine side.event
+
+
+{-| A side channel's event, as the log says it. -}
+sideLine : Connection.Event -> String
+sideLine e =
+    when e is
+        Connection.Started ->
+            "started"
+
+        Connection.Refused why ->
+            "refused: " ++ why
+
+        Connection.Output b ->
+            "output " ++ String.fromInt (Bytes.length b) ++ " bytes"
+
+        Connection.ErrorOutput b ->
+            "error output " ++ String.fromInt (Bytes.length b) ++ " bytes"
+
+        Connection.Exited code ->
+            "exited, status " ++ String.fromInt code
+
+        Connection.Killed k ->
+            "killed by " ++ k.signal
+
+        Connection.Ended ->
+            "ended"
+
+        Connection.KeepaliveUnanswered n ->
+            String.fromInt n ++ " keepalives unanswered"
+
 
 {-| tmux commands written, each a line in the log (redacted, `Diag.command`). -}
 sendCommands : Array String -> (taken m : Model) -> Model
@@ -4061,8 +4094,17 @@ sshNoticed told m =
 
                         Session.Output _ ->
                             screen
+
+                        Session.Side _ ->
+                            -- the side channels' own users read them
+                            screen
             in
-            { m | ssh = Just updated, urgent = True }
+            when told is
+                Session.Side _ ->
+                    m
+
+                _ ->
+                    { m | ssh = Just updated, urgent = True }
 
 
 {-| Whether a notice ends a session that went as it should, its shell's
