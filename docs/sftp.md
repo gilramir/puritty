@@ -628,3 +628,91 @@ guide, `docs/user/file-transfer.md`, begins with step 2.
 
 The OpenSSH-client tabs on Linux get the same through `ControlMaster`
 after step 4.
+
+## FT11 · Step 0, measured (2026-11-19)
+
+**tmux's directory for a pane** (tmux 3.4 on nene, a tmux of its own
+socket, `bash --norc`). `#{pane_current_path}` after `cd /usr/share` was
+`/usr/share`, without any shell setup. The rest:
+
+- *A root process in front.* tmux 3.4's `osdep_get_cwd` (osdep-linux.c)
+  reads `/proc/<foreground process group>/cwd`, and when that fails,
+  `/proc/<session leader>/cwd`, the user's own shell. A user can't read a
+  root process's `cwd` (`readlink /proc/<root sshd>/cwd` failed on nene).
+  So after `sudo su` and `cd /etc`, tmux says the directory where `sudo
+  su` was typed, and nothing tells it apart from a true answer. Measured
+  with a stand-in, since there's no sudo here or on gmktec7: `cd /tmp;
+  su` waiting at its password prompt (root, `S+`) gave `/tmp` and
+  `pane_current_command` `su`.
+- *A nested ssh.* `cd /var; ssh gmktec7`, then `cd /etc` there: `/var`,
+  the local `ssh` process's directory, with `pane_current_command` `ssh`.
+- *OSC 7 is kept by tmux.* A shell on gmktec7 printing `ESC ] 7 ;
+  file://gmktec7/usr/lib` set the pane's `#{pane_path}` to that URL, host
+  included, with no `allow-passthrough`. So a `tmux -CC` tab can ask for
+  both: `pane_current_path` (no setup, but blind to a user switch and a
+  nested ssh) and `pane_path` (the shell's own word and its host, where
+  the shell prints OSC 7).
+
+What it means for step 5: the destination marked on a pane is
+`pane_current_path` when `pane_current_command` is not `ssh`, `su`,
+`sudo` or another program known to change host or user; `pane_path`
+when its host is the tab's; else the folder chooser. A root shell's
+directory is never offered without OSC 7, since tmux can't read it.
+
+**Windows' clipboard after each kind of screenshot** (beelink1, Windows
+11, a 4K screen; formats listed with `EnumClipboardFormats` from a script
+in the desktop session, `clipfmt.ps1`):
+
+| Taken with | Formats | Sizes |
+|---|---|---|
+| Alt+Print Screen (the active window) | `CF_BITMAP`, `CF_DIB`, `CF_DIBV5` | DIB 1.1 MB |
+| Win+Print Screen (the whole screen, also saved to `Pictures\Screenshots`) | `CF_BITMAP`, `CF_DIB`, `CF_DIBV5` | DIB 33.2 MB (3840×2160×4); the saved PNG 22.9 MB |
+| Snipping Tool, Win+Shift+S (Gilbert) | `PNG`, `CF_DIB`, `CF_DIBV5`, `CF_BITMAP`, `DataObject`, `Ole Private Data`, `CanUploadToCloudClipboard`, `CanIncludeInClipboardHistory` | PNG 49.9 KB, DIB 279 KB |
+
+So the Snipping Tool's `PNG` goes up as it is, and the two Print Screen
+keys leave only bitmaps, which step 2 encodes. A whole 4K screen is a
+33 MB bitmap: the encoder's speed matters, and the upload is tens of MB,
+so step 2 shows a progress bar for it as FT6 says.
+
+**OpenSSH's `sftp` to gmktec7** (3.8 ms round trip, a 256 MiB file of
+random bytes; `-R` is the requests in flight):
+
+| | `-R 64` | `-R 16` | `-R 4` | `-R 1` |
+|---|---|---|---|---|
+| upload | 41.5 MB/s | 41.4 | 41.0 | 37.4 |
+| download | 92.2 MB/s | | | 39.2 |
+
+Uploads stop at about 41 MB/s whatever `-R` is, so something on the
+path limits them, not round trips; downloads gain 2.4 times from
+requests in flight. These are the numbers step 3 is held to. puritty's
+own channel has no tool to measure it yet; step 1 adds one.
+
+**Typing while a file goes up** (echo round trips of 2 bytes through
+`cat` on a session channel, every 50 ms, while `sftp` uploads the same
+file):
+
+| | idle | during the upload |
+|---|---|---|
+| the upload on the same connection (`ControlMaster`) | 3.7 ms median | 42.9 ms median, p90 56.6, max 69.3 |
+| the upload on a connection of its own | 3.7 ms | 17.2 ms median, p90 26.6, max 39.1 |
+
+The busy link alone adds about 13 ms; sharing the connection adds about
+26 ms more, the keystrokes waiting behind the file's bytes in OpenSSH's
+buffers. puritty schedules its own channels, so step 1 sends a session
+channel's bytes ahead of queued file data and keeps little file data
+queued unsent; the same table, for puritty, is step 1's check.
+
+**A `ControlPath` must be short.** A socket path under the scratchpad
+failed: "too long for Unix domain socket" (Linux allows 108 bytes, and
+OpenSSH adds a random suffix while it makes the socket). puritty's own
+socket for its OpenSSH tabs goes under `$XDG_RUNTIME_DIR` with a short
+name.
+
+The plain Print Screen key on beelink1 (Gilbert): it opens Windows 11's
+full-screen overlay for choosing an area, the one Win+Shift+S opens (the
+Snipping Tool's screen capture, by the setting "Use the Print screen key
+to open screen capture"), so a snip taken that way should leave the same
+formats as the Snipping Tool row; he closed it without taking one, so
+that is inferred, not listed. Alt+Print Screen and Win+Print Screen still
+copy without the overlay, as measured above. Not measured: the RHEL8
+hosts, which aren't reachable from here.
