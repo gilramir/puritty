@@ -744,16 +744,35 @@ static int open_cols, open_rows;
 static int dpi_now, points_now, dpi_forced;
 /* The cell as the window thread sizes by it, under the queue's lock. */
 static int cell_w, cell_h;
-/* The gap between the cells and the window's edges, on every side
- * (docs/renderer.md R20): asked in points, kept in pixels at the window's
- * resolution, beside cell_w under queue_lock. The cells' (0, 0) is the
- * client area's (pad, pad); the pointer is reported from there, with the
- * client area's size less the two gaps. */
-static int pad_pt, pad;
+/* The gaps between the cells and the window's edges (docs/renderer.md
+ * R20, R21): left and right `padx`, above and below `pady`, asked in
+ * points and kept in pixels at the window's resolution, beside cell_w
+ * under queue_lock. What is past the last whole cell is shared between
+ * the two sides, so the cells' (0, 0) is the client area's (ox, oy); the
+ * pointer is reported from there, with the client area's size less the
+ * two gaps. */
+static int padx_pt, pady_pt, padx, pady, ox, oy;
 static int pad_px(int points, int dpi) {
     return points <= 0 ? 0 : (points * dpi + 36) / 72;
 }
 static int win_cols, win_rows, win_w, win_h, focused = -1;
+/* The cells' corner for the client area's size, under queue_lock;
+ * answers whether it moved. */
+static int place_cells(void) {
+    int x = padx, y = pady;
+    if (cell_w > 0 && cell_h > 0) {
+        int c = (win_w - 2 * padx) / cell_w, r = (win_h - 2 * pady) / cell_h;
+        if (c < 1) c = 1;
+        if (r < 1) r = 1;
+        int sx = win_w - 2 * padx - c * cell_w, sy = win_h - 2 * pady - r * cell_h;
+        if (sx > 0) x += sx / 2;
+        if (sy > 0) y += sy / 2;
+    }
+    int moved = x != ox || y != oy;
+    ox = x;
+    oy = y;
+    return moved;
+}
 /* Where the queue's last record begins when it is a motion, else -1; under
  * the queue's lock. */
 static int last_motion = -1;
@@ -1194,15 +1213,15 @@ static int wheel_v, wheel_h, last_x = INT32_MIN, last_y = INT32_MIN;
 static void pointer_record(int action, int button, int x, int y) {
     int mods = mods_now();
     EnterCriticalSection(&queue_lock);
-    int w = win_w, h = win_h, cw = cell_w, ch = cell_h, p = pad;
+    int w = win_w, h = win_h, cw = cell_w, ch = cell_h, px = padx, py = pady, x0 = ox, y0 = oy;
     LeaveCriticalSection(&queue_lock);
     last_x = x;
     last_y = y;
     /* from the cells' corner, in the cells' area (R20) */
-    x -= p;
-    y -= p;
-    w = w - 2 * p > 0 ? w - 2 * p : 0;
-    h = h - 2 * p > 0 ? h - 2 * p : 0;
+    x -= x0;
+    y -= y0;
+    w = w - 2 * px > 0 ? w - 2 * px : 0;
+    h = h - 2 * py > 0 ? h - 2 * py : 0;
     uint8_t r[17] = {9, (uint8_t) action, (uint8_t) button, (uint8_t) (mods >> 8), (uint8_t) mods,
                      (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
                      (uint8_t) (w >> 8), (uint8_t) w, (uint8_t) (h >> 8), (uint8_t) h,
@@ -1335,9 +1354,9 @@ static void place_ime(HWND h) {
     HIMC c = ImmGetContext(h);
     if (!c) return;
     EnterCriticalSection(&queue_lock);
-    int cw = cell_w, ch = cell_h, p = pad;
+    int cw = cell_w, ch = cell_h, x0 = ox, y0 = oy;
     LeaveCriticalSection(&queue_lock);
-    int x = p + spot_x * cw, y = p + spot_y * ch;
+    int x = x0 + spot_x * cw, y = y0 + spot_y * ch;
     COMPOSITIONFORM cf = {CFS_POINT, {x, y}, {0, 0, 0, 0}};
     ImmSetCompositionWindow(c, &cf);
     CANDIDATEFORM cand = {0, CFS_EXCLUDE, {x, y}, {x, y, x + cw, y + ch}};
@@ -1347,12 +1366,15 @@ static void place_ime(HWND h) {
 
 static void size_in(int w, int h) {
     EnterCriticalSection(&queue_lock);
-    int cw = cell_w, ch = cell_h, p = pad;
+    int cw = cell_w, ch = cell_h, px = padx, py = pady;
     win_w = w;
     win_h = h;
+    /* the cells moved within the window: drawn again where they now are */
+    int moved = place_cells();
     LeaveCriticalSection(&queue_lock);
+    if (moved && win) InvalidateRect(win, NULL, FALSE);
     if (cw <= 0 || ch <= 0) return;
-    int c = (w - 2 * p) / cw, r = (h - 2 * p) / ch;
+    int c = (w - 2 * px) / cw, r = (h - 2 * py) / ch;
     if (c < 1) c = 1;
     if (r < 1) r = 1;
     if (c > 65535) c = 65535;
@@ -1379,7 +1401,7 @@ static void paint_window(HWND h) {
     RECT client;
     GetClientRect(h, &client);
     EnterCriticalSection(&queue_lock);
-    int gap = pad;
+    int gx = ox, gy = oy;
     LeaveCriticalSection(&queue_lock);
     EnterCriticalSection(&paint);
     if (pixels && pw > 0 && ph > 0) {
@@ -1393,7 +1415,7 @@ static void paint_window(HWND h) {
         bi.bmiHeader.biCompression = BI_RGB;
         LARGE_INTEGER t0, t1;
         QueryPerformanceCounter(&t0);
-        SetDIBitsToDevice(dc, gap, gap, (DWORD) pw, (DWORD) ph, 0, 0, 0, (UINT) ph, pixels, &bi, DIB_RGB_COLORS);
+        SetDIBitsToDevice(dc, gx, gy, (DWORD) pw, (DWORD) ph, 0, 0, 0, (UINT) ph, pixels, &bi, DIB_RGB_COLORS);
         QueryPerformanceCounter(&t1);
         paints++;
         paint_ticks += t1.QuadPart - t0.QuadPart;
@@ -1403,8 +1425,8 @@ static void paint_window(HWND h) {
     LeaveCriticalSection(&paint);
     HBRUSH b = CreateSolidBrush(RGB((m >> 16) & 0xff, (m >> 8) & 0xff, m & 0xff));
     /* the gaps on every side, and what is past the last cells */
-    RECT top = {0, 0, client.right, gap}, left = {0, 0, gap, client.bottom};
-    RECT right = {gap + w, 0, client.right, client.bottom}, below = {0, gap + hh, client.right, client.bottom};
+    RECT top = {0, 0, client.right, gy}, left = {0, 0, gx, client.bottom};
+    RECT right = {gx + w, 0, client.right, client.bottom}, below = {0, gy + hh, client.right, client.bottom};
     if (top.top < top.bottom) FillRect(dc, &top, b);
     if (left.left < left.right) FillRect(dc, &left, b);
     if (right.left < right.right) FillRect(dc, &right, b);
@@ -1430,14 +1452,16 @@ static void rescale(int dpi, int x, int y, const RECT *whole) {
     int cols = win_cols > 0 ? win_cols : open_cols, rows = win_rows > 0 ? win_rows : open_rows;
     cell_w = pt_cw;
     cell_h = pt_ch;
-    pad = pad_px(pad_pt, dpi);
-    int gap = pad;
+    padx = pad_px(padx_pt, dpi);
+    pady = pad_px(pady_pt, dpi);
+    int gx = padx, gy = pady;
+    place_cells();
     LeaveCriticalSection(&queue_lock);
     if (whole) {
         SetWindowPos(win, NULL, whole->left, whole->top, whole->right - whole->left, whole->bottom - whole->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
     } else {
-        RECT r = {0, 0, cols * pt_cw + 2 * gap, rows * pt_ch + 2 * gap};
+        RECT r = {0, 0, cols * pt_cw + 2 * gx, rows * pt_ch + 2 * gy};
         DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
         AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi);
         SetWindowPos(win, NULL, x, y, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1625,7 +1649,7 @@ static void *window_thread(void *arg) {
     if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, (LPCWSTR) IDI_APPLICATION);
     RegisterClassExW(&wc);
     DWORD style = WS_OVERLAPPEDWINDOW, ex = 0;
-    RECT r = {0, 0, open_cols * cell_w + 2 * pad, open_rows * cell_h + 2 * pad};
+    RECT r = {0, 0, open_cols * cell_w + 2 * padx, open_rows * cell_h + 2 * pady};
     AdjustWindowRectExForDpi(&r, style, FALSE, ex, (UINT) dpi_now);
     win = CreateWindowExW(ex, L"puritty", title0 ? title0 : L"puritty", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
                           r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
@@ -1716,8 +1740,9 @@ static void at_exit(void) {
  * (V37). Answers the cell as `width * 65536 + height`, or -1 no font, -2
  * no window. */
 geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
-                               void *title_bytes, int32_t padding, geng_wait *wait) {
-    pad_pt = padding;
+                               void *title_bytes, int32_t padding_x, int32_t padding_y, geng_wait *wait) {
+    padx_pt = padding_x;
+    pady_pt = padding_y;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     InitializeCriticalSection(&paint);
     InitializeCriticalSection(&queue_lock);
@@ -1749,7 +1774,8 @@ geng_cancel puritty_win32_open(int32_t c, int32_t r, int32_t points, void *font_
     open_rows = r;
     dpi_now = dpi;
     points_now = points;
-    pad = pad_px(pad_pt, dpi);
+    padx = ox = pad_px(padx_pt, dpi);
+    pady = oy = pad_px(pady_pt, dpi);
     char *title = string_of(title_bytes);
     title0 = wide(title);
     free(title);
@@ -1789,8 +1815,10 @@ geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
     LeaveCriticalSection(&paint);
     if (margins) InvalidateRect(win, NULL, FALSE);
     else if (frame.last >= frame.first) {
-        int gap = pad;
-        RECT rows = {gap, gap + frame.first * pt_ch, gap + pt_cols * pt_cw, gap + (frame.last + 1) * pt_ch};
+        EnterCriticalSection(&queue_lock);
+        int gx = ox, gy = oy;
+        LeaveCriticalSection(&queue_lock);
+        RECT rows = {gx, gy + frame.first * pt_ch, gx + pt_cols * pt_cw, gy + (frame.last + 1) * pt_ch};
         InvalidateRect(win, &rows, FALSE);
     }
     int inklen;
@@ -1816,10 +1844,10 @@ geng_cancel puritty_win32_draw(void *list, geng_wait *wait) {
 static int write_shot(const char *path) {
     RECT client = {0, 0, 0, 0};
     if (win) GetClientRect(win, &client);
-    /* the cells where paint_window puts them, at the padding's (gap,
-     * gap), the rest the margin's color, as the window shows them */
+    /* the cells where paint_window puts them, at (ox, oy), the rest
+     * the margin's color, as the window shows them */
     EnterCriticalSection(&queue_lock);
-    int gap = pad;
+    int gx = ox, gy = oy;
     LeaveCriticalSection(&queue_lock);
     EnterCriticalSection(&paint);
     int w = client.right > 0 ? client.right : pw, h = client.bottom > 0 ? client.bottom : ph;
@@ -1832,7 +1860,7 @@ static int write_shot(const char *path) {
     uint8_t *line = malloc((size_t) w * 3);
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            int cx = x - gap, cy = y - gap;
+            int cx = x - gx, cy = y - gy;
             uint32_t p = cx >= 0 && cy >= 0 && cx < pw && cy < ph ? pixels[(size_t) cy * pw + cx] : margin_rgb;
             line[x * 3] = (uint8_t) (p >> 16);
             line[x * 3 + 1] = (uint8_t) (p >> 8);
@@ -1949,9 +1977,9 @@ static void refit(void) {
 geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
     if (win && !IsZoomed(win)) {
         EnterCriticalSection(&queue_lock);
-        int gap = pad;
+        int gx = padx, gy = pady;
         LeaveCriticalSection(&queue_lock);
-        RECT r = {0, 0, cols * cell_w + 2 * gap, rows * cell_h + 2 * gap};
+        RECT r = {0, 0, cols * cell_w + 2 * gx, rows * cell_h + 2 * gy};
         DWORD style = (DWORD) GetWindowLongPtrW(win, GWL_STYLE), ex = (DWORD) GetWindowLongPtrW(win, GWL_EXSTYLE);
         EnterCriticalSection(&paint);
         UINT dpi = (UINT) dpi_now;
@@ -1963,17 +1991,19 @@ geng_cancel puritty_win32_resize(int32_t cols, int32_t rows, geng_wait *wait) {
     return (geng_cancel) {0};
 }
 
-/* The gap around the cells set again, in points (R20): the window kept at
- * its size in pixels, so the cells that now fit it are reported as a new
- * size, and the whole window drawn again at the new corner. */
-geng_cancel puritty_win32_padding(int32_t points, geng_wait *wait) {
+/* The gaps around the cells set again, in points (R20, R21): the window
+ * kept at its size in pixels, so the cells that now fit it are reported
+ * as a new size, and the whole window drawn again at the new corner. */
+geng_cancel puritty_win32_padding(int32_t points_x, int32_t points_y, geng_wait *wait) {
     EnterCriticalSection(&paint);
     int dpi = dpi_now;
     LeaveCriticalSection(&paint);
     EnterCriticalSection(&queue_lock);
-    pad_pt = points;
-    int p = pad_px(points, dpi), changed = p != pad;
-    pad = p;
+    padx_pt = points_x;
+    pady_pt = points_y;
+    int px = pad_px(points_x, dpi), py = pad_px(points_y, dpi), changed = px != padx || py != pady;
+    padx = px;
+    pady = py;
     LeaveCriticalSection(&queue_lock);
     if (changed && win) refit();
     geng_succeed(wait, geng_slot_I4(0));

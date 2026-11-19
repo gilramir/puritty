@@ -118,13 +118,25 @@ static double ns(void) {
 static int dpi0 = 96;
 /* The window in cells, as its size was last reported. */
 static int win_cols, win_rows, focused = -1, win_w, win_h;
-/* The gap between the cells and the window's edges, on every side
- * (docs/renderer.md R20): asked in points, kept in pixels at the screen's
- * dpi. The cells' (0, 0) is the window's (pad, pad); the pointer's place
- * is reported from there, and the window's size less the two gaps. */
-static int pad_pt = 0, pad = 0;
+/* The gaps between the cells and the window's edges (docs/renderer.md
+ * R20, R21): left and right `padx`, above and below `pady`, asked in
+ * points and kept in pixels at the screen's dpi. What is past the last
+ * whole cell is shared between the two sides, so the cells' (0, 0) is the
+ * window's (ox, oy); the pointer's place is reported from there, and the
+ * window's size less the two gaps. */
+static int padx_pt = 0, pady_pt = 0, padx = 0, pady = 0, ox = 0, oy = 0;
 static int pad_px(int points) {
     return points <= 0 ? 0 : (points * dpi0 + 36) / 72;
+}
+/* The cells' corner for the window's size and the cells that fit it;
+ * answers whether it moved. */
+static int place_cells(void) {
+    int sx = win_w - 2 * padx - win_cols * pt_cw, sy = win_h - 2 * pady - win_rows * pt_ch;
+    int x = padx + (sx > 0 ? sx / 2 : 0), y = pady + (sy > 0 ? sy / 2 : 0);
+    int moved = x != ox || y != oy;
+    ox = x;
+    oy = y;
+    return moved;
 }
 static void size_hints(void);
 static uint32_t margin_bg = 0xFFFFFFFF;
@@ -490,12 +502,10 @@ static void margins(void) {
     margin_bg = bg;
     xcb_change_window_attributes(conn, window, XCB_CW_BACK_PIXEL, &bg);
     /* the gaps on every side, and what is past the last cells */
-    if (pad > 0) {
-        xcb_clear_area(conn, 0, window, 0, 0, 0, (uint16_t) pad);
-        xcb_clear_area(conn, 0, window, 0, 0, (uint16_t) pad, 0);
-    }
-    xcb_clear_area(conn, 0, window, (int16_t) (pad + pt_cols * pt_cw), 0, 0, 0);
-    xcb_clear_area(conn, 0, window, 0, (int16_t) (pad + pt_rows * pt_ch), 0, 0);
+    if (oy > 0) xcb_clear_area(conn, 0, window, 0, 0, 0, (uint16_t) oy);
+    if (ox > 0) xcb_clear_area(conn, 0, window, 0, 0, (uint16_t) ox, 0);
+    xcb_clear_area(conn, 0, window, (int16_t) (ox + pt_cols * pt_cw), 0, 0, 0);
+    xcb_clear_area(conn, 0, window, 0, (int16_t) (oy + pt_rows * pt_ch), 0, 0);
 }
 
 static void stats(void) {
@@ -689,17 +699,26 @@ static void xkb_event_in(xcb_generic_event_t *e) {
     }
 }
 
+static void repaint_all(void);
 static void size_in(int w, int h) {
     win_w = w;
     win_h = h;
-    int c = (w - 2 * pad) / pt_cw, r = (h - 2 * pad) / pt_ch;
+    int c = (w - 2 * padx) / pt_cw, r = (h - 2 * pady) / pt_ch;
     if (c < 1) c = 1;
     if (r < 1) r = 1;
     if (c > 65535) c = 65535;
     if (r > 65535) r = 65535;
-    if (c == win_cols && r == win_rows) return;
-    win_cols = c;
-    win_rows = r;
+    int same = c == win_cols && r == win_rows;
+    if (!same) {
+        win_cols = c;
+        win_rows = r;
+    }
+    /* the cells moved within the window: drawn again where they now are */
+    if (place_cells() && window) {
+        margin_bg = 0xFFFFFFFF;
+        repaint_all();
+    }
+    if (same) return;
     uint8_t rec[5] = {2, (uint8_t) (c >> 8), (uint8_t) c, (uint8_t) (r >> 8), (uint8_t) r};
     record(rec, 5);
 }
@@ -718,9 +737,9 @@ static void pointer_event(int action, int xbutton, int x, int y, uint16_t state)
     int button = xbutton == 2 ? 3 : xbutton == 3 ? 2 : xbutton;
     if (button > 11) return;
     /* from the cells' corner, in the cells' area (R20) */
-    x -= pad;
-    y -= pad;
-    int gw = win_w - 2 * pad, gh = win_h - 2 * pad;
+    x -= ox;
+    y -= oy;
+    int gw = win_w - 2 * padx, gh = win_h - 2 * pady;
     if (gw < 0) gw = 0;
     if (gh < 0) gh = 0;
     int mods = 0;
@@ -784,7 +803,7 @@ static void note(const char *fmt, int a, int b, int c, int d) {
  * it (ETX, RE9) would otherwise leave blank. */
 static void repaint_all(void) {
     if (!pixmap) return;
-    xcb_copy_area(conn, pixmap, window, gc, 0, 0, (int16_t) pad, (int16_t) pad, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
+    xcb_copy_area(conn, pixmap, window, gc, 0, 0, (int16_t) ox, (int16_t) oy, (uint16_t) (pt_cols * pt_cw), (uint16_t) (pt_rows * pt_ch));
     margins();
     xcb_flush(conn);
 }
@@ -958,7 +977,7 @@ static void drain(void) {
             if (pixmap) {
                 /* the part of the cells exposed; the gaps the server fills
                  * with the background pixel itself */
-                int sx = x->x - pad, sy = x->y - pad, w = x->width, h = x->height;
+                int sx = x->x - ox, sy = x->y - oy, w = x->width, h = x->height;
                 if (sx < 0) {
                     w += sx;
                     sx = 0;
@@ -968,7 +987,7 @@ static void drain(void) {
                     sy = 0;
                 }
                 if (w > 0 && h > 0)
-                    xcb_copy_area(conn, pixmap, window, gc, (int16_t) sx, (int16_t) sy, (int16_t) (sx + pad), (int16_t) (sy + pad),
+                    xcb_copy_area(conn, pixmap, window, gc, (int16_t) sx, (int16_t) sy, (int16_t) (sx + ox), (int16_t) (sy + oy),
                                   (uint16_t) w, (uint16_t) h);
             }
             xcb_flush(conn);
@@ -1126,8 +1145,9 @@ static void pointers_setup(void) {
 }
 
 geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_bytes, void *lang_bytes, int32_t cap,
-                              void *title_bytes, int32_t padding, geng_wait *wait) {
-    pad_pt = padding;
+                              void *title_bytes, int32_t padding_x, int32_t padding_y, geng_wait *wait) {
+    padx_pt = padding_x;
+    pady_pt = padding_y;
     /* the display first: the font's size in pixels is its dpi's (V50) */
     int screen_number = 0;
     conn = xcb_connect(NULL, &screen_number);
@@ -1164,9 +1184,11 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     visual_format = visual->format;
     win_cols = c;
     win_rows = r;
-    pad = pad_px(pad_pt);
-    win_w = c * pt_cw + 2 * pad;
-    win_h = r * pt_ch + 2 * pad;
+    padx = pad_px(padx_pt);
+    pady = pad_px(pady_pt);
+    win_w = c * pt_cw + 2 * padx;
+    win_h = r * pt_ch + 2 * pady;
+    place_cells();
     window = xcb_generate_id(conn);
     uint32_t values[2] = {screen->black_pixel, BASE_EVENTS};
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t) win_w, (uint16_t) win_h, 0,
@@ -1215,7 +1237,7 @@ geng_cancel puritty_x11_draw(void *list, geng_wait *wait) {
     pt_frame(b->data, (size_t) b->length, &frame);
     int first = frame.first, last = frame.last, sized = frame.sized;
     if (last >= first)
-        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * pt_ch), (int16_t) pad, (int16_t) (pad + first * pt_ch), (uint16_t) (pt_cols * pt_cw),
+        xcb_copy_area(conn, pixmap, window, gc, 0, (int16_t) (first * pt_ch), (int16_t) ox, (int16_t) (oy + first * pt_ch), (uint16_t) (pt_cols * pt_cw),
                       (uint16_t) ((last - first + 1) * pt_ch));
     if (sized || pt_default_bg() != margin_bg) margins();
     xcb_flush(conn);
@@ -1308,8 +1330,8 @@ geng_cancel puritty_x11_take(geng_wait *wait) {
  * cell, and a minimum of one cell and the gaps. Flags: PMinSize 16,
  * PResizeInc 64, PBaseSize 256. */
 static void size_hints(void) {
-    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) (pt_cw + 2 * pad), (uint32_t) (pt_ch + 2 * pad), 0, 0, (uint32_t) pt_cw,
-                          (uint32_t) pt_ch, 0, 0, 0, 0, (uint32_t) (2 * pad), (uint32_t) (2 * pad), 0};
+    uint32_t hints[18] = {16 | 64 | 256, 0, 0, 0, 0, (uint32_t) (pt_cw + 2 * padx), (uint32_t) (pt_ch + 2 * pady), 0, 0, (uint32_t) pt_cw,
+                          (uint32_t) pt_ch, 0, 0, 0, 0, (uint32_t) (2 * padx), (uint32_t) (2 * pady), 0};
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
 }
 
@@ -1335,22 +1357,25 @@ static void refit(void) {
  * where it is; the window manager may refuse or adjust it, and the
  * ConfigureNotify that follows reports what it is. */
 geng_cancel puritty_x11_resize(int32_t cols, int32_t rows, geng_wait *wait) {
-    uint32_t wh[2] = {(uint32_t) (cols * pt_cw + 2 * pad), (uint32_t) (rows * pt_ch + 2 * pad)};
+    uint32_t wh[2] = {(uint32_t) (cols * pt_cw + 2 * padx), (uint32_t) (rows * pt_ch + 2 * pady)};
     xcb_configure_window(conn, window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, wh);
     xcb_flush(conn);
     geng_succeed(wait, geng_slot_I4(0));
     return (geng_cancel) {0};
 }
 
-/* The gap around the cells set again, in points (R20): the window kept at
- * its size in pixels, so the cells that now fit it are reported as a new
- * size, and the whole window drawn again at the new corner. */
-geng_cancel puritty_x11_padding(int32_t points, geng_wait *wait) {
-    pad_pt = points;
-    int p = pad_px(points);
-    if (p != pad) {
-        pad = p;
+/* The gaps around the cells set again, in points (R20, R21): the window
+ * kept at its size in pixels, so the cells that now fit it are reported as
+ * a new size, and the whole window drawn again at the new corner. */
+geng_cancel puritty_x11_padding(int32_t points_x, int32_t points_y, geng_wait *wait) {
+    padx_pt = points_x;
+    pady_pt = points_y;
+    int px = pad_px(points_x), py = pad_px(points_y);
+    if (px != padx || py != pady) {
+        padx = px;
+        pady = py;
         refit();
+        place_cells();
         margin_bg = 0xFFFFFFFF;
         repaint_all();
     }
@@ -1775,7 +1800,7 @@ geng_cancel puritty_x11_spot(int32_t x, int32_t y, geng_wait *wait) {
     if (have_xic && (x != spot_x || y != spot_y)) {
         spot_x = x;
         spot_y = y;
-        xcb_point_t spot = {(int16_t) (pad + x * pt_cw), (int16_t) (pad + y * pt_ch + pt_ascent)};
+        xcb_point_t spot = {(int16_t) (ox + x * pt_cw), (int16_t) (oy + y * pt_ch + pt_ascent)};
         xcb_xim_nested_list pre = xcb_xim_create_nested_list(xim, XCB_XIM_XNSpotLocation, &spot, NULL);
         xcb_xim_set_ic_values(xim, xic, NULL, NULL, XCB_XIM_XNPreeditAttributes, &pre, NULL);
         free(pre.data);

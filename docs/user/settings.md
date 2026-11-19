@@ -31,7 +31,8 @@ clicks as you turn key sounds on, so you hear what you are choosing.
 columns = 120
 rows = 36
 padding = 8                 # points between the text and the window's
-                            # edges, on every side; 0 for none
+                            # left and right edges; 0 for none
+padding_vertical = 4        # the same above and below
 
 [font]
 family = "Fira Code"        # DejaVu Sans Mono when left out,

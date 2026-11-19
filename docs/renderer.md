@@ -969,3 +969,46 @@ middle of the cell at column 5, row 2, with mouse reports on, reported
 `ESC [ M` with `&#`, that cell. The Windows build, under Wine 11 on Xvfb
 with DejaVu Sans Mono (Wine has no Cascadia Mono): the text 11 pixels in
 from the client area's corner. Not yet seen on Windows itself.
+
+## R21. Less above and below, and the spare shared (2026-11-19, Dnene65)
+
+Gilbert, 2026-11-19, looking at R20's gap on Linux and on Windows: the top
+and bottom margins are a little too much. Two things made them so. The
+gap was the same 8 points on every side. And what was past the last whole
+row, up to most of a row, all went below it, so the bottom was the gap
+and that spare together. On Windows, whose windows don't step by cells,
+and on Linux when maximized or tiled, there is nearly always some.
+
+**Gilbert's choice** (of three: a smaller top and bottom with the spare
+shared; one smaller value for every side; only the spare shared):
+
+- `[window] padding` is now the left and right gap, 8 points as before
+  ("Padding at the sides"), and `[window] padding_vertical` the top and
+  bottom one, 4 points by default ("Padding above and below"), both on the
+  Window page, 0 to 72. WezTerm leaves half as much above and below as at
+  the sides (R20's table); 4 points is 5 px at 96 dpi and 8 at 144.
+- What is past the last whole column and row is shared between the two
+  sides, the odd pixel going after, as Ghostty's `window-padding-balance`
+  does. The cells' corner is `(padx + spare_x / 2, pady + spare_y / 2)`,
+  where the spare is what the window's size less the two gaps leaves
+  past the cells that fit it.
+
+**Where it changed:** the two platform layers again (`puritty_x11.c`,
+`puritty_win32.c`). `padx` and `pady` size things: the cells that fit,
+the window for c by r cells, X11's size hints, a rescale on Windows. The
+corner `(ox, oy)`, worked out again by `place_cells` at each size the
+window is given, places things: the frame's copies and exposes, the four
+gaps filled, the pointer's offset and the input method's spot. When a
+resize moves the corner without changing the cells that fit, the whole
+window is drawn again there (X11's `repaint_all`, Windows'
+`InvalidateRect`). `Window.Settings.padding` and `Window.setPadding` take
+`{ x, y }`; the settings window and the pixel gate pass zeros.
+
+**Checked.** Under Xvfb at 96 dpi with DejaVu Sans Mono 11: a window of
+whole cells has its text 11 px from the left and right and 5 px from the
+top and bottom; resized to 400 by 140, which leaves 11 px past the last
+row, the text is 10 px from the top and 11 from the bottom, where R20
+put 5 and 16. On beelink1 (Windows 11, 150%), maximized: the text 22 px
+from the left and from the right (16 and half the spare), and 13 px under
+the title bar (8 and half the spare), where R20 put 16 and the whole
+spare at the bottom.
