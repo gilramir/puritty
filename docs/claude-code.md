@@ -164,3 +164,60 @@ not go through ConPTY, and gets what the Linux column shows.
    pictures and the mouse in pixels as on Linux.
 7. **Claude Code in `tmux -CC`**: measure its fullscreen renderer in
    puritty's panes, where iTerm2's integration cannot run it.
+
+## CL7 · OSC 7501 built (2026-11-18)
+
+**What puritty does with it**:
+
+- **The core** (`Vt.Status`, new, pure; `Vt.Osc`): `OSC 7501 ; ?` is
+  answered `OSC 7501 ; ?` with the query's own terminator. A report
+  replaces its id's record whole, `clear` takes an id and those under it
+  (all, with no id), at most 256 records, the least recently updated
+  going first. Everything the spec drops is dropped: an unknown state, an
+  id that is not a path of `[A-Za-z0-9_.+-]{1,32}` segments, an `app`
+  over 32 bytes, a `msg` or `title` over its size, not base64, or with a
+  control character in it; a malformed pair is skipped, an unknown key
+  ignored, a repeated key's last value taken. The bidirectional and
+  invisible formatting characters are taken out of what is shown. The
+  records are the terminal's (the alternate screen keeps them), RIS
+  removes them, and a new prompt (OSC 133 `A` or `N`, ConEmu's `9;12`)
+  drops `working` and `blocked`. 7501 takes the spec's 4,096 bytes, past
+  the 2,048 Ghostty's limit gives other OSCs; one that filled the core's
+  string may have been cut and is dropped whole. `Vt.programStatus`
+  gives the most pressing record (blocked, error, working, done, idle),
+  its app its own or its nearest ancestor's.
+- **The window and its tabs** (`Main`): the title and each tab's label
+  begin with the state's mark, ◔ working, ◉ waiting on you (`blocked`),
+  ✓ done, ✗ error. When a tab comes to be blocked, done or failed while
+  the user is not looking at it (the window not focused, or the tab not
+  shown), the window asks for attention (`Window.attention`: X11's
+  urgency hint in `WM_HINTS`, `FlashWindowEx` on Windows' taskbar) and
+  the bell's sound (`[sound] bell`) rings, once for that change; the
+  window stops asking once it has the focus. Under tmux's control mode
+  and on puritty's own screen the title is theirs, unmarked.
+
+**Measured**: eleven tests in the vt suite (185): the query and both
+terminators; a report kept, its message decoded, replaced whole; the most
+pressing shown, a child's app inherited; clear by id and clear all; six
+reports dropped whole; a bad pair skipped, an unknown key ignored, a
+repeated key's last; invisible characters taken out; a prompt dropping
+working but keeping done; RIS and the alternate screen; a report past
+2,048 bytes kept; the change count. Claude Code 2.1.326 in puritty now
+says `programStatus=yes (probe: OSC 7501 reply)`. In puritty on Xvfb, a
+program reporting `working` then `blocked`: the title went "◔ t", then
+"◉ t"; with the focus moved away, `WM_HINTS` gained the urgency bit and
+the log said "tab 0 is blocked: attention asked"; given the focus back,
+the bit was cleared.
+
+**Not covered**: Claude Code inside tmux asks tmux, which does not
+answer, so a tmux pane reports nothing (#103022); Windows, where ConPTY
+stands between (CL4), not yet tried.
+
+**CL6's ConPTY passthrough, tried (CL4)**: `CreatePseudoConsole` with
+`PSEUDOCONSOLE_PASSTHROUGH_MODE` (0x8), behind a variable, on beelink1
+(Windows 11 25H2, build 26200): Claude Code's capability line was the
+same as without it (synchronized output, the graphics reply and mouse
+pixels still lost). The console in Windows itself does not pass through;
+Windows Terminal ships its own (`conpty.dll` and `OpenConsole.exe`, MIT),
+which is where the mode lives. Taking it would mean shipping those two
+files with puritty: Gilbert's call. The experiment was taken back out.

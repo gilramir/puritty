@@ -126,6 +126,11 @@ type alias Model =
     -- every terminal's bells added up when the bell last sounded, so
     -- that a turn whose total rose rings it (docs/sounds.md SN6)
     , bellsHeard : Int
+    -- each tab's Program Status Protocol state when last looked at, and
+    -- whether the window asked for attention for one (OSC 7501,
+    -- docs/claude-code.md CL7)
+    , statusSeen : Dict Int String
+    , attentionAsked : Bool
     -- the pointer shown (the arrow while the program takes the mouse, a
     -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
     -- last place over the window, and whether Shift is held, which takes
@@ -1221,6 +1226,8 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , mouseLast = Nothing
                      , allMotion = False
                      , bellsHeard = 0
+                     , statusSeen = Dict.empty
+                     , attentionAsked = False
                      , pointerShown = Window.TextPointer
                      , hover = Nothing
                      , shiftHeld = False
@@ -1796,6 +1803,7 @@ loop remote m00 =
     )
         |> Task.andThen pointerShape
         |> Task.andThen bellRung
+        |> Task.andThen statusNoticed
         |> Task.andThen clipboardRequests
         |> Task.andThen (writeLog False)
         |> Task.andThen (flush remote)
@@ -1855,6 +1863,98 @@ bellRung m =
 
     else
         Task.succeed { m | bellsHeard = total }
+
+
+{-| Each tab's Program Status Protocol state (OSC 7501), the shown tab's
+and the others': what the most pressing of its records says, empty for
+none (docs/claude-code.md CL7). -}
+tabStates : Model -> Array { id : Int, state : String }
+tabStates m =
+    let
+        statusOf term =
+            Vt.programStatus term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet "")
+    in
+    Array.range 0 (Builder.length m.tabs - 1)
+        |> Array.foldl
+            (\i acc ->
+                when Builder.get i m.tabs is
+                    Just (Just t) ->
+                        Array.pushLast { id = t.info.id, state = statusOf t.term } acc
+
+                    _ ->
+                        meant Reason.Gone acc
+            )
+            [ { id = m.tab.id, state = statusOf m.term } ]
+
+
+{-| A tab that has come to wait on the user, or finished or failed
+(OSC 7501's `blocked`, `done`, `error`), while the user is not looking at
+it (the window not focused, or the tab not shown): the window asks for
+attention and the bell's sound rings, once for that change. The window
+stops asking once it has the focus (docs/claude-code.md CL7). -}
+statusNoticed : (taken m : Model) -> Task Error Model
+statusNoticed m =
+    let
+        states =
+            tabStates m
+
+        pressing s =
+            s == "blocked" || s == "done" || s == "error"
+
+        news =
+            Array.keepIf (\t -> pressing t.state && Dict.get t.id m.statusSeen /= Just t.state && (not m.focus.focused || t.id /= m.tab.id)) states
+
+        seen =
+            Array.foldl (\t d -> Dict.set t.id t.state d) Dict.empty states
+
+        noted =
+            { m | statusSeen = seen }
+    in
+    when Array.first news is
+        Just first ->
+            Window.attention True
+                |> Task.andThen
+                    (\_ ->
+                        when Config.bellSound m.config.soundBell is
+                            Just id ->
+                                Window.sound id |> Task.map (\_ -> {})
+
+                            Nothing ->
+                                meant Reason.NotSet Task.succeed {}
+                    )
+                |> Task.map (\_ -> logLine "status" ("tab " ++ String.fromInt first.id ++ " is " ++ first.state ++ ": attention asked") { noted | attentionAsked = True })
+
+        Nothing ->
+            -- nothing new: the attention asked for taken back once the
+            -- window has the focus
+            meant Reason.NoMore
+                (if m.attentionAsked && m.focus.focused then
+                    Window.attention False |> Task.map (\_ -> { noted | attentionAsked = False })
+
+                 else
+                    Task.succeed noted
+                )
+
+
+{-| The mark a Program Status Protocol state puts before a title: working,
+waiting on the user, done, failed (docs/claude-code.md CL7). -}
+statusMark : String -> String
+statusMark state =
+    when state is
+        "working" ->
+            "◔ "
+
+        "blocked" ->
+            "◉ "
+
+        "done" ->
+            "✓ "
+
+        "error" ->
+            "✗ "
+
+        _ ->
+            ""
 
 
 {-| The key sound for a key that sends something (`[sound] keys`,
@@ -5928,19 +6028,25 @@ draw ms m =
                 )
 
         title =
-            (if tmuxOn then
-                TmuxMode.title tmux
-
-             else if ownUp then
-                -- puritty's own while its screen is up, which no server can set
-                "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
-
-             else if m.term.title == "" then
-                m.config.title
+            (if tmuxOn || ownUp then
+                ""
 
              else
-                m.term.title
+                statusMark (Vt.programStatus m.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet ""))
             )
+                ++ (if tmuxOn then
+                        TmuxMode.title tmux
+
+                    else if ownUp then
+                        -- puritty's own while its screen is up, which no server can set
+                        "puritty: ssh to " ++ (m.ssh |> Maybe.map .host |> Maybe.withDefault "")
+
+                    else if m.term.title == "" then
+                        m.config.title
+
+                    else
+                        m.term.title
+                   )
                 ++ (if m.replaced > 0 then
                         " [" ++ String.fromInt m.replaced ++ " characters sent as ?]"
 
@@ -6259,7 +6365,7 @@ labelsOf i m acc =
             m
             (when Builder.get i m.tabs |> Maybe.andThen identity is
                 Just t ->
-                    Array.pushLast { id = t.info.id, label = tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
+                    Array.pushLast { id = t.info.id, label = statusMark (Vt.programStatus t.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet "")) ++ tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
 
                 Nothing ->
                     meant Reason.Gone acc
@@ -7107,9 +7213,14 @@ barTabs m =
         hidden =
             labelsOf 0 m []
 
+        -- the shown tab's Program Status mark, read here: the closure
+        -- below may only read the model's fields (CL7)
+        shownMark =
+            statusMark (Vt.programStatus m.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet ""))
+
         one id =
             if id == m.tab.id then
-                Just { id = id, label = lostMark (sessionLost m.ssh) (tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
+                Just { id = id, label = lostMark (sessionLost m.ssh) (shownMark ++ tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
 
             else
                 Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = lostMark f.value.lost f.value.label, active = False, bell = f.value.bell, activity = f.value.activity, lost = f.value.lost, color = f.value.color })

@@ -1895,3 +1895,19 @@ geng_cancel puritty_x11_shot(void *path_bytes, geng_wait *wait) {
     geng_succeed(wait, geng_slot_I4(r));
     return (geng_cancel) {0};
 }
+
+/* ATTENTION (puritty docs/claude-code.md CL7)
+ *
+ * The window asks for the user's attention, or stops: ICCCM's WM_HINTS
+ * with UrgencyHint (bit 8) set or not, InputHint (bit 0) set with input
+ * true, which puritty takes as any window does. The window manager marks
+ * the window, in its task bar or by its decoration, until it is cleared. */
+geng_cancel puritty_x11_attention(int32_t on, geng_wait *wait) {
+    uint32_t hints[9] = {0};
+    hints[0] = 1u | (on ? 256u : 0u);
+    hints[1] = 1;
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_HINTS, XCB_ATOM_WM_HINTS, 32, 9, hints);
+    xcb_flush(conn);
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}

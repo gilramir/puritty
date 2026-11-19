@@ -5,6 +5,7 @@ module Window exposing
     , PointerEvent
     , Selection(..)
     , Settings
+    , attention
     , draw
     , events
     , fontUsed
@@ -50,7 +51,7 @@ the loop (WS4). Keys, the pointer and the IME's records are X11's, read as
 Linux reads them (WS5-WS7, WS19). The selections are step 5's (WS12), and
 until then [`select`](#select) and [`paste`](#paste) change nothing.
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
 
 -}
 
@@ -487,6 +488,26 @@ setTitle title =
 
 @extern(c, "puritty_win32_title")
 titleExtern : Bytes -> Task x Int
+
+
+{-| The window asks for the user's attention (`True`), or stops: the
+window manager's urgency hint on X11, the taskbar button flashing until
+the window is brought forward on Windows. For a tab that waits on the user
+while the window is not looked at (puritty `docs/claude-code.md` CL7). -}
+attention : Bool -> Task x {}
+attention on =
+    attentionExtern
+        (if on then
+            1
+
+         else
+            0
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_win32_attention")
+attentionExtern : Int -> Task x Int
 
 
 {-| Waits for events: answers `True` once there are some, or `False` once

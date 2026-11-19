@@ -1,0 +1,325 @@
+module Vt.Status exposing (Record, Report(..), Shown, apply, onPrompt, parse, shown)
+
+{-| The Program Status Protocol, OSC 7501 (revision 0.4, puritty
+`docs/claude-code.md` CL3, CL7): a program says whether it is working,
+waiting on the user, done or failed, and the terminal keeps one record for
+each id and shows them as it likes. Pure; `Vt` keeps the records on the
+terminal and answers the query.
+
+A report is `key=value` pairs separated by `:`; keys are `[a-z]+` of at
+most 16 bytes, values `[A-Za-z0-9_.,+/=-]*`. A pair that is not one is
+skipped; an unknown key ignored; a repeated key takes its last value. A
+report is dropped whole when its `state` is missing or unknown, its `id`
+is not a path of at most 8 segments of `[A-Za-z0-9_.+-]{1,32}` and 128
+bytes, `app` is over 32 bytes, or `msg` or `title` is over its size, is
+not base64, or decodes to text with a control character. What a report
+says is untrusted: shown as text only, never echoed back.
+-}
+
+import Bytes
+import Vt.Base64 as Base64
+import Vt.Reason as Reason
+
+
+{-| A record: what one program, or one part of it (`id`), last said.
+`touched` orders them, for the least recently updated to go first when
+there are too many. -}
+type alias Record =
+    { id : String
+    , state : String
+    , kind : String
+    , app : String
+    , msg : String
+    , title : String
+    , progress : Int
+    , touched : Int
+    }
+
+
+{-| What a sequence was: the query, a report, or neither. -}
+type Report
+    = Query
+    | Report Record
+    | Ignored
+
+
+{-| The body after `7501;`, as a report, the query, or one to ignore. -}
+parse : String -> Report
+parse body =
+    if String.trim body == "?" then
+        Query
+
+    else
+        let
+            pairs =
+                String.split ":" body
+                    |> Array.mapAndKeepJust pairOf
+
+            value key =
+                Array.foldl
+                    (\p acc ->
+                        if p.key == key then
+                            Just p.value
+
+                        else
+                            acc
+                    )
+                    Nothing
+                    pairs
+
+            text key limit =
+                when value key is
+                    Just v ->
+                        if String.count v > limit.encoded then
+                            Err {}
+
+                        else
+                            decoded v limit.decoded
+
+                    Nothing ->
+                        meant Reason.NotSet Ok ""
+        in
+        when value "state" is
+            Just state ->
+                if not (Array.member state [ "idle", "working", "done", "blocked", "error", "clear" ]) then
+                    Ignored
+
+                else
+                    let
+                        id =
+                            Maybe.withDefault (meant Reason.NotSet "") (value "id")
+
+                        app =
+                            Maybe.withDefault (meant Reason.NotSet "") (value "app")
+                    in
+                    when { msg = text "msg" { encoded = 2732, decoded = 2048 }, title = text "title" { encoded = 256, decoded = 192 } } is
+                        { msg = Ok msg, title = Ok title } ->
+                            if not (validId id) || String.count app > 32 then
+                                Ignored
+
+                            else
+                                Report
+                                    { id = id
+                                    , state = state
+                                    , kind =
+                                        when value "kind" is
+                                            Just k ->
+                                                if Array.member k [ "permission", "question", "auth" ] then
+                                                    k
+
+                                                else
+                                                    ""
+
+                                            Nothing ->
+                                                meant Reason.NotSet ""
+                                    , app = app
+                                    , msg = msg
+                                    , title = title
+                                    , progress =
+                                        when value "progress" |> Maybe.andThen String.toInt is
+                                            Just p ->
+                                                if p >= 0 && p <= 100 then
+                                                    p
+
+                                                else
+                                                    -1
+
+                                            Nothing ->
+                                                meant Reason.NotSet -1
+                                    , touched = 0
+                                    }
+
+                        _ ->
+                            Ignored
+
+            Nothing ->
+                meant Reason.FromOutside Ignored
+
+
+pairOf : String -> Maybe { key : String, value : String }
+pairOf pair =
+    when String.firstIndexOf "=" pair is
+        Just i ->
+            let
+                key =
+                    String.trim (String.takeFirst i pair)
+
+                v =
+                    String.trim (String.dropFirst (i + 1) pair)
+            in
+            if key /= "" && String.count key <= 16 && String.all (\c -> c >= 'a' && c <= 'z') key && String.all valueChar v then
+                Just { key = key, value = v }
+
+            else
+                Nothing
+
+        Nothing ->
+            -- a pair with no `=`: skipped
+            meant Reason.FromOutside Nothing
+
+
+valueChar : Char -> Bool
+valueChar c =
+    Char.isAlphaNum c || Array.member c [ '_', '.', ',', '+', '/', '=', '-' ]
+
+
+validId : String -> Bool
+validId id =
+    if id == "" then
+        True
+
+    else
+        let
+            segments =
+                String.split "/" id
+        in
+        String.count id <= 128
+            && Array.length segments <= 8
+            && Array.all (\s -> String.count s >= 1 && String.count s <= 32 && String.all (\c -> Char.isAlphaNum c || Array.member c [ '_', '.', '+', '-' ]) s) segments
+
+
+{-| Base64 text decoded to UTF-8 of at most `most` bytes with no control
+character, the bidirectional and invisible formatting characters taken
+out (the spec's "disarm"); or an error. -}
+decoded : String -> Int -> Result {} String
+decoded v most =
+    when Base64.decode (Bytes.fromString v) is
+        Just b ->
+            if Bytes.length b > most then
+                Err {}
+
+            else
+                when Bytes.toString b is
+                    Just s ->
+                        if String.any control s then
+                            Err {}
+
+                        else
+                            Ok (String.fromArray (Array.keepIf (\c -> not (invisible c)) (String.toArray s)))
+
+                    Nothing ->
+                        meant Reason.FromOutside Err {}
+
+        Nothing ->
+            meant Reason.FromOutside Err {}
+
+
+control : Char -> Bool
+control c =
+    let
+        n =
+            Char.toCode c
+    in
+    n < 0x20 || (n >= 0x7F && n <= 0x9F)
+
+
+invisible : Char -> Bool
+invisible c =
+    let
+        n =
+            Char.toCode c
+    in
+    n == 0x061C || (n >= 0x200B && n <= 0x200F) || (n >= 0x202A && n <= 0x202E) || (n >= 0x2060 && n <= 0x2069) || n == 0xFEFF
+
+
+{-| The records with a report applied, as it was the `serial`th: it
+replaces the record of its id whole; `clear` removes its id's record and
+those under it, every record with no id. At most 256 records, the least
+recently updated going first. -}
+apply : Record -> Int -> Array Record -> Array Record
+apply r serial records =
+    let
+        under rec =
+            rec.id == r.id || String.startsWith (r.id ++ "/") rec.id
+    in
+    if r.state == "clear" then
+        if r.id == "" then
+            []
+
+        else
+            Array.keepIf (\rec -> not (under rec)) records
+
+    else
+        let
+            kept =
+                Array.keepIf (\rec -> rec.id /= r.id) records
+
+            full =
+                if Array.length kept >= 256 then
+                    Array.sortBy .touched kept |> Array.dropFirst (Array.length kept - 255)
+
+                else
+                    kept
+        in
+        Array.pushLast { r | touched = serial } full
+
+
+{-| The records as a new prompt leaves them (OSC 133 `A`): `working` and
+`blocked` dropped, since what said them has ended. -}
+onPrompt : Array Record -> Array Record
+onPrompt records =
+    Array.keepIf (\rec -> rec.state /= "working" && rec.state /= "blocked") records
+
+
+{-| What a tab shows of its records: the most pressing state of all of
+them (blocked, then error, working, done, idle), with that record's kind,
+app (its own, or its nearest ancestor's), message and progress; nothing
+when there are none. -}
+type alias Shown =
+    { state : String, kind : String, app : String, msg : String, progress : Int }
+
+
+shown : Array Record -> Maybe Shown
+shown records =
+    let
+        rank s =
+            when s is
+                "blocked" ->
+                    5
+
+                "error" ->
+                    4
+
+                "working" ->
+                    3
+
+                "done" ->
+                    2
+
+                _ ->
+                    1
+
+        appOf rec =
+            if rec.app /= "" then
+                rec.app
+
+            else
+                Array.foldl
+                    (\other acc ->
+                        if other.app /= "" && (other.id == "" || String.startsWith (other.id ++ "/") rec.id) && String.count other.id > acc.length then
+                            { length = String.count other.id, app = other.app }
+
+                        else
+                            acc
+                    )
+                    { length = -1, app = "" }
+                    records
+                    |> .app
+    in
+    Array.foldl
+        (\rec acc ->
+            when acc is
+                Just best ->
+                    if rank rec.state > rank best.state || (rank rec.state == rank best.state && rec.touched > best.touched) then
+                        Just rec
+
+                    else
+                        acc
+
+                Nothing ->
+                    -- the first record
+                    meant Reason.NotYet Just rec
+        )
+        Nothing
+        records
+        |> Maybe.map (\rec -> { state = rec.state, kind = rec.kind, app = appOf rec, msg = rec.msg, progress = rec.progress })

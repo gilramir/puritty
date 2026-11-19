@@ -48,6 +48,7 @@ import Vt.Resize exposing (..)
 import Vt.Screen exposing (..)
 import Vt.Scroll exposing (..)
 import Vt.Sgr exposing (..)
+import Vt.Status as Status
 import Vt.Style exposing (..)
 import Vt.Term exposing (..)
 import Vt.Term as State
@@ -213,8 +214,19 @@ oscDispatch end t0 =
         long =
             Array.length taken.text - String.count (Maybe.withDefault "" (Array.first parts)) - 1 > oscMax
 
+        -- OSC 7501 takes up to its own limit, the whole sequence's 4,096
+        -- bytes, past Ghostty's 2,048 for the rest; one that filled the
+        -- string may have been cut, and is dropped whole, as the spec says
         done =
-            oscCommand end long command parts rest t
+            if command == Just 7501 then
+                if Array.length taken.text >= stringMax then
+                    t
+
+                else
+                    oscCommand end False command parts rest t
+
+            else
+                oscCommand end long command parts rest t
     in
     if listening == 0 then
         done
@@ -257,7 +269,7 @@ oscKnown long command parts =
             command
          ) is
         Just c ->
-            c == 0 || c == 2 || c == 4 || c == 104 || c == 133 || c == 9 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
+            c == 0 || c == 2 || c == 4 || c == 104 || c == 133 || c == 9 || c == 7501 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
 
         Nothing ->
             -- not a command's number
@@ -294,6 +306,9 @@ oscCommand end long command parts rest t =
 
             else
                 t
+
+        Just 7501 ->
+            programStatus end rest t
 
         Just c ->
             if c >= 10 && c <= 19 then
@@ -596,6 +611,37 @@ intensity text =
             meant Reason.FromOutside Nothing
 
 
+{-| OSC 7501, the Program Status Protocol (puritty `docs/claude-code.md`
+CL7): the query answered, `OSC 7501 ; ?`, with the terminator it came
+with; a report applied to the records. -}
+programStatus : String -> String -> (taken t : Term) -> Term
+programStatus end body t =
+    when Status.parse body is
+        Status.Query ->
+            reply ("\u{001B}]7501;?" ++ end) t
+
+        Status.Report r ->
+            { t | status = Status.apply r (t.statusChanges + 1) t.status, statusChanges = t.statusChanges + 1 }
+
+        Status.Ignored ->
+            t
+
+
+{-| A new prompt ends what was working or waiting (OSC 7501's lifetime):
+those records dropped. -}
+promptEndsStatus : (taken t : Term) -> Term
+promptEndsStatus t =
+    let
+        kept =
+            Status.onPrompt t.status
+    in
+    if Array.length kept == Array.length t.status then
+        t
+
+    else
+        { t | status = kept, statusChanges = t.statusChanges + 1 }
+
+
 {-| OSC 133, the semantic prompts (§VC22), as Ghostty takes them: `A` and
 `N` a fresh line and a prompt, `P` a prompt, `B` and `I` the input (`I`
 to the line's end), `C` and `D` output, `L` (alone) a fresh line. A
@@ -606,10 +652,10 @@ semanticPrompt : String -> Array String -> Bool -> (taken t : Term) -> Term
 semanticPrompt action options onlyL t =
     when action is
         "A" ->
-            promptStart options (freshLine (withRedraw options t))
+            promptStart options (freshLine (withRedraw options (promptEndsStatus t)))
 
         "N" ->
-            promptStart options (freshLine (withRedraw options t))
+            promptStart options (freshLine (withRedraw options (promptEndsStatus t)))
 
         "P" ->
             promptStart options t

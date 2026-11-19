@@ -5,6 +5,7 @@ module Window exposing
     , PointerEvent
     , Selection(..)
     , Settings
+    , attention
     , draw
     , events
     , fontUsed
@@ -46,7 +47,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
 
 -}
 
@@ -463,6 +464,26 @@ setTitle title =
 
 @extern(c, "puritty_x11_title")
 titleExtern : Bytes -> Task x Int
+
+
+{-| The window asks for the user's attention (`True`), or stops: the
+window manager's urgency hint on X11, the taskbar button flashing until
+the window is brought forward on Windows. For a tab that waits on the user
+while the window is not looked at (puritty `docs/claude-code.md` CL7). -}
+attention : Bool -> Task x {}
+attention on =
+    attentionExtern
+        (if on then
+            1
+
+         else
+            0
+        )
+        |> Task.map (\_ -> {})
+
+
+@extern(c, "puritty_x11_attention")
+attentionExtern : Int -> Task x Int
 
 
 {-| Waits for events: answers `True` once there are some, or `False` once

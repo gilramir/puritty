@@ -90,8 +90,9 @@ SUITES = [
     # seven, and GIF, five; 161 since IT6: Exif orientation, four,
     # progressive, four, the progressive "says so" made a lossless one;
     # 163 since IM30: Kitty's images in tmux's panes, two; 174 since IM35:
-    # Kitty's Unicode placeholders, eleven
-    Suite("vt", 174, runs_of("vt/tests")),
+    # Kitty's Unicode placeholders, eleven; 185 since CL7: the Program
+    # Status Protocol (OSC 7501), eleven
+    Suite("vt", 185, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

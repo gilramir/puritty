@@ -2653,3 +2653,19 @@ geng_cancel puritty_win32_credDelete(void *target_bytes, geng_wait *wait) {
     geng_succeed(wait, geng_slot_I4(ok));
     return (geng_cancel) {0};
 }
+
+/* ATTENTION (puritty docs/claude-code.md CL7): the taskbar button
+ * flashes until the window comes to the front (FLASHW_TIMERNOFG), or
+ * stops. */
+geng_cancel puritty_win32_attention(int32_t on, geng_wait *wait) {
+    FLASHWINFO f;
+    memset(&f, 0, sizeof f);
+    f.cbSize = sizeof f;
+    f.hwnd = win;
+    f.dwFlags = on ? (FLASHW_TRAY | FLASHW_TIMERNOFG) : FLASHW_STOP;
+    f.uCount = 0;
+    f.dwTimeout = 0;
+    FlashWindowEx(&f);
+    geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}

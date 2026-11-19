@@ -1,0 +1,154 @@
+module ProgramStatus exposing (suite)
+
+{-| The Program Status Protocol, OSC 7501 (puritty `docs/claude-code.md`
+CL7): the query, reports kept by id, the spec's limits, a prompt ending
+what was working, and RIS. -}
+
+import Bytes
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+import Vt.Base64 as Base64
+import Vt.Status as Status
+
+
+b64 : String -> String
+b64 s =
+    Bytes.toStringLossy (Base64.encode (Bytes.fromString s))
+
+
+osc : String -> String
+osc body =
+    "\u{001B}]7501;" ++ body ++ "\u{001B}\\"
+
+
+shownState : Vt.Term -> String
+shownState t =
+    Vt.programStatus t |> Maybe.map (\s -> s.state ++ "/" ++ s.kind ++ "/" ++ s.app ++ "/" ++ s.msg) |> Maybe.withDefault "none"
+
+
+suite : U.Suite
+suite =
+    Support.run "ProgramStatus"
+        [ { name = "the query is answered with the terminator it came with"
+          , test =
+                \_ ->
+                    let
+                        st =
+                            Vt.takeReplies (feed "\u{001B}]7501;?\u{001B}\\" (term 20 4))
+
+                        bel =
+                            Vt.takeReplies (feed "\u{001B}]7501;?\u{0007}" (term 20 4))
+                    in
+                    Expect.equal [ "\u{001B}]7501;?\u{001B}\\", "\u{001B}]7501;?\u{0007}" ]
+                        (Array.map Bytes.toStringLossy (st.replies ++ bel.replies))
+          }
+        , { name = "a report is kept, its message decoded; the next replaces it whole"
+          , test =
+                \_ ->
+                    let
+                        t1 =
+                            feed (osc ("state=blocked:kind=permission:app=claude-code:msg=" ++ b64 "Allow Bash?")) (term 20 4)
+
+                        first =
+                            shownState t1
+
+                        t2 =
+                            feed (osc "state=working") t1
+                    in
+                    Expect.equal [ "blocked/permission/claude-code/Allow Bash?", "working///" ] [ first, shownState t2 ]
+          }
+        , { name = "the most pressing record is shown; a child inherits its ancestor's app"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            term 20 4
+                                |> feed (osc "state=working:app=claude-code")
+                                |> feed (osc "state=blocked:kind=question:id=agent/a1")
+                    in
+                    Expect.equal "blocked/question/claude-code/" (shownState t)
+          }
+        , { name = "clear with an id takes it and those under it; clear alone takes all"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            term 20 4
+                                |> feed (osc "state=done")
+                                |> feed (osc "state=blocked:id=agent/a1")
+                                |> feed (osc "state=clear:id=agent")
+
+                        first =
+                            shownState t
+                    in
+                    Expect.equal [ "done///", "none" ] [ first, shownState (feed (osc "state=clear") t) ]
+          }
+        , { name = "dropped whole: an unknown state, a bad id, bad base64, a control character, a message too long"
+          , test =
+                \_ ->
+                    let
+                        after body =
+                            shownState (feed (osc body) (feed (osc "state=idle") (term 20 4)))
+                    in
+                    Expect.equal [ "idle///", "idle///", "idle///", "idle///", "idle///", "idle///" ]
+                        [ after "state=sleeping"
+                        , after "state=done:id=a//b"
+                        , after "state=done:msg=A"
+                        , after ("state=done:msg=" ++ b64 "two\nlines")
+                        , after ("state=done:msg=" ++ b64 (String.repeat 2049 "x"))
+                        , after "state=done:app=a-name-that-is-far-longer-than-32-bytes"
+                        ]
+          }
+        , { name = "a bad pair is skipped, an unknown key ignored, the last of a repeated key taken"
+          , test =
+                \_ ->
+                    Expect.equal "error///"
+                        (shownState (feed (osc "junk:color=red:state=done:state=error") (term 20 4)))
+          }
+        , { name = "bidirectional and invisible characters are taken out of a message"
+          , test =
+                \_ ->
+                    Expect.equal "done///ab" (shownState (feed (osc ("state=done:msg=" ++ b64 "a\u{202E}\u{200B}b")) (term 20 4)))
+          }
+        , { name = "a new prompt (OSC 133 A) drops working and blocked, keeps done"
+          , test =
+                \_ ->
+                    let
+                        working =
+                            feed "\u{001B}]133;A\u{0007}" (feed (osc "state=working") (term 20 4))
+
+                        done =
+                            feed "\u{001B}]133;A\u{0007}" (feed (osc "state=done") (term 20 4))
+                    in
+                    Expect.equal [ "none", "done///" ] [ shownState working, shownState done ]
+          }
+        , { name = "RIS removes every record; the alternate screen keeps them"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}[?1049h" (feed (osc "state=working") (term 20 4))
+
+                        first =
+                            shownState t
+                    in
+                    Expect.equal [ "working///", "none" ] [ first, shownState (feed "\u{001B}c" t) ]
+          }
+        , { name = "a report longer than Ghostty's 2,048 bytes is kept, up to the spec's limit"
+          , test =
+                \_ ->
+                    Expect.equal ("done///" ++ String.repeat 2000 "y")
+                        (shownState (feed (osc ("state=done:msg=" ++ b64 (String.repeat 2000 "y"))) (term 20 4)))
+          }
+        , { name = "each report that changes the records counts; an ignored one does not"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            term 20 4 |> feed (osc "state=working") |> feed (osc "state=nonsense") |> feed (osc "state=done")
+                    in
+                    Expect.equal 2 t.statusChanges
+          }
+        ]
