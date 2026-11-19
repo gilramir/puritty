@@ -52,6 +52,7 @@ import Diag
 import Dialog
 import Dict exposing (Dict)
 import Hosts
+import ImageFile
 import Int64
 import Keys
 import LastWindow
@@ -1519,6 +1520,10 @@ embedderOf config =
     , listening = listeningOf config
     , extraImages = True
     , kittyErases = False
+    -- Kitty's pictures from files a program names (`[images]
+    -- read_files`, `docs/images-kitty.md` KG9); read for a local
+    -- program only (`filesRead`)
+    , kittyFiles = config.imageFiles
     }
 
 
@@ -3634,9 +3639,59 @@ feedTerm remote chunk0 ms m =
         pushedBefore =
             Vt.rowsPushed m.term
 
+        decoder =
+            decoded.decoder
+
         -- listening as the diagnostic log is set (DG6), whatever tab
+        fed =
+            { m | term = Vt.feed decoded.bytes (Vt.listen (listeningOf m.config) m.term) }
+    in
+    -- a Kitty picture's file read, for a local program only (KG9)
+    filesRead fed []
+        |> Task.map (\r -> fedTerm r.said decoder pushedBefore ms r.model)
+
+
+{-| The files the terminal's Kitty commands wait for, read and given, until
+none waits (`docs/images-kitty.md` KG9); for an ssh session's program,
+refused as before, since its paths name another machine's files. What
+was read or refused, for the log. -}
+filesRead : (taken m : Model) -> Array String -> Task x { model : Model, said : Array String }
+filesRead m said =
+    when Vt.fileWanted m.term is
+        Just want ->
+            (if m.tab.host == Nothing then
+                ImageFile.read m.settings.given.fs want
+
+             else
+                Task.succeed (Err "EINVAL: unsupported medium")
+            )
+                |> Task.andThen
+                    (\result ->
+                        let
+                            line =
+                                want.path
+                                    ++ (when result is
+                                            Ok bytes ->
+                                                ": " ++ String.fromInt (Bytes.length bytes) ++ " bytes read"
+
+                                            Err why ->
+                                                meant Reason.Refused (": " ++ why)
+                                       )
+                        in
+                        filesRead { m | term = Vt.fileGiven result m.term } (Array.pushLast line said)
+                    )
+
+        Nothing ->
+            meant Reason.NoMore Task.succeed { model = m, said = said }
+
+
+{-| The rest of a read once the core has it: its replies queued, what it
+asked for taken, and the view kept where it was. -}
+fedTerm : Array String -> Charset.Decoder -> Int -> Int -> (taken m : Model) -> Model
+fedTerm said decoder pushedBefore ms m =
+    let
         replied =
-            Vt.takeReplies (Vt.feed decoded.bytes (Vt.listen (listeningOf m.config) m.term))
+            Vt.takeReplies m.term
 
         taken =
             let
@@ -3663,40 +3718,39 @@ feedTerm remote chunk0 ms m =
             else
                 0
     in
-    Task.succeed
-        (Array.foldl
-            (\r acc ->
-                if Outbox.size acc.out >= replyCap then
-                    acc
+    Array.foldl
+        (\r acc ->
+            if Outbox.size acc.out >= replyCap then
+                acc
+
+            else
+                send r acc
+        )
+        { m
+            | term = taken.term
+            , clips = m.clips ++ taken.clips
+            , back = back
+            , selection = selection
+            , decoder = decoder
+            , pending =
+                if m.pending < 0 then
+                    ms
 
                 else
-                    send r acc
-            )
-            { m
-                | term = taken.term
-                , clips = m.clips ++ taken.clips
-                , back = back
-                , selection = selection
-                , decoder = decoded.decoder
-                , pending =
-                    if m.pending < 0 then
-                        ms
+                    m.pending
+            , syncSince =
+                if not held then
+                    -1
 
-                    else
-                        m.pending
-                , syncSince =
-                    if not held then
-                        -1
+                else if m.syncSince < 0 then
+                    ms
 
-                    else if m.syncSince < 0 then
-                        ms
-
-                    else
-                        m.syncSince
-            }
-            taken.replies
-            |> logHeard taken.heard
-        )
+                else
+                    m.syncSince
+        }
+        taken.replies
+        |> logHeard taken.heard
+        |> (\done -> Array.foldl (\line acc -> logLine "image file" line acc) done said)
 
 
 {-| The window's events: a key sent to the program, a new size given to the

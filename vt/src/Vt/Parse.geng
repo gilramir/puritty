@@ -62,6 +62,15 @@ import Vt.Width as Width
 {-| The terminal fed one read's bytes. -}
 feed : Bytes -> (taken t0 : Term) -> Term
 feed bytes t0 =
+    if waiting t0 then
+        hold bytes t0
+
+    else
+        feedRead bytes t0
+
+
+feedRead : Bytes -> (taken t0 : Term) -> Term
+feedRead bytes t0 =
     let
         n =
             Bytes.length bytes
@@ -989,16 +998,54 @@ apcString bytes n i t =
                 byteAt bytes j
         in
         if b == 0x1B then
-            escape bytes n (j + 1) (Kitty.apcDispatch True kept)
+            let
+                done =
+                    Kitty.apcDispatch True kept
+            in
+            if waiting done then
+                hold (Bytes.slice (j + 1) n bytes) { done | ps = psEscape }
+
+            else
+                escape bytes n (j + 1) done
 
         else if b == 0x9C then
-            resume bytes n (j + 1) (Kitty.apcDispatch True kept)
+            let
+                done =
+                    Kitty.apcDispatch True kept
+            in
+            if waiting done then
+                hold (Bytes.slice (j + 1) n bytes) done
+
+            else
+                resume bytes n (j + 1) done
 
         else if b == 0x18 || b == 0x1A then
             resume bytes n (j + 1) (Kitty.apcDispatch False kept)
 
         else
             c1 bytes n (j + 1) b (Kitty.apcDispatch False kept)
+
+
+{-| Whether a Kitty command waits for the embedder to read its file
+(`docs/images-kitty.md` KG9): until it is given, nothing more is parsed. -}
+waiting : Term -> Bool
+waiting t =
+    t.images.file /= Nothing
+
+
+{-| Bytes read while a Kitty command waits for its file, kept to be parsed
+once it is given (`Vt.fileGiven`), after what was held before them. -}
+hold : Bytes -> (taken t : Term) -> Term
+hold bytes t =
+    let
+        im =
+            t.images
+    in
+    if Bytes.length bytes == 0 then
+        t
+
+    else
+        { t | images = { im | held = Array.pushLast bytes im.held } }
 
 
 {-| Where an APC's run ends: ESC, CAN, SUB or a C1, or `n`. -}

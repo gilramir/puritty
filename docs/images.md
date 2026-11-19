@@ -155,6 +155,15 @@ which Ghostty bundles), so both sides accept PNG.
   it. A local shell could be allowed temporary files later, with Ghostty's
   checks (a real path under the temp directory, `tty-graphics-protocol`
   in its name); not in the first version.
+  *Changed 2026-11-18* (Gilbert, for Claude Code's mods): files and
+  temporary files are read for a local program, with Kitty's and
+  Ghostty's checks, behind `[images] read_files`, on by default
+  (`images-kitty.md` KG9). puritty's own ssh sessions and tmux's
+  control-mode panes still take direct transmission only. What this rule
+  no longer holds: a program reached by `ssh` in a local tab, which
+  puritty cannot tell from a local one, can have a local file read and
+  drawn (never sent back), as in Kitty and Ghostty; the setting turns
+  that off. Shared memory stays refused.
 - **Size.** Each side at most 10000 pixels and each image's RGBA at most
   a cap, both checked before allocating (Ghostty: 10000 px, 400 MB; WezTerm:
   100 MB). The Sixel decoder stops at the same bound.

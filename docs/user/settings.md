@@ -72,6 +72,11 @@ paste_button = "middle"     # or "right"
 [clipboard]
 osc52_read = "deny"         # or "allow"
 
+[images]
+read_files = true           # a program on this computer may show a
+                            # picture by naming its file (Kitty's
+                            # graphics); false: only pictures it sends
+
 [debug]
 log = false                 # true: a diagnostic log for each window,
                             # see the diagnostic log guide

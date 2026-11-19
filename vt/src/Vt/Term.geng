@@ -4,6 +4,7 @@ module Vt.Term exposing
     , Composed
     , Config
     , Embedder
+    , FileWant
     , Image
     , Images
     , Keys
@@ -91,6 +92,10 @@ type alias Embedder =
     -- `clear` takes them. On in tmux's panes, whose `clear` is ED 0
     -- (`docs/images.md` IM30, `review.md` RV3); off elsewhere, as Ghostty
     , kittyErases : Bool
+    -- whether a Kitty transmission may name a file for the embedder to
+    -- read (`t=f`, `t=t`; `docs/images-kitty.md` KG9): off in the
+    -- oracle's terminal, as libghostty-vt reads no files
+    , kittyFiles : Bool
     }
 
 
@@ -102,6 +107,7 @@ ghosttyEmbedder =
     , listening = 0
     , extraImages = False
     , kittyErases = False
+    , kittyFiles = False
     }
 
 
@@ -534,6 +540,23 @@ type alias Images =
     -- placements in view, moved to the canvas and clipped to their pane,
     -- each with its image (`docs/images.md` IM18)
     , composed : Array Composed
+    -- a Kitty transmission whose data is in a file (KG9), waiting for the
+    -- embedder to read it (`Vt.fileWanted`, `Vt.fileGiven`), and what was
+    -- read after it meanwhile, held until then, in order
+    , file : Maybe FileWant
+    , held : Array Bytes
+    }
+
+
+{-| A file a Kitty transmission names (KG9): its command's keys, the
+path, whether it is a temporary file (`t=t`, to be removed once read),
+and where to read from and how much (`O`, `S`; 0 is to its end). -}
+type alias FileWant =
+    { kv : Dict Int Int
+    , path : String
+    , temporary : Bool
+    , offset : Int
+    , size : Int
     }
 
 
@@ -560,7 +583,7 @@ type alias Composed =
 
 noImages : Images
 noImages =
-    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000, sixel = Nothing, iterm = Nothing, multipart = Nothing, composed = [] }
+    { apc = [], apcLen = 0, apcOver = False, shown = noStore, other = Nothing, limit = 10000000, sixel = Nothing, iterm = Nothing, multipart = Nothing, composed = [], file = Nothing, held = [] }
 
 
 {-| A screen's images (KG7): by id, the placements showing them, the bytes

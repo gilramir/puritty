@@ -362,9 +362,9 @@ session committed.
   puritty takes only pictures sent inline, so Claude Code logged "the
   terminal refused its source: EINVAL: unsupported medium" and left the
   row blank. The mod in the shot sends the PNG's bytes (`source.png`).
-  Reading a file a program names is a choice about trust (kitty allows it
-  with checks; a remote program's path names another machine's file):
-  not done, Gilbert's call.
+  *Since done*: Gilbert asked for files to be read for local programs,
+  with a setting, on by default (`images-kitty.md` KG9); such a mod's
+  picture now draws.
 - **A mod's hooks module imports only its own files and `claude-code`**:
   no `node:fs`, so a mod that shows a file builds the bytes into a module
   beside it.

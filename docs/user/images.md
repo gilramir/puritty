@@ -69,8 +69,29 @@ ssh is the remote host, in your shell's startup file there (`~/.bashrc`,
 ## Over ssh, on Windows too
 
 Pictures travel in the program's output, so they work the same over ssh,
-with OpenSSH or with puritty's own ssh client on Windows. A remote program
-can't make puritty open your files: it has to send the picture itself.
+with OpenSSH or with puritty's own ssh client on Windows.
+
+## Pictures from files
+
+With Kitty's graphics, a program on the same computer can name a picture's
+file instead of sending it, and puritty reads the file. Claude Code's mods
+do this. puritty reads only an ordinary file of at most 400 MB, never one
+under `/proc`, `/sys` or `/dev`; a *temporary* file must be in a
+temporary folder, with `tty-graphics-protocol` in its name, and puritty
+deletes it once read. puritty only shows the picture: what it reads never
+goes back to the program.
+
+A session in puritty's own ssh client never makes puritty read a file, nor
+does a pane of `tmux -CC`. A program you reach with `ssh` in a puritty
+tab can't be told apart from a local one, as in Kitty and Ghostty: the
+paths it names are looked for on your computer, where they're usually
+not found. To have only pictures that programs send, turn off "Pictures
+from files" on the settings window's Advanced page, or:
+
+```toml
+[images]
+read_files = false
+```
 
 ## In tmux
 

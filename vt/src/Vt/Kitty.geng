@@ -5,6 +5,7 @@ module Vt.Kitty exposing
     , cleared
     , clearedHistory
     , dumpLines
+    , fileDone
     , hasVirtual
     , imageByKey
     , imageOf
@@ -21,8 +22,10 @@ module Vt.Kitty exposing
 (`docs/images-kitty.md`, KG1 to KG8): an APC beginning `G` is a command;
 images are kept on the screen that was active, placements anchored to its
 absolute rows (IM11); compressed data and PNG decoded here (`Vt.Inflate`,
-`Vt.Png`, IM15). Not yet: relative placements (`P`), animation (`a=f`,
-`a`, `c`), and placements through a resize's rewrap (IM14).
+`Vt.Png`, IM15). A transmission whose data is in a file (`t=f`, `t=t`) waits for
+the embedder to read it, where it lets programs name files (KG9). Not yet:
+shared memory (`t=s`), relative placements (`P`), animation (`a=f`, `a`,
+`c`), and placements through a resize's rewrap (IM14).
 -}
 
 import Array.Builder as Builder exposing (Builder)
@@ -475,6 +478,9 @@ query cmd t =
     if i == 0 then
         t
 
+    else if fromFile cmd t then
+        wantFile cmd t
+
     else
         when loaded cmd cmd.payload is
             Ok _ ->
@@ -631,12 +637,111 @@ transmit cmd t =
                  if badFormat then
                     respond (quietOf cmd) (firstResponse cmd.kv "EINVAL: unsupported format") (withStore cleared0 t)
 
+                 else if fromFile cmd t then
+                    wantFile cmd (withStore cleared0 t)
+
                  else if more then
                     withStore { cleared0 | loading = Just { command = cmd.kv, data = [ cmd.payload ], len = Bytes.length cmd.payload, quiet = quietOf cmd } } t
 
                  else
                     finishLoad cmd.kv cmd.payload (quietOf cmd) (withStore cleared0 t)
                 )
+
+
+{-| Whether a command's data is in a file the embedder is to read (KG9):
+`t=f` or `t=t`, where the embedder lets programs name files. -}
+fromFile : Command -> Term -> Bool
+fromFile cmd t =
+    t.embedder.kittyFiles && (key 0x74 cmd == 0x66 || key 0x74 cmd == 0x74)
+
+
+{-| A command waiting for its file (KG9): its payload is the path, UTF-8
+of at most 4,096 bytes with no control character, or the command fails
+here. The parser stops after it until the embedder gives the file
+(`fileDone`). -}
+wantFile : Command -> (taken t : Term) -> Term
+wantFile cmd t =
+    let
+        path =
+            if Bytes.length cmd.payload > 4096 then
+                Nothing
+
+            else
+                Bytes.toString cmd.payload
+                    |> Maybe.andThen
+                        (\p ->
+                            if p == "" || String.any (\c -> Char.toCode c < 0x20 || Char.toCode c == 0x7F) p then
+                                Nothing
+
+                            else
+                                Just p
+                        )
+
+        im =
+            t.images
+    in
+    when path is
+        Just p ->
+            { t
+                | images =
+                    { im
+                        | file =
+                            Just
+                                { kv = cmd.kv
+                                , path = p
+                                , temporary = key 0x74 cmd == 0x74
+                                , offset = max 0 (key 0x4F cmd)
+                                , size = max 0 (key 0x53 cmd)
+                                }
+                    }
+            }
+
+        Nothing ->
+            meant Reason.FromOutside respond (quietOf cmd) (firstResponse cmd.kv "EINVAL: invalid data") t
+
+
+{-| The file a waiting command named, as the embedder read it, or why it
+could not (KG9): the command done with those bytes as a direct
+transmission's data, or answered with the error. -}
+fileDone : Result String Bytes -> (taken t : Term) -> Term
+fileDone result t =
+    let
+        im =
+            t.images
+
+        unwaited =
+            { t | images = { im | file = Nothing } }
+    in
+    when im.file is
+        Just want ->
+            let
+                kv =
+                    Dict.remove 0x74 want.kv
+
+                cmd =
+                    { kv = kv, payload = Bytes.empty }
+
+                quiet =
+                    quietOf cmd
+            in
+            when result is
+                Ok data ->
+                    if Dict.get 0x61 kv == Just 0x71 then
+                        when loaded cmd data is
+                            Ok _ ->
+                                respond quiet (firstResponse kv "OK") unwaited
+
+                            Err why ->
+                                meant Reason.FromOutside respond quiet (firstResponse kv why) unwaited
+
+                    else
+                        finishLoad kv data quiet unwaited
+
+                Err why ->
+                    meant Reason.FromOutside respond quiet (firstResponse kv why) unwaited
+
+        Nothing ->
+            meant Reason.NotOpen unwaited
 
 
 firstResponse : Dict Int Int -> String -> Response

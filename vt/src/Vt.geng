@@ -14,6 +14,8 @@ module Vt exposing
     , dump
     , embedderOf
     , feed
+    , fileGiven
+    , fileWanted
     , historyBound
     , historyReached
     , invert
@@ -1610,10 +1612,41 @@ takeReplies t =
     { term = { t | replies = [] }, replies = replies }
 
 
-{-| The terminal fed one read's bytes (`Vt.Parse.feed`). -}
+{-| The terminal fed one read's bytes (`Vt.Parse.feed`). After a Kitty
+command that names a file (`docs/images-kitty.md` KG9), nothing more is
+parsed, and what comes is held, until the embedder gives the file
+(`fileWanted`, `fileGiven`). -}
 feed : Bytes -> (taken t : Term) -> Term
 feed bytes t =
     Parse.feed bytes t
+
+
+{-| The file a Kitty command waits for (KG9): its path, whether it is a
+temporary file to remove once read (`t=t`), and where to read from and how
+many bytes (0: to its end). Only where the embedder lets programs name
+files (`Embedder.kittyFiles`). -}
+fileWanted : Term -> Maybe { path : String, temporary : Bool, offset : Int, size : Int }
+fileWanted t =
+    Maybe.map (\w -> { path = w.path, temporary = w.temporary, offset = w.offset, size = w.size }) t.images.file
+
+
+{-| The file the waiting Kitty command named, as the embedder read it, or
+why not, in Kitty's words (`ENOENT: …`): the command done, then what was
+held since parsed. That may name another file, so the embedder asks
+`fileWanted` again. -}
+fileGiven : Result String Bytes -> (taken t : Term) -> Term
+fileGiven result t =
+    let
+        done =
+            Kitty.fileDone result t
+
+        held =
+            Bytes.flatten done.images.held
+
+        im =
+            done.images
+    in
+    Parse.feed held { done | images = { im | held = [] } }
 
 
 -- MODES

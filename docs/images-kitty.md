@@ -155,3 +155,60 @@ offsets, source, columns, rows, z; `…_source_rect`, `…_grid_size`,
 height, format, data). No image iterator: images are found through the
 placements or by the ids sent. Hash order: sort. p=0 placements show
 their internal id. Removed-but-listed placements have no rect.
+
+## KG9 · Pictures from files, puritty's own (2026-11-18)
+
+Not libghostty-vt's, which reads no files (the oracle's terminal keeps
+`Embedder.kittyFiles` off and answers `EINVAL: unsupported medium` as
+before). Asked for by Gilbert after Claude Code's mods were found to send a
+file-sourced `Image` as `t=f` (`claude-code.md` CL11).
+
+- **The core** (`Vt.Kitty`, `Vt.Parse`, pure): where the embedder says it
+  reads files, a transmission or a query with `t=f` (a file) or `t=t` (a
+  temporary file) takes its payload as the path: UTF-8, at most 4,096
+  bytes, no control character, or it is answered `EINVAL: invalid data`
+  at once. Image `i` is deleted first, as for any transmission. Then the
+  command waits (`Vt.fileWanted`: the path, temporary or not, `O` the
+  offset and `S` the size, 0 to the end), and the parser stops right after
+  its ST: nothing more is parsed, and every read meanwhile is held, so a
+  picture placed by `a=T` is where the cursor was at the command. The
+  embedder gives the bytes or a reason (`Vt.fileGiven`); the command is
+  done as a direct transmission of those bytes (format, size, zlib and
+  PNG as ever), or answered with the reason, and what was held is parsed.
+  A held read can name another file, so the embedder asks again until
+  none waits. `m` (chunks) does not apply to a file. Shared memory (`t=s`)
+  stays refused.
+- **The app** (`ImageFile`, `Main.filesRead`): Kitty's checks, as
+  Ghostty's `LoadingImage.zig` copies them. An absolute path, followed
+  through its links (`File.realPath`); nothing under `/proc/`, `/sys/` or
+  `/dev/` but `/dev/shm/`; a regular file; at most 400 MB (Ghostty's
+  `max_size`), from `O`, `S` bytes or to the end. A `t=t` file must be in
+  a temporary folder (`/tmp`, `/dev/shm`, `TMPDIR`, `TEMP` or `TMP`,
+  followed through links) with `tty-graphics-protocol` in its name, and is
+  removed once read. Failures are answered in Kitty's words (`ENOENT: no
+  such file`, `EPERM: …`, `EINVAL: not a regular file`), never the
+  platform's message. Each read or refusal is a line in the diagnostic
+  log (`image file`).
+- **Where**: a local program only. A tab that is puritty's own ssh session
+  answers `EINVAL: unsupported medium`, since its paths name the other
+  machine's files; tmux's control-mode panes (`TmuxMode`) keep it off,
+  since tmux may run elsewhere and nothing reads their files. A program
+  run through `ssh` in a local tab is not told apart: as in Kitty and
+  Ghostty, its paths are read here, where they mostly name nothing.
+- **The setting**: `[images] read_files`, on by default ("Pictures from
+  files", the settings window's Advanced page, English and Korean); off,
+  the core is told `kittyFiles = False` and answers as libghostty-vt does.
+
+**Measured**: nine tests in the vt suite (208): refused where the
+embedder reads none; the path, `O` and `S` asked for and what follows
+held; given, answered and the held text parsed after; `a=T` placed at the
+command's cursor, not after the held move; a read's failure answered, no
+image; `t=t` temporary; a control character refused at once; `a=q` keeping
+nothing; two files in one read, the second wanted once the first is
+given. An app test (428) holds the setting's default. In puritty on Xvfb,
+a script sending gnuplot's 108,298-byte seashell PNG by `t=f` and by `t=t`
+(`/tmp/tty-graphics-protocol-kf.png`): both drawn, the temporary file
+removed, `/proc/self/status` answered `EPERM`, a missing file `ENOENT`;
+with `read_files = false`, all four `EINVAL: unsupported medium` and the
+temporary file left. Claude Code 2.1.328 with a mod whose `Image` has
+`source: { format: 'png', file }`: drawn, its log with no refusal.
