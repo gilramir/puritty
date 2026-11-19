@@ -2,7 +2,7 @@
 title = "Roadmap"
 +++
 
-puritty is at 0.2.0: its author's daily terminal, with builds for
+puritty is at 0.2.1: its author's daily terminal, with builds for
 Windows, RHEL 8 and 9, and Ubuntu 24.04 (and Linux Mint). This is where it
 stands, and what comes next.
 

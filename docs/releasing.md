@@ -277,3 +277,13 @@ each smoke run ending by itself. This is the first release with RHEL 10
 and Debian 13 builds. The release was made with `gh release create`
 without `--draft` and is GitHub's latest, with nine files: the
 zip, five tarballs, two `.deb`s and `SHA256SUMS`.
+
+## RL13 · 0.2.1 (2026-11-19)
+
+Gilbert, 2026-11-19, after trying WS31's fix on beelink1: "looks good;
+issue 0.2.1 release". 0.2.1 is 0.2.0 with WS31: on Windows, minimizing a
+window no longer empties its screen. The only code changed is the Windows
+window procedure's `WM_SIZE`; the Linux builds differ from 0.2.0's only
+in the version they say. So the unit gate is run (it builds and runs the
+app's suite on Windows too) and RL6's tmux runs, which drive the Linux
+build, are not: they passed on 0.2.0 (RL12) with the same Linux code.
