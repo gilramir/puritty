@@ -39,6 +39,7 @@ The survey's "biggest opening" is the work puritty already has planned.
 | **Key sounds** (Gilbert's request, §3) | Small to medium: audio is new | Soon, and the first new setting added through the settings UI. |
 | **Jump between and fold command outputs** | Medium; needs shell integration (OSC 133) | Later. |
 | **Pipe a pane's text to a command** (pull out URLs) | Small | Later. |
+| **OSC 5522 clipboard paste events** (kitty's protocol: a program on the host asks for `image/png` after the paste key) | Medium | Later (Gilbert, 2026-11-19), when tmux passes it (tmux#5837, declined 2026-11-04) and Claude Code reads it (claude-code#105520). `image-paste.md` IP2, IP6. |
 | **Inline images**: Sixel, Kitty graphics, iTerm2 | Large | Right after phase 4 (§4 below). |
 | **Smooth scrolling, animated cursor** | Medium; better with the GPU renderer | After phase 5, if at all. |
 
@@ -318,6 +319,8 @@ right after phase 4, before images.
 Gilbert, 2026-11-17: a screenshot taken on Windows, pasted into Claude
 Code running in puritty over ssh and tmux. Noted as a possible feature, to
 decide later.
+`image-paste.md` (2026-11-19) surveys how programs and terminals do it:
+no program takes an image through a paste; every one takes a path.
 
 **Today** a paste is text only (`CF_UNICODETEXT` on Windows,
 `UTF8_STRING` on X11), so an image on the clipboard pastes nothing.
