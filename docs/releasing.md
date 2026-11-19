@@ -287,3 +287,9 @@ window procedure's `WM_SIZE`; the Linux builds differ from 0.2.0's only
 in the version they say. So the unit gate is run (it builds and runs the
 app's suite on Windows too) and RL6's tmux runs, which drive the Linux
 build, are not: they passed on 0.2.0 (RL12) with the same Linux code.
+
+Measured, 2026-11-19, from commit `76a427b`: the unit gate passed 17 of
+17 runs; `scripts/prerelease.sh --sign 0.2.1` built the six targets, the
+Windows exe signed on beelink1 and every smoke run ending by itself. The
+release was made with `gh release create` without `--draft` and is
+GitHub's latest, with nine files.
