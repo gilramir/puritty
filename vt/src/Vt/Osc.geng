@@ -37,6 +37,7 @@ import Vt.Dump exposing (..)
 import Vt.Edit exposing (..)
 import Vt.Keys as Keys
 import Vt.Modes exposing (..)
+import Vt.Notice as Notice
 import Vt.Pages exposing (..)
 import Vt.Palette exposing (..)
 import Vt.Print exposing (..)
@@ -269,7 +270,7 @@ oscKnown long command parts =
             command
          ) is
         Just c ->
-            c == 0 || c == 2 || c == 4 || c == 104 || c == 133 || c == 9 || c == 7501 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
+            c == 0 || c == 2 || c == 4 || c == 104 || c == 133 || c == 9 || c == 7501 || c == 777 || c == 99 || (c >= 10 && c <= 19) || (c >= 110 && c <= 112)
 
         Nothing ->
             -- not a command's number
@@ -300,12 +301,23 @@ oscCommand end long command parts rest t =
             semanticPrompt (Maybe.withDefault (meant Reason.FromOutside "") (Array.get 1 parts)) (Array.dropFirst 2 parts) (rest == "L") t
 
         Just 9 ->
-            -- ConEmu's mark of a prompt's start, Ghostty's 133;A
+            -- ConEmu's mark of a prompt's start, Ghostty's 133;A; else
+            -- iTerm2's notification, unless another of ConEmu's commands
             if String.startsWith "12" rest then
                 semanticPrompt "A" [] False t
 
             else
-                t
+                withNotice (Notice.fromOsc9 rest) t
+
+        Just 777 ->
+            withNotice (Notice.fromOsc777 (Array.dropFirst 1 parts)) t
+
+        Just 99 ->
+            let
+                read =
+                    Notice.fromOsc99 rest t.kittyNotices
+            in
+            withNotice read.done { t | kittyNotices = read.pending }
 
         Just 7501 ->
             programStatus end rest t
@@ -609,6 +621,18 @@ intensity text =
 
         Nothing ->
             meant Reason.FromOutside Nothing
+
+
+{-| A desktop notification a program asked for, kept for the embedder
+(CL8): at most 16 waiting, the oldest going first. -}
+withNotice : Maybe Notice.Notice -> (taken t : Term) -> Term
+withNotice asked t =
+    when asked is
+        Just n ->
+            { t | notices = Array.pushLast n (Array.takeLast 15 t.notices) }
+
+        Nothing ->
+            meant Reason.NotSet t
 
 
 {-| OSC 7501, the Program Status Protocol (puritty `docs/claude-code.md`

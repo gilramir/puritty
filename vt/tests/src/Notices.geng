@@ -1,0 +1,59 @@
+module Notices exposing (suite)
+
+{-| Desktop notifications asked for by OSC 9, 777 and 99 (puritty
+`docs/claude-code.md` CL8). -}
+
+import Bytes
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+import Vt.Base64 as Base64
+
+
+taken : String -> Array String
+taken input =
+    (Vt.takeNotices (feed input (term 20 4))).notices |> Array.map (\n -> n.title ++ "|" ++ n.body)
+
+
+suite : U.Suite
+suite =
+    Support.run "Notices"
+        [ { name = "OSC 9 is iTerm2's notification, its text the body"
+          , test = \_ -> Expect.equal [ "|Claude is done" ] (taken "\u{001B}]9;Claude is done\u{0007}")
+          }
+        , { name = "OSC 9's ConEmu commands are not notifications: 9;4 progress, 9;12 a prompt, 9;1 a sleep"
+          , test = \_ -> Expect.equal [] (taken "\u{001B}]9;4;1;50\u{0007}\u{001B}]9;12\u{0007}\u{001B}]9;1;100\u{0007}")
+          }
+        , { name = "a text that only starts with a number is a notification"
+          , test = \_ -> Expect.equal [ "|3 files changed", "|13;x" ] (taken "\u{001B}]9;3 files changed\u{0007}\u{001B}]9;13;x\u{0007}")
+          }
+        , { name = "OSC 777 notify: a title and a body that may hold ;"
+          , test = \_ -> Expect.equal [ "Claude Code|done; 2 edits" ] (taken "\u{001B}]777;notify;Claude Code;done; 2 edits\u{001B}\\")
+          }
+        , { name = "OSC 99: a title alone, and a title and a body in two parts by id, the body base64"
+          , test =
+                \_ ->
+                    Expect.equal [ "Hello|", "Title|Body text" ]
+                        (taken
+                            ("\u{001B}]99;;Hello\u{001B}\\"
+                                ++ "\u{001B}]99;i=1:d=0;Title\u{001B}\\"
+                                ++ "\u{001B}]99;i=1:p=body:e=1;"
+                                ++ Bytes.toStringLossy (Base64.encode (Bytes.fromString "Body text"))
+                                ++ "\u{001B}\\"
+                            )
+                        )
+          }
+        , { name = "control characters are taken out; an empty notification is none"
+          , test = \_ -> Expect.equal [ "a b|" ] (taken "\u{001B}]777;notify;a\u{0008} b;\u{0007}\u{001B}]777;notify;;\u{0007}")
+          }
+        , { name = "taking empties the queue"
+          , test =
+                \_ ->
+                    let
+                        first =
+                            Vt.takeNotices (feed "\u{001B}]9;x\u{0007}" (term 20 4))
+                    in
+                    Expect.equal 0 (Array.length (Vt.takeNotices first.term).notices)
+          }
+        ]

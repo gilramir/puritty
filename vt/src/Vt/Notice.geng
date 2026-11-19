@@ -1,0 +1,175 @@
+module Vt.Notice exposing (Notice, Pending, fromOsc777, fromOsc9, fromOsc99)
+
+{-| Desktop notifications a program asks for (puritty
+`docs/claude-code.md` CL8), in the three forms programs send:
+
+- **OSC 9** (iTerm2's): `OSC 9 ; text`, the text the notification's body.
+  ConEmu uses OSC 9 for commands of its own, a number from 1 to 12 and
+  then `;` or the end (`9;4` progress, `9;12` a prompt), which are not
+  notifications, as Ghostty reads them.
+- **OSC 777** (rxvt-unicode's, which Ghostty sends): `OSC 777 ; notify ;
+  title ; body`.
+- **OSC 99** (kitty's): `OSC 99 ; metadata ; payload`, the metadata
+  `key=value` pairs separated by `:`; `i` an id, `p` what the payload is
+  (`title`, the default, or `body`), `e=1` the payload base64, `d=0` more
+  to come for this id (`d=1`, the default, the notification complete).
+
+A notice is text a program wrote: its control characters taken out, its
+title cut at 256 characters and its body at 1,024. Pure; `Vt` keeps them
+on the terminal for the embedder to take.
+-}
+
+import Bytes
+import Vt.Base64 as Base64
+import Vt.Reason as Reason
+
+
+type alias Notice =
+    { title : String, body : String }
+
+
+{-| kitty's notifications not yet complete, by id. -}
+type alias Pending =
+    Array { id : String, title : String, body : String }
+
+
+clean : Int -> String -> String
+clean most text =
+    String.toArray text
+        |> Array.keepIf
+            (\c ->
+                let
+                    n =
+                        Char.toCode c
+                in
+                n >= 0x20 && not (n >= 0x7F && n <= 0x9F)
+            )
+        |> Array.takeFirst most
+        |> String.fromArray
+
+
+notice : String -> String -> Maybe Notice
+notice title body =
+    let
+        t =
+            clean 256 title
+
+        b =
+            clean 1024 body
+    in
+    if t == "" && b == "" then
+        Nothing
+
+    else
+        Just { title = t, body = b }
+
+
+{-| OSC 9's text after `9;`: a notification, unless it is one of ConEmu's
+commands. -}
+fromOsc9 : String -> Maybe Notice
+fromOsc9 rest =
+    let
+        -- String.split gives at least one piece
+        head =
+            String.split ";" rest |> Array.first |> Maybe.withDefault ""
+
+        conEmu =
+            when String.toInt head is
+                Just n ->
+                    String.all Char.isDigit head && n >= 1 && n <= 12
+
+                Nothing ->
+                    meant Reason.FromOutside False
+    in
+    if conEmu then
+        Nothing
+
+    else
+        notice "" rest
+
+
+{-| OSC 777's parts after `777`: `notify`, a title and a body (which may
+hold `;`). -}
+fromOsc777 : Array String -> Maybe Notice
+fromOsc777 parts =
+    when Array.popFirst parts is
+        Just { first, rest } ->
+            if first == "notify" then
+                notice (Maybe.withDefault (meant Reason.FromOutside "") (Array.first rest)) (String.join ";" (Array.dropFirst 1 rest))
+
+            else
+                Nothing
+
+        Nothing ->
+            meant Reason.FromOutside Nothing
+
+
+{-| OSC 99's text after `99;`: the kitty notifications waiting for more,
+with this one's part added, and the notification it completed, if it did. -}
+fromOsc99 : String -> Pending -> { pending : Pending, done : Maybe Notice }
+fromOsc99 rest pending =
+    let
+        meta =
+            String.split ";" rest |> Array.first |> Maybe.withDefault ""
+
+        payload =
+            String.dropFirst (String.count meta + 1) rest
+
+        pairs =
+            String.split ":" meta
+                |> Array.mapAndKeepJust
+                    (\pair ->
+                        when String.firstIndexOf "=" pair is
+                            Just i ->
+                                Just { key = String.takeFirst i pair, value = String.dropFirst (i + 1) pair }
+
+                            Nothing ->
+                                meant Reason.FromOutside Nothing
+                    )
+
+        value key default =
+            Array.foldl
+                (\p acc ->
+                    if p.key == key then
+                        p.value
+
+                    else
+                        acc
+                )
+                default
+                pairs
+
+        id =
+            value "i" "0"
+
+        text =
+            if value "e" "0" == "1" then
+                Base64.decode (Bytes.fromString payload) |> Maybe.andThen Bytes.toString |> Maybe.withDefault (meant Reason.FromOutside "")
+
+            else
+                payload
+
+        before =
+            Array.findFirst (\p -> p.id == id) pending
+                |> Maybe.map .value
+                |> Maybe.withDefault (meant Reason.NotYet { id = id, title = "", body = "" })
+
+        added =
+            if value "p" "title" == "body" then
+                { before | body = before.body ++ text }
+
+            else if value "p" "title" == "title" then
+                { before | title = before.title ++ text }
+
+            else
+                -- another kind of payload (an icon, a button): not shown
+                before
+
+        others =
+            Array.keepIf (\p -> p.id /= id) pending
+    in
+    if value "d" "1" == "0" then
+        { pending = Array.pushLast added (Array.takeLast 15 others), done = Nothing }
+
+    else
+        { pending = others, done = notice added.title added.body }

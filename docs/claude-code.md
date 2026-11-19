@@ -221,3 +221,42 @@ pixels still lost). The console in Windows itself does not pass through;
 Windows Terminal ships its own (`conpty.dll` and `OpenConsole.exe`, MIT),
 which is where the mode lives. Taking it would mean shipping those two
 files with puritty: Gilbert's call. The experiment was taken back out.
+
+## CL8 · Desktop notifications built (2026-11-18)
+
+- **The core** (`Vt.Notice`, new, pure): OSC 9 is iTerm2's notification,
+  its text the body, unless it is one of ConEmu's commands (a number from
+  1 to 12, then `;` or the end: `9;4` progress, `9;12` a prompt), as
+  Ghostty reads it; OSC 777 `notify;title;body` (rxvt's, Ghostty's), the
+  body keeping its `;`; OSC 99 (kitty's), metadata `i` (id), `p`
+  (`title`, the default, or `body`), `e=1` (base64) and `d=0` (more to
+  come), parts joined by id until one completes it. Control characters
+  are taken out, the title cut at 256 characters and the body at 1,024;
+  an empty one is none. At most 16 wait on a terminal for the embedder,
+  `Vt.takeNotices`. OSC 777 is no longer an ignored sequence in the
+  diagnostic log's test (its example became OSC 5113).
+- **The app** (`Main.noticesShown`, `Notify` per platform): each turn the
+  notices are taken from every tab, one with no title given its tab's
+  label; the newest is shown, at most one every 3 s, the others dropped
+  and said in the log. On Linux by `notify-send`, which hands it to the
+  desktop's notification service; where it is not installed the log says
+  so. On Windows by the notification area's balloon from puritty's icon
+  (`Window.notify`, `Shell_NotifyIconW`, shell32 now linked), which
+  Windows 10 and 11 show as a toast; the icon goes when puritty ends.
+
+So Claude Code's notifications reach the desktop in puritty with
+`preferredNotifChannel` set to `"iterm2"` (OSC 9), `"ghostty"` (OSC 777)
+or `"kitty"` (OSC 99) in `~/.claude/settings.json`; left at `auto` it
+sends none to a terminal it does not know.
+
+**Measured**: seven tests in the vt suite (192): OSC 9's text; ConEmu's
+`9;4`, `9;12` and `9;1` not notifications; a text that only starts with a
+number one; OSC 777 with `;` in its body; OSC 99 alone, and in two parts
+by id with a base64 body; control characters out and an empty one none;
+taking empties. In puritty on Xvfb, with a `notify-send` that records its
+arguments: OSC 777 "Claude Code" / "Claude is waiting for your input"
+sent as given; OSC 9's `9;4;1;50` not sent; two OSC 9s a second later
+dropped (one shown less than 3 s before); one after the pause sent,
+titled "shell", its tab's label. On beelink1, PowerShell in puritty.exe
+writing OSC 9 through ConPTY (which passes it): the toast "puritty.exe",
+"shell", "Claude is waiting for your input".

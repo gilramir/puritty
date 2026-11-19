@@ -55,6 +55,7 @@ import Hosts
 import Int64
 import Keys
 import LastWindow
+import Notify
 import Os.Directory as Directory
 import Os.Env
 import Os.Error exposing (Error)
@@ -131,6 +132,9 @@ type alias Model =
     -- docs/claude-code.md CL7)
     , statusSeen : Dict Int String
     , attentionAsked : Bool
+    -- when the next desktop notification may be shown (CL8): at most one
+    -- every 3 s; -1 any time
+    , noticeAt : Int
     -- the pointer shown (the arrow while the program takes the mouse, a
     -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
     -- last place over the window, and whether Shift is held, which takes
@@ -1228,6 +1232,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , bellsHeard = 0
                      , statusSeen = Dict.empty
                      , attentionAsked = False
+                     , noticeAt = -1
                      , pointerShown = Window.TextPointer
                      , hover = Nothing
                      , shiftHeld = False
@@ -1804,6 +1809,7 @@ loop remote m00 =
         |> Task.andThen pointerShape
         |> Task.andThen bellRung
         |> Task.andThen statusNoticed
+        |> Task.andThen noticesShown
         |> Task.andThen clipboardRequests
         |> Task.andThen (writeLog False)
         |> Task.andThen (flush remote)
@@ -1934,6 +1940,107 @@ statusNoticed m =
                  else
                     Task.succeed noted
                 )
+
+
+{-| The desktop notifications programs asked for (OSC 9, 777, 99;
+docs/claude-code.md CL8), taken from every tab's terminal, one with no
+title given its tab's; the newest shown, at most one every 3 s, the others
+dropped and said in the log. -}
+noticesShown : (taken m : Model) -> Task Error Model
+noticesShown m0 =
+    let
+        own =
+            Vt.takeNotices m0.term
+
+        label =
+            tabLabel m0.tab own.term.title
+
+        titled tab ns =
+            Array.map
+                (\n ->
+                    if n.title == "" then
+                        { n | title = tab }
+
+                    else
+                        n
+                )
+                ns
+
+        others =
+            noticesFrom 0 m0.tabs []
+
+        m =
+            { m0 | term = own.term, tabs = others.tabs }
+
+        all =
+            titled label own.notices ++ others.notices
+    in
+    when Array.last all is
+        Just newest ->
+            if m.noticeAt < 0 || Clock.reached m.noticeAt m.turnMs then
+                Notify.show (Maybe.map .cp m.settingsWindow) newest
+                    |> Task.map
+                        (\shown ->
+                            let
+                                said =
+                                    when shown is
+                                        Ok _ ->
+                                            "shown: " ++ String.fromInt (String.count newest.title) ++ " and " ++ String.fromInt (String.count newest.body) ++ " characters"
+
+                                        Err why ->
+                                            meant Reason.Refused ("not shown: " ++ why)
+                            in
+                            logLine "notice"
+                                (said
+                                    ++ (if Array.length all > 1 then
+                                            ", " ++ String.fromInt (Array.length all - 1) ++ " older dropped"
+
+                                        else
+                                            ""
+                                       )
+                                )
+                                { m | noticeAt = Clock.after m.turnMs 3000 }
+                        )
+
+            else
+                Task.succeed (logLine "notice" (String.fromInt (Array.length all) ++ " dropped: one was shown less than 3 s ago") m)
+
+        Nothing ->
+            meant Reason.NoMore Task.succeed m
+
+
+{-| The hidden tabs' notices taken, from tab `i` on, each titled with its
+tab's label where it has none. -}
+noticesFrom : Int -> (taken tabs : Builder (Maybe Tab)) -> Array { title : String, body : String } -> { tabs : Builder (Maybe Tab), notices : Array { title : String, body : String } }
+noticesFrom i tabs acc =
+    if i >= Builder.length tabs then
+        { tabs = tabs, notices = acc }
+
+    else
+        when Builder.get i tabs is
+            Just (Just t) ->
+                let
+                    taken =
+                        Vt.takeNotices t.term
+
+                    label =
+                        tabLabel t.info taken.term.title
+
+                    titled =
+                        Array.map
+                            (\n ->
+                                if n.title == "" then
+                                    { n | title = label }
+
+                                else
+                                    n
+                            )
+                            taken.notices
+                in
+                noticesFrom (i + 1) (Builder.set i (Just { t | term = taken.term }) tabs) (acc ++ titled)
+
+            _ ->
+                meant Reason.Gone noticesFrom (i + 1) tabs acc
 
 
 {-| The mark a Program Status Protocol state puts before a title: working,

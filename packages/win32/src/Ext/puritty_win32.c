@@ -73,6 +73,7 @@
 #include <imm.h>
 #include <windowsx.h>
 #include <wincred.h>
+#include <shellapi.h>
 #include <mmsystem.h>
 
 #include <ft2build.h>
@@ -2667,5 +2668,58 @@ geng_cancel puritty_win32_attention(int32_t on, geng_wait *wait) {
     f.dwTimeout = 0;
     FlashWindowEx(&f);
     geng_succeed(wait, geng_slot_I4(0));
+    return (geng_cancel) {0};
+}
+
+/* DESKTOP NOTIFICATIONS (puritty docs/claude-code.md CL8)
+ *
+ * A notification a program asked for (OSC 9, 777, 99), shown as the
+ * shell's balloon from an icon of puritty's in the notification area,
+ * which Windows 10 and 11 show as a toast: the icon added with the first,
+ * changed for each next, and taken away when puritty ends. */
+
+static int notify_icon;
+
+static void notify_icon_gone(void) {
+    if (notify_icon) {
+        NOTIFYICONDATAW n;
+        memset(&n, 0, sizeof n);
+        n.cbSize = sizeof n;
+        n.hWnd = win;
+        n.uID = 1;
+        Shell_NotifyIconW(NIM_DELETE, &n);
+        notify_icon = 0;
+    }
+}
+
+geng_cancel puritty_win32_notify(void *title_bytes, void *body_bytes, geng_wait *wait) {
+    char *title = string_of(title_bytes), *body = string_of(body_bytes);
+    wchar_t *wt = wide(title), *wb = wide(body);
+    free(title);
+    free(body);
+    NOTIFYICONDATAW n;
+    memset(&n, 0, sizeof n);
+    n.cbSize = sizeof n;
+    n.hWnd = win;
+    n.uID = 1;
+    n.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
+    n.hIcon = (HICON) GetClassLongPtrW(win, GCLP_HICONSM);
+    if (!n.hIcon) n.hIcon = LoadIconW(NULL, (LPCWSTR) IDI_APPLICATION);
+    wcsncpy(n.szTip, L"puritty", sizeof n.szTip / sizeof *n.szTip - 1);
+    wcsncpy(n.szInfoTitle, wt, sizeof n.szInfoTitle / sizeof *n.szInfoTitle - 1);
+    wcsncpy(n.szInfo, wb[0] ? wb : L" ", sizeof n.szInfo / sizeof *n.szInfo - 1);
+    n.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
+    BOOL shown;
+    if (!notify_icon) {
+        shown = Shell_NotifyIconW(NIM_ADD, &n);
+        if (shown) {
+            notify_icon = 1;
+            atexit(notify_icon_gone);
+        }
+    } else
+        shown = Shell_NotifyIconW(NIM_MODIFY, &n);
+    free(wt);
+    free(wb);
+    geng_succeed(wait, geng_slot_I4(shown ? 1 : 0));
     return (geng_cancel) {0};
 }

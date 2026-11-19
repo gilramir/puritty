@@ -1,0 +1,26 @@
+module Notify exposing (show)
+
+{-| A desktop notification a program asked for (puritty
+`docs/claude-code.md` CL8), on Linux: `notify-send`, which hands it to
+the desktop's notification service (`org.freedesktop.Notifications`, the
+same one GNOME, KDE and the others show). Where `notify-send` is not
+installed, nothing is shown, and the caller says why in the log.
+`app/windows` shows a toast. -}
+
+import Os.Error
+import Os.Process as Process
+import Reason
+import Task exposing (Task)
+
+
+{-| Shown, or why not. -}
+show : Maybe Process.Permission -> { title : String, body : String } -> Task x (Result String {})
+show cp n =
+    when cp is
+        Just permission ->
+            Process.spawn permission "notify-send" [ "--app-name=puritty", "--", n.title, n.body ] (Process.defaultSpawnOptions Process.Ignored)
+                |> Task.map (\_ -> Ok {})
+                |> Task.onError (\e -> Task.succeed (Err ("notify-send: " ++ Os.Error.toString e)))
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed (Err "no permission to start programs")
