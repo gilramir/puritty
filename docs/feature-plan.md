@@ -58,6 +58,7 @@ hosts:
    `config.toml`. Surveyed in `saved-secrets.md` (PW1–PW6), with
    questions for Gilbert.
 5. File transfer inside the session: an SFTP panel or drag-and-drop.
+   Surveyed in `sftp.md` (FT1–FT5), with questions for Gilbert.
 6. Reconnect, restoring tabs, layouts and titles. tmux control mode does much
    of this for free when the remote end runs tmux.
 7. None of MobaXterm's free-tier caps, which is easy since puritty has none.
@@ -381,6 +382,8 @@ Gilbert, 2026-11-18: a file dragged onto puritty's window is uploaded to
 the host the tab is connected to. **Not into a set folder**: a dialog
 opens and the user chooses the remote folder to put it in. Written down
 to build later.
+`sftp.md` surveys how other programs do it and what users say, and
+answers the open questions below with leanings (FT5).
 
 **Which tabs it can work in**, as for §8's screenshot:
 
