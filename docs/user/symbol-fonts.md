@@ -64,6 +64,45 @@ not):
 Noto Sans Symbols 2 misses `⎿` and `⧉`, but RHEL's own Noto Sans Symbols
 has both, so together they cover all 20.
 
+### puritty's own marks for Claude Code
+
+puritty marks each tab, and the window's title, with what Claude Code is
+doing: `◔` working, `◉` waiting on you, `✓` done, `✗` failed
+([Claude Code in puritty](claude-code.md)). The tab bar draws them in
+puritty's interface font (Segoe UI on Windows, `sans-serif` on Linux),
+which has none of them, so they come from other fonts the same way:
+
+| font | ◔ | ◉ | ✓ | ✗ |
+|---|---|---|---|---|
+| Fira Code 6.2 | · | ✔ | ✔ | · |
+| Cascadia Code, Cascadia Mono (Windows) | ✔ | ✔ | ✔ | · |
+| Consolas (Windows) | · | · | · | · |
+| Segoe UI Symbol (Windows) | ✔ | ✔ | ✔ | ✔ |
+| DejaVu Sans Mono, DejaVu Sans | ✔ | ✔ | ✔ | ✔ |
+| Noto Sans Symbols 2 | ✔ | ✔ | ✔ | ✔ |
+| Noto Sans Mono | ✔ | ✔ | · | · |
+| Liberation Mono | ✔ | · | · | · |
+| OpenSymbol | · | · | ✔ | ✔ |
+
+Which font draws each one, as measured with puritty's font report:
+
+- **Windows**, with the default Cascadia Mono: `◔ ◉ ✓` are Cascadia
+  Mono's, and `✗` is Segoe UI Symbol's. With Fira Code: `◉ ✓` are Fira
+  Code's, `✗` is Segoe UI Symbol's, and `◔` is Cascadia Mono's, or Segoe
+  UI Symbol's when an `✗` was drawn first. Once puritty has opened a font
+  for one symbol, it uses that font for others it has.
+- **Ubuntu and Linux Mint**: all four come from DejaVu Sans Mono, which
+  puritty asks for as the system's monospace font, except that `◉ ✓` are
+  Fira Code's when Fira Code is your font.
+
+So the marks may come from two fonts side by side, and look a little
+uneven together. Nothing needs installing for them: Windows, Ubuntu and
+Linux Mint have every one, and on RHEL, DejaVu Sans Mono and Noto Sans
+Symbols 2 both have all four.
+
+The window's title is drawn by Windows or your desktop, not puritty, in
+its own font.
+
 ---
 
 ## The fonts
