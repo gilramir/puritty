@@ -4,7 +4,7 @@ title = "puritty"
 [extra]
 headline = "A terminal that's fast, and just does things right"
 lede = "puritty runs on Linux and Windows. It has deep integration with tmux, carries its own ssh client on Windows, and is quick on the desktop and over remote X11."
-status = "**0.1.1.** puritty is its author's daily terminal. It is published now in source and binary form, but nobody but the author can build it until [Geng](https://geng-lang.org), the language it is written in, is published."
+status = "**0.2.0.** puritty is its author's daily terminal. It is published now in source and binary form, but nobody but the author can build it until [Geng](https://geng-lang.org), the language it is written in, is published."
 hero_image = "tmux-on-windows.png"
 hero_alt = "puritty on Windows 11 with three colored tabs, the first connected to Linux with puritty's own ssh client and attached to tmux 3.8 by tmux -CC: git history in the left pane, two Chinese poems and a table in the right one, and Thai in a floating pane over them"
 hero_caption = "On Windows 11, connected to Linux with puritty's own ssh client, running `tmux -CC attach`: tmux's panes and a floating pane, with Chinese and Thai, drawn by puritty, and three tabs of puritty's own."
@@ -225,7 +225,7 @@ body = "Remote programs can copy to it with OSC 52. Reading it is denied unless 
 
 ## Try it
 
-puritty 0.1.1 is out for Windows and Linux:
+puritty 0.2.0 is out for Windows and Linux:
 [download it](https://github.com/gilramir/puritty/releases/latest) from
 GitHub. [Getting started](@/guide/getting-started.md) says which file to
 take, and the [roadmap](@/roadmap.md) what comes next.

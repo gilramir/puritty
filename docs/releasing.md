@@ -254,3 +254,16 @@ picture kept on the screen beside a scroll region costs its line feeds
 about 4 times; a Sixel or iTerm2 picture kept on the screen makes text
 about 19 times slower, some 30 MB/s on 12.8 MB of text, more than an ssh
 link brings.
+
+## RL12 · 0.2.0 (2026-11-19)
+
+Gilbert, 2026-11-19: puritty 0.2.0 is released on GitHub, published, not
+a draft. It has RL11's images, and since 0.1.1 also Claude Code's
+support (program status, desktop notifications, OSC 8 links, Kitty's
+pictures from files behind a setting that is off), passwords and
+passphrases remembered in Windows' Credential Manager, PuTTY's saved
+sessions in the host list, and the padding around the text.
+`purittyVersion` says `0.2.0`, and the site says so. The checks run
+first: the unit gate, `harness/puppet.py --all` and
+`harness/puppet-trials.py` on RL6's six tmux releases.
+
