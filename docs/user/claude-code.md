@@ -32,18 +32,32 @@ answers. Most of what follows works with nothing set.
 ## What to turn on
 
 Claude Code decides some things by the terminal's name, and it doesn't
-know puritty's name yet. Two settings tell it what puritty can do.
+know puritty's name yet. A few settings tell it what puritty can do.
 
-**Pictures.** Mods can draw pictures in Claude Code, and puritty draws
-them (Kitty's graphics), whether a mod gives the picture itself or names
-its file. A mod that names a file needs "Pictures from files" turned
-on, since that's off by default
-([pictures from files](images.md#pictures-from-files)). Set this before
-you start Claude Code, in your shell's startup file:
+**Pictures.** Claude Code's *mods*, add-ons that change its screen (a
+panel, a status line, a theme), can draw pictures, and puritty shows them
+with Kitty's graphics. Claude Code sends them only to terminals it knows
+can draw, so tell it puritty can: set this in your shell's startup file
+(`~/.zshrc`, `~/.bashrc`) before you start Claude Code:
 
 ```sh
 export CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1
 ```
+
+That's enough for a mod that sends the picture itself. A mod can instead
+name the picture's file and leave reading it to the terminal. puritty
+reads such files only with "Pictures from files" turned on, on the
+settings window's Advanced page, since it's off by default (see
+[pictures from files](images.md#pictures-from-files) for why). In
+`config.toml`:
+
+```toml
+[images]
+read_files = true
+```
+
+Without it, such a mod's picture stays blank, and Claude Code's debug
+log says the terminal refused its source.
 
 **Desktop notifications.** Claude Code can tell you it's waiting through
 the desktop's notifications. In `~/.claude/settings.json`, choose one of
