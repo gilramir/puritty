@@ -2723,3 +2723,16 @@ geng_cancel puritty_win32_notify(void *title_bytes, void *body_bytes, geng_wait 
     geng_succeed(wait, geng_slot_I4(shown ? 1 : 0));
     return (geng_cancel) {0};
 }
+
+/* A LINK OPENED (puritty docs/claude-code.md CL9): the shell's "open" of a
+ * URI the app has already found safe to open; 1 when the shell took it
+ * (ShellExecuteW answers more than 32). */
+geng_cancel puritty_win32_openLink(void *uri_bytes, geng_wait *wait) {
+    char *uri = string_of(uri_bytes);
+    wchar_t *w = wide(uri);
+    free(uri);
+    HINSTANCE r = ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL);
+    free(w);
+    geng_succeed(wait, geng_slot_I4((INT_PTR) r > 32 ? 1 : 0));
+    return (geng_cancel) {0};
+}

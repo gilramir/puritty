@@ -19,6 +19,7 @@ module Vt exposing
     , invert
     , keyOptions
     , lineAt
+    , linkAt
     , listen
     , mouseModes
     , new
@@ -2085,3 +2086,33 @@ takeNotices t =
             t.notices
     in
     { term = { t | notices = [] }, notices = notices }
+
+
+{-| The OSC 8 link of the cell at `p` in the view `back` rows scrolled
+back, if it is part of one (puritty `docs/claude-code.md` CL9): its URI. -}
+linkAt : Int -> Point -> Term -> Maybe String
+linkAt back0 p t =
+    let
+        back =
+            clamp 0 (scrollbackRows t) back0
+
+        row =
+            clamp 0 (max 0 (t.rows - 1)) p.row
+
+        read =
+            rowsBetween (row - back) 1 t
+    in
+    Array.first read.rows
+        |> Maybe.andThen (\r -> Array.get p.col r.cells)
+        |> Maybe.andThen
+            (\c ->
+                let
+                    link =
+                        (styleOf (cellStyle c) t.styles).link
+                in
+                if link > 0 then
+                    Array.get (link - 1) t.links |> Maybe.map .uri
+
+                else
+                    Nothing
+            )

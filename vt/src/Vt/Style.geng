@@ -42,12 +42,16 @@ type alias Attrs =
     , ulc : Int
     , flags : Int
     , ul : Int
+    -- the OSC 8 hyperlink the cell is part of: 0 none, else its place in
+    -- the terminal's `links` and one more (puritty docs/claude-code.md
+    -- CL9); kept out of the key, as the underline color is
+    , link : Int
     }
 
 
 plainAttrs : Attrs
 plainAttrs =
-    { fg = 0, bg = 0, ulc = 0, flags = 0, ul = 0 }
+    { fg = 0, bg = 0, ulc = 0, flags = 0, ul = 0, link = 0 }
 
 
 {-| The styles in use, each an id. `ids` maps a style's key, everything but
@@ -83,7 +87,15 @@ intern a styles =
             Maybe.withDefault (meant Reason.NotKnown []) (Dict.get key styles.ids)
 
         found =
-            Array.findFirst (\id -> (Maybe.withDefault plainAttrs (Array.get id styles.table)).ulc == a.ulc) same
+            Array.findFirst
+                (\id ->
+                    let
+                        b =
+                            Maybe.withDefault plainAttrs (Array.get id styles.table)
+                    in
+                    b.ulc == a.ulc && b.link == a.link
+                )
+                same
     in
     when found is
         Just f ->

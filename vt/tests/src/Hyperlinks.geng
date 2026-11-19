@@ -1,0 +1,82 @@
+module Hyperlinks exposing (suite)
+
+{-| OSC 8 hyperlinks (puritty `docs/claude-code.md` CL9): the cells a
+link covers, what ends it, and what keeps it. -}
+
+import Expect
+import Support exposing (feed, term)
+import Test.Runner.UnitNode as U
+import Vt
+
+
+link : String -> String -> String
+link uri text =
+    "\u{001B}]8;;" ++ uri ++ "\u{001B}\\" ++ text ++ "\u{001B}]8;;\u{001B}\\"
+
+
+at : Int -> Int -> Vt.Term -> String
+at row col t =
+    Vt.linkAt 0 { row = row, col = col } t |> Maybe.withDefault "-"
+
+
+suite : U.Suite
+suite =
+    Support.run "Hyperlinks"
+        [ { name = "the cells printed between OSC 8 and its end carry the link, the others none"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed ("a " ++ link "https://example.com/x" "here" ++ " b") (term 20 4)
+                    in
+                    Expect.equal [ "-", "https://example.com/x", "https://example.com/x", "-" ] [ at 0 0 t, at 0 2 t, at 0 5 t, at 0 7 t ]
+          }
+        , { name = "SGR, 0 too, does not end a link; colors inside it keep it"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}]8;;https://a.example\u{001B}\\x\u{001B}[1;31my\u{001B}[0mz\u{001B}]8;;\u{001B}\\w" (term 20 4)
+                    in
+                    Expect.equal [ "https://a.example", "https://a.example", "https://a.example", "-" ] [ at 0 0 t, at 0 1 t, at 0 2 t, at 0 3 t ]
+          }
+        , { name = "an erase inside a link writes no link"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}]8;;https://a.example\u{001B}\\ab\u{001B}[K\u{001B}[5Gc" (term 20 4)
+                    in
+                    Expect.equal [ "https://a.example", "-", "https://a.example" ] [ at 0 0 t, at 0 2 t, at 0 4 t ]
+          }
+        , { name = "two links of the same URI and id are one; another id is another"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            feed "\u{001B}]8;id=1;https://a.example\u{001B}\\a\u{001B}]8;;\u{001B}\\ \u{001B}]8;id=1;https://a.example\u{001B}\\b\u{001B}]8;id=2;https://b.example\u{001B}\\c" (term 20 4)
+                    in
+                    Expect.equal [ "https://a.example", "https://a.example", "https://b.example" ] [ at 0 0 t, at 0 2 t, at 0 3 t ]
+          }
+        , { name = "a URI with a space or a control character is no link"
+          , test =
+                \_ ->
+                    Expect.equal "-" (at 0 0 (feed "\u{001B}]8;;https://a b\u{001B}\\x" (term 20 4)))
+          }
+        , { name = "a link reflows with its text, and is found in the scrollback"
+          , test =
+                \_ ->
+                    let
+                        t =
+                            term 10 3
+                                |> feed (link "https://wrap.example" "abcdefghijkl")
+                                |> feed "\r\n1\r\n2\r\n3"
+                    in
+                    Expect.equal [ "https://wrap.example", "https://wrap.example" ] [ Vt.linkAt 2 { row = 0, col = 9 } t |> Maybe.withDefault "-", Vt.linkAt 2 { row = 1, col = 1 } t |> Maybe.withDefault "-" ]
+          }
+        , { name = "RIS forgets the links"
+          , test =
+                \_ ->
+                    Expect.equal "-" (at 0 0 (feed ("\u{001B}c" ++ "x") (feed "\u{001B}]8;;https://a.example\u{001B}\\" (term 20 4))))
+          }
+        ]

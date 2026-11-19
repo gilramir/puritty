@@ -15,6 +15,7 @@ module TmuxMode exposing
     , isOn
     , keyName
     , keys
+    , linkAt
     , newWindow
     , paint
     , paste
@@ -7702,6 +7703,49 @@ pointer how p s =
             historyAsked wasAsking { state = r.state, commands = r.commands }
     in
     { state = asked.state, commands = asked.commands, own = r.own, paste = r.paste }
+
+
+{-| The OSC 8 link under the pointer, in the topmost pane there (puritty
+`docs/claude-code.md` CL9): its URI. -}
+linkAt : Window.PointerEvent -> State -> Maybe String
+linkAt p s =
+    when s.layout is
+        Just cell ->
+            let
+                col =
+                    p.x // max 1 p.cellWidth
+
+                row =
+                    p.y // max 1 p.cellHeight
+            in
+            when placedPanes s cell (Array.reverse (Layout.floating cell) ++ Layout.tiled cell) |> Array.findFirst (\q -> col >= q.x && col < q.x + q.w && row >= q.y && row < q.y + q.h) is
+                Just f ->
+                    let
+                        -- read before the pane's terminal is
+                        back =
+                            backOf f.value.id s
+
+                        place =
+                            { row = row - f.value.y, col = col - f.value.x }
+                    in
+                    when Array.findFirst (\i -> i == f.value.id) s.ids is
+                        Just found ->
+                            when Builder.get found.index s.panes is
+                                Just t ->
+                                    Vt.linkAt back place t
+
+                                Nothing ->
+                                    meant Reason.OutOfRange Nothing
+
+                        Nothing ->
+                            meant Reason.Gone Nothing
+
+                Nothing ->
+                    -- not over a pane
+                    meant Reason.OutOfRange Nothing
+
+        Nothing ->
+            meant Reason.NotYet Nothing
 
 
 {-| `pointer`'s press, release or motion. -}

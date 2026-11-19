@@ -92,8 +92,9 @@ SUITES = [
     # 163 since IM30: Kitty's images in tmux's panes, two; 174 since IM35:
     # Kitty's Unicode placeholders, eleven; 185 since CL7: the Program
     # Status Protocol (OSC 7501), eleven; 192 since CL8: desktop
-    # notifications by OSC 9, 777 and 99, seven
-    Suite("vt", 192, runs_of("vt/tests")),
+    # notifications by OSC 9, 777 and 99, seven; 199 since CL9: OSC 8
+    # hyperlinks, seven
+    Suite("vt", 199, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys
@@ -145,8 +146,9 @@ SUITES = [
         # 408 since SG20: the host list's boxes edited, F2 and Up's recall;
         # 420 since SG21: PuTTY's sessions read and listed as hosts, twelve;
         # 425 since PW8: what is remembered, by what name, and when; 426
-        # since CL8: desktop notifications' setting
-        426,
+        # since CL8: desktop notifications' setting; 427 since CL9: which
+        # links are opened
+        427,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

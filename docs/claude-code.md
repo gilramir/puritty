@@ -265,3 +265,77 @@ dropped (one shown less than 3 s before); one after the pause sent,
 titled "shell", its tab's label. On beelink1, PowerShell in puritty.exe
 writing OSC 9 through ConPTY (which passes it): the toast "puritty.exe",
 "shell", "Claude is waiting for your input".
+
+## CL9 · OSC 8 hyperlinks built (2026-11-18)
+
+- **The core**: a link is part of a cell's style (`Attrs.link`, its place
+  in the terminal's `links` and one more), kept out of the style's key as
+  the underline color is and compared when a style is interned, so the
+  style cache (keyed without either) is not used for a linked pen. OSC 8
+  `params ; URI` gives the pen a link, found again by its URI and `id`
+  param (two of the same are one link), until an OSC 8 with no URI ends
+  it; no SGR, `0` included, ends it, and an erase writes plain cells, so
+  no erased cell is linked. A URI with a space or anything but printable
+  ASCII is no link; past the 4,096th a new one ends the link instead. The
+  links reflow and scroll back with their cells, as their styles do; RIS
+  forgets them. `Vt.linkAt back point` reads the link of a cell in the
+  view, `TmuxMode.linkAt` the topmost pane's under the pointer.
+- **Ctrl and the left button** on a link open it, where the program does
+  not take the mouse; with Shift too where it does (its own a plain
+  Ctrl+click then is: Claude Code's fullscreen renderer opens its links
+  so itself). In tmux's control mode, the pane's link. Only a web
+  (`http`, `https`), mail (`mailto`) or this machine's file link
+  (`file:///`, `file://localhost/`) is opened (`Links.openable`), by
+  `xdg-open` on Linux and the shell's "open" on Windows
+  (`Window.openLink`, `ShellExecuteW`); anything else is refused and said
+  in the log.
+- **`FORCE_HYPERLINK=1`** is in a local program's environment, beside
+  `TERM` and `COLORTERM`: what Node's `supports-hyperlinks` reads, so
+  Claude Code (run in puritty, not over ssh) prints its links as OSC 8.
+
+**Measured**: seven tests in the vt suite (199): the cells between OSC 8
+and its end linked, the others not; SGR (0 too) inside a link keeping it;
+an erase writing no link; same URI and id one link, another id another; a
+URI with a space no link; a link reflowed at 10 columns and found in the
+scrollback; RIS. One app test (427): web, mail and local files opened;
+another host's file, `javascript:` and `vscode:` not. In puritty on Xvfb
+with an `xdg-open` that records what it is given: Ctrl+click on an OSC 8
+link opened `https://example.com/claude`; a plain click opened nothing;
+Ctrl+click on a `javascript:` link was refused ("not a web, mail or local
+file link"); the same link in a `tmux -CC` pane opened from the pane.
+Not tried on Windows, where it would open a browser on Gilbert's desktop;
+the Windows build compiles.
+
+**Not done**: a link is not drawn differently (most programs underline
+their links themselves; Ghostty underlines one under the pointer), and
+the pointer does not change over one.
+
+## CL10 · Measured with Gilbert's own Claude Code (2026-11-18)
+
+Gilbert let these run with his login (his `~/.claude`), in puritty on
+Xvfb, from a scratch folder (trusted once, which Claude Code records in
+`~/.claude.json`); nothing was sent to the API.
+
+- **A mod's picture draws in puritty.** A local mod whose `/imgtest`
+  opened a pane with a 160×160 red PNG (`Image`, `source.png`), Claude
+  Code 2.1.326 started with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`: the
+  debug log said `kittyGraphics=yes (env: CLAUDE_CODE_FORCE_TERMINAL_IMAGES)`,
+  and the pane showed the square, 18,496 red pixels in puritty's frame.
+  So Kitty's Unicode placeholders (IM35) are what Claude Code needs; only
+  its list of terminal names keeps it from drawing unasked (CL1).
+- **The fullscreen renderer works in puritty's `tmux -CC` panes**, where
+  Claude Code's docs say it does not in iTerm2's (the mouse wheel does
+  nothing, a double click corrupts the terminal). Claude Code 2.1.328 in a
+  tmux 3.x `-CC` pane with `CLAUDE_CODE_NO_FLICKER=1` (Gilbert's own
+  setting is the classic renderer, `"tui": "default"`): the prompt held at
+  the pane's foot on the alternate screen, `/` opened the command list, and
+  a click on its `/dataviz` row put `/dataviz` in the prompt, so the click
+  reached Claude Code through tmux. The wheel was not tried (nothing to
+  scroll in an empty conversation). In the pane Claude Code saw
+  synchronized output (tmux's answer) and no kitty keyboard (tmux does not
+  pass `CSI ? u`), and asked for tmux's `focus-events`.
+- **Its opening screen** shows the account's plan ("Claude Ultra") and the
+  working folder under the logo, and here the debug log's path and a note
+  that this session's environment (`CLAUDE_CODE_CHILD_SESSION`, inherited)
+  turned transcripts off. A shot for the website leaves those out
+  (`CLAUDE_CODE_HIDE_CWD=1`, no `--debug-file`, a clean environment).

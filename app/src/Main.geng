@@ -55,7 +55,9 @@ import Hosts
 import Int64
 import Keys
 import LastWindow
+import Links
 import Notify
+import Open
 import Os.Directory as Directory
 import Os.Env
 import Os.Error exposing (Error)
@@ -135,6 +137,8 @@ type alias Model =
     -- when the next desktop notification may be shown (CL8): at most one
     -- every 3 s; -1 any time
     , noticeAt : Int
+    -- an OSC 8 link Ctrl+clicked, to open in the turn's end (CL9)
+    , toOpen : Maybe String
     -- the pointer shown (the arrow while the program takes the mouse, a
     -- drag's shape over what is dragged, docs/tmux.md TM38), the pointer's
     -- last place over the window, and whether Shift is held, which takes
@@ -967,7 +971,7 @@ begin cp vars given problems locale config cell restoring =
 
                     Nothing ->
                         meant Reason.NotSet
-                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) }
+                            spawnFirst cp commands { options | environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) }
                                 |> Task.mapError Os.Error.toString
                                 |> Task.andThen
                                     (\child ->
@@ -994,7 +998,7 @@ begin cp vars given problems locale config cell restoring =
                                             spawnFirst cp
                                                 commands
                                                 (Process.defaultSpawnOptions (Terminal { columns = size.columns, rows = size.rows, widthInPixels = size.widthInPixels, heightInPixels = size.heightInPixels, utf8 = localCharset == Charset.Utf8 })
-                                                    |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty)) })
+                                                    |> (\o -> { o | workingDirectory = size.directory, environmentVariables = Process.MergeWithEnvironmentVariables (Dict.set "FORCE_HYPERLINK" "1" (Dict.set "COLORTERM" "truecolor" (Dict.set "TERM" "xterm-256color" Dict.empty))) })
                                                 )
                                                 |> Task.mapError Os.Error.toString
                                                 |> Task.andThen
@@ -1233,6 +1237,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , statusSeen = Dict.empty
                      , attentionAsked = False
                      , noticeAt = -1
+                     , toOpen = Nothing
                      , pointerShown = Window.TextPointer
                      , hover = Nothing
                      , shiftHeld = False
@@ -1811,6 +1816,7 @@ loop remote m00 =
         |> Task.andThen statusNoticed
         |> Task.andThen noticesShown
         |> Task.andThen clipboardRequests
+        |> Task.andThen linkOpened
         |> Task.andThen (writeLog False)
         |> Task.andThen (flush remote)
         |> Task.andThen (\m0 -> race remote m0)
@@ -5029,6 +5035,36 @@ owned remote ms rest m =
                         meant Reason.NoMore handle remote ms rest m
 
 
+{-| An OSC 8 link Ctrl+clicked, opened as the desktop opens one (Open: xdg-open,
+the shell's "open"), if it is a web, mail or local file link (`Links`);
+what happened said in the log (docs/claude-code.md CL9). -}
+linkOpened : (taken m : Model) -> Task x Model
+linkOpened m =
+    when m.toOpen is
+        Just uri ->
+            let
+                cleared =
+                    { m | toOpen = Nothing }
+            in
+            if Links.openable uri then
+                Open.link (Maybe.map .cp m.settingsWindow) uri
+                    |> Task.map
+                        (\opened ->
+                            when opened is
+                                Ok _ ->
+                                    logLine "link" ("opened, " ++ String.fromInt (String.count uri) ++ " characters") cleared
+
+                                Err why ->
+                                    meant Reason.Refused (logLine "link" ("not opened: " ++ why) cleared)
+                        )
+
+            else
+                Task.succeed (logLine "link" "not opened: not a web, mail or local file link" cleared)
+
+        Nothing ->
+            meant Reason.NotSet Task.succeed m
+
+
 {-| The OSC 52 requests the core made (docs/phase3-select.md §16): a write
 makes the window own the selection with its text, as a copy does, and a
 write to PRIMARY takes a selection's highlight away; a read is answered only
@@ -5312,8 +5348,34 @@ pointer ms p m =
 
         taken =
             Bitwise.and p.mods 1 /= 0 && not wheel && (p.action /= 2 || held /= 0)
+
+        -- Ctrl and the left button on an OSC 8 link opens it (CL9): with
+        -- Shift too where the program takes the mouse, whose own a plain
+        -- Ctrl+click then is
+        linkPress =
+            p.action == 0 && p.button == 1 && Bitwise.and p.mods 2 /= 0 && Bitwise.and p.mods 12 == 0
+
+        link =
+            if not linkPress then
+                Nothing
+
+            else if TmuxMode.isOn m.tmux then
+                TmuxMode.linkAt p m.tmux
+
+            else if modes.tracking == Mouse.none || Bitwise.and p.mods 1 /= 0 then
+                Vt.linkAt (viewBack m)
+                    { row = clamp 0 (m.term.rows - 1) (p.y // max 1 p.cellHeight)
+                    , col = clamp 0 (m.term.cols - 1) (p.x // max 1 p.cellWidth)
+                    }
+                    m.term
+
+            else
+                Nothing
     in
-    if TmuxMode.isOn m.tmux then
+    if link /= Nothing then
+        { m | toOpen = link }
+
+    else if TmuxMode.isOn m.tmux then
         -- tmux's panes, their programs and selections in them
         -- (docs/tmux.md TM16, TM17); Shift selects
         let
