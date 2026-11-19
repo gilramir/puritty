@@ -582,3 +582,49 @@ Removed when the edit is closed and uploaded, kept otherwise.
    name is not uploaded, and puritty says so when it happens.
 4. **The line-ending note**: when a file that had only LF comes back with
    CRLF or a byte-order mark, a note says so; puritty never converts.
+
+## FT10 · The plan (2026-11-19)
+
+The steps, in order. Gilbert: the screenshot paste (`feature-plan.md` §8,
+`image-paste.md`) comes before SFTP. Each step gets its own section here
+with what was measured, gate cases (the hosts gate against the local sshd,
+the paste gate, beelink1 for Windows), and a commit of its own. The user
+guide, `docs/user/file-transfer.md`, begins with step 2.
+
+0. **Measure what the surveys left open.** `#{pane_current_path}` after
+   `sudo su` and after a nested ssh (nene, the RHEL8 hosts); the clipboard
+   formats the Snipping Tool and Print Screen leave (beelink1); one
+   channel's throughput against `sftp-server`, locally and to gmktec7; the
+   typing latency while a large upload shares the connection.
+1. **Several channels on one connection** (`packages/ssh`):
+   `Ssh.Connection`'s `ourChannel` is a constant today. A table of
+   channels, each with its window, events tagged by channel, `session`,
+   `exec` and `subsystem` opens; one channel's failure closes that channel
+   only (Tabby's lesson, FT1). Tested against the local sshd, the scripted
+   server and the fuzzer.
+2. **The screenshot paste.** The clipboard's image (Windows' `PNG` as it
+   is, a `CF_DIB` encoded with zlib in C; X11's `image/png`); the upload on
+   an `exec` channel (`cat > name.part && mv`); the absolute path pasted,
+   bracketed; the setting, on by default; local tabs as IP6 says.
+   Checked with Claude Code over ssh, in tmux and in `tmux -CC`, on
+   beelink1.
+3. **An SFTP client** (`Ssh.Sftp`, pure): version 3 and `posix-rename`,
+   pipelined. Replayed, fuzzed, measured against OpenSSH's `sftp`.
+4. **The transfer engine**: the queue, `.part` and rename, overwrite in
+   place, times kept, the conflict question, the progress bar, the `exec`
+   fallback (FT7).
+5. **The drop** (§9, FT6): XDND and `IDropTarget`; the pane under the
+   pointer marked with its directory in `tmux -CC`; the chooser
+   (`Dialog.geng`) otherwise and on a write error; a path pasted in a local
+   tab. **OSC 7 in the core** (Gilbert: in step 5; "it may not help me,
+   but it could help other users"): the shell's directory and host for a
+   tab without `tmux -CC`, where the shell prints it; its host checked
+   against the tab's, a nested ssh's ignored; `tmux.md`'s `osc7` row then
+   answered.
+6. **The file tab** (FT5 question 1).
+7. **`get` and `put` typed in the shell** (FT4).
+8. **Drag out**: virtual files on Windows, XDS on X11.
+9. **Remote edit** (FT8, FT9).
+
+The OpenSSH-client tabs on Linux get the same through `ControlMaster`
+after step 4.
