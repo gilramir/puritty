@@ -267,3 +267,13 @@ sessions in the host list, and the padding around the text.
 first: the unit gate, `harness/puppet.py --all` and
 `harness/puppet-trials.py` on RL6's six tmux releases.
 
+
+Measured, 2026-11-19, from commit `07a9d0b`: the unit gate passed 17 of
+17 runs; `puppet.py --all` passed every tmux release from 2.7 to 3.8;
+`puppet-trials.py` passed 138 of 138 trials. `scripts/prerelease.sh
+--sign 0.2.0` built all six targets, `windows-x64` (signed on beelink1),
+`rhel8-x64`, `rhel9-x64`, `rhel10-x64`, `noble-x64` and `debian13-x64`,
+each smoke run ending by itself. This is the first release with RHEL 10
+and Debian 13 builds. The release was made with `gh release create`
+without `--draft` and is GitHub's latest, with nine files: the
+zip, five tarballs, two `.deb`s and `SHA256SUMS`.
