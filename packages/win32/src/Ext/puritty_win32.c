@@ -1488,6 +1488,9 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND:
         return 1;
     case WM_SIZE:
+        /* minimized, the client area is 0x0: not a size for the terminal,
+         * which would keep one cell of its screen (docs/windows.md WS31) */
+        if (wp == SIZE_MINIMIZED) return 0;
         size_in(LOWORD(lp), HIWORD(lp));
         return 0;
     case WM_DPICHANGED: {

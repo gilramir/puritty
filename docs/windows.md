@@ -1167,3 +1167,25 @@ A first build without `Rescaled` passed the terminal's rows and failed the
 host list's: its frame shrank at 120 and its text, laid out by the old
 cell, was cut off at the right and the bottom. No second monitor was at hand: a move
 between two is the same message with another rectangle.
+
+## WS31 · Minimizing keeps the screen (2026-11-19)
+
+Gilbert, on 0.2.0: "if I have content on the puritty screen (even w/o
+tmux), and the minimize the puritty window ..., and then I open puritty
+again by clicking its icon on the task bar, the contents of the screen
+are now gone; the shell prompt is there". Windows sends `WM_SIZE` with
+`SIZE_MINIMIZED` and a client area of 0x0 when a window is minimized, and
+the window procedure passed it on as a size like any other: the terminal
+was resized to one column and one row (`size_in` holds it at least 1x1),
+which kept one cell of the screen, and restoring brought the size back but
+not the text. It has been so since the window procedure was written
+(`ac135d8`, 11-10), so 0.1.0, 0.1.1 and 0.2.0 all have it. A minimized
+window's `WM_SIZE` is now ignored; restoring sends the size the window had,
+which the terminal already has, so nothing is resized. X11 sends no such
+size when a window is iconified.
+
+Checked on beelink1 with `harness/windows/minimize/run.sh`: puritty
+running `lines.cmd` (30 lines, then `cmd /k`), minimized and restored with
+`ShowWindow` (no keys sent), the desktop pictured before and after. 0.2.0's
+exe kept only the prompt, cut at the window's left edge; the one built
+with the fix kept all 30 lines and the prompt.
