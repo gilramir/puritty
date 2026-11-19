@@ -339,3 +339,38 @@ Xvfb, from a scratch folder (trusted once, which Claude Code records in
   that this session's environment (`CLAUDE_CODE_CHILD_SESSION`, inherited)
   turned transcripts off. A shot for the website leaves those out
   (`CLAUDE_CODE_HIDE_CWD=1`, no `--debug-file`, a clean environment).
+
+## CL11 · The website's shot, and what making it found (2026-11-18)
+
+**The shot** (`docs/images/claude-code.png`, on the home page and the new
+guide page `docs/user/claude-code.md`, CL6 #5): one puritty window on
+Xvfb (144 dpi, Fira Code 11, Ghostty's colors), three tabs each running
+Claude Code 2.1.328 with Gilbert's login: a question about a notes folder
+answered (✓), an LRU cache being written and tested (◔), and the shown
+tab asking leave to run a git command (◉), with the seashell plot
+(`site/static/plots/seashell.gp`, rendered to a PNG) drawn in the
+conversation by a local mod. So that no path or name of Gilbert's shows,
+puritty ran under `bwrap` with the demo folder bound at `/home/you` and an
+`/etc/passwd` whose account is `you`; the logo and plan line scrolled off
+before the capture. Nothing was approved that would change anything; no
+session committed.
+
+**Found**:
+
+- **A mod's `Image` with a `file` source is refused**: Claude Code sends
+  it as Kitty's file medium (`t=f`, the terminal reads the path), and
+  puritty takes only pictures sent inline, so Claude Code logged "the
+  terminal refused its source: EINVAL: unsupported medium" and left the
+  row blank. The mod in the shot sends the PNG's bytes (`source.png`).
+  Reading a file a program names is a choice about trust (kitty allows it
+  with checks; a remote program's path names another machine's file):
+  not done, Gilbert's call.
+- **A mod's hooks module imports only its own files and `claude-code`**:
+  no `node:fs`, so a mod that shows a file builds the bytes into a module
+  beside it.
+- **The placed row** (`$.ui.place`, drawn at the `Placed` site) is where
+  a picture sits in the conversation and scrolls with it, in the classic
+  renderer; a pane cannot be opened without focus at `session.start`
+  (`focus: false` throws).
+- **`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`** is still needed (CL10): without
+  it the row kept its room and drew only its alt text.

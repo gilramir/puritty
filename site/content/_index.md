@@ -49,6 +49,31 @@ alt = "puritty in Ghostty's colors: the command gnuplot seashell.gp, under it a 
 script = "seashell.gp"
 
 [[extra.features]]
+kicker = "Claude Code"
+title = "Built for Claude Code"
+body = """
+Claude Code asks the terminal what it can do, and puritty has the
+answers.
+
+- **Each tab shows what Claude is doing.** puritty speaks the new Program
+  Status Protocol, and marks a tab ◔ working, ◉ waiting on you, ✓ done or
+  ✗ failed. When a tab you aren't watching needs you, the window asks for
+  your attention.
+- **Desktop notifications**, in all three forms terminals send.
+- **Pictures** that mods draw in the conversation.
+- **Links** you open with Ctrl+click.
+- **Shift+Enter** for a new line, no flicker, and the mouse in pixels for
+  the fullscreen view, which works in `tmux -CC` panes too.
+
+Run several sessions in tabs and see at a glance which one is waiting on
+you.
+"""
+link = "@/guide/claude-code.md"
+link_text = "Claude Code in puritty"
+image = "claude-code.png"
+alt = "puritty with three tabs, each running Claude Code: the first marked ✓ done, the second ◔ working, the third, shown, ◉ waiting on you. In it, a seashell plot that a mod drew in the conversation, and Claude Code asking permission to run a git command"
+
+[[extra.features]]
 kicker = "Local and remote X11"
 title = "Fast over remote X11, and at home on your desktop"
 body = """
