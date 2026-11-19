@@ -144,8 +144,9 @@ SUITES = [
         # 402 since IM18: a pane's image on the canvas, on each;
         # 408 since SG20: the host list's boxes edited, F2 and Up's recall;
         # 420 since SG21: PuTTY's sessions read and listed as hosts, twelve;
-        # 425 since PW8: what is remembered, by what name, and when
-        425,
+        # 425 since PW8: what is remembered, by what name, and when; 426
+        # since CL8: desktop notifications' setting
+        426,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

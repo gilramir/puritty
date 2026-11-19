@@ -244,6 +244,11 @@ files with puritty: Gilbert's call. The experiment was taken back out.
   (`Window.notify`, `Shell_NotifyIconW`, shell32 now linked), which
   Windows 10 and 11 show as a toast; the icon goes when puritty ends.
 
+**Turned off** (Gilbert, 2026-11-18): `[notifications] desktop = false`
+(on by default; "Desktop notifications" on the settings window's Program
+page, English and Korean) takes the notices and shows none, the log saying
+how many; an app test holds the default and the setting.
+
 So Claude Code's notifications reach the desktop in puritty with
 `preferredNotifChannel` set to `"iterm2"` (OSC 9), `"ghostty"` (OSC 777)
 or `"kitty"` (OSC 99) in `~/.claude/settings.json`; left at `auto` it
