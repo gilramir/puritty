@@ -195,9 +195,14 @@ file-sourced `Image` as `t=f` (`claude-code.md` CL11).
   since tmux may run elsewhere and nothing reads their files. A program
   run through `ssh` in a local tab is not told apart: as in Kitty and
   Ghostty, its paths are read here, where they mostly name nothing.
-- **The setting**: `[images] read_files`, on by default ("Pictures from
+- **The setting**: `[images] read_files`, off by default ("Pictures from
   files", the settings window's Advanced page, English and Korean); off,
   the core is told `kittyFiles = False` and answers as libghostty-vt does.
+  *Dnene64* (Gilbert, 2026-11-19): off by default, where it was first on,
+  so that the IM5 guarantee holds until the user chooses otherwise: with
+  it on, a program reached by `ssh` in a local tab could have a local file
+  drawn. Kitty and Ghostty read files with no setting; a Claude Code mod
+  that names a file needs it turned on.
 
 **Measured**: nine tests in the vt suite (208): refused where the
 embedder reads none; the path, `O` and `S` asked for and what follows
@@ -205,7 +210,7 @@ held; given, answered and the held text parsed after; `a=T` placed at the
 command's cursor, not after the held move; a read's failure answered, no
 image; `t=t` temporary; a control character refused at once; `a=q` keeping
 nothing; two files in one read, the second wanted once the first is
-given. An app test (428) holds the setting's default. In puritty on Xvfb,
+given. An app test (428) holds the setting's default (off since Dnene64). In puritty on Xvfb,
 a script sending gnuplot's 108,298-byte seashell PNG by `t=f` and by `t=t`
 (`/tmp/tty-graphics-protocol-kf.png`): both drawn, the temporary file
 removed, `/proc/self/status` answered `EPERM`, a missing file `ENOENT`;

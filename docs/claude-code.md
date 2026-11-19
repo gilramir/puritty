@@ -363,8 +363,8 @@ session committed.
   terminal refused its source: EINVAL: unsupported medium" and left the
   row blank. The mod in the shot sends the PNG's bytes (`source.png`).
   *Since done*: Gilbert asked for files to be read for local programs,
-  with a setting, on by default (`images-kitty.md` KG9); such a mod's
-  picture now draws.
+  with a setting, off by default (`images-kitty.md` KG9, Dnene64); with
+  it on, such a mod's picture draws.
 - **A mod's hooks module imports only its own files and `claude-code`**:
   no `node:fs`, so a mod that shows a file builds the bytes into a module
   beside it.

@@ -81,16 +81,17 @@ temporary folder, with `tty-graphics-protocol` in its name, and puritty
 deletes it once read. puritty only shows the picture: what it reads never
 goes back to the program.
 
-A session in puritty's own ssh client never makes puritty read a file, nor
-does a pane of `tmux -CC`. A program you reach with `ssh` in a puritty
-tab can't be told apart from a local one, as in Kitty and Ghostty: the
-paths it names are looked for on your computer, where they're usually
-not found. To have only pictures that programs send, turn off "Pictures
-from files" on the settings window's Advanced page, or:
+This is off until you turn it on, because a program you reach with
+`ssh` in a puritty tab can't be told apart from a local one: with it on,
+such a program could name a file on your computer and have it shown on
+your screen. Kitty and Ghostty read such files without asking. A session
+in puritty's own ssh client never makes puritty read a file, nor does a
+pane of `tmux -CC`, even with it on. To turn it on, use "Pictures from
+files" on the settings window's Advanced page, or:
 
 ```toml
 [images]
-read_files = false
+read_files = true
 ```
 
 ## In tmux

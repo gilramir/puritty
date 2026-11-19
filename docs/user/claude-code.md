@@ -36,8 +36,10 @@ know puritty's name yet. Two settings tell it what puritty can do.
 
 **Pictures.** Mods can draw pictures in Claude Code, and puritty draws
 them (Kitty's graphics), whether a mod gives the picture itself or names
-its file ([pictures from files](images.md#pictures-from-files)). Set this
-before you start Claude Code, in your shell's startup file:
+its file. A mod that names a file needs "Pictures from files" turned
+on, since that's off by default
+([pictures from files](images.md#pictures-from-files)). Set this before
+you start Claude Code, in your shell's startup file:
 
 ```sh
 export CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1

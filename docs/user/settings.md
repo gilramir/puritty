@@ -73,9 +73,9 @@ paste_button = "middle"     # or "right"
 osc52_read = "deny"         # or "allow"
 
 [images]
-read_files = true           # a program on this computer may show a
-                            # picture by naming its file (Kitty's
-                            # graphics); false: only pictures it sends
+read_files = false          # true: a program on this computer may
+                            # show a picture by naming its file
+                            # (Kitty's graphics, Claude Code's mods)
 
 [debug]
 log = false                 # true: a diagnostic log for each window,
