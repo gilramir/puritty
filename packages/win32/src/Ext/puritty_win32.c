@@ -31,7 +31,7 @@
  *
  * Events (WS12 steps 4 and 5): the size in cells (2), the focus (3), a
  * request to close (4), keys (1, WS5), the pointer (9, WS7), the IME (5 to
- * 8, WS6), the clipboard lost (10), a paste's text come (11, WS8) and an image paste's bytes (14, docs/sftp.md FT13), each record as packages/x11's comment says, read so that Windows'
+ * 8, WS6), the clipboard lost (10), a paste's text come (11, WS8), an image paste's bytes (14, docs/sftp.md FT13), and a drag from another program over the window, gone, and dropped (15, 16, 17, FT22), each record as packages/x11's comment says, read so that Windows'
  * keys and pointer reach Geng as Linux's do:
  *
  *   - a key's code is X's keycode for the same key, from its scan code
@@ -1633,6 +1633,171 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, m, wp, lp);
 }
 
+/* DROPS (docs/sftp.md FT21, FT22)
+ *
+ * OLE's drag and drop: the window registers an IDropTarget on its own
+ * thread, which OleInitialize readies, and Windows calls it there. A drag
+ * that holds files on disk (CF_HDROP, as Explorer and a browser's
+ * downloads give) is taken as a copy; one that holds only virtual files
+ * (FileGroupDescriptorW, a file inside a zip, an Outlook attachment; FT21)
+ * is taken too, so that its drop can say it gave no file to send; any
+ * other is refused. Each DragOver is recorded (15) as X11's position, the
+ * pointer's screen position made the window's; DragLeave is 16. A drop
+ * reads CF_HDROP's paths, UTF-16 made UTF-8, a line each ended CRLF, into
+ * the drop's buffer under queue_lock (the program's thread takes it with
+ * `puritty_win32_dropped`), and records 17 with 0: the whole list, or
+ * nothing for virtual files alone. DragOver answers at once, as OLE
+ * wants: what the drop will do is decided by the program later. */
+
+#define COBJMACROS
+#include <ole2.h>
+
+static uint8_t *dbuf;
+static size_t dlen;
+
+static const IID dt_IID_IUnknown = {0x00000000, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const IID dt_IID_IDropTarget = {0x00000122, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+
+typedef struct {
+    IDropTarget target;
+    LONG refs;
+    int files; /* 1 files on disk, 2 virtual files only, 0 neither */
+} DropTarget;
+
+static int drag_holds(IDataObject *d) {
+    if (!d) return 0;
+    FORMATETC f = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    if (IDataObject_QueryGetData(d, &f) == S_OK) return 1;
+    FORMATETC v = {(CLIPFORMAT) RegisterClipboardFormatW(L"FileGroupDescriptorW"), NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return IDataObject_QueryGetData(d, &v) == S_OK ? 2 : 0;
+}
+
+static DWORD drag_effect(DropTarget *t, DWORD allowed) {
+    return t->files && (allowed & DROPEFFECT_COPY) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+}
+
+static void drag_record(POINTL pt) {
+    POINT p = {pt.x, pt.y};
+    ScreenToClient(win, &p);
+    EnterCriticalSection(&queue_lock);
+    int w = win_w, h = win_h, cw = cell_w, ch = cell_h, px = padx, py = pady, x0 = ox, y0 = oy;
+    LeaveCriticalSection(&queue_lock);
+    int x = p.x - x0, y = p.y - y0;
+    w = w - 2 * px > 0 ? w - 2 * px : 0;
+    h = h - 2 * py > 0 ? h - 2 * py : 0;
+    uint8_t r[13] = {15, (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
+                     (uint8_t) (w >> 8), (uint8_t) w, (uint8_t) (h >> 8), (uint8_t) h,
+                     (uint8_t) (cw >> 8), (uint8_t) cw, (uint8_t) (ch >> 8), (uint8_t) ch};
+    record(r, sizeof r);
+}
+
+static HRESULT STDMETHODCALLTYPE dt_query(IDropTarget *t, REFIID riid, void **out) {
+    if (IsEqualIID(riid, &dt_IID_IUnknown) || IsEqualIID(riid, &dt_IID_IDropTarget)) {
+        *out = t;
+        IDropTarget_AddRef(t);
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+/* the target is this file's for the window's life, never freed */
+static ULONG STDMETHODCALLTYPE dt_addref(IDropTarget *t) { return (ULONG) InterlockedIncrement(&((DropTarget *) t)->refs); }
+static ULONG STDMETHODCALLTYPE dt_release(IDropTarget *t) { return (ULONG) InterlockedDecrement(&((DropTarget *) t)->refs); }
+
+static HRESULT STDMETHODCALLTYPE dt_enter(IDropTarget *t, IDataObject *d, DWORD keys, POINTL pt, DWORD *effect) {
+    (void) keys;
+    DropTarget *dt = (DropTarget *) t;
+    dt->files = drag_holds(d);
+    *effect = drag_effect(dt, *effect);
+    if (dt->files) drag_record(pt);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_over(IDropTarget *t, DWORD keys, POINTL pt, DWORD *effect) {
+    (void) keys;
+    DropTarget *dt = (DropTarget *) t;
+    *effect = drag_effect(dt, *effect);
+    if (dt->files) drag_record(pt);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_leave(IDropTarget *t) {
+    if (((DropTarget *) t)->files) {
+        uint8_t r[1] = {16};
+        record(r, 1);
+    }
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_drop(IDropTarget *t, IDataObject *d, DWORD keys, POINTL pt, DWORD *effect) {
+    (void) keys;
+    (void) pt;
+    DropTarget *dt = (DropTarget *) t;
+    *effect = drag_effect(dt, *effect);
+    if (!dt->files) return S_OK;
+    uint8_t *list = NULL;
+    size_t n = 0, cap = 0;
+    FORMATETC f = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    STGMEDIUM m;
+    if (dt->files == 1 && SUCCEEDED(IDataObject_GetData(d, &f, &m))) {
+        HDROP h = (HDROP) GlobalLock(m.hGlobal);
+        UINT count = h ? DragQueryFileW(h, 0xFFFFFFFF, NULL, 0) : 0;
+        for (UINT i = 0; i < count; i++) {
+            UINT units = DragQueryFileW(h, i, NULL, 0);
+            WCHAR *w = malloc(((size_t) units + 1) * sizeof(WCHAR));
+            if (!w || !DragQueryFileW(h, i, w, units + 1)) {
+                free(w);
+                continue;
+            }
+            int bytes = WideCharToMultiByte(CP_UTF8, 0, w, (int) units, NULL, 0, NULL, NULL);
+            if (bytes > 0) {
+                if (n + (size_t) bytes + 2 > cap) {
+                    cap = (n + (size_t) bytes + 2) * 2;
+                    list = realloc(list, cap);
+                }
+                WideCharToMultiByte(CP_UTF8, 0, w, (int) units, (char *) list + n, bytes, NULL, NULL);
+                n += (size_t) bytes;
+                list[n++] = '\r';
+                list[n++] = '\n';
+            }
+            free(w);
+        }
+        if (h) GlobalUnlock(m.hGlobal);
+        ReleaseStgMedium(&m);
+    }
+    EnterCriticalSection(&queue_lock);
+    free(dbuf);
+    dbuf = list;
+    dlen = n;
+    LeaveCriticalSection(&queue_lock);
+    uint8_t r[2] = {17, 0};
+    record(r, 2);
+    return S_OK;
+}
+
+static IDropTargetVtbl drop_vtbl = {dt_query, dt_addref, dt_release, dt_enter, dt_over, dt_leave, dt_drop};
+static DropTarget drop_target = {{&drop_vtbl}, 1, 0};
+
+/* The drop's list since it was last taken, UTF-8 paths a line each. */
+geng_cancel puritty_win32_dropped(geng_wait *wait) {
+    EnterCriticalSection(&queue_lock);
+    size_t n = dlen;
+    geng_bytes *b = geng_alloc_atomic(sizeof *b + n, GENG_HEADER_BYTES(sizeof *b + n));
+    b->length = (int64_t) n;
+    b->pad = 0;
+    b->data = (uint8_t *) (b + 1);
+    b->buffer = NULL;
+    b->block = NULL;
+    if (n) memcpy(b->data, dbuf, n);
+    free(dbuf);
+    dbuf = NULL;
+    dlen = 0;
+    LeaveCriticalSection(&queue_lock);
+    geng_succeed(wait, geng_slot_P(b));
+    return (geng_cancel) {0};
+}
+
 static void *window_thread(void *arg) {
     (void) arg;
     WNDCLASSEXW wc;
@@ -1671,6 +1836,9 @@ static void *window_thread(void *arg) {
     }
     ShowWindow(win, start_maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
     AddClipboardFormatListener(win);
+    /* drops from other programs (FT22), called on this thread */
+    int ole = SUCCEEDED(OleInitialize(NULL));
+    if (ole) RegisterDragDrop(win, &drop_target.target);
     /* keys go through IMM32's input context, which every window has */
     HIMC c = ImmGetContext(win);
     if (c) {
@@ -1686,6 +1854,10 @@ static void *window_thread(void *arg) {
             continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+    if (ole) {
+        RevokeDragDrop(win);
+        OleUninitialize();
     }
     geng_post_done(post);
     return NULL;

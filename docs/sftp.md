@@ -1482,3 +1482,91 @@ beside it, `beelink1-2026-11-20.log`):
    sent as its bytes, since they are already that host's; to a UTF-8 host,
    refused, since there is no right UTF-8 for them.
 
+**Answered (2026-11-20).** Gilbert: the three leanings, as written. A
+virtual file is not taken in the first drop, which says the program gave
+no file to send; a name Dolphin spoiled is reported as given; a local
+name that is not UTF-8 goes as its bytes to an `euc-kr` or `cp949` host
+and is refused for a UTF-8 one.
+
+## FT22 · Step 5, item 1 built: the drop on both systems (2026-11-20)
+
+**X11** (`packages/x11/src/Ext/puritty_x11.c`, its DROPS section). The
+window sets `XdndAware` to 5. A drag's Enter names its types (in the
+message, or past three in the source's `XdndTypeList`); the window takes
+`text/uri-list`, else KDE's `application/x-kde4-urilist`. Where the
+window is on the screen is asked once a drag, on Enter, a round trip,
+since positions come in the root's pixels. Each Position is recorded and
+answered at once with a Status (accepted, a copy, every position wanted);
+a missing action counts as a copy (FT21). Leave is recorded. On Drop the
+list is read by the paste's code, `XdndSelection` as a third selection
+asked for with the drop's own time, so a long list comes in INCR pieces
+without the window waiting; Finished goes back when it has come. A drop
+with no files offered gives an empty list and a refused Finished; one
+while a paste is still being read counts as a leave, since the two would
+share the paste's buffer.
+
+**Windows** (`packages/win32/src/Ext/puritty_win32.c`, its DROPS
+section). The window's thread calls `OleInitialize` and registers an
+`IDropTarget` written in C (its vtable, `IID`s declared in the file as
+the jump list's are, no import library). A drag holding `CF_HDROP` is
+taken as a copy; one holding only `FileGroupDescriptorW` (virtual files)
+is taken too, so its drop can say why nothing came; any other is refused.
+`DragOver` answers at once and records the position, made the window's
+from the screen's. A drop reads `CF_HDROP` with `DragQueryFileW`, UTF-16
+to UTF-8, a path a line, into a buffer of its own under the queue's lock,
+since it fills on the window's thread and is taken on the program's.
+
+**The same events from both** (records 15, 16, 17 in the X11 file's
+list): `Window.DragOver` (the pointer's place in the cells' area, with
+the area and the cell, as a pointer event's), `DragLeft`, and `Dropped
+more`, whose list `Window.dropped` takes: `file://` URIs on X11, paths on
+Windows.
+
+**The app** (`app/src/Drop.geng`, `Main.filesDropped`). `Drop.paths`
+reads either shape into path bytes: a `file://` URI percent-decoded to
+bytes after its host, a `#` line skipped, another scheme counted as not
+a file, a Windows path taken as it is. Then:
+
+- every path is checked to be there (`File.exists`): a name a file
+  manager spoiled names no file (FT21: Dolphin's U+FFFD), and the note
+  says so, with the name as given, as Gilbert chose;
+- in a tab on this computer the paths are pasted, each followed by a
+  space as GNOME Terminal and Windows Terminal paste a drop: for a POSIX
+  shell a path with anything but letters, digits and `_./+-:@%,=` in
+  single quotes, `'` written `'\''`; on Windows in double quotes, a
+  backslash plain;
+- a name that is not UTF-8 is read in the tab's character set, so the
+  paste hands the shell its own bytes; one the set can't carry, or any
+  in a UTF-8 tab, is not pasted, and the note says so;
+- a drop with no file on disk says the program it came from gave none,
+  and a file inside a zip or an attachment must be saved first;
+- in an ssh tab, for now, a note that sending dropped files is not built
+  yet (items 3 and 4).
+
+The drag's position is not yet used: item 3 marks the pane under it.
+
+**Tested.**
+
+- Nine unit cases (`drops`, the app suite 437 now): Nemo's list with a
+  space and an EUC-KR name, Dolphin's spoiled name read as given,
+  Windows' paths, a comment and a web address, a URI naming its host and
+  a last line with no end, a `%` with no hex after it, and the quoting
+  for both shells (a quote and a dollar; a Korean name; a Windows path
+  with a space).
+- `harness/drop.py` (new): under Xvfb, Nemo and Dolphin (from nixpkgs)
+  drag onto puritty's window, whose local tab runs a program that records
+  the paste (`harness/drop/record-paste.py`), and each case pins what was
+  pasted and what the window said. Six cases: one file; four items, a
+  folder, a quote and a dollar, and Korean among them, from each file
+  manager; an EUC-KR name in a UTF-8 tab (not pasted, said) and in an
+  EUC-KR tab (its four bytes pasted as they are); and Dolphin's spoiled
+  EUC-KR name, said and not pasted. Its first run pasted `???` for the
+  last, the spoiled name's U+FFFD sent as EUC-KR's stand-in: that is why
+  every path is checked and a name the set can't carry refused. Three
+  runs gave the same pins.
+- beelink1 (Windows 11), with Gilbert's drags onto the window: Explorer's
+  `한.txt` pasted as `"C:\Users\yosup\OneDrive\Documents\한.txt" `;
+  three files at once pasted plain, one after another; a file from inside
+  a zip pasted nothing, and the note said why. The diagnostic log has
+  each (`drop   1 paths pasted`, `drop   3 paths pasted`, the note).
+

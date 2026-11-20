@@ -53,6 +53,14 @@
  *  14 an image paste's bytes have come (docs/sftp.md FT13), as 11: 1 when
  *     more is to come, 0 when it is the last; `puritty_x11_pasted` takes
  *     them, none when the clipboard has no image.
+ *  15 a drag from another program is over the window (docs/sftp.md FT22):
+ *     its position as a pointer record's, x and y from the cells' corner,
+ *     2 bytes each, signed, then the cells' area and the cell in pixels,
+ *     2 bytes each;
+ *  16 that drag left the window, or ended somewhere else;
+ *  17 a drop's list has come, as 11: 1 when more is to come, 0 when it is
+ *     the last; `puritty_x11_dropped` takes it, a text/uri-list (RFC 2483)
+ *     of the files dropped, none when the drag offered no files.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
@@ -919,6 +927,9 @@ static void xim_setup(int screen_number) {
     xcb_xim_open(xim, xim_opened, true, NULL);
 }
 
+static void xdnd_message(xcb_client_message_event_t *m);
+static void xdnd_setup(void);
+
 static void drain(void) {
     xcb_generic_event_t *e;
     while ((e = xcb_poll_for_event(conn)) != NULL) {
@@ -1015,6 +1026,8 @@ static void drain(void) {
             if (m->type == wm_protocols && m->data.data32[0] == wm_delete) {
                 uint8_t rec[1] = {4};
                 record(rec, 1);
+            } else {
+                xdnd_message(m);
             }
         }
         free(e);
@@ -1201,6 +1214,7 @@ geng_cancel puritty_x11_open(int32_t c, int32_t r, int32_t points, void *font_by
     net_wm_name = atom("_NET_WM_NAME");
     utf8_string = atom("UTF8_STRING");
     selection_atoms();
+    xdnd_setup();
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, wm_protocols, XCB_ATOM_ATOM, 32, 1, &wm_delete);
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 18, "puritty\0Puritty\0");
     /* the icon a dock or a taskbar shows (docs/windows.md WS25), 16 to 64
@@ -1600,8 +1614,13 @@ static void selection_request(xcb_selection_request_event_t *q) {
 /* A requestor deleted the property an INCR piece was in: the next piece,
  * and after the last an empty one, which ends it. */
 static void paste_read(void);
+static void xdnd_finished(int accepted);
+static xcb_atom_t a_xdnd_selection;
 static struct {
+    /* `which` 0 PRIMARY, 1 CLIPBOARD, 2 a drop's XdndSelection, asked for
+     * with the drop's `time` */
     int active, incr, waiting, which, pending, image, probe;
+    xcb_timestamp_t time;
     xcb_atom_t target;
     xcb_get_property_cookie_t cookie;
     double started;
@@ -1674,9 +1693,12 @@ static void paste_add(const uint8_t *d, size_t n) {
 }
 
 static void paste_done(int more) {
-    uint8_t r[2] = {(uint8_t) (pst.image ? 14 : 11), (uint8_t) more};
+    uint8_t r[2] = {(uint8_t) (pst.which == 2 ? 17 : pst.image ? 14 : 11), (uint8_t) more};
     record(r, 2);
-    if (!more) pst.active = 0;
+    if (!more) {
+        pst.active = 0;
+        if (pst.which == 2) xdnd_finished(1);
+    }
 }
 
 static void paste_read(void) {
@@ -1690,7 +1712,8 @@ static void paste_read(void) {
 static void paste_ask(xcb_atom_t target) {
     pst.target = target;
     xcb_delete_property(conn, window, a_paste);
-    xcb_convert_selection(conn, window, pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, a_paste, last_time);
+    xcb_convert_selection(conn, window, pst.which == 2 ? a_xdnd_selection : pst.which ? a_clipboard : XCB_ATOM_PRIMARY, target, a_paste,
+                          pst.which == 2 ? pst.time : last_time);
     xcb_flush(conn);
 }
 
@@ -1818,6 +1841,161 @@ geng_cancel puritty_x11_pasted(geng_wait *wait) {
     plen = 0;
     geng_succeed(wait, geng_slot_P(b));
     return (geng_cancel) {0};
+}
+
+/* The drop's list since it was last taken: the paste's buffer, which a drop
+ * fills as a paste does (record 17). */
+geng_cancel puritty_x11_dropped(geng_wait *wait) {
+    return puritty_x11_pasted(wait);
+}
+
+/* DROPS (docs/sftp.md FT21, FT22)
+ *
+ * XDND, version 5 (freedesktop.org's XDND page): the window says it takes
+ * drops (XdndAware), and a drag from another program comes as client
+ * messages from its source. Enter names the types offered, in the message
+ * or, past three, in the source's XdndTypeList; the window takes files,
+ * as text/uri-list, or KDE's application/x-kde4-urilist, which is the same
+ * list (FT21: Nemo and Dolphin offer the first, Dolphin the second too).
+ * Each Position is answered at once with a Status, accepting a copy where
+ * files are offered and asking for every position, and recorded (15) for
+ * the program to mark where the drop would go; a source may leave the
+ * action out after the first, which is still a copy. Leave is recorded
+ * (16). On Drop the list is asked for with the drop's time and read as a
+ * paste is, INCR and all, without waiting (record 17, `which` 2); Finished
+ * goes back once it has come, accepted. A drop with no files offered is a
+ * 17 with nothing and a Finished refused; one while a paste is still being
+ * read is refused as a leave (16), since its list would share the paste's
+ * buffer.
+ *
+ * Positions come in the root's pixels: where the window is on the screen
+ * is asked once a drag, on Enter, a round trip, since a window does not
+ * move while something is dragged over it. */
+
+static xcb_atom_t a_xdnd_aware, a_xdnd_enter, a_xdnd_position, a_xdnd_status, a_xdnd_leave, a_xdnd_drop, a_xdnd_finished,
+    a_xdnd_typelist, a_xdnd_copy, a_urilist, a_kde_urilist;
+static struct {
+    xcb_window_t source;
+    xcb_atom_t type;
+    int dx, dy;
+} dnd;
+
+static void xdnd_setup(void) {
+    const char *names[] = {"XdndAware", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished",
+                           "XdndSelection", "XdndTypeList", "XdndActionCopy", "text/uri-list", "application/x-kde4-urilist"};
+    xcb_atom_t *out[] = {&a_xdnd_aware, &a_xdnd_enter, &a_xdnd_position, &a_xdnd_status, &a_xdnd_leave, &a_xdnd_drop,
+                         &a_xdnd_finished, &a_xdnd_selection, &a_xdnd_typelist, &a_xdnd_copy, &a_urilist, &a_kde_urilist};
+    xcb_intern_atom_cookie_t ck[12];
+    for (int i = 0; i < 12; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < 12; i++) {
+        xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
+        *out[i] = r ? r->atom : XCB_ATOM_NONE;
+        free(r);
+    }
+    uint32_t version = 5;
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, a_xdnd_aware, XCB_ATOM_ATOM, 32, 1, &version);
+}
+
+static void xdnd_send(xcb_atom_t kind, uint32_t d1, uint32_t d2, uint32_t d3, uint32_t d4) {
+    xcb_client_message_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.response_type = XCB_CLIENT_MESSAGE;
+    ev.format = 32;
+    ev.window = dnd.source;
+    ev.type = kind;
+    ev.data.data32[0] = window;
+    ev.data.data32[1] = d1;
+    ev.data.data32[2] = d2;
+    ev.data.data32[3] = d3;
+    ev.data.data32[4] = d4;
+    xcb_send_event(conn, 0, dnd.source, XCB_EVENT_MASK_NO_EVENT, (const char *) &ev);
+    xcb_flush(conn);
+}
+
+static void xdnd_finished(int accepted) {
+    if (dnd.source) xdnd_send(a_xdnd_finished, (uint32_t) accepted, accepted ? a_xdnd_copy : XCB_ATOM_NONE, 0, 0);
+    dnd.source = 0;
+}
+
+/* The files' type among those offered: text/uri-list first. */
+static xcb_atom_t xdnd_pick(const xcb_atom_t *t, int n) {
+    xcb_atom_t got = XCB_ATOM_NONE;
+    for (int i = 0; i < n; i++) {
+        if (t[i] == a_urilist) return a_urilist;
+        if (t[i] == a_kde_urilist && t[i] != XCB_ATOM_NONE) got = a_kde_urilist;
+    }
+    return got;
+}
+
+static void xdnd_message(xcb_client_message_event_t *m) {
+    const uint32_t *l = m->data.data32;
+    if (m->format != 32 || m->type == XCB_ATOM_NONE) return;
+    if (m->type == a_xdnd_enter) {
+        dnd.source = l[0];
+        dnd.type = XCB_ATOM_NONE;
+        if (l[1] & 1) {
+            xcb_get_property_reply_t *r =
+                xcb_get_property_reply(conn, xcb_get_property(conn, 0, dnd.source, a_xdnd_typelist, XCB_ATOM_ATOM, 0, 1024), NULL);
+            if (r && r->type == XCB_ATOM_ATOM)
+                dnd.type = xdnd_pick(xcb_get_property_value(r), xcb_get_property_value_length(r) / 4);
+            free(r);
+        } else {
+            xcb_atom_t t[3] = {l[2], l[3], l[4]};
+            dnd.type = xdnd_pick(t, 3);
+        }
+        xcb_translate_coordinates_reply_t *tr =
+            xcb_translate_coordinates_reply(conn, xcb_translate_coordinates(conn, window, screen->root, 0, 0), NULL);
+        dnd.dx = tr ? tr->dst_x : 0;
+        dnd.dy = tr ? tr->dst_y : 0;
+        free(tr);
+    } else if (m->type == a_xdnd_position) {
+        if (l[0] != dnd.source || !dnd.source) return;
+        int x = (int) (l[2] >> 16) - dnd.dx - ox, y = (int) (l[2] & 0xFFFF) - dnd.dy - oy;
+        int gw = win_w - 2 * padx, gh = win_h - 2 * pady;
+        if (gw < 0) gw = 0;
+        if (gh < 0) gh = 0;
+        uint8_t r[13] = {15, (uint8_t) ((uint16_t) x >> 8), (uint8_t) x, (uint8_t) ((uint16_t) y >> 8), (uint8_t) y,
+                         (uint8_t) (gw >> 8), (uint8_t) gw, (uint8_t) (gh >> 8), (uint8_t) gh,
+                         (uint8_t) (pt_cw >> 8), (uint8_t) pt_cw, (uint8_t) (pt_ch >> 8), (uint8_t) pt_ch};
+        record(r, sizeof r);
+        /* accepted, a copy; every position wanted (bit 1), no rectangle */
+        xdnd_send(a_xdnd_status, dnd.type ? 3 : 2, 0, 0, dnd.type ? a_xdnd_copy : XCB_ATOM_NONE);
+    } else if (m->type == a_xdnd_leave) {
+        if (l[0] != dnd.source) return;
+        dnd.source = 0;
+        uint8_t r[1] = {16};
+        record(r, 1);
+    } else if (m->type == a_xdnd_drop) {
+        if (l[0] != dnd.source || !dnd.source) return;
+        if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+        if (pst.active) {
+            /* a paste still being read, whose buffer this would take: as
+             * if the drag had left */
+            uint8_t r[1] = {16};
+            record(r, 1);
+            xdnd_finished(0);
+            return;
+        }
+        if (!dnd.type) {
+            /* no files offered: a list with nothing in it */
+            uint8_t r[2] = {17, 0};
+            plen = 0;
+            record(r, 2);
+            xdnd_finished(0);
+            return;
+        }
+        pst.active = 1;
+        pst.incr = 0;
+        pst.waiting = 0;
+        pst.pending = 0;
+        pst.which = 2;
+        pst.image = 0;
+        pst.probe = 0;
+        pst.time = l[2];
+        pst.started = ns();
+        plen = 0;
+        paste_ask(dnd.type);
+    }
 }
 
 /* The window owns PRIMARY (0) or CLIPBOARD (1) with this text, from the

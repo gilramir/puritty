@@ -148,8 +148,9 @@ SUITES = [
         # 425 since PW8: what is remembered, by what name, and when; 426
         # since CL8: desktop notifications' setting; 427 since CL9: which
         # links are opened; 428 since KG9: the setting for pictures from
-        # files
-        428,
+        # files; 437 since FT22: a drop's list read and its paths quoted,
+        # nine
+        437,
         [
             Run("node", ["app/tests/run.sh"]),
             Run("linux", ["app/tests/native/run.sh"]),

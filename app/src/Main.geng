@@ -51,6 +51,7 @@ import Console
 import Diag
 import Dialog
 import Dict exposing (Dict)
+import Drop
 import Hosts
 import ImageFile
 import Int64
@@ -115,6 +116,7 @@ type alias Model =
     , syncSince : Int
     , upload : Maybe Upload
     , imagePaste : ImagePaste
+    , dropGather : Array Bytes
     , note : Maybe Note
     , uploads : Int
     , title : String
@@ -1286,6 +1288,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , syncSince = -1
                      , upload = Nothing
                      , imagePaste = NoImagePaste
+                     , dropGather = []
                      , note = Nothing
                      , uploads = 0
                      , title = ""
@@ -4392,6 +4395,94 @@ unwritable m =
     "The picture can't be pasted: the paste folder's name has characters " ++ charsetName m.charset ++ " cannot write"
 
 
+{-| Files dropped on the window (docs/sftp.md FT22): in a tab on this
+computer, their paths pasted, quoted for its shell, as other terminals do
+(FT5 question 6). Each must be there first: a name a file manager spoiled
+(FT21: Dolphin's U+FFFD for an EUC-KR name) names no file, and is said, as
+given, not pasted. A name not UTF-8 is read in the tab's character set, so
+that the paste gives the shell the name's own bytes; one that set can't
+carry is not pasted. A drop with no file on disk (FT21: a file inside a
+zip, an attachment) says so. -}
+filesDropped : Bytes -> (taken m : Model) -> Task Error Model
+filesDropped list m =
+    let
+        dropped =
+            Drop.paths list
+
+        fs =
+            m.settings.given.fs
+    in
+    dropped.paths
+        |> Array.map
+            (\p ->
+                File.exists fs (Path.fromBytes p)
+                    |> Task.onError (\_ -> Task.succeed False)
+                    |> Task.map (\there -> { path = p, there = there })
+            )
+        |> Task.sequence
+        |> Task.map (\checked -> droppedChecked dropped.others checked m)
+
+
+droppedChecked : Int -> Array { path : Bytes, there : Bool } -> (taken m : Model) -> Model
+droppedChecked others checked m =
+    let
+        names =
+            Array.map
+                (\c ->
+                    when Bytes.toString c.path is
+                        Just text ->
+                            Just text
+
+                        Nothing ->
+                            -- a name not UTF-8: in the tab's character set
+                            meant Reason.FromOutside
+                                (if m.charset == Charset.Utf8 then
+                                    Nothing
+
+                                 else
+                                    Just (fromHost m.charset c.path)
+                                )
+                )
+                checked
+
+        readable =
+            Array.mapAndKeepJust identity names
+
+        pasted =
+            Drop.quoted (Platform.pathSeparator == "\\") readable
+    in
+    if Array.isEmpty checked then
+        noteUp
+            { text =
+                if others > 0 then
+                    "What was dropped is not a file on this computer"
+
+                else
+                    "The program it was dragged from gave no file on disk to send: a file inside a zip, or an attachment, must be saved first"
+            , failed = True
+            , kept = False
+            }
+            m
+
+    else
+        when Array.findFirst (\c -> not c.there) checked is
+            Just missing ->
+                noteUp { text = "A dropped file is not there, by the name it was given as: " ++ Bytes.toStringLossy missing.value.path, failed = True, kept = False } m
+
+            Nothing ->
+                -- every file there
+                meant Reason.NoMore
+                    (if m.tab.host /= Nothing then
+                        noteUp { text = "Dropping files on an ssh tab is not built yet: nothing was sent", failed = True, kept = False } m
+
+                     else if Array.length readable < Array.length names || (Charset.encode m.charset (Bytes.fromString pasted)).replaced > 0 then
+                        noteUp { text = "A dropped file's name is not in this tab's character set, " ++ charsetName m.charset ++ ", and was not pasted", failed = True, kept = False } m
+
+                     else
+                        logLine "drop" (String.fromInt (Array.length readable) ++ " paths pasted") (pasteIn False (Bytes.fromString pasted) m)
+                    )
+
+
 {-| A path pasted whole: in double quotes when it has a space, which Claude
 Code takes off. -}
 quotedPath : String -> String
@@ -5858,6 +5949,26 @@ handleOne remote ms rest ev m =
 
                         else
                             imagePasted (Bytes.flatten got) { m | imagePaste = NoImagePaste, turnMs = ms }
+                                |> Task.andThen (handle remote ms rest)
+                    )
+
+        Window.DragOver _ ->
+            -- where a drop would go is marked from here (FT22's next
+            -- items); a drag over the window changes nothing yet
+            handle remote ms rest m
+
+        Window.DragLeft ->
+            handle remote ms rest m
+
+        Window.Dropped more ->
+            Window.dropped
+                |> Task.andThen
+                    (\bytes ->
+                        if more then
+                            handle remote ms rest { m | dropGather = Array.pushLast bytes m.dropGather }
+
+                        else
+                            filesDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms }
                                 |> Task.andThen (handle remote ms rest)
                     )
 

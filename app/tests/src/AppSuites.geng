@@ -15,6 +15,7 @@ import Clock
 import Config
 import Diag
 import Dict
+import Drop
 import Expect exposing (Expectation)
 import Explorer
 import Hosts
@@ -36,6 +37,7 @@ import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import TmuxTests
 import Toml
+import UInt8
 import Vt
 import Words
 
@@ -44,7 +46,7 @@ import Words
 (`native/`'s `NativeTests`). -}
 suites : Array U.Suite
 suites =
-    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, TmuxTests.tmuxMode, Explorer.explorer ]
+    [ schema, writing, window, hosts, words, chords, restoring, diagnostics, searching, putty, remembered, tabOrder, clock, drops, TmuxTests.tmuxMode, Explorer.explorer ]
 
 
 {-| The window's clock, which starts over every 2^30 ms (`docs/rhel8-etx.md`
@@ -80,6 +82,56 @@ clock =
                 \_ ->
                     Expect.equal [ "000001 00:00:00.020 note   x" ]
                         (Diag.start "log" { ms = late, dayMs = 0 } [] |> Diag.add 10 "note" "x" |> Diag.take 10 |> .bytes |> Bytes.toString |> Maybe.withDefault "" |> String.lines |> Array.keepIf (\l -> String.contains "note" l))
+          }
+        ]
+
+
+{-| Files dropped on the window (`docs/sftp.md` FT21, FT22): the lists
+the window's layers give, as Nemo, Dolphin and Explorer gave them, read
+into paths; and paths quoted for a shell, to be pasted. -}
+drops : U.Suite
+drops =
+    let
+        bytes ints =
+            Bytes.fromUInt8s (Array.map UInt8.fromInt ints)
+
+        -- 한글 in EUC-KR
+        euc =
+            bytes [ 0xC7, 0xD1, 0xB1, 0xDB ]
+
+        read text =
+            Drop.paths (Bytes.fromString text)
+    in
+    run "drops"
+        [ { name = "Nemo's list: a space and an EUC-KR name, each name's own bytes"
+          , test =
+                \_ ->
+                    Expect.equal { paths = [ Bytes.fromString "/tmp/x/a plain.txt", Bytes.flatten [ Bytes.fromString "/tmp/x/", euc, Bytes.fromString ".txt" ] ], others = 0 }
+                        (read "file:///tmp/x/a%20plain.txt\u{000D}\nfile:///tmp/x/%C7%D1%B1%DB.txt\u{000D}\n")
+          }
+        , { name = "a name Dolphin spoiled is read as Dolphin gave it"
+          , test = \_ -> Expect.equal [ Bytes.flatten [ Bytes.fromString "/t/", bytes [ 0xEF, 0xBF, 0xBD, 0xD1, 0xB1, 0xEF, 0xBF, 0xBD ] ] ] (read "file:///t/%EF%BF%BD%D1%B1%EF%BF%BD\u{000D}\n").paths
+          }
+        , { name = "Windows' paths, a line each, as they are"
+          , test = \_ -> Expect.equal { paths = [ Bytes.fromString "C:\\Users\\y\\한.txt", Bytes.fromString "C:\\prj\\go.mod" ], others = 0 } (read "C:\\Users\\y\\한.txt\u{000D}\nC:\\prj\\go.mod\u{000D}\n")
+          }
+        , { name = "a comment left out, and a web address counted as not a file"
+          , test = \_ -> Expect.equal { paths = [ Bytes.fromString "/a" ], others = 1 } (read "# from a browser\u{000D}\nhttps://example.com/a\u{000D}\nfile:///a\u{000D}\n")
+          }
+        , { name = "a file URI that names its host, and a last line with no end"
+          , test = \_ -> Expect.equal [ Bytes.fromString "/home/me/b c" ] (read "file://nene/home/me/b%20c").paths
+          }
+        , { name = "a % not followed by two hex digits is kept"
+          , test = \_ -> Expect.equal [ Bytes.fromString "/a%zz%4" ] (read "file:///a%zz%4").paths
+          }
+        , { name = "paths quoted for a POSIX shell, a quote and a dollar inside"
+          , test = \_ -> Expect.equal "'/tmp/a plain.txt' '/tmp/it'\\''s $HOME.txt' /tmp/b.txt " (Drop.quoted False [ "/tmp/a plain.txt", "/tmp/it's $HOME.txt", "/tmp/b.txt" ])
+          }
+        , { name = "a name past ASCII quoted, as its characters"
+          , test = \_ -> Expect.equal "'/tmp/한.txt' " (Drop.quoted False [ "/tmp/한.txt" ])
+          }
+        , { name = "paths quoted for Windows' shells, a backslash plain there"
+          , test = \_ -> Expect.equal "\"C:\\a b\\c.txt\" C:\\d.txt " (Drop.quoted True [ "C:\\a b\\c.txt", "C:\\d.txt" ])
           }
         ]
 

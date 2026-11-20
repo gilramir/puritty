@@ -1,0 +1,209 @@
+module Drop exposing (Dropped, paths, quoted)
+
+{-| Files dropped on the window from another program (`docs/sftp.md`
+FT21, FT22): the list the window's layer gives read into paths, and paths
+written for a shell.
+
+The list is a line a file, ended CRLF. On X11 it is a `text/uri-list`
+(RFC 2483): `file://` URIs, each name's bytes percent-encoded, which
+Nemo keeps exact and Dolphin, for a name that is not UTF-8, has already
+spoiled (FT21); `#` starts a comment line. On Windows it is each path in
+UTF-8. A path is bytes, as this computer names the file.
+-}
+
+import Bytes exposing (Bytes)
+import Reason
+import UInt8
+
+
+{-| The paths dropped, and how many entries were not files on this
+computer (another scheme, such as `http://`). -}
+type alias Dropped =
+    { paths : Array Bytes, others : Int }
+
+
+{-| The list read. -}
+paths : Bytes -> Dropped
+paths list =
+    lines list 0 0 []
+        |> Array.foldl
+            (\line acc ->
+                if Bytes.isEmpty line || Bytes.get 0 line == Just (UInt8.fromInt 35) then
+                    acc
+
+                else if startsWith "file://" line then
+                    let
+                        rest =
+                            Bytes.slice 7 (Bytes.length line) line
+                    in
+                    -- the host, empty or named, up to the path's first `/`
+                    when indexOf 47 rest 0 is
+                        Just at ->
+                            { acc | paths = Array.pushLast (decoded (Bytes.slice at (Bytes.length rest) rest)) acc.paths }
+
+                        Nothing ->
+                            -- a URI with a host and no path
+                            meant Reason.FromOutside { acc | others = acc.others + 1 }
+
+                else if hasScheme line then
+                    { acc | others = acc.others + 1 }
+
+                else
+                    { acc | paths = Array.pushLast line acc.paths }
+            )
+            { paths = [], others = 0 }
+
+
+{-| Each line, its CR and LF taken off. -}
+lines : Bytes -> Int -> Int -> Array Bytes -> Array Bytes
+lines b from at acc =
+    if at >= Bytes.length b then
+        if from < at then
+            Array.pushLast (trimCr (Bytes.slice from at b)) acc
+
+        else
+            acc
+
+    else if Bytes.get at b == Just (UInt8.fromInt 10) then
+        lines b (at + 1) (at + 1) (Array.pushLast (trimCr (Bytes.slice from at b)) acc)
+
+    else
+        lines b from (at + 1) acc
+
+
+trimCr : Bytes -> Bytes
+trimCr line =
+    if Bytes.get (Bytes.length line - 1) line == Just (UInt8.fromInt 13) then
+        Bytes.slice 0 (Bytes.length line - 1) line
+
+    else
+        line
+
+
+startsWith : String -> Bytes -> Bool
+startsWith prefix b =
+    Bytes.slice 0 (String.count prefix) b == Bytes.fromString prefix
+
+
+{-| A URI's scheme before `:`, letters only, more than one, so that
+Windows' `C:\…` is a path. -}
+hasScheme : Bytes -> Bool
+hasScheme b =
+    when indexOf 58 b 0 is
+        Just at ->
+            at > 1 && Array.all (\i -> isLetter (Bytes.get i b)) (Array.range 0 (at - 1))
+
+        Nothing ->
+            meant Reason.NoMore False
+
+
+isLetter : Maybe UInt8 -> Bool
+isLetter u =
+    when u is
+        Just c ->
+            let
+                n =
+                    UInt8.toInt c
+            in
+            (n >= 65 && n <= 90) || (n >= 97 && n <= 122)
+
+        Nothing ->
+            meant Reason.OutOfRange False
+
+
+indexOf : Int -> Bytes -> Int -> Maybe Int
+indexOf byte b at =
+    if at >= Bytes.length b then
+        Nothing
+
+    else if Bytes.get at b == Just (UInt8.fromInt byte) then
+        Just at
+
+    else
+        indexOf byte b (at + 1)
+
+
+{-| `%XX` as its byte; a `%` not followed by two hex digits as it is. -}
+decoded : Bytes -> Bytes
+decoded b =
+    Bytes.fromUInt8s (decodeFrom b 0 [])
+
+
+decodeFrom : Bytes -> Int -> Array UInt8 -> Array UInt8
+decodeFrom b at out =
+    if at >= Bytes.length b then
+        out
+
+    else
+        when Bytes.get at b is
+            Just u ->
+                if UInt8.toInt u == 37 then
+                    when { hi = hexOf (Bytes.get (at + 1) b), lo = hexOf (Bytes.get (at + 2) b) } is
+                        { hi = Just hi, lo = Just lo } ->
+                            decodeFrom b (at + 3) (Array.pushLast (UInt8.fromInt (hi * 16 + lo)) out)
+
+                        _ ->
+                            decodeFrom b (at + 1) (Array.pushLast u out)
+
+                else
+                    decodeFrom b (at + 1) (Array.pushLast u out)
+
+            Nothing ->
+                meant Reason.OutOfRange out
+
+
+hexOf : Maybe UInt8 -> Maybe Int
+hexOf u =
+    when u is
+        Just c ->
+            let
+                n =
+                    UInt8.toInt c
+            in
+            if n >= 48 && n <= 57 then
+                Just (n - 48)
+
+            else if n >= 65 && n <= 70 then
+                Just (n - 55)
+
+            else if n >= 97 && n <= 102 then
+                Just (n - 87)
+
+            else
+                Nothing
+
+        Nothing ->
+            -- a `%` at the end
+            meant Reason.OutOfRange Nothing
+
+
+{-| Paths as a shell takes them, each followed by a space, as GNOME
+Terminal and Windows Terminal paste a drop: for a POSIX shell, one with
+anything but letters, digits and `_./+-:@%,=` in single quotes, a `'`
+written `'\''`; on Windows (`windows`), one with anything but those in
+double quotes, which a Windows name cannot hold. -}
+quoted : Bool -> Array String -> String
+quoted windows names =
+    names
+        |> Array.map
+            (\name ->
+                if name /= "" && String.all (isPlain windows) name then
+                    name
+
+                else if windows then
+                    "\"" ++ name ++ "\""
+
+                else
+                    "'" ++ String.replace "'" "'\\''" name ++ "'"
+            )
+        |> Array.map (\word -> word ++ " ")
+        |> String.join ""
+
+
+{-| A character no shell reads as anything but itself: a backslash too on
+Windows, where it is the separator. -}
+isPlain : Bool -> Char -> Bool
+isPlain windows c =
+    (Char.isAlphaNum c && Char.toCode c < 128)
+        || String.contains (String.fromChar c) "_./+-:@%,="
+        || (windows && c == '\\')

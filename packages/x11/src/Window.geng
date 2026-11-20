@@ -1,5 +1,6 @@
 module Window exposing
     ( Cell
+    , DragPosition
     , Event(..)
     , Pointer(..)
     , PointerEvent
@@ -7,6 +8,7 @@ module Window exposing
     , Settings
     , attention
     , draw
+    , dropped
     , events
     , fontUsed
     , fonts
@@ -48,7 +50,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasteOrImage, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasteOrImage, pasted, dropped, sound, events, take, Event, PointerEvent, DragPosition
 
 -}
 
@@ -308,6 +310,20 @@ pasted =
 pastedExtern : Task x Bytes
 
 
+{-| A drop's list of files since it was last taken (`Dropped` events,
+puritty `docs/sftp.md` FT22): each file a line, ended CRLF, as a
+`file://` URI on X11 (`text/uri-list`, each name's bytes percent-encoded)
+and as a path in UTF-8 on Windows; nothing when the drag held no files on
+disk. -}
+dropped : Task x Bytes
+dropped =
+    droppedExtern
+
+
+@extern(c, "puritty_x11_dropped")
+droppedExtern : Task x Bytes
+
+
 {-| The window sized to hold `cols` by `rows` cells at the font it has,
 where it is (`docs/settings-gui.md` SG11): what the host list's window,
 the settings window's size, becomes when a host is chosen and it turns
@@ -544,6 +560,9 @@ type Event
     | SelectionLost Selection
     | Pasted Bool
     | PastedImage Bool
+    | DragOver DragPosition
+    | DragLeft
+    | Dropped Bool
     | MenuChosen { menu : Int, index : Int }
     | Rescaled Cell
     | Note String
@@ -561,6 +580,21 @@ type alias PointerEvent =
     , button : Int
     , mods : Int
     , x : Int
+    , y : Int
+    , width : Int
+    , height : Int
+    , cellWidth : Int
+    , cellHeight : Int
+    }
+
+
+{-| Where a drag from another program is over the window (puritty
+`docs/sftp.md` FT22), as a pointer's position is: pixels from the cells'
+top left, the cells' area and a cell. `DragLeft` says it went, or ended
+elsewhere; `Dropped` that its files' list has come, `True` while more is
+to come, which [`dropped`](#dropped) takes. -}
+type alias DragPosition =
+    { x : Int
     , y : Int
     , width : Int
     , height : Int
@@ -705,6 +739,40 @@ decode b at acc =
 
             12 ->
                 decode b (advance b at 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)
+
+            15 ->
+                let
+                    signed i =
+                        let
+                            v =
+                                u16 i
+                        in
+                        if v >= 0x8000 then
+                            v - 0x10000
+
+                        else
+                            v
+                in
+                decode b
+                    (advance b at 13)
+                    (Array.pushLast
+                        (DragOver
+                            { x = signed 1
+                            , y = signed 3
+                            , width = u16 5
+                            , height = u16 7
+                            , cellWidth = u16 9
+                            , cellHeight = u16 11
+                            }
+                        )
+                        acc
+                    )
+
+            16 ->
+                decode b (advance b at 1) (Array.pushLast DragLeft acc)
+
+            17 ->
+                decode b (advance b at 2) (Array.pushLast (Dropped (byte 1 == 1)) acc)
 
             10 ->
                 decode b
