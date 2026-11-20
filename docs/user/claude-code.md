@@ -31,7 +31,10 @@ answers. Most of what follows works with nothing set.
   `[Image #1]` (see
   [pasting a picture](copy-and-paste.md#pasting-a-picture)). Claude Code
   alone can't: over ssh it reads the host's clipboard, which holds
-  nothing.
+  nothing. Paste it into a regular prompt: a `/btw` side question shows
+  `[Image #1]` too, but Claude answered it that it could not see the
+  image (seen 2026-11-20; Claude Code's doing, not puritty's, since the
+  same paste in a regular prompt reached it).
 - **Links**: puritty tells Claude Code it can show links
   (`FORCE_HYPERLINK=1`, set for every program it starts), and Ctrl+click
   opens one, in the fullscreen view too.
