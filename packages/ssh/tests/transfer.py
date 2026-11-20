@@ -127,6 +127,43 @@ def c_no_rename(l, r):
     return ["up", l / "f.txt", r, "f.txt"]
 
 
+def named(text, charset):
+    """A file name as a host in `charset` writes it: its bytes, held by
+    Python as the str that stands for them (os.fsdecode), so that a Path
+    and an argument carry those bytes and no others (FT19)."""
+    return os.fsdecode(text.encode(charset))
+
+
+KOREAN = named("한글 파일.txt", "euc-kr")
+QUOTED = named("it's 한.txt", "euc-kr")
+FOLDER = named("폴더", "euc-kr")
+INSIDE = named("안의 파일.txt", "euc-kr")
+
+
+def c_euc_kr(l, r):
+    # names in EUC-KR both ways: two uploads, one with a quote, a folder
+    # and a file in it, and a download
+    put(l / KOREAN, b"one\n", OLD)
+    put(l / QUOTED, b"two\n", OLD)
+    put(l / FOLDER / INSIDE, b"three\n", NEWER)
+    put(r / named("받은.bin", "euc-kr"), pattern(70001), OLD)
+    return ["up", l / KOREAN, r, KOREAN, "up", l / QUOTED, r, QUOTED, "mkdir", r / FOLDER, "up", l / FOLDER / INSIDE, r / FOLDER, INSIDE,
+            "down", r / named("받은.bin", "euc-kr"), l / named("받은.bin", "euc-kr"), l / named(".받은.bin.part", "euc-kr"), l / named("받은 (2).bin", "euc-kr")]
+
+
+def c_euc_kr_keep(l, r):
+    put(l / KOREAN, b"new\n")
+    put(r / KOREAN, b"old\n")
+    return ["--choice", "keep", "up", l / KOREAN, r, KOREAN]
+
+
+def c_cp949(l, r):
+    # CP949's 똠 is 8C 63: its second byte an ASCII c
+    name = named("똠방각하.txt", "cp949")
+    put(l / name, b"cp949\n", OLD)
+    return ["up", l / name, r, name]
+
+
 # a case's server, when not SERVER as it is
 SERVERS = {"rename-refused": ["-P", "rename,posix-rename"]}
 
@@ -136,7 +173,17 @@ CASES = [
     ("conflict-replace-if-newer", c_newer), ("stale-part", c_stale_part), ("no-such-folder", c_no_folder),
     ("folder-in-the-way", c_folder_in_way), ("make-folders", c_mkdir), ("download", c_download),
     ("download-keep-both", c_download_keep), ("cancel", c_cancel), ("rename-refused", c_no_rename),
+    ("euc-kr-names", c_euc_kr), ("euc-kr-keep-both", c_euc_kr_keep), ("cp949-names", c_cp949),
 ]
+
+
+def shown(path):
+    """A name as the pins show it: UTF-8 as it is, other bytes as \\xNN."""
+    b = os.fsencode(str(path))
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return "".join(chr(c) if c < 128 else f"\\x{c:02x}" for c in b)
 
 
 def listing(top, sources):
@@ -147,12 +194,12 @@ def listing(top, sources):
         rel = p.relative_to(top)
         st = p.lstat()
         if stat.S_ISDIR(st.st_mode):
-            lines.append(f"  {rel}/")
+            lines.append(f"  {shown(rel)}/")
             continue
-        line = f"  {rel}: {st.st_size} bytes, mode {oct(st.st_mode & 0o777)}"
+        line = f"  {shown(rel)}: {st.st_size} bytes, mode {oct(st.st_mode & 0o777)}"
         src = sources.get(p.name)
         if src is not None and src != p and src.exists():
-            line += f", bytes {'same' if src.read_bytes() == p.read_bytes() else 'DIFFERENT'} as {src.parent.name}/{src.name}"
+            line += f", bytes {'same' if src.read_bytes() == p.read_bytes() else 'DIFFERENT'} as {shown(src.parent.name)}/{shown(src.name)}"
             line += f", time {'same' if int(src.stat().st_mtime) == int(st.st_mtime) else 'not kept'}"
         lines.append(line)
     return lines
@@ -176,7 +223,7 @@ def run_case(name, setup):
         server = str(d / "server.sh")
         Path(server).write_text(f"#!/bin/sh\nexec {SERVER} {' '.join(SERVERS[name])}\n")
         Path(server).chmod(0o755)
-    out = subprocess.run([str(CLIENT), "transfer-local", server, *args], capture_output=True, text=True, timeout=120,
+    out = subprocess.run([str(CLIENT), "transfer-local", server, *args], capture_output=True, text=True, errors="backslashreplace", timeout=120,
                          preexec_fn=lambda: os.umask(0o002))
     said = out.stdout.replace(str(d), "DIR")
     sources = {}

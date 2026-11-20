@@ -1,4 +1,4 @@
-module TransferDrive exposing (jobsOf, option, run, withoutOptions)
+module TransferDrive exposing (Arg, argsOf, jobsOf, option, run, shown, withoutOptions)
 
 {-| `Ssh.Transfer` driven over a link to `sftp-server` (puritty
 `docs/sftp.md` FT17), its local actions done here with `Os.File`: one
@@ -44,7 +44,44 @@ say line =
     Console.write (line ++ "\n")
 
 
-run : File.Permission -> Link -> Array String -> Task String {}
+{-| An argument as text, for options and words, and as the bytes it was,
+for a path or a name, which need not be UTF-8 (FT19). -}
+type alias Arg =
+    { text : String, bytes : Bytes }
+
+
+argsOf : Array Bytes -> Array Arg
+argsOf raw =
+    Array.map (\b -> { text = Bytes.toStringLossy b, bytes = b }) raw
+
+
+{-| A name as the pins show it: as it is when UTF-8, and otherwise each
+byte past ASCII as `\xNN`, so an EUC-KR name reads as its bytes. -}
+shown : Bytes -> String
+shown b =
+    when Bytes.toString b is
+        Just text ->
+            text
+
+        Nothing ->
+            Array.range 0 (Bytes.length b - 1)
+                |> Array.map
+                    (\i ->
+                        let
+                            one =
+                                Bytes.slice i (i + 1) b
+                        in
+                        when Bytes.toString one is
+                            Just ascii ->
+                                ascii
+
+                            Nothing ->
+                                "\\x" ++ Bytes.toHexString { padding = False } one
+                    )
+                |> String.join ""
+
+
+run : File.Permission -> Link -> Array Arg -> Task String {}
 run fs link args =
     let
         choice =
@@ -101,13 +138,14 @@ run fs link args =
             )
 
 
-option : String -> Array String -> Maybe String
+option : String -> Array Arg -> Maybe String
 option name args =
-    Array.findFirst (\a -> a == name) args
+    Array.findFirst (\a -> a.text == name) args
         |> Maybe.andThen (\found -> Array.get (found.index + 1) args)
+        |> Maybe.map .text
 
 
-withoutOptions : Array String -> Array String
+withoutOptions : Array Arg -> Array Arg
 withoutOptions args =
     when args is
         [] ->
@@ -116,7 +154,7 @@ withoutOptions args =
         _ ->
             when Array.first args is
                 Just a ->
-                    if a == "--choice" || a == "--cancel-after" then
+                    if a.text == "--choice" || a.text == "--cancel-after" then
                         withoutOptions (Array.dropFirst 2 args)
 
                     else
@@ -126,13 +164,13 @@ withoutOptions args =
                     []
 
 
-jobsOf : File.Permission -> Array String -> Array Job -> Task String (Array Job)
+jobsOf : File.Permission -> Array Arg -> Array Job -> Task String (Array Job)
 jobsOf fs args acc =
-    when Array.first args is
+    when Array.first args |> Maybe.map .text is
         Just "up" ->
             when Array.slice 1 4 args is
                 [ local, dir, name ] ->
-                    File.metadata fs (Path.fromString local)
+                    File.metadata fs (Path.fromBytes local.bytes)
                         |> Task.mapError Os.Error.toString
                         |> Task.andThen
                             (\m ->
@@ -140,11 +178,11 @@ jobsOf fs args acc =
                                     (Array.dropFirst 4 args)
                                     (Array.pushLast
                                         (Upload
-                                            { local = local
+                                            { local = Path.fromBytes local.bytes
                                             , size = m.size
                                             , mtime = Just (Time.posixToMillis m.modified // Int64.fromInt 1000)
-                                            , dir = Bytes.fromString dir
-                                            , name = Bytes.fromString name
+                                            , dir = dir.bytes
+                                            , name = name.bytes
                                             }
                                         )
                                         acc
@@ -157,12 +195,12 @@ jobsOf fs args acc =
         Just "down" ->
             when Array.slice 1 5 args is
                 [ remote, to, part, keep ] ->
-                    File.metadata fs (Path.fromString to)
+                    File.metadata fs (Path.fromBytes to.bytes)
                         |> Task.map (\m -> Just { size = m.size, mtime = Just (Time.posixToMillis m.modified // Int64.fromInt 1000) })
                         |> Task.onError (\_ -> Task.succeed Nothing)
                         |> Task.andThen
                             (\existing ->
-                                jobsOf fs (Array.dropFirst 5 args) (Array.pushLast (Download { remote = Bytes.fromString remote, to = to, part = part, keepBoth = keep, existing = existing }) acc)
+                                jobsOf fs (Array.dropFirst 5 args) (Array.pushLast (Download { remote = remote.bytes, to = Path.fromBytes to.bytes, part = Path.fromBytes part.bytes, keepBoth = Path.fromBytes keep.bytes, existing = existing }) acc)
                             )
 
                 _ ->
@@ -171,7 +209,7 @@ jobsOf fs args acc =
         Just "mkdir" ->
             when Array.get 1 args is
                 Just path ->
-                    jobsOf fs (Array.dropFirst 2 args) (Array.pushLast (MakeDir { path = Bytes.fromString path }) acc)
+                    jobsOf fs (Array.dropFirst 2 args) (Array.pushLast (MakeDir { path = path.bytes }) acc)
 
                 Nothing ->
                     Task.fail "mkdir PATH"
@@ -252,14 +290,14 @@ told : Event -> Drive -> Task String Drive
 told e d =
     when e is
         Conflicts cs ->
-            say ("conflicts: " ++ String.join ", " (Array.map (\c -> String.fromInt c.job ++ " " ++ Bytes.toStringLossy c.name) cs))
+            say ("conflicts: " ++ String.join ", " (Array.map (\c -> String.fromInt c.job ++ " " ++ shown c.name) cs))
                 |> Task.map (\_ -> d)
 
         Progress p ->
             Task.succeed { d | progressed = d.progressed + 1, last = Just { bytes = p.bytes, total = p.total } }
 
         Done x ->
-            say ("done " ++ String.fromInt x.job ++ " as " ++ Bytes.toStringLossy x.as_) |> Task.map (\_ -> d)
+            say ("done " ++ String.fromInt x.job ++ " as " ++ shown x.as_) |> Task.map (\_ -> d)
 
         Skipped x ->
             say ("skipped " ++ String.fromInt x.job) |> Task.map (\_ -> d)
@@ -304,7 +342,7 @@ doLocal l r =
     else
         when l is
             ReadPiece p ->
-                File.withHandle fs ForRead (Path.fromString p.path) (\h -> File.seek (FromStart p.offset) h |> Task.andThen (\_ -> readUpTo p.length h []))
+                File.withHandle fs ForRead p.path (\h -> File.seek (FromStart p.offset) h |> Task.andThen (\_ -> readUpTo p.length h []))
                     |> Task.map Ok
                     |> Task.onError (\e -> Task.succeed (Err e))
                     |> Task.mapError Os.Error.toString
@@ -319,24 +357,24 @@ doLocal l r =
                         )
 
             CreateFile c ->
-                File.writeFile fs Bytes.empty (Path.fromString c.path)
+                File.writeFile fs Bytes.empty c.path
                     |> Task.map (\_ -> r)
                     |> Task.onError (\e -> failed c.job e)
 
             WritePiece w ->
-                File.withHandle fs (ForWrite ExpectExisting) (Path.fromString w.path) (\h -> File.seek (FromStart w.offset) h |> Task.andThen (\_ -> File.write w.bytes h))
+                File.withHandle fs (ForWrite ExpectExisting) w.path (\h -> File.seek (FromStart w.offset) h |> Task.andThen (\_ -> File.write w.bytes h))
                     |> Task.map (\_ -> r)
                     |> Task.onError (\e -> failed w.job e)
 
             Move m ->
                 (when m.mtime is
                     Just seconds ->
-                        File.setTimes fs { modified = Just (Time.millisToPosix (seconds * Int64.fromInt 1000)), accessed = Nothing } (Path.fromString m.from)
+                        File.setTimes fs { modified = Just (Time.millisToPosix (seconds * Int64.fromInt 1000)), accessed = Nothing } m.from
 
                     Nothing ->
                         Task.succeed {}
                 )
-                    |> Task.andThen (\_ -> File.move fs { from = Path.fromString m.from, to = Path.fromString m.to })
+                    |> Task.andThen (\_ -> File.move fs { from = m.from, to = m.to })
                     |> Task.map Ok
                     |> Task.onError (\e -> Task.succeed (Err e))
                     |> Task.mapError Os.Error.toString
@@ -351,7 +389,7 @@ doLocal l r =
                         )
 
             RemoveFile x ->
-                File.remove fs (Path.fromString x.path)
+                File.remove fs x.path
                     |> Task.onError (\_ -> Task.succeed {})
                     |> Task.map (\_ -> r)
 

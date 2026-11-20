@@ -46,13 +46,15 @@ What it does with a file:
   - **Cancelled**, the file being moved is closed and its part removed.
 
 Sizes and offsets are `Int64`, since files pass 2 GiB. A remote name is
-`Bytes`, in the host's own character set; a local path is the caller's
-`String`.
+`Bytes`, in the host's own character set, and a local path an `Os.Path`,
+its bytes as this computer names the file: neither need be UTF-8, so an
+EUC-KR name goes through as it is (FT19).
 -}
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Int64
+import Os.Path as Path exposing (Path)
 import Ssh.Reason as Reason
 import Ssh.Sftp as Sftp exposing (Request(..), Response(..))
 import UInt8
@@ -70,8 +72,8 @@ import UInt8
 
 -}
 type Job
-    = Upload { local : String, size : Int64, mtime : Maybe Int64, dir : Bytes, name : Bytes }
-    | Download { remote : Bytes, to : String, part : String, keepBoth : String, existing : Maybe { size : Int64, mtime : Maybe Int64 } }
+    = Upload { local : Path, size : Int64, mtime : Maybe Int64, dir : Bytes, name : Bytes }
+    | Download { remote : Bytes, to : Path, part : Path, keepBoth : Path, existing : Maybe { size : Int64, mtime : Maybe Int64 } }
     | MakeDir { path : Bytes }
 
 
@@ -107,11 +109,11 @@ Any that fails is answered with [`localFailed`](#localFailed).
 
 -}
 type Local
-    = ReadPiece { job : Int, path : String, offset : Int64, length : Int }
-    | CreateFile { job : Int, path : String }
-    | WritePiece { job : Int, path : String, offset : Int64, bytes : Bytes }
-    | Move { job : Int, from : String, to : String, mtime : Maybe Int64 }
-    | RemoveFile { job : Int, path : String }
+    = ReadPiece { job : Int, path : Path, offset : Int64, length : Int }
+    | CreateFile { job : Int, path : Path }
+    | WritePiece { job : Int, path : Path, offset : Int64, bytes : Bytes }
+    | Move { job : Int, from : Path, to : Path, mtime : Maybe Int64 }
+    | RemoveFile { job : Int, path : Path }
 
 
 {-| What happened:
@@ -219,7 +221,7 @@ type alias Run =
     , mode : Mode
     , target : Bytes
     , part : Bytes
-    , localTo : String
+    , localTo : Path
     , handle : Maybe Bytes
     , offset : Int64
     , size : Int64
@@ -662,7 +664,7 @@ failJob i why st =
     startNext (emit (Failed { job = i, why = why }) { st | failed = st.failed + 1, run = Nothing })
 
 
-newRun : Int -> Mode -> Bytes -> Bytes -> String -> Int64 -> Run
+newRun : Int -> Mode -> Bytes -> Bytes -> Path -> Int64 -> Run
 newRun i mode target part localTo size =
     { job = i
     , mode = mode
@@ -696,7 +698,7 @@ openUpload i mode target st =
                     meant Reason.NotKnown (Int64.fromInt 0)
 
         run =
-            newRun i mode target part "" size
+            newRun i mode target part (Path.fromString "") size
     in
     ask
         (Open
@@ -722,7 +724,7 @@ openUpload i mode target st =
 
 {-| A download's file opened on the host, to be written here to its part,
 then moved to `to`. -}
-openDownload : Int -> String -> State -> State
+openDownload : Int -> Path -> State -> State
 openDownload i to st =
     let
         size =
@@ -1013,24 +1015,24 @@ isUpload i st =
             meant Reason.NotKnown False
 
 
-partOf : Int -> State -> String
+partOf : Int -> State -> Path
 partOf i st =
     when Array.get i st.jobs is
         Just (Download d) ->
             d.part
 
         _ ->
-            meant Reason.NotKnown ""
+            meant Reason.NotKnown (Path.fromString "")
 
 
-localOf : Int -> State -> String
+localOf : Int -> State -> Path
 localOf i st =
     when Array.get i st.jobs is
         Just (Upload u) ->
             u.local
 
         _ ->
-            meant Reason.NotKnown ""
+            meant Reason.NotKnown (Path.fromString "")
 
 
 handleOf : Run -> Bytes
@@ -1144,7 +1146,7 @@ localRead r (Transfer st) =
 {-| A local [`Move`](#Local) done: the download is finished. -}
 localDone : Int -> Transfer -> Step
 localDone i (Transfer st) =
-    finish (withRun i st (\run -> doneRun { run | target = Bytes.fromString run.localTo } st))
+    finish (withRun i st (\run -> doneRun { run | target = Path.toBytes run.localTo } st))
 
 
 {-| A local action failed: the file is given up, with the system's words. -}

@@ -94,7 +94,8 @@ main =
                         -- (TransferDrive, docs/sftp.md FT17)
                         when Array.get 1 r.args is
                             Just server ->
-                                sftpChild server (\link -> TransferDrive.run r.fs link (Array.dropFirst 2 r.args))
+                                Os.Env.getEnvironment
+                                    |> Task.andThen (\env -> sftpChild server (\link -> TransferDrive.run r.fs link (TransferDrive.argsOf (Array.dropFirst 2 env.argsAsBytes))))
 
                             Nothing ->
                                 say "usage: ssh-tests transfer-local SFTP-SERVER [OPTIONS] JOB..."
@@ -222,7 +223,7 @@ connectionSuite =
                     -- an exec channel beside it, number 1, the server's 9,
                     -- confirmed and its command started
                     side =
-                        Connection.openExec "true" opened.connection
+                        Connection.openExec (Bytes.fromString "true") opened.connection
 
                     confirmed =
                         Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
@@ -261,7 +262,7 @@ connectionSuite =
             (\_ ->
                 let
                     side =
-                        Connection.openExec "cat" opened.connection
+                        Connection.openExec (Bytes.fromString "cat") opened.connection
 
                     confirmed =
                         Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
@@ -291,7 +292,7 @@ connectionSuite =
             (\_ ->
                 let
                     side =
-                        Connection.openExec "cat" opened.connection
+                        Connection.openExec (Bytes.fromString "cat") opened.connection
 
                     confirmed =
                         Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
@@ -414,7 +415,7 @@ sftpSuite =
             let
                 s0 =
                     ShellTransfer.start { piece = 32768, ahead = 131072, ref = 10 }
-                        [ Transfer.Upload { local = "x", size = Int64.fromInt 1048576, mtime = Nothing, dir = Bytes.fromString "/d", name = Bytes.fromString "n" } ]
+                        [ Transfer.Upload { local = Path.fromString "x", size = Int64.fromInt 1048576, mtime = Nothing, dir = Bytes.fromString "/d", name = Bytes.fromString "n" } ]
 
                 tell ref event t =
                     ShellTransfer.told { ref = ref, event = event } t
@@ -465,6 +466,39 @@ sftpSuite =
 
                     r ->
                         Just ("reads and writes: " ++ String.join ", " (Array.map String.fromInt r.counts))
+            )
+        , caseTest "an EUC-KR name goes into the shell's command as its own bytes"
+            (\_ ->
+                let
+                    -- 한'글.txt in EUC-KR: C7 D1, a quote, B1 DB
+                    name =
+                        Bytes.flatten [ Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xC7, 0xD1, 0x27, 0xB1, 0xDB ]), Bytes.fromString ".txt" ]
+
+                    started =
+                        ShellTransfer.start { piece = 32768, ahead = 131072, ref = 10 }
+                            [ Transfer.Upload { local = Path.fromString "x", size = Int64.fromInt 1, mtime = Nothing, dir = Bytes.fromString "/d", name = name } ]
+
+                    has needle hay =
+                        Array.any (\at -> Bytes.slice at (at + Bytes.length needle) hay == needle) (Array.range 0 (Bytes.length hay - Bytes.length needle))
+
+                    -- the quote, escaped by the script's quotes and again
+                    -- by sh -c's
+                    escaped =
+                        Bytes.flatten [ Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xC7, 0xD1 ]), Bytes.fromString "'\\''\\'\\'''\\''", Bytes.fromUInt8s (Array.map UInt8.fromInt [ 0xB1, 0xDB ]) ]
+                in
+                when started.channel is
+                    [ ShellTransfer.Open o ] ->
+                        if Bytes.toString o.command /= Nothing then
+                            Just "the command was made UTF-8"
+
+                        else if has escaped o.command then
+                            Nothing
+
+                        else
+                            Just ("the name's bytes and quote are not in the command as the shell needs: " ++ Bytes.toStringLossy o.command)
+
+                    _ ->
+                        Just "the look at the target was not opened"
             )
         , caseTest "the shell's upload cancelled while its command opens is closed once it starts"
             (\_ ->
@@ -2082,7 +2116,8 @@ sessionMode r target =
                                         Just found ->
                                             -- `--upload [OPTIONS] JOB...`, the rest of the
                                             -- arguments (ShellDrive, docs/sftp.md FT18)
-                                            uploadOverSession r.fs (Array.dropFirst (found.index + 1) r.args) sources
+                                            Os.Env.getEnvironment
+                                                |> Task.andThen (\env -> uploadOverSession r.fs (Array.dropFirst (found.index + 1) env.argsAsBytes) sources)
 
                                         Nothing ->
                                             watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 }
@@ -2092,7 +2127,7 @@ sessionMode r target =
 
 {-| `--upload …`: once the session has started, `ShellDrive`'s batch,
 and the session hung up. -}
-uploadOverSession : File.Permission -> Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never {}
+uploadOverSession : File.Permission -> Array Bytes -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never {}
 uploadOverSession fs args sources =
     untilSessionStarted sources
         |> Task.andThen
@@ -2400,7 +2435,7 @@ openSides args sources =
                     (\a ->
                         when { arg = a.arg, value = Array.get (a.index + 1) args } is
                             { arg = "--side-exec", value = Just command } ->
-                                [ \ref -> Session.OpenExec { ref = ref, command = command } ]
+                                [ \ref -> Session.OpenExec { ref = ref, command = Bytes.fromString command } ]
 
                             { arg = "--side-subsystem", value = Just name } ->
                                 [ \ref -> Session.OpenSubsystem { ref = ref, name = name } ]

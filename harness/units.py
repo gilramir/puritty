@@ -203,9 +203,10 @@ SUITES = [
     Suite(
         # sftp.md FT14: Ssh.Sftp reading packets split and joined, 64-bit
         # sizes, and the streams it refuses; 9 since FT18: the shell's
-        # upload paced by its queue, and cancelled while it opens
+        # upload paced by its queue, and cancelled while it opens; 10 since
+        # FT19: an EUC-KR name in its command as its own bytes
         "ssh-sftp",
-        9,
+        10,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "sftp"], cwd="packages/ssh/tests"),
             Run(

@@ -122,7 +122,7 @@ type Phase
 running a command or a subsystem. -}
 type Kind
     = Main
-    | Exec String
+    | Exec Bytes
     | Subsystem String
 
 
@@ -361,8 +361,10 @@ opening session direct request =
 
 {-| A side channel that runs `command` (an `exec` request, no terminal),
 on a connection whose session has started: its number, for its
-[`SideEvent`](#SideEvent)s and [`writeSide`](#writeSide). -}
-openExec : String -> Connection -> { channel : Int, step : Step }
+[`SideEvent`](#SideEvent)s and [`writeSide`](#writeSide). The command is
+bytes, as SSH sends it, so that a name in it can be in the host's own
+character set, EUC-KR as well as UTF-8 (puritty `docs/sftp.md` FT19). -}
+openExec : Bytes -> Connection -> { channel : Int, step : Step }
 openExec command conn =
     openSide (Exec command) conn
 
@@ -420,7 +422,7 @@ afterOpen id ch st =
                     sessionRequests ch st.session
 
                 Exec command ->
-                    [ { payload = channelRequest ch "exec" True (Wire.writeText command), awaits = Just "the command" } ]
+                    [ { payload = channelRequest ch "exec" True (Wire.writeString command), awaits = Just "the command" } ]
 
                 Subsystem name ->
                     [ { payload = channelRequest ch "subsystem" True (Wire.writeText name), awaits = Just ("the " ++ name ++ " subsystem") } ]

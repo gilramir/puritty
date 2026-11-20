@@ -47,6 +47,44 @@ def c_large(l, r):
     return ["up", l / "large.bin", r, "large.bin"]
 
 
+def locale(name, charmap):
+    """A locale of glibc's built here, for a host that runs in EUC-KR or
+    CP949: this machine has none, and localedef makes one from glibc's own
+    sources without root. Its directory, for LOCPATH."""
+    d = sshd.WORK / "locales"
+    if not (d / name).exists():
+        d.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["localedef", "-i", "ko_KR", "-f", charmap, str(d / name)], check=True, capture_output=True)
+    return d
+
+
+def in_locale(name, charmap):
+    """sshd_config lines that run the host's commands in that locale."""
+    d = locale(name, charmap)
+    return [f"SetEnv LOCPATH={d} LANG={name} LC_ALL={name}"]
+
+
+def locale_check(name, charmap, keys, korean):
+    """That the host's commands run in the locale: its name and character
+    set, and how many characters `wc -m` counts in two Korean ones, which
+    only that character set gets right (2, not the bytes' 4)."""
+    server = sshd.Server(in_locale(name, charmap))
+    kh = WORK / f"known_hosts.{name}"
+    kh.parent.mkdir(parents=True, exist_ok=True)
+    pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
+    kh.write_text(f"[127.0.0.1]:{server.port} {' '.join(pub)}\n")
+    octal = "".join(f"\\{c:03o}" for c in korean.encode(charmap.lower()))
+    try:
+        out = subprocess.run([str(CLIENT), "session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--identity", keys["ed"],
+                              "--known-hosts", str(kh), "--strict", "yes", "--exec",
+                              f"sh -c 'echo $LANG; locale charmap; printf \"{octal}\" | wc -m'"],
+                             capture_output=True, text=True, errors="backslashreplace", timeout=60)
+    finally:
+        server.stop()
+    lines = out.stdout.splitlines()
+    return "\n".join(lines[lines.index("started") + 1:]) + "\n"
+
+
 def c_not_allowed(l, r):
     transfer.put(l / "a.txt", b"a\n")
     return ["up", l / "a.txt", r, "a.txt"]
@@ -59,6 +97,10 @@ CASES = [(name, setup, True, []) for name, setup in transfer.CASES if name != "r
     ("not-allowed", c_not_allowed, False, []),
     ("host-has-sftp", c_not_allowed, True, [f"Subsystem sftp {SFTP_SERVER}"]),
 ]
+# the EUC-KR and CP949 cases again, the host's commands run in a locale of
+# that character set, as on a host set up in it
+CASES = [(n, s_, a_, in_locale("ko_KR.euckr", "EUC-KR") if n.startswith("euc-kr") else in_locale("ko_KR.cp949", "CP949") if n.startswith("cp949") else e)
+         for n, s_, a_, e in CASES]
 
 
 def run_case(name, setup, allow, extra, keys):
@@ -79,7 +121,7 @@ def run_case(name, setup, allow, extra, keys):
         out = subprocess.run([str(CLIENT), "session", "127.0.0.1", str(server.port), "--user", getpass.getuser(), "--identity", keys["ed"],
                               "--known-hosts", str(kh), "--strict", "yes", "--exec", "read x",
                               "--upload", *(["--allow-shell"] if allow else []), *args],
-                             capture_output=True, text=True, timeout=120, preexec_fn=lambda: os.umask(0o002))
+                             capture_output=True, text=True, errors="backslashreplace", timeout=120, preexec_fn=lambda: os.umask(0o002))
     finally:
         server.stop()
     said = out.stdout.replace(str(d), "DIR")
@@ -106,11 +148,15 @@ def main():
     keys = sshd.user_keys()[0]
     fails = 0
     ran = 0
-    for name, setup, allow, extra in CASES:
+    checks = [("locale-euc-kr", lambda: locale_check("ko_KR.euckr", "EUC-KR", keys, "한글")),
+              ("locale-cp949", lambda: locale_check("ko_KR.cp949", "CP949", keys, "똠방"))]
+    runs = checks + [(name, (lambda name=name, setup=setup, allow=allow, extra=extra: run_case(name, setup, allow, extra, keys)))
+                     for name, setup, allow, extra in CASES]
+    for name, go in runs:
         if a.only and name not in a.only:
             continue
         ran += 1
-        got = run_case(name, setup, allow, extra, keys)
+        got = go()
         pin = PINS / f"{name}.txt"
         if a.update:
             PINS.mkdir(parents=True, exist_ok=True)

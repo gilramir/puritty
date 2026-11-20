@@ -38,16 +38,20 @@ command, one after another:
 
 The file's bytes are its standard input, read on this computer a piece at
 a time as the channel's queue empties (`Connection.Sent`), so a large
-file is never all in memory. A name must be UTF-8 to go in a command.
+file is never all in memory. A command is bytes, and a name goes into
+it as its own bytes, so a host that names its files in EUC-KR is sent
+EUC-KR (FT19).
 -}
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
 import Int64
+import Os.Path as Path exposing (Path)
 import Ssh.Connection as Connection
 import Ssh.Reason as Reason
 import Ssh.Transfer exposing (Choice(..), Conflict, Event(..), Job(..), Local(..))
 import Time
+import UInt8
 
 
 {-| What the caller does with the session's side channels, by the
@@ -55,7 +59,7 @@ reference the engine gives each: `Open` a channel running `command`
 (`Session.OpenExec`), `Write` its standard input, `Eof` its end, `Close`
 it. Each channel's events go to [`told`](#told). -}
 type Channel
-    = Open { ref : Int, command : String }
+    = Open { ref : Int, command : Bytes }
     | Write { ref : Int, bytes : Bytes }
     | Eof Int
     | Close Int
@@ -213,7 +217,7 @@ onChannel c st =
     { st | channelQ = Array.pushLast c st.channelQ }
 
 
-openCommand : Int -> String -> Array Bytes -> Int64 -> State -> State
+openCommand : Int -> Bytes -> Array Bytes -> Int64 -> State -> State
 openCommand job command names size st =
     onChannel (Open { ref = st.ref, command = command })
         { st
@@ -241,69 +245,95 @@ openCommand job command names size st =
 -- COMMANDS
 
 
-{-| A word for the shell: in single quotes, a `'` written `'\''`. -}
-quoted : String -> String
-quoted s =
-    "'" ++ String.replace "'" "'\\''" s ++ "'"
+{-| Text and bytes joined as one command: text as UTF-8, which is ASCII
+here, and names as their own bytes, in whatever character set the host
+names its files (FT19). -}
+type Piece
+    = T String
+    | B Bytes
+
+
+glue : Array Piece -> Bytes
+glue pieces =
+    Bytes.flatten
+        (Array.map
+            (\p ->
+                when p is
+                    T text ->
+                        Bytes.fromString text
+
+                    B bytes ->
+                        bytes
+            )
+            pieces
+        )
+
+
+{-| A word for the shell: in single quotes, a `'` written `'\''`. Inside
+single quotes `sh` takes every byte as it is but the quote itself, so a
+name's bytes go in untouched: EUC-KR's and CP949's never include 0x27,
+whose bytes past ASCII are 0x81 to 0xFE and whose second bytes in ASCII
+are letters. -}
+quoted : Bytes -> Bytes
+quoted b =
+    Bytes.flatten [ Bytes.fromString "'", quoteFrom 0 0 b [], Bytes.fromString "'" ]
+
+
+quoteFrom : Int -> Int -> Bytes -> Array Bytes -> Bytes
+quoteFrom from at b pieces =
+    if at >= Bytes.length b then
+        Bytes.flatten (Array.pushLast (Bytes.slice from at b) pieces)
+
+    else if Bytes.get at b == Just (UInt8.fromInt 39) then
+        quoteFrom (at + 1) (at + 1) b (Array.pushLast (Bytes.fromString "'\\''") (Array.pushLast (Bytes.slice from at b) pieces))
+
+    else
+        quoteFrom from (at + 1) b pieces
 
 
 {-| The script run by `sh`, whatever the login shell is. -}
-underSh : String -> String
+underSh : Bytes -> Bytes
 underSh script =
-    "sh -c " ++ quoted script
+    Bytes.flatten [ Bytes.fromString "sh -c ", quoted script ]
 
 
-textOf : Bytes -> Maybe String
-textOf b =
-    Bytes.toString b
-
-
-joined : String -> String -> String
+joined : Bytes -> Bytes -> Bytes
 joined dir name =
-    if String.endsWith "/" dir then
-        dir ++ name
+    if Bytes.get (Bytes.length dir - 1) dir == Just (UInt8.fromInt 47) then
+        Bytes.flatten [ dir, name ]
 
     else
-        dir ++ "/" ++ name
+        Bytes.flatten [ dir, Bytes.fromString "/", name ]
 
 
 {-| For each upload, a line: its number, then `d` for a folder, `-` for
 nothing, or `f`, the size, and the time where `date -r` gives one. -}
-lookScript : Array Job -> String
+lookScript : Array Job -> Bytes
 lookScript jobs =
     Array.indexedMap
         (\i j ->
             when j is
                 Upload u ->
-                    when { dir = textOf u.dir, name = textOf u.name } is
-                        { dir = Just dir, name = Just name } ->
-                            let
-                                n =
-                                    String.fromInt i
-                            in
-                            "p="
-                                ++ quoted (joined dir name)
-                                ++ "; if [ -d \"$p\" ]; then echo "
-                                ++ n
-                                ++ " d; elif [ -e \"$p\" ] || [ -L \"$p\" ]; then set -- $(ls -lnd -- \"$p\"); echo "
-                                ++ n
-                                ++ " f \"$5\" $(date -r \"$p\" +%s 2>/dev/null); else echo "
-                                ++ n
-                                ++ " -; fi"
-
-                        _ ->
-                            ""
+                    let
+                        n =
+                            String.fromInt i
+                    in
+                    [ T "p="
+                    , B (quoted (joined u.dir u.name))
+                    , T ("; if [ -d \"$p\" ]; then echo " ++ n ++ " d; elif [ -e \"$p\" ] || [ -L \"$p\" ]; then set -- $(ls -lnd -- \"$p\"); echo ")
+                    , T (n ++ " f \"$5\" $(date -r \"$p\" +%s 2>/dev/null); else echo " ++ n ++ " -; fi\n")
+                    ]
 
                 Download _ ->
-                    ""
+                    []
 
                 MakeDir _ ->
-                    ""
+                    []
         )
         jobs
-        |> Array.keepIf (\line -> line /= "")
-        |> Array.pushFirst "set -f"
-        |> String.join "\n"
+        |> Array.flatten
+        |> Array.pushFirst (T "set -f\n")
+        |> glue
 
 
 {-| `CCYYMMDDhhmm.SS` in UTC, as `touch -t` takes under `TZ=UTC0`. -}
@@ -369,34 +399,33 @@ monthNumber m =
 its time set; renamed to the first of `names` not there, whose number
 (from 1) it prints. Every failure removes the part before saying why,
 since the channel may be gone by then. -}
-newFileScript : { dir : String, name : String, size : Int64, mtime : Maybe Int64, names : Array String } -> String
+newFileScript : { dir : Bytes, name : Bytes, size : Int64, mtime : Maybe Int64, names : Array Bytes } -> Bytes
 newFileScript f =
-    String.join "; "
-        [ "d=" ++ quoted f.dir
-        , "if [ ! -d \"$d\" ]; then echo \"there is no folder $d\" >&2; exit 1; fi"
-        , "p=" ++ quoted (joined f.dir ("." ++ f.name ++ ".puritty-part"))
-        , "rm -f -- \"$p\" || exit 1"
-        , "set -C"
-        , "cat > \"$p\" || exit 1"
-        , "set +C"
-        , "if [ \"$(wc -c < \"$p\")\" -ne " ++ String.fromInt64 f.size ++ " ]; then rm -f -- \"$p\"; echo \"the upload stopped before its end\" >&2; exit 1; fi"
-        , touched "$p" f.mtime "rm -f -- \"$p\"; "
-        , "n=0; t="
-        , "for f in " ++ String.join " " (Array.map (\name -> quoted (joined f.dir name)) f.names) ++ "; do n=$((n+1)); if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then t=$f; break; fi; done"
-        , "if [ -z \"$t\" ]; then rm -f -- \"$p\"; echo " ++ quoted (f.name ++ " is there already") ++ " >&2; exit 1; fi"
-        , "mv -f -- \"$p\" \"$t\" && echo $n"
+    glue
+        [ T "d="
+        , B (quoted f.dir)
+        , T "; if [ ! -d \"$d\" ]; then echo \"there is no folder $d\" >&2; exit 1; fi; p="
+        , B (quoted (joined f.dir (Bytes.flatten [ Bytes.fromString ".", f.name, Bytes.fromString ".puritty-part" ])))
+        , T "; rm -f -- \"$p\" || exit 1; set -C; cat > \"$p\" || exit 1; set +C"
+        , T ("; if [ \"$(wc -c < \"$p\")\" -ne " ++ String.fromInt64 f.size ++ " ]; then rm -f -- \"$p\"; echo \"the upload stopped before its end\" >&2; exit 1; fi; ")
+        , T (touched "$p" f.mtime "rm -f -- \"$p\"; ")
+        , T "; n=0; t=; for f in"
+        , B (Bytes.flatten (Array.map (\name -> Bytes.flatten [ Bytes.fromString " ", quoted (joined f.dir name) ]) f.names))
+        , T "; do n=$((n+1)); if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then t=$f; break; fi; done; if [ -z \"$t\" ]; then rm -f -- \"$p\"; echo "
+        , B (quoted (Bytes.flatten [ f.name, Bytes.fromString " is there already" ]))
+        , T " >&2; exit 1; fi; mv -f -- \"$p\" \"$t\" && echo $n"
         ]
 
 
 {-| A file replaced: written in place, its size checked, its time set. -}
-inPlaceScript : { dir : String, name : String, size : Int64, mtime : Maybe Int64 } -> String
+inPlaceScript : { dir : Bytes, name : Bytes, size : Int64, mtime : Maybe Int64 } -> Bytes
 inPlaceScript f =
-    String.join "; "
-        [ "f=" ++ quoted (joined f.dir f.name)
-        , "cat > \"$f\" || exit 1"
-        , "if [ \"$(wc -c < \"$f\")\" -ne " ++ String.fromInt64 f.size ++ " ]; then echo " ++ quoted ("the upload stopped before its end; " ++ f.name ++ " is partly written") ++ " >&2; exit 1; fi"
-        , touched "$f" f.mtime ""
-        , "echo 1"
+    glue
+        [ T "f="
+        , B (quoted (joined f.dir f.name))
+        , T ("; cat > \"$f\" || exit 1; if [ \"$(wc -c < \"$f\")\" -ne " ++ String.fromInt64 f.size ++ " ]; then echo ")
+        , B (quoted (Bytes.flatten [ Bytes.fromString "the upload stopped before its end; ", f.name, Bytes.fromString " is partly written" ]))
+        , T (" >&2; exit 1; fi; " ++ touched "$f" f.mtime "" ++ "; echo 1")
         ]
 
 
@@ -410,9 +439,9 @@ touched file mtime cleanUp =
             meant Reason.NotSet ":"
 
 
-makeDirScript : String -> String
+makeDirScript : Bytes -> Bytes
 makeDirScript path =
-    "p=" ++ quoted path ++ "; if [ -d \"$p\" ]; then exit 0; fi; mkdir -- \"$p\""
+    glue [ T "p=", B (quoted path), T "; if [ -d \"$p\" ]; then exit 0; fi; mkdir -- \"$p\"" ]
 
 
 -- EVENTS
@@ -491,14 +520,14 @@ fill run st =
         { st | run = Just run }
 
 
-localOf : Int -> State -> String
+localOf : Int -> State -> Path
 localOf job st =
     when Array.get job st.jobs is
         Just (Upload u) ->
             u.local
 
         _ ->
-            meant Reason.NotKnown ""
+            meant Reason.NotKnown (Path.fromString "")
 
 
 {-| A piece read on this computer: written to the command's input. -}
@@ -655,22 +684,27 @@ lastLine s =
 lastName : Bytes -> Bytes
 lastName path =
     let
-        text =
-            Bytes.toStringLossy path
-
-        trimmed =
-            if String.endsWith "/" text then
-                String.dropLast 1 text
+        end =
+            if Bytes.get (Bytes.length path - 1) path == Just (UInt8.fromInt 47) then
+                Bytes.length path - 1
 
             else
-                text
+                Bytes.length path
     in
-    when String.split "/" trimmed |> Array.last is
-        Just name ->
-            Bytes.fromString name
+    Bytes.slice (afterSlash path (end - 1) + 1) end path
 
-        Nothing ->
-            meant Reason.NoMore path
+
+{-| The last `/` at or before `at`, or -1. -}
+afterSlash : Bytes -> Int -> Int
+afterSlash path at =
+    if at < 0 then
+        -1
+
+    else if Bytes.get at path == Just (UInt8.fromInt 47) then
+        at
+
+    else
+        afterSlash path (at - 1)
 
 
 doneJob : Int -> Bytes -> State -> State
@@ -857,39 +891,24 @@ startNext st0 =
             failJob i "SFTP is turned off on this host, and a download needs it" st
 
         Just (MakeDir m) ->
-            when textOf m.path is
-                Just path ->
-                    openCommand i (underSh (makeDirScript path)) [] (Int64.fromInt 0) st
-
-                Nothing ->
-                    meant Reason.FromOutside (failJob i notUtf8 st)
+            openCommand i (underSh (makeDirScript m.path)) [] (Int64.fromInt 0) st
 
         Just (Upload u) ->
-            when { dir = textOf u.dir, name = textOf u.name } is
-                { dir = Just dir, name = Just name } ->
-                    upload i u dir name st
-
-                _ ->
-                    failJob i notUtf8 st
+            upload i u st
 
 
-notUtf8 : String
-notUtf8 =
-    "its name is not UTF-8, which a command cannot carry here"
-
-
-upload : Int -> { local : String, size : Int64, mtime : Maybe Int64, dir : Bytes, name : Bytes } -> String -> String -> State -> State
-upload i u dir name st =
+upload : Int -> { local : Path, size : Int64, mtime : Maybe Int64, dir : Bytes, name : Bytes } -> State -> State
+upload i u st =
     let
         byPart names =
             openCommand i
-                (underSh (newFileScript { dir = dir, name = name, size = u.size, mtime = u.mtime, names = names }))
-                (Array.map Bytes.fromString names)
+                (underSh (newFileScript { dir = u.dir, name = u.name, size = u.size, mtime = u.mtime, names = names }))
+                names
                 u.size
                 st
 
         inPlace =
-            openCommand i (underSh (inPlaceScript { dir = dir, name = name, size = u.size, mtime = u.mtime })) [ u.name ] u.size st
+            openCommand i (underSh (inPlaceScript { dir = u.dir, name = u.name, size = u.size, mtime = u.mtime })) [ u.name ] u.size st
     in
     when Dict.get i st.theirs is
         Just AFolder ->
@@ -911,13 +930,13 @@ upload i u dir name st =
                         skipJob i st
 
                 KeepBoth ->
-                    byPart (Array.map (\n -> Bytes.toStringLossy (Ssh.Transfer.keepBothName n u.name)) (Array.range 2 50))
+                    byPart (Array.map (\n -> Ssh.Transfer.keepBothName n u.name) (Array.range 2 50))
 
         Just Missing ->
-            byPart [ name ]
+            byPart [ u.name ]
 
         Nothing ->
-            meant Reason.NotYet byPart [ name ]
+            meant Reason.NotYet (byPart [ u.name ])
 
 
 {-| Whether a time is later than another; not known, no. -}

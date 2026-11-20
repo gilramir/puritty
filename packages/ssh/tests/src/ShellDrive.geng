@@ -50,14 +50,17 @@ say line =
     Console.write (line ++ "\n")
 
 
-run : File.Permission -> Sources -> Array String -> Task String {}
-run fs sources args0 =
+run : File.Permission -> Sources -> Array Bytes -> Task String {}
+run fs sources raw =
     let
+        args0 =
+            TransferDrive.argsOf raw
+
         allowShell =
-            Array.member "--allow-shell" args0
+            Array.any (\a -> a.text == "--allow-shell") args0
 
         args =
-            Array.keepIf (\a -> a /= "--allow-shell") args0
+            Array.keepIf (\a -> a.text /= "--allow-shell") args0
 
         choice =
             when TransferDrive.option "--choice" args is
@@ -235,14 +238,14 @@ told : Event -> Drive -> Task String Drive
 told e d =
     when e is
         Conflicts cs ->
-            say ("conflicts: " ++ String.join ", " (Array.map (\c -> String.fromInt c.job ++ " " ++ Bytes.toStringLossy c.name) cs))
+            say ("conflicts: " ++ String.join ", " (Array.map (\c -> String.fromInt c.job ++ " " ++ TransferDrive.shown c.name) cs))
                 |> Task.map (\_ -> d)
 
         Progress p ->
             Task.succeed { d | progressed = d.progressed + 1, last = Just { bytes = p.bytes, total = p.total } }
 
         Done x ->
-            say ("done " ++ String.fromInt x.job ++ " as " ++ Bytes.toStringLossy x.as_) |> Task.map (\_ -> d)
+            say ("done " ++ String.fromInt x.job ++ " as " ++ TransferDrive.shown x.as_) |> Task.map (\_ -> d)
 
         Skipped x ->
             say ("skipped " ++ String.fromInt x.job) |> Task.map (\_ -> d)
@@ -281,7 +284,7 @@ doLocal l r =
     else
         when l is
             ReadPiece p ->
-                File.withHandle r.d.fs ForRead (Path.fromString p.path) (\h -> File.seek (FromStart p.offset) h |> Task.andThen (\_ -> readUpTo p.length h []))
+                File.withHandle r.d.fs ForRead p.path (\h -> File.seek (FromStart p.offset) h |> Task.andThen (\_ -> readUpTo p.length h []))
                     |> Task.map Ok
                     |> Task.onError (\e -> Task.succeed (Err e))
                     |> Task.mapError Os.Error.toString

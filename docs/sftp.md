@@ -1208,8 +1208,8 @@ to open, write, end and close `exec` channels (`Channel`: `Open`,
 `Write`, `Eof`, `Close`, each with a reference from a base the caller
 gives) and is told their events. Every command is `sh -c '…'`, so the
 login shell does not matter (zsh's ran them in the gate), each name in
-single quotes with `'` written `'\''`; a name that is not UTF-8 fails its
-job, since a command is text here.
+single quotes with `'` written `'\''`. (As first built, a name that was
+not UTF-8 failed its job, since a command was text; FT19 made it bytes.)
 
 - **One command looks at every target first**: `test -d`, `test -e`, the
   size from `ls -lnd` (fields, not the name, under `set -f`), and the
@@ -1258,3 +1258,62 @@ job, since a command is text here.
 Measured, 256 MiB to the local sshd, connecting included, three runs:
 241 to 243 MB/s, the bytes the same (SFTP's own was 320 MB/s with the
 connection made, FT17).
+
+## FT19 · Names in the host's own character set: EUC-KR (2026-11-20)
+
+*Why.* Gilbert: a user may be working in an EUC-KR environment. FT18's
+engine failed any name that was not UTF-8, because `Session.OpenExec`
+and `Connection.openExec` took the command as a `String`, written as
+UTF-8. SSH sends an `exec` command as bytes, and `sh` takes every byte
+inside single quotes as it is, but the quote: EUC-KR's bytes past ASCII
+are 0xA1 to 0xFE, and CP949's second bytes add 0x41 to 0x5A, 0x61 to
+0x7A and 0x81 to 0xFE, so neither ever makes 0x27. Nothing needed the
+limit. Local paths had the same flaw on this computer's side:
+`Ssh.Transfer`'s `Upload.local`, a download's `to`, `part` and
+`keepBoth`, and every `Local` action's path were `String`s.
+
+**Changed.**
+
+- `Connection.openExec` and `Session.OpenExec` take the command as
+  `Bytes`, sent with `Wire.writeString`. The paste's commands (FT13) are
+  made from text, as before, with `Bytes.fromString`. The session's own
+  `command` (a host's setting) is still text: it comes from the settings
+  file, which is UTF-8.
+- `Ssh.ShellTransfer` builds every script as bytes, each name spliced in
+  as it came, `'` written `'\''` byte by byte. Its `notUtf8` failure is
+  gone.
+- `Ssh.Transfer` and `Ssh.ShellTransfer` take local paths as `Os.Path`,
+  which holds a path's exact bytes (`Path.fromBytes`); the drivers read
+  their arguments as bytes (`Os.Env`'s `argsAsBytes`).
+
+Which character set a dropped file's name should be turned into, for a
+host whose `charset` is `euc-kr` while this computer names files in
+UTF-8, is step 5's: the drop knows both ends. The engines move names as
+the caller gives them.
+
+**Tested without an EUC-KR machine.** Linux names files by bytes, so a
+name's EUC-KR bytes are a name like any other; what has to be real is
+the host running in EUC-KR. glibc has no Korean locale installed here,
+and `localedef -i ko_KR -f EUC-KR` (and `-f CP949`) builds one from
+glibc's own sources without root, into the gate's work folder.
+`shell-transfer.py` runs the Korean cases with `SetEnv LOCPATH=… LANG=…
+LC_ALL=…` in the test sshd's config, so the login shell (zsh), `sh`,
+`wc`, `ls` and `mv` all run in that locale; two pinned checks show it
+holds (`locale charmap` says `EUC-KR` and `CP949`, and `wc -m` counts the
+4 bytes of 한글, and of CP949's 똠방, as 2 characters).
+
+- `transfer.py` (SFTP) and `shell-transfer.py` (the shell) each gain
+  three cases: EUC-KR names both ways (`한글 파일.txt`, `it's 한.txt`
+  with a quote inside, a folder `폴더` made and a file put in it, and over
+  SFTP a download `받은.bin`, part and all); keep both on an EUC-KR name
+  (`한글 파일 (2).txt`); and CP949's `똠방각하.txt`, whose 똠 is `8C 63`,
+  a second byte that is an ASCII `c`. Every file arrives under its own
+  bytes with its own bytes in it and its time kept. A name that is not
+  UTF-8 is pinned as its bytes, `\xc7\xd1…`.
+- A unit case (`sftp` suite, 10 now): `한'글.txt` in EUC-KR given to the
+  engine, whose command is not UTF-8 and holds `C7 D1`, the quote
+  escaped twice over (the script's quotes and `sh -c`'s), then `B1 DB`.
+  With the expected escape changed, it fails.
+
+All pass three runs in a row.
+
