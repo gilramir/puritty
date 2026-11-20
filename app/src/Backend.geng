@@ -48,6 +48,9 @@ command line does, for asking before a tab is closed (docs/tabs.md TB4);
 an ssh session answers `Nothing`, and `Main` asks from its own state.
 `directory` is where the program started is, as its `cd` left it, for a
 new tab opened there (TB4); an ssh session answers `Nothing`.
+`side` gives an ssh session the inputs that open and feed channels beside
+it on its connection (`docs/sftp.md` FT12, FT13); a pseudo terminal has
+none.
 -}
 type alias Backend =
     { read : Task Error Incoming
@@ -60,6 +63,7 @@ type alias Backend =
     , reconnect : Size -> Task Error {}
     , busy : Task Error (Maybe String)
     , directory : Task Error (Maybe Path)
+    , side : Maybe (Session.Input -> Task Error {})
     }
 
 
@@ -84,6 +88,7 @@ pty child =
                 , reconnect = \_ -> Task.succeed {}
                 , busy = Process.foreground terminal
                 , directory = Process.directory terminal
+                , side = Nothing
                 }
             )
 
@@ -126,6 +131,7 @@ ssh permissions options =
                                         |> Task.andThen (\_ -> Source.emit sources.inputs Session.Reconnect)
                             , busy = Task.succeed Nothing
                             , directory = Task.succeed Nothing
+                            , side = Just (\input -> Source.emit sources.inputs input)
                             }
                         )
             )

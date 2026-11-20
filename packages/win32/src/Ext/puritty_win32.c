@@ -31,7 +31,7 @@
  *
  * Events (WS12 steps 4 and 5): the size in cells (2), the focus (3), a
  * request to close (4), keys (1, WS5), the pointer (9, WS7), the IME (5 to
- * 8, WS6), the clipboard lost (10) and a paste's text come (11, WS8), each record as packages/x11's comment says, read so that Windows'
+ * 8, WS6), the clipboard lost (10), a paste's text come (11, WS8) and an image paste's bytes (14, docs/sftp.md FT13), each record as packages/x11's comment says, read so that Windows'
  * keys and pointer reach Geng as Linux's do:
  *
  *   - a key's code is X's keycode for the same key, from its scan code
@@ -2767,5 +2767,100 @@ geng_cancel puritty_win32_openLink(void *uri_bytes, geng_wait *wait) {
     HINSTANCE r = ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL);
     free(w);
     geng_succeed(wait, geng_slot_I4((INT_PTR) r > 32 ? 1 : 0));
+    return (geng_cancel) {0};
+}
+
+/* AN IMAGE PASTE (puritty docs/sftp.md FT13)
+ *
+ * A paste of the clipboard asks for its text when it has any, as before,
+ * and otherwise for its image as PNG, into the paste's buffer, told by
+ * record 14 as a paste's text is by 11. Windows' Snipping Tool puts a PNG on the
+ * clipboard (its registered "PNG" format), which is taken as it is; the
+ * Print Screen keys leave only a bitmap (CF_DIB, CF_DIBV5 and CF_BITMAP,
+ * measured in FT11), which the Windows Imaging Component encodes, while
+ * the clipboard is open, since the bitmap is the clipboard's. No image is
+ * an empty last record. */
+
+#include <wincodec.h>
+
+static const GUID im_CLSID_WICImagingFactory = {0xcacaf262, 0x9370, 0x4615, {0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a}};
+static const GUID im_IID_IWICImagingFactory = {0xec5ec8a9, 0xc395, 0x4314, {0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70}};
+static const GUID im_ContainerFormatPng = {0x1b7cfaf4, 0x713f, 0x473c, {0xbb, 0xcd, 0x61, 0x37, 0x42, 0x5f, 0xae, 0xaf}};
+
+static void take_bytes(const void *d, size_t n) {
+    free(pbuf);
+    pbuf = malloc(n ? n : 1);
+    if (pbuf && n) memcpy(pbuf, d, n);
+    plen = pbuf ? n : 0;
+}
+
+/* The bitmap encoded as PNG into the paste's buffer; nothing on a failure. */
+static void encode_png(HBITMAP bitmap) {
+    IWICImagingFactory *factory = NULL;
+    IWICBitmap *source = NULL;
+    IWICBitmapEncoder *encoder = NULL;
+    IWICBitmapFrameEncode *frame = NULL;
+    IPropertyBag2 *options = NULL;
+    IStream *stream = NULL;
+    HRESULT hr = CoCreateInstance(&im_CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &im_IID_IWICImagingFactory, (void **) &factory);
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateBitmapFromHBITMAP(factory, bitmap, NULL, WICBitmapIgnoreAlpha, &source);
+    if (SUCCEEDED(hr)) hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateEncoder(factory, &im_ContainerFormatPng, NULL, &encoder);
+    if (SUCCEEDED(hr)) hr = IWICBitmapEncoder_Initialize(encoder, stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr)) hr = IWICBitmapEncoder_CreateNewFrame(encoder, &frame, &options);
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameEncode_Initialize(frame, options);
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameEncode_WriteSource(frame, (IWICBitmapSource *) source, NULL);
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameEncode_Commit(frame);
+    if (SUCCEEDED(hr)) hr = IWICBitmapEncoder_Commit(encoder);
+    HGLOBAL g = NULL;
+    STATSTG stat;
+    if (SUCCEEDED(hr)) hr = IStream_Stat(stream, &stat, STATFLAG_NONAME);
+    if (SUCCEEDED(hr)) hr = GetHGlobalFromStream(stream, &g);
+    if (SUCCEEDED(hr) && g) {
+        void *d = GlobalLock(g);
+        if (d) take_bytes(d, (size_t) stat.cbSize.QuadPart);
+        GlobalUnlock(g);
+    }
+    if (options) IPropertyBag2_Release(options);
+    if (frame) IWICBitmapFrameEncode_Release(frame);
+    if (encoder) IWICBitmapEncoder_Release(encoder);
+    if (stream) IStream_Release(stream);
+    if (source) IWICBitmap_Release(source);
+    if (factory) IWICImagingFactory_Release(factory);
+}
+
+static void read_clipboard_image(void) {
+    plen = 0;
+    static UINT png;
+    if (!png) png = RegisterClipboardFormatW(L"PNG");
+    int has_png = png && IsClipboardFormatAvailable(png);
+    if (!has_png && !IsClipboardFormatAvailable(CF_BITMAP)) return;
+    if (!open_clipboard()) return;
+    if (has_png) {
+        HANDLE h = GetClipboardData(png);
+        const void *d = h ? GlobalLock(h) : NULL;
+        if (d) take_bytes(d, GlobalSize(h));
+        if (d) GlobalUnlock(h);
+    } else {
+        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        HBITMAP b = GetClipboardData(CF_BITMAP);
+        if (b) encode_png(b);
+    }
+    CloseClipboard();
+}
+
+/* A paste of the clipboard that may be a picture: its text when it holds
+ * any (record 11), else its picture (record 14), else nothing (an empty
+ * record 11). Read now; always 1, none is ever under way. */
+geng_cancel puritty_win32_pasteOrImage(geng_wait *wait) {
+    uint8_t r[2] = {11, 0};
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+        read_clipboard();
+    } else {
+        read_clipboard_image();
+        if (plen) r[0] = 14;
+    }
+    record(r, 2);
+    geng_succeed(wait, geng_slot_I4(1));
     return (geng_cancel) {0};
 }

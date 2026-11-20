@@ -112,6 +112,10 @@ type alias Model =
     , urgent : Bool
     , blinkAt : Int
     , syncSince : Int
+    , upload : Maybe Upload
+    , imagePaste : ImagePaste
+    , note : Maybe Note
+    , uploads : Int
     , title : String
     , closed : Bool
     , lost : Bool
@@ -281,7 +285,30 @@ type alias Tab =
     , tmux : TmuxMode.State
     , search : Maybe Search.State
     , syncSince : Int
+    , upload : Maybe Upload
     }
+
+
+{-| A picture pasted into a tab's ssh session (`docs/sftp.md` FT13), on its
+way to the host over a channel beside the session: the channel's number,
+the picture's size, and what the command on the host wrote and how it
+ended. -}
+type alias Upload =
+    { ref : Int, size : Int, out : Bytes, err : Bytes, status : Maybe Int }
+
+
+{-| A picture pasted from the clipboard (FT13), gathered as its pieces
+come. -}
+type ImagePaste
+    = NoImagePaste
+    | Gathering (Array Bytes)
+
+
+{-| A line at the window's bottom right saying what puritty did or could
+not do (FT13), until `until`, or until it is replaced when `until` is -1.
+-}
+type alias Note =
+    { text : String, failed : Bool, until : Int }
 
 
 {-| A tab's own: an id the loop's reads are told apart by, the name the
@@ -1222,6 +1249,10 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , urgent = True
                      , blinkAt = -1
                      , syncSince = -1
+                     , upload = Nothing
+                     , imagePaste = NoImagePaste
+                     , note = Nothing
+                     , uploads = 0
                      , title = ""
                      , closed = False
                      , lost = False
@@ -1449,7 +1480,7 @@ nextAt m =
             else
                 -1
     in
-    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)
+    Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest (Clock.soonest f b) m.settings.at) (TmuxMode.dueAt m.tmux)) m.saving.at) (closedDue m)) (Diag.due m.diag)) (noteDue m)
 
 
 {-| What the program is sent, queued: keys, replies, focus reports, a
@@ -2244,7 +2275,7 @@ race remote m0 =
                                                         |> Task.andThen (\next -> step remote ms next)
 
                                             Due ->
-                                                reloadIfDue ms (expireClosed ms (blink ms (tmuxTick ms m))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
+                                                reloadIfDue ms (expireNote ms (expireClosed ms (blink ms (tmuxTick ms m)))) |> Task.andThen (saveIfDue ms) |> Task.andThen (\next -> step next.remote ms next)
 
                                             Writable ->
                                                 step remote ms m
@@ -3898,8 +3929,298 @@ sshTold told m =
         Session.Asking ask ->
             sshAsked ask m
 
+        Session.Side side ->
+            Task.succeed (uploaded side m)
+
+        Session.Ended ->
+            Task.succeed (sshNoticed told (uploadLost m))
+
+        Session.Failed _ ->
+            Task.succeed (sshNoticed told (uploadLost m))
+
         _ ->
             Task.succeed (sshNoticed told m)
+
+
+-- A PICTURE PASTED (docs/sftp.md FT13)
+
+
+{-| How long a note stays up. -}
+noteMs : Int
+noteMs =
+    6000
+
+
+{-| A note put up, and the same in the log. A note kept (`kept`) stays
+until another replaces it. -}
+noteUp : { text : String, failed : Bool, kept : Bool } -> (taken m : Model) -> Model
+noteUp n m =
+    logLine "paste"
+        n.text
+        { m
+            | note =
+                Just
+                    { text = n.text
+                    , failed = n.failed
+                    , until =
+                        if n.kept then
+                            -1
+
+                        else
+                            Clock.after m.turnMs noteMs
+                    }
+            , urgent = True
+        }
+
+
+{-| The note gone when its time has come. -}
+expireNote : Int -> (taken m : Model) -> Model
+expireNote ms m =
+    when m.note is
+        Just n ->
+            if n.until >= 0 && Clock.reached n.until ms then
+                { m | note = Nothing, urgent = True }
+
+            else
+                m
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+noteDue : Model -> Int
+noteDue m =
+    when m.note is
+        Just n ->
+            n.until
+
+        Nothing ->
+            meant Reason.NotOpen -1
+
+
+{-| A size as a person reads it: bytes, KB or MB. -}
+sizeText : Int -> String
+sizeText n =
+    if n < 1024 then
+        String.fromInt n ++ " bytes"
+
+    else if n < 1048576 then
+        String.fromInt (n // 1024) ++ " KB"
+
+    else
+        String.fromInt (n // 1048576) ++ "." ++ String.fromInt (modBy 1048576 n * 10 // 1048576) ++ " MB"
+
+
+{-| The clipboard's picture, PNG, pasted as a file's name where the tab's
+program runs: over a channel beside an ssh session, to the host's
+`~/.cache/puritty/paste`; on Linux, for a local tab, to a folder of
+puritty's (`Platform.pasteDirectory`); on Windows, for a local tab, an
+empty bracketed paste, which Claude Code in WSL takes as the cue to read
+the clipboard itself, as Windows Terminal sends it. A tab on OpenSSH's
+`ssh` has no channel puritty can use, and says so. No picture: nothing.
+-}
+imagePasted : Bytes -> (taken m : Model) -> Task Error Model
+imagePasted png m =
+    if Bytes.isEmpty png then
+        Task.succeed (logLine "paste" "the clipboard holds no text and no picture" m)
+
+    else
+        when m.remote.side is
+            Just side ->
+                uploadImage side png m
+
+            Nothing ->
+                -- a tab with no ssh session of puritty's: on this computer, or
+                -- OpenSSH's ssh
+                meant Reason.NotOpen
+                    if m.tab.host /= Nothing then
+                        Task.succeed (noteUp { text = "The picture can't be pasted: this tab's ssh is OpenSSH's, which puritty can't send a file through (set client = \"built-in\")", failed = True, kept = False } m)
+
+                    else
+                        Os.Env.getEnvironmentVariables
+                            |> Task.andThen
+                                (\vars ->
+                                    when Platform.pasteDirectory vars is
+                                        Just dir ->
+                                            localImage dir png m
+
+                                        Nothing ->
+                                            meant Reason.NotSet Task.succeed (emptyPaste m)
+                                )
+
+
+{-| What the host runs to keep a pasted picture: a file of its own made by
+`mktemp` (mode 0600) in `~/.cache/puritty/paste`, its bytes from standard
+input, renamed to end `.png` once all are there, and its path written
+back. Pictures there older than a day are removed first. It runs under
+`sh`, whatever the user's shell is. -}
+uploadCommand : String
+uploadCommand =
+    "sh -c 'umask 077; d=\"${XDG_CACHE_HOME:-$HOME/.cache}/puritty/paste\"; mkdir -p \"$d\" || exit 1; find \"$d\" -type f -mmin +1440 -exec rm -f {} + 2>/dev/null; f=$(mktemp \"$d/paste.XXXXXXXX\") && cat > \"$f\" && mv \"$f\" \"$f.png\" && printf \"%s.png\" \"$f\"'"
+
+
+uploadImage : (Session.Input -> Task Error {}) -> Bytes -> (taken m : Model) -> Task Error Model
+uploadImage side png m =
+    let
+        connected =
+            when m.ssh is
+                Just screen ->
+                    screen.started && screen.failed == Nothing && screen.exitStatus == Nothing
+
+                Nothing ->
+                    meant Reason.NotSet False
+
+        ref =
+            m.uploads + 1
+    in
+    if m.upload /= Nothing then
+        Task.succeed (noteUp { text = "A picture is still being sent to the host; paste again when it is done", failed = True, kept = False } m)
+
+    else if not connected then
+        Task.succeed (noteUp { text = "The picture can't be pasted: the tab is not connected", failed = True, kept = False } m)
+
+    else
+        side (Session.OpenExec { ref = ref, command = uploadCommand })
+            |> Task.andThen (\_ -> side (Session.SideWrite { ref = ref, bytes = png }))
+            |> Task.andThen (\_ -> side (Session.SideEof ref))
+            |> Task.map
+                (\_ ->
+                    noteUp { text = "Sending the picture (" ++ sizeText (Bytes.length png) ++ ") to the host", failed = False, kept = True }
+                        { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing }, uploads = ref }
+                )
+
+
+{-| What the channel carrying a picture told: its output kept, and at its
+end the file's path pasted, or why it could not be. -}
+uploaded : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Model
+uploaded side m =
+    when m.upload is
+        Just u ->
+            if u.ref /= side.ref then
+                m
+
+            else
+                when side.event is
+                    Connection.Output b ->
+                        { m | upload = Just { u | out = Bytes.flatten [ u.out, b ] } }
+
+                    Connection.ErrorOutput b ->
+                        { m | upload = Just { u | err = Bytes.flatten [ u.err, b ] } }
+
+                    Connection.Refused why ->
+                        { m | upload = Just { u | err = Bytes.flatten [ u.err, Bytes.fromString why ] } }
+
+                    Connection.Exited status ->
+                        { m | upload = Just { u | status = Just status } }
+
+                    Connection.Killed _ ->
+                        { m | upload = Just { u | status = Just 255 } }
+
+                    Connection.Ended ->
+                        uploadDone u { m | upload = Nothing }
+
+                    _ ->
+                        m
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+uploadDone : Upload -> (taken m : Model) -> Model
+uploadDone u m =
+    let
+        path =
+            String.trim (Bytes.toStringLossy u.out)
+
+        said =
+            String.trim (Bytes.toStringLossy u.err)
+    in
+    if u.status == Just 0 && path /= "" then
+        pasteIn False (Bytes.fromString (quotedPath path)) (noteUp { text = "Pasted the picture as " ++ path, failed = False, kept = False } m)
+
+    else
+        noteUp
+            { text =
+                "The picture could not be sent to the host: "
+                    ++ (if said /= "" then
+                            String.join " " (String.lines said)
+
+                        else
+                            when u.status is
+                                Just status ->
+                                    "its command ended with status " ++ String.fromInt status
+
+                                Nothing ->
+                                    meant Reason.FromOutside "the channel closed"
+                       )
+            , failed = True
+            , kept = False
+            }
+            m
+
+
+{-| A path pasted whole: in double quotes when it has a space, which Claude
+Code takes off. -}
+quotedPath : String -> String
+quotedPath path =
+    if String.contains " " path then
+        "\"" ++ path ++ "\""
+
+    else
+        path
+
+
+{-| A picture on its way when the session ended: said, and forgotten. -}
+uploadLost : (taken m : Model) -> Model
+uploadLost m =
+    if m.upload /= Nothing then
+        noteUp { text = "The connection ended before the picture was sent", failed = True, kept = False } { m | upload = Nothing }
+
+    else
+        m
+
+
+{-| A picture pasted in a local tab on Linux: written to `dir`, its path
+pasted. -}
+localImage : String -> Bytes -> (taken m : Model) -> Task Error Model
+localImage dir png m =
+    let
+        n =
+            m.uploads + 1
+
+        folder =
+            Path.fromString dir
+
+        file =
+            Path.append (Path.fromString ("paste-" ++ String.fromInt m.turnMs ++ "-" ++ String.fromInt n ++ ".png")) folder
+
+        fs =
+            m.settings.given.fs
+    in
+    Directory.createAll fs folder
+        |> Task.andThen (\_ -> File.writeFile fs png file)
+        |> Task.map (\_ -> Ok {})
+        |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+        |> Task.map
+            (\written ->
+                when written is
+                    Ok _ ->
+                        pasteIn False (Bytes.fromString (quotedPath (Path.toString file))) (noteUp { text = "Pasted the picture as " ++ Path.toString file, failed = False, kept = False } { m | uploads = n })
+
+                    Err why ->
+                        meant Reason.Refused noteUp { text = "The picture could not be written: " ++ why, failed = True, kept = False } m
+            )
+
+
+{-| A picture pasted in a local tab on Windows: an empty bracketed paste,
+where the program asked for bracketed pastes. -}
+emptyPaste : (taken m : Model) -> Model
+emptyPaste m =
+    if modeOn 2004 m && not (TmuxMode.isOn m.tmux) then
+        logLine "paste" "a picture: an empty bracketed paste sent, for the program to read the clipboard" (send (Bytes.flatten [ Paste.bracketStart, Paste.bracketEnd ]) m)
+
+    else
+        logLine "paste" "a picture, and the program asked for no bracketed paste: nothing sent" m
 
 
 {-| A question that may be remembered (`docs/saved-secrets.md` PW8):
@@ -5090,6 +5411,27 @@ handleOne remote ms rest ev m =
                             )
                     )
 
+        Window.PastedImage more ->
+            Window.pasted
+                |> Task.andThen
+                    (\bytes ->
+                        let
+                            got =
+                                when m.imagePaste is
+                                    Gathering pieces ->
+                                        Array.pushLast bytes pieces
+
+                                    _ ->
+                                        [ bytes ]
+                        in
+                        if more then
+                            handle remote ms rest { m | imagePaste = Gathering got }
+
+                        else
+                            imagePasted (Bytes.flatten got) { m | imagePaste = NoImagePaste, turnMs = ms }
+                                |> Task.andThen (handle remote ms rest)
+                    )
+
         Window.SelectionLost which ->
             -- another program's selection now: the highlight goes,
             -- as xterm takes it away
@@ -5127,7 +5469,14 @@ owned remote ms rest m =
             meant Reason.NoMore
                 when m.toPaste is
                     Just which ->
-                        Window.paste which
+                        -- the clipboard's text, or its picture when it holds
+                        -- no text (docs/sftp.md FT13)
+                        (if which == Window.Clipboard && m.config.pasteImages && m.clipRead == Nothing then
+                            Window.pasteOrImage
+
+                         else
+                            Window.paste which
+                        )
                             |> Task.andThen
                                 (\_ ->
                                     handle remote
@@ -5142,7 +5491,7 @@ owned remote ms rest m =
                                                         "the clipboard"
                                                    )
                                             )
-                                            { m | toPaste = Nothing }
+                                            { m | toPaste = Nothing, imagePaste = NoImagePaste }
                                         )
                                 )
 
@@ -6281,10 +6630,19 @@ draw ms m =
                     )
                     m.search
 
+        -- a note of what puritty did (docs/sftp.md FT13)
+        noteDrawn =
+            when m.note is
+                Just n ->
+                    Dialog.noteBar overlay { text = n.text, failed = n.failed }
+
+                Nothing ->
+                    meant Reason.NotOpen Bytes.empty
+
         -- every cell drawn while anything is over them, and in the frame
         -- the last of it goes: a scroll's copy would carry it along
         over =
-            boxed || not (Bytes.isEmpty bar) || searchDrawn /= Nothing
+            boxed || not (Bytes.isEmpty bar) || searchDrawn /= Nothing || not (Bytes.isEmpty noteDrawn)
 
         shadow0 =
             if over || m.overlaid then
@@ -6378,7 +6736,7 @@ draw ms m =
                         else
                             View.frameWith m.look m.focus preedit highlight m.term shadow0
     in
-    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list searchDrawn), Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list boxDrawn) ])
+    Window.draw (Bytes.flatten [ f.list, tabsDrawn, bar, noteDrawn, Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list searchDrawn), Maybe.withDefault (meant Reason.NotOpen Bytes.empty) (Maybe.map .list boxDrawn) ])
         |> Task.andThen (\up -> Window.spot (Maybe.withDefault (meant Reason.NotOpen Maybe.withDefault (meant Reason.NotOpen spot) (Maybe.map .spot searchDrawn)) (Maybe.map .spot boxDrawn)) |> Task.map (\_ -> up))
         |> Task.andThen
             (\up ->
@@ -6687,6 +7045,7 @@ swapTab t m =
         , tmux = m.tmux
         , search = m.search
         , syncSince = m.syncSince
+        , upload = m.upload
         }
     , model =
         { m
@@ -6706,6 +7065,7 @@ swapTab t m =
             , tmux = t.tmux
             , search = t.search
             , syncSince = t.syncSince
+            , upload = t.upload
         }
     }
 
@@ -7044,6 +7404,7 @@ freshTab id remote host name color cols rows m =
     , tmux = freshTmux m.config m.term
     , search = Nothing
     , syncSince = -1
+    , upload = Nothing
     }
 
 
@@ -7084,6 +7445,7 @@ reopened k id remote host m =
         , tmux = freshTmux m.config m.term
         , search = Nothing
         , syncSince = -1
+        , upload = Nothing
     }
 
 

@@ -16,6 +16,7 @@ module Window exposing
     , motion
     , open
     , paste
+    , pasteOrImage
     , pasted
     , raise
     , resize
@@ -47,7 +48,7 @@ The loop waits on [`events`](#events) in its race, and after the race
 [`take`](#take)s what came (`docs/phase2-window.md` §12): keys, a new size
 in cells, the focus, a request to close (V36).
 
-@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasted, sound, events, take, Event, PointerEvent
+@docs Settings, Cell, open, setFont, fonts, raise, menu, systemMenu, jumpList, warning, draw, shot, setTitle, attention, setPointer, Pointer, spot, zoom, resize, setPadding, motion, select, Selection, paste, pasteOrImage, pasted, sound, events, take, Event, PointerEvent
 
 -}
 
@@ -281,7 +282,23 @@ paste which =
 pasteExtern : Int -> Task x Int
 
 
-{-| The paste's text since it was last taken, UTF-8. -}
+{-| A paste of the clipboard that may be a picture (puritty
+`docs/sftp.md` FT13): its text when it holds any, told by `Pasted` events
+as [`paste`](#paste)'s; else its picture as PNG, told by `PastedImage`
+events; with neither, a `Pasted` with nothing. `pasted` takes what came.
+False when another paste is under way and this one is not made. -}
+pasteOrImage : Task x Bool
+pasteOrImage =
+    pasteOrImageExtern
+        |> Task.map (\r -> r == 1)
+
+
+@extern(c, "puritty_x11_pasteOrImage")
+pasteOrImageExtern : Task x Int
+
+
+{-| The paste's text, or an image paste's bytes, since it was last taken;
+text in UTF-8. -}
 pasted : Task x Bytes
 pasted =
     pastedExtern
@@ -526,6 +543,7 @@ type Event
     | Pointer PointerEvent
     | SelectionLost Selection
     | Pasted Bool
+    | PastedImage Bool
     | MenuChosen { menu : Int, index : Int }
     | Rescaled Cell
     | Note String
@@ -681,6 +699,9 @@ decode b at acc =
 
             11 ->
                 decode b (advance b at 2) (Array.pushLast (Pasted (byte 1 == 1)) acc)
+
+            14 ->
+                decode b (advance b at 2) (Array.pushLast (PastedImage (byte 1 == 1)) acc)
 
             12 ->
                 decode b (advance b at 4) (Array.pushLast (MenuChosen { menu = byte 1, index = u16 2 }) acc)

@@ -786,3 +786,82 @@ on beelink1 too.
   files are at most tens of MB; step 4's transfer engine needs a notice
   of how much waits.
 - A side channel closed before the server confirms it is not closed.
+
+## FT13 · Step 2 built: a screenshot pasted as a file's name (2026-11-19)
+
+`feature-plan.md` §8, with `image-paste.md` IP4's details and IP6's
+answers.
+
+**The platform asks for text or a picture in one step.** `Window.pasteOrImage`
+(both platforms) pastes the clipboard's text when it has any, told by
+`Pasted` events as before, and otherwise its picture as PNG, told by a new
+record (14) and `PastedImage` events; `pasted` takes either.
+
+- *X11* asks the clipboard's owner for its `TARGETS` first: any text
+  target (`UTF8_STRING`, `STRING`, `TEXT`, `text/plain;charset=utf-8`)
+  means text; else `image/png` is asked for and read as a paste's text
+  is, INCR pieces too; an owner that won't say its targets is asked for
+  text. Asking for text first and for the picture only when none came was
+  the first design, and it failed the first test: `xclip` holding only
+  `image/png` answers a request for `UTF8_STRING` with the PNG's bytes,
+  which were pasted as text.
+- *Windows*: `CF_UNICODETEXT` means text, as before. Else the
+  registered `PNG` format (the Snipping Tool's, FT11) is taken as it is,
+  and a bitmap alone (the Print Screen keys') is encoded by the Windows
+  Imaging Component through COM, while the clipboard is open, since the
+  bitmap is the clipboard's. No new library: WIC is reached with
+  `CoCreateInstance`, and `ole32` was linked already.
+
+**The app.** On the paste key, with `[clipboard] paste_images` on (the
+default; a new setting, with its Korean text), `Main` asks with
+`pasteOrImage`; a picture, gathered as its pieces come, is then put where
+the tab's program runs (`imagePasted`):
+
+- *A tab on the built-in client*: a side channel (FT12) runs, under `sh -c`
+  so that any login shell will do,
+  `umask 077; mkdir -p ~/.cache/puritty/paste; find … -mmin +1440 -exec rm
+  -f {} +; f=$(mktemp …/paste.XXXXXXXX) && cat > "$f" && mv "$f" "$f.png"
+  && printf "%s.png" "$f"` (`$XDG_CACHE_HOME` when set), with the picture
+  as its standard input. The path it writes back is pasted, bracketed, as
+  any paste, in double quotes if it has a space. Its failure, the
+  session's end before it finishes, a second picture while one is on its
+  way and a tab not connected are each said.
+- *A local tab on Linux*: written to `Platform.pasteDirectory`,
+  `$XDG_RUNTIME_DIR/puritty/paste` or `~/.cache/puritty/paste`, and its
+  path pasted.
+- *A local tab on Windows*: an empty bracketed paste, where the program
+  asked for bracketed pastes.
+- *A tab on OpenSSH's `ssh`*: refused, with why.
+
+What happened shows in a **note** at the window's bottom right
+(`Dialog.noteBar`): "Sending the picture (49 KB) to the host" while it
+goes, then "Pasted the picture as …", for six seconds, or the failure in
+red. The `Backend` record gained `side`, an ssh session's way to its side
+channels; a pseudo terminal has none.
+
+**Tested** (`harness/sshwindow.py`, puritty on Xvfb against the local
+sshd, the clipboard owned by `xclip`, the host's command
+`harness/sshwindow/paste-check.py`, which turns bracketed paste on and
+reads one paste):
+
+| case | the host received |
+|---|---|
+| `paste-picture` (a 971-byte PNG) | a path in `~/.cache/puritty/paste`, named `paste.*.png`, mode 0600, the picture's bytes exactly |
+| `paste-text` | `hello there`, as before |
+| `paste-picture-off` (`paste_images = false`) | 970 bytes that are not text: the paste asked for text, as before FT13, and `xclip` answered with the PNG, its CR LF made CR as a paste's are |
+
+The gate's 24 other cases are unchanged (27 of 27). It finds a window
+whose program set no title by its class now, as these cases' does.
+
+**Not yet tested: Windows.** The build compiles, and is on beelink1 for
+Gilbert to try with Claude Code over ssh, in tmux and in `tmux -CC`, with
+the Snipping Tool and with Alt+Print Screen (WIC); the local-tab paths
+(Linux's file, Windows' empty paste) are not tested either.
+
+**The compiler's memory.** A build of the app after these changes was
+killed under a 12 GB cap. Measured with every process the build starts
+sampled every 0.2 s: it is `geng`, the fork's Haskell backend, alone, at
+10.3 GB when any module changes (an 85-line one) and 16.6 GB when `Main`
+does, against 1.7 GB with all cached. Most of it is a pass over the whole
+program, which splitting `Main` cannot lower. Recorded in geng-lang's
+register, not fixed (D761); puritty builds under 24 GB.

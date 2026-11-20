@@ -159,6 +159,42 @@ second more to arrive over `ssh -X`.
 **A pane set to EUC-KR or CP949** sends a paste in that character set, as it
 does typed text. A character the set does not have is sent as `?`.
 
+### Pasting a picture
+
+When the clipboard holds a picture and no text, as it does after a
+screenshot, Ctrl+Shift+V pastes the picture **as a file's name**. Claude
+Code, and the other programs that accept a picture's path, take that as
+the picture itself. puritty puts the file on the computer where the tab's
+program runs:
+
+- **In a tab connected with puritty's own ssh** (the built-in client, the
+  default on Windows), the picture goes to the host over the tab's own
+  connection, with no second login, to
+  `~/.cache/puritty/paste/paste.XXXXXXXX.png`, readable only by you.
+  Pictures there older than a day are removed the next time you paste
+  one. A note at the bottom right says when it's being sent and where it
+  went.
+- **In a tab on this computer on Linux**, the file goes to
+  `$XDG_RUNTIME_DIR/puritty/paste/` (or `~/.cache/puritty/paste/`).
+- **In a tab on this computer on Windows**, puritty sends an empty
+  bracketed paste, as Windows Terminal does. Claude Code running in WSL
+  takes that as the cue to read the Windows clipboard itself.
+- **In a tab that runs OpenSSH's `ssh`** (`client = "openssh"`), puritty
+  has no way to send a file through that connection; a note says so.
+
+Any screenshot works on Windows: the Snipping Tool (Win+Shift+S or the
+Print Screen key) puts a PNG on the clipboard, which goes as it is;
+Alt+Print Screen and Win+Print Screen leave a bitmap, which puritty
+turns into a PNG first.
+
+When the clipboard holds text as well as a picture, the text is pasted.
+To paste pictures as plain data instead (the old way), turn it off:
+
+```toml
+[clipboard]
+paste_images = false
+```
+
 ---
 
 ## 4. Programs that copy for you: OSC 52
@@ -225,4 +261,5 @@ mode.
 | copy the selection to the clipboard | Ctrl+Shift+C |
 | paste the clipboard | Ctrl+Shift+V |
 | paste the selection | middle button (or right, `[mouse] paste_button`), or Shift+Insert |
+| paste a screenshot to a program on the host | Ctrl+Shift+V with a picture on the clipboard: the file's name is pasted (`[clipboard] paste_images`) |
 | let programs read the clipboard | `[clipboard] osc52_read = "allow"` (off by default) |

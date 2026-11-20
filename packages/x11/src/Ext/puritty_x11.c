@@ -50,6 +50,9 @@
  *     §14): 0 PRIMARY, 1 CLIPBOARD;
  *  11 a paste's text has come (docs/phase3-select.md §15): 1 when more is
  *     to come, 0 when it is the last; `puritty_x11_pasted` takes it.
+ *  14 an image paste's bytes have come (docs/sftp.md FT13), as 11: 1 when
+ *     more is to come, 0 when it is the last; `puritty_x11_pasted` takes
+ *     them, none when the clipboard has no image.
  *
  * Keys go through XIM when an input method is there (V44-V46,
  * docs/phase3-input.md §3): xcb-imdkit, patched (patches/), with an input
@@ -1482,7 +1485,7 @@ geng_cancel puritty_x11_setfont(int32_t points, void *font_bytes, void *lang_byt
  * last, from the event loop, so no request waits on another. */
 
 #define PIECE 262144
-static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste;
+static xcb_atom_t a_clipboard, a_targets, a_timestamp, a_text, a_plain, a_incr, a_paste, a_png;
 static struct {
     uint8_t *data;
     size_t len;
@@ -1498,11 +1501,11 @@ static struct {
 } xfer[8];
 
 static void selection_atoms(void) {
-    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE"};
-    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste};
-    xcb_intern_atom_cookie_t ck[7];
-    for (int i = 0; i < 7; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
-    for (int i = 0; i < 7; i++) {
+    const char *names[] = {"CLIPBOARD", "TARGETS", "TIMESTAMP", "TEXT", "text/plain;charset=utf-8", "INCR", "PURITTY_PASTE", "image/png"};
+    xcb_atom_t *out[] = {&a_clipboard, &a_targets, &a_timestamp, &a_text, &a_plain, &a_incr, &a_paste, &a_png};
+    xcb_intern_atom_cookie_t ck[8];
+    for (int i = 0; i < 8; i++) ck[i] = xcb_intern_atom(conn, 0, (uint16_t) strlen(names[i]), names[i]);
+    for (int i = 0; i < 8; i++) {
         xcb_intern_atom_reply_t *r = xcb_intern_atom_reply(conn, ck[i], NULL);
         *out[i] = r ? r->atom : XCB_ATOM_NONE;
         free(r);
@@ -1598,7 +1601,7 @@ static void selection_request(xcb_selection_request_event_t *q) {
  * and after the last an empty one, which ends it. */
 static void paste_read(void);
 static struct {
-    int active, incr, waiting, which, pending;
+    int active, incr, waiting, which, pending, image, probe;
     xcb_atom_t target;
     xcb_get_property_cookie_t cookie;
     double started;
@@ -1652,7 +1655,14 @@ static void selection_clear(xcb_selection_clear_event_t *c) {
  * are read as the owner puts them. What comes is kept here, UTF-8, and
  * a record says so; Geng takes it with puritty_x11_pasted. One paste at
  * a time: another asked for while one is under way is not made, unless
- * the first has waited 10 s for an owner that never answered. */
+ * the first has waited 10 s for an owner that never answered.
+ *
+ * A paste that may be a picture (docs/sftp.md FT13) asks the clipboard's
+ * owner for its TARGETS first: any text there is pasted as text; with
+ * none and image/png, the picture is asked for, read the same way, its
+ * bytes as they came, and said with record 14 in place of 11; with
+ * neither, a last record 11 with nothing. An owner that will not say its
+ * targets is asked for text. */
 
 static void paste_add(const uint8_t *d, size_t n) {
     if (plen + n > pcap) {
@@ -1664,7 +1674,7 @@ static void paste_add(const uint8_t *d, size_t n) {
 }
 
 static void paste_done(int more) {
-    uint8_t r[2] = {11, (uint8_t) more};
+    uint8_t r[2] = {(uint8_t) (pst.image ? 14 : 11), (uint8_t) more};
     record(r, 2);
     if (!more) pst.active = 0;
 }
@@ -1686,8 +1696,13 @@ static void paste_ask(xcb_atom_t target) {
 
 static void paste_notify(xcb_selection_notify_event_t *n) {
     if (!pst.active || n->requestor != window) return;
+    if (n->property == XCB_ATOM_NONE && pst.probe) {
+        pst.probe = 0;
+        paste_ask(utf8_string);
+        return;
+    }
     if (n->property == XCB_ATOM_NONE) {
-        if (pst.target == utf8_string) paste_ask(XCB_ATOM_STRING); /* an owner of Latin-1 alone */
+        if (pst.target == utf8_string && !pst.image) paste_ask(XCB_ATOM_STRING); /* an owner of Latin-1 alone */
         else paste_done(0);                                       /* nothing to paste */
         return;
     }
@@ -1706,13 +1721,31 @@ static void paste_poll(void) {
         return;
     }
     int len = xcb_get_property_value_length(r);
+    if (pst.probe) {
+        /* the owner's targets: text if it has any, else its picture */
+        pst.probe = 0;
+        const xcb_atom_t *t = xcb_get_property_value(r);
+        int n = r->type == XCB_ATOM_ATOM ? len / 4 : 0, text = 0, png = 0;
+        for (int i = 0; i < n; i++) {
+            if (t[i] == utf8_string || t[i] == XCB_ATOM_STRING || t[i] == a_text || t[i] == a_plain) text = 1;
+            if (t[i] == a_png) png = 1;
+        }
+        free(r);
+        if (text || !png) {
+            paste_ask(utf8_string);
+        } else {
+            pst.image = 1;
+            paste_ask(a_png);
+        }
+        return;
+    }
     if (r->type == a_incr) {
         /* the owner sends pieces as the property is deleted, which the read did */
         pst.incr = 1;
         if (pst.pending) paste_read();
     } else {
         const uint8_t *d = xcb_get_property_value(r);
-        if (r->type == XCB_ATOM_STRING) {
+        if (r->type == XCB_ATOM_STRING && !pst.image) {
             for (int i = 0; i < len; i++) {
                 uint8_t u[2] = {(uint8_t) (0xC0 | d[i] >> 6), (uint8_t) (0x80 | (d[i] & 63))};
                 if (d[i] < 0x80) paste_add(d + i, 1);
@@ -1739,9 +1772,34 @@ geng_cancel puritty_x11_paste(int32_t which, geng_wait *wait) {
         pst.waiting = 0;
         pst.pending = 0;
         pst.which = which;
+        pst.image = 0;
+        pst.probe = 0;
         pst.started = ns();
         plen = 0;
         paste_ask(utf8_string);
+        asked = 1;
+    }
+    geng_succeed(wait, geng_slot_I4(asked));
+    return (geng_cancel) {0};
+}
+
+/* A paste of CLIPBOARD that may be a picture: its targets asked for
+ * first, then its text or its image/png (record 11 or 14). Answers 1 when
+ * it is asked for, 0 when a paste is under way. */
+geng_cancel puritty_x11_pasteOrImage(geng_wait *wait) {
+    int asked = 0;
+    if (pst.active && ns() - pst.started > 10e9) pst.active = 0;
+    if (!pst.active) {
+        pst.active = 1;
+        pst.incr = 0;
+        pst.waiting = 0;
+        pst.pending = 0;
+        pst.which = 1;
+        pst.image = 0;
+        pst.probe = 1;
+        pst.started = ns();
+        plen = 0;
+        paste_ask(a_targets);
         asked = 1;
     }
     geng_succeed(wait, geng_slot_I4(asked));

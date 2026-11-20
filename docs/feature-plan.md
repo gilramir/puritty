@@ -314,13 +314,15 @@ and the settings window.
 the settings window; the per-pane overlay and the tmux settings helper
 right after phase 4, before images.
 
-## 8. A pasted screenshot reaching a remote program (2026-11-17, not decided)
+## 8. A pasted screenshot reaching a remote program (2026-11-17, built 2026-11-19)
 
 Gilbert, 2026-11-17: a screenshot taken on Windows, pasted into Claude
 Code running in puritty over ssh and tmux. Noted as a possible feature, to
 decide later.
 `image-paste.md` (2026-11-19) surveys how programs and terminals do it:
 no program takes an image through a paste; every one takes a path.
+Built 2026-11-19 as `sftp.md` FT13: the picture put where the tab's
+program runs, its path pasted; on by default (`[clipboard] paste_images`).
 
 **Today** a paste is text only (`CF_UNICODETEXT` on Windows,
 `UTF8_STRING` on X11), so an image on the clipboard pastes nothing.

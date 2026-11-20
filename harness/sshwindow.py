@@ -107,7 +107,24 @@ CASES = [
      "if [ -e {size} ]; then read l; echo $l >> {size}; exit 0; else echo first > {size}; (sleep 5; tmux -L sw-t kill-server; kill -9 $PPID) & tmux -L sw-t -f /dev/null -CC new-session; fi"),
     ("tmux-drop-in-flood", "ed", "", "known", ["sleep:4", "r", "type:hello", "Return"],
      "if [ -e {size} ]; then read l; echo $l >> {size}; exit 0; else echo first > {size}; (sleep 3; tmux -L sw-f kill-server; kill -9 $PPID) & tmux -L sw-f -f /dev/null -CC new-session 'seq 1 100000000'; fi"),
+    # a picture on the clipboard and no text, pasted (docs/sftp.md FT13):
+    # sent over a channel beside the session to ~/.cache/puritty/paste on
+    # the host, and its path pasted, bracketed; the remote command checks
+    # the file's bytes against the picture's. Then text, pasted as before.
+    # Then the picture with [clipboard] paste_images = false: the paste
+    # asks for text, as before FT13, and xclip, holding only image/png,
+    # answers a request for UTF8_STRING with the PNG's bytes, which are
+    # pasted as they are (why a paste that may be a picture asks for the
+    # owner's TARGETS first)
+    ("paste-picture", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
+    ("paste-text", "ed", "", "known", ["clip-text:hello there", "ctrl+shift+v", "sleep:2"], "python3 {check} {size} {picture}"),
+    ("paste-picture-off", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:9"], "python3 {check} {size} {picture}"),
 ]
+
+# settings a case's config.toml adds
+EXTRA = {"paste-picture-off": "\n[clipboard]\npaste_images = false\n"}
+PICTURE = ROOT / "harness" / "sshwindow" / "picture.png"
+CHECK = ROOT / "harness" / "sshwindow" / "paste-check.py"
 
 
 SHOTS = False
@@ -136,9 +153,9 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             jump = f'jump = "{getpass.getuser()}@127.0.0.1:{bastion.port}"\n'
         (home / "config" / "puritty" / "config.toml").write_text(
             f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
-            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size)}"\n' + jump
+            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size, check=CHECK, picture=PICTURE)}"\n' + jump
             # the diagnostic log, for a case that fails
-            + "\n[debug]\nlog = true\n")
+            + "\n[debug]\nlog = true\n" + EXTRA.get(name, ""))
         env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser(),
                    PURITTY_SHOT=str(home / "shot.ppm"))
         env.pop("SSH_AUTH_SOCK", None)
@@ -148,8 +165,12 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
         titles = []
         if presses:
             titles.append(reload.title_of(env))
-            win = subprocess.run([hosts.XDO, "search", "--sync", "--name", "^(puritty: ssh to|tmux: )"], env=env, capture_output=True,
-                                 text=True, timeout=10).stdout.split()
+            # by its title, puritty's own while its screen is up; a window
+            # whose program runs and set none, by its class
+            win = subprocess.run([hosts.XDO, "search", "--name", "^(puritty: ssh to|tmux: )"], env=env, capture_output=True,
+                                 text=True, timeout=10).stdout.split() \
+                or subprocess.run([hosts.XDO, "search", "--sync", "--class", "puritty"], env=env, capture_output=True,
+                                  text=True, timeout=10).stdout.split()
             for n, k in enumerate(presses):
                 if SHOTS:
                     # the window as the question is asked (docs/ssh-client.md SC23)
@@ -164,6 +185,12 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
                 elif k.startswith("sleep:"):
                     time.sleep(float(k[6:]))
                     titles.append(reload.title_of(env))
+                elif k == "clip-picture":
+                    # xclip owns the clipboard with the picture alone, and
+                    # leaves when another owns it, or with Xvfb
+                    subprocess.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-i", str(PICTURE)], env=env, check=True)
+                elif k.startswith("clip-text:"):
+                    subprocess.run(["xclip", "-selection", "clipboard", "-i"], input=k[10:].encode(), env=env, check=True)
                 elif k.startswith("type:"):
                     subprocess.run([hosts.XDO, "type", "--delay", "40", k[5:]], env=env, check=True)
                 else:
