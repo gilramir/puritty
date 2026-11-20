@@ -83,12 +83,21 @@ def host_listing(there, files):
             lines.append(f"  {rel}/")
             continue
         src = next((f for f in files.rglob(p.name.replace(" (2)", "")) if f.is_file()), None)
-        same = "" if src is None or src.stat().st_size > 1 << 20 else (", the dropped file's bytes" if src.read_bytes() == p.read_bytes() else ", OTHER bytes")
+        if src is None:
+            same = ""
+        elif src.stat().st_size > 1 << 20:
+            # a large one, compared a piece at a time
+            with open(src, "rb") as a, open(p, "rb") as b:
+                alike = all(x == y for x, y in iter(lambda: (a.read(1 << 20), b.read(1 << 20)), (b"", b"")))
+            same = ", the dropped file's bytes" if alike and src.stat().st_size == p.stat().st_size else ", OTHER bytes"
+        else:
+            same = ", the dropped file's bytes" if src.read_bytes() == p.read_bytes() else ", OTHER bytes"
         lines.append(f"  {rel}: {p.stat().st_size} bytes{same}")
     return lines
 
 
-def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False):
+def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False, size=4 << 30,
+                  wait=3):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
@@ -96,7 +105,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     if big:
         # one file, 4 GiB of a hole, long enough to send that it is cancelled
         with open(files / "big.bin", "wb") as f:
-            f.truncate(4 << 30)
+            f.truncate(size)
     else:
         for n in ["a plain.txt", "it's $HOME.txt", "한글 이름.txt"]:
             (files / n).write_text("x\n")
@@ -164,11 +173,13 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
             for n, k in enumerate(after):
                 if k.startswith("type:"):
                     xdo(env, "type", "--delay", "30", k[5:].replace("HOST", str(there)))
+                elif k.startswith("sleep:"):
+                    time.sleep(float(k[6:]))
                 else:
                     xdo(env, "key", k)
                 time.sleep(1.2)
                 subprocess.run(shot + [str(home / f"after-{n}.png")], env=env)
-        if big:
+        if big and name == "tmux-cancel":
             # the progress, a second and more on, and a click on it cancels
             time.sleep(2.5)
             subprocess.run(shot + [str(home / "progress.png")], env=env)
@@ -177,7 +188,7 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
             xdo(env, "mousemove", 1000, 434)
             xdo(env, "click", 1)
         # what is sent, given time to arrive
-        time.sleep(3)
+        time.sleep(wait)
     finally:
         for p in procs:
             if p.poll() is None:
@@ -309,7 +320,11 @@ def main():
          ("tmux-no-sftp-shell", lambda: run_tmux_case(env, "tmux-no-sftp-shell", (760, 250), keys, sftp=False, shell=True)),
          ("tmux-no-sftp", lambda: run_tmux_case(env, "tmux-no-sftp", (760, 250), keys, sftp=False)),
          # a long one: its progress, and a click on it cancels, no part left
-         ("tmux-cancel", lambda: run_tmux_case(env, "tmux-cancel", (760, 250), keys, items=("big",), big=True))]
+         ("tmux-cancel", lambda: run_tmux_case(env, "tmux-cancel", (760, 250), keys, items=("big",), big=True)),
+         # another tab shown while one sends (FT26): the sending goes on in
+         # its own session, its tab marked, and its end said with its name
+         ("switch-tab", lambda: run_tmux_case(env, "switch-tab", (950, 300), keys, tmux=False, items=("big",), big=True, size=512 << 20,
+                                              after=TO_HOST + ["sleep:2", "ctrl+shift+t", "sleep:3"], wait=30))]
     try:
         for name, go in runs:
             if a.only and name not in a.only:

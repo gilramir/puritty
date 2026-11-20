@@ -298,6 +298,11 @@ type alias Tab =
     , search : Maybe Search.State
     , syncSince : Int
     , upload : Maybe Upload
+    -- files dropped on the tab, on their way to its host, and the folder
+    -- chooser for them (docs/sftp.md FT24, FT25, FT26): the tab's, kept
+    -- with it when another is shown, since each talks to its own session
+    , sending : Maybe Sending.Sending
+    , choosing : Maybe Choosing
     }
 
 
@@ -4666,14 +4671,31 @@ sendingShown m =
         Just s ->
             when s.over is
                 Just said ->
-                    noteUp { text = said, failed = not (Array.isEmpty s.failed && Array.isEmpty s.refused) || s.done == 0, kept = False } { m | sending = Nothing }
+                    noteUp
+                        { text =
+                            if isShownTab m then
+                                said
+
+                            else
+                                -- a tab not shown: which one it was
+                                "In the tab " ++ tabLabel m.tab m.term.title ++ ": " ++ said
+                        , failed = not (Array.isEmpty s.failed && Array.isEmpty s.refused) || s.done == 0
+                        , kept = False
+                        }
+                        { m | sending = Nothing }
 
                 Nothing ->
                     -- still sending: its progress
                     meant Reason.NotYet
                         (when Sending.progressText m.turnMs s is
                             Just text ->
-                                { m | note = Just { text = text, failed = False, until = -1 } }
+                                -- over its own tab only: a tab not shown has
+                                -- its mark in the bar
+                                if isShownTab m then
+                                    { m | note = Just { text = text, failed = False, until = -1 } }
+
+                                else
+                                    m
 
                             Nothing ->
                                 -- under a second in: no progress shown
@@ -4682,6 +4704,13 @@ sendingShown m =
 
         Nothing ->
             meant Reason.NotOpen m
+
+
+{-| Whether the model's tab is the one on the screen, not one `atTab` has
+swapped in to handle what its session said. -}
+isShownTab : Model -> Bool
+isShownTab m =
+    Array.get m.shown m.order == Just m.tab.id
 
 
 {-| The session ended under a batch: said, and forgotten. -}
@@ -8117,7 +8146,7 @@ labelsOf i m acc =
             m
             (when Builder.get i m.tabs |> Maybe.andThen identity is
                 Just t ->
-                    Array.pushLast { id = t.info.id, label = statusMark (Vt.programStatus t.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet "")) ++ tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
+                    Array.pushLast { id = t.info.id, label = statusMark (Vt.programStatus t.term |> Maybe.map .state |> Maybe.withDefault (meant Reason.NotSet "")) ++ sendingMark t.sending ++ tabLabel t.info t.term.title, bell = t.info.bell, activity = t.info.activity, lost = sessionLost t.ssh, color = tabColorOf m.config t.info } acc
 
                 Nothing ->
                     meant Reason.Gone acc
@@ -8151,6 +8180,8 @@ swapTab t m =
         , search = m.search
         , syncSince = m.syncSince
         , upload = m.upload
+        , sending = m.sending
+        , choosing = m.choosing
         }
     , model =
         { m
@@ -8171,6 +8202,8 @@ swapTab t m =
             , search = t.search
             , syncSince = t.syncSince
             , upload = t.upload
+            , sending = t.sending
+            , choosing = t.choosing
         }
     }
 
@@ -8198,6 +8231,15 @@ afterSwitch m =
         , shadow = View.shadowIn m.term.cols m.term.rows m.windowRows
         , urgent = True
         , menu = Nothing
+        -- a note kept for work going on, such as a transfer's progress, is
+        -- the tab's that was shown: its mark in the bar says it goes on
+        -- (docs/sftp.md FT26)
+        , note =
+            if Maybe.map .until m.note == Just -1 then
+                Nothing
+
+            else
+                m.note
     }
 
 
@@ -8510,6 +8552,8 @@ freshTab id remote host name color cols rows m =
     , search = Nothing
     , syncSince = -1
     , upload = Nothing
+    , sending = Nothing
+    , choosing = Nothing
     }
 
 
@@ -8551,6 +8595,8 @@ reopened k id remote host m =
         , search = Nothing
         , syncSince = -1
         , upload = Nothing
+        , sending = Nothing
+        , choosing = Nothing
     }
 
 
@@ -8901,6 +8947,18 @@ endTab id kill m =
 -- THE BAR
 
 
+{-| A tab sending files marked in the bar, shown or not (FT6, FT26). -}
+sendingMark : Maybe Sending.Sending -> String
+sendingMark sending =
+    when sending is
+        Just _ ->
+            "↑ "
+
+        Nothing ->
+            -- a tab sending nothing, most of them
+            meant Reason.NotOpen ""
+
+
 {-| What a tab shows: the name given it, else its host's, else its
 program's title, else "shell", with `! ` once it rang. -}
 tabLabel : TabInfo -> String -> String
@@ -8976,7 +9034,7 @@ barTabs m =
 
         one id =
             if id == m.tab.id then
-                Just { id = id, label = lostMark (sessionLost m.ssh) (shownMark ++ tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
+                Just { id = id, label = lostMark (sessionLost m.ssh) (shownMark ++ sendingMark m.sending ++ tabLabel m.tab m.term.title), active = True, bell = False, activity = False, lost = sessionLost m.ssh, color = tabColorOf m.config m.tab }
 
             else
                 Array.findFirst (\h -> h.id == id) hidden |> Maybe.map (\f -> { id = id, label = lostMark f.value.lost f.value.label, active = False, bell = f.value.bell, activity = f.value.activity, lost = f.value.lost, color = f.value.color })

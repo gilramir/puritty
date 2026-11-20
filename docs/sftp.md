@@ -1738,3 +1738,32 @@ FT17), so it may not show there; on a faster link it would. Keeping the
 file open for its job, and the replies taken in batches, are the next
 step when measured.
 
+## FT26 · A batch keeps to its tab (2026-11-20)
+
+FT25's batch and FT24's chooser were the window's: they talked to the
+host through `m.remote`, the shown tab's session. Another tab shown
+mid-way, and the next piece would have gone to that tab's session, while
+the first tab's replies, read behind (`atTab`), reached no batch. Found
+by reading the code, not by a failure; FT6 says a transfer goes on when
+the user switches tabs, and its tab is marked.
+
+- **`sending` and `choosing` are the tab's**, in `Tab` beside the
+  picture's `upload` (which was already), swapped in and out with it
+  (`swapTab`). Its session's replies, read while it is not shown, are
+  handled with it swapped in, as everything a hidden tab's session says
+  is, so the batch goes on talking to its own host. A chooser or a
+  conflict question goes away with its tab and is there again with it.
+- **The bar marks a tab sending**: `↑ ` before its name, shown or not.
+- **Its progress is over its own tab only** (`isShownTab`: the tab
+  `atTab` swapped in is not the one `m.order` shows); its end is said
+  whichever tab is shown, "In the tab NAME: …" when it is another.
+- **A note kept for work going on** (a transfer's progress, a picture's
+  "Sending…") is dropped when another tab is shown: it was about the tab
+  left, whose mark says it goes on; its next progress puts it back.
+
+**Tested** (`harness/drop.py`, sixteen cases): `switch-tab`, 512 MiB of
+a sparse file dropped on an ssh tab and its folder chosen; two seconds
+in, Ctrl+Shift+T opens a second tab on the host and stays shown. The
+whole file arrives, every byte; the bar shows `↑ test` on the first tab
+(`after-5.png`); and the note says "In the tab test: Sent 1 item".
+
