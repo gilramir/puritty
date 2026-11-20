@@ -119,10 +119,33 @@ CASES = [
     ("paste-picture", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
     ("paste-text", "ed", "", "known", ["clip-text:hello there", "ctrl+shift+v", "sleep:2"], "python3 {check} {size} {picture}"),
     ("paste-picture-off", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:9"], "python3 {check} {size} {picture}"),
+    # the folder chosen (FT15): the host's paste_folder over the settings',
+    # a name with a space, quotes and $HOME in it, which must reach the
+    # host as it is; there, puritty's picture of two days ago is removed,
+    # and the user's own old file and puritty's recent one are kept
+    ("paste-picture-folder", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
 ]
 
-# settings a case's config.toml adds
-EXTRA = {"paste-picture-off": "\n[clipboard]\npaste_images = false\n"}
+# settings a case's config.toml adds, and its host's
+EXTRA = {"paste-picture-off": "\n[clipboard]\npaste_images = false\n",
+         "paste-picture-folder": "\n[clipboard]\npaste_folder = \"/nowhere/not-this-one\"\n"}
+FOLDER_NAME = "p \"x\" $HOME 'q'"
+
+
+def toml_text(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def paste_folder(home):
+    """The case's folder made, with puritty's old picture, the user's old
+    file and puritty's recent picture in it."""
+    folder = home / FOLDER_NAME
+    folder.mkdir()
+    old = time.time() - 2 * 86400
+    for n, when in [("puritty-paste.old00000.png", old), ("keep.txt", old), ("puritty-paste.new00000.png", time.time())]:
+        (folder / n).write_text("x")
+        os.utime(folder / n, (when, when))
+    return folder
 PICTURE = ROOT / "harness" / "sshwindow" / "picture.png"
 CHECK = ROOT / "harness" / "sshwindow" / "paste-check.py"
 
@@ -151,8 +174,10 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
         if bastion:
             (home / ".ssh" / "config").write_text(f"Host 127.0.0.1\n    IdentityFile {keys[key]}\n")
             jump = f'jump = "{getpass.getuser()}@127.0.0.1:{bastion.port}"\n'
+        folder = paste_folder(home) if name == "paste-picture-folder" else None
         (home / "config" / "puritty" / "config.toml").write_text(
-            f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
+            (f'[hosts.test]\npaste_folder = {toml_text(str(folder))}\n' if folder else "[hosts.test]\n")
+            + f'host = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
             f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size, check=CHECK, picture=PICTURE)}"\n' + jump
             # the diagnostic log, for a case that fails
             + "\n[debug]\nlog = true\n" + EXTRA.get(name, ""))
@@ -210,6 +235,8 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             bastion.stop()
     held = kh.exists() and " ".join(server_pub) in kh.read_text()
     seen = size.read_text().strip().replace("\n", ", ") if size.exists() else "none"
+    if folder:
+        seen = seen.replace(str(folder), "FOLDER") + f"; FOLDER holds {sorted(p.name for p in folder.iterdir())}"
     return (f"titles: {titles}\n".replace(str(server.port), "PORT")
             + f"pressed: {presses}\nexit status: {status}\nknown_hosts holds the key: {'yes' if held else 'no'}\n"
             + f"the remote side's terminal: {seen}\n")

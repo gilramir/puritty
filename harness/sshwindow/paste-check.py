@@ -35,7 +35,7 @@ else:
         cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "puritty", "paste")
         where = "the cache's paste folder" if os.path.dirname(path) == cache else os.path.dirname(path)
         same = open(path, "rb").read() == open(want, "rb").read()
-        said = f"a file in {where}, named paste.*.png: {os.path.basename(path).startswith('paste.') and path.endswith('.png')}; " \
+        said = f"a file in {where}, named puritty-paste.*.png: {os.path.basename(path).startswith('puritty-paste.') and path.endswith('.png')}; " \
                f"the picture's bytes: {same}; mode {oct(os.stat(path).st_mode & 0o777)}"
         os.remove(path)
     else:

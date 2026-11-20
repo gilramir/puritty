@@ -853,10 +853,12 @@ reads one paste):
 The gate's 24 other cases are unchanged (27 of 27). It finds a window
 whose program set no title by its class now, as these cases' does.
 
-**Not yet tested: Windows.** The build compiles, and is on beelink1 for
-Gilbert to try with Claude Code over ssh, in tmux and in `tmux -CC`, with
-the Snipping Tool and with Alt+Print Screen (WIC); the local-tab paths
-(Linux's file, Windows' empty paste) are not tested either.
+**Tested on Windows by Gilbert** (2026-11-19, puritty on beelink1, pasted
+into Claude Code over an ssh tab on the built-in client): Alt+Print Screen,
+which leaves a bitmap that WIC turns into a PNG, and Win+Shift+S, the
+Snipping Tool's PNG taken as it is. Both pasted, and Claude Code took each
+as a picture. Not yet tested: the local-tab paths (Linux's file, Windows'
+empty paste).
 
 **The compiler's memory.** A build of the app after these changes was
 killed under a 12 GB cap. Measured with every process the build starts
@@ -928,3 +930,41 @@ A request of 256 KiB fails: OpenSSH's `sftp-server` takes no packet of
 The SFTP script and transfer have an over-the-session mode (`--sftp`,
 `--transfer SIZE,PIECE,MOST` on `ssh-tests session`), which is how the
 gmktec7 numbers were taken; the app does not use `Ssh.Sftp` yet (step 4).
+
+## FT15 · The paste folder chosen (2026-11-19)
+
+Gilbert, after FT13's Windows test: the host's folder for a pasted
+picture should be a setting, a fixed folder for now. It stays a temporary
+place; putting the picture in the shell's current folder is for
+drag-and-drop later (§FT10's step 5, once OSC 7 tells puritty that
+folder).
+
+**The settings.** `[clipboard] paste_folder`, and `paste_folder` in a
+`[hosts.NAME]` entry, which comes first (`Main.pasteFolderOf`). Empty, the
+default, is `~/.cache/puritty/paste` as before (`$XDG_CACHE_HOME`'s when
+set); `~` or `~/…` is the home on the host. Both are in the settings
+window, the host's in its host page, with their Korean text.
+
+**The cleanup made safe for any folder.** FT13's command removed every file
+in the folder older than a day, in its subfolders too: harmless in
+puritty's own cache folder, not in one the user names. Now pictures are
+named `puritty-paste.XXXXXXXX.png`, and each paste removes only files of
+that name, in the folder itself (`find "$d" -maxdepth 1 -type f -name
+"puritty-paste.*" -mmin +1440`), and nothing else. The folder is made if
+it is not there.
+
+**Quoting.** The folder reaches `sh -c '…'` inside double quotes, with `\`,
+`"`, `$` and backquote escaped (`Main.doubleQuoted`), and the whole script
+inside single quotes with each `'` closed and reopened; `~/` becomes
+`"$HOME/"` followed by the rest, quoted.
+
+**Tested** (`harness/sshwindow.py`, as FT13's cases):
+
+| case | the host received |
+|---|---|
+| `paste-picture` | as FT13, the file now named `puritty-paste.*.png` |
+| `paste-picture-folder` | settings' folder `/nowhere/not-this-one`, the host's `p "x" $HOME 'q'` under the home, holding beforehand puritty's picture of two days ago, the user's `keep.txt` of two days ago and puritty's picture of now: the picture went to the host's folder, mode 0600, its bytes exact; afterwards the folder holds `keep.txt`, the recent picture and the new one, the old picture gone |
+
+28 of 28 cases pass. The settings' folder used alone, with no host
+folder, is not a case of its own: it is the same command with another
+string.

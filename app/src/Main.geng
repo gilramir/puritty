@@ -4049,14 +4049,48 @@ imagePasted png m =
                                 )
 
 
-{-| What the host runs to keep a pasted picture: a file of its own made by
-`mktemp` (mode 0600) in `~/.cache/puritty/paste`, its bytes from standard
-input, renamed to end `.png` once all are there, and its path written
-back. Pictures there older than a day are removed first. It runs under
-`sh`, whatever the user's shell is. -}
-uploadCommand : String
-uploadCommand =
-    "sh -c 'umask 077; d=\"${XDG_CACHE_HOME:-$HOME/.cache}/puritty/paste\"; mkdir -p \"$d\" || exit 1; find \"$d\" -type f -mmin +1440 -exec rm -f {} + 2>/dev/null; f=$(mktemp \"$d/paste.XXXXXXXX\") && cat > \"$f\" && mv \"$f\" \"$f.png\" && printf \"%s.png\" \"$f\"'"
+{-| What the host runs to keep a pasted picture (docs/sftp.md FT13, FT15):
+in `folder` (`~/` the home there; empty for `~/.cache/puritty/paste`,
+`$XDG_CACHE_HOME`'s when set), made if it is not there, a file of its own
+made by `mktemp` (mode 0600), its bytes from standard input, renamed to
+end `.png` once all are there, and its path written back. puritty's own
+pictures there more than a day old are removed first, those whose names
+begin `puritty-paste.`, in the folder itself, and nothing else, so that a
+folder of the user's choosing is safe. It runs under `sh`, whatever the
+user's shell is; the folder reaches it quoted, whatever it holds. -}
+uploadCommand : String -> String
+uploadCommand folder =
+    let
+        dir =
+            if folder == "" then
+                "\"${XDG_CACHE_HOME:-$HOME/.cache}/puritty/paste\""
+
+            else if folder == "~" then
+                "\"$HOME\""
+
+            else if String.startsWith "~/" folder then
+                "\"$HOME/" ++ doubleQuoted (String.dropFirst 2 folder) ++ "\""
+
+            else
+                "\"" ++ doubleQuoted folder ++ "\""
+
+        script =
+            "umask 077; d="
+                ++ dir
+                ++ "; mkdir -p \"$d\" || exit 1; find \"$d\" -maxdepth 1 -type f -name \"puritty-paste.*\" -mmin +1440 -exec rm -f {} + 2>/dev/null; f=$(mktemp \"$d/puritty-paste.XXXXXXXX\") && cat > \"$f\" && mv \"$f\" \"$f.png\" && printf \"%s.png\" \"$f\""
+    in
+    "sh -c '" ++ String.replace "'" "'\\''" script ++ "'"
+
+
+{-| Text inside a shell's double quotes as it is: `\`, `"`, `$` and a
+backquote escaped. -}
+doubleQuoted : String -> String
+doubleQuoted text =
+    text
+        |> String.replace "\\" "\\\\"
+        |> String.replace "\"" "\\\""
+        |> String.replace "$" "\\$"
+        |> String.replace "`" "\\`"
 
 
 uploadImage : (Session.Input -> Task Error {}) -> Bytes -> (taken m : Model) -> Task Error Model
@@ -4080,7 +4114,7 @@ uploadImage side png m =
         Task.succeed (noteUp { text = "The picture can't be pasted: the tab is not connected", failed = True, kept = False } m)
 
     else
-        side (Session.OpenExec { ref = ref, command = uploadCommand })
+        side (Session.OpenExec { ref = ref, command = uploadCommand (pasteFolderOf m) })
             |> Task.andThen (\_ -> side (Session.SideWrite { ref = ref, bytes = png }))
             |> Task.andThen (\_ -> side (Session.SideEof ref))
             |> Task.map
@@ -4088,6 +4122,15 @@ uploadImage side png m =
                     noteUp { text = "Sending the picture (" ++ sizeText (Bytes.length png) ++ ") to the host", failed = False, kept = True }
                         { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing }, uploads = ref }
                 )
+
+
+{-| Where the shown tab's host keeps pasted pictures: the host's own
+`paste_folder`, else the settings'. -}
+pasteFolderOf : Model -> String
+pasteFolderOf m =
+    m.tab.host
+        |> Maybe.andThen .pasteFolder
+        |> Maybe.withDefault (meant Reason.NotSet m.config.pasteFolder)
 
 
 {-| What the channel carrying a picture told: its output kept, and at its

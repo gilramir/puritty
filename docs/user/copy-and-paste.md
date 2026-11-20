@@ -170,10 +170,10 @@ program runs:
 - **In a tab connected with puritty's own ssh** (the built-in client, the
   default on Windows), the picture goes to the host over the tab's own
   connection, with no second login, to
-  `~/.cache/puritty/paste/paste.XXXXXXXX.png`, readable only by you.
-  Pictures there older than a day are removed the next time you paste
-  one. A note at the bottom right says when it's being sent and where it
-  went.
+  `~/.cache/puritty/paste/puritty-paste.XXXXXXXX.png`, readable only by
+  you, or to a folder you choose (below). puritty's pictures there older
+  than a day are removed the next time you paste one. A note at the
+  bottom right says when it's being sent and where it went.
 - **In a tab on this computer on Linux**, the file goes to
   `$XDG_RUNTIME_DIR/puritty/paste/` (or `~/.cache/puritty/paste/`).
 - **In a tab on this computer on Windows**, puritty sends an empty
@@ -194,6 +194,25 @@ To paste pictures as plain data instead (the old way), turn it off:
 [clipboard]
 paste_images = false
 ```
+
+**Choosing the folder on the host.** `paste_folder` says where the
+pictures go, for every host or, in a host's entry, for that one host,
+which comes first. `~/` is your home on the host; the folder is made if
+it isn't there:
+
+```toml
+[clipboard]
+paste_folder = "~/tmp/screenshots"
+
+[hosts.build]
+host = "build.example.com"
+paste_folder = "/scratch/me/paste"
+```
+
+Treat it as a temporary place. Each paste removes puritty's own pictures
+there (the files named `puritty-paste.*`) that are more than a day old.
+It removes nothing else, not in subfolders and no file of yours, so any
+folder is safe to choose.
 
 ---
 
@@ -261,5 +280,5 @@ mode.
 | copy the selection to the clipboard | Ctrl+Shift+C |
 | paste the clipboard | Ctrl+Shift+V |
 | paste the selection | middle button (or right, `[mouse] paste_button`), or Shift+Insert |
-| paste a screenshot to a program on the host | Ctrl+Shift+V with a picture on the clipboard: the file's name is pasted (`[clipboard] paste_images`) |
+| paste a screenshot to a program on the host | Ctrl+Shift+V with a picture on the clipboard: the file's name is pasted (`[clipboard] paste_images`, `paste_folder`) |
 | let programs read the clipboard | `[clipboard] osc52_read = "allow"` (off by default) |

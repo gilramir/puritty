@@ -323,6 +323,7 @@ decide later.
 no program takes an image through a paste; every one takes a path.
 Built 2026-11-19 as `sftp.md` FT13: the picture put where the tab's
 program runs, its path pasted; on by default (`[clipboard] paste_images`).
+Its folder on the host is a setting since FT15 (`paste_folder`).
 
 **Today** a paste is text only (`CF_UNICODETEXT` on Windows,
 `UTF8_STRING` on X11), so an image on the clipboard pastes nothing.
@@ -425,7 +426,9 @@ dialog.
 - What a drop does in a local tab: paste the file's path, as most
   terminals do, or nothing.
 - After an upload, whether the remote path is pasted (as §8 does) or not.
-- Whether §8's screenshot should ask for its folder the same way, rather
-  than `~/.cache/puritty/paste/`.
+- ~~Whether §8's screenshot should ask for its folder the same way~~:
+  answered 2026-11-19, a fixed folder of the user's choosing, a setting
+  with a host's own over it (`sftp.md` FT15); the shell's folder is for
+  drag-and-drop.
 - A server with SFTP turned off: refuse, or fall back to an `exec`
   channel writing the file (`cat > …`), which needs only a shell.
