@@ -1794,3 +1794,29 @@ at most every 10 ms rather than each (`windowToo`): 171.9 MB/s against
 280 MB/s was not found; to a host over a network the link sets the speed
 well under either (gmktec7: 41 to 49 MB/s, FT11, FT17).
 
+## FT28 · Asked before dropped files are sent: drop_uploads (2026-11-20)
+
+Gilbert: a setting for uploads by drop, three values as the picture
+paste's (FT16), ask by default. `[files] drop_uploads`: `"ask"`,
+`"allow"` or `"deny"` (he chose `allow` over `always`, to match
+`paste_images`).
+
+- **deny**: a drop on an ssh tab sends nothing, and the note says which
+  setting.
+- **ask**: where puritty found the folder itself, a tmux pane's (FT23), a
+  box before anything is sent: "Send this to HOST?", the files (five, and
+  how many more), "into" and the folder, wrapped at its slashes, and
+  "Nothing is sent unless you say yes"; Enter, Y or Send sends, Esc, N or
+  Don't send does not, and a tab no longer shown when it is answered
+  sends nothing. Where the folder chooser asked (FT24), choosing a folder
+  is the yes: there is no second question.
+- **allow**: sent as soon as the folder is known, as FT25 did.
+- A drop on a tab on this computer pastes the paths whatever it says.
+
+**Tested** (`harness/drop.py`, nineteen cases; the pane cases that send
+now say `allow`, the chooser cases keep the default): on a pane with the
+default, Enter sends the file, its bytes on the host; Esc sends nothing
+and says so; with `deny` nothing is sent and the note names the setting.
+Each case keeps a screenshot after the drop (`dropped.png`), which shows
+the box.
+

@@ -97,7 +97,7 @@ def host_listing(there, files):
 
 
 def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False, size=4 << 30,
-                  wait=3):
+                  wait=3, drop=None):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
@@ -124,7 +124,8 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     (home / "config" / "puritty" / "config.toml").write_text(
         f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\nidentity = "{keys["ed"]}"\n'
         f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "") + '\n[debug]\nlog = true\n'
-        + ('\n[files]\nupload_through_shell = true\n' if shell else ""))
+        + ('\n[files]\n' if shell or drop else "") + ('upload_through_shell = true\n' if shell else "")
+        + (f'drop_uploads = "{drop}"\n' if drop else ""))
     if not tmux:
         # the folders the chooser is taken to
         for d in ["alpha", "beta dir", ".hidden"]:
@@ -167,6 +168,8 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
         subprocess.run(shot + [str(home / "marked.png")], env=env)
         xdo(env, "mouseup", 1)
         time.sleep(2)
+        # what the drop put up, before any key
+        subprocess.run(shot + [str(home / "dropped.png")], env=env)
         if after:
             for wid in xdo(env, "search", "--class", "puritty").split():
                 xdo(env, "windowfocus", "--sync", wid)
@@ -309,7 +312,7 @@ def main():
     keys = sshd.user_keys()[0]
     runs = [(name, (lambda name=name, fm=fm, items=items, charset=charset: run_case(env, name, fm, items, charset)))
             for name, fm, items, charset in CASES] + \
-        [(name, (lambda name=name, at=at: run_tmux_case(env, name, at, keys, after=["Escape"] if name == "tmux-ssh-pane" else ())))
+        [(name, (lambda name=name, at=at: run_tmux_case(env, name, at, keys, after=["Escape"] if name == "tmux-ssh-pane" else (), drop="allow")))
          for name, at in TMUX_CASES] + \
         [("ssh-chooser", lambda: run_tmux_case(env, "ssh-chooser", (950, 300), keys, after=CHOOSER_KEYS, tmux=False)),
          # four items, a folder among them, to the folder typed
@@ -321,10 +324,16 @@ def main():
          # a host with SFTP off: through its shell when the setting allows,
          # else nothing, said; the chooser needs SFTP, so the pane of tmux
          # whose folder is known is dropped on
-         ("tmux-no-sftp-shell", lambda: run_tmux_case(env, "tmux-no-sftp-shell", (760, 250), keys, sftp=False, shell=True)),
-         ("tmux-no-sftp", lambda: run_tmux_case(env, "tmux-no-sftp", (760, 250), keys, sftp=False)),
+         ("tmux-no-sftp-shell", lambda: run_tmux_case(env, "tmux-no-sftp-shell", (760, 250), keys, sftp=False, shell=True, drop="allow")),
+         ("tmux-no-sftp", lambda: run_tmux_case(env, "tmux-no-sftp", (760, 250), keys, sftp=False, drop="allow")),
          # a long one: its progress, and a click on it cancels, no part left
-         ("tmux-cancel", lambda: run_tmux_case(env, "tmux-cancel", (760, 250), keys, items=("big",), big=True)),
+         ("tmux-cancel", lambda: run_tmux_case(env, "tmux-cancel", (760, 250), keys, items=("big",), big=True, drop="allow")),
+         # [files] drop_uploads (FT28): on a pane, whose folder puritty
+         # finds, asked by default, Enter sends and Esc does not; deny
+         # sends nothing; the chooser cases above ask nothing more
+         ("tmux-ask-yes", lambda: run_tmux_case(env, "tmux-ask-yes", (760, 250), keys, after=["Return"])),
+         ("tmux-ask-no", lambda: run_tmux_case(env, "tmux-ask-no", (760, 250), keys, after=["Escape"])),
+         ("tmux-deny", lambda: run_tmux_case(env, "tmux-deny", (760, 250), keys, drop="deny")),
          # another tab shown while one sends (FT26; 2 GiB, which a shown tab
          # does not finish in the two seconds before the switch, FT27): the sending goes on in
          # its own session, its tab marked, and its end said with its name

@@ -232,6 +232,7 @@ type alias Model =
     -- a pasted picture waiting for the user's yes before it is written
     -- (docs/sftp.md FT16)
     , pasteAsk : Maybe PasteAsk
+    , dropAsk : Maybe { folder : Bytes, files : Array Bytes, tab : Int }
     , choosing : Maybe Choosing
     , sending : Maybe Sending.Sending
     , pendingSend : Maybe { folder : Bytes, files : Array Bytes }
@@ -1365,6 +1366,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , coloring = Nothing
                      , closing = Nothing
                      , pasteAsk = Nothing
+                     , dropAsk = Nothing
                      , choosing = Nothing
                      , sending = Nothing
                      , pendingSend = Nothing
@@ -2208,7 +2210,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || Maybe.isJust m.dropAsk || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -2239,7 +2241,7 @@ so that the window sends every motion: under tmux control mode, with the tab
 bar or the scroll bar shown, or a menu or a question up. -}
 hoverShapes : Model -> Bool
 hoverShapes m =
-    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || m.coloring /= Nothing || m.menu /= Nothing
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || Maybe.isJust m.dropAsk || m.coloring /= Nothing || m.menu /= Nothing
 
 
 {-| The window's events waiting, taken after a turn the session's output
@@ -2969,6 +2971,11 @@ windowState m =
                     ""
                 , if sendingAsks m then
                     "the conflict question"
+
+                  else
+                    ""
+                , if Maybe.isJust m.dropAsk then
+                    "the question before dropped files are sent"
 
                   else
                     ""
@@ -4515,29 +4522,39 @@ sshDropped files m0 =
         m =
             { m0 | tmux = TmuxMode.dragLeft m0.tmux, urgent = True }
     in
-    when known is
-        Just folder ->
-            -- sent when this drop's handling is done (`startPending`)
-            { m | pendingSend = Just { folder = folder, files = files } }
+    if m.config.dropUploads == "deny" then
+        noteUp { text = "Dropped files are not sent to the host: [files] drop_uploads is \"deny\"", failed = True, kept = False } m
 
-        Nothing ->
-            -- no folder known: the chooser asks
-            meant Reason.NotYet
-                (if not (Maybe.isJust m.remote.side) then
-                    noteUp { text = "Files can't be sent to this host: this tab's ssh is OpenSSH's (set client = \"built-in\")", failed = True, kept = False } m
+    else
+        when known is
+            Just folder ->
+                if m.config.dropUploads == "allow" then
+                    -- sent when this drop's handling is done (`startPending`)
+                    { m | pendingSend = Just { folder = folder, files = files } }
 
-                 else if Maybe.isJust m.choosing then
-                    noteUp { text = "The folder chooser is open already", failed = True, kept = False } m
+                else
+                    -- asked first (docs/sftp.md FT28): the folder is
+                    -- puritty's choice, not the user's
+                    logLine "drop" ("asked: send " ++ String.fromInt (Array.length files) ++ " items to the pane's folder?") { m | dropAsk = Just { folder = folder, files = files, tab = m.tab.id } }
 
-                 else
-                    let
-                        begun =
-                            Chooser.start { files = files, at = Bytes.empty }
-                    in
-                    logLine "drop"
-                        ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
-                        { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
-                )
+            Nothing ->
+                -- no folder known: the chooser asks
+                meant Reason.NotYet
+                    (if not (Maybe.isJust m.remote.side) then
+                        noteUp { text = "Files can't be sent to this host: this tab's ssh is OpenSSH's (set client = \"built-in\")", failed = True, kept = False } m
+
+                     else if Maybe.isJust m.choosing then
+                        noteUp { text = "The folder chooser is open already", failed = True, kept = False } m
+
+                     else
+                        let
+                            begun =
+                                Chooser.start { files = files, at = Bytes.empty }
+                        in
+                        logLine "drop"
+                            ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
+                            { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
+                    )
 
 
 {-| Files sent once their folder is known (docs/sftp.md FT25): the jobs
@@ -4906,6 +4923,103 @@ chooserPress p c m =
 
         Nothing ->
             meant Reason.OutOfRange Task.succeed m
+
+
+{-| The question before dropped files are sent to a folder puritty chose
+(`[files] drop_uploads = "ask"`, docs/sftp.md FT28): what, where, and on
+which host. -}
+dropBox : Model -> { folder : Bytes, files : Array Bytes, tab : Int } -> Dialog.Dialog
+dropBox m a =
+    let
+        names =
+            Array.map (\p -> Bytes.toStringLossy (Path.filenameAsBytes (Path.fromBytes p))) a.files
+
+        shown =
+            Array.takeFirst 5 names |> Array.map (\n -> "  " ++ n)
+
+        more =
+            if Array.length names > 5 then
+                [ "  and " ++ String.fromInt (Array.length names - 5) ++ " more" ]
+
+            else
+                []
+
+        host =
+            Maybe.withDefault (meant Reason.NotSet "the host") (Maybe.map .host m.tab.host)
+    in
+    { title =
+        if Array.length names == 1 then
+            "Send this to " ++ host ++ "?"
+
+        else
+            "Send these " ++ String.fromInt (Array.length names) ++ " to " ++ host ++ "?"
+    , lines = shown ++ more ++ [ "into" ] ++ wrapPath 56 (fromHost m.charset a.folder) ++ [ "Nothing is sent unless you say yes." ]
+    , field = Nothing
+    , swatches = []
+    , check = Nothing
+    , buttons = [ { label = "Send", primary = True }, { label = "Don't send", primary = False } ]
+    , hint = "Enter: send    Esc: don't"
+    }
+
+
+dropKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropKey k a m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+        dropAnswer True a m
+
+    else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+        dropAnswer False a m
+
+    else
+        Task.succeed m
+
+
+dropPress : Window.PointerEvent -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropPress p a m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) (dropBox m a) { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            dropAnswer True a m
+
+        Just _ ->
+            dropAnswer False a m
+
+        Nothing ->
+            meant Reason.OutOfRange (Task.succeed m)
+
+
+{-| The question answered: on yes the files sent, if their tab is still
+the one shown; on no, nothing. -}
+dropAnswer : Bool -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropAnswer yes a m0 =
+    let
+        m =
+            logLine "drop"
+                ("question answered: "
+                    ++ (if yes then
+                            "send"
+
+                        else
+                            "don't"
+                       )
+                )
+                { m0 | dropAsk = Nothing, urgent = True }
+    in
+    if not yes then
+        Task.succeed (noteUp { text = "The dropped files were not sent", failed = False, kept = False } m)
+
+    else if a.tab /= m.tab.id then
+        Task.succeed (noteUp { text = "The dropped files were not sent: their tab is not the one shown now", failed = True, kept = False } m)
+
+    else
+        startPending { m | pendingSend = Just { folder = a.folder, files = a.files } }
 
 
 {-| Where a drop on a tmux pane would have gone, for the note. -}
@@ -5985,6 +6099,21 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if Maybe.isJust m.dropAsk then
+                -- the question before dropped files are sent (FT28)
+                (if k.action /= 0 then
+                    when m.dropAsk is
+                        Just a ->
+                            dropKey k a m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if sendingAsks m then
                 -- the conflict question takes the keys (docs/sftp.md FT25)
                 (if k.action /= 0 then
@@ -6348,6 +6477,21 @@ handleOne remote ms rest ev m =
                 -- and the pointer: its button dismisses it
                 (if p.action == 0 then
                     startFailedPress p m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if Maybe.isJust m.dropAsk then
+                -- the question before dropped files are sent
+                (if p.action == 0 then
+                    when m.dropAsk is
+                        Just a ->
+                            dropPress p a m
+
+                        Nothing ->
+                            Task.succeed m
 
                  else
                     Task.succeed m
@@ -7684,6 +7828,9 @@ draw ms m =
 
             else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
+
+            else if Maybe.isJust m.dropAsk then
+                Maybe.map (dropBox m) m.dropAsk
 
             else if sendingAsks m then
                 Maybe.andThen (\s -> Maybe.map (Sending.conflictBox (fromHost m.charset)) s.asking) m.sending

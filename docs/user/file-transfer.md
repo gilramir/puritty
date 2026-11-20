@@ -49,6 +49,22 @@ files yet, and says so.
 
 Folders are sent with everything in them.
 
+### Asked first
+
+Sending writes your files on the host, so puritty asks first. When it
+found the folder itself (the `tmux -CC` pane you dropped on), a box names
+the files and the folder, and nothing is sent until you say yes (Enter, or
+Send; Esc, or Don't send, sends nothing). When it asked you for the folder,
+choosing one is your yes, and there is no second question.
+
+```toml
+[files]
+drop_uploads = "ask"     # the default; "allow" sends without asking,
+                         # "deny" never sends dropped files
+```
+
+A drop on a tab on this computer pastes the paths whatever this says.
+
 ### A name that is there already
 
 One question for the whole drop, listing the names:

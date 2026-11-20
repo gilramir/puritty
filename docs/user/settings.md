@@ -74,6 +74,8 @@ paste_button = "middle"     # or "right"
 osc52_read = "deny"         # or "allow"
 
 [files]
+drop_uploads = "ask"        # files dropped on an ssh tab sent to its
+                            # host: "ask" first, "allow", or "deny"
 upload_through_shell = false  # true: where a host has SFTP turned
                             # off, an upload may run sh, cat and mv
                             # there instead; off, since it runs
