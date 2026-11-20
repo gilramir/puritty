@@ -224,6 +224,11 @@ there (the files named `puritty-paste.*`) that are more than a day old.
 It removes nothing else, not in subfolders and no file of yours, so any
 folder is safe to choose.
 
+A host whose `charset` is `euc-kr` or `cp949` gets the folder's name in
+that character set, as it gets what you type, so a Korean folder name
+works there. A character that set has no form for stops the paste, with
+a note saying so, rather than making a folder under a wrong name.
+
 ---
 
 ## 4. Programs that copy for you: OSC 52

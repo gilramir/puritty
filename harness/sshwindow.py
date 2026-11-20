@@ -128,13 +128,32 @@ CASES = [
     # afterwards, since nothing but the folder's path was asked of the host
     ("paste-picture-ask", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:2", "Return", "sleep:4"], "python3 {check} {size} {picture}"),
     ("paste-picture-ask-no", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:2", "Escape", "sleep:11"], "python3 {check} {size} {picture}"),
+    # a host in EUC-KR (FT20): its charset set so, its sshd running commands
+    # in a ko_KR.EUC-KR locale, a Korean paste_folder, and its command
+    # writing to a Korean name; each must reach it as EUC-KR, the folder
+    # made under its EUC-KR bytes and the path pasted back as the host has it
+    ("paste-picture-euc-kr", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
 ]
 
 # settings a case's config.toml adds, and its host's
 EXTRA = {"paste-picture": "\n[clipboard]\npaste_images = \"allow\"\n",
          "paste-text": "\n[clipboard]\npaste_images = \"allow\"\n",
          "paste-picture-off": "\n[clipboard]\npaste_images = \"deny\"\n",
-         "paste-picture-folder": "\n[clipboard]\npaste_images = \"allow\"\npaste_folder = \"/nowhere/not-this-one\"\n"}
+         "paste-picture-folder": "\n[clipboard]\npaste_images = \"allow\"\npaste_folder = \"/nowhere/not-this-one\"\n",
+         "paste-picture-euc-kr": "\n[clipboard]\npaste_images = \"allow\"\n"}
+
+KOREAN_FOLDER = "붙여넣기 폴더"
+KOREAN_OUT = "결과.txt"
+
+
+def euc_kr_locale():
+    """sshd_config lines that run the host's commands in ko_KR.EUC-KR, a
+    locale built here by localedef (this machine has none; FT19)."""
+    d = sshd.WORK / "locales"
+    if not (d / "ko_KR.euckr").exists():
+        d.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["localedef", "-i", "ko_KR", "-f", "EUC-KR", str(d / "ko_KR.euckr")], check=True, capture_output=True)
+    return [f"SetEnv LOCPATH={d} LANG=ko_KR.euckr LC_ALL=ko_KR.euckr"]
 FOLDER_NAME = "p \"x\" $HOME 'q'"
 
 
@@ -164,8 +183,10 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
     shutil.rmtree(home, ignore_errors=True)
     (home / "config" / "puritty").mkdir(parents=True)
     (home / ".ssh").mkdir()
-    size = home / "size.txt"
-    server = sshd.Server([])
+    korean = name == "paste-picture-euc-kr"
+    # the result's name, in EUC-KR on the EUC-KR host
+    size = home / (os.fsdecode(KOREAN_OUT.encode("euc-kr")) if korean else "size.txt")
+    server = sshd.Server(euc_kr_locale() if korean else [])
     bastion = sshd.Server([]) if name == "jump" else None
     try:
         server_pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
@@ -182,9 +203,10 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
             jump = f'jump = "{getpass.getuser()}@127.0.0.1:{bastion.port}"\n'
         folder = paste_folder(home) if name in ("paste-picture-folder", "paste-picture-ask-no") else None
         (home / "config" / "puritty" / "config.toml").write_text(
-            (f'[hosts.test]\npaste_folder = {toml_text(str(folder))}\n' if folder else "[hosts.test]\n")
+            (f'[hosts.test]\npaste_folder = {toml_text(str(folder))}\n' if folder
+             else f'[hosts.test]\npaste_folder = {toml_text(str(home / KOREAN_FOLDER))}\ncharset = "euc-kr"\n' if korean else "[hosts.test]\n")
             + f'host = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
-            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=size, check=CHECK, picture=PICTURE)}"\n' + jump
+            f'identity = "{keys[key]}"\nclient = "built-in"\ncommand = "{command.format(size=home / KOREAN_OUT if korean else size, check=CHECK, picture=PICTURE)}"\n' + jump
             # the diagnostic log, for a case that fails
             + "\n[debug]\nlog = true\n" + EXTRA.get(name, ""))
         env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser(),
@@ -243,6 +265,13 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
     seen = size.read_text().strip().replace("\n", ", ") if size.exists() else "none"
     if folder:
         seen = seen.replace(str(folder), "FOLDER") + f"; FOLDER holds {sorted(p.name for p in folder.iterdir())}"
+    if korean:
+        # where the picture went, by the folder's bytes: EUC-KR's, or UTF-8's
+        # had the folder gone as UTF-8
+        euc = home / os.fsdecode(KOREAN_FOLDER.encode("euc-kr"))
+        utf = home / KOREAN_FOLDER
+        seen = seen.replace(str(home / KOREAN_FOLDER), "KOREAN_FOLDER") + \
+            f"; the folder made under its EUC-KR bytes: {euc.is_dir()}, under UTF-8's: {utf.is_dir()}"
     asked = [line.split("asked: write ", 1)[1].rsplit(" on ", 1)[0]
              for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
              for line in log.read_text(errors="replace").splitlines() if "asked: write " in line]

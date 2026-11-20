@@ -1278,7 +1278,7 @@ limit. Local paths had the same flaw on this computer's side:
   `Bytes`, sent with `Wire.writeString`. The paste's commands (FT13) are
   made from text, as before, with `Bytes.fromString`. The session's own
   `command` (a host's setting) is still text: it comes from the settings
-  file, which is UTF-8.
+  file, which is UTF-8. (FT20 sends both in the host's character set.)
 - `Ssh.ShellTransfer` builds every script as bytes, each name spliced in
   as it came, `'` written `'\''` byte by byte. Its `notUtf8` failure is
   gone.
@@ -1316,4 +1316,45 @@ holds (`locale charmap` says `EUC-KR` and `CP949`, and `wc -m` counts the
   With the expected escape changed, it fails.
 
 All pass three runs in a row.
+
+## FT20 · The paste folder and a host's command in the host's character set (2026-11-20)
+
+*Why.* FT19 left two commands made from the settings file's text and
+sent as UTF-8: the screenshot paste's (FT13, FT15), which hold
+`paste_folder`, and the session's own, a host's `command`. On a host
+whose `charset` is `euc-kr`, a Korean folder in `paste_folder` was made
+under its UTF-8 bytes, a name its shell shows as mojibake; a Korean word
+in `command` went the same way. Gilbert: fix both.
+
+**Changed.**
+
+- `Connection.Session`'s `command` is `Bytes`, and `Session.optionsFor`
+  takes it so. `RemoteCommand` from `~/.ssh/config` goes as the file has
+  it, as OpenSSH sends it.
+- The app encodes text for a command with `Vt.Charset.encode`, the
+  encoder typed keys go through: the paste's two commands in the tab's
+  character set, a host's `command` in that host's (`charset`, else the
+  window's). Where a character has no form in it (strict EUC-KR is KS X
+  1001 only), nothing is sent: the paste stops with "the paste folder's
+  name has characters EUC-KR cannot write", and the session with the
+  same about its command, rather than a `?` in a name.
+- What the paste's commands print back, the folder's path and the
+  host's error, is decoded the same way (`Vt.Charset.decode`), so the
+  path asked about and the path pasted are the folder as the host has
+  it, which the paste then sends in the tab's character set.
+
+**Tested.** A window case, `paste-picture-euc-kr` (31 in all now), runs
+the app against sshd.py's sshd with its commands in `ko_KR.EUC-KR`
+(FT19's locale, `SetEnv`), a host entry with `charset = "euc-kr"`, a
+`paste_folder` named 붙여넣기 폴더 and a `command` that writes its result to
+결과.txt. The result is found under 결과.txt's EUC-KR bytes; the picture
+went to the folder under its EUC-KR bytes, none under UTF-8's; the path
+pasted back, read in the host's locale, names the picture, whose bytes
+are the clipboard's. Built with the commands sent as UTF-8 instead, the
+case fails: the result is not found, and the folder is made under
+UTF-8's bytes.
+
+(The case's first run used `~/` for the folder; sshd's `$HOME` is the
+real one, so the folder was made in the user's home. It was empty, and
+removed; the case uses a folder under its own work directory.)
 

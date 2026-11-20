@@ -1362,7 +1362,7 @@ followed.
 -}
 optionsFor :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
     -> Task x { options : Options, jumps : Array Options, problems : Array String }
 optionsFor permissions given =
     resolveOne permissions given
@@ -1443,7 +1443,7 @@ jumpSpecs value =
 it (`none` when neither does). -}
 resolveOne :
     Permissions
-    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe String, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
+    -> { host : String, user : Maybe String, port : Maybe Int, identity : Maybe String, jump : Maybe String, command : Maybe Bytes, home : String, localUser : String, agents : Array AgentPath, terminal : Maybe { term : String, columns : Int, rows : Int, widthInPixels : Int, heightInPixels : Int, utf8 : Bool } }
     -> Task x { options : Options, proxyJump : String, problems : Array String }
 resolveOne permissions given =
     let
@@ -1540,7 +1540,9 @@ resolveOne permissions given =
                                             Just c
 
                                         Nothing ->
-                                            meant Reason.NotSet Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first
+                                            -- RemoteCommand as the file has it, as OpenSSH
+                                            -- sends it (FT20)
+                                            meant Reason.NotSet Dict.get "remotecommand" settings.values |> Maybe.andThen Array.first |> Maybe.map Bytes.fromString
                             in
                             { options =
                                 { host = one "hostname" given.host

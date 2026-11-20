@@ -1072,10 +1072,26 @@ SC18): its options from `~/.ssh/config` with the host entry's over them,
 the home, the local user and the agent's socket from the environment. -}
 sshBackend : Dict String String -> Config -> Window.Cell -> Charset -> Config.Host -> Task String { remote : Backend, problems : Array String }
 sshBackend vars config cell charset host =
-    Task.map2 (\net fs -> { net = net, fs = fs }) Net.initialize File.initialize
+    -- the host's command in its character set (docs/sftp.md FT20)
+    (when host.command is
+        Just text ->
+            when inHostCharset (Maybe.withDefault (meant Reason.NotSet charset) (Maybe.map Charset.fromName host.charset)) text is
+                Just bytes ->
+                    Task.succeed (Just bytes)
+
+                Nothing ->
+                    meant Reason.FromOutside (Task.fail ("the host's command has characters " ++ charsetName (Maybe.withDefault (meant Reason.NotSet charset) (Maybe.map Charset.fromName host.charset)) ++ " cannot write"))
+
+        Nothing ->
+            meant Reason.NotSet (Task.succeed Nothing)
+    )
+        |> Task.andThen (\command -> Task.map2 (\net fs -> { permissions = { net = net, fs = fs }, command = command }) Net.initialize File.initialize)
         |> Task.andThen
-            (\permissions ->
+            (\given ->
                 let
+                    permissions =
+                        given.permissions
+
                     -- an empty local user is let through: the host, the
                     -- config or a Match may give the user, and one that
                     -- is still empty is refused below
@@ -1094,7 +1110,7 @@ sshBackend vars config cell charset host =
                                             , port = host.port
                                             , identity = host.identity
                                             , jump = Hosts.jumpSpec config host
-                                            , command = host.command
+                                            , command = given.command
                                             , home = home
                                             , localUser = localUser
                                             , agents = agents
@@ -4184,14 +4200,19 @@ uploadImage side png m =
                         sendImage side png name m
 
                     else
-                        side (Session.OpenExec { ref = ref, command = Bytes.fromString (folderCommand (pasteFolderOf m)) })
-                            |> Task.andThen (\_ -> side (Session.SideEof ref))
-                            |> Task.map
-                                (\_ ->
-                                    logLine "paste"
-                                        "the host asked where its paste folder is"
-                                        { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Just { png = png, name = name } }, uploads = ref }
-                                )
+                        when inHostCharset m.charset (folderCommand (pasteFolderOf m)) is
+                            Nothing ->
+                                meant Reason.FromOutside (Task.succeed (noteUp { text = unwritable m, failed = True, kept = False } m))
+
+                            Just command ->
+                                side (Session.OpenExec { ref = ref, command = command })
+                                    |> Task.andThen (\_ -> side (Session.SideEof ref))
+                                    |> Task.map
+                                        (\_ ->
+                                            logLine "paste"
+                                                "the host asked where its paste folder is"
+                                                { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Just { png = png, name = name } }, uploads = ref }
+                                        )
                 )
 
 
@@ -4203,7 +4224,17 @@ sendImage side png name m =
         ref =
             m.uploads + 1
     in
-    side (Session.OpenExec { ref = ref, command = Bytes.fromString (uploadCommand (pasteFolderOf m) name) })
+    when inHostCharset m.charset (uploadCommand (pasteFolderOf m) name) is
+        Nothing ->
+            meant Reason.FromOutside (Task.succeed (noteUp { text = unwritable m, failed = True, kept = False } m))
+
+        Just command ->
+            sendCommand side ref command png m
+
+
+sendCommand : (Session.Input -> Task Error {}) -> Int -> Bytes -> Bytes -> (taken m : Model) -> Task Error Model
+sendCommand side ref command png m =
+    side (Session.OpenExec { ref = ref, command = command })
         |> Task.andThen (\_ -> side (Session.SideWrite { ref = ref, bytes = png }))
         |> Task.andThen (\_ -> side (Session.SideEof ref))
         |> Task.map
@@ -4261,11 +4292,12 @@ uploaded side m =
 uploadDone : Upload -> (taken m : Model) -> Model
 uploadDone u m =
     let
+        -- in the host's character set, as the tab reads it (FT20)
         path =
-            String.trim (Bytes.toStringLossy u.out)
+            String.trim (fromHost m.charset u.out)
 
         said =
-            String.trim (Bytes.toStringLossy u.err)
+            String.trim (fromHost m.charset u.err)
     in
     if u.status == Just 0 && path /= "" then
         when u.asking is
@@ -4310,6 +4342,54 @@ uploadDone u m =
             , kept = False
             }
             m
+
+
+{-| Text for a command on the host, in the tab's character set, as typed
+keys are sent (docs/sftp.md FT20): `Nothing` when a character has no form
+there, rather than a `?` in a folder's name. -}
+inHostCharset : Charset -> String -> Maybe Bytes
+inHostCharset charset text =
+    let
+        encoded =
+            Charset.encode charset (Bytes.fromString text)
+    in
+    if encoded.replaced == 0 then
+        Just encoded.bytes
+
+    else
+        Nothing
+
+
+{-| What the host's command printed, in the tab's character set, as text. -}
+fromHost : Charset -> Bytes -> String
+fromHost charset bytes =
+    when charset is
+        Charset.Utf8 ->
+            Bytes.toStringLossy bytes
+
+        Charset.EucKr ->
+            Bytes.toStringLossy (Charset.decode Charset.decoder bytes).bytes
+
+        Charset.Cp949 ->
+            Bytes.toStringLossy (Charset.decode Charset.decoder bytes).bytes
+
+
+charsetName : Charset -> String
+charsetName charset =
+    when charset is
+        Charset.Utf8 ->
+            "UTF-8"
+
+        Charset.EucKr ->
+            "EUC-KR"
+
+        Charset.Cp949 ->
+            "CP949"
+
+
+unwritable : Model -> String
+unwritable m =
+    "The picture can't be pasted: the paste folder's name has characters " ++ charsetName m.charset ++ " cannot write"
 
 
 {-| A path pasted whole: in double quotes when it has a space, which Claude
