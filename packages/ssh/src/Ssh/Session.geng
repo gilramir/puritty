@@ -5,9 +5,11 @@ module Ssh.Session exposing
     , Input(..)
     , Notice(..)
     , Options
+    , Pacing
     , Permissions
     , fingerprint
     , optionsFor
+    , pacing
     , resized
     , run
     )
@@ -34,6 +36,7 @@ is open a hop runs in a process of its own, carrying bytes both ways.
 
 import Bytes exposing (Bytes)
 import Dict
+import Int64
 import Os.Directory as Directory
 import Os.Error
 import Os.File as File
@@ -52,6 +55,7 @@ import Ssh.Reason as Reason
 import Ssh.Transport as Transport
 import SshCrypto
 import Task exposing (Task)
+import Time
 
 
 type alias Permissions =
@@ -79,6 +83,33 @@ type alias Options =
     , session : Connection.Session
     , keepaliveSeconds : Int
     , keepaliveCountMax : Int
+    , pacing : Pacing
+    }
+
+
+{-| How a side channel's bytes are paced beside the session's keys
+(puritty `docs/sftp.md` FT12, FT17). While keys come, the socket keeps at
+most `unsent` bytes unsent and each turn sends `pump` bytes of the side
+channels, so a key never waits behind much. Once no key has come for
+`quietMs`, `quietUnsent` and `quietPump` are used instead, for speed, until
+the next key, which then waits behind at most `quietUnsent`. -}
+type alias Pacing =
+    { unsent : Int
+    , pump : Int
+    , quietMs : Int
+    , quietUnsent : Int
+    , quietPump : Int
+    }
+
+
+{-| The pacing puritty uses (FT17). -}
+pacing : Pacing
+pacing =
+    { unsent = 65536
+    , pump = 32768
+    , quietMs = 1000
+    , quietUnsent = 262144
+    , quietPump = 131072
     }
 
 
@@ -189,6 +220,7 @@ type alias Link =
     , write : Bytes -> Task Os.Error.Error {}
     , writable : Task Os.Error.Error {}
     , close : Task Os.Error.Error {}
+    , setUnsent : Int -> Task Os.Error.Error {}
     }
 
 
@@ -197,16 +229,13 @@ type alias Link =
 socket has room, never sits in front of the session's keys by more than
 that (docs/sftp.md FT12). A system that will not set it is used as it
 is. -}
-limited : Net.Socket -> Task Os.Error.Error Link
-limited socket =
-    Net.limitUnsent unsentLimit socket
-        |> Task.onError (\_ -> Task.succeed {})
-        |> Task.map (\_ -> socketLink socket)
-
-
-unsentLimit : Int
-unsentLimit =
-    65536
+limited : Int -> Net.Socket -> Task Os.Error.Error Link
+limited most socket =
+    let
+        link =
+            socketLink socket
+    in
+    link.setUnsent most |> Task.map (\_ -> link)
 
 
 socketLink : Net.Socket -> Link
@@ -215,6 +244,7 @@ socketLink socket =
     , write = \bytes -> Net.write bytes socket
     , writable = Net.writable socket
     , close = Net.close socket |> Task.onError (\_ -> Task.succeed {})
+    , setUnsent = \most -> Net.limitUnsent most socket |> Task.onError (\_ -> Task.succeed {})
     }
 
 
@@ -247,6 +277,10 @@ type alias State =
     , exitStatus : Maybe Int
     , unanswered : Int
     , done : Bool
+    -- when keys last came, on the monotonic clock, and whether the link
+    -- is paced for quiet (FT17)
+    , keysAt : Int64
+    , quiet : Bool
     }
 
 
@@ -328,6 +362,7 @@ through permissions jumps target notices inputs given =
                                                             , write = \bytes -> Source.emit pipes.fromInner bytes
                                                             , writable = Task.succeed {}
                                                             , close = Source.close pipes.fromInner
+                                                            , setUnsent = \_ -> Task.succeed {}
                                                             }
                                                         )
                                                 )
@@ -384,7 +419,7 @@ connectTo permissions options notices label given =
                         Task.succeed link
 
                     Nothing ->
-                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.andThen limited
+                        meant Reason.NotSet Net.connect permissions.net { host = options.host, port = options.port } |> Task.andThen (limited options.pacing.unsent)
             )
 
 
@@ -440,6 +475,8 @@ session permissions options role label link notices =
                                                         , exitStatus = Nothing
                                                         , unanswered = 0
                                                         , done = False
+                                                        , keysAt = Int64.fromInt 0
+                                                        , quiet = False
                                                         }
                                                 )
                                     )
@@ -638,16 +675,29 @@ loop other st =
                                 withConnection Connection.keepalive st
 
                         Pump ->
-                            withConnection (Connection.pump pumpBudget) st
+                            Time.monotonic
+                                |> Task.andThen
+                                    (\now ->
+                                        let
+                                            p =
+                                                st.options.pacing
+
+                                            quiet =
+                                                Time.inMilliseconds now - st.keysAt >= Int64.fromInt p.quietMs
+                                        in
+                                        if quiet && not st.quiet then
+                                            -- no key for a while: more at once
+                                            st.link.setUnsent p.quietUnsent
+                                                |> Task.andThen (\_ -> withConnection (Connection.pump p.quietPump) { st | quiet = True })
+
+                                        else if st.quiet then
+                                            withConnection (Connection.pump p.quietPump) st
+
+                                        else
+                                            withConnection (Connection.pump p.pump) st
+                                    )
                 )
             |> Task.andThen (loop other)
-
-
-{-| The side channels' bytes sent for each time the link has room: one
-packet's worth. -}
-pumpBudget : Int
-pumpBudget =
-    32768
 
 
 {-| The session over: why, unless it already said how the program ended. -}
@@ -673,7 +723,19 @@ onInput input st =
             Task.succeed st
 
         { input = Keys bytes } ->
-            withConnection (Connection.write bytes) st
+            -- a key ends a quiet spell: the link paced for keys again
+            -- before it goes (FT17)
+            Time.monotonic
+                |> Task.andThen
+                    (\now ->
+                        (if st.quiet then
+                            st.link.setUnsent st.options.pacing.unsent
+
+                         else
+                            Task.succeed {}
+                        )
+                            |> Task.andThen (\_ -> withConnection (Connection.write bytes) { st | keysAt = Time.inMilliseconds now, quiet = False })
+                    )
 
         { input = Resize size } ->
             when st.connection is
@@ -1503,6 +1565,7 @@ resolveOne permissions given =
                                     }
                                 , keepaliveSeconds = Dict.get "serveraliveinterval" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 0)
                                 , keepaliveCountMax = Dict.get "serveralivecountmax" settings.numbers |> Maybe.withDefault (meant Reason.NotSet 3)
+                                , pacing = pacing
                                 }
                             , proxyJump = one "proxyjump" "none"
                             , problems = parsed.problems ++ settings.problems

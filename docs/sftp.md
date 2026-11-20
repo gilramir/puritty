@@ -1020,3 +1020,85 @@ set `paste_images = "allow"`; `paste-check.py` waits 12 s for a paste, was
 30 of 30 cases pass. The question as drawn was looked at in the cases'
 window pictures (`--shots`): the FT15 folder's path in three lines, the
 file's name whole on the last.
+
+## FT17 · Step 4 begun: faster uploads while no key is typed (2026-11-19)
+
+FT14 left a question for the transfer engine: whether to send more when no
+key has been typed for a while. Gilbert: yes.
+
+**What changed** (`Ssh.Session`). A session's options carry a `Pacing`:
+while keys come, the socket keeps at most 64 KiB unsent and each turn
+sends 32 KiB of the side channels, as FT12 chose. Once no key has come for
+a second (`quietMs`), the socket is set to keep 256 KiB unsent and each
+turn sends 128 KiB. The next key sets it back before it is sent, so that
+key waits behind at most what the quiet setting let in, and the keys after
+it behind FT12's 64 KiB. `Os.Net.limitUnsent` is set again on the open
+socket (`TCP_NOTSENT_LOWAT` can be changed at any time); a link through a
+jump host has no socket of its own and is not paced, as before.
+`ssh-tests session --pacing UNSENT,PUMP,QUIET_MS,QUIET_UNSENT,QUIET_PUMP`
+runs with another. The measuring scripts are kept now, in
+`packages/ssh/tests/measure/` (`echo-timer.py`, which takes the gap
+between keys, and `sink.py`); FT12's were in `/tmp` and were lost.
+
+**Measured** (to gmktec7, which ran a load average of 35 throughout, so
+each comparison was made in the same minutes, interleaved):
+
+Uploads, 256 MiB on a side channel, no keys at all, MB/s (two rounds; a
+third, when the load rose, was 20 to 35 for every setting, OpenSSH's too):
+
+| quiet setting (unsent, pump) | round 1 | round 2 |
+|---|---|---|
+| 64 KiB, 32 KiB (FT12's, unchanged) | 31.4 | 34.8 |
+| **256 KiB, 128 KiB** | **47.7** | **49.0** |
+| 1 MiB, 256 KiB | 48.4 | 49.5 |
+| 64 MiB, 512 KiB (no limit in effect) | 48.5 | 49.2 |
+| OpenSSH `sftp -R 64`, its own connection, login counted | 46.5 | 41.9 |
+
+The first key after a quiet spell (12 keys 1.2 s apart during a 1 GiB
+upload; median, p90, two runs each):
+
+| quiet setting | run 1 | run 2 |
+|---|---|---|
+| 64 KiB, 32 KiB (FT12's) | 5.7, 7.6 ms | 8.7, 13.5 ms |
+| 128 KiB, 64 KiB | 17.0, 28.3 ms | 14.6, 19.8 ms |
+| **256 KiB, 128 KiB** | **16.6, 22.0 ms** | **17.3, 23.1 ms** |
+| no upload | 4.3, 4.8 ms | |
+
+Steady typing (80 keys 50 ms apart, which never go quiet): 5.2 ms median
+with FT12's setting and 5.3 to 5.4 ms with the quiet one, both runs; the
+quiet one's worst is the run's first key, which comes after a second's
+quiet.
+
+**Chosen: 256 KiB and 128 KiB after one second.** An upload with no typing
+runs 40% faster, as fast as with no limit and as OpenSSH's; the first key
+after a pause of a second or more costs about 17 ms instead of 6 to 9, and
+every key after it is as before. OpenSSH sharing its connection with an
+upload gave 42.9 ms for every key (FT11). 128 KiB's first key cost the
+same and its rate was not measured, so the larger, measured as fast as no
+limit, is taken. On a slower link
+the first key waits longer, by 256 KiB's time to drain (a quarter second
+at 1 MB/s); a pacing from the link's measured rate would bound it, and is
+left until a slow link shows it matters. On Windows `limitUnsent` does
+nothing yet (FT12), so only the pump changes there.
+
+**The rest of step 4**, in order, each held by cases against the local
+sshd and `sftp-server` in `ssh-tests`, as FT14's were:
+
+1. **Back-pressure** (FT12's leftover): how much waits for a side channel,
+   so the engine keeps a few pumps' worth queued instead of a whole file
+   in memory, and `SideWrite` stops copying what waits.
+2. **`Ssh.Transfer`**, pure, over `Ssh.Sftp`: a queue of uploads and
+   downloads, files and folders, pipelined; a new file written to
+   `NAME.part` and renamed at the end (`posix-rename`), falling back to
+   writing in place where the rename is refused; a file replaced written
+   in place, so it keeps its owner and mode; the modification time kept;
+   names already there found before anything is written, for the conflict
+   question (FT4: Replace, Keep both, Skip, Replace if newer), answered by
+   the caller; progress as bytes done of the total; cancel, which removes
+   the `.part`.
+3. **The `exec` fallback** for uploads where the server refuses SFTP
+   (FT7): `cat > NAME.part && mv`, with the message saying so.
+
+The progress bar and the conflict question are drawn by the app, and
+their first caller is step 5's drop; they are built with it, on the
+engine's events, rather than here with nothing to start a transfer.

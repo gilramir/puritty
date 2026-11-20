@@ -1891,6 +1891,15 @@ sessionMode r target =
             , session = sessionOf r.args
             , keepaliveSeconds = 0
             , keepaliveCountMax = 3
+            , pacing =
+                -- `--pacing UNSENT,PUMP,QUIET_MS,QUIET_UNSENT,QUIET_PUMP`, to
+                -- measure another (docs/sftp.md FT17)
+                when option "--pacing" r.args |> Maybe.map (String.split "," >> Array.map String.toInt) is
+                    Just [ Just unsent, Just pump, Just quietMs, Just quietUnsent, Just quietPump ] ->
+                        { unsent = unsent, pump = pump, quietMs = quietMs, quietUnsent = quietUnsent, quietPump = quietPump }
+
+                    _ ->
+                        Session.pacing
             }
 
         -- `--jump HOST:PORT`, again for each hop: the same user, keys and
