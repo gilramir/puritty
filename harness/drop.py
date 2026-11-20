@@ -59,8 +59,13 @@ TMUX_CASES = [
     ("tmux-ssh-pane", (1100, 400)),
 ]
 
+# an ssh tab without tmux (FT24): the folder chooser, driven by keys: a path
+# typed over the home it opens at, its folders listed, the second chosen,
+# gone into, and chosen
+CHOOSER_KEYS = ["ctrl+a", "type:HOST", "Return", "Down", "Down", "Down", "Return", "Return"]
 
-def run_tmux_case(env0, name, at, keys):
+
+def run_tmux_case(env0, name, at, keys, after=(), tmux=True):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
@@ -71,7 +76,7 @@ def run_tmux_case(env0, name, at, keys):
         f.write("x\n")
     (files / "a folder").mkdir()
     there = home / "host"
-    server = sshd.Server([])
+    server = sshd.Server(["Subsystem sftp /usr/lib/openssh/sftp-server"])
     kh = home / ".ssh" / "known_hosts"
     kh.parent.mkdir(parents=True)
     pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
@@ -79,7 +84,11 @@ def run_tmux_case(env0, name, at, keys):
     (home / "config" / "puritty").mkdir(parents=True)
     (home / "config" / "puritty" / "config.toml").write_text(
         f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\nidentity = "{keys["ed"]}"\n'
-        f'client = "built-in"\ncommand = "sh {PANES} \'{there}\'"\n\n[debug]\nlog = true\n')
+        f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "") + '\n[debug]\nlog = true\n')
+    if not tmux:
+        # the folders the chooser is taken to
+        for d in ["alpha", "beta dir", ".hidden"]:
+            (there / d).mkdir(parents=True)
     env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
     procs = []
     try:
@@ -109,6 +118,16 @@ def run_tmux_case(env0, name, at, keys):
         subprocess.run(shot + [str(home / "marked.png")], env=env)
         xdo(env, "mouseup", 1)
         time.sleep(2)
+        if after:
+            for wid in xdo(env, "search", "--class", "puritty").split():
+                xdo(env, "windowfocus", "--sync", wid)
+            for n, k in enumerate(after):
+                if k.startswith("type:"):
+                    xdo(env, "type", "--delay", "30", k[5:].replace("HOST", str(there)))
+                else:
+                    xdo(env, "key", k)
+                time.sleep(1.2)
+                subprocess.run(shot + [str(home / f"after-{n}.png")], env=env)
     finally:
         for p in procs:
             if p.poll() is None:
@@ -117,8 +136,9 @@ def run_tmux_case(env0, name, at, keys):
         server.stop()
     said = [line.split(None, 3)[-1].replace(str(there), "HOST").replace(str(files), "DIR")
             for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
-            for line in log.read_text(errors="replace").splitlines() if " paste " in line and "paste button" not in line and "paste asked" not in line]
-    return f"dropped on the pane at {at}\nsaid: {said}\n"
+            for line in log.read_text(errors="replace").splitlines()
+            if (" paste " in line or " drop " in line) and "paste button" not in line and "paste asked" not in line]
+    return f"dropped {'on the pane ' if tmux else ''}at {at}{', then ' + str(after) if after else ''}\nsaid: {said}\n"
 
 
 def dolphin():
@@ -223,7 +243,9 @@ def main():
     keys = sshd.user_keys()[0]
     runs = [(name, (lambda name=name, fm=fm, items=items, charset=charset: run_case(env, name, fm, items, charset)))
             for name, fm, items, charset in CASES] + \
-        [(name, (lambda name=name, at=at: run_tmux_case(env, name, at, keys))) for name, at in TMUX_CASES]
+        [(name, (lambda name=name, at=at: run_tmux_case(env, name, at, keys, after=["Escape"] if name == "tmux-ssh-pane" else ())))
+         for name, at in TMUX_CASES] + \
+        [("ssh-chooser", lambda: run_tmux_case(env, "ssh-chooser", (950, 300), keys, after=CHOOSER_KEYS, tmux=False))]
     try:
         for name, go in runs:
             if a.only and name not in a.only:

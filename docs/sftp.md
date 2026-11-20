@@ -1631,3 +1631,43 @@ pane with no folder; sending (item 4). A host whose files are named in
 EUC-KR under `tmux -CC` shows its folder's bytes as UTF-8 in the label,
 as TmuxMode's panes read every byte (it keeps no charset).
 
+## FT24 · Step 5, item 3: the folder chooser (2026-11-20)
+
+For an ssh tab without `tmux -CC`, and for a pane whose folder tmux can't
+say (FT23's rule 3), a drop opens a box that lists the host's folders
+over SFTP (FT6): `app/src/Chooser.geng`, pure as `Ssh.Transfer` is, on an
+SFTP channel of its own (`Session.OpenSubsystem`), as the transfer that
+follows will use one.
+
+- **It opens at the host's home** (`realpath .`). The field holds the
+  folder listed; under it its folders, `..` first, the rest by name with
+  case not counted and hidden ones (`.name`) last, twelve shown around
+  the one chosen. A folder is what its attributes say (`S_IFDIR`); a link
+  to one is not listed, since `readdir`'s attributes are the link's.
+- **Keys** (keyboard first, FT5): Up and Down choose a row, which puts
+  its path in the field; Enter goes to the path in the field (`realpath`
+  reads `..`, `~`-less relative paths and links), and Enter on the folder
+  listed chooses it; a path can be typed or pasted (TextEdit's keys: the
+  field starts as the folder's path); Esc cancels. With the mouse, Send
+  here chooses the folder listed, Cancel cancels.
+- **Names are the host's bytes**, read and written in the tab's character
+  set (FT20's `fromHost` and `inHostCharset`); a typed path that set
+  can't write is refused, saying so.
+- **What goes wrong is said in the box**, in lines it holds: a path not
+  there, not a folder, not readable (the server's words, the folder
+  listed before kept); SFTP refused ("SFTP is turned off on this host,
+  and the folders are read with it"); the channel closed.
+- A tab whose ssh is OpenSSH's has no channel of puritty's: the drop says
+  so. Until item 4 sends, the chosen folder is named in the note.
+
+**Tested** (`harness/drop.py`, ten cases now; two runs): `ssh-chooser`, an ssh
+tab to the local sshd (with SFTP, `Subsystem sftp`) and no tmux, a file
+dropped, then Ctrl+A and the case's folder typed, Enter (its `alpha`,
+`beta dir` and `.hidden` listed in that order), Down three times
+(`..`, `alpha`, `beta dir`), Enter into it, and Enter to choose it: the
+note names `HOST/beta dir`. A screenshot after each key is kept; they
+showed the listing and the chosen row's mark. Its first run had no
+`Subsystem` in the sshd's config, and the box said SFTP was off, which
+is how the problem lines came to be wrapped. `tmux-ssh-pane` now opens
+the chooser for the pane running `ssh`, and Esc cancels it.
+

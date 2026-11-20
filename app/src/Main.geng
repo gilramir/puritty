@@ -44,6 +44,7 @@ import Array.Builder as Builder exposing (Builder)
 import Backend exposing (Backend, Incoming(..))
 import Bitwise
 import Bytes exposing (Bytes)
+import Chooser
 import Chord
 import Clock
 import Config exposing (Config)
@@ -229,6 +230,7 @@ type alias Model =
     -- a pasted picture waiting for the user's yes before it is written
     -- (docs/sftp.md FT16)
     , pasteAsk : Maybe PasteAsk
+    , choosing : Maybe Choosing
     -- why a new tab did not start, said in a box until it is
     -- dismissed (docs/tabs.md TB16)
     , startFailed : Maybe String
@@ -309,6 +311,13 @@ path it will have, shown in the question, where it goes, `on` that place
 as the question says it, and the tab it was pasted in. -}
 type alias PasteAsk =
     { png : Bytes, path : String, to : PasteTo, on : String, tab : Int }
+
+
+{-| The folder chooser for files dropped on an ssh tab (docs/sftp.md
+FT24): its SFTP channel's reference, the tab it is for, whether the
+channel is opened yet, and the bytes it waits to send. -}
+type alias Choosing =
+    { ref : Int, tab : Int, chooser : Chooser.Chooser, opened : Bool, toSend : Bytes }
 
 
 {-| Where an asked-about picture goes: to the ssh host's paste folder,
@@ -1347,6 +1356,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , coloring = Nothing
                      , closing = Nothing
                      , pasteAsk = Nothing
+                     , choosing = Nothing
                      , startFailed = Nothing
                      , barClick = { at = -1000, id = -1 }
                      , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
@@ -2187,7 +2197,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -2218,7 +2228,7 @@ so that the window sends every motion: under tmux control mode, with the tab
 bar or the scroll bar shown, or a menu or a question up. -}
 hoverShapes : Model -> Bool
 hoverShapes m =
-    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || m.coloring /= Nothing || m.menu /= Nothing
 
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
@@ -2905,6 +2915,11 @@ windowState m =
                     ""
                 , if m.pasteAsk /= Nothing then
                     "the paste question"
+
+                  else
+                    ""
+                , if Maybe.isJust m.choosing then
+                    "the folder chooser"
 
                   else
                     ""
@@ -3977,7 +3992,7 @@ sshTold told m =
             sshAsked ask m
 
         Session.Side side ->
-            Task.succeed (uploaded side m)
+            sideEvent side m
 
         Session.Ended ->
             Task.succeed (sshNoticed told (uploadLost m))
@@ -4423,6 +4438,168 @@ filesDropped list m =
         |> Task.map (\checked -> droppedChecked dropped.others checked m)
 
 
+{-| Files dropped on an ssh tab: on a tmux pane whose folder is known,
+that folder; else the folder chooser, over an SFTP channel of its own
+(FT24), from the host's home. Sending them is item 4's: until then the
+note says where they would have gone. -}
+sshDropped : Array Bytes -> (taken m : Model) -> Model
+sshDropped files m0 =
+    let
+        known =
+            when TmuxMode.dropTarget m0.tmux |> Maybe.map .folder is
+                Just (TmuxMode.Folder path) ->
+                    Just path
+
+                Just (TmuxMode.NoFolder _) ->
+                    Nothing
+
+                Just (TmuxMode.Asking _) ->
+                    Nothing
+
+                Nothing ->
+                    -- no tmux pane marked: a tab without tmux -CC
+                    meant Reason.NotOpen Nothing
+
+        why =
+            dropWhere m0
+
+        m =
+            { m0 | tmux = TmuxMode.dragLeft m0.tmux, urgent = True }
+    in
+    when known is
+        Just _ ->
+            noteUp { text = "Sending dropped files to the host is not built yet: nothing was sent" ++ why, failed = True, kept = False } m
+
+        Nothing ->
+            -- no folder known: the chooser asks
+            meant Reason.NotYet
+                (if not (Maybe.isJust m.remote.side) then
+                    noteUp { text = "Files can't be sent to this host: this tab's ssh is OpenSSH's (set client = \"built-in\")", failed = True, kept = False } m
+
+                 else if Maybe.isJust m.choosing then
+                    noteUp { text = "The folder chooser is open already", failed = True, kept = False } m
+
+                 else
+                    let
+                        begun =
+                            Chooser.start { files = files, at = Bytes.empty }
+                    in
+                    logLine "drop"
+                        ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
+                        { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
+                )
+
+
+{-| The chooser's channel opened and its bytes sent, when it has any. -}
+chooserIo : (taken m : Model) -> Task Error Model
+chooserIo m =
+    when { c = m.choosing, side = m.remote.side } is
+        { c = Just c, side = Just side } ->
+            (if c.opened then
+                Task.succeed {}
+
+             else
+                side (Session.OpenSubsystem { ref = c.ref, name = "sftp" })
+            )
+                |> Task.andThen
+                    (\_ ->
+                        if Bytes.isEmpty c.toSend then
+                            Task.succeed {}
+
+                        else
+                            side (Session.SideWrite { ref = c.ref, bytes = c.toSend })
+                    )
+                |> Task.map (\_ -> { m | choosing = Just { c | opened = True, toSend = Bytes.empty } })
+
+        _ ->
+            Task.succeed m
+
+
+{-| A side channel's event: the chooser's, or the picture's upload. -}
+sideEvent : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Task Error Model
+sideEvent side m =
+    when m.choosing is
+        Just c ->
+            if c.ref /= side.ref then
+                Task.succeed (uploaded side m)
+
+            else
+                when side.event is
+                    Connection.Output b ->
+                        let
+                            r =
+                                Chooser.received b c.chooser
+                        in
+                        chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
+
+                    Connection.Refused why ->
+                        Task.succeed { m | choosing = Just { c | chooser = Chooser.refused why c.chooser }, urgent = True }
+
+                    Connection.Ended ->
+                        Task.succeed { m | choosing = Just { c | chooser = Chooser.refused "the channel closed" c.chooser }, urgent = True }
+
+                    _ ->
+                        Task.succeed m
+
+        Nothing ->
+            meant Reason.NotOpen (Task.succeed (uploaded side m))
+
+
+{-| A key in the folder chooser: the chooser's, and what came of it. -}
+chooserKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Choosing -> (taken m : Model) -> Task Error Model
+chooserKey k c m =
+    let
+        r =
+            Chooser.key { sym = k.sym, mods = k.mods, text = Bytes.toStringLossy k.text } { decode = fromHost m.charset, encode = inHostCharset m.charset } c.chooser
+    in
+    when r.outcome is
+        Chooser.Stay ->
+            chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
+
+        Chooser.Chosen folder ->
+            chooserClosed c (noteUp { text = "Sending dropped files to the host is not built yet: nothing was sent; they would go to " ++ fromHost m.charset folder, failed = True, kept = False } m)
+
+        Chooser.Cancelled ->
+            chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
+
+
+{-| The chooser gone, its channel closed. -}
+chooserClosed : Choosing -> (taken m : Model) -> Task Error Model
+chooserClosed c m =
+    (when m.remote.side is
+        Just side ->
+            side (Session.SideClose c.ref)
+
+        Nothing ->
+            meant Reason.Gone (Task.succeed {})
+    )
+        |> Task.map (\_ -> { m | choosing = Nothing, urgent = True })
+
+
+{-| A press while the chooser is up: Send here chooses the folder listed,
+Cancel cancels; nothing reaches the terminal under it. -}
+chooserPress : Window.PointerEvent -> Choosing -> (taken m : Model) -> Task Error Model
+chooserPress p c m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) (Chooser.dialog (fromHost m.charset) c.chooser) { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            -- Enter's answer
+            chooserKey { action = 1, keycode = 0, mods = 0, consumed = 0, unshifted = 0, sym = 0xFF0D, text = Bytes.empty } c m
+
+        Just _ ->
+            chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
+
+        Nothing ->
+            meant Reason.OutOfRange Task.succeed m
+
+
 {-| Where a drop on a tmux pane would have gone, for the note. -}
 dropWhere : Model -> String
 dropWhere m =
@@ -4491,7 +4668,7 @@ droppedChecked others checked m =
                 -- every file there
                 meant Reason.NoMore
                     (if m.tab.host /= Nothing then
-                        noteUp { text = "Sending dropped files to the host is not built yet: nothing was sent" ++ dropWhere m, failed = True, kept = False } { m | tmux = TmuxMode.dragLeft m.tmux, urgent = True }
+                        sshDropped (Array.map .path checked) m
 
                      else if Array.length readable < Array.length names || (Charset.encode m.charset (Bytes.fromString pasted)).replaced > 0 then
                         noteUp { text = "A dropped file's name is not in this tab's character set, " ++ charsetName m.charset ++ ", and was not pasted", failed = True, kept = False } m
@@ -5500,6 +5677,21 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if Maybe.isJust m.choosing then
+                -- the folder chooser takes the keys (docs/sftp.md FT24)
+                (if k.action /= 0 then
+                    when m.choosing is
+                        Just c ->
+                            chooserKey k c m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if m.pasteAsk /= Nothing then
                 -- the question before a picture is written takes the keys
                 -- (docs/sftp.md FT16)
@@ -5839,6 +6031,21 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if Maybe.isJust m.choosing then
+                -- the folder chooser takes the pointer
+                (if p.action == 0 then
+                    when m.choosing is
+                        Just c ->
+                            chooserPress p c m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if m.pasteAsk /= Nothing then
                 -- the paste question takes the pointer, as the close
                 -- question does
@@ -6000,6 +6207,7 @@ handleOne remote ms rest ev m =
 
                         else
                             filesDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms }
+                                |> Task.andThen chooserIo
                                 |> Task.andThen (handle remote ms rest)
                     )
 
@@ -7126,6 +7334,9 @@ draw ms m =
 
             else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
+
+            else if Maybe.isJust m.choosing then
+                Maybe.map (\c -> Chooser.dialog (fromHost m.charset) c.chooser) m.choosing
 
             else if m.pasteAsk /= Nothing then
                 Maybe.map pasteBox m.pasteAsk
