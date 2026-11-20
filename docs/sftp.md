@@ -1358,3 +1358,127 @@ UTF-8's bytes.
 real one, so the folder was made in the user's home. It was empty, and
 removed; the case uses a folder under its own work directory.)
 
+## FT21 · Step 5's survey: what a drop carries (2026-11-20)
+
+Measured before building the drop (FT10 step 5), on both systems. The
+probes are in `probes/xdnd/` and `probes/drop-windows/`.
+
+### Linux: XDND from Nemo and Dolphin
+
+A probe drop target (`probes/xdnd/target.py`, python-xlib, XDND version 5)
+logs the types a source offers, each position, and on the drop the data in
+every type. `drag-from-nemo.py` opens a file manager under Xvfb on a folder
+of test names (`a plain.txt`, `it's $HOME.txt`, `한글 이름.txt` in UTF-8, a
+name in EUC-KR's bytes, `a folder`) and drags with xdotool: each alone,
+then five selected together. Nemo is the one installed here (GTK, as
+Nautilus is); Dolphin 26.08.3 (Qt 6, KDE) came from nixpkgs for the run.
+
+| | Nemo | Dolphin |
+|---|---|---|
+| version | 5 | 5 |
+| types | `x-special/gnome-icon-list`, `text/uri-list`, `UTF8_STRING`, `COMPOUND_TEXT`, `TEXT`, `STRING`, `text/plain;charset=utf-8`, `text/plain` | `text/uri-list`, `text/x-moz-url` (UTF-16), `text/plain`, `application/x-kde4-urilist` |
+| positions a drag | 12 to 21, each with `XdndActionCopy` | 11; in one run those after the first had no action |
+| five items | five `file://` lines, CRLF | the same |
+| `'` and `$` | not escaped in the URI | the same |
+| a UTF-8 Korean name | percent-encoded UTF-8 | the same |
+| an EUC-KR name | `%C7%D1%B1%DB`: the bytes as they are | `%EF%BF%BD%D1%B1%EF%BF%BD`: each byte that is not UTF-8 made U+FFFD |
+
+- **`text/uri-list` is the one to read**: both offer it, it is exact for
+  any name GTK can see, and the text types are no better (Nemo's
+  `UTF8_STRING` holds the EUC-KR bytes raw, not UTF-8). Percent-decoded,
+  each line is a path's bytes, for `Os.Path.fromBytes`.
+- **Dolphin loses a name that is not UTF-8**, and not only under a UTF-8
+  locale: run in `ko_KR.EUC-KR` (FT19's locale) it sent the same
+  `%EF%BF%BD`, since Qt 6 takes every file name as UTF-8. No drop target
+  can get that file back; puritty can only say the file it was given is
+  not there.
+- **A missing action is a copy.** XDND 5 lets a source leave it out after
+  the first position.
+- puritty's X11 layer (`packages/x11/src/Ext/puritty_x11.c`, Xlib) already
+  reads selections, INCR included, for the clipboard and its pictures;
+  XDND's data comes the same way, a `ConvertSelection` of
+  `XdndSelection` with the drop's time.
+
+Not measured: a drop from a Wayland program into puritty under XWayland
+(GNOME and KDE on Wayland bridge it to XDND; there is no Wayland session
+here), and a Flatpak'd source, which may offer only the portal's types.
+
+### Windows: OLE drops on beelink1
+
+A WinForms window (`probes/drop-windows/drop-probe.ps1`; WinForms' drop
+target is OLE's `IDropTarget`, the one puritty's window would register),
+run in Gilbert's session, logged four drops he made (the log is kept
+beside it, `beelink1-2026-11-20.log`):
+
+| Dragged | Allowed | Formats | What it gives |
+|---|---|---|---|
+| `한.txt` from Explorer (OneDrive Documents) | copy, move, link | `Shell IDList Array`, `FileDrop`, `FileNameW`, `FileGroupDescriptorW`, `FileContents`, drag image and context | `FileDrop`: the path, 한 intact |
+| three files and a folder from Explorer | copy, move, link | the same without the virtual-file pair | `FileDrop`: four paths, the folder among them |
+| a file inside a `.zip` in Explorer | copy, move | `Shell IDList Array`, `FileGroupDescriptorW`, `FileContents` only | no path at all: the name `built-from.txt` and 19 bytes, as a stream |
+| a download from the browser's list | copy, link | `FileDrop`, drag image and context | `FileDrop`: the path |
+
+- **`CF_HDROP` (`FileDrop`)** is what Explorer and the browser give:
+  UTF-16 paths, read with `DragQueryFileW`, Korean as it is.
+- **A file inside a zip is virtual**: `FileGroupDescriptorW` gives names
+  and sizes, and `FileContents` the bytes, a stream for each file asked
+  for by its index. Nothing on disk to read with `ReadPiece`.
+- `DragOver` came 24 to 33 times a drag, each with the pointer's screen
+  position; the drop has no modifier keys held.
+- puritty's window runs on a thread of its own with its own message loop
+  (WS4, WS15): that thread calls `OleInitialize` and `RegisterDragDrop`,
+  and its `IDropTarget` answers each `DragOver` at once, a copy, posting
+  the position on to the program, as the window's other events go.
+
+### tmux and OSC 7
+
+- **tmux's folder for a pane** was measured in FT11: `pane_current_path`
+  needs no shell setup but is blind after `sudo su` (a root process's cwd
+  can't be read) and inside a nested ssh (the local `ssh`'s folder);
+  `pane_path` holds OSC 7, with its host, as the shell sent it.
+- **OSC 7 is mostly not sent over ssh unless set up.** Mint's (and
+  Fedora's) `/etc/profile.d/vte-2.91.sh` sends it only when `VTE_VERSION`
+  is 3405 or more, which a VTE terminal sets in its own environment and
+  ssh does not carry (sshd takes only `LANG` and `LC_*` by default). fish
+  sends it by default. So the folder chooser stays the common path for an
+  ssh tab without `tmux -CC`; OSC 7 serves those who set it up.
+- puritty's core does not take OSC 7 yet (`tmux.md`'s `osc7` row: no).
+
+### The plan for step 5
+
+1. **The drop, on both systems.** X11: `XdndAware` (5) on the window;
+   Enter, Position, Leave and Drop answered (`XdndStatus` accepting a copy
+   where `text/uri-list` or `application/x-kde4-urilist` is offered,
+   `XdndFinished`); the list read through the selection code and
+   percent-decoded to bytes. Windows: `IDropTarget` on the window's
+   thread, `CF_HDROP` read as UTF-16 and given on as UTF-8. Both give the
+   program the same events: a drag over a cell, a leave, a drop of paths.
+2. **A local tab** pastes the paths, each quoted for the shell, as other
+   terminals do (FT5 question 6).
+3. **An ssh tab**: the pane under the pointer marked with its folder in
+   `tmux -CC` (FT6, FT11's rule); otherwise, or on a write error, the
+   folder chooser, a dialog listing the host's folders over SFTP.
+4. **The transfer in the app**: SFTP's engine, or the shell's where SFTP
+   is refused and `upload_through_shell` allows it (FT18); the conflict
+   question; the progress bar after a second, with cancel and "3 of 12";
+   a folder dropped is made and its files listed here, each a job.
+5. **Names in the host's character set**: a local name turned into the
+   host's `charset` with `Vt.Charset.encode` (FT20), a name that set
+   can't write failing its job, saying so.
+6. **OSC 7 in the core**: the shell's folder and host for a tab, its host
+   held against the tab's, so a nested ssh's is not offered.
+
+### For Gilbert
+
+1. **A file dragged out of a zip (or an Outlook attachment) on Windows**
+   is not on disk: its bytes come as a stream. Taking it means writing it
+   to a folder of puritty's first and uploading that. Leaning: not in the
+   first drop; such a drop says the program gave no file to send, and it
+   comes later if wanted.
+2. **A name Dolphin has already spoiled** (a file named in EUC-KR on a
+   UTF-8 or Qt 6 desktop) can't be sent from a Dolphin drag at all.
+   Leaning: say so, naming the file as Dolphin gave it, and nothing more.
+3. **A local file whose name is not UTF-8** (EUC-KR bytes on this
+   computer), dropped on a host whose `charset` is `euc-kr`: leaning,
+   sent as its bytes, since they are already that host's; to a UTF-8 host,
+   refused, since there is no right UTF-8 for them.
+
