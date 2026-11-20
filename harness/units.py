@@ -93,8 +93,9 @@ SUITES = [
     # Kitty's Unicode placeholders, eleven; 185 since CL7: the Program
     # Status Protocol (OSC 7501), eleven; 192 since CL8: desktop
     # notifications by OSC 9, 777 and 99, seven; 199 since CL9: OSC 8
-    # hyperlinks, seven; 208 since KG9: Kitty's pictures from files, nine
-    Suite("vt", 208, runs_of("vt/tests")),
+    # hyperlinks, seven; 208 since KG9: Kitty's pictures from files, nine;
+    # 211 since FT29: OSC 7 kept, the last one said, cleared by RIS, three
+    Suite("vt", 211, runs_of("vt/tests")),
     # 100 since VC63: a choice moved on from the last; 114 since TM72:
     # what a tmux takes, and its 2.x keys, fourteen; 117 since TK2: the
     # catalog held to every dumped tmux, three; 121 since TK9: the 2.x keys

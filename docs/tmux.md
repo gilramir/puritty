@@ -133,7 +133,7 @@ terminfo and `COLORTERM`).
 | overline | SGR 53 | yes, drawn | no | same |
 | margins | `?69`, DECSLRM | yes | no | DA1 21 |
 | hyperlinks | OSC 8 | **no** (ignored; `vt-core.md` §VC9) | no | build OSC 8 first |
-| osc7 | OSC 7 | **no** | no | build first |
+| osc7 | OSC 7 | yes, kept for a drop's folder (`sftp.md` FT29) | no | under `-CC` tmux keeps it as `pane_path`, which puritty asks for (FT23); a row is not needed for that |
 | progressbar | OSC 9;4 | **no** (only `9;12`) | no | build first |
 | rectfill | DECFRA | no | no | leave DA1 28 unclaimed |
 | sixel | DCS sixel | no (after phase 4) | no | then DA1 4 |

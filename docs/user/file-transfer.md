@@ -34,6 +34,8 @@ files yet, and says so.
   is the shell's: the one it reports itself (OSC 7) when it does, else the
   one tmux sees. When the pane runs `ssh`, `su`, `sudo` or the like, tmux
   can't see its folder, and the label says a folder will be asked for.
+- **In a tab without tmux whose shell says where it is** (by OSC 7, see
+  below), they go to the shell's folder.
 - **Otherwise** a box asks which folder, starting at your home on the
   host:
 
@@ -52,10 +54,12 @@ Folders are sent with everything in them.
 ### Asked first
 
 Sending writes your files on the host, so puritty asks first. When it
-found the folder itself (the `tmux -CC` pane you dropped on), a box names
-the files and the folder, and nothing is sent until you say yes (Enter, or
-Send; Esc, or Don't send, sends nothing). When it asked you for the folder,
-choosing one is your yes, and there is no second question.
+found the folder itself (the `tmux -CC` pane you dropped on, or the
+shell's), a box names the files and the folder, and nothing is sent until
+you say yes (Enter, or Send; Esc, or Don't send, sends nothing). "Another
+folder…" (C) opens the folder box there, to choose another. When it asked
+you for the folder, choosing one is your yes, and there is no second
+question.
 
 ```toml
 [files]
@@ -92,6 +96,28 @@ half-written file under the real name. The file keeps its modification
 time.
 
 ---
+
+### Letting the shell say where it is (OSC 7)
+
+A shell can tell the terminal its folder with OSC 7, and some do at every
+prompt: fish does by default; bash and zsh do in a desktop's terminal on
+Fedora and Linux Mint, but not over ssh. To have bash say it on a host,
+add this to its `~/.bashrc`:
+
+```bash
+PROMPT_COMMAND='printf "\033]7;file://%s%s\007" "$HOSTNAME" "${PWD// /%20}"'"${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+```
+
+and for zsh, to `~/.zshrc`:
+
+```zsh
+precmd_osc7() { printf '\033]7;file://%s%s\007' "$HOST" "${PWD// /%20}" }
+precmd_functions+=(precmd_osc7)
+```
+
+puritty takes the host the tab's shell names first as the tab's host. A
+folder named by another host later, from an `ssh` run in the tab, is not
+used: the files would go to the tab's host, not that one.
 
 ## 3. A host with SFTP turned off
 

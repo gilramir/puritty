@@ -1820,3 +1820,43 @@ and says so; with `deny` nothing is sent and the note names the setting.
 Each case keeps a screenshot after the drop (`dropped.png`), which shows
 the box.
 
+## FT29 · Step 5, item 6: OSC 7 in the core, a drop's folder (2026-11-20)
+
+The last of step 5 (FT10): the shell's folder for a tab without
+`tmux -CC`, where the shell says it (FT21: over ssh most don't unless set
+up; fish does).
+
+**The core** (`vt/src/Vt/Osc.geng`) keeps OSC 7's text as it came,
+`file://HOST/PATH`, in the term's `workingDirectory`, the last one said;
+RIS clears it, as it does the title (`Vt.workingDirectory`). It answers
+nothing and draws nothing. Three cases in the core's suite (211 now):
+kept, ended by BEL or by ST; the last one said wins; RIS clears it.
+
+**The tab's host** (`shellHost`, kept with the tab): the host the first
+OSC 7 after a read names, the login shell's. puritty has no other word
+for the host's own name: the tab's host entry is a name or an address of
+the user's. An OSC 7 naming another host later comes from a program run in
+the tab, an `ssh` to another host, whose folder is not this host's and is
+not used. The rule reads the last OSC 7 after each read: two in one read
+(a shell and a nested ssh both printing at once) would be read as the
+second; a shell prints its OSC 7 at its prompt, so a nested ssh's comes
+after the login shell's has, in a read of its own.
+
+**A drop** on an ssh tab without `tmux -CC` whose shell's folder is
+known goes there, as a tmux pane's does (FT23): with `drop_uploads =
+"ask"`, the box (FT28) first. The box gains a third answer, "Another
+folder…" (C), which opens the folder chooser at that folder: the chooser
+starts where the shell is (FT10 item 5's "the chooser could start there").
+With no folder known, the chooser opens at home as before.
+
+`tmux.md`'s `osc7` row: yes, kept; under `-CC` tmux keeps OSC 7 as
+`pane_path`, which puritty asks for (FT23).
+
+**Tested** (`harness/drop.py`, twenty-two cases): an ssh tab whose login
+shell says by OSC 7 it is in `beta dir` (`%20` in the URI, this host's
+name), a file dropped: the box, Enter, the file there; C, the chooser at
+`…/beta dir` (`after-0.png`), Enter, the file there. A shell whose second
+OSC 7, a second later, names `elsewhere`: the chooser at home, Esc. The
+first run of that case printed both in the same moment and was asked about
+`elsewhere`'s folder, which is how the rule's limit above was found.
+

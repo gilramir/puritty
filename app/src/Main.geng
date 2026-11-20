@@ -234,6 +234,7 @@ type alias Model =
     , pasteAsk : Maybe PasteAsk
     , dropAsk : Maybe { folder : Bytes, files : Array Bytes, tab : Int }
     , choosing : Maybe Choosing
+    , shellHost : Maybe Bytes
     , sending : Maybe Sending.Sending
     , pendingSend : Maybe { folder : Bytes, files : Array Bytes }
     -- why a new tab did not start, said in a box until it is
@@ -304,6 +305,10 @@ type alias Tab =
     -- with it when another is shown, since each talks to its own session
     , sending : Maybe Sending.Sending
     , choosing : Maybe Choosing
+    -- the host the tab's first OSC 7 named, the login shell's: one naming
+    -- another comes from a nested ssh, and its folder is not this host's
+    -- (docs/sftp.md FT29)
+    , shellHost : Maybe Bytes
     }
 
 
@@ -1368,6 +1373,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , pasteAsk = Nothing
                      , dropAsk = Nothing
                      , choosing = Nothing
+                     , shellHost = Nothing
                      , sending = Nothing
                      , pendingSend = Nothing
                      , startFailed = Nothing
@@ -3784,7 +3790,7 @@ feed remote chunk ms m =
                 else
                     m.pending
         }
-        |> Task.map (\fed -> sendCommands r.commands fed)
+        |> Task.map (\fed -> shellHostSeen (sendCommands r.commands fed))
 
 
 {-| Whether a private mode is set for what keys and pastes reach: the
@@ -4513,8 +4519,9 @@ sshDropped files m0 =
                     Nothing
 
                 Nothing ->
-                    -- no tmux pane marked: a tab without tmux -CC
-                    meant Reason.NotOpen Nothing
+                    -- no tmux pane marked: a tab without tmux -CC, whose
+                    -- shell may have said its folder (FT29)
+                    meant Reason.NotOpen (shellFolder m0)
 
         why =
             dropWhere m0
@@ -4535,7 +4542,7 @@ sshDropped files m0 =
                 else
                     -- asked first (docs/sftp.md FT28): the folder is
                     -- puritty's choice, not the user's
-                    logLine "drop" ("asked: send " ++ String.fromInt (Array.length files) ++ " items to the pane's folder?") { m | dropAsk = Just { folder = folder, files = files, tab = m.tab.id } }
+                    logLine "drop" ("asked: send " ++ String.fromInt (Array.length files) ++ " items to the folder found?") { m | dropAsk = Just { folder = folder, files = files, tab = m.tab.id } }
 
             Nothing ->
                 -- no folder known: the chooser asks
@@ -4547,13 +4554,7 @@ sshDropped files m0 =
                         noteUp { text = "The folder chooser is open already", failed = True, kept = False } m
 
                      else
-                        let
-                            begun =
-                                Chooser.start { files = files, at = Bytes.empty }
-                        in
-                        logLine "drop"
-                            ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
-                            { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
+                        chooserOpened files Bytes.empty m
                     )
 
 
@@ -4800,6 +4801,19 @@ sendingAsks m =
     Maybe.map Sending.isAsking m.sending == Just True
 
 
+{-| The folder chooser for `files`, at `at` (the host's home when empty);
+its channel is opened by `chooserIo`. -}
+chooserOpened : Array Bytes -> Bytes -> (taken m : Model) -> Model
+chooserOpened files at m =
+    let
+        begun =
+            Chooser.start { files = files, at = at }
+    in
+    logLine "drop"
+        ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
+        { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
+
+
 {-| The chooser's channel opened and its bytes sent, when it has any. -}
 chooserIo : (taken m : Model) -> Task Error Model
 chooserIo m =
@@ -4957,8 +4971,8 @@ dropBox m a =
     , field = Nothing
     , swatches = []
     , check = Nothing
-    , buttons = [ { label = "Send", primary = True }, { label = "Don't send", primary = False } ]
-    , hint = "Enter: send    Esc: don't"
+    , buttons = [ { label = "Send", primary = True }, { label = "Another folder…", primary = False }, { label = "Don't send", primary = False } ]
+    , hint = "Enter: send    C: choose    Esc: don't"
     }
 
 
@@ -4970,8 +4984,26 @@ dropKey k a m =
     else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
         dropAnswer False a m
 
+    else if k.sym == 0x63 || k.sym == 0x43 then
+        dropElsewhere a m
+
     else
         Task.succeed m
+
+
+{-| Another folder than the one puritty found: the chooser, at that one
+(FT29). -}
+dropElsewhere : { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
+dropElsewhere a m0 =
+    let
+        m =
+            logLine "drop" "question answered: another folder" { m0 | dropAsk = Nothing, urgent = True }
+    in
+    if a.tab /= m.tab.id || Maybe.isJust m.choosing then
+        Task.succeed (noteUp { text = "The dropped files were not sent", failed = False, kept = False } m)
+
+    else
+        chooserIo (chooserOpened a.files a.folder m)
 
 
 dropPress : Window.PointerEvent -> { folder : Bytes, files : Array Bytes, tab : Int } -> (taken m : Model) -> Task Error Model
@@ -4987,6 +5019,9 @@ dropPress p a m =
     when hit is
         Just 0 ->
             dropAnswer True a m
+
+        Just 1 ->
+            dropElsewhere a m
 
         Just _ ->
             dropAnswer False a m
@@ -5020,6 +5055,39 @@ dropAnswer yes a m0 =
 
     else
         startPending { m | pendingSend = Just { folder = a.folder, files = a.files } }
+
+
+{-| The tab's host, by the first OSC 7 it read (FT29), once one has come. -}
+shellHostSeen : (taken m : Model) -> Model
+shellHostSeen m =
+    if Maybe.isJust m.shellHost || m.tab.host == Nothing then
+        m
+
+    else
+        when Drop.fileUri (Bytes.fromString (Vt.workingDirectory m.term)) is
+            Just u ->
+                { m | shellHost = Just u.host }
+
+            Nothing ->
+                -- no OSC 7 yet
+                meant Reason.NotYet m
+
+
+{-| The folder the shell of an ssh tab without tmux -CC says it is in, by
+OSC 7, when it names the tab's host (FT29): its path's bytes. -}
+shellFolder : Model -> Maybe Bytes
+shellFolder m =
+    when { said = Drop.fileUri (Bytes.fromString (Vt.workingDirectory m.term)), host = m.shellHost } is
+        { said = Just u, host = Just h } ->
+            if u.host == h && not (Bytes.isEmpty u.path) then
+                Just u.path
+
+            else
+                -- another host's: a nested ssh's
+                Nothing
+
+        _ ->
+            Nothing
 
 
 {-| Where a drop on a tmux pane would have gone, for the note. -}
@@ -8333,6 +8401,7 @@ swapTab t m =
         , upload = m.upload
         , sending = m.sending
         , choosing = m.choosing
+        , shellHost = m.shellHost
         }
     , model =
         { m
@@ -8355,6 +8424,7 @@ swapTab t m =
             , upload = t.upload
             , sending = t.sending
             , choosing = t.choosing
+            , shellHost = t.shellHost
         }
     }
 
@@ -8705,6 +8775,7 @@ freshTab id remote host name color cols rows m =
     , upload = Nothing
     , sending = Nothing
     , choosing = Nothing
+    , shellHost = Nothing
     }
 
 
@@ -8748,6 +8819,7 @@ reopened k id remote host m =
         , upload = Nothing
         , sending = Nothing
         , choosing = Nothing
+        , shellHost = Nothing
     }
 
 

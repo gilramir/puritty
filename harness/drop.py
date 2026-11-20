@@ -73,6 +73,21 @@ def taken(there):
     os.utime(there / "a plain.txt", (1577934245, 1577934245))
 
 
+def toml_text(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def osc7_command(there, which):
+    """A login shell that says its folder by OSC 7 (FT29), as a shell set up
+    for it does at each prompt: `beta dir` in the case's folder, by this
+    host's name; with `nested`, then another host's, as a shell in an ssh
+    run in the tab would say."""
+    path = str(there / "beta dir").replace(" ", "%20")
+    first = f'printf "\\033]7;file://%s%s\\007" "$(hostname)" "{path}"'
+    second = 'sleep 1; printf "\\033]7;file://elsewhere/srv\\007"' if which == "nested" else ":"
+    return f"sh -c '{first}; {second}; exec sh'"
+
+
 def host_listing(there, files):
     """What the host's folders hold after the drop: each file's size and
     whether its bytes are a dropped file's, by name."""
@@ -97,7 +112,7 @@ def host_listing(there, files):
 
 
 def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False, size=4 << 30,
-                  wait=3, drop=None):
+                  wait=3, drop=None, osc7=None):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
@@ -123,7 +138,8 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
     (home / "config" / "puritty").mkdir(parents=True)
     (home / "config" / "puritty" / "config.toml").write_text(
         f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\nidentity = "{keys["ed"]}"\n'
-        f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "") + '\n[debug]\nlog = true\n'
+        f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "")
+        + (f'command = {toml_text(osc7_command(there, osc7))}\n' if osc7 else "") + '\n[debug]\nlog = true\n'
         + ('\n[files]\n' if shell or drop else "") + ('upload_through_shell = true\n' if shell else "")
         + (f'drop_uploads = "{drop}"\n' if drop else ""))
     if not tmux:
@@ -334,6 +350,13 @@ def main():
          ("tmux-ask-yes", lambda: run_tmux_case(env, "tmux-ask-yes", (760, 250), keys, after=["Return"])),
          ("tmux-ask-no", lambda: run_tmux_case(env, "tmux-ask-no", (760, 250), keys, after=["Escape"])),
          ("tmux-deny", lambda: run_tmux_case(env, "tmux-deny", (760, 250), keys, drop="deny")),
+         # OSC 7 (FT29): an ssh tab whose shell says its folder is asked
+         # about that folder, Enter sends there; C takes the chooser to it,
+         # where Enter sends; one whose last OSC 7 named another host (a
+         # nested ssh's) gets the chooser at home, and Esc
+         ("osc7-ask", lambda: run_tmux_case(env, "osc7-ask", (950, 300), keys, tmux=False, osc7="beta", after=["Return"])),
+         ("osc7-another", lambda: run_tmux_case(env, "osc7-another", (950, 300), keys, tmux=False, osc7="beta", after=["c", "Return"])),
+         ("osc7-nested", lambda: run_tmux_case(env, "osc7-nested", (950, 300), keys, tmux=False, osc7="nested", after=["Escape"])),
          # another tab shown while one sends (FT26; 2 GiB, which a shown tab
          # does not finish in the two seconds before the switch, FT27): the sending goes on in
          # its own session, its tab marked, and its end said with its name
