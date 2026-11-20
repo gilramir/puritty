@@ -11,8 +11,8 @@ batch, from the command line, and what it told, a line each, for
     JOB: up LOCAL REMOTE-DIR NAME | down REMOTE TO PART KEEP-BOTH | mkdir PATH
 
 The engine is told a local file's size and time from its metadata, and
-whether a download's target is there. A `Move`'s time is not set: geng's
-`Os.File` cannot set one yet (FT17).
+whether a download's target is there. A `Move`'s time is set on the part
+before it is renamed, so a failure to set it leaves no file in place.
 -}
 
 import Bytes exposing (Bytes)
@@ -329,7 +329,14 @@ doLocal l r =
                     |> Task.onError (\e -> failed w.job e)
 
             Move m ->
-                File.move fs { from = Path.fromString m.from, to = Path.fromString m.to }
+                (when m.mtime is
+                    Just seconds ->
+                        File.setTimes fs { modified = Just (Time.millisToPosix (seconds * Int64.fromInt 1000)), accessed = Nothing } (Path.fromString m.from)
+
+                    Nothing ->
+                        Task.succeed {}
+                )
+                    |> Task.andThen (\_ -> File.move fs { from = Path.fromString m.from, to = Path.fromString m.to })
                     |> Task.map Ok
                     |> Task.onError (\e -> Task.succeed (Err e))
                     |> Task.mapError Os.Error.toString

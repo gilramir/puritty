@@ -1156,9 +1156,10 @@ after another, each pipelined: 32 KiB a request, 64 in flight.
   goes before the last dot, or at the end of a name with none or with only
   a leading one (`.hidden (2)`).
 - **The modification time** is set on the open file before it is closed
-  (`fsetstat`). A download's is handed to the caller with `Move`, and is not
-  set yet: geng's `Os.File` has no call that sets a file's times (recorded
-  in geng-lang's register).
+  (`fsetstat`). A download's is handed to the caller with `Move`, which
+  sets it on the part with geng's `Os.File.setTimes` (geng-lang Dnene63,
+  `m3-os.md` §OS39) before the rename, so a failure to set it leaves no
+  file in place.
 - **`Finished` waits for every answer still owed.** OpenSSH's
   `sftp-server` exits when its input ends and drops the requests it has
   not done, so an engine that said "finished" with a close and a removal
