@@ -66,6 +66,7 @@ import Os.File as File
 import Os.Net as Net
 import Os.Path as Path
 import Os.Process as Process exposing (Connection(..))
+import Os.Random
 import Outbox exposing (Outbox)
 import Platform
 import Process as Sleep
@@ -223,6 +224,9 @@ type alias Model =
     , renaming : Maybe { id : Int, typed : String }
     , coloring : Maybe Int
     , closing : Maybe { id : Int, why : String, window : Bool }
+    -- a pasted picture waiting for the user's yes before it is written
+    -- (docs/sftp.md FT16)
+    , pasteAsk : Maybe PasteAsk
     -- why a new tab did not start, said in a box until it is
     -- dismissed (docs/tabs.md TB16)
     , startFailed : Maybe String
@@ -294,7 +298,22 @@ way to the host over a channel beside the session: the channel's number,
 the picture's size, and what the command on the host wrote and how it
 ended. -}
 type alias Upload =
-    { ref : Int, size : Int, out : Bytes, err : Bytes, status : Maybe Int }
+    { ref : Int, size : Int, out : Bytes, err : Bytes, status : Maybe Int, asking : Maybe { png : Bytes, name : String } }
+
+
+{-| A pasted picture to be written once the user says yes
+(`[clipboard] paste_images = "ask"`, docs/sftp.md FT16): its bytes, the
+path it will have, shown in the question, where it goes, `on` that place
+as the question says it, and the tab it was pasted in. -}
+type alias PasteAsk =
+    { png : Bytes, path : String, to : PasteTo, on : String, tab : Int }
+
+
+{-| Where an asked-about picture goes: to the ssh host's paste folder,
+by the file's name there, or to a file on this computer. -}
+type PasteTo
+    = ToHost String
+    | ToLocal Path.Path
 
 
 {-| A picture pasted from the clipboard (FT13), gathered as its pieces
@@ -1308,6 +1327,7 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , renaming = Nothing
                      , coloring = Nothing
                      , closing = Nothing
+                     , pasteAsk = Nothing
                      , startFailed = Nothing
                      , barClick = { at = -1000, id = -1 }
                      , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
@@ -2148,7 +2168,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.startFailed /= Nothing || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -2179,7 +2199,7 @@ so that the window sends every motion: under tmux control mode, with the tab
 bar or the scroll bar shown, or a menu or a question up. -}
 hoverShapes : Model -> Bool
 hoverShapes m =
-    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || m.coloring /= Nothing || m.menu /= Nothing
 
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
@@ -2861,6 +2881,11 @@ windowState m =
                     ""
                 , if m.closing /= Nothing then
                     "the close question"
+
+                  else
+                    ""
+                , if m.pasteAsk /= Nothing then
+                    "the paste question"
 
                   else
                     ""
@@ -4012,17 +4037,22 @@ sizeText n =
 
 
 {-| The clipboard's picture, PNG, pasted as a file's name where the tab's
-program runs: over a channel beside an ssh session, to the host's
-`~/.cache/puritty/paste`; on Linux, for a local tab, to a folder of
-puritty's (`Platform.pasteDirectory`); on Windows, for a local tab, an
-empty bracketed paste, which Claude Code in WSL takes as the cue to read
-the clipboard itself, as Windows Terminal sends it. A tab on OpenSSH's
-`ssh` has no channel puritty can use, and says so. No picture: nothing.
+program runs: over a channel beside an ssh session, to the host's paste
+folder; on Linux, for a local tab, to a folder of puritty's
+(`Platform.pasteDirectory`); on Windows, for a local tab, an empty
+bracketed paste, which Claude Code in WSL takes as the cue to read the
+clipboard itself, as Windows Terminal sends it. A tab on OpenSSH's `ssh`
+has no channel puritty can use, and says so. No picture: nothing. With
+`[clipboard] paste_images = "deny"`, nothing written and that said; with
+"ask", the file's path asked about first (docs/sftp.md FT16).
 -}
 imagePasted : Bytes -> (taken m : Model) -> Task Error Model
 imagePasted png m =
     if Bytes.isEmpty png then
         Task.succeed (logLine "paste" "the clipboard holds no text and no picture" m)
+
+    else if m.config.pasteImages == "deny" then
+        Task.succeed (noteUp { text = "The clipboard holds a picture, which is not pasted: paste_images is \"deny\"", failed = True, kept = False } m)
 
     else
         when m.remote.side is
@@ -4049,37 +4079,56 @@ imagePasted png m =
                                 )
 
 
-{-| What the host runs to keep a pasted picture (docs/sftp.md FT13, FT15):
-in `folder` (`~/` the home there; empty for `~/.cache/puritty/paste`,
-`$XDG_CACHE_HOME`'s when set), made if it is not there, a file of its own
-made by `mktemp` (mode 0600), its bytes from standard input, renamed to
-end `.png` once all are there, and its path written back. puritty's own
-pictures there more than a day old are removed first, those whose names
-begin `puritty-paste.`, in the folder itself, and nothing else, so that a
-folder of the user's choosing is safe. It runs under `sh`, whatever the
-user's shell is; the folder reaches it quoted, whatever it holds. -}
-uploadCommand : String -> String
-uploadCommand folder =
-    let
-        dir =
-            if folder == "" then
-                "\"${XDG_CACHE_HOME:-$HOME/.cache}/puritty/paste\""
+{-| The paste folder as the host's `sh` reads it, in double quotes: `~/`
+the home there; empty for `~/.cache/puritty/paste`, `$XDG_CACHE_HOME`'s
+when set; whatever else it holds as it is (docs/sftp.md FT15). -}
+folderWord : String -> String
+folderWord folder =
+    if folder == "" then
+        "\"${XDG_CACHE_HOME:-$HOME/.cache}/puritty/paste\""
 
-            else if folder == "~" then
-                "\"$HOME\""
+    else if folder == "~" then
+        "\"$HOME\""
 
-            else if String.startsWith "~/" folder then
-                "\"$HOME/" ++ doubleQuoted (String.dropFirst 2 folder) ++ "\""
+    else if String.startsWith "~/" folder then
+        "\"$HOME/" ++ doubleQuoted (String.dropFirst 2 folder) ++ "\""
 
-            else
-                "\"" ++ doubleQuoted folder ++ "\""
+    else
+        "\"" ++ doubleQuoted folder ++ "\""
 
-        script =
-            "umask 077; d="
-                ++ dir
-                ++ "; mkdir -p \"$d\" || exit 1; find \"$d\" -maxdepth 1 -type f -name \"puritty-paste.*\" -mmin +1440 -exec rm -f {} + 2>/dev/null; f=$(mktemp \"$d/puritty-paste.XXXXXXXX\") && cat > \"$f\" && mv \"$f\" \"$f.png\" && printf \"%s.png\" \"$f\""
-    in
+
+{-| A script run under `sh -c`, whatever the user's shell is: in single
+quotes, each `'` in it closed and opened again. -}
+underSh : String -> String
+underSh script =
     "sh -c '" ++ String.replace "'" "'\\''" script ++ "'"
+
+
+{-| What the host runs to say where its paste folder is, before the user is
+asked (FT16): the folder's path written back, nothing made or changed. -}
+folderCommand : String -> String
+folderCommand folder =
+    underSh ("d=" ++ folderWord folder ++ "; printf \"%s\" \"$d\"")
+
+
+{-| What the host runs to keep a pasted picture (docs/sftp.md FT13, FT15,
+FT16): in `folder`, made if it is not there, the file `name`, chosen by
+puritty so that it can be shown before anything is written, mode 0600.
+Its bytes come from standard input to `NAME.part`, made only if it is not
+there, and it is renamed to `name` once all are there, if nothing has that
+name; its path is written back. puritty's own pictures there more than a
+day old are removed first, those whose names begin `puritty-paste.`, in
+the folder itself, and nothing else, so that a folder of the user's
+choosing is safe. -}
+uploadCommand : String -> String -> String
+uploadCommand folder name =
+    underSh
+        ("umask 077; d="
+            ++ folderWord folder
+            ++ "; mkdir -p \"$d\" || exit 1; find \"$d\" -maxdepth 1 -type f -name \"puritty-paste.*\" -mmin +1440 -exec rm -f {} + 2>/dev/null; f=\"$d/"
+            ++ name
+            ++ "\"; p=\"$f.part\"; set -C; cat > \"$p\" || exit 1; if [ -e \"$f\" ]; then rm -f \"$p\"; echo \"$f is there already\" >&2; exit 1; fi; mv \"$p\" \"$f\" && printf \"%s\" \"$f\""
+        )
 
 
 {-| Text inside a shell's double quotes as it is: `\`, `"`, `$` and a
@@ -4093,35 +4142,72 @@ doubleQuoted text =
         |> String.replace "`" "\\`"
 
 
+{-| Whether the shown tab's ssh session is up, so that a channel can be
+opened beside it. -}
+sideUp : Model -> Bool
+sideUp m =
+    when m.ssh is
+        Just screen ->
+            screen.started && screen.failed == Nothing && screen.exitStatus == Nothing
+
+        Nothing ->
+            meant Reason.NotSet False
+
+
+{-| A picture for an ssh session's host, under a name of puritty's
+(`puritty-paste.` and ten random hex digits): sent at once with
+`paste_images = "allow"`; with "ask", the host asked for its folder's path
+first, so that the question can name the file (FT16). -}
 uploadImage : (Session.Input -> Task Error {}) -> Bytes -> (taken m : Model) -> Task Error Model
 uploadImage side png m =
-    let
-        connected =
-            when m.ssh is
-                Just screen ->
-                    screen.started && screen.failed == Nothing && screen.exitStatus == Nothing
-
-                Nothing ->
-                    meant Reason.NotSet False
-
-        ref =
-            m.uploads + 1
-    in
     if m.upload /= Nothing then
         Task.succeed (noteUp { text = "A picture is still being sent to the host; paste again when it is done", failed = True, kept = False } m)
 
-    else if not connected then
+    else if not (sideUp m) then
         Task.succeed (noteUp { text = "The picture can't be pasted: the tab is not connected", failed = True, kept = False } m)
 
     else
-        side (Session.OpenExec { ref = ref, command = uploadCommand (pasteFolderOf m) })
-            |> Task.andThen (\_ -> side (Session.SideWrite { ref = ref, bytes = png }))
-            |> Task.andThen (\_ -> side (Session.SideEof ref))
-            |> Task.map
-                (\_ ->
-                    noteUp { text = "Sending the picture (" ++ sizeText (Bytes.length png) ++ ") to the host", failed = False, kept = True }
-                        { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing }, uploads = ref }
+        Os.Random.bytes 5
+            |> Task.andThen
+                (\random ->
+                    let
+                        name =
+                            "puritty-paste." ++ Bytes.toHexString { padding = False } random ++ ".png"
+
+                        ref =
+                            m.uploads + 1
+                    in
+                    if m.config.pasteImages == "allow" then
+                        sendImage side png name m
+
+                    else
+                        side (Session.OpenExec { ref = ref, command = folderCommand (pasteFolderOf m) })
+                            |> Task.andThen (\_ -> side (Session.SideEof ref))
+                            |> Task.map
+                                (\_ ->
+                                    logLine "paste"
+                                        "the host asked where its paste folder is"
+                                        { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Just { png = png, name = name } }, uploads = ref }
+                                )
                 )
+
+
+{-| The picture sent to the host as `name` in its paste folder, over a
+new channel beside the session. -}
+sendImage : (Session.Input -> Task Error {}) -> Bytes -> String -> (taken m : Model) -> Task Error Model
+sendImage side png name m =
+    let
+        ref =
+            m.uploads + 1
+    in
+    side (Session.OpenExec { ref = ref, command = uploadCommand (pasteFolderOf m) name })
+        |> Task.andThen (\_ -> side (Session.SideWrite { ref = ref, bytes = png }))
+        |> Task.andThen (\_ -> side (Session.SideEof ref))
+        |> Task.map
+            (\_ ->
+                noteUp { text = "Sending the picture (" ++ sizeText (Bytes.length png) ++ ") to the host", failed = False, kept = True }
+                    { m | upload = Just { ref = ref, size = Bytes.length png, out = Bytes.empty, err = Bytes.empty, status = Nothing, asking = Nothing }, uploads = ref }
+            )
 
 
 {-| Where the shown tab's host keeps pasted pictures: the host's own
@@ -4179,7 +4265,28 @@ uploadDone u m =
             String.trim (Bytes.toStringLossy u.err)
     in
     if u.status == Just 0 && path /= "" then
-        pasteIn False (Bytes.fromString (quotedPath path)) (noteUp { text = "Pasted the picture as " ++ path, failed = False, kept = False } m)
+        when u.asking is
+            Just a ->
+                -- the folder's path: the question, naming the file
+                -- (docs/sftp.md FT16)
+                askPaste
+                    { png = a.png
+                    , path =
+                        (if String.endsWith "/" path then
+                            path
+
+                         else
+                            path ++ "/"
+                        )
+                            ++ a.name
+                    , to = ToHost a.name
+                    , on = "on " ++ Maybe.withDefault (meant Reason.NotSet "the host") (Maybe.map .host m.tab.host)
+                    , tab = m.tab.id
+                    }
+                    m
+
+            Nothing ->
+                meant Reason.NotOpen pasteIn False (Bytes.fromString (quotedPath path)) (noteUp { text = "Pasted the picture as " ++ path, failed = False, kept = False } m)
 
     else
         noteUp
@@ -4223,24 +4330,37 @@ uploadLost m =
         m
 
 
-{-| A picture pasted in a local tab on Linux: written to `dir`, its path
-pasted. -}
+{-| A picture pasted in a local tab on Linux: written to a file of its own
+in `dir`, its path pasted; with `paste_images = "ask"`, the file's path
+asked about first (FT16). -}
 localImage : String -> Bytes -> (taken m : Model) -> Task Error Model
-localImage dir png m =
+localImage dir png m0 =
     let
         n =
-            m.uploads + 1
+            m0.uploads + 1
 
-        folder =
-            Path.fromString dir
+        m =
+            { m0 | uploads = n }
 
         file =
-            Path.append (Path.fromString ("paste-" ++ String.fromInt m.turnMs ++ "-" ++ String.fromInt n ++ ".png")) folder
+            Path.append (Path.fromString ("paste-" ++ String.fromInt m.turnMs ++ "-" ++ String.fromInt n ++ ".png")) (Path.fromString dir)
+    in
+    if m.config.pasteImages == "allow" then
+        writeLocal file png m
 
+    else
+        Task.succeed (askPaste { png = png, path = Path.toString file, to = ToLocal file, on = "on this computer", tab = m.tab.id } m)
+
+
+{-| A local tab's picture written to `file`, its folder made first, and
+its path pasted. -}
+writeLocal : Path.Path -> Bytes -> (taken m : Model) -> Task Error Model
+writeLocal file png m =
+    let
         fs =
             m.settings.given.fs
     in
-    Directory.createAll fs folder
+    Directory.createAll fs (Path.parent file |> Maybe.withDefault (meant Reason.NotSet file))
         |> Task.andThen (\_ -> File.writeFile fs png file)
         |> Task.map (\_ -> Ok {})
         |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
@@ -4248,11 +4368,162 @@ localImage dir png m =
             (\written ->
                 when written is
                     Ok _ ->
-                        pasteIn False (Bytes.fromString (quotedPath (Path.toString file))) (noteUp { text = "Pasted the picture as " ++ Path.toString file, failed = False, kept = False } { m | uploads = n })
+                        pasteIn False (Bytes.fromString (quotedPath (Path.toString file))) (noteUp { text = "Pasted the picture as " ++ Path.toString file, failed = False, kept = False } m)
 
                     Err why ->
                         meant Reason.Refused noteUp { text = "The picture could not be written: " ++ why, failed = True, kept = False } m
             )
+
+
+{-| The question before a pasted picture is written (docs/sftp.md FT16):
+up, and in the log with the path it names. -}
+askPaste : PasteAsk -> (taken m : Model) -> Model
+askPaste a m =
+    logLine "paste" ("asked: write " ++ a.path ++ " " ++ a.on ++ "?") { m | pasteAsk = Just a, urgent = True }
+
+
+{-| The question: where the picture is to be written, by the file's whole
+path, and the buttons that answer. -}
+pasteBox : PasteAsk -> Dialog.Dialog
+pasteBox a =
+    { title = "Paste the picture as a file?"
+    , lines =
+        [ "The picture (" ++ sizeText (Bytes.length a.png) ++ ") is to be written " ++ a.on ++ " as" ]
+            ++ wrapPath 56 a.path
+            ++ [ "and that file's name pasted. Nothing is written unless you say yes." ]
+    , field = Nothing
+    , swatches = []
+    , check = Nothing
+    , buttons = [ { label = "Paste", primary = True }, { label = "Don't paste", primary = False } ]
+    , hint = "Enter: paste it    Esc: don't"
+    }
+
+
+{-| A path in lines of at most `most` characters, broken after a `/`
+where it can be, so that the end of it, the file's name, is never what a
+box's edge cuts off (the box holds about 60). -}
+wrapPath : Int -> String -> Array String
+wrapPath most path =
+    let
+        parts =
+            String.split "/" path
+
+        n =
+            Array.length parts
+
+        pieces =
+            Array.indexedMap
+                (\i part ->
+                    if i < n - 1 then
+                        part ++ "/"
+
+                    else
+                        part
+                )
+                parts
+
+        out =
+            Array.foldl
+                (\piece acc ->
+                    if acc.line == "" || String.count acc.line + String.count piece <= most then
+                        { done = acc.done, line = acc.line ++ piece }
+
+                    else
+                        { done = acc.done ++ [ acc.line ], line = piece }
+                )
+                { done = [], line = "" }
+                pieces
+    in
+    Array.flatten (Array.map (chunked most) (out.done ++ [ out.line ]))
+
+
+{-| Text in pieces of `most` characters, the last shorter. -}
+chunked : Int -> String -> Array String
+chunked most text =
+    if most < 1 || String.count text <= most then
+        [ text ]
+
+    else
+        [ String.takeFirst most text ] ++ chunked most (String.dropFirst most text)
+
+
+{-| A key while the paste question is up: Enter or y writes the picture,
+Escape or n does not; any other key, nothing. -}
+pasteKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> PasteAsk -> (taken m : Model) -> Task Error Model
+pasteKey k a m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x79 || k.sym == 0x59 then
+        pasteAnswer True a m
+
+    else if k.sym == 0xFF1B || k.sym == 0x6E || k.sym == 0x4E then
+        pasteAnswer False a m
+
+    else
+        Task.succeed m
+
+
+{-| A press while the paste question is up: its buttons answer it, and
+nothing reaches the terminal under it. -}
+pastePress : Window.PointerEvent -> PasteAsk -> (taken m : Model) -> Task Error Model
+pastePress p a m =
+    let
+        hit =
+            if p.button == 1 then
+                Dialog.buttonAt (overlaySize m) (pasteBox a) { x = p.x, y = p.y }
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            pasteAnswer True a m
+
+        Just _ ->
+            pasteAnswer False a m
+
+        Nothing ->
+            meant Reason.OutOfRange Task.succeed m
+
+
+{-| The paste question answered: on yes the picture written where the
+question said, if its tab is still the one shown and, for a host, still
+connected; on no, nothing written. -}
+pasteAnswer : Bool -> PasteAsk -> (taken m : Model) -> Task Error Model
+pasteAnswer yes a m0 =
+    let
+        m =
+            logLine "paste"
+                ("question answered: "
+                    ++ (if yes then
+                            "paste"
+
+                        else
+                            "don't paste"
+                       )
+                )
+                { m0 | pasteAsk = Nothing, urgent = True }
+    in
+    if not yes then
+        Task.succeed (noteUp { text = "The picture was not pasted", failed = False, kept = False } m)
+
+    else if a.tab /= m.tab.id then
+        Task.succeed (noteUp { text = "The picture was not pasted: its tab is no longer the one shown", failed = True, kept = False } m)
+
+    else
+        when a.to is
+            ToLocal file ->
+                writeLocal file a.png m
+
+            ToHost name ->
+                when m.remote.side is
+                    Just side ->
+                        if sideUp m && m.upload == Nothing then
+                            sendImage side a.png name m
+
+                        else
+                            Task.succeed (noteUp { text = "The picture was not pasted: the tab is no longer connected", failed = True, kept = False } m)
+
+                    Nothing ->
+                        meant Reason.NotOpen Task.succeed (noteUp { text = "The picture was not pasted: the tab is no longer connected", failed = True, kept = False } m)
 
 
 {-| A picture pasted in a local tab on Windows: an empty bracketed paste,
@@ -5037,6 +5308,22 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if m.pasteAsk /= Nothing then
+                -- the question before a picture is written takes the keys
+                -- (docs/sftp.md FT16)
+                (if k.action /= 0 then
+                    when m.pasteAsk is
+                        Just a ->
+                            pasteKey k a m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if m.closing /= Nothing then
                 -- the question before closing takes the keys (TB4)
                 (if k.action /= 0 then
@@ -5360,6 +5647,22 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if m.pasteAsk /= Nothing then
+                -- the paste question takes the pointer, as the close
+                -- question does
+                (if p.action == 0 then
+                    when m.pasteAsk is
+                        Just a ->
+                            pastePress p a m
+
+                        Nothing ->
+                            Task.succeed m
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if m.closing /= Nothing then
                 -- the close question takes the pointer: its buttons
                 -- answer it, and nothing reaches the terminal (TB12)
@@ -5514,7 +5817,7 @@ owned remote ms rest m =
                     Just which ->
                         -- the clipboard's text, or its picture when it holds
                         -- no text (docs/sftp.md FT13)
-                        (if which == Window.Clipboard && m.config.pasteImages && m.clipRead == Nothing then
+                        (if which == Window.Clipboard && m.clipRead == Nothing then
                             Window.pasteOrImage
 
                          else
@@ -6598,6 +6901,9 @@ draw ms m =
 
             else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
+
+            else if m.pasteAsk /= Nothing then
+                Maybe.map pasteBox m.pasteAsk
 
             else if m.renaming /= Nothing then
                 Maybe.map renameBox m.renaming

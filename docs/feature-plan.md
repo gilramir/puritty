@@ -322,7 +322,9 @@ decide later.
 `image-paste.md` (2026-11-19) surveys how programs and terminals do it:
 no program takes an image through a paste; every one takes a path.
 Built 2026-11-19 as `sftp.md` FT13: the picture put where the tab's
-program runs, its path pasted; on by default (`[clipboard] paste_images`).
+program runs, its path pasted (`[clipboard] paste_images`); since FT16 the
+user is asked first by default, naming the file, or it is allowed or
+denied always.
 Its folder on the host is a setting since FT15 (`paste_folder`).
 
 **Today** a paste is text only (`CF_UNICODETEXT` on Windows,

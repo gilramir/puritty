@@ -111,24 +111,30 @@ CASES = [
     # sent over a channel beside the session to ~/.cache/puritty/paste on
     # the host, and its path pasted, bracketed; the remote command checks
     # the file's bytes against the picture's. Then text, pasted as before.
-    # Then the picture with [clipboard] paste_images = false: the paste
-    # asks for text, as before FT13, and xclip, holding only image/png,
-    # answers a request for UTF8_STRING with the PNG's bytes, which are
-    # pasted as they are (why a paste that may be a picture asks for the
-    # owner's TARGETS first)
+    # (paste_images = "allow"). Then the picture with paste_images =
+    # "deny" (FT16): nothing pasted, nothing written
     ("paste-picture", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
     ("paste-text", "ed", "", "known", ["clip-text:hello there", "ctrl+shift+v", "sleep:2"], "python3 {check} {size} {picture}"),
-    ("paste-picture-off", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:9"], "python3 {check} {size} {picture}"),
+    ("paste-picture-off", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:13"], "python3 {check} {size} {picture}"),
     # the folder chosen (FT15): the host's paste_folder over the settings',
     # a name with a space, quotes and $HOME in it, which must reach the
     # host as it is; there, puritty's picture of two days ago is removed,
     # and the user's own old file and puritty's recent one are kept
     ("paste-picture-folder", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:4"], "python3 {check} {size} {picture}"),
+    # paste_images left at its default, "ask" (FT16): the question names
+    # the file, and Return writes it there, the path the host received
+    # being the one asked about; Escape writes nothing, in the folder of
+    # paste-picture-folder, where even puritty's old picture is still there
+    # afterwards, since nothing but the folder's path was asked of the host
+    ("paste-picture-ask", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:2", "Return", "sleep:4"], "python3 {check} {size} {picture}"),
+    ("paste-picture-ask-no", "ed", "", "known", ["clip-picture", "ctrl+shift+v", "sleep:2", "Escape", "sleep:11"], "python3 {check} {size} {picture}"),
 ]
 
 # settings a case's config.toml adds, and its host's
-EXTRA = {"paste-picture-off": "\n[clipboard]\npaste_images = false\n",
-         "paste-picture-folder": "\n[clipboard]\npaste_folder = \"/nowhere/not-this-one\"\n"}
+EXTRA = {"paste-picture": "\n[clipboard]\npaste_images = \"allow\"\n",
+         "paste-text": "\n[clipboard]\npaste_images = \"allow\"\n",
+         "paste-picture-off": "\n[clipboard]\npaste_images = \"deny\"\n",
+         "paste-picture-folder": "\n[clipboard]\npaste_images = \"allow\"\npaste_folder = \"/nowhere/not-this-one\"\n"}
 FOLDER_NAME = "p \"x\" $HOME 'q'"
 
 
@@ -174,7 +180,7 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
         if bastion:
             (home / ".ssh" / "config").write_text(f"Host 127.0.0.1\n    IdentityFile {keys[key]}\n")
             jump = f'jump = "{getpass.getuser()}@127.0.0.1:{bastion.port}"\n'
-        folder = paste_folder(home) if name == "paste-picture-folder" else None
+        folder = paste_folder(home) if name in ("paste-picture-folder", "paste-picture-ask-no") else None
         (home / "config" / "puritty" / "config.toml").write_text(
             (f'[hosts.test]\npaste_folder = {toml_text(str(folder))}\n' if folder else "[hosts.test]\n")
             + f'host = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\n'
@@ -237,6 +243,13 @@ def run_case(env0, name, key, passphrase, known, presses, command, keys):
     seen = size.read_text().strip().replace("\n", ", ") if size.exists() else "none"
     if folder:
         seen = seen.replace(str(folder), "FOLDER") + f"; FOLDER holds {sorted(p.name for p in folder.iterdir())}"
+    asked = [line.split("asked: write ", 1)[1].rsplit(" on ", 1)[0]
+             for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
+             for line in log.read_text(errors="replace").splitlines() if "asked: write " in line]
+    if asked:
+        got = (size.parent / (size.name + ".path"))
+        received = got.read_text() if got.exists() else None
+        seen += f"; asked about {len(asked)} file(s), " + ("none received" if received is None else "the one received" if received in asked else "not the one received")
     return (f"titles: {titles}\n".replace(str(server.port), "PORT")
             + f"pressed: {presses}\nexit status: {status}\nknown_hosts holds the key: {'yes' if held else 'no'}\n"
             + f"the remote side's terminal: {seen}\n")

@@ -26,8 +26,9 @@ answers. Most of what follows works with nothing set.
 - **The mouse in pixels**, for Claude Code's fullscreen view
   (`CLAUDE_CODE_NO_FLICKER=1`). It works in the panes of `tmux -CC` too.
 - **Pasting a screenshot** works over ssh: with a picture on the clipboard,
-  Ctrl+Shift+V puts it in a file on the host and pastes the file's name,
-  which Claude Code shows as `[Image #1]` (see
+  Ctrl+Shift+V puts it in a file on the host, once you say yes to the
+  file it names, and pastes the file's name, which Claude Code shows as
+  `[Image #1]` (see
   [pasting a picture](copy-and-paste.md#pasting-a-picture)). Claude Code
   alone can't: over ssh it reads the host's clipboard, which holds
   nothing.

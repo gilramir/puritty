@@ -968,3 +968,55 @@ inside single quotes with each `'` closed and reopened; `~/` becomes
 28 of 28 cases pass. The settings' folder used alone, with no host
 folder, is not a case of its own: it is the same command with another
 string.
+
+## FT16 · Asked first: paste_images is ask, allow or deny (2026-11-19)
+
+Gilbert: writing a pasted picture writes to the user's files, so the user
+should give puritty permission. `[clipboard] paste_images` was on or off;
+it is now `"ask"` (the default), `"allow"` or `"deny"`.
+
+- **ask**: a box (`Main.pasteBox`, drawn as the close question is) names
+  the file by its whole path and where it goes ("on build.example.com",
+  "on this computer"), and nothing is written until the user says yes:
+  Enter, `y` or Paste; Escape, `n` or Don't paste writes nothing and says
+  so. The box takes the keys and the pointer while it is up.
+- **allow**: as FT13 and FT15, no question.
+- **deny**: a picture is not pasted anywhere, and a note says why.
+  (`false` used to ask the clipboard for text alone, and `xclip` holding
+  only a PNG answered with the PNG's bytes, pasted as text; `deny` pastes
+  nothing.)
+
+A local tab on Windows writes nothing (the empty bracketed paste), so it is
+not asked about; a local tab on Linux is, its file in
+`Platform.pasteDirectory` named before the question.
+
+**Naming the file before it is written.** FT13's command let `mktemp` choose
+the name on the host, so the name was known only after the file was. Now
+puritty chooses it, `puritty-paste.` and ten hex digits from
+`Os.Random.bytes 5`. For an ssh tab under "ask", the host is first asked
+only for its folder's path (`folderCommand`: `printf` of the folder, with
+`$XDG_CACHE_HOME` and `~/` as the host reads them; nothing made or
+changed), so that the question shows the path as it will be. On yes,
+`uploadCommand` writes the bytes to `NAME.part`, made only if it is not
+there (`set -C`), and renames it to the name if nothing has that name.
+The old-pictures cleanup runs only then, so a "no" leaves the host as it
+was. If the tab is no longer the one shown, or no longer connected, when
+the answer comes, nothing is sent and that is said.
+
+A long path is broken after its `/`s into lines of at most 56 characters
+(`wrapPath`), since the box, 560 pixels at most, cuts a line off at its
+edge, and the end of the path, the file's name, is what must show.
+
+**Tested** (`harness/sshwindow.py`; the paste cases from FT13 and FT15 now
+set `paste_images = "allow"`; `paste-check.py` waits 12 s for a paste, was
+8, and writes the path it received beside its report):
+
+| case | the host received |
+|---|---|
+| `paste-picture-off` (`"deny"`) | nothing pasted |
+| `paste-picture-ask` (the default), Return | the picture, mode 0600, its bytes exact, at the path the question named (the diagnostic log's `asked: write PATH` against the path received) |
+| `paste-picture-ask-no`, in FT15's folder `p "x" $HOME 'q'`, Escape | nothing pasted; the folder holds what it held before, puritty's two-day-old picture too, since nothing but the folder's path was asked of the host |
+
+30 of 30 cases pass. The question as drawn was looked at in the cases'
+window pictures (`--shots`): the FT15 folder's path in three lines, the
+file's name whole on the last.

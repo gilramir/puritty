@@ -165,12 +165,14 @@ When the clipboard holds a picture and no text, as it does after a
 screenshot, Ctrl+Shift+V pastes the picture **as a file's name**. Claude
 Code, and the other programs that accept a picture's path, take that as
 the picture itself. puritty puts the file on the computer where the tab's
-program runs:
+program runs, and **asks you first**: a box names the file, with its whole
+path, and nothing is written until you say yes (Enter or Paste; Escape or
+Don't paste writes nothing).
 
 - **In a tab connected with puritty's own ssh** (the built-in client, the
   default on Windows), the picture goes to the host over the tab's own
   connection, with no second login, to
-  `~/.cache/puritty/paste/puritty-paste.XXXXXXXX.png`, readable only by
+  `~/.cache/puritty/paste/puritty-paste.XXXXXXXXXX.png`, readable only by
   you, or to a folder you choose (below). puritty's pictures there older
   than a day are removed the next time you paste one. A note at the
   bottom right says when it's being sent and where it went.
@@ -178,7 +180,8 @@ program runs:
   `$XDG_RUNTIME_DIR/puritty/paste/` (or `~/.cache/puritty/paste/`).
 - **In a tab on this computer on Windows**, puritty sends an empty
   bracketed paste, as Windows Terminal does. Claude Code running in WSL
-  takes that as the cue to read the Windows clipboard itself.
+  takes that as the cue to read the Windows clipboard itself. Nothing is
+  written, so nothing is asked.
 - **In a tab that runs OpenSSH's `ssh`** (`client = "openssh"`), puritty
   has no way to send a file through that connection; a note says so.
 
@@ -188,12 +191,19 @@ Alt+Print Screen and Win+Print Screen leave a bitmap, which puritty
 turns into a PNG first.
 
 When the clipboard holds text as well as a picture, the text is pasted.
-To paste pictures as plain data instead (the old way), turn it off:
+
+**Asking, or not.** `paste_images` says whether puritty may write the
+file:
 
 ```toml
 [clipboard]
-paste_images = false
+paste_images = "ask"     # the default: ask before each picture
+# paste_images = "allow" # write it without asking
+# paste_images = "deny"  # never write a pasted picture anywhere
 ```
+
+With `"deny"`, a picture on the clipboard pastes nothing, and a note says
+why.
 
 **Choosing the folder on the host.** `paste_folder` says where the
 pictures go, for every host or, in a host's entry, for that one host,
@@ -280,5 +290,5 @@ mode.
 | copy the selection to the clipboard | Ctrl+Shift+C |
 | paste the clipboard | Ctrl+Shift+V |
 | paste the selection | middle button (or right, `[mouse] paste_button`), or Shift+Insert |
-| paste a screenshot to a program on the host | Ctrl+Shift+V with a picture on the clipboard: the file's name is pasted (`[clipboard] paste_images`, `paste_folder`) |
+| paste a screenshot to a program on the host | Ctrl+Shift+V with a picture on the clipboard: the file's name is pasted, after you say yes (`[clipboard] paste_images`, `paste_folder`) |
 | let programs read the clipboard | `[clipboard] osc52_read = "allow"` (off by default) |
