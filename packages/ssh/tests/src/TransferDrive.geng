@@ -1,0 +1,370 @@
+module TransferDrive exposing (run)
+
+{-| `Ssh.Transfer` driven over a link to `sftp-server` (puritty
+`docs/sftp.md` FT17), its local actions done here with `Os.File`: one
+batch, from the command line, and what it told, a line each, for
+`transfer.py`'s pins.
+
+    ssh-tests transfer-local SFTP-SERVER [--choice replace|keep|skip|newer]
+        [--cancel-after N] JOB...
+
+    JOB: up LOCAL REMOTE-DIR NAME | down REMOTE TO PART KEEP-BOTH | mkdir PATH
+
+The engine is told a local file's size and time from its metadata, and
+whether a download's target is there. A `Move`'s time is not set: geng's
+`Os.File` cannot set one yet (FT17).
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Error
+import Os.File as File exposing (Access(..), Creation(..), Position(..))
+import Os.Path as Path
+import SftpDrive exposing (Link)
+import Ssh.Transfer as Transfer exposing (Choice(..), Event(..), Job(..), Local(..))
+import Task exposing (Task)
+import Time
+
+
+type alias Drive =
+    { fs : File.Permission
+    , link : Link
+    , choice : Choice
+    , cancelAfter : Int
+    , progressed : Int
+    , over : Bool
+    , last : Maybe { bytes : Int64, total : Int64 }
+    , cancelled : Bool
+    }
+
+
+say : String -> Task x {}
+say line =
+    Console.write (line ++ "\n")
+
+
+run : File.Permission -> Link -> Array String -> Task String {}
+run fs link args =
+    let
+        choice =
+            when option "--choice" args is
+                Just "keep" ->
+                    KeepBoth
+
+                Just "skip" ->
+                    Skip
+
+                Just "newer" ->
+                    ReplaceIfNewer
+
+                _ ->
+                    Replace
+
+        cancelAfter =
+            option "--cancel-after" args |> Maybe.andThen String.toInt |> Maybe.withDefault -1
+    in
+    jobsOf fs (withoutOptions args) []
+        |> Task.andThen
+            (\jobs ->
+                let
+                    d =
+                        { fs = fs, link = link, choice = choice, cancelAfter = cancelAfter, progressed = 0, over = False, last = Nothing, cancelled = False }
+                in
+                handle d (Transfer.start { piece = 32768, most = 64 } jobs)
+                    |> Task.andThen loop
+                    |> Task.andThen
+                        (\r ->
+                            when r.d.last is
+                                Just p ->
+                                    if r.d.cancelled then
+                                        -- how far it got is the timing's
+                                        say
+                                            ("moved "
+                                                ++ (if p.bytes < p.total then
+                                                        "part"
+
+                                                    else
+                                                        "all"
+                                                   )
+                                                ++ " of "
+                                                ++ String.fromInt64 p.total
+                                                ++ " bytes"
+                                            )
+
+                                    else
+                                        say ("moved " ++ String.fromInt64 p.bytes ++ " of " ++ String.fromInt64 p.total ++ " bytes")
+
+                                Nothing ->
+                                    say "moved nothing"
+                        )
+            )
+
+
+option : String -> Array String -> Maybe String
+option name args =
+    Array.findFirst (\a -> a == name) args
+        |> Maybe.andThen (\found -> Array.get (found.index + 1) args)
+
+
+withoutOptions : Array String -> Array String
+withoutOptions args =
+    when args is
+        [] ->
+            []
+
+        _ ->
+            when Array.first args is
+                Just a ->
+                    if a == "--choice" || a == "--cancel-after" then
+                        withoutOptions (Array.dropFirst 2 args)
+
+                    else
+                        Array.pushFirst a (withoutOptions (Array.dropFirst 1 args))
+
+                Nothing ->
+                    []
+
+
+jobsOf : File.Permission -> Array String -> Array Job -> Task String (Array Job)
+jobsOf fs args acc =
+    when Array.first args is
+        Just "up" ->
+            when Array.slice 1 4 args is
+                [ local, dir, name ] ->
+                    File.metadata fs (Path.fromString local)
+                        |> Task.mapError Os.Error.toString
+                        |> Task.andThen
+                            (\m ->
+                                jobsOf fs
+                                    (Array.dropFirst 4 args)
+                                    (Array.pushLast
+                                        (Upload
+                                            { local = local
+                                            , size = m.size
+                                            , mtime = Just (Time.posixToMillis m.modified // Int64.fromInt 1000)
+                                            , dir = Bytes.fromString dir
+                                            , name = Bytes.fromString name
+                                            }
+                                        )
+                                        acc
+                                    )
+                            )
+
+                _ ->
+                    Task.fail "up LOCAL REMOTE-DIR NAME"
+
+        Just "down" ->
+            when Array.slice 1 5 args is
+                [ remote, to, part, keep ] ->
+                    File.metadata fs (Path.fromString to)
+                        |> Task.map (\m -> Just { size = m.size, mtime = Just (Time.posixToMillis m.modified // Int64.fromInt 1000) })
+                        |> Task.onError (\_ -> Task.succeed Nothing)
+                        |> Task.andThen
+                            (\existing ->
+                                jobsOf fs (Array.dropFirst 5 args) (Array.pushLast (Download { remote = Bytes.fromString remote, to = to, part = part, keepBoth = keep, existing = existing }) acc)
+                            )
+
+                _ ->
+                    Task.fail "down REMOTE TO PART KEEP-BOTH"
+
+        Just "mkdir" ->
+            when Array.get 1 args is
+                Just path ->
+                    jobsOf fs (Array.dropFirst 2 args) (Array.pushLast (MakeDir { path = Bytes.fromString path }) acc)
+
+                Nothing ->
+                    Task.fail "mkdir PATH"
+
+        Just other ->
+            Task.fail ("not a job: " ++ other)
+
+        Nothing ->
+            Task.succeed acc
+
+
+{-| Bytes from the server until the batch is over. -}
+loop : { d : Drive, transfer : Transfer.Transfer } -> Task String { d : Drive, transfer : Transfer.Transfer }
+loop r =
+    if r.d.over then
+        Task.succeed r
+
+    else
+        r.d.link.receive
+            |> Task.andThen
+                (\bytes ->
+                    if Bytes.isEmpty bytes then
+                        say "the server's end closed" |> Task.map (\_ -> r)
+
+                    else
+                        handle r.d (Transfer.received bytes r.transfer) |> Task.andThen loop
+                )
+
+
+{-| A step: its bytes sent, its events said, its local actions done in
+order (each answer a step of its own, handled at once), and a conflict
+answered with the run's choice. -}
+handle : Drive -> Transfer.Step -> Task String { d : Drive, transfer : Transfer.Transfer }
+handle d0 step =
+    (if Bytes.isEmpty step.send then
+        Task.succeed {}
+
+     else
+        d0.link.send step.send
+    )
+        |> Task.andThen (\_ -> Array.foldl (\e acc -> acc |> Task.andThen (\d -> told e d)) (Task.succeed d0) step.events)
+        |> Task.andThen
+            (\d1 ->
+                Array.foldl
+                    (\l acc -> acc |> Task.andThen (\r -> doLocal l r))
+                    (Task.succeed { d = d1, transfer = step.transfer })
+                    step.local
+            )
+        |> Task.andThen
+            (\r ->
+                if Array.any isConflicts step.events then
+                    handle r.d (Transfer.answer r.d.choice r.transfer)
+
+                else if r.d.cancelAfter >= 0 && r.d.progressed > r.d.cancelAfter && not r.d.over then
+                    let
+                        d =
+                            r.d
+                    in
+                    say "cancelled"
+                        |> Task.andThen (\_ -> handle { d | cancelAfter = -1 } (Transfer.cancel r.transfer))
+
+                else
+                    Task.succeed r
+            )
+
+
+isConflicts : Event -> Bool
+isConflicts e =
+    when e is
+        Conflicts _ ->
+            True
+
+        _ ->
+            False
+
+
+told : Event -> Drive -> Task String Drive
+told e d =
+    when e is
+        Conflicts cs ->
+            say ("conflicts: " ++ String.join ", " (Array.map (\c -> String.fromInt c.job ++ " " ++ Bytes.toStringLossy c.name) cs))
+                |> Task.map (\_ -> d)
+
+        Progress p ->
+            Task.succeed { d | progressed = d.progressed + 1, last = Just { bytes = p.bytes, total = p.total } }
+
+        Done x ->
+            say ("done " ++ String.fromInt x.job ++ " as " ++ Bytes.toStringLossy x.as_) |> Task.map (\_ -> d)
+
+        Skipped x ->
+            say ("skipped " ++ String.fromInt x.job) |> Task.map (\_ -> d)
+
+        Failed x ->
+            say ("failed " ++ String.fromInt x.job ++ ": " ++ x.why) |> Task.map (\_ -> d)
+
+        Finished f ->
+            say
+                ("finished: "
+                    ++ String.fromInt f.done
+                    ++ " done, "
+                    ++ String.fromInt f.skipped
+                    ++ " skipped, "
+                    ++ String.fromInt f.failed
+                    ++ " failed"
+                    ++ (if f.cancelled then
+                            ", cancelled"
+
+                        else
+                            ""
+                       )
+                )
+                |> Task.map (\_ -> { d | over = True, cancelled = f.cancelled })
+
+        Broken why ->
+            say ("broken: " ++ why) |> Task.map (\_ -> { d | over = True })
+
+
+doLocal : Local -> { d : Drive, transfer : Transfer.Transfer } -> Task String { d : Drive, transfer : Transfer.Transfer }
+doLocal l r =
+    let
+        fs =
+            r.d.fs
+
+        failed job e =
+            handle r.d (Transfer.localFailed { job = job, why = Os.Error.toString e } r.transfer)
+    in
+    if r.d.over then
+        Task.succeed r
+
+    else
+        when l is
+            ReadPiece p ->
+                File.withHandle fs ForRead (Path.fromString p.path) (\h -> File.seek (FromStart p.offset) h |> Task.andThen (\_ -> readUpTo p.length h []))
+                    |> Task.map Ok
+                    |> Task.onError (\e -> Task.succeed (Err e))
+                    |> Task.mapError Os.Error.toString
+                    |> Task.andThen
+                        (\got ->
+                            when got is
+                                Ok bytes ->
+                                    handle r.d (Transfer.localRead { job = p.job, offset = p.offset, bytes = bytes } r.transfer)
+
+                                Err e ->
+                                    failed p.job e
+                        )
+
+            CreateFile c ->
+                File.writeFile fs Bytes.empty (Path.fromString c.path)
+                    |> Task.map (\_ -> r)
+                    |> Task.onError (\e -> failed c.job e)
+
+            WritePiece w ->
+                File.withHandle fs (ForWrite ExpectExisting) (Path.fromString w.path) (\h -> File.seek (FromStart w.offset) h |> Task.andThen (\_ -> File.write w.bytes h))
+                    |> Task.map (\_ -> r)
+                    |> Task.onError (\e -> failed w.job e)
+
+            Move m ->
+                File.move fs { from = Path.fromString m.from, to = Path.fromString m.to }
+                    |> Task.map Ok
+                    |> Task.onError (\e -> Task.succeed (Err e))
+                    |> Task.mapError Os.Error.toString
+                    |> Task.andThen
+                        (\moved ->
+                            when moved is
+                                Ok _ ->
+                                    handle r.d (Transfer.localDone m.job r.transfer)
+
+                                Err e ->
+                                    failed m.job e
+                        )
+
+            RemoveFile x ->
+                File.remove fs (Path.fromString x.path)
+                    |> Task.onError (\_ -> Task.succeed {})
+                    |> Task.map (\_ -> r)
+
+
+readUpTo : Int -> File.Handle -> Array Bytes -> Task Os.Error.Error Bytes
+readUpTo n h pieces =
+    let
+        have =
+            Array.foldl (\p acc -> acc + Bytes.length p) 0 pieces
+    in
+    if have >= n then
+        Task.succeed (Bytes.slice 0 n (Bytes.flatten pieces))
+
+    else
+        File.read h
+            |> Task.andThen
+                (\b ->
+                    if Bytes.isEmpty b then
+                        Task.succeed (Bytes.flatten pieces)
+
+                    else
+                        readUpTo n h (Array.pushLast b pieces)
+                )

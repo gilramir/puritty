@@ -78,6 +78,8 @@ type alias Session =
   - `Ended`: the channel is closed; nothing more comes.
   - `KeepaliveUnanswered`: keepalives the server has not answered, counted
     (the session's only).
+  - `Sent`: a side channel's data went, and this much of it still waits
+    for room (FT17).
 
 -}
 type Event
@@ -89,6 +91,7 @@ type Event
     | Killed { signal : String, message : String }
     | Ended
     | KeepaliveUnanswered Int
+    | Sent Int
 
 
 {-| An [`Event`](#Event) on a side channel, by the number
@@ -133,7 +136,8 @@ type alias Channel =
     , remoteWindow : Int
     , remoteMaxPacket : Int
     , consumed : Int
-    , pending : Bytes
+    , pending : Array Bytes
+    , pendingLength : Int
     , eofPending : Bool
     , sentEof : Bool
     }
@@ -294,7 +298,8 @@ fresh kind =
     , remoteWindow = 0
     , remoteMaxPacket = 0
     , consumed = 0
-    , pending = Bytes.empty
+    , pending = []
+    , pendingLength = 0
     , eofPending = False
     , sentEof = False
     }
@@ -778,19 +783,22 @@ flushUpTo budget ch st =
     if ch.phase /= Running then
         { channel = ch, state = st, sent = 0 }
 
-    else if not (Bytes.isEmpty ch.pending) && ch.remoteWindow > 0 && budget > 0 then
+    else if ch.pendingLength > 0 && ch.remoteWindow > 0 && budget > 0 then
         let
             n =
-                min budget (min (Bytes.length ch.pending) (min ch.remoteWindow ch.remoteMaxPacket))
+                min budget (min ch.pendingLength (min ch.remoteWindow ch.remoteMaxPacket))
+
+            taken =
+                takePending n ch.pending
 
             rest =
                 flushUpTo (budget - n)
-                    { ch | pending = Bytes.slice n (Bytes.length ch.pending) ch.pending, remoteWindow = ch.remoteWindow - n }
-                    (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString (Bytes.slice 0 n ch.pending) ]) st)
+                    { ch | pending = taken.rest, pendingLength = ch.pendingLength - n, remoteWindow = ch.remoteWindow - n }
+                    (queue (Bytes.flatten [ Wire.writeByte msgData, Wire.writeUint32 ch.remote, Wire.writeString taken.bytes ]) st)
         in
         { rest | sent = rest.sent + n }
 
-    else if Bytes.isEmpty ch.pending && ch.eofPending && not ch.sentEof then
+    else if ch.pendingLength == 0 && ch.eofPending && not ch.sentEof then
         { channel = { ch | sentEof = True, eofPending = False }
         , state = queue (Bytes.flatten [ Wire.writeByte msgEof, Wire.writeUint32 ch.remote ]) st
         , sent = 0
@@ -800,11 +808,47 @@ flushUpTo budget ch st =
         { channel = ch, state = st, sent = 0 }
 
 
+{-| The first `n` bytes of what waits, as one piece, and the pieces left:
+only those bytes are copied, and a piece cut is kept as a view of its
+rest (`Bytes.slice` costs nothing), so what waits is never copied whole
+(FT17). -}
+takePending : Int -> Array Bytes -> { bytes : Bytes, rest : Array Bytes }
+takePending n pieces =
+    let
+        took =
+            Array.foldl
+                (\piece acc ->
+                    if acc.want <= 0 then
+                        { acc | rest = Array.pushLast piece acc.rest }
+
+                    else if Bytes.length piece <= acc.want then
+                        { acc | want = acc.want - Bytes.length piece, taken = Array.pushLast piece acc.taken }
+
+                    else
+                        { want = 0
+                        , taken = Array.pushLast (Bytes.slice 0 acc.want piece) acc.taken
+                        , rest = Array.pushLast (Bytes.slice acc.want (Bytes.length piece) piece) acc.rest
+                        }
+                )
+                { want = n, taken = [], rest = [] }
+                pieces
+    in
+    { bytes =
+        when took.taken is
+            [ one ] ->
+                one
+
+            _ ->
+                Bytes.flatten took.taken
+    , rest = took.rest
+    }
+
+
 {-| Whether channel `id` could send now: running, with bytes and room for
 them in the server's window, or an EOF to send. -}
 canSend : Channel -> Bool
 canSend ch =
-    ch.phase == Running && ((not (Bytes.isEmpty ch.pending) && ch.remoteWindow > 0) || (Bytes.isEmpty ch.pending && ch.eofPending && not ch.sentEof))
+    ch.phase == Running && ((ch.pendingLength > 0 && ch.remoteWindow > 0) || (ch.pendingLength == 0 && ch.eofPending && not ch.sentEof))
 
 
 {-| The side channels' bytes that could be sent now, the server's windows
@@ -814,7 +858,7 @@ sideWaiting (Connection st) =
     Dict.foldl
         (\id ch acc ->
             if id /= mainChannel && canSend ch then
-                acc + max 1 (min (Bytes.length ch.pending) ch.remoteWindow)
+                acc + max 1 (min ch.pendingLength ch.remoteWindow)
 
             else
                 acc
@@ -826,21 +870,30 @@ sideWaiting (Connection st) =
 {-| Up to `budget` bytes of the side channels' data sent, from the lowest
 number up, and their EOFs once their data is gone. The caller pumps when
 the connection's link has room, so the session's bytes, sent at once,
-never wait behind more than one pump of a file. -}
+never wait behind more than one pump of a file. Each side channel that
+sent anything says how much of its data still waits ([`Sent`](#Event)),
+so that its writer can keep a little queued, not a whole file (FT17). -}
 pump : Int -> Connection -> Step
 pump budget (Connection st) =
     finish
         (Dict.foldl
             (\id ch acc ->
-                if id == mainChannel || acc.left <= 0 && not (Bytes.isEmpty ch.pending) then
+                if id == mainChannel || acc.left <= 0 && ch.pendingLength > 0 then
                     acc
 
                 else
                     let
                         sent =
                             flushUpTo acc.left ch acc.state
+
+                        told =
+                            if sent.sent > 0 then
+                                emitOn id (Sent sent.channel.pendingLength) sent.state
+
+                            else
+                                sent.state
                     in
-                    { state = setChannel id sent.channel sent.state, left = acc.left - sent.sent }
+                    { state = setChannel id sent.channel told, left = acc.left - sent.sent }
             )
             { state = st, left = budget }
             st.channels
@@ -870,7 +923,7 @@ writeOn id bytes (Connection st) =
                 finish st
 
             else
-                finish (running id { ch | pending = Bytes.flatten [ ch.pending, bytes ] } st)
+                finish (running id { ch | pending = Array.pushLast bytes ch.pending, pendingLength = ch.pendingLength + Bytes.length bytes } st)
 
         Nothing ->
             meant Reason.NotKnown finish st

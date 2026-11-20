@@ -218,9 +218,10 @@ SUITES = [
     Suite(
         # since SC27: a channel message that does not read ends the session;
         # 7 since sftp.md FT12: a side channel's bad data closes only it, and
-        # its data waits for a pump
+        # its data waits for a pump; 8 since FT17: writes kept in pieces go in
+        # order, each pump saying what waits
         "ssh-connection",
-        7,
+        8,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "connection"], cwd="packages/ssh/tests"),
             Run(

@@ -1102,3 +1102,86 @@ sshd and `sftp-server` in `ssh-tests`, as FT14's were:
 The progress bar and the conflict question are drawn by the app, and
 their first caller is step 5's drop; they are built with it, on the
 engine's events, rather than here with nothing to start a transfer.
+
+**1, back-pressure, built.** A side channel's data waiting to be sent was
+one `Bytes`, and each `writeSide` made a new one of what waited and the
+new bytes (`Bytes.flatten`, which copies everything): an SFTP upload,
+which writes one request at a time with up to 64 waiting, copied what
+waited at every request. It is kept in pieces now, with their length
+beside them; a packet copies only its own bytes, cutting a piece where it
+ends (`Bytes.slice`, which costs nothing). Each pump that sends a side
+channel's data tells how much still waits, a new `Connection.Sent`
+event, which `Session` passes on as a `Side` notice, so that a writer
+with no answers to pace it (the `exec` fallback, FT7) can keep a little
+queued instead of a whole file. A unit case (`ssh-connection`, 8 now)
+writes three pieces, pumps 32 KiB across the first two, and checks the
+bytes, their order, and `Sent` saying 87,232 and then 0.
+
+Measured, SFTP to a local sshd (`packages/ssh/tests/measure/local-sftp.py`,
+256 MiB in 32 KiB requests, 64 in flight, no network, so the client's own
+cost):
+
+| | upload | download |
+|---|---|---|
+| before (72505cf, built in a worktree; two runs) | 136.6, 135.6 MB/s | 360.8, 366.2 MB/s |
+| pieces (two runs) | **318.4, 325.3 MB/s** | 370.2, 355.5 MB/s |
+
+To gmktec7 the link set the rate in the same minutes (ours 29.4 and 22.7
+MB/s up, OpenSSH's `sftp` 18.5 and 29.4), so the gain shows only where
+the client's work is what limits.
+
+**2, `Ssh.Transfer`, built.** A pure state machine over `Ssh.Sftp`, since
+the app runs on events and cannot wait in a chain of tasks as
+`SftpDrive` does. It is told the channel's bytes, what the caller did on
+this computer, and the answer to a conflict; it answers bytes to send,
+`Local` actions for the caller (`ReadPiece`, `CreateFile`, `WritePiece`,
+`Move`, `RemoveFile`), and events (`Conflicts`, `Progress`, `Done`,
+`Skipped`, `Failed`, `Finished`, `Broken`). A batch's jobs are
+`Upload`, `Download` and `MakeDir` (a folder made for an upload of a
+folder, which the caller lists, having the file system). Files go one
+after another, each pipelined: 32 KiB a request, 64 in flight.
+
+- **Every target is looked at first** (`stat`), and if any name is there
+  already, one question for the batch: replace, keep both, skip, replace
+  if newer. A folder in the way is not asked about; that upload fails,
+  saying so. A download's target the caller looks at, here.
+- **A new file goes to `.NAME.puritty-part`**, made only if it is not
+  there, and is renamed at the end (`posix-rename` when offered). A part
+  in the way, left by a transfer that broke, is removed and made again,
+  once. Where the server refuses the rename, the part is removed and the
+  file written under its own name.
+- **A file replaced is written in place** (`TRUNC`), so it keeps its
+  owner and mode; a failure then says the file is partly written.
+- **Keep both** finds the first free `name (N).ext` from 2; the number
+  goes before the last dot, or at the end of a name with none or with only
+  a leading one (`.hidden (2)`).
+- **The modification time** is set on the open file before it is closed
+  (`fsetstat`). A download's is handed to the caller with `Move`, and is not
+  set yet: geng's `Os.File` has no call that sets a file's times (recorded
+  in geng-lang's register).
+- **`Finished` waits for every answer still owed.** OpenSSH's
+  `sftp-server` exits when its input ends and drops the requests it has
+  not done, so an engine that said "finished" with a close and a removal
+  in flight left the part behind once the caller closed the channel (the
+  first `cancel` pin had `.big.bin.puritty-part` in it). Cancel, a
+  failure and the end of the batch now drain first.
+
+**Tested** (`packages/ssh/tests/transfer.py`, in the ssh gate):
+`ssh-tests transfer-local` (`TransferDrive`) runs one batch against
+`sftp-server` over pipes and does the local actions with `Os.File`; the
+script sets up each case's folders and pins what the engine said and what
+the folders hold afterwards, each file's size, mode, bytes and time
+against its source. Thirteen cases: new files (a 1,000,001-byte one, an
+empty one, a folder and a file in it), skip, replace in place (the host's
+mode 0600 kept), keep both (`a (3).txt` past an `a (2).txt`, `noext (2)`,
+`.hidden (2)`), replace if newer (one replaced, one skipped), a stale
+part, a folder that is not there (the server's "No such file"), a folder
+in the way, folders made (one there already, one a file), a download, a
+download's keep both, a cancel after three progress steps (no part left,
+both files counted skipped), and a server that refuses renames
+(`sftp-server -P rename,posix-rename`; its log shows the rename refused,
+the part removed and the target opened with `TRUNCATE`). Five runs gave
+the same pins.
+
+Not yet: the `exec` fallback (item 3); a folder downloaded whole (the
+host's folders listed); the app's use, with step 5.

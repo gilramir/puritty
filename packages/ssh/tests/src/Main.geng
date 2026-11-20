@@ -60,6 +60,7 @@ import SshCrypto
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Test.Runner.UnitNode.Program as Program
+import TransferDrive
 import UInt8
 
 
@@ -84,6 +85,16 @@ main =
                     Just "sftp-local" ->
                         -- ssh-tests sftp-local SFTP-SERVER DIR [SIZE PIECE MOST]
                         sftpLocal r
+
+                    Just "transfer-local" ->
+                        -- ssh-tests transfer-local SFTP-SERVER [OPTIONS] JOB...
+                        -- (TransferDrive, docs/sftp.md FT17)
+                        when Array.get 1 r.args is
+                            Just server ->
+                                sftpChild server (\link -> TransferDrive.run r.fs link (Array.dropFirst 2 r.args))
+
+                            Nothing ->
+                                say "usage: ssh-tests transfer-local SFTP-SERVER [OPTIONS] JOB..."
 
                     _ ->
                         when afterWord "connect" r.args is
@@ -269,6 +280,64 @@ connectionSuite =
 
                 else if Connection.sideWaiting pumped.connection <= 0 then
                     Just "nothing waits after one pump of 100,000 bytes"
+
+                else
+                    Nothing
+            )
+        , caseTest "a side channel's writes go in order, each pump saying what waits"
+            (\_ ->
+                let
+                    side =
+                        Connection.openExec "cat" opened.connection
+
+                    confirmed =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 91, Wire.writeUint32 1, Wire.writeUint32 9, Wire.writeUint32 1048576, Wire.writeUint32 32768 ]) side.step.connection
+
+                    started =
+                        Connection.received (Bytes.flatten [ Wire.writeByte 99, Wire.writeUint32 1 ]) confirmed.connection
+
+                    -- three writes, the first pump's packet across the
+                    -- first two (FT17: what waits is kept in pieces)
+                    pieces =
+                        [ String.repeat 20000 "a", String.repeat 20000 "b", String.repeat 80000 "c" ]
+
+                    written =
+                        Array.foldl (\t conn -> (Connection.writeSide 1 (Bytes.fromString t) conn).connection) started.connection pieces
+
+                    first =
+                        Connection.pump 32768 written
+
+                    rest =
+                        Connection.pump 1000000 first.connection
+
+                    -- a data packet's payload: its type, the server's
+                    -- channel, then the bytes as a string
+                    data packet =
+                        Bytes.slice 9 (Bytes.length packet) packet
+
+                    sentOf step =
+                        Array.mapAndKeepJust
+                            (\e ->
+                                when e.event is
+                                    Connection.Sent n ->
+                                        Just n
+
+                                    _ ->
+                                        Nothing
+                            )
+                            step.side
+                in
+                if Bytes.flatten (Array.map data first.send) /= Bytes.fromString (String.repeat 20000 "a" ++ String.repeat 12768 "b") then
+                    Just "the first pump did not send the first 32 KiB in order"
+
+                else if sentOf first /= [ 87232 ] then
+                    Just ("the first pump said " ++ String.join ", " (Array.map String.fromInt (sentOf first)) ++ " wait, not 87232")
+
+                else if Bytes.flatten (Array.map data (first.send ++ rest.send)) /= Bytes.fromString (String.join "" pieces) then
+                    Just "the bytes sent are not the bytes written, in order"
+
+                else if sentOf rest /= [ 0 ] then
+                    Just ("the last pump said " ++ String.join ", " (Array.map String.fromInt (sentOf rest)) ++ " wait, not 0")
 
                 else
                     Nothing
@@ -1845,6 +1914,9 @@ onConnectionEvent event session =
         Connection.KeepaliveUnanswered n ->
             say ("keepalive sent; " ++ String.fromInt n ++ " unanswered before it") |> Task.map (\_ -> session)
 
+        Connection.Sent _ ->
+            Task.succeed session
+
         Connection.Ended ->
             let
                 all =
@@ -2149,6 +2221,9 @@ watch args sources w =
                                         line "ended"
 
                                     Connection.KeepaliveUnanswered _ ->
+                                        was
+
+                                    Connection.Sent _ ->
                                         was
 
                             stillOpen =
