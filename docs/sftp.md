@@ -1097,7 +1097,8 @@ sshd and `sftp-server` in `ssh-tests`, as FT14's were:
    the caller; progress as bytes done of the total; cancel, which removes
    the `.part`.
 3. **The `exec` fallback** for uploads where the server refuses SFTP
-   (FT7): `cat > NAME.part && mv`, with the message saying so.
+   (FT7): `cat > NAME.part && mv`, with the message saying so. Built,
+   FT18, behind a setting that is off by default.
 
 The progress bar and the conflict question are drawn by the app, and
 their first caller is step 5's drop; they are built with it, on the
@@ -1184,5 +1185,76 @@ both files counted skipped), and a server that refuses renames
 the part removed and the target opened with `TRUNCATE`). Five runs gave
 the same pins.
 
-Not yet: the `exec` fallback (item 3); a folder downloaded whole (the
-host's folders listed); the app's use, with step 5.
+Not yet: a folder downloaded whole (the host's folders listed); the
+app's use, with step 5. Item 3 is FT18.
+
+## FT18 · Step 4's fallback: uploads through the host's shell (2026-11-20)
+
+**Off unless the user turns it on.** Gilbert, 2026-11-20: the fallback
+runs commands on the user's behalf, so it is guarded by a setting,
+disabled by default: `[files] upload_through_shell = false` (Advanced
+page, with its Korean words). Where a host refuses the `sftp`
+subsystem, an upload with the setting off fails, saying SFTP is off
+there and naming the setting; with it on, it goes through the shell,
+saying so. A host that has SFTP is never sent through the shell. The
+screenshot paste keeps its own shell commands (FT13, FT16): Gilbert,
+the same day, `paste_images` is its permission, and the new setting
+does not cover it.
+
+**`Ssh.ShellTransfer`**, pure, beside `Ssh.Transfer` and with its jobs,
+choices, conflicts and events, so that the app drives both the same way.
+Where `Transfer` is told one channel's bytes, this one asks the caller
+to open, write, end and close `exec` channels (`Channel`: `Open`,
+`Write`, `Eof`, `Close`, each with a reference from a base the caller
+gives) and is told their events. Every command is `sh -c '…'`, so the
+login shell does not matter (zsh's ran them in the gate), each name in
+single quotes with `'` written `'\''`; a name that is not UTF-8 fails its
+job, since a command is text here.
+
+- **One command looks at every target first**: `test -d`, `test -e`, the
+  size from `ls -lnd` (fields, not the name, under `set -f`), and the
+  time from `date -r FILE +%s` where the host's `date` has it (GNU, BSD,
+  busybox; elsewhere the time is not known, and "replace if newer" then
+  skips). The same one question for the batch follows.
+- **A new file** is written by `cat` to `.NAME.puritty-part`, after
+  removing a part a broken transfer left, under `set -C`; its size is
+  checked against what was sent (`wc -c`); its time set with
+  `TZ=UTC0 touch -m -t CCYYMMDDhhmm.SS`, POSIX's form; then renamed with
+  `mv` to the first of its names not there at that moment, the name or,
+  for keep both, `name (2).ext` to `name (50).ext`, which the command
+  prints by number. Where the folder is not there, it says so.
+- **A file replaced** is written in place by `cat`, keeping its owner
+  and mode, its size checked and its time set.
+- **A folder** is `mkdir`, if not there. **A download** fails: it needs
+  SFTP.
+- **Cut short or cancelled**, the command's input closes early; `cat`
+  ends, the size is short, and the part is removed before anything is
+  said (the channel may be gone). OpenSSH's sshd closes a session
+  channel only once its command has exited, so the `Ended` the engine
+  waits for comes after the removal.
+- **Paced by the channel's queue**: the file is read here 32 KiB a piece,
+  with at most 256 KiB read and not yet sent; `Connection.Sent` (FT17's
+  item 1) says how much still waits, and more is read as it drains.
+
+**Tested.**
+
+- `packages/ssh/tests/shell-transfer.py`, in the ssh gate: `ssh-tests
+  session … --upload` (`ShellDrive`) over a session to sshd.py's local
+  sshd with no `Subsystem` line, so the subsystem is refused as on such
+  a host. Sixteen cases: `transfer.py`'s twelve that apply, run through
+  the shell (the same results: names, conflicts, keep both's `a (3).txt`,
+  the replaced file's mode 0600 kept, times kept, the stale part, the
+  cancel leaving no part; a folder's `mkdir` failure in coreutils' words;
+  downloads failing), and four of its own: names with quotes, `$HOME`,
+  `*` and a leading `-` arriving as written; 5 MiB, past what is read
+  ahead; the setting off, nothing written; a host with SFTP, not sent
+  through the shell. Five runs gave the same pins.
+- Two unit cases in the `sftp` suite (9 now, `harness/units.py`): an
+  upload reads 4 pieces of 32 KiB on starting with 128 KiB allowed, none
+  more once they are written, and 4 more when the queue says it is
+  empty (a changed expectation fails it); and a cancel while the command
+  is opening closes it once it has started, the batch then cancelled.
+
+Measured, 256 MiB to the local sshd, connecting included, three runs:
+241 to 243 MB/s, the bytes the same (SFTP's own was 320 MB/s with the
+connection made, FT17).

@@ -1,0 +1,931 @@
+module Ssh.ShellTransfer exposing
+    ( Channel(..)
+    , ShellTransfer
+    , Step
+    , answer
+    , cancel
+    , localFailed
+    , localRead
+    , start
+    , told
+    )
+
+{-| Files uploaded through the host's shell, where it has SFTP turned off
+(puritty `docs/sftp.md` FT7, FT18): the same batch, questions and events
+as [`Ssh.Transfer`](Ssh.Transfer), done by commands on `exec` channels
+instead of an SFTP subsystem. It runs commands on the user's behalf, so
+the app uses it only where the user's setting allows (`[files]
+upload_through_shell`, off by default).
+
+Each command is `sh -c '…'`, whatever the login shell, and needs only
+what POSIX gives: `test`, `cat`, `mv`, `rm`, `mkdir`, `wc`, `ls`, `touch`.
+One command first looks at every target (`ls -lnd` for a size, `date -r`
+for a time where the host has it, `-` where not), so that a name already
+there is asked about before anything is written; then each job is one
+command, one after another:
+
+  - **A new file** is written by `cat` to `.NAME.puritty-part` beside it,
+    made only if it is not there (`set -C`, after removing a part left by a
+    transfer that broke), its size checked against what was sent, its time
+    set (`TZ=UTC0 touch -m -t`), and renamed to the first of its names not
+    there at that moment: the name, or for keep both `name (2).ext` and on.
+    A transfer cut short, or cancelled, closes the command's input early:
+    the size is short, and the part is removed.
+  - **A file replaced** is written in place by `cat`, so it keeps its
+    owner and mode; cut short, it is partly written, which is said.
+  - **A folder** is made with `mkdir` if it is not there.
+  - **A download** fails: it needs SFTP.
+
+The file's bytes are its standard input, read on this computer a piece at
+a time as the channel's queue empties (`Connection.Sent`), so a large
+file is never all in memory. A name must be UTF-8 to go in a command.
+-}
+
+import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Int64
+import Ssh.Connection as Connection
+import Ssh.Reason as Reason
+import Ssh.Transfer exposing (Choice(..), Conflict, Event(..), Job(..), Local(..))
+import Time
+
+
+{-| What the caller does with the session's side channels, by the
+reference the engine gives each: `Open` a channel running `command`
+(`Session.OpenExec`), `Write` its standard input, `Eof` its end, `Close`
+it. Each channel's events go to [`told`](#told). -}
+type Channel
+    = Open { ref : Int, command : String }
+    | Write { ref : Int, bytes : Bytes }
+    | Eof Int
+    | Close Int
+
+
+{-| The engine after a step: what to do with channels, local actions
+(only `ReadPiece` here), and events, each in order. -}
+type alias Step =
+    { transfer : ShellTransfer, channel : Array Channel, local : Array Local, events : Array Event }
+
+
+type ShellTransfer
+    = ShellTransfer State
+
+
+type alias State =
+    { piece : Int
+    , ahead : Int
+    , ref : Int
+    , jobs : Array Job
+    , phase : Phase
+    , theirs : Dict Int There
+    , choice : Choice
+    , run : Maybe Run
+    , next : Int
+    , moved : Int64
+    , total : Int64
+    , done : Int
+    , skipped : Int
+    , failed : Int
+    , cancelled : Bool
+    , channelQ : Array Channel
+    , localQ : Array Local
+    , eventQ : Array Event
+    }
+
+
+type Phase
+    = Checking
+    | Asking
+    | Moving
+    | Over
+
+
+{-| What is at an upload's target, as the first command found. -}
+type There
+    = Missing
+    | AFolder
+    | AFile { size : Maybe Int64, mtime : Maybe Int64 }
+
+
+{-| The command running: the job's (or the look at every target's, `job`
+-1), its channel, whether it has started, and what it has said; for an
+upload, the next offset to read, the bytes read and not yet written,
+what waits to be sent, whether its input is ended, and the names it may
+end under. -}
+type alias Run =
+    { job : Int
+    , ref : Int
+    , started : Bool
+    , closing : Bool
+    , out : Array Bytes
+    , err : Array Bytes
+    , status : Maybe Int
+    , why : Maybe String
+    , offset : Int64
+    , size : Int64
+    , reading : Int
+    , waiting : Int
+    , ended : Bool
+    , names : Array Bytes
+    }
+
+
+{-| A batch begun: `piece` bytes a read, and at most `ahead` bytes read
+and not yet sent; `ref` the first channel reference the engine may use,
+the caller's others being below it. -}
+start : { piece : Int, ahead : Int, ref : Int } -> Array Job -> Step
+start options jobs =
+    let
+        st =
+            { piece = max 1 options.piece
+            , ahead = max 1 options.ahead
+            , ref = options.ref
+            , jobs = jobs
+            , phase = Checking
+            , theirs = Dict.empty
+            , choice = Replace
+            , run = Nothing
+            , next = 0
+            , moved = Int64.fromInt 0
+            , total = Array.foldl (\j acc -> acc + sizeOf j) (Int64.fromInt 0) jobs
+            , done = 0
+            , skipped = 0
+            , failed = 0
+            , cancelled = False
+            , channelQ = []
+            , localQ = []
+            , eventQ = []
+            }
+
+        targets =
+            Array.indexedMap (\i j -> { i = i, j = j }) jobs
+                |> Array.keepIf (\x -> isUpload x.j)
+    in
+    if Array.isEmpty targets then
+        finish (startNext { st | phase = Moving })
+
+    else
+        finish (openCommand -1 (underSh (lookScript jobs)) [] (Int64.fromInt 0) st)
+
+
+sizeOf : Job -> Int64
+sizeOf j =
+    when j is
+        Upload u ->
+            u.size
+
+        Download _ ->
+            Int64.fromInt 0
+
+        MakeDir _ ->
+            Int64.fromInt 0
+
+
+isUpload : Job -> Bool
+isUpload j =
+    when j is
+        Upload _ ->
+            True
+
+        Download _ ->
+            False
+
+        MakeDir _ ->
+            False
+
+
+finish : State -> Step
+finish st =
+    { transfer = ShellTransfer { st | channelQ = [], localQ = [], eventQ = [] }
+    , channel = st.channelQ
+    , local = st.localQ
+    , events = st.eventQ
+    }
+
+
+emit : Event -> State -> State
+emit e st =
+    { st | eventQ = Array.pushLast e st.eventQ }
+
+
+onChannel : Channel -> State -> State
+onChannel c st =
+    { st | channelQ = Array.pushLast c st.channelQ }
+
+
+openCommand : Int -> String -> Array Bytes -> Int64 -> State -> State
+openCommand job command names size st =
+    onChannel (Open { ref = st.ref, command = command })
+        { st
+            | ref = st.ref + 1
+            , run =
+                Just
+                    { job = job
+                    , ref = st.ref
+                    , started = False
+                    , closing = False
+                    , out = []
+                    , err = []
+                    , status = Nothing
+                    , why = Nothing
+                    , offset = Int64.fromInt 0
+                    , size = size
+                    , reading = 0
+                    , waiting = 0
+                    , ended = False
+                    , names = names
+                    }
+        }
+
+
+-- COMMANDS
+
+
+{-| A word for the shell: in single quotes, a `'` written `'\''`. -}
+quoted : String -> String
+quoted s =
+    "'" ++ String.replace "'" "'\\''" s ++ "'"
+
+
+{-| The script run by `sh`, whatever the login shell is. -}
+underSh : String -> String
+underSh script =
+    "sh -c " ++ quoted script
+
+
+textOf : Bytes -> Maybe String
+textOf b =
+    Bytes.toString b
+
+
+joined : String -> String -> String
+joined dir name =
+    if String.endsWith "/" dir then
+        dir ++ name
+
+    else
+        dir ++ "/" ++ name
+
+
+{-| For each upload, a line: its number, then `d` for a folder, `-` for
+nothing, or `f`, the size, and the time where `date -r` gives one. -}
+lookScript : Array Job -> String
+lookScript jobs =
+    Array.indexedMap
+        (\i j ->
+            when j is
+                Upload u ->
+                    when { dir = textOf u.dir, name = textOf u.name } is
+                        { dir = Just dir, name = Just name } ->
+                            let
+                                n =
+                                    String.fromInt i
+                            in
+                            "p="
+                                ++ quoted (joined dir name)
+                                ++ "; if [ -d \"$p\" ]; then echo "
+                                ++ n
+                                ++ " d; elif [ -e \"$p\" ] || [ -L \"$p\" ]; then set -- $(ls -lnd -- \"$p\"); echo "
+                                ++ n
+                                ++ " f \"$5\" $(date -r \"$p\" +%s 2>/dev/null); else echo "
+                                ++ n
+                                ++ " -; fi"
+
+                        _ ->
+                            ""
+
+                Download _ ->
+                    ""
+
+                MakeDir _ ->
+                    ""
+        )
+        jobs
+        |> Array.keepIf (\line -> line /= "")
+        |> Array.pushFirst "set -f"
+        |> String.join "\n"
+
+
+{-| `CCYYMMDDhhmm.SS` in UTC, as `touch -t` takes under `TZ=UTC0`. -}
+stamp : Int64 -> String
+stamp seconds =
+    let
+        t =
+            Time.millisToPosix (seconds * Int64.fromInt 1000)
+
+        two n =
+            String.padLeft 2 '0' (String.fromInt n)
+    in
+    String.padLeft 4 '0' (String.fromInt (Time.toYear Time.utc t))
+        ++ two (monthNumber (Time.toMonth Time.utc t))
+        ++ two (Time.toDay Time.utc t)
+        ++ two (Time.toHour Time.utc t)
+        ++ two (Time.toMinute Time.utc t)
+        ++ "."
+        ++ two (Time.toSecond Time.utc t)
+
+
+monthNumber : Time.Month -> Int
+monthNumber m =
+    when m is
+        Time.Jan ->
+            1
+
+        Time.Feb ->
+            2
+
+        Time.Mar ->
+            3
+
+        Time.Apr ->
+            4
+
+        Time.May ->
+            5
+
+        Time.Jun ->
+            6
+
+        Time.Jul ->
+            7
+
+        Time.Aug ->
+            8
+
+        Time.Sep ->
+            9
+
+        Time.Oct ->
+            10
+
+        Time.Nov ->
+            11
+
+        Time.Dec ->
+            12
+
+
+{-| A new file: to its part, made only if not there; its size checked;
+its time set; renamed to the first of `names` not there, whose number
+(from 1) it prints. Every failure removes the part before saying why,
+since the channel may be gone by then. -}
+newFileScript : { dir : String, name : String, size : Int64, mtime : Maybe Int64, names : Array String } -> String
+newFileScript f =
+    String.join "; "
+        [ "d=" ++ quoted f.dir
+        , "if [ ! -d \"$d\" ]; then echo \"there is no folder $d\" >&2; exit 1; fi"
+        , "p=" ++ quoted (joined f.dir ("." ++ f.name ++ ".puritty-part"))
+        , "rm -f -- \"$p\" || exit 1"
+        , "set -C"
+        , "cat > \"$p\" || exit 1"
+        , "set +C"
+        , "if [ \"$(wc -c < \"$p\")\" -ne " ++ String.fromInt64 f.size ++ " ]; then rm -f -- \"$p\"; echo \"the upload stopped before its end\" >&2; exit 1; fi"
+        , touched "$p" f.mtime "rm -f -- \"$p\"; "
+        , "n=0; t="
+        , "for f in " ++ String.join " " (Array.map (\name -> quoted (joined f.dir name)) f.names) ++ "; do n=$((n+1)); if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then t=$f; break; fi; done"
+        , "if [ -z \"$t\" ]; then rm -f -- \"$p\"; echo " ++ quoted (f.name ++ " is there already") ++ " >&2; exit 1; fi"
+        , "mv -f -- \"$p\" \"$t\" && echo $n"
+        ]
+
+
+{-| A file replaced: written in place, its size checked, its time set. -}
+inPlaceScript : { dir : String, name : String, size : Int64, mtime : Maybe Int64 } -> String
+inPlaceScript f =
+    String.join "; "
+        [ "f=" ++ quoted (joined f.dir f.name)
+        , "cat > \"$f\" || exit 1"
+        , "if [ \"$(wc -c < \"$f\")\" -ne " ++ String.fromInt64 f.size ++ " ]; then echo " ++ quoted ("the upload stopped before its end; " ++ f.name ++ " is partly written") ++ " >&2; exit 1; fi"
+        , touched "$f" f.mtime ""
+        , "echo 1"
+        ]
+
+
+touched : String -> Maybe Int64 -> String -> String
+touched file mtime cleanUp =
+    when mtime is
+        Just t ->
+            "TZ=UTC0 touch -m -t " ++ stamp t ++ " \"" ++ file ++ "\" || { " ++ cleanUp ++ "exit 1; }"
+
+        Nothing ->
+            meant Reason.NotSet ":"
+
+
+makeDirScript : String -> String
+makeDirScript path =
+    "p=" ++ quoted path ++ "; if [ -d \"$p\" ]; then exit 0; fi; mkdir -- \"$p\""
+
+
+-- EVENTS
+
+
+{-| An event on one of the engine's channels; one on another is
+ignored. -}
+told : { ref : Int, event : Connection.Event } -> ShellTransfer -> Step
+told e (ShellTransfer st) =
+    when st.run is
+        Just run ->
+            if run.ref /= e.ref then
+                finish st
+
+            else
+                finish (onEvent e.event run st)
+
+        Nothing ->
+            meant Reason.NotOpen finish st
+
+
+onEvent : Connection.Event -> Run -> State -> State
+onEvent event run st =
+    when event is
+        Connection.Started ->
+            if run.closing then
+                onChannel (Close run.ref) { st | run = Just { run | started = True } }
+
+            else
+                fill { run | started = True } st
+
+        Connection.Output bytes ->
+            { st | run = Just { run | out = Array.pushLast bytes run.out } }
+
+        Connection.ErrorOutput bytes ->
+            { st | run = Just { run | err = Array.pushLast bytes run.err } }
+
+        Connection.Exited status ->
+            { st | run = Just { run | status = Just status } }
+
+        Connection.Killed k ->
+            { st | run = Just { run | status = Just -1, why = Just ("the command was killed (" ++ k.signal ++ ") " ++ k.message) } }
+
+        Connection.Sent waiting ->
+            fill { run | waiting = waiting } st
+
+        Connection.Refused why ->
+            ended { run | status = Nothing, why = Just ("the host refused to run a command: " ++ why) } st
+
+        Connection.Ended ->
+            ended run st
+
+        Connection.KeepaliveUnanswered _ ->
+            st
+
+
+{-| Reads asked for while what is read and waiting is under `ahead`; the
+input ended once all is read and written. -}
+fill : Run -> State -> State
+fill run st =
+    if run.closing || not run.started || run.job < 0 then
+        { st | run = Just run }
+
+    else if run.offset < run.size && run.waiting + run.reading * st.piece < st.ahead then
+        let
+            length =
+                Int64.toInt (min (Int64.fromInt st.piece) (run.size - run.offset))
+        in
+        fill { run | offset = run.offset + Int64.fromInt length, reading = run.reading + 1 }
+            { st | localQ = Array.pushLast (ReadPiece { job = run.job, path = localOf run.job st, offset = run.offset, length = length }) st.localQ }
+
+    else if run.offset >= run.size && run.reading == 0 && not run.ended then
+        onChannel (Eof run.ref) { st | run = Just { run | ended = True } }
+
+    else
+        { st | run = Just run }
+
+
+localOf : Int -> State -> String
+localOf job st =
+    when Array.get job st.jobs is
+        Just (Upload u) ->
+            u.local
+
+        _ ->
+            meant Reason.NotKnown ""
+
+
+{-| A piece read on this computer: written to the command's input. -}
+localRead : { job : Int, offset : Int64, bytes : Bytes } -> ShellTransfer -> Step
+localRead r (ShellTransfer st) =
+    when st.run is
+        Just run ->
+            if run.job /= r.job || run.closing then
+                finish st
+
+            else
+                let
+                    n =
+                        Bytes.length r.bytes
+
+                    moved =
+                        { st | moved = st.moved + Int64.fromInt n }
+                in
+                finish
+                    (fill { run | reading = run.reading - 1, waiting = run.waiting + n }
+                        (progress run.job (onChannel (Write { ref = run.ref, bytes = r.bytes }) moved))
+                    )
+
+        Nothing ->
+            meant Reason.NotOpen finish st
+
+
+{-| A local action failed: the command's input closed early, so its part
+is removed, and the job failed with `why`. -}
+localFailed : { job : Int, why : String } -> ShellTransfer -> Step
+localFailed r (ShellTransfer st) =
+    when st.run is
+        Just run ->
+            if run.job /= r.job then
+                finish st
+
+            else
+                finish (closeRun { run | why = Just r.why } st)
+
+        Nothing ->
+            meant Reason.NotOpen finish st
+
+
+closeRun : Run -> State -> State
+closeRun run st =
+    if run.closing then
+        st
+
+    else if run.started then
+        onChannel (Close run.ref) { st | run = Just { run | closing = True } }
+
+    else
+        { st | run = Just { run | closing = True } }
+
+
+progress : Int -> State -> State
+progress job st =
+    emit
+        (Progress
+            { bytes = st.moved
+            , total = st.total
+            , file = job + 1
+            , files = Array.length st.jobs
+            , name =
+                when Array.get job st.jobs is
+                    Just (Upload u) ->
+                        u.name
+
+                    _ ->
+                        meant Reason.NotKnown Bytes.empty
+            }
+        )
+        st
+
+
+{-| A command over: the look at the targets read, or a job done or
+failed by its status and what it said. -}
+ended : Run -> State -> State
+ended run st0 =
+    let
+        st =
+            { st0 | run = Nothing }
+
+        said =
+            Bytes.toStringLossy (Bytes.flatten run.err) |> String.trim
+
+        why =
+            when run.why is
+                Just w ->
+                    w
+
+                Nothing ->
+                    meant Reason.NotSet
+                        (if said /= "" then
+                            lastLine said
+
+                         else
+                            when run.status is
+                                Just status ->
+                                    "the command ended with status " ++ String.fromInt status
+
+                                Nothing ->
+                                    meant Reason.FromOutside "the command ended with no status"
+                        )
+    in
+    if st.cancelled then
+        over st
+
+    else if run.job < 0 then
+        if run.status == Just 0 && run.why == Nothing then
+            looked (Bytes.toStringLossy (Bytes.flatten run.out)) st
+
+        else
+            emit (Broken ("the host's shell could not look at the targets: " ++ why)) (over st)
+
+    else if run.status == Just 0 && run.why == Nothing then
+        let
+            n =
+                Bytes.toStringLossy (Bytes.flatten run.out) |> String.trim |> String.toInt
+
+            named =
+                when n |> Maybe.andThen (\i -> Array.get (i - 1) run.names) is
+                    Just name ->
+                        doneJob run.job name st
+
+                    Nothing ->
+                        meant Reason.FromOutside (failJob run.job ("the command did not say which name it wrote: " ++ Bytes.toStringLossy (Bytes.flatten run.out)) st)
+        in
+        when Array.get run.job st.jobs is
+            Just (MakeDir m) ->
+                doneJob run.job (lastName m.path) st
+
+            Just (Upload _) ->
+                named
+
+            Just (Download _) ->
+                named
+
+            Nothing ->
+                meant Reason.NotKnown named
+
+    else
+        failJob run.job why st
+
+
+lastLine : String -> String
+lastLine s =
+    String.split "\n" s
+        |> Array.keepIf (\l -> String.trim l /= "")
+        |> Array.last
+        |> Maybe.withDefault (meant Reason.NoMore s)
+
+
+lastName : Bytes -> Bytes
+lastName path =
+    let
+        text =
+            Bytes.toStringLossy path
+
+        trimmed =
+            if String.endsWith "/" text then
+                String.dropLast 1 text
+
+            else
+                text
+    in
+    when String.split "/" trimmed |> Array.last is
+        Just name ->
+            Bytes.fromString name
+
+        Nothing ->
+            meant Reason.NoMore path
+
+
+doneJob : Int -> Bytes -> State -> State
+doneJob job name st =
+    startNext (emit (Done { job = job, as_ = name }) { st | done = st.done + 1 })
+
+
+failJob : Int -> String -> State -> State
+failJob job why st =
+    startNext (emit (Failed { job = job, why = why }) { st | failed = st.failed + 1, total = st.total - unsent job st })
+
+
+skipJob : Int -> State -> State
+skipJob job st =
+    startNext (emit (Skipped { job = job }) { st | skipped = st.skipped + 1, total = st.total - unsent job st })
+
+
+{-| What of a job's bytes will not be sent, once it is skipped or has
+failed: all of them, less what was. -}
+unsent : Int -> State -> Int64
+unsent job st =
+    when Array.get job st.jobs is
+        Just (Upload u) ->
+            when st.run is
+                Just run ->
+                    if run.job == job then
+                        u.size - run.offset
+
+                    else
+                        u.size
+
+                Nothing ->
+                    meant Reason.NotOpen u.size
+
+        Just (Download _) ->
+            Int64.fromInt 0
+
+        Just (MakeDir _) ->
+            Int64.fromInt 0
+
+        Nothing ->
+            meant Reason.NotKnown (Int64.fromInt 0)
+
+
+{-| The look at the targets' lines read, and the names there asked
+about. -}
+looked : String -> State -> State
+looked text st =
+    let
+        theirs =
+            String.split "\n" text
+                |> Array.foldl
+                    (\line acc ->
+                        when String.split " " line |> Array.keepIf (\w -> w /= "") is
+                            [ i, "d" ] ->
+                                insert i AFolder acc
+
+                            [ i, "-" ] ->
+                                insert i Missing acc
+
+                            [ i, "f", size ] ->
+                                insert i (AFile { size = int64Of size, mtime = Nothing }) acc
+
+                            [ i, "f", size, mtime ] ->
+                                insert i (AFile { size = int64Of size, mtime = int64Of mtime }) acc
+
+                            _ ->
+                                acc
+                    )
+                    Dict.empty
+
+        insert i there acc =
+            when String.toInt i is
+                Just n ->
+                    Dict.set n there acc
+
+                Nothing ->
+                    meant Reason.FromOutside acc
+
+        conflicts =
+            Array.indexedMap (\i j -> conflictOf i j theirs) st.jobs
+                |> Array.mapAndKeepJust identity
+    in
+    if Array.isEmpty conflicts then
+        startNext { st | theirs = theirs, phase = Moving }
+
+    else
+        emit (Conflicts conflicts) { st | theirs = theirs, phase = Asking }
+
+
+{-| A whole number of any size the host printed, digits only. -}
+int64Of : String -> Maybe Int64
+int64Of text =
+    if text == "" then
+        Nothing
+
+    else
+        String.foldl
+            (\c acc ->
+                let
+                    code =
+                        Char.toCode c
+                in
+                if code >= 48 && code <= 57 then
+                    Maybe.map (\n -> n * Int64.fromInt 10 + Int64.fromInt (code - 48)) acc
+
+                else
+                    Nothing
+            )
+            (Just (Int64.fromInt 0))
+            text
+
+
+conflictOf : Int -> Job -> Dict Int There -> Maybe Conflict
+conflictOf i j theirs =
+    when { job = j, there = Dict.get i theirs } is
+        { job = Upload u, there = Just (AFile a) } ->
+            Just { job = i, name = u.name, ours = { size = Just u.size, mtime = u.mtime }, theirs = { size = a.size, mtime = a.mtime } }
+
+        _ ->
+            Nothing
+
+
+{-| The user's answer to the conflicts, for the batch. -}
+answer : Choice -> ShellTransfer -> Step
+answer choice (ShellTransfer st) =
+    if st.phase == Asking then
+        finish (startNext { st | choice = choice, phase = Moving })
+
+    else
+        finish st
+
+
+{-| Stop: the command running has its input closed early, which removes
+its part; the batch is over once its channel has ended, the jobs not
+done counted skipped. -}
+cancel : ShellTransfer -> Step
+cancel (ShellTransfer st0) =
+    if st0.phase == Over || st0.cancelled then
+        finish st0
+
+    else
+        let
+            st =
+                { st0 | cancelled = True }
+        in
+        when st.run is
+            Just run ->
+                finish (closeRun run st)
+
+            Nothing ->
+                meant Reason.NotOpen (finish (over st))
+
+
+{-| The batch over: when cancelled, every job not done or failed is
+counted skipped. -}
+over : State -> State
+over st =
+    let
+        skipped =
+            if st.cancelled then
+                Array.length st.jobs - st.done - st.failed
+
+            else
+                st.skipped
+    in
+    emit (Finished { done = st.done, skipped = skipped, failed = st.failed, cancelled = st.cancelled }) { st | phase = Over, run = Nothing, skipped = skipped }
+
+
+startNext : State -> State
+startNext st0 =
+    let
+        i =
+            st0.next
+
+        st =
+            { st0 | next = i + 1 }
+    in
+    when Array.get i st.jobs is
+        Nothing ->
+            meant Reason.NoMore (over st0)
+
+        Just (Download _) ->
+            failJob i "SFTP is turned off on this host, and a download needs it" st
+
+        Just (MakeDir m) ->
+            when textOf m.path is
+                Just path ->
+                    openCommand i (underSh (makeDirScript path)) [] (Int64.fromInt 0) st
+
+                Nothing ->
+                    meant Reason.FromOutside (failJob i notUtf8 st)
+
+        Just (Upload u) ->
+            when { dir = textOf u.dir, name = textOf u.name } is
+                { dir = Just dir, name = Just name } ->
+                    upload i u dir name st
+
+                _ ->
+                    failJob i notUtf8 st
+
+
+notUtf8 : String
+notUtf8 =
+    "its name is not UTF-8, which a command cannot carry here"
+
+
+upload : Int -> { local : String, size : Int64, mtime : Maybe Int64, dir : Bytes, name : Bytes } -> String -> String -> State -> State
+upload i u dir name st =
+    let
+        byPart names =
+            openCommand i
+                (underSh (newFileScript { dir = dir, name = name, size = u.size, mtime = u.mtime, names = names }))
+                (Array.map Bytes.fromString names)
+                u.size
+                st
+
+        inPlace =
+            openCommand i (underSh (inPlaceScript { dir = dir, name = name, size = u.size, mtime = u.mtime })) [ u.name ] u.size st
+    in
+    when Dict.get i st.theirs is
+        Just AFolder ->
+            failJob i "a folder of that name is there" st
+
+        Just (AFile a) ->
+            when st.choice is
+                Skip ->
+                    skipJob i st
+
+                Replace ->
+                    inPlace
+
+                ReplaceIfNewer ->
+                    if newer u.mtime a.mtime then
+                        inPlace
+
+                    else
+                        skipJob i st
+
+                KeepBoth ->
+                    byPart (Array.map (\n -> Bytes.toStringLossy (Ssh.Transfer.keepBothName n u.name)) (Array.range 2 50))
+
+        Just Missing ->
+            byPart [ name ]
+
+        Nothing ->
+            meant Reason.NotYet byPart [ name ]
+
+
+{-| Whether a time is later than another; not known, no. -}
+newer : Maybe Int64 -> Maybe Int64 -> Bool
+newer ours theirs =
+    when { ours = ours, theirs = theirs } is
+        { ours = Just o, theirs = Just t } ->
+            o > t
+
+        _ ->
+            False

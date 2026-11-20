@@ -46,6 +46,7 @@ import Os.Process as OsProcess
 import Os.Random
 import Process
 import SftpDrive
+import ShellDrive
 import Source exposing (Source)
 import Ssh.Agent as Agent
 import Ssh.Auth as Auth
@@ -54,6 +55,8 @@ import Ssh.Connection as Connection
 import Ssh.KnownHosts as KnownHosts
 import Ssh.Session as Session
 import Ssh.Sftp as Sftp
+import Ssh.ShellTransfer as ShellTransfer
+import Ssh.Transfer as Transfer
 import Ssh.Transport as Transport exposing (Event(..), Transport)
 import Ssh.Wire as Wire
 import SshCrypto
@@ -404,9 +407,85 @@ sftpSuite =
                             []
                 )
                 events
+
+        -- ShellTransfer (docs/sftp.md FT18): one upload of 1 MiB to a
+        -- host where nothing is in the way, its look at the target over
+        shell =
+            let
+                s0 =
+                    ShellTransfer.start { piece = 32768, ahead = 131072, ref = 10 }
+                        [ Transfer.Upload { local = "x", size = Int64.fromInt 1048576, mtime = Nothing, dir = Bytes.fromString "/d", name = Bytes.fromString "n" } ]
+
+                tell ref event t =
+                    ShellTransfer.told { ref = ref, event = event } t
+            in
+            s0.transfer
+                |> tell 10 (Connection.Output (Bytes.fromString "0 -\n"))
+                |> .transfer
+                |> tell 10 (Connection.Exited 0)
+                |> .transfer
+                |> tell 10 Connection.Ended
+
+        reads step =
+            Array.length step.local
+
+        readAll step =
+            Array.foldl
+                (\l acc ->
+                    when l is
+                        Transfer.ReadPiece r ->
+                            let
+                                next =
+                                    ShellTransfer.localRead { job = r.job, offset = r.offset, bytes = Bytes.fromString (String.repeat r.length "x") } acc.transfer
+                            in
+                            { transfer = next.transfer, reads = acc.reads + reads next, writes = acc.writes + Array.length next.channel }
+
+                        _ ->
+                            acc
+                )
+                { transfer = step.transfer, reads = 0, writes = 0 }
+                step.local
     in
     suiteOf "Sftp"
-        [ caseTest "the version, and posix-rename used for a rename"
+        [ caseTest "the shell's upload reads ahead only so far, and more as its queue empties"
+            (\_ ->
+                let
+                    started =
+                        ShellTransfer.told { ref = 11, event = Connection.Started } shell.transfer
+
+                    written =
+                        readAll started
+
+                    drained =
+                        ShellTransfer.told { ref = 11, event = Connection.Sent 0 } written.transfer
+                in
+                when { opened = shell.channel, counts = [ reads started, written.reads, written.writes, reads drained ] } is
+                    { opened = [ ShellTransfer.Open { ref = 11 } ], counts = [ 4, 0, 4, 4 ] } ->
+                        Nothing
+
+                    r ->
+                        Just ("reads and writes: " ++ String.join ", " (Array.map String.fromInt r.counts))
+            )
+        , caseTest "the shell's upload cancelled while its command opens is closed once it starts"
+            (\_ ->
+                let
+                    cancelled =
+                        ShellTransfer.cancel shell.transfer
+
+                    started =
+                        ShellTransfer.told { ref = 11, event = Connection.Started } cancelled.transfer
+
+                    ended =
+                        ShellTransfer.told { ref = 11, event = Connection.Ended } started.transfer
+                in
+                when { early = cancelled.channel, closed = started.channel, events = ended.events } is
+                    { early = [], closed = [ ShellTransfer.Close 11 ], events = [ Transfer.Finished { done = 0, skipped = 1, failed = 0, cancelled = True } ] } ->
+                        Nothing
+
+                    _ ->
+                        Just "the command was not closed once, after it started, with the batch then cancelled"
+            )
+        , caseTest "the version, and posix-rename used for a rename"
             (\_ ->
                 let
                     r =
@@ -1999,8 +2078,55 @@ sessionMode r target =
                                     sftpOverSession r.args dir sources
 
                                 Nothing ->
-                                    watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 }
+                                    when Array.findFirst (\a -> a == "--upload") r.args is
+                                        Just found ->
+                                            -- `--upload [OPTIONS] JOB...`, the rest of the
+                                            -- arguments (ShellDrive, docs/sftp.md FT18)
+                                            uploadOverSession r.fs (Array.dropFirst (found.index + 1) r.args) sources
+
+                                        Nothing ->
+                                            watch r.args sources { output = [], sides = Dict.empty, open = 0, opened = 0 }
                         )
+            )
+
+
+{-| `--upload …`: once the session has started, `ShellDrive`'s batch,
+and the session hung up. -}
+uploadOverSession : File.Permission -> Array String -> { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never {}
+uploadOverSession fs args sources =
+    untilSessionStarted sources
+        |> Task.andThen
+            (\started ->
+                if started then
+                    ShellDrive.run fs sources args
+                        |> Task.onError (\why -> say ("failed: " ++ why))
+                        |> Task.andThen (\_ -> Source.emit sources.inputs Session.Hangup)
+
+                else
+                    Task.succeed {}
+            )
+
+
+untilSessionStarted : { notices : Source Session.Notice, inputs : Source Session.Input } -> Task Never Bool
+untilSessionStarted sources =
+    Source.next sources.notices
+        |> Task.andThen
+            (\n ->
+                when n is
+                    Just Session.Started ->
+                        Task.succeed True
+
+                    Just (Session.Failed why) ->
+                        say ("failed: " ++ why) |> Task.map (\_ -> False)
+
+                    Just Session.Ended ->
+                        Task.succeed False
+
+                    Nothing ->
+                        Task.succeed False
+
+                    Just _ ->
+                        untilSessionStarted sources
             )
 
 

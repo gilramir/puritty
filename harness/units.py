@@ -202,9 +202,10 @@ SUITES = [
     ),
     Suite(
         # sftp.md FT14: Ssh.Sftp reading packets split and joined, 64-bit
-        # sizes, and the streams it refuses
+        # sizes, and the streams it refuses; 9 since FT18: the shell's
+        # upload paced by its queue, and cancelled while it opens
         "ssh-sftp",
-        7,
+        9,
         [
             Run("linux", ["packages/ssh/tests/build.sh"], ["./ssh-tests", "sftp"], cwd="packages/ssh/tests"),
             Run(

@@ -1,0 +1,320 @@
+module ShellDrive exposing (run)
+
+{-| An upload over a session to a host, as the app is to do it (puritty
+`docs/sftp.md` FT18): SFTP first, and where the host refuses the
+subsystem, through its shell with `Ssh.ShellTransfer`, if allowed. One
+batch, from the command line, and what it told, a line each, for
+`shell-transfer.py`'s pins.
+
+    ssh-tests session … --upload [--allow-shell] [--choice C]
+        [--cancel-after N] JOB...
+
+The jobs are `TransferDrive`'s. Only the fallback is driven here: a host
+that has SFTP is said to, and nothing is moved, since `transfer.py`
+holds that path.
+-}
+
+import Bytes exposing (Bytes)
+import Console
+import Int64
+import Os.Error
+import Os.File as File exposing (Access(..), Position(..))
+import Os.Path as Path
+import Source exposing (Source)
+import Ssh.Connection as Connection
+import Ssh.Session as Session
+import Ssh.ShellTransfer as Shell exposing (Channel(..))
+import Ssh.Transfer exposing (Choice(..), Event(..), Local(..))
+import Task exposing (Task)
+import TransferDrive
+
+
+type alias Sources =
+    { notices : Source Session.Notice, inputs : Source Session.Input }
+
+
+type alias Drive =
+    { fs : File.Permission
+    , sources : Sources
+    , choice : Choice
+    , cancelAfter : Int
+    , progressed : Int
+    , over : Bool
+    , last : Maybe { bytes : Int64, total : Int64 }
+    , cancelled : Bool
+    }
+
+
+say : String -> Task x {}
+say line =
+    Console.write (line ++ "\n")
+
+
+run : File.Permission -> Sources -> Array String -> Task String {}
+run fs sources args0 =
+    let
+        allowShell =
+            Array.member "--allow-shell" args0
+
+        args =
+            Array.keepIf (\a -> a /= "--allow-shell") args0
+
+        choice =
+            when TransferDrive.option "--choice" args is
+                Just "keep" ->
+                    KeepBoth
+
+                Just "skip" ->
+                    Skip
+
+                Just "newer" ->
+                    ReplaceIfNewer
+
+                _ ->
+                    Replace
+
+        cancelAfter =
+            TransferDrive.option "--cancel-after" args |> Maybe.andThen String.toInt |> Maybe.withDefault -1
+
+        d =
+            { fs = fs, sources = sources, choice = choice, cancelAfter = cancelAfter, progressed = 0, over = False, last = Nothing, cancelled = False }
+    in
+    TransferDrive.jobsOf fs (TransferDrive.withoutOptions args) []
+        |> Task.andThen
+            (\jobs ->
+                Source.emit sources.inputs (Session.OpenSubsystem { ref = 1, name = "sftp" })
+                    |> Task.andThen (\_ -> sftpAnswer sources)
+                    |> Task.andThen
+                        (\refused ->
+                            when refused is
+                                Nothing ->
+                                    say "the host has SFTP"
+
+                                Just why ->
+                                    if allowShell then
+                                        say ("SFTP is turned off on this host (" ++ why ++ "); uploading through the shell")
+                                            |> Task.andThen (\_ -> handle d (Shell.start { piece = 32768, ahead = 262144, ref = 2 } jobs))
+                                            |> Task.andThen loop
+                                            |> Task.andThen (\r -> moved r.d)
+
+                                    else
+                                        say ("SFTP is turned off on this host (" ++ why ++ "), and uploading through the shell is off: [files] upload_through_shell")
+                        )
+            )
+
+
+{-| Whether the sftp subsystem was refused, and why. -}
+sftpAnswer : Sources -> Task String (Maybe String)
+sftpAnswer sources =
+    Source.next sources.notices
+        |> Task.andThen
+            (\n ->
+                when n is
+                    Just (Session.Side { ref = 1, event = Connection.Started }) ->
+                        Source.emit sources.inputs (Session.SideClose 1) |> Task.map (\_ -> Nothing)
+
+                    Just (Session.Side { ref = 1, event = Connection.Refused why }) ->
+                        Task.succeed (Just why)
+
+                    Just Session.Ended ->
+                        Task.fail "the session ended"
+
+                    Nothing ->
+                        Task.fail "the session ended"
+
+                    Just _ ->
+                        sftpAnswer sources
+            )
+
+
+moved : Drive -> Task String {}
+moved d =
+    when d.last is
+        Just p ->
+            if d.cancelled then
+                say
+                    ("moved "
+                        ++ (if p.bytes < p.total then
+                                "part"
+
+                            else
+                                "all"
+                           )
+                        ++ " of "
+                        ++ String.fromInt64 p.total
+                        ++ " bytes"
+                    )
+
+            else
+                say ("moved " ++ String.fromInt64 p.bytes ++ " of " ++ String.fromInt64 p.total ++ " bytes")
+
+        Nothing ->
+            say "moved nothing"
+
+
+loop : { d : Drive, transfer : Shell.ShellTransfer } -> Task String { d : Drive, transfer : Shell.ShellTransfer }
+loop r =
+    if r.d.over then
+        Task.succeed r
+
+    else
+        Source.next r.d.sources.notices
+            |> Task.andThen
+                (\n ->
+                    when n is
+                        Just (Session.Side side) ->
+                            handle r.d (Shell.told side r.transfer) |> Task.andThen loop
+
+                        Just Session.Ended ->
+                            say "the session ended" |> Task.map (\_ -> r)
+
+                        Nothing ->
+                            say "the session ended" |> Task.map (\_ -> r)
+
+                        Just _ ->
+                            loop r
+                )
+
+
+handle : Drive -> Shell.Step -> Task String { d : Drive, transfer : Shell.ShellTransfer }
+handle d0 step =
+    Array.foldl (\c acc -> acc |> Task.andThen (\_ -> Source.emit d0.sources.inputs (input c))) (Task.succeed {}) step.channel
+        |> Task.andThen (\_ -> Array.foldl (\e acc -> acc |> Task.andThen (\d -> told e d)) (Task.succeed d0) step.events)
+        |> Task.andThen
+            (\d1 ->
+                Array.foldl
+                    (\l acc -> acc |> Task.andThen (\r -> doLocal l r))
+                    (Task.succeed { d = d1, transfer = step.transfer })
+                    step.local
+            )
+        |> Task.andThen
+            (\r ->
+                if Array.any isConflicts step.events then
+                    handle r.d (Shell.answer r.d.choice r.transfer)
+
+                else if r.d.cancelAfter >= 0 && r.d.progressed > r.d.cancelAfter && not r.d.over then
+                    let
+                        d =
+                            r.d
+                    in
+                    say "cancelled"
+                        |> Task.andThen (\_ -> handle { d | cancelAfter = -1 } (Shell.cancel r.transfer))
+
+                else
+                    Task.succeed r
+            )
+
+
+input : Channel -> Session.Input
+input c =
+    when c is
+        Open o ->
+            Session.OpenExec o
+
+        Write w ->
+            Session.SideWrite w
+
+        Eof ref ->
+            Session.SideEof ref
+
+        Close ref ->
+            Session.SideClose ref
+
+
+isConflicts : Event -> Bool
+isConflicts e =
+    when e is
+        Conflicts _ ->
+            True
+
+        _ ->
+            False
+
+
+told : Event -> Drive -> Task String Drive
+told e d =
+    when e is
+        Conflicts cs ->
+            say ("conflicts: " ++ String.join ", " (Array.map (\c -> String.fromInt c.job ++ " " ++ Bytes.toStringLossy c.name) cs))
+                |> Task.map (\_ -> d)
+
+        Progress p ->
+            Task.succeed { d | progressed = d.progressed + 1, last = Just { bytes = p.bytes, total = p.total } }
+
+        Done x ->
+            say ("done " ++ String.fromInt x.job ++ " as " ++ Bytes.toStringLossy x.as_) |> Task.map (\_ -> d)
+
+        Skipped x ->
+            say ("skipped " ++ String.fromInt x.job) |> Task.map (\_ -> d)
+
+        Failed x ->
+            say ("failed " ++ String.fromInt x.job ++ ": " ++ x.why) |> Task.map (\_ -> d)
+
+        Finished f ->
+            say
+                ("finished: "
+                    ++ String.fromInt f.done
+                    ++ " done, "
+                    ++ String.fromInt f.skipped
+                    ++ " skipped, "
+                    ++ String.fromInt f.failed
+                    ++ " failed"
+                    ++ (if f.cancelled then
+                            ", cancelled"
+
+                        else
+                            ""
+                       )
+                )
+                |> Task.map (\_ -> { d | over = True, cancelled = f.cancelled })
+
+        Broken why ->
+            say ("broken: " ++ why) |> Task.map (\_ -> { d | over = True })
+
+
+{-| Only `ReadPiece` comes from the shell's engine. -}
+doLocal : Local -> { d : Drive, transfer : Shell.ShellTransfer } -> Task String { d : Drive, transfer : Shell.ShellTransfer }
+doLocal l r =
+    if r.d.over then
+        Task.succeed r
+
+    else
+        when l is
+            ReadPiece p ->
+                File.withHandle r.d.fs ForRead (Path.fromString p.path) (\h -> File.seek (FromStart p.offset) h |> Task.andThen (\_ -> readUpTo p.length h []))
+                    |> Task.map Ok
+                    |> Task.onError (\e -> Task.succeed (Err e))
+                    |> Task.mapError Os.Error.toString
+                    |> Task.andThen
+                        (\got ->
+                            when got is
+                                Ok bytes ->
+                                    handle r.d (Shell.localRead { job = p.job, offset = p.offset, bytes = bytes } r.transfer)
+
+                                Err e ->
+                                    handle r.d (Shell.localFailed { job = p.job, why = Os.Error.toString e } r.transfer)
+                        )
+
+            _ ->
+                Task.succeed r
+
+
+readUpTo : Int -> File.Handle -> Array Bytes -> Task Os.Error.Error Bytes
+readUpTo n h pieces =
+    let
+        have =
+            Array.foldl (\p acc -> acc + Bytes.length p) 0 pieces
+    in
+    if have >= n then
+        Task.succeed (Bytes.slice 0 n (Bytes.flatten pieces))
+
+    else
+        File.read h
+            |> Task.andThen
+                (\b ->
+                    if Bytes.isEmpty b then
+                        Task.succeed (Bytes.flatten pieces)
+
+                    else
+                        readUpTo n h (Array.pushLast b pieces)
+                )
