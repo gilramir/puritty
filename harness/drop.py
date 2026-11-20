@@ -63,20 +63,50 @@ TMUX_CASES = [
 # typed over the home it opens at, its folders listed, the second chosen,
 # gone into, and chosen
 CHOOSER_KEYS = ["ctrl+a", "type:HOST", "Return", "Down", "Down", "Down", "Return", "Return"]
+# the chooser's folder, typed and chosen at once
+TO_HOST = ["ctrl+a", "type:HOST", "Return", "Return"]
 
 
-def run_tmux_case(env0, name, at, keys, after=(), tmux=True):
+def taken(there):
+    # a file of the dropped one's name there already, older
+    (there / "a plain.txt").write_text("older\n")
+    os.utime(there / "a plain.txt", (1577934245, 1577934245))
+
+
+def host_listing(there, files):
+    """What the host's folders hold after the drop: each file's size and
+    whether its bytes are a dropped file's, by name."""
+    lines = []
+    for p in sorted(there.rglob("*")):
+        rel = p.relative_to(there)
+        if p.is_dir():
+            lines.append(f"  {rel}/")
+            continue
+        src = next((f for f in files.rglob(p.name.replace(" (2)", "")) if f.is_file()), None)
+        same = "" if src is None or src.stat().st_size > 1 << 20 else (", the dropped file's bytes" if src.read_bytes() == p.read_bytes() else ", OTHER bytes")
+        lines.append(f"  {rel}: {p.stat().st_size} bytes{same}")
+    return lines
+
+
+def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), sftp=True, shell=False, before=None, big=False):
     home = WORK / name
     shutil.rmtree(home, ignore_errors=True)
     files = home / "files"
     files.mkdir(parents=True)
-    for n in ["a plain.txt", "it's $HOME.txt", "한글 이름.txt"]:
-        (files / n).write_text("x\n")
-    with open(os.path.join(os.fsencode(files), EUC), "w") as f:
-        f.write("x\n")
-    (files / "a folder").mkdir()
+    if big:
+        # one file, 4 GiB of a hole, long enough to send that it is cancelled
+        with open(files / "big.bin", "wb") as f:
+            f.truncate(4 << 30)
+    else:
+        for n in ["a plain.txt", "it's $HOME.txt", "한글 이름.txt"]:
+            (files / n).write_text("x\n")
+        with open(os.path.join(os.fsencode(files), EUC), "w") as f:
+            f.write("x\n")
+        (files / "a folder").mkdir()
     there = home / "host"
-    server = sshd.Server(["Subsystem sftp /usr/lib/openssh/sftp-server"])
+    if not big:
+        (files / "a folder" / "inside.txt").write_text("inside\n")
+    server = sshd.Server(["Subsystem sftp /usr/lib/openssh/sftp-server"] if sftp else [])
     kh = home / ".ssh" / "known_hosts"
     kh.parent.mkdir(parents=True)
     pub = (sshd.WORK / "keys" / "ssh_host_ed25519_key.pub").read_text().split()[:2]
@@ -84,11 +114,14 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True):
     (home / "config" / "puritty").mkdir(parents=True)
     (home / "config" / "puritty" / "config.toml").write_text(
         f'[hosts.test]\nhost = "127.0.0.1"\nport = {server.port}\nuser = "{getpass.getuser()}"\nidentity = "{keys["ed"]}"\n'
-        f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "") + '\n[debug]\nlog = true\n')
+        f'client = "built-in"\n' + (f'command = "sh {PANES} \'{there}\'"\n' if tmux else "") + '\n[debug]\nlog = true\n'
+        + ('\n[files]\nupload_through_shell = true\n' if shell else ""))
     if not tmux:
         # the folders the chooser is taken to
         for d in ["alpha", "beta dir", ".hidden"]:
             (there / d).mkdir(parents=True)
+    if before:
+        before(there)
     env = dict(env0, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"), SHELL="/bin/sh", USER=getpass.getuser())
     procs = []
     try:
@@ -104,10 +137,17 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True):
         time.sleep(1.5)
         shot = [sys.executable, str(ROOT / "probes" / "xdnd" / "shot.py")]
         subprocess.run(shot + [str(home / "before.png")], env=env)
-        x, y = NEMO["plain"]
+        x, y = (253, 120) if big else NEMO[items[0]]
         xdo(env, "mousemove", x, y)
         xdo(env, "click", 1)
+        for it in items[1:]:
+            xdo(env, "mousemove", *NEMO[it])
+            xdo(env, "keydown", "ctrl")
+            xdo(env, "click", 1)
+            xdo(env, "keyup", "ctrl")
         time.sleep(0.5)
+        xdo(env, "mousemove", x, y)
+        time.sleep(0.3)
         xdo(env, "mousedown", 1)
         for i in range(1, 31):
             xdo(env, "mousemove", x + (at[0] - x) * i // 30, y + (at[1] - y) * i // 30)
@@ -128,6 +168,16 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True):
                     xdo(env, "key", k)
                 time.sleep(1.2)
                 subprocess.run(shot + [str(home / f"after-{n}.png")], env=env)
+        if big:
+            # the progress, a second and more on, and a click on it cancels
+            time.sleep(2.5)
+            subprocess.run(shot + [str(home / "progress.png")], env=env)
+            # the note bar, at the window's bottom right over the tab bar,
+            # where progress.png shows it (the window at 660,60)
+            xdo(env, "mousemove", 1000, 434)
+            xdo(env, "click", 1)
+        # what is sent, given time to arrive
+        time.sleep(3)
     finally:
         for p in procs:
             if p.poll() is None:
@@ -138,7 +188,8 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True):
             for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
             for line in log.read_text(errors="replace").splitlines()
             if (" paste " in line or " drop " in line) and "paste button" not in line and "paste asked" not in line]
-    return f"dropped {'on the pane ' if tmux else ''}at {at}{', then ' + str(after) if after else ''}\nsaid: {said}\n"
+    return (f"dropped {items} {'on the pane ' if tmux else ''}at {at}{', then ' + str(after) if after else ''}\nsaid: {said}\n"
+            + "the host holds:\n" + "\n".join(host_listing(there, files)) + "\n")
 
 
 def dolphin():
@@ -245,7 +296,20 @@ def main():
             for name, fm, items, charset in CASES] + \
         [(name, (lambda name=name, at=at: run_tmux_case(env, name, at, keys, after=["Escape"] if name == "tmux-ssh-pane" else ())))
          for name, at in TMUX_CASES] + \
-        [("ssh-chooser", lambda: run_tmux_case(env, "ssh-chooser", (950, 300), keys, after=CHOOSER_KEYS, tmux=False))]
+        [("ssh-chooser", lambda: run_tmux_case(env, "ssh-chooser", (950, 300), keys, after=CHOOSER_KEYS, tmux=False)),
+         # four items, a folder among them, to the folder typed
+         ("ssh-several", lambda: run_tmux_case(env, "ssh-several", (950, 300), keys, after=TO_HOST, tmux=False,
+                                               items=("plain", "folder", "korean", "quote"))),
+         # a name there already: the question, answered K, keep both
+         ("ssh-keep-both", lambda: run_tmux_case(env, "ssh-keep-both", (950, 300), keys, after=TO_HOST + ["k"], tmux=False,
+                                                 before=taken)),
+         # a host with SFTP off: through its shell when the setting allows,
+         # else nothing, said; the chooser needs SFTP, so the pane of tmux
+         # whose folder is known is dropped on
+         ("tmux-no-sftp-shell", lambda: run_tmux_case(env, "tmux-no-sftp-shell", (760, 250), keys, sftp=False, shell=True)),
+         ("tmux-no-sftp", lambda: run_tmux_case(env, "tmux-no-sftp", (760, 250), keys, sftp=False)),
+         # a long one: its progress, and a click on it cancels, no part left
+         ("tmux-cancel", lambda: run_tmux_case(env, "tmux-cancel", (760, 250), keys, items=("big",), big=True))]
     try:
         for name, go in runs:
             if a.only and name not in a.only:

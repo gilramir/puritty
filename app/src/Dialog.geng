@@ -1,4 +1,4 @@
-module Dialog exposing (Button, Check, Dialog, Swatch, buttonAt, checkAt, contrast, draw, noteBar, scrollbar, scrollbarHit, searchBar, swatchAt)
+module Dialog exposing (Button, Check, Dialog, Swatch, buttonAt, checkAt, contrast, draw, noteBar, noteBarAt, scrollbar, scrollbarHit, searchBar, swatchAt)
 
 {-| A question asked over the terminal (`docs/ssh-client.md` SC23), as
 ChromeOS's Terminal asks for a password: a box in the middle of the
@@ -653,7 +653,8 @@ searchBar size b =
 {-| A note at the window's bottom right, above the tab bar's row (puritty
 `docs/sftp.md` FT13): one line of what puritty did or could not do, such
 as a picture sent to the host and pasted, in the search bar's look, red
-for a failure. Nothing takes keys or clicks from it; it goes by itself. -}
+for a failure. It takes no keys; a click on it cancels what it shows the
+progress of, a batch of files sent (`noteBarAt`, docs/sftp.md FT25). -}
 noteBar : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> { text : String, failed : Bool } -> Bytes
 noteBar size n =
     let
@@ -794,3 +795,38 @@ barGeometry size v =
             top + room - (room * clamp 0 v.most v.back) // max 1 v.most
     in
     { x = w - width - px 3, width = width, top = top, track = track, thumbY = thumbY, thumbH = thumbH }
+
+
+{-| Whether a point is on the note bar `noteBar` draws with this text
+(docs/sftp.md FT25: a click on the progress cancels it). -}
+noteBarAt : { cols : Int, rows : Int, cellWidth : Int, cellHeight : Int } -> String -> { x : Int, y : Int } -> Bool
+noteBarAt size text at =
+    let
+        w =
+            size.cols * size.cellWidth
+
+        h =
+            size.rows * size.cellHeight
+
+        k =
+            toFloat size.cellHeight / 17
+
+        px v =
+            max 1 (Math.round (toFloat v * k))
+
+        most =
+            min (w - px 28) (px 560)
+
+        bw =
+            min (most - px 24) (Text.width (px 13) text) + px 24
+
+        bh =
+            px 32
+
+        bx =
+            w - bw - px 14
+
+        by =
+            h - bh - size.cellHeight - px 6
+    in
+    at.x >= bx && at.x < bx + bw && at.y >= by && at.y < by + bh

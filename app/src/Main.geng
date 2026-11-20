@@ -81,6 +81,7 @@ import RestoreFile exposing (TabColor(..))
 import Schema
 import Search
 import SecretStore
+import Sending
 import SessionFile
 import SettingsGui
 import SettingsProgram
@@ -88,6 +89,7 @@ import SettingsSource exposing (Given, Read(..), Settings, overridden, readSetti
 import Source exposing (Source)
 import Ssh.Connection as Connection
 import Ssh.Session as Session
+import Ssh.Transfer as Transfer
 import SshAgents
 import TabOrder
 import Task exposing (Task)
@@ -231,6 +233,8 @@ type alias Model =
     -- (docs/sftp.md FT16)
     , pasteAsk : Maybe PasteAsk
     , choosing : Maybe Choosing
+    , sending : Maybe Sending.Sending
+    , pendingSend : Maybe { folder : Bytes, files : Array Bytes }
     -- why a new tab did not start, said in a box until it is
     -- dismissed (docs/tabs.md TB16)
     , startFailed : Maybe String
@@ -1357,6 +1361,8 @@ runWith started imeLog shotPath startAt charset config cell remote starter setti
                      , closing = Nothing
                      , pasteAsk = Nothing
                      , choosing = Nothing
+                     , sending = Nothing
+                     , pendingSend = Nothing
                      , startFailed = Nothing
                      , barClick = { at = -1000, id = -1 }
                      , saving = { dir = restoring.dir, window = Nothing, written = "", at = -1 }
@@ -2197,7 +2203,7 @@ pointerShape m =
                 Window.TextPointer
 
         shape =
-            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || m.coloring /= Nothing || m.menu /= Nothing then
+            if m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || m.coloring /= Nothing || m.menu /= Nothing then
                 Window.ArrowPointer
 
             else
@@ -2228,7 +2234,40 @@ so that the window sends every motion: under tmux control mode, with the tab
 bar or the scroll bar shown, or a menu or a question up. -}
 hoverShapes : Model -> Bool
 hoverShapes m =
-    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || m.coloring /= Nothing || m.menu /= Nothing
+    TmuxMode.isOn m.tmux || barRows m > 0 || barShown m || m.startFailed /= Nothing || m.closing /= Nothing || m.pasteAsk /= Nothing || Maybe.isJust m.choosing || sendingAsks m || m.coloring /= Nothing || m.menu /= Nothing
+
+
+{-| The window's events waiting, taken after a turn the session's output
+or notice won (docs/sftp.md FT25): which of a race's ready tasks wins is
+not said, and while a transfer keeps the session's notices coming, the
+window's clicks and keys could wait for its end. -}
+windowToo : Backend -> Int -> (taken m : Model) -> Task Error Model
+windowToo remote ms m =
+    Window.take
+        |> Task.andThen
+            (\evs ->
+                if Array.isEmpty evs then
+                    Task.succeed m
+
+                else
+                    handle remote ms evs m
+            )
+
+
+{-| A notice of the session's in the log, but a side channel's output and
+how much of its data waits: a transfer has one of each for every piece,
+which would be most of the log. -}
+noticeLogged : Session.Notice -> (taken m : Model) -> Model
+noticeLogged told m =
+    when told is
+        Session.Side { ref = _, event = Connection.Output _ } ->
+            m
+
+        Session.Side { ref = _, event = Connection.Sent _ } ->
+            m
+
+        _ ->
+            logLine "ssh" (sshLine told) m
 
 
 race : Backend -> (taken m0 : Model) -> Task Error Model
@@ -2305,14 +2344,14 @@ race remote m0 =
                                                         Task.succeed m
 
                                                 else
-                                                    feed remote chunk ms m |> Task.andThen (\next -> step remote ms next)
+                                                    feed remote chunk ms m |> Task.andThen (windowToo remote ms) |> Task.andThen (\next -> step remote ms next)
 
                                             Read (Notice told) ->
                                                 if endsSession told m.ssh then
                                                     closeShown (sshNoticed told (logLine "ssh" (sshLine told) { m | turnMs = ms })) |> Task.andThen (\next -> step next.remote ms next)
 
                                                 else
-                                                    sshTold told (logLine "ssh" (sshLine told) { m | turnMs = ms }) |> Task.andThen (\next -> step remote ms next)
+                                                    sshTold told (noticeLogged told { m | turnMs = ms }) |> Task.andThen (windowToo remote ms) |> Task.andThen (\next -> step remote ms next)
 
                                             Events up ->
                                                 if not up then
@@ -2920,6 +2959,11 @@ windowState m =
                     ""
                 , if Maybe.isJust m.choosing then
                     "the folder chooser"
+
+                  else
+                    ""
+                , if sendingAsks m then
+                    "the conflict question"
 
                   else
                     ""
@@ -3995,7 +4039,7 @@ sshTold told m =
             sideEvent side m
 
         Session.Ended ->
-            Task.succeed (sshNoticed told (uploadLost m))
+            Task.succeed (sshNoticed told (sendingLost (uploadLost m)))
 
         Session.Failed _ ->
             Task.succeed (sshNoticed told (uploadLost m))
@@ -4467,8 +4511,9 @@ sshDropped files m0 =
             { m0 | tmux = TmuxMode.dragLeft m0.tmux, urgent = True }
     in
     when known is
-        Just _ ->
-            noteUp { text = "Sending dropped files to the host is not built yet: nothing was sent" ++ why, failed = True, kept = False } m
+        Just folder ->
+            -- sent when this drop's handling is done (`startPending`)
+            { m | pendingSend = Just { folder = folder, files = files } }
 
         Nothing ->
             -- no folder known: the chooser asks
@@ -4488,6 +4533,221 @@ sshDropped files m0 =
                         ("the folder chooser opened for " ++ String.fromInt (Array.length files) ++ " files")
                         { m | choosing = Just { ref = m.uploads + 1, tab = m.tab.id, chooser = begun.chooser, opened = False, toSend = begun.send }, uploads = m.uploads + 1 }
                 )
+
+
+{-| Files sent once their folder is known (docs/sftp.md FT25): the jobs
+made from them, and the batch begun. -}
+startPending : (taken m : Model) -> Task Error Model
+startPending m0 =
+    when m0.pendingSend is
+        Just p ->
+            let
+                m =
+                    { m0 | pendingSend = Nothing }
+            in
+            if Maybe.isJust m.sending then
+                Task.succeed (noteUp { text = "Files are still being sent; drop these again when they are done", failed = True, kept = False } m)
+
+            else
+                Sending.jobsFor m.settings.given.fs { folder = p.folder, paths = p.files, name = hostName m.charset }
+                    |> Task.andThen
+                        (\j ->
+                            let
+                                ref =
+                                    m.uploads + 1
+
+                                st =
+                                    Sending.begin { ref = ref, tab = m.tab.id, folder = p.folder, jobs = j.jobs, refused = j.refused, allowShell = m.config.uploadThroughShell, ms = m.turnMs }
+                            in
+                            -- the shell's channels, should SFTP be refused, are
+                            -- numbered after `ref`: a block of them kept
+                            sendingStep st (logLine "drop" ("sending " ++ String.fromInt (Array.length j.jobs) ++ " items, " ++ String.fromInt (Array.length j.refused) ++ " refused") { m | uploads = ref + 100000 })
+                        )
+
+        Nothing ->
+            meant Reason.NotSet (Task.succeed m0)
+
+
+{-| A local file's name as the host's (FT21's answers): UTF-8 in the
+host's character set; a name not UTF-8 as its bytes to a host in EUC-KR
+or CP949, and refused for a UTF-8 one. -}
+hostName : Charset -> Bytes -> Result String Bytes
+hostName charset local =
+    when Bytes.toString local is
+        Just text ->
+            when inHostCharset charset text is
+                Just b ->
+                    Ok b
+
+                Nothing ->
+                    meant Reason.FromOutside (Err ("its name has characters " ++ charsetName charset ++ " cannot write"))
+
+        Nothing ->
+            -- not UTF-8: already in the host's set, or no name it can take
+            meant Reason.FromOutside
+                (if charset == Charset.Utf8 then
+                    Err "its name is not UTF-8, which this host's UTF-8 can't take"
+
+                 else
+                    Ok local
+                )
+
+
+{-| A step of the batch: its outs done in order, each local read told back
+as it is done; the progress shown, and at the end what was sent. -}
+sendingStep : { sending : Sending.Sending, out : Array Sending.Out } -> (taken m : Model) -> Task Error Model
+sendingStep taken m =
+    when m.remote.side is
+        Just side ->
+            Array.foldl
+                (\o acc -> acc |> Task.andThen (sendingOut side o))
+                (Task.succeed { m | sending = Just taken.sending, urgent = True })
+                taken.out
+                |> Task.map sendingShown
+
+        Nothing ->
+            meant Reason.Gone (Task.succeed (sendingShown { m | sending = Just taken.sending }))
+
+
+sendingOut : (Session.Input -> Task Error {}) -> Sending.Out -> (taken m : Model) -> Task Error Model
+sendingOut side o m =
+    when o is
+        Sending.Input i ->
+            side i |> Task.map (\_ -> m)
+
+        Sending.Read r ->
+            File.withHandle m.settings.given.fs File.ForRead r.path (\h -> File.seek (File.FromStart r.offset) h |> Task.andThen (\_ -> readUpTo r.length h []))
+                |> Task.map Ok
+                |> Task.onError (\e -> Task.succeed (Err (Os.Error.toString e)))
+                |> Task.andThen
+                    (\got ->
+                        when m.sending is
+                            Just s ->
+                                when got is
+                                    Ok bytes ->
+                                        sendingStep (Sending.localRead { job = r.job, offset = r.offset, bytes = bytes } s) m
+
+                                    Err why ->
+                                        -- the file can't be read here now
+                                        meant Reason.Refused (sendingStep (Sending.localFailed { job = r.job, why = why } s) m)
+
+                            Nothing ->
+                                meant Reason.Gone (Task.succeed m)
+                    )
+
+
+{-| Up to `n` bytes from a handle's place, fewer at the file's end. -}
+readUpTo : Int -> File.Handle -> Array Bytes -> Task Os.Error.Error Bytes
+readUpTo n h pieces =
+    let
+        have =
+            Array.foldl (\p acc -> acc + Bytes.length p) 0 pieces
+    in
+    if have >= n then
+        Task.succeed (Bytes.slice 0 n (Bytes.flatten pieces))
+
+    else
+        File.read h
+            |> Task.andThen
+                (\b ->
+                    if Bytes.isEmpty b then
+                        Task.succeed (Bytes.flatten pieces)
+
+                    else
+                        readUpTo n h (Array.pushLast b pieces)
+                )
+
+
+{-| The batch's progress in the note bar, kept while it runs; at its end
+what was sent, and the batch gone. -}
+sendingShown : (taken m : Model) -> Model
+sendingShown m =
+    when m.sending is
+        Just s ->
+            when s.over is
+                Just said ->
+                    noteUp { text = said, failed = not (Array.isEmpty s.failed && Array.isEmpty s.refused) || s.done == 0, kept = False } { m | sending = Nothing }
+
+                Nothing ->
+                    -- still sending: its progress
+                    meant Reason.NotYet
+                        (when Sending.progressText m.turnMs s is
+                            Just text ->
+                                { m | note = Just { text = text, failed = False, until = -1 } }
+
+                            Nothing ->
+                                -- under a second in: no progress shown
+                                meant Reason.NotYet m
+                        )
+
+        Nothing ->
+            meant Reason.NotOpen m
+
+
+{-| The session ended under a batch: said, and forgotten. -}
+sendingLost : (taken m : Model) -> Model
+sendingLost m =
+    if Maybe.isJust m.sending then
+        noteUp { text = "The connection ended before the files were sent", failed = True, kept = False } { m | sending = Nothing }
+
+    else
+        m
+
+
+{-| A key while the conflict question is up (FT4): R replace, K keep both,
+S skip, N replace if newer, Enter replace, Esc cancels the batch. -}
+conflictKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Sending.Sending -> (taken m : Model) -> Task Error Model
+conflictKey k s m =
+    if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x72 || k.sym == 0x52 then
+        sendingStep (Sending.answer Transfer.Replace s) m
+
+    else if k.sym == 0x6B || k.sym == 0x4B then
+        sendingStep (Sending.answer Transfer.KeepBoth s) m
+
+    else if k.sym == 0x73 || k.sym == 0x53 then
+        sendingStep (Sending.answer Transfer.Skip s) m
+
+    else if k.sym == 0x6E || k.sym == 0x4E then
+        sendingStep (Sending.answer Transfer.ReplaceIfNewer s) m
+
+    else if k.sym == 0xFF1B then
+        sendingStep (Sending.cancel s) m
+
+    else
+        Task.succeed m
+
+
+conflictPress : Window.PointerEvent -> Sending.Sending -> (taken m : Model) -> Task Error Model
+conflictPress p s m =
+    let
+        hit =
+            if p.button == 1 then
+                Maybe.andThen (\cs -> Dialog.buttonAt (overlaySize m) (Sending.conflictBox (fromHost m.charset) cs) { x = p.x, y = p.y }) s.asking
+
+            else
+                Nothing
+    in
+    when hit is
+        Just 0 ->
+            sendingStep (Sending.answer Transfer.Replace s) m
+
+        Just 1 ->
+            sendingStep (Sending.answer Transfer.KeepBoth s) m
+
+        Just 2 ->
+            sendingStep (Sending.answer Transfer.Skip s) m
+
+        Just _ ->
+            sendingStep (Sending.answer Transfer.ReplaceIfNewer s) m
+
+        Nothing ->
+            meant Reason.OutOfRange (Task.succeed m)
+
+
+{-| Whether the conflict question is up. -}
+sendingAsks : Model -> Bool
+sendingAsks m =
+    Maybe.map Sending.isAsking m.sending == Just True
 
 
 {-| The chooser's channel opened and its bytes sent, when it has any. -}
@@ -4518,6 +4778,20 @@ chooserIo m =
 {-| A side channel's event: the chooser's, or the picture's upload. -}
 sideEvent : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Task Error Model
 sideEvent side m =
+    when m.sending is
+        Just s ->
+            if Sending.owns side.ref s then
+                sendingStep (Sending.side side s) m
+
+            else
+                chooserEvent side m
+
+        Nothing ->
+            meant Reason.NotOpen (chooserEvent side m)
+
+
+chooserEvent : { ref : Int, event : Connection.Event } -> (taken m : Model) -> Task Error Model
+chooserEvent side m =
     when m.choosing is
         Just c ->
             if c.ref /= side.ref then
@@ -4557,7 +4831,8 @@ chooserKey k c m =
             chooserIo { m | choosing = Just { c | chooser = r.chooser, toSend = Bytes.flatten [ c.toSend, r.send ] }, urgent = True }
 
         Chooser.Chosen folder ->
-            chooserClosed c (noteUp { text = "Sending dropped files to the host is not built yet: nothing was sent; they would go to " ++ fromHost m.charset folder, failed = True, kept = False } m)
+            chooserClosed c { m | pendingSend = Just { folder = folder, files = c.chooser.files } }
+                |> Task.andThen startPending
 
         Chooser.Cancelled ->
             chooserClosed c (logLine "drop" "the folder chooser cancelled" m)
@@ -5677,6 +5952,21 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if sendingAsks m then
+                -- the conflict question takes the keys (docs/sftp.md FT25)
+                (if k.action /= 0 then
+                    when m.sending is
+                        Just s ->
+                            conflictKey k s m
+
+                        Nothing ->
+                            meant Reason.NotOpen (Task.succeed m)
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if Maybe.isJust m.choosing then
                 -- the folder chooser takes the keys (docs/sftp.md FT24)
                 (if k.action /= 0 then
@@ -6031,6 +6321,32 @@ handleOne remote ms rest ev m =
                 )
                     |> Task.andThen (\next -> handle next.remote ms rest next)
 
+            else if sendingAsks m then
+                -- the conflict question takes the pointer
+                (if p.action == 0 then
+                    when m.sending is
+                        Just s ->
+                            conflictPress p s m
+
+                        Nothing ->
+                            meant Reason.NotOpen (Task.succeed m)
+
+                 else
+                    Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
+            else if Maybe.isJust m.sending && p.action == 0 && p.button == 1 && Dialog.noteBarAt (overlaySize m) (Maybe.map .text m.note |> Maybe.withDefault (meant Reason.NotOpen "")) { x = p.x, y = p.y } && Maybe.isJust m.note then
+                -- a click on the progress cancels the batch (FT25)
+                (when m.sending is
+                    Just s ->
+                        sendingStep (Sending.cancel s) m
+
+                    Nothing ->
+                        Task.succeed m
+                )
+                    |> Task.andThen (\next -> handle next.remote ms rest next)
+
             else if Maybe.isJust m.choosing then
                 -- the folder chooser takes the pointer
                 (if p.action == 0 then
@@ -6208,6 +6524,7 @@ handleOne remote ms rest ev m =
                         else
                             filesDropped (Bytes.flatten (Array.pushLast bytes m.dropGather)) { m | dropGather = [], turnMs = ms }
                                 |> Task.andThen chooserIo
+                                |> Task.andThen startPending
                                 |> Task.andThen (handle remote ms rest)
                     )
 
@@ -7334,6 +7651,9 @@ draw ms m =
 
             else if m.closing /= Nothing then
                 Maybe.map closeBox m.closing
+
+            else if sendingAsks m then
+                Maybe.andThen (\s -> Maybe.map (Sending.conflictBox (fromHost m.charset)) s.asking) m.sending
 
             else if Maybe.isJust m.choosing then
                 Maybe.map (\c -> Chooser.dialog (fromHost m.charset) c.chooser) m.choosing

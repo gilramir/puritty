@@ -1671,3 +1671,70 @@ showed the listing and the chosen row's mark. Its first run had no
 is how the problem lines came to be wrapped. `tmux-ssh-pane` now opens
 the chooser for the pane running `ssh`, and Esc cancels it.
 
+## FT25 · Step 5, item 4: dropped files sent (2026-11-20)
+
+Once the folder is known, a tmux pane's (FT23) or the chooser's (FT24),
+the files go there.
+
+**`app/src/Sending.geng`**, pure, holds a batch: its jobs, its engine,
+its progress, the conflict question, and the outcome. It answers outs,
+session inputs to send and pieces of local files to read, which `Main`
+does (`sendingStep`) and tells back.
+
+- **The jobs** (`jobsFor`): a file an `Upload` (its size and time from
+  this computer); a folder a `MakeDir` and then what it holds, listed
+  here and sorted, at any depth. Each name is the host's (FT21's answers,
+  `hostName`): UTF-8 put in the host's character set, a name not UTF-8
+  sent as its bytes to an EUC-KR or CP949 host and refused for a UTF-8
+  one; a path that can't be read here is refused too, the refusals in the
+  final note.
+- **The engine**: `Ssh.Transfer` on an SFTP channel of its own; where the
+  host refuses the subsystem, `Ssh.ShellTransfer` on exec channels if
+  `[files] upload_through_shell` is on (their references follow the SFTP
+  one: a block of 100,000 kept), and otherwise nothing sent, the note
+  naming the setting.
+- **The conflict question** (FT4), a box: the names there already (six,
+  and how many more), Replace, Keep both, Skip, Replace if newer, as
+  buttons and as R, K, S, N; Enter replaces; Esc cancels the batch.
+- **The progress**, in the note bar once a second has gone (FT6): the
+  file, which of how many, MB of the total, the rate, the time left. A
+  click on it cancels: what is being sent leaves no part on the host, the
+  rest is not sent (`Dialog.noteBarAt`, the bar's place).
+- **At the end** a note: what was sent, skipped, failed and refused, why
+  for each; "cancelled:" first when it was. The session ending under a
+  batch says so.
+
+**Found on the way: the window's events starved by a transfer's.** The
+first cancel case's click did nothing: the main loop races the session's
+read against the window's events, and which of two ready tasks wins is
+not said (`Task.race`); natively the session's did every time while an
+upload's SFTP replies kept coming, so clicks and keys waited for the
+transfer's end. After every turn the session's output or a notice won,
+`Main` now takes the window's events too (`windowToo`, `Window.take`
+does not wait). And the log no longer has a line for each side channel's
+output and pacing notice: the first cancel run wrote 18,351 lines for
+300 MB; the next, 209.
+
+**Tested** (`harness/drop.py`, fifteen cases; each now lists what the
+host's folder holds afterwards, each file's size and whether its bytes
+are the dropped file's):
+
+- a file onto a tmux pane's folder, and onto the chooser's;
+- four items, a folder with a file in it, a quote and a dollar, and
+  Korean, through the chooser: five jobs, every byte there;
+- a name there already, answered K: `a plain (2).txt` beside the older
+  file, untouched;
+- SFTP off with the setting on: sent through the shell; off: nothing
+  sent, the note naming the setting;
+- 4 GiB of a sparse file onto a pane: its progress in the note bar
+  (`progress.png`), a click on it, "Cancelled: nothing sent", and no
+  `.big.bin.puritty-part` on the host.
+
+**Measured, not yet improved**: 46.7 MB/s to the local sshd, where the ssh
+package alone sends 320 MB/s (FT17). Each 32 KiB piece opens, seeks and
+closes its file (`File.withHandle`), and each SFTP reply is a turn of the
+window's loop. To gmktec7 the link limited uploads to 41–49 MB/s (FT11,
+FT17), so it may not show there; on a faster link it would. Keeping the
+file open for its job, and the replies taken in batches, are the next
+step when measured.
+
