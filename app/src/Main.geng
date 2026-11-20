@@ -4606,7 +4606,11 @@ sendingStep taken m =
         Just side ->
             Array.foldl
                 (\o acc -> acc |> Task.andThen (sendingOut side o))
-                (Task.succeed { m | sending = Just taken.sending, urgent = True })
+                -- a frame only for what the screen shows: the question,
+                -- and the progress a few times a second (`sendingShown`);
+                -- a frame each reply held a shown tab's upload to a fifth
+                -- of a hidden one's (FT27)
+                (Task.succeed { m | sending = Just taken.sending, urgent = m.urgent || Sending.isAsking taken.sending })
                 taken.out
                 |> Task.map sendingShown
 
@@ -4682,7 +4686,7 @@ sendingShown m =
                         , failed = not (Array.isEmpty s.failed && Array.isEmpty s.refused) || s.done == 0
                         , kept = False
                         }
-                        { m | sending = Nothing }
+                        { m | sending = Nothing, urgent = True }
 
                 Nothing ->
                     -- still sending: its progress
@@ -4691,8 +4695,8 @@ sendingShown m =
                             Just text ->
                                 -- over its own tab only: a tab not shown has
                                 -- its mark in the bar
-                                if isShownTab m then
-                                    { m | note = Just { text = text, failed = False, until = -1 } }
+                                if isShownTab m && (s.shownAt < 0 || m.turnMs - s.shownAt >= 250) then
+                                    { m | note = Just { text = text, failed = False, until = -1 }, sending = Just { s | shownAt = m.turnMs }, urgent = True }
 
                                 else
                                     m
@@ -4728,19 +4732,19 @@ S skip, N replace if newer, Enter replace, Esc cancels the batch. -}
 conflictKey : { action : Int, keycode : Int, mods : Int, consumed : Int, unshifted : Int, sym : Int, text : Bytes } -> Sending.Sending -> (taken m : Model) -> Task Error Model
 conflictKey k s m =
     if k.sym == 0xFF0D || k.sym == 0xFF8D || k.sym == 0x72 || k.sym == 0x52 then
-        sendingStep (Sending.answer Transfer.Replace s) m
+        sendingStep (Sending.answer Transfer.Replace s) { m | urgent = True }
 
     else if k.sym == 0x6B || k.sym == 0x4B then
-        sendingStep (Sending.answer Transfer.KeepBoth s) m
+        sendingStep (Sending.answer Transfer.KeepBoth s) { m | urgent = True }
 
     else if k.sym == 0x73 || k.sym == 0x53 then
-        sendingStep (Sending.answer Transfer.Skip s) m
+        sendingStep (Sending.answer Transfer.Skip s) { m | urgent = True }
 
     else if k.sym == 0x6E || k.sym == 0x4E then
-        sendingStep (Sending.answer Transfer.ReplaceIfNewer s) m
+        sendingStep (Sending.answer Transfer.ReplaceIfNewer s) { m | urgent = True }
 
     else if k.sym == 0xFF1B then
-        sendingStep (Sending.cancel s) m
+        sendingStep (Sending.cancel s) { m | urgent = True }
 
     else
         Task.succeed m
@@ -4758,16 +4762,16 @@ conflictPress p s m =
     in
     when hit is
         Just 0 ->
-            sendingStep (Sending.answer Transfer.Replace s) m
+            sendingStep (Sending.answer Transfer.Replace s) { m | urgent = True }
 
         Just 1 ->
-            sendingStep (Sending.answer Transfer.KeepBoth s) m
+            sendingStep (Sending.answer Transfer.KeepBoth s) { m | urgent = True }
 
         Just 2 ->
-            sendingStep (Sending.answer Transfer.Skip s) m
+            sendingStep (Sending.answer Transfer.Skip s) { m | urgent = True }
 
         Just _ ->
-            sendingStep (Sending.answer Transfer.ReplaceIfNewer s) m
+            sendingStep (Sending.answer Transfer.ReplaceIfNewer s) { m | urgent = True }
 
         Nothing ->
             meant Reason.OutOfRange (Task.succeed m)
@@ -6369,7 +6373,7 @@ handleOne remote ms rest ev m =
                 -- a click on the progress cancels the batch (FT25)
                 (when m.sending is
                     Just s ->
-                        sendingStep (Sending.cancel s) m
+                        sendingStep (Sending.cancel s) { m | urgent = True }
 
                     Nothing ->
                         Task.succeed m

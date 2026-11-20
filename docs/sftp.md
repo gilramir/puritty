@@ -1761,9 +1761,36 @@ the user switches tabs, and its tab is marked.
   "Sending…") is dropped when another tab is shown: it was about the tab
   left, whose mark says it goes on; its next progress puts it back.
 
-**Tested** (`harness/drop.py`, sixteen cases): `switch-tab`, 512 MiB of
+**Tested** (`harness/drop.py`, sixteen cases): `switch-tab`, 2 GiB (512 MiB until FT27 made a shown tab fast enough to finish it before the switch) of
 a sparse file dropped on an ssh tab and its folder chosen; two seconds
 in, Ctrl+Shift+T opens a second tab on the host and stays shown. The
 whole file arrives, every byte; the bar shows `↑ test` on the first tab
 (`after-5.png`); and the note says "In the tab test: Sent 1 item".
+
+## FT27 · A shown tab's upload: a frame for what changed (2026-11-20)
+
+FT25 measured 46.7 MB/s to the local sshd and blamed the file opened for
+each piece and a loop turn for each reply. Measured before changing
+either, 1 GiB of a sparse file dropped on an ssh tab without tmux, the
+time from "sending" to "Sent" in the window's log
+(`harness/drop.py`'s `run_tmux_case`, the tab shown throughout, or
+another tab shown a second in):
+
+| | tab shown | tab hidden |
+|---|---|---|
+| before | 51.8 MB/s | 280.9 MB/s |
+| a frame only for what changed | **171.0, 171.9 MB/s** | 280.4, 280.5 MB/s |
+
+A hidden tab's upload already ran at nearly the ssh package's own speed
+(FT17's 320 MB/s with no window), so neither suspect was the cost: every
+engine step set `urgent`, a frame drawn for each SFTP reply. Now a step
+asks for one only when the screen changes (the conflict question, its
+answer, a cancel, the end), and the progress goes in the note bar at
+most four times a second (`Sending.shownAt`).
+
+Tried and taken back: the window's events taken after a session's turn
+at most every 10 ms rather than each (`windowToo`): 171.9 MB/s against
+171.0, no difference, so it was not kept. What is left between 172 and
+280 MB/s was not found; to a host over a network the link sets the speed
+well under either (gmktec7: 41 to 49 MB/s, FT11, FT17).
 

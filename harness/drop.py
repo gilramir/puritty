@@ -199,8 +199,12 @@ def run_tmux_case(env0, name, at, keys, after=(), tmux=True, items=("plain",), s
             for log in sorted((home / ".local" / "state" / "puritty" / "logs").glob("*.log"))
             for line in log.read_text(errors="replace").splitlines()
             if (" paste " in line or " drop " in line) and "paste button" not in line and "paste asked" not in line]
+    held = host_listing(there, files)
+    # a large file sent is not kept in the work folder
+    for p in list(there.rglob("big.bin")) + list(there.rglob(".big.bin.puritty-part")):
+        p.unlink()
     return (f"dropped {items} {'on the pane ' if tmux else ''}at {at}{', then ' + str(after) if after else ''}\nsaid: {said}\n"
-            + "the host holds:\n" + "\n".join(host_listing(there, files)) + "\n")
+            + "the host holds:\n" + "\n".join(held) + "\n")
 
 
 def dolphin():
@@ -321,9 +325,10 @@ def main():
          ("tmux-no-sftp", lambda: run_tmux_case(env, "tmux-no-sftp", (760, 250), keys, sftp=False)),
          # a long one: its progress, and a click on it cancels, no part left
          ("tmux-cancel", lambda: run_tmux_case(env, "tmux-cancel", (760, 250), keys, items=("big",), big=True)),
-         # another tab shown while one sends (FT26): the sending goes on in
+         # another tab shown while one sends (FT26; 2 GiB, which a shown tab
+         # does not finish in the two seconds before the switch, FT27): the sending goes on in
          # its own session, its tab marked, and its end said with its name
-         ("switch-tab", lambda: run_tmux_case(env, "switch-tab", (950, 300), keys, tmux=False, items=("big",), big=True, size=512 << 20,
+         ("switch-tab", lambda: run_tmux_case(env, "switch-tab", (950, 300), keys, tmux=False, items=("big",), big=True, size=2 << 30,
                                               after=TO_HOST + ["sleep:2", "ctrl+shift+t", "sleep:3"], wait=30))]
     try:
         for name, go in runs:
