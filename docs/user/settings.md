@@ -77,7 +77,8 @@ osc52_read = "deny"         # or "allow"
 upload_through_shell = false  # true: where a host has SFTP turned
                             # off, an upload may run sh, cat and mv
                             # there instead; off, since it runs
-                            # commands on your behalf
+                            # commands on your behalf (see
+                            # Sending files to a host)
 
 [images]
 read_files = false          # true: a program on this computer may

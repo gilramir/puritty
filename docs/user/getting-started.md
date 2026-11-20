@@ -78,5 +78,7 @@ shell; `start = "hosts"` in the settings makes it open the list there too.
 - [Settings](settings.md): the settings file, and the window that edits it.
 - [Copy and paste](copy-and-paste.md): the selection, the clipboard, and
   programs that take the mouse.
+- [Sending files to a host](file-transfer.md): files dropped on an ssh
+  tab, sent over its connection.
 - [tmux](tmux.md): tmux's panes drawn as puritty's own, floating panes
   included.
